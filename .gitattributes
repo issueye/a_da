@@ -1,0 +1,4 @@
+# The repo is line-ending normalised: everyone checks out LF, on any platform.
+* text=auto eol=lf
+*.ico binary
+*.png binary

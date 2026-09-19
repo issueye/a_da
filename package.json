@@ -1,0 +1,22 @@
+{
+  "name": "a-da",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A local AI coding agent with a native GPU UI, rendered with GPUIX",
+  "scripts": {
+    "link": "bun scripts/link.ts",
+    "icons": "bun scripts/make-icon.tsx",
+    "dev": "bun scripts/link.ts && bun --hot app.tsx",
+    "start": "bun scripts/link.ts && bun app.tsx",
+    "build": "bun scripts/link.ts && bun scripts/build.ts",
+    "typecheck": "tsc --noEmit",
+    "screenshot": "bun screenshot.ts",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "@types/react": "^19.2.0",
+    "typescript": "^5.3.0"
+  }
+}
