@@ -22,6 +22,7 @@ import { connectTest } from '@gpuix/react/automation'
 import { createTestRoot, hasNativeTestRenderer } from '@gpuix/react/testing'
 import { AgentWindow } from '../AgentWindow'
 import { store } from './store'
+import { defaultToolRegistry } from './tools'
 
 const describeNative = hasNativeTestRenderer ? describe : describe.skip
 
@@ -42,24 +43,39 @@ function textChunk(text: string) {
   return { choices: [{ delta: { content: text } }] }
 }
 
+/** DeepSeek 一类的端点在正文之前先吐思考链，字段名是 reasoning_content。 */
+function reasoningChunk(text: string) {
+  return { choices: [{ delta: { reasoning_content: text } }] }
+}
+
+const REASONING = '用户要一个说明文件，先看看工作区里有什么。'
+
 let workspaces: string[] = []
 let workspace = ''
 let server: ReturnType<typeof Bun.serve>
 let requests = 0
+/** 最近一次请求里模型拿到的工具表——工具是注册中心给的，不是写死的常量。 */
+let lastTools: string[] = []
 
 beforeAll(() => {
   server = Bun.serve({
     port: 0,
     async fetch(request) {
-      const body = (await request.json()) as { messages: { role: string }[] }
+      const body = (await request.json()) as {
+        messages: { role: string }[]
+        tools?: { function: { name: string } }[]
+      }
       requests += 1
+      lastTools = (body.tools ?? []).map((tool) => tool.function.name)
       const sawToolResult = body.messages.some((message) => message.role === 'tool')
 
-      // First round: a write_file whose arguments arrive in pieces, the way a
-      // real endpoint streams them. Second round: the closing summary.
+      // First round: reasoning, then a write_file whose arguments arrive in
+      // pieces, the way a real endpoint streams them. Second round: the closing
+      // summary.
       const stream = sawToolResult
         ? sse([textChunk('已写入 '), textChunk('`'), textChunk(FILE), textChunk('`。')])
         : sse([
+            reasoningChunk(REASONING),
             textChunk('我先写一个文件。'),
             toolCallChunk('call_1', 'write_file', '{"path":"'),
             toolCallChunk('call_1', 'write_file', FILE),
@@ -129,12 +145,35 @@ describeNative('the model loop', () => {
       await painted('已写入 note.md。')
       expect(await readFile(join(workspace, FILE), 'utf8')).toBe(CONTENT)
 
-      // The card is painted from the patch the tool returned: `<diff>` paints
-      // the hunk header and each changed line as its own run.
-      expect(screen()).toContain('@@ -1,0 +1,1 @@')
+      // 卡片默认收起，只留一行；展开之后 `<diff>` 才把 hunk 头和每一行改动画出来。
+      expect(screen()).not.toContain('@@ -1,0 +1,1 @@')
+      await app.getByText('写入文件').click()
+      await painted('@@ -1,0 +1,1 @@')
       expect(screen()).toContain('# hello from the mock model')
       expect(requests).toBe(2)
 
+      await app.close()
+    },
+    30_000,
+  )
+
+  test(
+    'shows the model reasoning as a row that opens on click',
+    async () => {
+      // 用自动批准：这个用例只关心思考行，但一轮必须真的跑完——停在审批闸门上的
+      // 那一轮会让 store.running 一直是真，后面每个用例的输入都会变成排队。
+      const { app, screen, painted, ask } = await mount('auto')
+
+      await ask('写一个 note.md')
+      await painted('思考')
+      // 收起时只有一行：时长写在标签旁边，推理原文不占地方。
+      expect(screen()).toContain('持续')
+      expect(screen()).not.toContain(REASONING)
+
+      await app.getByText('思考').click()
+      await painted(REASONING)
+
+      await painted('已写入 note.md。')
       await app.close()
     },
     30_000,
@@ -149,9 +188,12 @@ describeNative('the model loop', () => {
       await painted('等待批准')
       await app.getByTestId('deny').click()
 
+      // 拒绝的理由收在行里，展开才看得到（错误和被拒也默认收起）。
+      await painted('已拒绝')
+      await app.getByText('写入文件').click()
       await painted('已拒绝执行')
       // The refusal is fed back to the model instead of the tool result.
-      const lastToolMessage = store.active.messages.find((message) => message.role === 'tool')
+      const lastToolMessage = store.active.messages.find((message) => message.role === 'toolResult')
       expect(lastToolMessage?.content).toContain('用户拒绝了这次调用')
       expect(existsSync(join(workspace, FILE))).toBe(false)
 
@@ -202,6 +244,36 @@ describeNative('the model loop', () => {
       expect(store.projects.slice(0, 2)).toEqual([other, owning])
 
       await app.close()
+    },
+    30_000,
+  )
+
+  test(
+    'advertises registry tools — including extensions — to the model',
+    async () => {
+      const { app, painted, ask } = await mount('auto')
+
+      // 扩展注册进来的工具必须出现在发给模型的工具表里，否则就是「装了但叫不到」。
+      defaultToolRegistry.register({
+        name: 'custom_probe',
+        description: '扩展提供的工具',
+        parameters: { type: 'object', properties: {} },
+        async execute() {
+          return { output: 'ok', ok: true }
+        },
+      })
+
+      try {
+        await ask('写一个 note.md')
+        await painted('已写入 note.md。')
+
+        expect(lastTools).toContain('read_file')
+        expect(lastTools).toContain('write_file')
+        expect(lastTools).toContain('custom_probe')
+      } finally {
+        defaultToolRegistry.unregister('custom_probe')
+        await app.close()
+      }
     },
     30_000,
   )

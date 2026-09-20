@@ -44,7 +44,12 @@ for (const [from, target] of links) {
     rmSync(path, { recursive: true, force: true })
   }
   mkdirSync(dirname(path), { recursive: true })
-  symlinkSync(target, path, 'junction')
+  try {
+    symlinkSync(target, path, 'junction')
+  } catch {
+    // On file systems that don't support junctions/symlinks (like exFAT on Windows), fall back to copy.
+    cpSync(target, path, { recursive: true })
+  }
   linked += 1
 }
 

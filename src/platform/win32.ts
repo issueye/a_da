@@ -64,6 +64,11 @@ function load(): Lib | null {
       GetAsyncKeyState: { args: [FFIType.i32], returns: FFIType.i16 },
       GetDpiForWindow: { args: [FFIType.i64], returns: FFIType.u32 },
       ShowWindow: { args: [FFIType.i64, FFIType.i32], returns: FFIType.bool },
+      SetForegroundWindow: { args: [FFIType.i64], returns: FFIType.bool },
+      GetForegroundWindow: { args: [], returns: FFIType.i64 },
+      BringWindowToTop: { args: [FFIType.i64], returns: FFIType.bool },
+      FlashWindow: { args: [FFIType.i64, FFIType.bool], returns: FFIType.bool },
+      GetClassNameW: { args: [FFIType.i64, FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
       SetWindowPos: {
         args: [
           FFIType.i64,
@@ -93,17 +98,36 @@ const windows = new Map<number, number>()
 /** The first visible top-level window owned by `pid` is that process's GPUI window. */
 export function findAppWindow(pid: number = process.pid): number | null {
   const cached = windows.get(pid)
-  if (cached) return cached
   const api = load()
+  if (cached && api?.symbols.IsWindowVisible(cached)) return cached
   if (!api) return null
   const owner = new Uint32Array(1)
-  const holder: { hwnd: number | null } = { hwnd: null }
+  const rect = new Int32Array(4)
+  const classBuf = new Uint16Array(64)
+  let bestHwnd: number | null = null
+
   const callback = new JSCallback(
     (candidate: number) => {
       api.symbols.GetWindowThreadProcessId(candidate, owner)
       if (owner[0] === pid && api.symbols.IsWindowVisible(candidate)) {
-        holder.hwnd = candidate
-        return false
+        // 读取类名以区分真正的主窗口与系统输入法/辅助窗口
+        classBuf.fill(0)
+        // GetClassNameW returns the character count it wrote, or 0 on failure.
+        const len = Number(api.symbols.GetClassNameW?.(candidate, classBuf, 64) ?? 0)
+        const clsName = len > 0 ? String.fromCharCode(...classBuf.slice(0, len)) : ''
+
+        api.symbols.GetWindowRect(candidate, rect)
+        const width = rect[2] - rect[0]
+        const height = rect[3] - rect[1]
+
+        // 优先匹配 GPUI / Zed 窗口，或具备真实应用尺寸的窗口
+        if (clsName.includes('Zed') || clsName.includes('GPUI') || (width > 200 && height > 200)) {
+          bestHwnd = candidate
+          return false
+        }
+        if (!bestHwnd && width > 50 && height > 50) {
+          bestHwnd = candidate
+        }
       }
       return true
     },
@@ -112,12 +136,35 @@ export function findAppWindow(pid: number = process.pid): number | null {
   try {
     api.symbols.EnumWindows(callback.ptr, 0)
   } catch {
-    holder.hwnd = null
+    bestHwnd = null
   } finally {
     callback.close()
   }
-  if (holder.hwnd) windows.set(pid, holder.hwnd)
-  return holder.hwnd
+  if (bestHwnd) windows.set(pid, bestHwnd)
+  return bestHwnd
+}
+
+/**
+ * 将窗口正常显示并置顶激活到用户桌面前台。
+ * 严格保留 GPUI 内部计算的最佳居中位置与缩放尺寸，绝不修改坐标；
+ * 采用 SWP_NOMOVE | SWP_NOSIZE 穿透置前，确保在桌面上稳定呈现。
+ */
+export function activateAndShowWindow(pid: number = process.pid): boolean {
+  const api = load()
+  const hwnd = findAppWindow(pid)
+  if (!api || !hwnd) return false
+  try {
+    const SWP_ACTIVATE = 0x0001 | 0x0002 | 0x0040 // SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW
+
+    api.symbols.ShowWindow(hwnd, 1) // SW_SHOWNORMAL (还原并显示)
+    api.symbols.SetWindowPos(hwnd, -1, 0, 0, 0, 0, SWP_ACTIVATE) // HWND_TOPMOST: 强力置顶
+    api.symbols.SetWindowPos(hwnd, -2, 0, 0, 0, 0, SWP_ACTIVATE) // HWND_NOTOPMOST: 恢复正常层级
+    api.symbols.BringWindowToTop?.(hwnd)
+    api.symbols.SetForegroundWindow?.(hwnd)
+    return true
+  } catch {
+    return false
+  }
 }
 
 export interface WindowState {
@@ -356,6 +403,7 @@ export function controlWindow(pid: number = process.pid): WindowControls {
     },
 
     close() {
+      userInitiatedExit = true
       activeDrag = null
       const api = load()
       const hwnd = findAppWindow(pid)
@@ -375,4 +423,98 @@ export function controlWindow(pid: number = process.pid): WindowControls {
   }
 }
 
+let userInitiatedExit = false
+
+export function isUserInitiatedExit(): boolean {
+  return userInitiatedExit
+}
+
+export function requestAppExit(code = 0): void {
+  userInitiatedExit = true
+  process.exit(code)
+}
+
 export const windowControls: WindowControls = controlWindow()
+
+let kernel32Lib: {
+  symbols: {
+    FreeConsole: () => boolean
+    GetStdHandle: (n: number) => bigint | number
+    SetStdHandle: (n: number, h: bigint | number) => boolean
+    CreateFileW: (...args: any[]) => bigint | number
+    GetConsoleWindow: () => bigint | number
+  }
+} | null = null
+let kernel32Loaded = false
+
+function getKernel32() {
+  if (kernel32Loaded) return kernel32Lib
+  kernel32Loaded = true
+  try {
+    kernel32Lib = dlopen('kernel32.dll', {
+      FreeConsole: { args: [], returns: FFIType.bool },
+      GetStdHandle: { args: [FFIType.i32], returns: FFIType.i64 },
+      SetStdHandle: { args: [FFIType.i32, FFIType.i64], returns: FFIType.bool },
+      CreateFileW: {
+        args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.ptr],
+        returns: FFIType.i64,
+      },
+      GetConsoleWindow: { args: [], returns: FFIType.i64 },
+    }) as any
+  } catch {
+    kernel32Lib = null
+  }
+  return kernel32Lib
+}
+
+let stdHandlesInitialized = false
+
+/**
+ * 确保在 Windows 纯 GUI 模式下拥有有效的 stdio 底层句柄。
+ * 防止 Rust 原生代码（如 gpui_windows 内部日志）调用 eprintln! 时
+ * 因 INVALID_HANDLE_VALUE 引发 panic (os error 6) 导致进程退出。
+ */
+export function ensureValidStdHandles(): void {
+  if (process.platform !== 'win32' || stdHandlesInitialized) return
+  stdHandlesInitialized = true
+
+  try {
+    const k32 = getKernel32()
+    if (!k32) return
+
+    const hStdOut = k32.symbols.GetStdHandle(-11)
+    const hStdErr = k32.symbols.GetStdHandle(-12)
+    const hStdIn = k32.symbols.GetStdHandle(-10)
+
+    const isInvalid = (h: bigint | number) => !h || h === -1n || h === -1
+
+    if (isInvalid(hStdOut) || isInvalid(hStdErr) || isInvalid(hStdIn)) {
+      const nulName = Buffer.from('NUL\0', 'utf-16le')
+      const hNul = k32.symbols.CreateFileW(
+        nulName,
+        0x80000000 | 0x40000000,
+        1 | 2,
+        null,
+        3,
+        0,
+        null
+      )
+
+      if (!isInvalid(hNul)) {
+        if (isInvalid(hStdIn)) k32.symbols.SetStdHandle(-10, hNul)
+        if (isInvalid(hStdOut)) k32.symbols.SetStdHandle(-11, hNul)
+        if (isInvalid(hStdErr)) k32.symbols.SetStdHandle(-12, hNul)
+      }
+    }
+  } catch {
+    // 容错处理
+  }
+}
+
+/** Detach any console window attached to this process on Windows. */
+export function detachConsole(): boolean {
+  if (process.platform !== 'win32') return false
+  const k32 = getKernel32()
+  return Boolean(k32?.symbols?.FreeConsole?.())
+}
+

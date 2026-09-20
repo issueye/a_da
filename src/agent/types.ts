@@ -1,26 +1,26 @@
 /**
- * Shared shapes for the agent: what a thread holds, what the model is sent,
- * and what the transcript rows render from.
+ * 界面层的数据形状：一个会话持有什么、每行卡片渲染什么。
+ *
+ * 发给模型的消息模型在 `core/types.ts`（AgentMessage）。会话原样保存那一份，
+ * 所以 thread.messages 永远等于真正发出去过的历史，不再有第二套转换。
  */
 
-export interface ToolCall {
-  id: string
-  name: string
-  /** Raw JSON as the model produced it, kept for the debug log. */
-  args: string
-}
-
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string
-  tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[]
-  tool_call_id?: string
-}
+import type { AgentMessage } from './core/types'
 
 export type ToolStatus = 'awaiting' | 'running' | 'done' | 'error' | 'denied'
 
 export type Item =
   | { kind: 'user'; id: string; at: number; text: string; queued?: boolean }
+  | {
+      /** 模型的思考链（reasoning_content）。默认折叠，只留一行时长。 */
+      kind: 'thinking'
+      id: string
+      /** 第一次收到思考增量的时刻，用来算「持续了几秒」。 */
+      at: number
+      text: string
+      /** 这段思考结束的时刻：思考完就不再增长。 */
+      endedAt?: number
+    }
   | { kind: 'assistant'; id: string; at: number; text: string; streaming?: boolean }
   | {
       kind: 'tool'
@@ -43,7 +43,8 @@ export interface Thread {
   /** The project this conversation works in. Every tool call is scoped to it. */
   workspace: string
   items: Item[]
-  messages: ChatMessage[]
+  /** Everything the model has been told in this thread, in the core message model. */
+  messages: AgentMessage[]
 }
 
 export interface DebugEntry {
@@ -58,98 +59,3 @@ export interface ToolOutcome {
   ok: boolean
   patch?: string
 }
-
-export const TOOL_SPECS = [
-  {
-    type: 'function' as const,
-    function: {
-      name: 'list_files',
-      description:
-        'List files and directories inside the workspace. Use it before reading a file you have not seen.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Directory relative to the workspace root.' },
-          depth: { type: 'number', description: 'How many levels to walk. Defaults to 3.' },
-        },
-      },
-    },
-  },
-  {
-    type: 'function' as const,
-    function: {
-      name: 'read_file',
-      description: 'Read a text file from the workspace. Output is capped at 400 lines.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'File path relative to the workspace root.' },
-        },
-        required: ['path'],
-      },
-    },
-  },
-  {
-    type: 'function' as const,
-    function: {
-      name: 'search_files',
-      description: 'Search the workspace with a regular expression and return matching lines.',
-      parameters: {
-        type: 'object',
-        properties: {
-          pattern: { type: 'string', description: 'JavaScript regular expression source.' },
-          glob: { type: 'string', description: 'Optional extension filter, for example "tsx".' },
-        },
-        required: ['pattern'],
-      },
-    },
-  },
-  {
-    type: 'function' as const,
-    function: {
-      name: 'write_file',
-      description: 'Create or replace a whole file. Prefer edit_file for a small change.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string' },
-          content: { type: 'string' },
-        },
-        required: ['path', 'content'],
-      },
-    },
-  },
-  {
-    type: 'function' as const,
-    function: {
-      name: 'edit_file',
-      description:
-        'Replace old_string with new_string in a file. old_string must appear exactly once.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string' },
-          old_string: { type: 'string' },
-          new_string: { type: 'string' },
-        },
-        required: ['path', 'old_string', 'new_string'],
-      },
-    },
-  },
-  {
-    type: 'function' as const,
-    function: {
-      name: 'run_command',
-      description:
-        'Run a shell command with the workspace as its working directory. Output is capped at 8000 characters.',
-      parameters: {
-        type: 'object',
-        properties: {
-          command: { type: 'string' },
-          cwd: { type: 'string', description: 'Optional subdirectory inside the workspace.' },
-        },
-        required: ['command'],
-      },
-    },
-  },
-]

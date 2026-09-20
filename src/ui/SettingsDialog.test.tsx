@@ -105,8 +105,13 @@ describeNative('settings', () => {
         model: 'deepseek-chat',
       })
 
-      // Saving must not disturb the rest of the window.
-      expect(screen()).toContain('新会话')
+      // Saving must not disturb the rest of the window. Assert on the window's
+      // own chrome: the session list is shared state that another test file's
+      // turns can retitle at any moment, so it cannot answer this question.
+      const painted = screen()
+      expect(painted).toContain('工作区')
+      expect(painted).toContain('会话')
+      expect(painted).toContain('描述要 Agent 完成的任务')
 
       await app.getByTestId('settings-close').click()
       await app.close()

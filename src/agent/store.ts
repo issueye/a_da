@@ -1,10 +1,13 @@
 /**
- * The agent runtime.
+ * Agent 运行时与桌面 UI 状态层
  *
- * One store owns every thread, the running turn, the approval gate and the
- * debug log. React subscribes to it and re-renders on `notify()`; the streaming
- * loop mutates the store directly, which keeps the transcript correct while a
- * model reply is still arriving.
+ * 参考 @earendil-works/pi-agent-core 与 @earendil-works/pi-coding-agent 架构设计。
+ * 模型侧的一切（多轮循环、工具调度、事件流）都在 src/agent/core 里，这一层只做
+ * 三件事：把事件翻译成界面卡片、把审批闸门挂在 beforeToolCall 上、把消息追加到
+ * 会话 JSONL。
+ *
+ * 界面层没有状态管理库：store 是模块级单例，异步轮次直接改它，React 通过
+ * subscribe 收到通知后重渲染，所以流式回复在到达过程中就是对的。
  */
 
 import {
@@ -14,9 +17,24 @@ import {
   writeSavedConfig,
   type ProviderConfig,
 } from './config'
-import { parseToolArgs, streamChat } from './llm'
-import { describeTool, isWriteTool, resolveProjectPath, runTool, scanWorkspace } from './tools'
-import { TOOL_SPECS, type ChatMessage, type DebugEntry, type Item, type Thread, type ToolCall } from './types'
+import { runAgentLoop } from './core/agent-loop'
+import type {
+  AgentMessage,
+  BeforeToolCallContext,
+  BeforeToolCallResult,
+  ToolCallBlock,
+} from './core/types'
+import {
+  describeTool,
+  isWriteTool,
+  resolveProjectPath,
+  runTool,
+  scanWorkspace,
+  defaultToolRegistry,
+  defaultExtensionLoader,
+} from './tools'
+import { defaultSessionManager } from './session/manager'
+import type { DebugEntry, Item, Thread } from './types'
 
 export type ApprovalMode = 'auto' | 'ask' | 'readonly'
 export type Effort = 'max' | 'high' | 'medium' | 'low'
@@ -44,6 +62,9 @@ const EFFORT_VALUE: Record<Effort, string> = {
 const MAX_STEPS = 24
 const MAX_LOG = 120
 
+/** 拒绝后回给模型的说明：说清楚行为，而不是只报一个 no。 */
+const DENIED_REASON = '用户拒绝了这次调用。不要重试同样的调用，先说明原因或换一种做法。'
+
 let counter = 0
 const nextId = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${++counter}`
 
@@ -53,8 +74,11 @@ function titleFrom(text: string): string {
 }
 
 function makeThread(workspace: string): Thread {
+  const id = nextId('thread')
+  // 异步在会话管理器中注册
+  void defaultSessionManager.createSession(id, workspace, '新会话').catch(() => {})
   return {
-    id: nextId('thread'),
+    id,
     title: '新会话',
     createdAt: Date.now(),
     workspace,
@@ -62,6 +86,8 @@ function makeThread(workspace: string): Thread {
     messages: [],
   }
 }
+
+type ToolCard = Extract<Item, { kind: 'tool' }>
 
 export class AgentStore {
   threads: Thread[] = []
@@ -83,12 +109,19 @@ export class AgentStore {
 
   private listeners = new Set<() => void>()
   private approvals = new Map<string, (approved: boolean) => void>()
+  /** 本轮每张工具卡片，按调用 id 找回去更新状态。 */
+  private cards = new Map<string, ToolCard>()
   private queue: { thread: Thread; text: string; item: Item }[] = []
   private abort: AbortController | null = null
+  /** 正在跑的那一轮属于哪个会话：它不能在自己运行的时候被删掉。 */
+  private runningThreadId: string | null = null
+  /** 最近一次工作区扩展加载：跑一轮之前要等它，工具表才完整。 */
+  private extensionsReady: Promise<void> = Promise.resolve()
   private notifyTimer: ReturnType<typeof setTimeout> | null = null
   private logId = 0
 
   constructor(workspace: string) {
+    defaultExtensionLoader.bindHost((msg) => this.trace(msg))
     const thread = makeThread(workspace)
     this.threads = [thread]
     this.activeId = thread.id
@@ -247,13 +280,51 @@ export class AgentStore {
     this.notify()
   }
 
+  /**
+   * 删掉一个会话：从列表里去掉，盘上的流水也一起删掉。
+   *
+   * 项目是靠会话存在的，所以删掉某个工作区的最后一个会话时会补一个新的空会话，
+   * 而不是让工作区从侧边栏消失——用户删的是一个会话，不是一个工作区。
+   * 正在跑的那一轮不能删：它还在往这个会话里写。
+   *
+   * @returns 出错时返回要显示给用户的理由，成功返回 null。
+   */
+  deleteThread(id: string): string | null {
+    const thread = this.threads.find((candidate) => candidate.id === id)
+    if (!thread) return null
+    if (this.runningThreadId === id) return '这个会话正在运行，先停止再删除'
+
+    this.threads = this.threads.filter((candidate) => candidate.id !== id)
+    this.queue = this.queue.filter((item) => item.thread.id !== id)
+    this.push({ kind: 'info', text: `已删除会话「${thread.title}」` })
+    void defaultSessionManager.deleteSession(id).catch(() => {})
+
+    if (this.activeId === id) {
+      const next = this.threads.find((candidate) => candidate.workspace === thread.workspace)
+      if (next) {
+        this.activeId = next.id
+      } else {
+        const fresh = makeThread(thread.workspace)
+        this.threads = [fresh, ...this.threads]
+        this.activeId = fresh.id
+      }
+      void this.refresh()
+    }
+
+    this.notify()
+    return null
+  }
+
   // ------------------------------------------------------------------ messages
 
   send(text: string): void {
     const prompt = text.trim()
     if (!prompt) return
     const thread = this.active
-    if (thread.title === '新会话') thread.title = titleFrom(prompt)
+    if (thread.title === '新会话') {
+      thread.title = titleFrom(prompt)
+      void defaultSessionManager.updateSessionTitle(thread.id, thread.title).catch(() => {})
+    }
     if (this.running) {
       const item: Item = { kind: 'user', id: nextId('item'), at: Date.now(), text: prompt, queued: true }
       thread.items.push(item)
@@ -285,6 +356,18 @@ export class AgentStore {
   async refresh(): Promise<void> {
     this.workspaceInfo = { ...this.workspaceInfo, scanning: true }
     this.notify()
+
+    // 扩展先加载、扫描后跑：扫描是这里最慢的一步（几千个文件），而工具表在下一轮
+    // 开始前就得齐——这两件事原来反着来，第一轮会漏掉扩展工具。
+    this.extensionsReady = defaultExtensionLoader
+      .autoLoadExtensions(this.project)
+      .then((loaded) => {
+        if (loaded.length > 0) {
+          this.push({ kind: 'info', text: `已加载扩展工具：${loaded.join(', ')}` })
+        }
+      })
+      .catch(() => {})
+
     try {
       const info = await scanWorkspace(this.project)
       this.workspaceInfo = { files: info.files, dirs: info.dirs, scanning: false }
@@ -304,6 +387,17 @@ export class AgentStore {
     this.log = [...this.log.slice(-MAX_LOG), { id: this.logId, at: Date.now(), ...entry }]
   }
 
+  /** 会话 JSONL 是追加写的流水账，写不进去也不该打断这一轮。 */
+  private persist(threadId: string, message: AgentMessage): void {
+    void defaultSessionManager.appendMessage(threadId, message).catch(() => {})
+  }
+
+  private fail(thread: Thread, text: string): void {
+    thread.items.push({ kind: 'notice', id: nextId('item'), at: Date.now(), text, level: 'error' })
+    this.push({ kind: 'error', text })
+    this.notify()
+  }
+
   private async drain(): Promise<void> {
     if (this.running) return
     this.running = true
@@ -311,28 +405,27 @@ export class AgentStore {
     try {
       while (this.queue.length) {
         const next = this.queue.shift()!
-        next.thread.messages.push({ role: 'user', content: next.text })
+        this.runningThreadId = next.thread.id
         await this.turn(next.thread, next.text)
       }
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {
-        const message = (error as Error).message ?? String(error)
-        this.active.items.push({
-          kind: 'notice',
-          id: nextId('item'),
-          at: Date.now(),
-          text: `运行失败：${message}`,
-          level: 'error',
-        })
-        this.push({ kind: 'error', text: message })
+        this.fail(this.active, `运行失败：${(error as Error).message ?? String(error)}`)
       }
     } finally {
       this.running = false
+      this.runningThreadId = null
       this.abort = null
       this.notify()
     }
   }
 
+  /**
+   * 一轮对话：消息交给 core 的循环，这里只把事件流翻译成界面状态。
+   *
+   * 与模型来回的完整历史由循环维护（它会在 agent_end 交还整份 messages），
+   * 所以 thread.messages 永远是真正发出去过的那份。
+   */
   private async turn(thread: Thread, prompt: string): Promise<void> {
     const config = await readLlmConfig()
     if (!config) {
@@ -341,56 +434,126 @@ export class AgentStore {
     }
     this.push({ kind: 'request', text: `${config.model} @ ${config.baseUrl}（${config.source}）` })
 
-    for (let step = 0; step < MAX_STEPS; step++) {
-      this.abort = new AbortController()
-      const item: Item = { kind: 'assistant', id: nextId('item'), at: Date.now(), text: '', streaming: true }
-      thread.items.push(item)
-      const index = thread.items.length - 1
-      this.notify()
+    const userMessage: AgentMessage = { role: 'user', content: prompt, timestamp: Date.now() }
+    thread.messages.push(userMessage)
+    this.persist(thread.id, userMessage)
 
-      const calls: ToolCall[] = []
-      for await (const event of streamChat(config, thread.messages, {
-        tools: TOOL_SPECS,
-        effort: EFFORT_VALUE[this.effort],
-        signal: this.abort.signal,
-      })) {
-        if (event.type === 'text') {
-          const live = thread.items[index]
-          if (live?.kind === 'assistant') live.text += event.text
-          this.notifySoon()
-        } else {
-          calls.push(...event.calls)
-        }
-      }
-      const live = thread.items[index]
-      if (live?.kind === 'assistant') live.streaming = false
-      this.notify()
+    const controller = new AbortController()
+    this.abort = controller
+    this.cards.clear()
 
-      if (!calls.length) {
-        const text = live?.kind === 'assistant' ? live.text : ''
-        if (text.trim()) thread.messages.push({ role: 'assistant', content: text })
-        return
-      }
+    // 扩展得先注册完，这一轮的工具表才不会漏掉它们（刚启动就开始打字也不会漏）。
+    await this.extensionsReady
 
-      thread.messages.push({
-        role: 'assistant',
-        content: live?.kind === 'assistant' ? live.text : '',
-        tool_calls: calls.map((call) => ({
-          id: call.id,
-          type: 'function' as const,
-          function: { name: call.name, arguments: call.args },
-        })),
-      })
-      this.push({ kind: 'tools', text: calls.map((call) => call.name).join(', ') })
-      await this.runCalls(thread, calls)
+    // 每轮重新问注册中心要一次工具：刚加载的扩展工具这一轮就要能被模型看见。
+    const tools = defaultToolRegistry.getToolsForWorkspace(thread.workspace)
+    // 助手行和思考行都等到第一段真的到了才建：思考先行，所以思考行会排在回答上
+    // 面；只调工具、不说一句话的那一轮则一行都不留（和以前一样什么都不显示）。
+    let assistant: Extract<Item, { kind: 'assistant' }> | null = null
+    let reasoning: Extract<Item, { kind: 'thinking' }> | null = null
+    /** 思考结束的时刻：回答开始、或这一条消息收尾时定下来。 */
+    const endReasoning = (): void => {
+      if (reasoning && reasoning.endedAt === undefined) reasoning.endedAt = Date.now()
     }
-    thread.items.push({
-      kind: 'notice',
-      id: nextId('item'),
-      at: Date.now(),
-      text: `达到单轮 ${MAX_STEPS} 步上限，已停下。可以继续输入让它接着做。`,
-      level: 'info',
+
+    const loop = runAgentLoop(thread.messages, config, {
+      tools,
+      effort: EFFORT_VALUE[this.effort],
+      maxSteps: MAX_STEPS,
+      // 顺序执行：审批一次只该问一件事，命令之间也不该互相抢工作目录。
+      toolExecution: 'sequential',
+      signal: controller.signal,
+      beforeToolCall: (context: BeforeToolCallContext) => this.gate(thread, context.toolCall),
     })
+
+    for await (const event of loop) {
+      // 扩展脚本订阅了生命周期点位，事件原样转发一份
+      defaultExtensionLoader.dispatchAgentEvent(event)
+
+      switch (event.type) {
+        case 'message_start':
+          if (event.message.role === 'assistant') {
+            assistant = null
+            reasoning = null
+          }
+          break
+
+        case 'message_update':
+          if (event.delta.thinking) {
+            if (!reasoning) {
+              reasoning = { kind: 'thinking', id: nextId('item'), at: Date.now(), text: '' }
+              thread.items.push(reasoning)
+            }
+            reasoning.text += event.delta.thinking
+            this.notifySoon()
+          }
+          if (event.delta.text) {
+            endReasoning()
+            if (!assistant) {
+              assistant = {
+                kind: 'assistant',
+                id: nextId('item'),
+                at: Date.now(),
+                text: '',
+                streaming: true,
+              }
+              thread.items.push(assistant)
+            }
+            assistant.text += event.delta.text
+            this.notifySoon()
+          }
+          break
+
+        case 'message_end': {
+          const message = event.message
+          if (message.role !== 'assistant') break
+          endReasoning()
+          if (assistant) assistant.streaming = false
+          if (message.stopReason === 'error') {
+            this.fail(thread, `模型请求失败：${message.errorMessage ?? '未知错误'}`)
+          } else if (message.content.trim()) {
+            this.persist(thread.id, message)
+          }
+          if (message.toolCalls?.length) {
+            this.push({ kind: 'tools', text: message.toolCalls.map((call) => call.name).join(', ') })
+          }
+          this.notify()
+          break
+        }
+
+        case 'tool_execution_start':
+          this.setCardStatus(event.toolCallId, 'running')
+          break
+
+        case 'tool_execution_update': {
+          const card = this.cards.get(event.toolCallId)
+          if (card) {
+            card.output = event.partialResult.output
+            this.notifySoon()
+          }
+          break
+        }
+
+        case 'tool_execution_end':
+          this.finishToolCall(thread, event.toolCallId, event.result)
+          break
+
+        case 'agent_end':
+          thread.messages = event.messages
+          if (event.reason === 'max_steps') {
+            thread.items.push({
+              kind: 'notice',
+              id: nextId('item'),
+              at: Date.now(),
+              text: `达到单轮 ${MAX_STEPS} 步上限，已停下。可以继续输入让它接着做。`,
+              level: 'info',
+            })
+          }
+          this.notify()
+          break
+      }
+    }
+    this.cards.clear()
   }
 
   /** No API key configured: exercise the tool loop anyway so the UI still works. */
@@ -403,7 +566,15 @@ export class AgentStore {
       level: 'error',
     })
     this.notify()
-    await this.runCalls(thread, [{ id: nextId('call'), name: 'list_files', args: '{"depth":2}' }])
+
+    // 离线也要真的跑一次工具：沙箱和界面都被走通了，而不是只留一句说明。
+    await this.runToolDirect(thread, {
+      id: nextId('call'),
+      name: 'list_files',
+      arguments: { depth: 2 },
+      rawArguments: '{"depth":2}',
+    })
+
     const info = this.workspaceInfo
     thread.items.push({
       kind: 'assistant',
@@ -411,8 +582,8 @@ export class AgentStore {
       at: Date.now(),
       text: `【离线模式】我扫描了项目 \`${thread.workspace}\`：${info.files} 个文件、${info.dirs} 个目录。配置模型接口后，我会按你的任务在这个目录里读写文件、执行命令。`,
     })
-    thread.messages.push({ role: 'user', content: prompt })
-    thread.messages.push({ role: 'assistant', content: '离线模式：仅扫描工作区，未调用模型。' })
+    thread.messages.push({ role: 'user', content: prompt, timestamp: Date.now() })
+    thread.messages.push({ role: 'assistant', content: '离线模式：仅扫描工作区，未调用模型。', timestamp: Date.now() })
     this.notify()
   }
 
@@ -422,56 +593,97 @@ export class AgentStore {
     return false
   }
 
-  private async runCalls(thread: Thread, calls: ToolCall[]): Promise<void> {
-    for (const call of calls) {
-      const args = parseToolArgs(call.args)
-      const item: Item = {
-        kind: 'tool',
-        id: nextId('item'),
-        at: Date.now(),
-        callId: call.id,
-        name: call.name,
-        args,
-        rawArgs: call.args,
-        status: this.needsApproval(call.name) ? 'awaiting' : 'running',
-      }
-      thread.items.push(item)
-      const index = thread.items.length - 1
-      this.notify()
-
-      if (item.status === 'awaiting') {
-        const approved = await new Promise<boolean>((resolve) => this.approvals.set(item.id, resolve))
-        const live = thread.items[index]
-        if (live?.kind !== 'tool') continue
-        if (!approved) {
-          live.status = 'denied'
-          live.output = '已拒绝执行'
-          thread.messages.push({
-            role: 'tool',
-            tool_call_id: call.id,
-            content: '用户拒绝了这次调用。不要重试同样的调用，先说明原因或换一种做法。',
-          })
-          this.push({ kind: 'tool', text: `${call.name} 被拒绝` })
-          this.notify()
-          continue
-        }
-        live.status = 'running'
-        this.notify()
-      }
-
-      const outcome = await runTool(thread.workspace, { name: call.name, args })
-      const live = thread.items[index]
-      if (live?.kind !== 'tool') continue
-      live.status = outcome.ok ? 'done' : 'error'
-      live.output = outcome.output
-      live.patch = outcome.patch
-      thread.messages.push({ role: 'tool', tool_call_id: call.id, content: outcome.output })
-      this.push({
-        kind: 'tool',
-        text: `${call.name} ${describeTool(call.name, args)} → ${outcome.ok ? 'ok' : '失败'}`,
-      })
-      this.notify()
+  /**
+   * 审批闸门：卡片在这里出现，等待也在这里发生。
+   *
+   * 挂在 beforeToolCall 上，所以拒绝走的不是「工具执行失败」而是 block——循环会把
+   * reason 当成工具结果回给模型，模型知道是被拒绝了，不会以为调用成功了。
+   */
+  private async gate(thread: Thread, call: ToolCallBlock): Promise<BeforeToolCallResult | undefined> {
+    const card: ToolCard = {
+      kind: 'tool',
+      id: nextId('item'),
+      at: Date.now(),
+      callId: call.id,
+      name: call.name,
+      args: call.arguments,
+      rawArgs: call.rawArguments,
+      status: this.needsApproval(call.name) ? 'awaiting' : 'running',
     }
+    thread.items.push(card)
+    this.cards.set(call.id, card)
+    this.notify()
+
+    if (card.status !== 'awaiting') return undefined
+
+    const approved = await new Promise<boolean>((resolve) => this.approvals.set(card.id, resolve))
+    if (approved) return undefined
+
+    card.status = 'denied'
+    card.output = '已拒绝执行'
+    this.cards.delete(call.id)
+    this.persist(thread.id, {
+      role: 'toolResult',
+      toolCallId: call.id,
+      toolName: call.name,
+      content: DENIED_REASON,
+      isError: true,
+      timestamp: Date.now(),
+    })
+    this.push({ kind: 'tool', text: `${call.name} 被拒绝` })
+    this.notify()
+    return { block: true, reason: DENIED_REASON }
+  }
+
+  private setCardStatus(callId: string, status: ToolCard['status']): void {
+    const card = this.cards.get(callId)
+    if (!card || card.status === status) return
+    card.status = status
+    this.notify()
+  }
+
+  /** 一次工具调用收尾：卡片落状态、结果进历史、流水记账。 */
+  private finishToolCall(
+    thread: Thread,
+    callId: string,
+    result: { output: string; ok: boolean; patch?: string }
+  ): void {
+    const card = this.cards.get(callId)
+    this.cards.delete(callId)
+
+    if (card) {
+      card.status = result.ok ? 'done' : 'error'
+      card.output = result.output
+      card.patch = result.patch
+    }
+
+    const name = card?.name ?? 'tool'
+    this.persist(thread.id, {
+      role: 'toolResult',
+      toolCallId: callId,
+      toolName: name,
+      content: result.output,
+      patch: result.patch,
+      isError: !result.ok,
+      timestamp: Date.now(),
+    })
+    this.push({
+      kind: 'tool',
+      text: `${name} ${describeTool(name, card?.args ?? {})} → ${result.ok ? 'ok' : '失败'}`,
+    })
+    this.notify()
+  }
+
+  /** 不经过模型的一次工具调用（离线模式），审批与卡片和在线时完全一样。 */
+  private async runToolDirect(thread: Thread, call: ToolCallBlock): Promise<void> {
+    const blocked = await this.gate(thread, call)
+    if (blocked) return
+    const outcome = await runTool(thread.workspace, { name: call.name, args: call.arguments })
+    this.finishToolCall(thread, call.id, {
+      output: outcome.output,
+      ok: outcome.ok,
+      patch: outcome.patch,
+    })
   }
 }
 

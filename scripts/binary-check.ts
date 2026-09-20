@@ -5,12 +5,15 @@
  *   bun run build && bun scripts/binary-check.ts
  */
 
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { launch } from '@gpuix/react/automation'
 
 const root = path.join(import.meta.dir, '..')
-const binary = path.join(root, 'dist', process.platform === 'win32' ? 'a-da.exe' : 'a-da')
+const coreBinary = path.join(root, 'dist', 'a-da-core.exe')
+const binary = process.platform === 'win32' && existsSync(coreBinary)
+  ? coreBinary
+  : path.join(root, 'dist', process.platform === 'win32' ? 'a-da.exe' : 'a-da')
 mkdirSync(path.join(root, 'tmp'), { recursive: true })
 
 const app = await launch({

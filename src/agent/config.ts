@@ -8,8 +8,8 @@
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { getAppHome } from './home'
 
 export interface ProviderConfig {
   baseUrl: string
@@ -40,7 +40,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 ]
 
 export function configPath(): string {
-  return process.env.A_DA_CONFIG || join(homedir(), '.a-da', 'config.json')
+  return process.env.A_DA_CONFIG || join(getAppHome(), 'config.json')
 }
 
 /** The file alone. The dialog edits this, and it may differ from what a turn uses. */

@@ -6,8 +6,10 @@
  * approval gate that holds a write until the user answers it.
  */
 
-import React, { useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
+import { useGpuix, type PublicInstance } from '@gpuix/react'
 import { describeTool } from '../agent/tools'
+import { patchStats } from '../agent/patch'
 import type { AgentStore } from '../agent/store'
 import type { Item, ToolStatus } from '../agent/types'
 import { Icon } from './controls'
@@ -36,9 +38,27 @@ const TOOL_ICON: Record<string, IconName> = {
 const STATUS: Record<ToolStatus, { label: string; color: string }> = {
   awaiting: { label: '等待批准', color: C.accent },
   running: { label: '执行中', color: C.tertiary },
-  done: { label: '完成', color: C.success },
+  // 跑完是常态，不再写一个「完成」占位置：行不再动就是结束了。
+  done: { label: '', color: C.faint },
   error: { label: '失败', color: C.danger },
   denied: { label: '已拒绝', color: C.faint },
+}
+
+/** 这些工具的摘要就是一条路径，可以拆成「文件名 + 目录」两段来排。 */
+const PATH_TOOLS = new Set(['read_file', 'write_file', 'edit_file', 'list_files'])
+
+/**
+ * 一行的目标：正文是文件名，目录是暗色小字。
+ *
+ * 摘要本身来自 `describeTool`（唯一的事实来源，它也被调试日志用着），这里只做
+ * 排版上的拆分。
+ */
+function toolTarget(name: string, args: Record<string, unknown>): { target: string; dir: string } {
+  const summary = describeTool(name, args)
+  if (!PATH_TOOLS.has(name)) return { target: summary, dir: '' }
+  const cut = summary.lastIndexOf('/')
+  if (cut < 0) return { target: summary, dir: '' }
+  return { target: summary.slice(cut + 1), dir: summary.slice(0, cut + 1) }
 }
 
 /** Mono output that keeps its own newlines and can be opened in full. */
@@ -57,6 +77,9 @@ function MonoBlock({ text, tone }: { text: string; tone?: string }) {
             lineHeight: 17,
             color: tone ?? C.secondary,
             whiteSpace: 'nowrap',
+            // 一行很长时给省略号，而不是被盒子边缘硬切成两半。
+            textOverflow: 'ellipsis',
+            minWidth: 0,
           }}
         >
           {line || ' '}
@@ -134,37 +157,47 @@ function AssistantRow({ item }: { item: Extract<Item, { kind: 'assistant' }> }) 
 
 function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; store: AgentStore }) {
   const status = STATUS[item.status]
+  /** 折叠 / 展开。默认一律收起：跑完的、失败的、被拒的都只占一行。 */
+  const [open, setOpen] = useState(false)
+  const stats = item.patch ? patchStats(item.patch) : null
+  const { target, dir } = toolTarget(item.name, item.args)
+  const detail = Boolean(item.patch) || Boolean(item.output)
+
   return (
     <div
       testId={`tool-${item.id}`}
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        width: '100%',
-        borderWidth: 1,
-        borderColor: C.cardBorder,
-        borderRadius: 10,
-        backgroundColor: C.tool,
-        overflow: 'hidden',
-      }}
+      style={{ display: 'flex', flexDirection: 'column', width: '100%' }}
     >
+      {/*
+        折叠起来就是一行：三角、图标、工具名、目标、改动量、状态。展开的那块才
+        进带边框的盒子——一整轮下来，几十次调用应该读成一列行，而不是一摞卡片。
+      */}
       <div
+        testId={`tool-head-${item.id}`}
+        role="button"
+        aria-label={TOOL_LABEL[item.name] ?? item.name}
+        onClick={detail ? () => setOpen((value) => !value) : undefined}
         style={{
           display: 'flex',
           flexDirection: 'row',
           alignItems: 'center',
-          gap: 8,
-          paddingTop: 7,
-          paddingBottom: 7,
-          paddingLeft: 10,
-          paddingRight: 10,
-          backgroundColor: C.card,
-          borderBottomWidth: item.patch || item.output ? 1 : 0,
-          borderColor: C.cardBorder,
+          gap: 7,
+          height: M.row,
+          paddingLeft: 2,
+          paddingRight: 8,
+          borderRadius: 6,
+          flexShrink: 0,
+          cursor: detail ? 'pointer' : 'default',
+          hover: detail ? { backgroundColor: C.overlay } : undefined,
         }}
       >
+        <Icon
+          name={open ? 'chevronDown' : 'chevronRight'}
+          size={11}
+          color={detail ? C.faint : '#00000000'}
+        />
         <Icon name={TOOL_ICON[item.name] ?? 'terminal'} size={12} color={C.tertiary} />
-        <text style={{ fontSize: 11.5, lineHeight: 16, fontWeight: 600, color: C.secondary }}>
+        <text style={{ fontSize: 12, lineHeight: 16, color: C.secondary, flexShrink: 0 }}>
           {TOOL_LABEL[item.name] ?? item.name}
         </text>
         <text
@@ -175,83 +208,271 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
             color: C.text,
             whiteSpace: 'nowrap',
             textOverflow: 'ellipsis',
+            // 弹性项默认按内容宽度撑着（min-width: auto），不给 0 就不会收缩，
+            // 也就永远轮不到省略号出手——只会被父级硬裁掉。
+            minWidth: 0,
             flexShrink: 1,
           }}
         >
-          {describeTool(item.name, item.args)}
+          {target}
         </text>
+        {dir ? (
+          <text
+            style={{
+              fontFamily: FONT_MONO,
+              fontSize: 11,
+              lineHeight: 15,
+              color: C.faint,
+              whiteSpace: 'nowrap',
+              textOverflow: 'ellipsis',
+              minWidth: 0,
+              flexShrink: 1,
+            }}
+          >
+            {dir}
+          </text>
+        ) : null}
         <div style={{ flexGrow: 1 }} />
-        <text style={{ fontSize: 11, lineHeight: 15, color: status.color }}>{status.label}</text>
+        {stats && stats.added > 0 ? (
+          <text
+            style={{
+              fontSize: 11,
+              lineHeight: 15,
+              color: C.success,
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+            }}
+          >
+            {`+${stats.added}`}
+          </text>
+        ) : null}
+        {stats && stats.removed > 0 ? (
+          <text
+            style={{
+              fontSize: 11,
+              lineHeight: 15,
+              color: C.danger,
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+            }}
+          >
+            {`−${stats.removed}`}
+          </text>
+        ) : null}
+        {status.label ? (
+          <text
+            style={{
+              fontSize: 11,
+              lineHeight: 15,
+              color: status.color,
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+            }}
+          >
+            {status.label}
+          </text>
+        ) : null}
       </div>
 
-      {item.status === 'awaiting' ? (
+      {/*
+        盒子只在真有大开内容时才渲染。收起时也渲染的话，一个带边框、里面什么都没有
+        的容器会塌成一条 1px 的线——看起来就像每行都带下划线。
+      */}
+      {open || item.status === 'awaiting' ? (
         <div
           style={{
             display: 'flex',
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 8,
-            paddingTop: 9,
-            paddingBottom: 9,
-            paddingLeft: 10,
-            paddingRight: 10,
-            backgroundColor: C.accentSoft,
+            flexDirection: 'column',
+            marginTop: 2,
+            borderWidth: 1,
+            borderColor: C.cardBorder,
+            borderRadius: 10,
+            backgroundColor: C.tool,
+            overflow: 'hidden',
           }}
         >
-          <text style={{ fontSize: 12, lineHeight: 17, color: C.accent, flexShrink: 1 }}>
-            这次调用会修改工作区，是否执行？
-          </text>
-          <div style={{ flexGrow: 1 }} />
-          <div
-            testId="approve"
-            role="button"
-            aria-label="批准"
-            onClick={() => store.decide(item.id, true)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              height: 24,
-              paddingLeft: 10,
-              paddingRight: 10,
-              borderRadius: 6,
-              cursor: 'pointer',
-              backgroundColor: C.inverse,
-              hover: { opacity: 0.9 },
-            }}
-          >
-            <text style={{ fontSize: 12, lineHeight: 16, color: C.onInverse }}>批准</text>
-          </div>
-          <div
-            testId="deny"
-            role="button"
-            aria-label="拒绝"
-            onClick={() => store.decide(item.id, false)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              height: 24,
-              paddingLeft: 10,
-              paddingRight: 10,
-              borderRadius: 6,
-              cursor: 'pointer',
-              backgroundColor: '#FFFFFF',
-              borderWidth: 1,
-              borderColor: C.borderStrong,
-              hover: { backgroundColor: C.chip },
-            }}
-          >
-            <text style={{ fontSize: 12, lineHeight: 16, color: C.secondary }}>拒绝</text>
-          </div>
+          {item.status === 'awaiting' ? (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+                paddingTop: 9,
+                paddingBottom: 9,
+                paddingLeft: 10,
+                paddingRight: 10,
+                backgroundColor: C.accentSoft,
+              }}
+            >
+              <text style={{ fontSize: 12, lineHeight: 17, color: C.accent, flexShrink: 1 }}>
+                这次调用会修改工作区，是否执行？
+              </text>
+              <div style={{ flexGrow: 1 }} />
+              <div
+                testId="approve"
+                role="button"
+                aria-label="批准"
+                onClick={() => store.decide(item.id, true)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  height: 24,
+                  paddingLeft: 10,
+                  paddingRight: 10,
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                  backgroundColor: C.inverse,
+                  hover: { opacity: 0.9 },
+                }}
+              >
+                <text style={{ fontSize: 12, lineHeight: 16, color: C.onInverse }}>批准</text>
+              </div>
+              <div
+                testId="deny"
+                role="button"
+                aria-label="拒绝"
+                onClick={() => store.decide(item.id, false)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  height: 24,
+                  paddingLeft: 10,
+                  paddingRight: 10,
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                  backgroundColor: '#FFFFFF',
+                  borderWidth: 1,
+                  borderColor: C.borderStrong,
+                  hover: { backgroundColor: C.chip },
+                }}
+              >
+                <text style={{ fontSize: 12, lineHeight: 16, color: C.secondary }}>拒绝</text>
+              </div>
+            </div>
+          ) : null}
+
+          {open && item.patch ? (
+            <diff patch={item.patch} wordDiff maxLines={22} theme={DOC_THEME} />
+          ) : null}
+
+          {open && item.output && !item.patch ? (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+                paddingTop: 9,
+                paddingBottom: 9,
+                paddingLeft: 10,
+                paddingRight: 10,
+              }}
+            >
+              {/* 命令展开后就是一份终端记录：先是命令本身，然后是它的输出。 */}
+              {item.name === 'run_command' && item.args.command ? (
+                <text
+                  style={{
+                    fontFamily: FONT_MONO,
+                    fontSize: 11.5,
+                    lineHeight: 17,
+                    color: C.text,
+                    whiteSpace: 'nowrap',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {`$ ${String(item.args.command)}`}
+                </text>
+              ) : null}
+              <MonoBlock text={item.output} tone={item.status === 'error' ? C.danger : C.secondary} />
+            </div>
+          ) : null}
         </div>
       ) : null}
+    </div>
+  )
+}
 
-      {item.patch ? (
-        <diff patch={item.patch} wordDiff maxLines={22} theme={DOC_THEME} />
-      ) : null}
+/**
+ * 模型的思考链，默认只占一行。
+ *
+ * 收起时是「思考 · 持续 N 秒」，展开才是推理原文——它通常是整轮里最长的东西，
+ * 该按需展开，而不是把回答挤下去。
+ */
+function ThinkingRow({ item }: { item: Extract<Item, { kind: 'thinking' }> }) {
+  const [open, setOpen] = useState(false)
+  const seconds =
+    item.endedAt === undefined ? null : Math.max(1, Math.round((item.endedAt - item.at) / 1000))
 
-      {item.output && !item.patch ? (
-        <div style={{ paddingTop: 9, paddingBottom: 9, paddingLeft: 10, paddingRight: 10 }}>
-          <MonoBlock text={item.output} tone={item.status === 'error' ? C.danger : C.secondary} />
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
+      <div
+        testId={`thinking-head-${item.id}`}
+        role="button"
+        aria-label="思考过程"
+        onClick={() => setOpen((value) => !value)}
+        style={{
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 7,
+          height: M.row,
+          paddingLeft: 2,
+          paddingRight: 8,
+          borderRadius: 6,
+          flexShrink: 0,
+          cursor: 'pointer',
+          hover: { backgroundColor: C.overlay },
+        }}
+      >
+        <Icon name={open ? 'chevronDown' : 'chevronRight'} size={11} color={C.faint} />
+        <Icon name="brain" size={12} color={C.tertiary} />
+        <text style={{ fontSize: 12, lineHeight: 16, color: C.secondary }}>思考</text>
+        <text style={{ fontSize: 11, lineHeight: 15, color: C.faint }}>
+          {seconds === null ? '· 进行中…' : `· 持续 ${seconds} 秒`}
+        </text>
+        <div style={{ flexGrow: 1 }} />
+      </div>
+
+      {open ? <ThinkingBody text={item.text} /> : null}
+    </div>
+  )
+}
+
+/** 推理原文：散文，不是等宽输出，所以按能换行的正文排。 */
+function ThinkingBody({ text }: { text: string }) {
+  const [full, setFull] = useState(false)
+  const lines = text.split('\n')
+  const limit = full ? lines.length : Math.min(lines.length, 14)
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 2,
+        marginTop: 2,
+        paddingTop: 9,
+        paddingBottom: 9,
+        paddingLeft: 10,
+        paddingRight: 10,
+        borderWidth: 1,
+        borderColor: C.cardBorder,
+        borderRadius: 10,
+        backgroundColor: C.card,
+      }}
+    >
+      {lines.slice(0, limit).map((line, index) => (
+        <text key={index} style={{ fontSize: 12, lineHeight: 18, color: C.tertiary }}>
+          {line || ' '}
+        </text>
+      ))}
+      {lines.length > limit ? (
+        <div
+          onClick={() => setFull(true)}
+          style={{ cursor: 'pointer', paddingTop: 4, width: '100%' }}
+        >
+          <text style={{ fontSize: 11.5, lineHeight: 17, color: C.link }}>
+            展开其余 {lines.length - limit} 行
+          </text>
         </div>
       ) : null}
     </div>
@@ -291,8 +512,23 @@ function NoticeRow({ item }: { item: Extract<Item, { kind: 'notice' }> }) {
   )
 }
 
+/**
+ * 每个条目下面留多少空。
+ *
+ * 一行一条的时间线要读得紧凑：工具行和思考行几乎贴在一起，人说的话才留白——
+ * 一屏能看下几十次调用，而不是被空隙吃掉一半。
+ */
+const GAP_BELOW: Record<Item['kind'], number> = {
+  user: 18,
+  assistant: 18,
+  notice: 12,
+  tool: 3,
+  thinking: 3,
+}
+
 function ItemRow({ item, store }: { item: Item; store: AgentStore }) {
   if (item.kind === 'user') return <UserRow item={item} />
+  if (item.kind === 'thinking') return <ThinkingRow item={item} />
   if (item.kind === 'assistant') return <AssistantRow item={item} />
   if (item.kind === 'tool') return <ToolCard item={item} store={store} />
   return <NoticeRow item={item} />
@@ -300,6 +536,32 @@ function ItemRow({ item, store }: { item: Item; store: AgentStore }) {
 
 export function Transcript({ store }: { store: AgentStore }) {
   const items = store.active.items
+  const { renderer } = useGpuix()
+  const listRef = useRef<PublicInstance>(null)
+  const [atBottom, setAtBottom] = useState(true)
+  const [tailKey, setTailKey] = useState(0)
+
+  useEffect(() => {
+    setAtBottom(true)
+  }, [store.activeId])
+
+  const scrollToBottom = () => {
+    if (items.length > 0) {
+      if (listRef.current && renderer?.scrollToItem) {
+        renderer.scrollToItem(listRef.current.id, items.length - 1)
+      }
+      setAtBottom(true)
+      setTailKey((k) => k + 1)
+    }
+  }
+
+  const handleVisibleRange = (event: { endIndex?: number; visibleEnd?: number }) => {
+    const end = event.endIndex ?? event.visibleEnd
+    if (typeof end === 'number' && items.length > 0) {
+      setAtBottom(end >= items.length)
+    }
+  }
+
   return (
     <div
       style={{
@@ -310,16 +572,21 @@ export function Transcript({ store }: { store: AgentStore }) {
         width: '100%',
         paddingLeft: M.contentPadding,
         paddingRight: M.contentPadding,
+        position: 'relative',
       }}
     >
       {items.length === 0 ? (
         <Welcome />
       ) : (
         <virtual-list
+          key={tailKey}
+          ref={listRef}
+          testId="transcript-list"
           alignment="bottom"
           followTail
           overdraw={420}
           estimatedItemHeight={150}
+          onVisibleRange={handleVisibleRange}
           style={{ flexGrow: 1, minHeight: 0, width: '100%' }}
         >
           {items.map((item) => (
@@ -330,7 +597,7 @@ export function Transcript({ store }: { store: AgentStore }) {
                 flexDirection: 'column',
                 alignItems: 'center',
                 width: '100%',
-                paddingBottom: 18,
+                paddingBottom: GAP_BELOW[item.kind],
               }}
             >
               <div
@@ -347,6 +614,47 @@ export function Transcript({ store }: { store: AgentStore }) {
           ))}
         </virtual-list>
       )}
+
+      {!atBottom && items.length > 0 ? (
+        <div
+          testId="scroll-to-bottom"
+          role="button"
+          aria-label="回到底部"
+          onClick={scrollToBottom}
+          style={{
+            position: 'absolute',
+            bottom: 12,
+            right: 28,
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 5,
+            height: 28,
+            paddingLeft: 9,
+            paddingRight: 11,
+            borderRadius: 14,
+            cursor: 'pointer',
+            backgroundColor: C.raised,
+            borderWidth: 1,
+            borderColor: C.borderStrong,
+            boxShadow: {
+              offsetX: 0,
+              offsetY: 4,
+              blurRadius: 12,
+              spreadRadius: 0,
+              color: '#00000022',
+            },
+            hover: {
+              backgroundColor: C.chip,
+            },
+          }}
+        >
+          <Icon name="arrowDown" size={12} color={C.secondary} />
+          <text style={{ fontSize: 11.5, lineHeight: 15, fontWeight: 500, color: C.secondary }}>
+            回到底部
+          </text>
+        </div>
+      ) : null}
     </div>
   )
 }

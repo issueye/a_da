@@ -8,7 +8,8 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { unifiedPatch, patchStats } from './patch'
-import { describeTool, resolveProjectPath, runTool, scanWorkspace, WorkspaceError } from './tools'
+import { describeTool, isWriteTool, resolveProjectPath, runTool, scanWorkspace } from './tools'
+import { checkWorkspaceSandbox } from './tools/workspace'
 
 let root = ''
 
@@ -161,7 +162,59 @@ describe('tool summaries', () => {
     expect(describeTool('search_files', { pattern: 'useState' })).toBe('/useState/')
   })
 
-  test('a sandbox violation is a WorkspaceError', () => {
-    expect(new WorkspaceError('x')).toBeInstanceOf(Error)
+  test('the sandbox helper accepts inside paths and rejects escapes', () => {
+    expect(checkWorkspaceSandbox(root, 'src/app.ts')).toBe(join(root, 'src/app.ts'))
+    for (const escape of ['../secrets.txt', 'src/../../outside.txt', join(root, '..', 'x')]) {
+      expect(() => checkWorkspaceSandbox(root, escape)).toThrow('拒绝访问工作区外的路径')
+    }
+  })
+})
+
+describe('tool permissions', () => {
+  // 「只读」模式靠这张名单决定要不要审批，所以名单之外的名字必须算写操作：
+  // 扩展工具是工作区里的第三方代码，不能默认它无害。
+  test('only the known read-only tools count as safe', () => {
+    for (const name of ['list_files', 'read_file', 'search_files']) {
+      expect(isWriteTool(name)).toBe(false)
+    }
+    for (const name of ['write_file', 'edit_file', 'run_command', 'custom_math', 'anything_else']) {
+      expect(isWriteTool(name)).toBe(true)
+    }
+  })
+})
+
+describe('read guards', () => {
+  // Reading is the one tool the model can point anywhere, so the guards that keep
+  // a directory, a huge file or a binary from being pulled into memory get their
+  // own cases: without them a single read can stall the window.
+  test('refuses a directory', async () => {
+    const result = await runTool(root, { name: 'read_file', args: { path: 'src' } })
+    expect(result.ok).toBe(false)
+    expect(result.output).toContain('这是目录，不是文件')
+  })
+
+  test('refuses a file over the size cap', async () => {
+    await writeFile(join(root, 'big.txt'), 'x'.repeat(600 * 1024))
+    const result = await runTool(root, { name: 'read_file', args: { path: 'big.txt' } })
+    expect(result.ok).toBe(false)
+    expect(result.output).toContain('文件过大')
+    expect(result.output).toContain('offset/limit')
+  })
+
+  test('refuses a binary file', async () => {
+    await writeFile(join(root, 'bin.dat'), Buffer.from([0x41, 0x00, 0x42, 0x43]))
+    const result = await runTool(root, { name: 'read_file', args: { path: 'bin.dat' } })
+    expect(result.ok).toBe(false)
+    expect(result.output).toContain('这是二进制文件')
+  })
+
+  test('reads a line range with offset and limit', async () => {
+    const result = await runTool(root, {
+      name: 'read_file',
+      args: { path: 'src/app.ts', offset: 2, limit: 1 },
+    })
+    expect(result.ok).toBe(true)
+    expect(result.output).toContain('2 | export const two = 2')
+    expect(result.output).not.toContain('export const one')
   })
 })
