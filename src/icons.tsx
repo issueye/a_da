@@ -20,6 +20,7 @@ export const ICONS = {
   close: wrap('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
   plus: wrap('<path d="M5 12h14"/><path d="M12 5v14"/>'),
   chevronDown: wrap('<path d="m6 9 6 6 6-6"/>'),
+  chevronUp: wrap('<path d="m18 15-6-6-6 6"/>'),
   chevronRight: wrap('<path d="m9 6 6 6-6 6"/>'),
   arrowUp: wrap('<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>'),
   arrowDown: wrap('<path d="m19 12-7 7-7-7"/><path d="M12 5v14"/>'),
@@ -62,8 +63,21 @@ export const ICONS = {
   x: wrap('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
   spinner: wrap('<path d="M21 12a9 9 0 1 1-6.2-8.6"/>'),
   dot: wrap('<circle cx="12" cy="12" r="4"/>'),
+  sun: wrap(
+    '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
+  ),
+  moon: wrap('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>'),
   copy: wrap(
     '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2"/>',
+  ),
+  listTodo: wrap(
+    '<rect x="3" y="5" width="6" height="6" rx="1"/><path d="m3 17 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/>',
+  ),
+  circleCheck: wrap('<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>'),
+  circle: wrap('<circle cx="12" cy="12" r="10"/>'),
+  arrowRight: wrap('<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>'),
+  sparkles: wrap(
+    '<path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/>',
   ),
 } as const
 

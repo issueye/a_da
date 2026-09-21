@@ -15,8 +15,8 @@ import {
   type ApprovalMode,
   type Effort,
 } from '../agent/store'
-import { ChipButton, ChipSelect, Icon, MENU_LAYER, MenuRow, MenuSurface, menuItemStyle } from './controls'
-import { C, EDITOR_THEME, M } from '../theme'
+import { ChipButton, ChipSelect, Icon, menuLayer, MenuRow, MenuSurface, menuItemStyle } from './controls'
+import { C, editorTheme, M } from '../theme'
 
 const DEBUG_OPTIONS = [
   { value: 'off', label: '关闭' },
@@ -45,7 +45,7 @@ function AppendMenu({ store, onPick }: { store: AgentStore; onPick: (value: stri
         >
           <Icon name="plus" size={14} color={C.secondary} />
         </SelectTrigger>
-        <SelectContent side="top" sideOffset={6} style={{ ...MENU_LAYER, minWidth: 250 }}>
+        <SelectContent side="top" sideOffset={6} style={{ ...menuLayer(), minWidth: 250 }}>
           <MenuSurface maxHeight={320}>
             {entries.length ? (
               entries.map((entry) => (
@@ -65,12 +65,14 @@ function AppendMenu({ store, onPick }: { store: AgentStore; onPick: (value: stri
   )
 }
 
-export function Composer({ store }: { store: AgentStore }) {
+export function Composer({ store, centered }: { store: AgentStore; centered?: boolean }) {
   const [draft, setDraft] = useState('')
+  const [focused, setFocused] = useState(false)
   const running = store.running
   const ready = draft.trim().length > 0
   const approval = APPROVAL_OPTIONS.find((option) => option.value === store.approval)!
   const effort = EFFORT_OPTIONS.find((option) => option.value === store.effort)!
+  const modelLabel = store.currentModel ? store.currentModel : '配置模型'
 
   const send = (text: string) => {
     if (!text.trim()) return
@@ -85,10 +87,11 @@ export function Composer({ store }: { store: AgentStore }) {
         flexDirection: 'column',
         alignItems: 'center',
         flexShrink: 0,
-        paddingLeft: M.contentPadding,
-        paddingRight: M.contentPadding,
-        paddingTop: 8,
-        paddingBottom: 16,
+        width: '100%',
+        paddingLeft: centered ? 0 : M.contentPadding,
+        paddingRight: centered ? 0 : M.contentPadding,
+        paddingTop: centered ? 0 : 8,
+        paddingBottom: centered ? 0 : 16,
         userSelect: 'none',
       }}
     >
@@ -100,19 +103,42 @@ export function Composer({ store }: { store: AgentStore }) {
           maxWidth: M.composerMax,
           backgroundColor: C.canvas,
           borderWidth: 1,
-          borderColor: C.borderStrong,
-          borderRadius: 12,
-          paddingTop: 8,
-          paddingBottom: 8,
+          borderColor: focused ? C.link : C.borderStrong,
+          borderRadius: 14,
+          paddingTop: centered ? 12 : 8,
+          paddingBottom: centered ? 10 : 8,
+          boxShadow: focused
+            ? {
+                offsetX: 0,
+                offsetY: 3,
+                blurRadius: 12,
+                spreadRadius: 0,
+                color: C.shadow,
+              }
+            : centered
+            ? {
+                offsetX: 0,
+                offsetY: 2,
+                blurRadius: 10,
+                spreadRadius: 0,
+                color: C.shadow,
+              }
+            : undefined,
         }}
       >
         <textarea
           testId="composer"
           value={draft}
-          placeholder={running ? '继续输入以排队后续修改' : '描述要 Agent 完成的任务'}
-          minRows={1}
+          placeholder={
+            running
+              ? '继续输入以排队后续修改'
+              : centered
+              ? '描述要 Agent 完成的任务 (Ask anything, @ to mention, / for actions)'
+              : '描述要 Agent 完成的任务'
+          }
+          minRows={centered ? 2 : 1}
           maxRows={7}
-          theme={EDITOR_THEME}
+          theme={editorTheme()}
           style={{
             width: '100%',
             minWidth: 0,
@@ -121,9 +147,11 @@ export function Composer({ store }: { store: AgentStore }) {
             color: C.text,
             backgroundColor: '#00000000',
             borderWidth: 0,
-            paddingLeft: 11,
-            paddingRight: 11,
+            paddingLeft: 12,
+            paddingRight: 12,
           }}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
           onChange={(event) => setDraft(event.value ?? '')}
           onSubmit={(event) => send(event.value ?? draft)}
         />
@@ -132,12 +160,49 @@ export function Composer({ store }: { store: AgentStore }) {
             display: 'flex',
             flexDirection: 'row',
             alignItems: 'center',
-            gap: 2,
+            gap: 3,
             marginTop: 6,
             paddingLeft: 8,
             paddingRight: 8,
           }}
         >
+          {/* 左侧控制区：模型标识、文件引入、权限模式、思考深度 */}
+          <div
+            testId="composer-model"
+            role="button"
+            aria-label={`模型：${modelLabel}，点击配置`}
+            onClick={() => store.setSettings(true)}
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 5,
+              height: 22,
+              paddingLeft: 7,
+              paddingRight: 8,
+              borderRadius: 6,
+              cursor: 'pointer',
+              backgroundColor: C.chip,
+              borderWidth: 1,
+              borderColor: C.chipBorder,
+              hover: { backgroundColor: C.chipHover },
+            }}
+          >
+            <Icon name="sparkles" size={12} color={store.currentModel ? C.link : C.tertiary} />
+            <text
+              style={{
+                fontSize: 11.5,
+                fontWeight: 500,
+                color: store.currentModel ? C.text : C.secondary,
+                whiteSpace: 'nowrap',
+                textOverflow: 'ellipsis',
+                maxWidth: 130,
+              }}
+            >
+              {modelLabel}
+            </text>
+          </div>
+
           <AppendMenu store={store} onPick={(value) => setDraft((text) => `${text}${value} `)} />
           <ChipSelect
             testId="approval"
@@ -171,11 +236,57 @@ export function Composer({ store }: { store: AgentStore }) {
             </SelectItem>
           </ChipSelect>
 
+          <ChipSelect
+            testId="effort"
+            value={store.effort}
+            onChange={(next) => store.setEffort(next as Effort)}
+            items={EFFORT_OPTIONS}
+            icon="brain"
+            label={effort.label}
+            menuWidth={170}
+          >
+            {EFFORT_OPTIONS.map((option) => (
+              <SelectItem key={option.value} testId={`effort-${option.value}`} value={option.value} style={menuItemStyle}>
+                <MenuRow
+                  label={option.label}
+                  description={option.value === 'max' ? '默认，最慢也最稳' : undefined}
+                  selected={store.effort === option.value}
+                />
+              </SelectItem>
+            ))}
+          </ChipSelect>
+
+          {/* 弹性占位分割 */}
           <div style={{ flexGrow: 1 }} />
 
+          {/* 右侧操作区：运行中停止按键、刷新、调试日志与主发送按键 */}
           {running ? (
-            <ChipButton testId="stop" icon="square" label="停止" onClick={() => store.stop()} />
+            <div
+              testId="stop"
+              role="button"
+              aria-label="停止"
+              onClick={() => store.stop()}
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 4,
+                height: 24,
+                paddingLeft: 8,
+                paddingRight: 9,
+                borderRadius: 6,
+                cursor: 'pointer',
+                backgroundColor: C.accentSoft,
+                borderWidth: 1,
+                borderColor: C.accent,
+                hover: { opacity: 0.85 },
+              }}
+            >
+              <Icon name="square" size={10} color={C.accent} />
+              <text style={{ fontSize: 11.5, fontWeight: 600, color: C.accent }}>停止</text>
+            </div>
           ) : null}
+
           <ChipButton
             testId="composer-refresh"
             icon="refresh"
@@ -203,25 +314,6 @@ export function Composer({ store }: { store: AgentStore }) {
               />
             </SelectItem>
           </ChipSelect>
-          <ChipSelect
-            testId="effort"
-            value={store.effort}
-            onChange={(next) => store.setEffort(next as Effort)}
-            items={EFFORT_OPTIONS}
-            icon="brain"
-            label={effort.label}
-            menuWidth={170}
-          >
-            {EFFORT_OPTIONS.map((option) => (
-              <SelectItem key={option.value} testId={`effort-${option.value}`} value={option.value} style={menuItemStyle}>
-                <MenuRow
-                  label={option.label}
-                  description={option.value === 'max' ? '默认，最慢也最稳' : undefined}
-                  selected={store.effort === option.value}
-                />
-              </SelectItem>
-            ))}
-          </ChipSelect>
 
           <div
             testId="send"
@@ -235,15 +327,15 @@ export function Composer({ store }: { store: AgentStore }) {
               justifyContent: 'center',
               width: 28,
               height: 28,
-              marginLeft: 4,
+              marginLeft: 2,
               borderRadius: 8,
               flexShrink: 0,
               cursor: ready ? 'pointer' : 'default',
-              backgroundColor: C.inverse,
-              hover: { opacity: ready ? 0.88 : 1 },
+              backgroundColor: ready ? C.inverse : C.overlay,
+              hover: { opacity: ready ? 0.85 : 1 },
             }}
           >
-            <Icon name="send" size={13} color={C.onInverse} />
+            <Icon name="arrowUp" size={14} color={ready ? C.onInverse : C.faint} />
           </div>
         </div>
       </div>

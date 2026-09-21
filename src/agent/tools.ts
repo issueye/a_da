@@ -118,6 +118,11 @@ export function describeTool(name: string, args: Record<string, unknown>): strin
     case 'write_file':
     case 'edit_file':
       return String(args.path ?? '')
+    case 'todo': {
+      const todos = Array.isArray(args.todos) ? (args.todos as { title?: string; status?: string }[]) : []
+      const active = todos.find((t) => t.status === 'in_progress') ?? todos.find((t) => t.status !== 'completed')
+      return active?.title ?? (todos.length ? `${todos.filter((t) => t.status === 'completed').length}/${todos.length}` : '')
+    }
     default:
       return ''
   }
@@ -142,7 +147,18 @@ export async function scanWorkspace(
 export async function resolveProjectPath(
   input: string
 ): Promise<{ path: string } | { error: string }> {
-  const trimmed = input.trim().replace(/^"|"$/g, '')
+  let trimmed = input.trim().replace(/^['"]|['"]$/g, '')
+  if (trimmed.startsWith('file://')) {
+    try {
+      const url = new URL(trimmed)
+      trimmed = decodeURIComponent(url.pathname)
+      if (process.platform === 'win32' && /^\/[a-zA-Z]:/.test(trimmed)) {
+        trimmed = trimmed.slice(1)
+      }
+    } catch {
+      // 容错保留原始串由 resolve 校验
+    }
+  }
   if (!trimmed) return { error: '请输入目录路径' }
   const absolute = resolve(trimmed)
   let info

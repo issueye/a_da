@@ -17,7 +17,7 @@ import {
   type ProviderConfig,
 } from '../agent/config'
 import type { AgentStore } from '../agent/store'
-import { C, EDITOR_THEME, FONT_MONO, M } from '../theme'
+import { C, editorTheme, FONT_MONO, M } from '../theme'
 import { Icon, IconButton } from './controls'
 import type { IconName } from '../icons'
 
@@ -74,7 +74,7 @@ function Field({
           value={value}
           placeholder={placeholder}
           autoFocus={autoFocus}
-          theme={EDITOR_THEME}
+          theme={editorTheme()}
           style={{
             flexGrow: 1,
             minWidth: 0,
@@ -245,7 +245,7 @@ export function SettingsDialog({ store }: { store: AgentStore }) {
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: '#00000038',
+        backgroundColor: C.scrim,
         // `auto` and not the default: a modal has to swallow the wheel too, or
         // it scrolls the transcript behind it.
         pointerEvents: 'auto',
@@ -268,7 +268,7 @@ export function SettingsDialog({ store }: { store: AgentStore }) {
             offsetY: 18,
             blurRadius: 48,
             spreadRadius: 0,
-            color: '#00000033',
+            color: C.shadowStrong,
           },
         }}
       >

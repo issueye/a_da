@@ -14,8 +14,10 @@ import type { AgentStore } from '../agent/store'
 import type { Item, ToolStatus } from '../agent/types'
 import { Icon } from './controls'
 import type { IconName } from '../icons'
-import { C, DOC_THEME, FONT_MONO, M } from '../theme'
+import { C, docTheme, FONT_MONO, M } from '../theme'
 import { Welcome } from './Welcome'
+import { copyToClipboard } from '../platform/clipboard'
+import { TodoFloatingPanel } from './TodoFloatingPanel'
 
 const TOOL_LABEL: Record<string, string> = {
   list_files: '列出文件',
@@ -24,6 +26,7 @@ const TOOL_LABEL: Record<string, string> = {
   write_file: '写入文件',
   edit_file: '修改文件',
   run_command: '执行命令',
+  todo: '任务规划',
 }
 
 const TOOL_ICON: Record<string, IconName> = {
@@ -33,15 +36,30 @@ const TOOL_ICON: Record<string, IconName> = {
   write_file: 'file',
   edit_file: 'file',
   run_command: 'terminal',
+  todo: 'listTodo',
 }
 
-const STATUS: Record<ToolStatus, { label: string; color: string }> = {
-  awaiting: { label: '等待批准', color: C.accent },
-  running: { label: '执行中', color: C.tertiary },
-  // 跑完是常态，不再写一个「完成」占位置：行不再动就是结束了。
-  done: { label: '', color: C.faint },
-  error: { label: '失败', color: C.danger },
-  denied: { label: '已拒绝', color: C.faint },
+/**
+ * The status word and tint for a tool card.
+ *
+ * A function, not a constant: the colours have to be read at render time so a
+ * theme switch repaints them. A module-level record would capture the palette
+ * that was installed when this file was first imported.
+ */
+function statusOf(status: ToolStatus): { label: string; color: string } {
+  switch (status) {
+    case 'awaiting':
+      return { label: '等待批准', color: C.accent }
+    case 'running':
+      return { label: '执行中', color: C.tertiary }
+    // 跑完是常态，不再写一个「完成」占位置：行不再动就是结束了。
+    case 'done':
+      return { label: '', color: C.faint }
+    case 'error':
+      return { label: '失败', color: C.danger }
+    case 'denied':
+      return { label: '已拒绝', color: C.faint }
+  }
 }
 
 /** 这些工具的摘要就是一条路径，可以拆成「文件名 + 目录」两段来排。 */
@@ -136,7 +154,7 @@ function AssistantRow({ item }: { item: Extract<Item, { kind: 'assistant' }> }) 
   if (!item.text.trim() && !item.streaming) return null
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
-      {item.text ? <markdown source={item.text} theme={DOC_THEME} /> : null}
+      {item.text ? <markdown source={item.text} theme={docTheme()} /> : null}
       {item.streaming ? (
         <div
           style={{
@@ -155,13 +173,171 @@ function AssistantRow({ item }: { item: Extract<Item, { kind: 'assistant' }> }) 
   )
 }
 
+/** 小型快捷复制按钮 */
+function CopyButton({ text, label = '复制' }: { text: string; label?: string }) {
+  const [copied, setCopied] = useState(false)
+  const handleCopy = (e: any) => {
+    e?.stopPropagation?.()
+    void copyToClipboard(text).then((ok) => {
+      if (ok) {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1500)
+      }
+    })
+  }
+  return (
+    <div
+      role="button"
+      aria-label={copied ? '已复制' : label}
+      onClick={handleCopy}
+      style={{
+        display: 'flex',
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 3,
+        paddingLeft: 6,
+        paddingRight: 6,
+        height: 20,
+        borderRadius: 4,
+        cursor: 'pointer',
+        backgroundColor: copied ? C.chipHover : C.overlay,
+        hover: { backgroundColor: C.chipHover },
+      }}
+    >
+      <Icon name={copied ? 'check' : 'copy'} size={10} color={copied ? C.success : C.tertiary} />
+      <text style={{ fontSize: 10.5, lineHeight: 14, color: copied ? C.success : C.tertiary }}>
+        {copied ? '已复制' : label}
+      </text>
+    </div>
+  )
+}
+
+interface TodoStep {
+  id?: string
+  title: string
+  status: 'pending' | 'in_progress' | 'completed'
+}
+
+function parseTodos(item: Extract<Item, { kind: 'tool' }>): TodoStep[] | null {
+  if (item.name !== 'todo') return null
+  if (Array.isArray(item.args?.todos)) {
+    return item.args.todos as TodoStep[]
+  }
+  if (item.output) {
+    try {
+      const parsed = JSON.parse(item.output)
+      if (Array.isArray(parsed?.todos)) return parsed.todos
+    } catch {}
+  }
+  return null
+}
+
+function TodoContent({ item }: { item: Extract<Item, { kind: 'tool' }> }) {
+  const todos = parseTodos(item)
+  if (!todos || !todos.length) {
+    return item.output ? (
+      <div style={{ padding: 10 }}>
+        <MonoBlock text={item.output} />
+      </div>
+    ) : null
+  }
+  const completedCount = todos.filter((t) => t.status === 'completed').length
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        paddingTop: 8,
+        paddingBottom: 8,
+        paddingLeft: 12,
+        paddingRight: 12,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          paddingBottom: 6,
+          borderBottomWidth: 1,
+          borderColor: C.cardBorder,
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Icon name="listTodo" size={13} color={C.link} />
+          <text style={{ fontSize: 12, fontWeight: 600, color: C.text }}>任务规划步骤</text>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <text style={{ fontFamily: FONT_MONO, fontSize: 11, color: C.tertiary }}>
+            {`${completedCount} / ${todos.length} 已完成`}
+          </text>
+          {item.output ? <CopyButton text={item.output} label="复制清单" /> : null}
+        </div>
+      </div>
+      {todos.map((step, idx) => {
+        const isDone = step.status === 'completed'
+        const isRunning = step.status === 'in_progress'
+        return (
+          <div
+            key={step.id || idx}
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 8,
+              paddingTop: 4,
+              paddingBottom: 4,
+            }}
+          >
+            <Icon
+              name={isDone ? 'circleCheck' : isRunning ? 'arrowRight' : 'circle'}
+              size={13}
+              color={isDone ? C.success : isRunning ? C.link : C.faint}
+            />
+            <text
+              style={{
+                fontSize: 12,
+                lineHeight: 17,
+                color: isDone ? C.faint : isRunning ? C.text : C.secondary,
+                fontWeight: isRunning ? 600 : 400,
+                textDecoration: isDone ? 'line-through' : undefined,
+                flexShrink: 1,
+              }}
+            >
+              {step.title}
+            </text>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; store: AgentStore }) {
-  const status = STATUS[item.status]
+  const status = statusOf(item.status)
   /** 折叠 / 展开。默认一律收起：跑完的、失败的、被拒的都只占一行。 */
   const [open, setOpen] = useState(false)
   const stats = item.patch ? patchStats(item.patch) : null
-  const { target, dir } = toolTarget(item.name, item.args)
-  const detail = Boolean(item.patch) || Boolean(item.output)
+  const isTodo = item.name === 'todo'
+  const todos = isTodo ? parseTodos(item) : null
+
+  let target = ''
+  let dir = ''
+  if (isTodo && todos) {
+    const completedCount = todos.filter((t) => t.status === 'completed').length
+    const activeStep = todos.find((t) => t.status === 'in_progress') ?? todos.find((t) => t.status !== 'completed')
+    target = activeStep?.title ?? '待办列表'
+    dir = `${completedCount}/${todos.length} 已完成`
+  } else {
+    const parsed = toolTarget(item.name, item.args)
+    target = parsed.target
+    dir = parsed.dir
+  }
+
+  const detail = Boolean(item.patch) || Boolean(item.output) || isTodo
 
   return (
     <div
@@ -196,8 +372,8 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
           size={11}
           color={detail ? C.faint : '#00000000'}
         />
-        <Icon name={TOOL_ICON[item.name] ?? 'terminal'} size={12} color={C.tertiary} />
-        <text style={{ fontSize: 12, lineHeight: 16, color: C.secondary, flexShrink: 0 }}>
+        <Icon name={TOOL_ICON[item.name] ?? 'terminal'} size={12} color={item.status === 'running' ? C.link : C.tertiary} />
+        <text style={{ fontSize: 12, lineHeight: 16, color: item.status === 'running' ? C.link : C.secondary, fontWeight: item.status === 'running' ? 500 : 400, flexShrink: 0 }}>
           {TOOL_LABEL[item.name] ?? item.name}
         </text>
         <text
@@ -234,36 +410,41 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
         ) : null}
         <div style={{ flexGrow: 1 }} />
         {stats && stats.added > 0 ? (
-          <text
-            style={{
-              fontSize: 11,
-              lineHeight: 15,
-              color: C.success,
-              whiteSpace: 'nowrap',
-              flexShrink: 0,
-            }}
-          >
-            {`+${stats.added}`}
-          </text>
+          <div style={{ display: 'flex', alignItems: 'center', height: 18, paddingLeft: 5, paddingRight: 5, borderRadius: 4, backgroundColor: C.overlay, flexShrink: 0 }}>
+            <text
+              style={{
+                fontSize: 11,
+                lineHeight: 15,
+                fontWeight: 500,
+                color: C.success,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {`+${stats.added}`}
+            </text>
+          </div>
         ) : null}
         {stats && stats.removed > 0 ? (
-          <text
-            style={{
-              fontSize: 11,
-              lineHeight: 15,
-              color: C.danger,
-              whiteSpace: 'nowrap',
-              flexShrink: 0,
-            }}
-          >
-            {`−${stats.removed}`}
-          </text>
+          <div style={{ display: 'flex', alignItems: 'center', height: 18, paddingLeft: 5, paddingRight: 5, borderRadius: 4, backgroundColor: C.overlay, flexShrink: 0 }}>
+            <text
+              style={{
+                fontSize: 11,
+                lineHeight: 15,
+                fontWeight: 500,
+                color: C.danger,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {`−${stats.removed}`}
+            </text>
+          </div>
         ) : null}
         {status.label ? (
           <text
             style={{
               fontSize: 11,
               lineHeight: 15,
+              fontWeight: item.status === 'running' ? 500 : 400,
               color: status.color,
               whiteSpace: 'nowrap',
               flexShrink: 0,
@@ -341,7 +522,7 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
                   paddingRight: 10,
                   borderRadius: 6,
                   cursor: 'pointer',
-                  backgroundColor: '#FFFFFF',
+                  backgroundColor: C.raised,
                   borderWidth: 1,
                   borderColor: C.borderStrong,
                   hover: { backgroundColor: C.chip },
@@ -352,37 +533,96 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
             </div>
           ) : null}
 
+          {open && isTodo ? <TodoContent item={item} /> : null}
+
           {open && item.patch ? (
-            <diff patch={item.patch} wordDiff maxLines={22} theme={DOC_THEME} />
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  paddingTop: 6,
+                  paddingBottom: 6,
+                  paddingLeft: 10,
+                  paddingRight: 10,
+                  backgroundColor: C.raised,
+                  borderBottomWidth: 1,
+                  borderColor: C.cardBorder,
+                }}
+              >
+                <text style={{ fontSize: 11, fontFamily: FONT_MONO, color: C.secondary }}>
+                  {target}
+                </text>
+                <CopyButton text={item.patch} label="复制 Diff" />
+              </div>
+              <diff patch={item.patch} wordDiff maxLines={24} theme={docTheme()} />
+            </div>
           ) : null}
 
-          {open && item.output && !item.patch ? (
+          {open && item.name === 'run_command' && !isTodo ? (
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  paddingTop: 6,
+                  paddingBottom: 6,
+                  paddingLeft: 10,
+                  paddingRight: 10,
+                  backgroundColor: C.raised,
+                  borderBottomWidth: 1,
+                  borderColor: C.cardBorder,
+                }}
+              >
+                <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 1 }}>
+                  <Icon name="terminal" size={11} color={C.tertiary} />
+                  <text
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 11,
+                      lineHeight: 15,
+                      color: C.text,
+                      whiteSpace: 'nowrap',
+                      textOverflow: 'ellipsis',
+                      minWidth: 0,
+                    }}
+                  >
+                    {`$ ${String(item.args.command ?? '')}`}
+                  </text>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                  <CopyButton text={String(item.args.command ?? '')} label="复制命令" />
+                  {item.output ? <CopyButton text={item.output} label="复制输出" /> : null}
+                </div>
+              </div>
+              {item.output ? (
+                <div style={{ padding: 10 }}>
+                  <MonoBlock text={item.output} tone={item.status === 'error' ? C.danger : C.secondary} />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {open && item.output && !item.patch && !isTodo && item.name !== 'run_command' ? (
             <div
               style={{
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 6,
-                paddingTop: 9,
-                paddingBottom: 9,
+                paddingTop: 8,
+                paddingBottom: 8,
                 paddingLeft: 10,
                 paddingRight: 10,
               }}
             >
-              {/* 命令展开后就是一份终端记录：先是命令本身，然后是它的输出。 */}
-              {item.name === 'run_command' && item.args.command ? (
-                <text
-                  style={{
-                    fontFamily: FONT_MONO,
-                    fontSize: 11.5,
-                    lineHeight: 17,
-                    color: C.text,
-                    whiteSpace: 'nowrap',
-                    textOverflow: 'ellipsis',
-                  }}
-                >
-                  {`$ ${String(item.args.command)}`}
-                </text>
-              ) : null}
+              <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <text style={{ fontSize: 11, color: C.tertiary }}>输出内容</text>
+                <CopyButton text={item.output} label="复制" />
+              </div>
               <MonoBlock text={item.output} tone={item.status === 'error' ? C.danger : C.secondary} />
             </div>
           ) : null}
@@ -395,13 +635,22 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
 /**
  * 模型的思考链，默认只占一行。
  *
- * 收起时是「思考 · 持续 N 秒」，展开才是推理原文——它通常是整轮里最长的东西，
- * 该按需展开，而不是把回答挤下去。
+ * 收起时是「思考 · 持续 N 秒」，并实时展现最新思考切片预览；
+ * 展开则是左侧带导线的推理原文卡片。
  */
 function ThinkingRow({ item }: { item: Extract<Item, { kind: 'thinking' }> }) {
   const [open, setOpen] = useState(false)
-  const seconds =
-    item.endedAt === undefined ? null : Math.max(1, Math.round((item.endedAt - item.at) / 1000))
+  const isStreaming = item.endedAt === undefined
+  const seconds = isStreaming ? null : Math.max(1, Math.round((item.endedAt! - item.at) / 1000))
+
+  // 提取思考输出的最新非空单行作为折叠态的动态预览
+  const streamingPreview = (() => {
+    if (!isStreaming) return null
+    const lines = item.text.split('\n').map((l) => l.trim()).filter(Boolean)
+    if (!lines.length) return null
+    const last = lines[lines.length - 1]!
+    return last.length > 48 ? `${last.slice(0, 48)}…` : last
+  })()
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
@@ -425,56 +674,102 @@ function ThinkingRow({ item }: { item: Extract<Item, { kind: 'thinking' }> }) {
         }}
       >
         <Icon name={open ? 'chevronDown' : 'chevronRight'} size={11} color={C.faint} />
-        <Icon name="brain" size={12} color={C.tertiary} />
-        <text style={{ fontSize: 12, lineHeight: 16, color: C.secondary }}>思考</text>
-        <text style={{ fontSize: 11, lineHeight: 15, color: C.faint }}>
-          {seconds === null ? '· 进行中…' : `· 持续 ${seconds} 秒`}
+        <Icon name="brain" size={12} color={isStreaming ? C.link : C.tertiary} />
+        <text style={{ fontSize: 12, lineHeight: 16, color: isStreaming ? C.link : C.secondary, fontWeight: isStreaming ? 600 : 400 }}>
+          思考
         </text>
+        <text style={{ fontSize: 11, lineHeight: 15, color: C.faint, flexShrink: 0 }}>
+          {isStreaming ? '· 思考中…' : `· 持续 ${seconds} 秒`}
+        </text>
+        {!open && streamingPreview ? (
+          <text
+            style={{
+              fontSize: 11,
+              lineHeight: 15,
+              color: C.tertiary,
+              whiteSpace: 'nowrap',
+              textOverflow: 'ellipsis',
+              minWidth: 0,
+              flexShrink: 1,
+            }}
+          >
+            {`· "${streamingPreview}"`}
+          </text>
+        ) : null}
         <div style={{ flexGrow: 1 }} />
       </div>
 
-      {open ? <ThinkingBody text={item.text} /> : null}
+      {open ? <ThinkingBody text={item.text} isStreaming={isStreaming} /> : null}
     </div>
   )
 }
 
-/** 推理原文：散文，不是等宽输出，所以按能换行的正文排。 */
-function ThinkingBody({ text }: { text: string }) {
+/** 推理原文：散文排版，左侧结构化导线缩进，带快捷复制。 */
+function ThinkingBody({ text, isStreaming }: { text: string; isStreaming?: boolean }) {
   const [full, setFull] = useState(false)
   const lines = text.split('\n')
-  const limit = full ? lines.length : Math.min(lines.length, 14)
+  const limit = full ? lines.length : Math.min(lines.length, 16)
   return (
     <div
       style={{
         display: 'flex',
         flexDirection: 'column',
-        gap: 2,
-        marginTop: 2,
-        paddingTop: 9,
-        paddingBottom: 9,
-        paddingLeft: 10,
-        paddingRight: 10,
-        borderWidth: 1,
-        borderColor: C.cardBorder,
-        borderRadius: 10,
-        backgroundColor: C.card,
+        marginLeft: 8,
+        paddingLeft: 12,
+        borderLeftWidth: 2,
+        borderColor: isStreaming ? C.link : C.borderStrong,
+        marginTop: 3,
+        marginBottom: 6,
+        width: '100%',
       }}
     >
-      {lines.slice(0, limit).map((line, index) => (
-        <text key={index} style={{ fontSize: 12, lineHeight: 18, color: C.tertiary }}>
-          {line || ' '}
-        </text>
-      ))}
-      {lines.length > limit ? (
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 3,
+          paddingTop: 8,
+          paddingBottom: 8,
+          paddingLeft: 12,
+          paddingRight: 12,
+          borderWidth: 1,
+          borderColor: C.cardBorder,
+          borderRadius: 8,
+          backgroundColor: C.card,
+        }}
+      >
         <div
-          onClick={() => setFull(true)}
-          style={{ cursor: 'pointer', paddingTop: 4, width: '100%' }}
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            paddingBottom: 4,
+            borderBottomWidth: 1,
+            borderColor: C.overlay,
+          }}
         >
-          <text style={{ fontSize: 11.5, lineHeight: 17, color: C.link }}>
-            展开其余 {lines.length - limit} 行
+          <text style={{ fontSize: 11, fontWeight: 500, color: C.tertiary }}>
+            {isStreaming ? '正在推理…' : '推理分析'}
           </text>
+          <CopyButton text={text} label="复制思考" />
         </div>
-      ) : null}
+        {lines.slice(0, limit).map((line, index) => (
+          <text key={index} style={{ fontSize: 12, lineHeight: 18, color: C.secondary }}>
+            {line || ' '}
+          </text>
+        ))}
+        {lines.length > limit ? (
+          <div
+            onClick={() => setFull(true)}
+            style={{ cursor: 'pointer', paddingTop: 6, width: '100%' }}
+          >
+            <text style={{ fontSize: 11.5, lineHeight: 17, color: C.link }}>
+              展开其余 {lines.length - limit} 行
+            </text>
+          </div>
+        ) : null}
+      </div>
     </div>
   )
 }
@@ -530,12 +825,17 @@ function ItemRow({ item, store }: { item: Item; store: AgentStore }) {
   if (item.kind === 'user') return <UserRow item={item} />
   if (item.kind === 'thinking') return <ThinkingRow item={item} />
   if (item.kind === 'assistant') return <AssistantRow item={item} />
-  if (item.kind === 'tool') return <ToolCard item={item} store={store} />
+  if (item.kind === 'tool') {
+    if (item.name === 'todo') return null
+    return <ToolCard item={item} store={store} />
+  }
   return <NoticeRow item={item} />
 }
 
 export function Transcript({ store }: { store: AgentStore }) {
   const items = store.active.items
+  // 任务规划步骤不在会话区中展示，由独立的收缩悬浮框呈现
+  const displayItems = items.filter((item) => !(item.kind === 'tool' && item.name === 'todo'))
   const { renderer } = useGpuix()
   const listRef = useRef<PublicInstance>(null)
   const [atBottom, setAtBottom] = useState(true)
@@ -546,9 +846,9 @@ export function Transcript({ store }: { store: AgentStore }) {
   }, [store.activeId])
 
   const scrollToBottom = () => {
-    if (items.length > 0) {
+    if (displayItems.length > 0) {
       if (listRef.current && renderer?.scrollToItem) {
-        renderer.scrollToItem(listRef.current.id, items.length - 1)
+        renderer.scrollToItem(listRef.current.id, displayItems.length - 1)
       }
       setAtBottom(true)
       setTailKey((k) => k + 1)
@@ -557,8 +857,8 @@ export function Transcript({ store }: { store: AgentStore }) {
 
   const handleVisibleRange = (event: { endIndex?: number; visibleEnd?: number }) => {
     const end = event.endIndex ?? event.visibleEnd
-    if (typeof end === 'number' && items.length > 0) {
-      setAtBottom(end >= items.length)
+    if (typeof end === 'number' && displayItems.length > 0) {
+      setAtBottom(end >= displayItems.length)
     }
   }
 
@@ -575,7 +875,7 @@ export function Transcript({ store }: { store: AgentStore }) {
         position: 'relative',
       }}
     >
-      {items.length === 0 ? (
+      {displayItems.length === 0 ? (
         <Welcome />
       ) : (
         <virtual-list
@@ -589,7 +889,7 @@ export function Transcript({ store }: { store: AgentStore }) {
           onVisibleRange={handleVisibleRange}
           style={{ flexGrow: 1, minHeight: 0, width: '100%' }}
         >
-          {items.map((item) => (
+          {displayItems.map((item) => (
             <div
               key={item.id}
               style={{
@@ -615,7 +915,10 @@ export function Transcript({ store }: { store: AgentStore }) {
         </virtual-list>
       )}
 
-      {!atBottom && items.length > 0 ? (
+      {/* 任务规划步骤独立收缩悬浮框 */}
+      <TodoFloatingPanel store={store} />
+
+      {!atBottom && displayItems.length > 0 ? (
         <div
           testId="scroll-to-bottom"
           role="button"
@@ -642,7 +945,7 @@ export function Transcript({ store }: { store: AgentStore }) {
               offsetY: 4,
               blurRadius: 12,
               spreadRadius: 0,
-              color: '#00000022',
+              color: C.shadow,
             },
             hover: {
               backgroundColor: C.chip,

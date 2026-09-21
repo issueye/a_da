@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { unifiedPatch, patchStats } from './patch'
 import { describeTool, isWriteTool, resolveProjectPath, runTool, scanWorkspace } from './tools'
 import { checkWorkspaceSandbox } from './tools/workspace'
@@ -143,6 +144,9 @@ describe('project paths', () => {
   test('accepts a directory, with or without quotes', async () => {
     expect(await resolveProjectPath(root)).toEqual({ path: root })
     expect(await resolveProjectPath(`"${root}"`)).toEqual({ path: root })
+    expect(await resolveProjectPath(`'${root}'`)).toEqual({ path: root })
+    const fileUrl = pathToFileURL(root).href
+    expect(await resolveProjectPath(fileUrl)).toEqual({ path: root })
   })
 
   test('rejects a file, a missing path and an empty string', async () => {

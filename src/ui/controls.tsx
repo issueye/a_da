@@ -127,27 +127,33 @@ export function ChipButton({
  * `<anchored>` paints an opaque `#1A1A1A` behind its children so a deferred
  * overlay is never see-through, and the floating layer's own div covers that. If
  * the rounded, bordered card *is* that div, its four corners cut into the dark
- * fill and the menu looks like it has black corners — invisible in the dark
- * example theme, glaring on this light one. So the layer gets a square fill of
- * the same colour, and the radius, border and shadow live on a card inside it.
+ * fill and the menu looks like it has black corners — invisible in the dark mode,
+ * glaring on the light one. So the layer gets a square fill of the same colour,
+ * and the radius, border and shadow live on a card inside it.
+ *
+ * Both are functions rather than constants because the palette is installed at
+ * runtime: a module-level object would freeze whatever mode was active at import
+ * and never follow a switch.
  */
-export const MENU_LAYER: StyleDesc = {
-  backgroundColor: C.raised,
+export function menuLayer(): StyleDesc {
+  return { backgroundColor: C.raised }
 }
 
-export const MENU_CARD: StyleDesc = {
-  display: 'flex',
-  flexDirection: 'column',
-  paddingTop: 4,
-  paddingBottom: 4,
-  paddingLeft: 4,
-  paddingRight: 4,
-  backgroundColor: C.raised,
-  borderWidth: 1,
-  borderColor: C.borderStrong,
-  borderRadius: 10,
-  overflow: 'hidden',
-  boxShadow: { offsetX: 0, offsetY: 6, blurRadius: 18, spreadRadius: 0, color: '#00000024' },
+export function menuCard(): StyleDesc {
+  return {
+    display: 'flex',
+    flexDirection: 'column',
+    paddingTop: 4,
+    paddingBottom: 4,
+    paddingLeft: 4,
+    paddingRight: 4,
+    backgroundColor: C.raised,
+    borderWidth: 1,
+    borderColor: C.borderStrong,
+    borderRadius: 10,
+    overflow: 'hidden',
+    boxShadow: { offsetX: 0, offsetY: 6, blurRadius: 18, spreadRadius: 0, color: C.shadow },
+  }
 }
 
 /** The rounded surface a menu's rows sit on, inside the square layer. */
@@ -161,7 +167,7 @@ export function MenuSurface({
   return (
     <div
       style={{
-        ...MENU_CARD,
+        ...menuCard(),
         ...(maxHeight ? { maxHeight, overflowY: 'scroll' as const } : {}),
       }}
     >
@@ -291,7 +297,7 @@ export function ChipSelect({
         <SelectContent
           side="top"
           sideOffset={6}
-          style={{ ...MENU_LAYER, minWidth: menuWidth ?? 190 }}
+          style={{ ...menuLayer(), minWidth: menuWidth ?? 190 }}
         >
           <MenuSurface>{children}</MenuSurface>
         </SelectContent>

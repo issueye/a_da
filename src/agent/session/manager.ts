@@ -1,21 +1,41 @@
 /**
  * 会话持久化管理器 (SessionManager)
- * 参考 @earendil-works/pi-coding-agent/src/core/session-manager.ts
+ * 参考 @earendil-works/pi-agent-core 与 @earendil-works/pi-coding-agent 架构设计。
  * 基于追加式 JSONL 格式落盘，支持崩溃安全与重启后历史恢复
  *
  * 落盘位置与 config.ts 的配置文件同一个目录（`~/.a-da`，A_DA_HOME 可覆盖），
- * 一个应用只该有一个数据目录。
+ * 一个应用只该有一个数据目录：
+ *
+ *   ~/.a-da/sessions/<工作区>/<会话 id>.jsonl
+ *
+ * 工作区是一层目录而不是字段前缀，因为「这个项目有哪些会话」是最常问的问题：
+ * 列一个目录就答完了，不必扫全部文件再按字段过滤。目录名是工作区路径的散列，
+ * 带一个 `.json` 边车记下真实路径——路径里有 `\ / :` 这类不能做目录名的字符，
+ * 散列也让目录名不会长到踩到 Windows 的路径上限。
  */
 
 import { appendFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { join, resolve } from 'node:path'
 import type { AgentMessage } from '../core/types'
 import { getAppHome } from '../home'
 import { CURRENT_SESSION_VERSION, type SessionEntry, type SessionHeader, type SessionSummary } from './types'
 
 export function getSessionsDir(): string {
   return join(getAppHome(), 'sessions')
+}
+
+/**
+ * `E:\code\a_da` → `1f3c…a9`：稳定、短，且没有文件系统不接受的字符。
+ *
+ * 分隔符和大小写都要归一化：同一个项目会以 `E:/code/a_da`（用户粘的）和
+ * `E:\code\a_da`（对话框选的）两种形式出现，不归一化就会散列成两个目录，一个
+ * 项目的会话被劈成两半。
+ */
+function workspaceSlug(workspace: string): string {
+  const canonical = workspace.replace(/[\\/]+/g, '\\').toLowerCase()
+  return createHash('sha256').update(canonical).digest('hex').slice(0, 20)
 }
 
 export class SessionManager {
@@ -42,18 +62,51 @@ export class SessionManager {
     }
   }
 
-  private getSessionPath(sessionId: string): string {
+  /** 一个工作区的目录。不判断存在性，调用方按需 `ensureDir`。 */
+  private workspaceDir(workspace: string): string {
+    return join(this.sessionsDir, workspaceSlug(workspace))
+  }
+
+  /** 工作区目录下的边车文件路径。 */
+  private workspacePointer(workspace: string): string {
+    return join(this.workspaceDir(workspace), 'workspace.json')
+  }
+
+  /**
+   * 工作区的边车文件，记下这个目录对应的真实路径。
+   *
+   * 启动时要按工作区恢复会话，而目录名是散列——真实路径只能另存一份。存调用方给的
+   * 原样（`E:/code` 就存 `E:/code`），因为侧边栏显示的就是它；归一化是散列的事，
+   * 写指针不必再改一遍。
+   *
+   * 写坏了不影响会话文件本身，所以失败就静默：那个目录照样能被列举，只是路径未知。
+   */
+  private async rememberWorkspace(workspace: string): Promise<void> {
+    try {
+      const dir = this.workspaceDir(workspace)
+      await mkdir(dir, { recursive: true })
+      await writeFile(
+        this.workspacePointer(workspace),
+        `${JSON.stringify({ workspace }, null, 2)}\n`,
+        'utf-8',
+      )
+    } catch {
+      // 一个写不进去的指针只影响「按工作区恢复」的体验，不该让保存本身失败。
+    }
+  }
+
+  private getSessionPath(workspace: string, sessionId: string): string {
     // 移除非法字符
     const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')
-    return join(this.sessionsDir, `${safeId}.jsonl`)
+    return join(this.workspaceDir(workspace), `${safeId}.jsonl`)
   }
 
   /**
    * 创建新的持久化会话文件并写入首行 Header
    */
   async createSession(id: string, workspace: string, title: string = '新会话'): Promise<SessionHeader> {
-    await this.ensureDir()
-    const filePath = this.getSessionPath(id)
+    await this.rememberWorkspace(workspace)
+    const filePath = this.getSessionPath(workspace, id)
     const now = Date.now()
 
     const header: SessionHeader = {
@@ -73,9 +126,11 @@ export class SessionManager {
   /**
    * 向会话以 Append-only 方式追加一条消息
    */
-  async appendMessage(sessionId: string, message: AgentMessage): Promise<void> {
-    await this.ensureDir()
-    const filePath = this.getSessionPath(sessionId)
+  async appendMessage(sessionId: string, message: AgentMessage, workspace?: string): Promise<void> {
+    const dir = workspace ? this.workspaceDir(workspace) : await this.findSessionDir(sessionId)
+    if (!dir) return
+    if (!existsSync(dir)) await mkdir(dir, { recursive: true })
+    const filePath = join(dir, `${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}.jsonl`)
     const entry: SessionEntry = {
       type: 'message',
       id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -87,11 +142,36 @@ export class SessionManager {
   }
 
   /**
+   * 一个会话现在在哪个工作区目录下。
+   *
+   * 追加消息时调用方不一定带着工作区（会话流水是追加写的流水账，写不进去也不该
+   * 打断这一轮），所以得能自己找。扫的目录数量等于工作区数量，启动后基本不变。
+   */
+  private async findSessionDir(sessionId: string): Promise<string | null> {
+    let entries: { name: string; isDirectory: () => boolean }[]
+    try {
+      entries = await readdir(this.sessionsDir, { withFileTypes: true })
+    } catch {
+      return null
+    }
+    const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')
+    for (const entry of entries) {
+      // 只进目录：工作区一层是散列目录，同级的 `.jsonl` 之类一律跳过。
+      if (!entry.isDirectory()) continue
+      const candidate = join(this.sessionsDir, entry.name, `${safe}.jsonl`)
+      if (existsSync(candidate)) return join(this.sessionsDir, entry.name)
+    }
+    return null
+  }
+
+  /**
    * 更新会话标题
    */
-  async updateSessionTitle(sessionId: string, title: string): Promise<void> {
-    const filePath = this.getSessionPath(sessionId)
-    if (!existsSync(filePath)) return
+  async updateSessionTitle(sessionId: string, title: string, workspace?: string): Promise<void> {
+    const filePath = workspace
+      ? this.getSessionPath(workspace, sessionId)
+      : await this.findSessionPath(sessionId)
+    if (!filePath || !existsSync(filePath)) return
 
     try {
       const content = await readFile(filePath, 'utf-8')
@@ -110,21 +190,45 @@ export class SessionManager {
     }
   }
 
+  /** 一个会话文件在哪，`findSessionDir` 的文件版。 */
+  private async findSessionPath(sessionId: string): Promise<string | null> {
+    const dir = await this.findSessionDir(sessionId)
+    if (!dir) return null
+    return join(dir, `${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}.jsonl`)
+  }
+
   /**
    * 删掉一个会话的流水文件。删一个本来就不存在的会话不算错。
    */
-  async deleteSession(sessionId: string): Promise<void> {
-    const filePath = this.getSessionPath(sessionId)
-    if (!existsSync(filePath)) return
+  async deleteSession(sessionId: string, workspace?: string): Promise<void> {
+    const filePath = workspace
+      ? this.getSessionPath(workspace, sessionId)
+      : await this.findSessionPath(sessionId)
+    if (!filePath || !existsSync(filePath)) return
     await rm(filePath, { force: true })
+  }
+
+  /**
+   * 删掉一个工作区的全部会话与目录（包含 workspace.json 和所有 .jsonl）。
+   * 删一个本来就不存在的工作区不算错。
+   */
+  async deleteWorkspace(workspace: string): Promise<void> {
+    const dir = this.workspaceDir(workspace)
+    if (!existsSync(dir)) return
+    await rm(dir, { recursive: true, force: true })
   }
 
   /**
    * 读取并重建指定会话的所有消息历史
    */
-  async loadSession(sessionId: string): Promise<{ header: SessionHeader; messages: AgentMessage[] } | null> {
-    const filePath = this.getSessionPath(sessionId)
-    if (!existsSync(filePath)) return null
+  async loadSession(
+    sessionId: string,
+    workspace?: string,
+  ): Promise<{ header: SessionHeader; messages: AgentMessage[] } | null> {
+    const filePath = workspace
+      ? this.getSessionPath(workspace, sessionId)
+      : await this.findSessionPath(sessionId)
+    if (!filePath || !existsSync(filePath)) return null
 
     try {
       const content = await readFile(filePath, 'utf-8')
@@ -155,43 +259,208 @@ export class SessionManager {
 
   /**
    * 列举指定工作区的所有历史会话摘要（按修改时间倒序排列）
+   *
+   * 目录名是散列，所以这里算一次散列去取那个目录，而不是扫全部再比字段。
    */
   async listSessionsForWorkspace(workspace: string): Promise<SessionSummary[]> {
-    await this.ensureDir()
-    const summaries: SessionSummary[] = []
-
+    const dir = this.workspaceDir(workspace)
     let files: string[] = []
     try {
-      files = await readdir(this.sessionsDir)
+      files = await readdir(dir)
     } catch {
       return []
     }
 
+    const summaries: SessionSummary[] = []
     for (const file of files) {
       if (!file.endsWith('.jsonl')) continue
-      const filePath = join(this.sessionsDir, file)
+      const filePath = join(dir, file)
       try {
         const content = await readFile(filePath, 'utf-8')
         const firstLine = content.split('\n')[0]
         if (!firstLine) continue
         const header = JSON.parse(firstLine) as SessionHeader
-        if (header.type === 'session' && header.workspace === workspace) {
-          const fileStat = await stat(filePath)
-          summaries.push({
-            id: header.id,
-            title: header.title || '新会话',
-            workspace: header.workspace,
-            createdAt: header.createdAt,
-            updatedAt: fileStat.mtimeMs || header.updatedAt,
-            filePath,
-          })
-        }
+        if (header.type !== 'session') continue
+        const fileStat = await stat(filePath)
+        summaries.push({
+          id: header.id,
+          title: header.title || '新会话',
+          workspace: header.workspace,
+          createdAt: header.createdAt,
+          updatedAt: fileStat.mtimeMs || header.updatedAt,
+          filePath,
+        })
       } catch {
         continue
       }
     }
 
     return summaries.sort((a, b) => b.updatedAt - a.updatedAt)
+  }
+
+  /**
+   * 列举**所有**工作区的会话摘要，按修改时间倒序。
+   *
+   * 启动恢复要它：窗口重新打开时要把每个项目的会话都摆回来，而不是只看当前项目。
+   * 每个工作区目录带一个 `workspace.json` 记着真实路径——目录名是散列，没有它就
+   * 不知道该把会话挂到哪个项目上，那种目录只能跳过。
+   */
+  async listAllSessions(): Promise<SessionSummary[]> {
+    let entries: string[]
+    try {
+      entries = await readdir(this.sessionsDir)
+    } catch {
+      return []
+    }
+
+    const summaries: SessionSummary[] = []
+    for (const entry of entries) {
+      const dir = join(this.sessionsDir, entry)
+      const workspace = await this.readWorkspacePointer(dir)
+      if (!workspace) continue
+      summaries.push(...(await this.listSessionsForWorkspace(workspace)))
+    }
+
+    return summaries.sort((a, b) => b.updatedAt - a.updatedAt)
+  }
+
+  /** 读一个工作区目录的 `workspace.json`；没有或坏了就当这个目录不存在。 */
+  private async readWorkspacePointer(dir: string): Promise<string | null> {
+    try {
+      const parsed = JSON.parse(await readFile(join(dir, 'workspace.json'), 'utf8')) as {
+        workspace?: unknown
+      }
+      return typeof parsed.workspace === 'string' && parsed.workspace ? parsed.workspace : null
+    } catch {
+      return null
+    }
+  }
+
+  // ---------------------------------------------------------------- sync reads
+  //
+  // 启动恢复走同步路径，和 `readSavedAppearance` 同一个理由：窗口的第一帧就得
+  // 是对的，等异步任务回来再换会闪一下。这些都是小文件，读得起。
+
+  /** `listAllSessions` 的同步版。 */
+  listAllSessionsSync(): SessionSummary[] {
+    let entries: string[]
+    try {
+      entries = readdirSync(this.sessionsDir)
+    } catch {
+      return []
+    }
+
+    const summaries: SessionSummary[] = []
+    for (const entry of entries) {
+      const dir = join(this.sessionsDir, entry)
+      const workspace = this.readWorkspacePointerSync(dir)
+      if (!workspace) continue
+      summaries.push(...this.listSessionsForWorkspaceSync(workspace))
+    }
+
+    return summaries.sort((a, b) => b.updatedAt - a.updatedAt)
+  }
+
+  /** `listSessionsForWorkspace` 的同步版。 */
+  listSessionsForWorkspaceSync(workspace: string): SessionSummary[] {
+    const dir = this.workspaceDir(workspace)
+    let files: string[]
+    try {
+      files = readdirSync(dir)
+    } catch {
+      return []
+    }
+
+    const summaries: SessionSummary[] = []
+    for (const file of files) {
+      if (!file.endsWith('.jsonl')) continue
+      const filePath = join(dir, file)
+      try {
+        const firstLine = readFileSync(filePath, 'utf8').split('\n')[0]
+        if (!firstLine) continue
+        const header = JSON.parse(firstLine) as SessionHeader
+        if (header.type !== 'session') continue
+        summaries.push({
+          id: header.id,
+          title: header.title || '新会话',
+          workspace: header.workspace,
+          createdAt: header.createdAt,
+          // 同步路径拿 mtime 要额外一次 stat，而 `updatedAt` 已经够排序用了。
+          updatedAt: header.updatedAt,
+          filePath,
+        })
+      } catch {
+        continue
+      }
+    }
+
+    return summaries.sort((a, b) => b.updatedAt - a.updatedAt)
+  }
+
+  /**
+   * 读一个会话摘要对应的消息流水（同步）。
+   *
+   * 收摘要是因为摘要里已经带了 `filePath`——启动恢复手里就是摘要，按 id 再推一遍
+   * 路径是白费。摘要里没有路径时退回按 id 找。
+   */
+  loadSummaryMessagesSync(summary: SessionSummary): AgentMessage[] {
+    const filePath = summary.filePath ?? this.findSessionPathSync(summary.id, summary.workspace)
+    if (!filePath) return []
+
+    try {
+      const messages: AgentMessage[] = []
+      for (const line of readFileSync(filePath, 'utf8').split('\n')) {
+        if (!line.trim()) continue
+        try {
+          const entry = JSON.parse(line) as SessionEntry
+          if (entry.type === 'message') messages.push(entry.message)
+        } catch {
+          // 容错跳过损坏单行
+        }
+      }
+      return messages
+    } catch {
+      // 文件被删了、被占了：这个会话就当没有历史，界面照常显示。
+      return []
+    }
+  }
+
+  /** `findSessionPath` 的同步版。 */
+  private findSessionPathSync(sessionId: string, workspace?: string): string | null {
+    const filePath = workspace
+      ? this.getSessionPath(workspace, sessionId)
+      : null
+    if (filePath && existsSync(filePath)) return filePath
+    const dir = this.findSessionDirSync(sessionId)
+    return dir ? join(dir, `${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}.jsonl`) : null
+  }
+
+  /** `findSessionDir` 的同步版。 */
+  private findSessionDirSync(sessionId: string): string | null {
+    let entries: { name: string; isDirectory: () => boolean }[]
+    try {
+      entries = readdirSync(this.sessionsDir, { withFileTypes: true })
+    } catch {
+      return null
+    }
+    const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      const candidate = join(this.sessionsDir, entry.name, `${safe}.jsonl`)
+      if (existsSync(candidate)) return join(this.sessionsDir, entry.name)
+    }
+    return null
+  }
+
+  private readWorkspacePointerSync(dir: string): string | null {
+    try {
+      const parsed = JSON.parse(readFileSync(join(dir, 'workspace.json'), 'utf8')) as {
+        workspace?: unknown
+      }
+      return typeof parsed.workspace === 'string' && parsed.workspace ? parsed.workspace : null
+    } catch {
+      return null
+    }
   }
 }
 

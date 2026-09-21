@@ -7,9 +7,11 @@
  * the real one.
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { getAppHome } from './home'
+import { APPEARANCES, type Appearance } from '../theme'
 
 export interface ProviderConfig {
   baseUrl: string
@@ -43,22 +45,90 @@ export function configPath(): string {
   return process.env.A_DA_CONFIG || join(getAppHome(), 'config.json')
 }
 
+/**
+ * What is on disk, which is not only the provider block: the file also carries
+ * the appearance choice and whatever a user hand-wrote. Hence the open index
+ * signature — the dialog edits three keys, and everything else must survive it.
+ */
+export type SavedConfig = Partial<ProviderConfig> & { appearance?: unknown; [key: string]: unknown }
+
 /** The file alone. The dialog edits this, and it may differ from what a turn uses. */
-export async function readSavedConfig(): Promise<Partial<ProviderConfig>> {
+export async function readSavedConfig(): Promise<SavedConfig> {
   try {
-    const parsed = JSON.parse(await readFile(configPath(), 'utf8')) as Partial<ProviderConfig>
+    const parsed = JSON.parse(await readFile(configPath(), 'utf8')) as SavedConfig
     return parsed && typeof parsed === 'object' ? parsed : {}
   } catch {
     return {}
   }
 }
 
+/**
+ * Every write goes through one queue.
+ *
+ * Each write is a read-modify-write of a whole-file JSON document, so two that
+ * overlap can lose one of the two keys — and the appearance toggle fires its save
+ * without being awaited, so an appearance write and a provider save really do
+ * overlap in normal use. Chaining them makes the pair sequential without making
+ * callers await anything they did not already await.
+ */
+let writeQueue: Promise<void> = Promise.resolve()
+
+function mutateSavedConfig(mutate: (current: SavedConfig) => SavedConfig): Promise<void> {
+  const run = async (): Promise<void> => {
+    const path = configPath()
+    const next = mutate(await readSavedConfig())
+    await mkdir(dirname(path), { recursive: true })
+    // Written to a sibling and renamed: a reader (or a crash) between the two
+    // steps otherwise sees a truncated file, and `readSavedConfig` would report
+    // that as "no config" and the next write would drop every key in it.
+    const temp = `${path}.${process.pid}.tmp`
+    await writeFile(temp, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+    await rename(temp, path)
+  }
+  // A failed write must not wedge the queue for every later one.
+  const queued = writeQueue.then(run, run)
+  writeQueue = queued.then(
+    () => undefined,
+    () => undefined,
+  )
+  return queued
+}
+
 /** Merge into the file so a hand-written key that the dialog does not edit survives. */
-export async function writeSavedConfig(patch: Partial<ProviderConfig>): Promise<void> {
-  const path = configPath()
-  const existing = await readSavedConfig()
-  await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, `${JSON.stringify({ ...existing, ...patch }, null, 2)}\n`, 'utf8')
+export function writeSavedConfig(patch: Partial<ProviderConfig>): Promise<void> {
+  return mutateSavedConfig((current) => ({ ...current, ...patch }))
+}
+
+/**
+ * The saved light/dark choice, or null when the user has never made one.
+ *
+ * It lives in the same file as the provider block rather than a second one: a
+ * preference the user set is config, and the app should not grow a file per
+ * toggle. The write merges, so a later provider save keeps this key.
+ *
+ * Synchronous on purpose. The window's first frame cannot wait on I/O, and
+ * installing the palette after that frame means a dark-mode user sees a white
+ * flash on every launch; this is read once during startup, where a small file is
+ * cheap. It is not an async function with a sync twin, because only one of the
+ * two would ever be called.
+ */
+export function readSavedAppearance(): Appearance | null {
+  try {
+    const parsed = JSON.parse(readFileSync(configPath(), 'utf8')) as SavedConfig
+    return parsed && typeof parsed === 'object' && isAppearance(parsed.appearance)
+      ? parsed.appearance
+      : null
+  } catch {
+    return null
+  }
+}
+
+export function writeSavedAppearance(next: Appearance): Promise<void> {
+  return mutateSavedConfig((current) => ({ ...current, appearance: next }))
+}
+
+function isAppearance(value: unknown): value is Appearance {
+  return typeof value === 'string' && (APPEARANCES as string[]).includes(value)
 }
 
 function fromEnv(): Partial<ProviderConfig> {

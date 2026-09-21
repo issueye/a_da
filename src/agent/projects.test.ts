@@ -88,4 +88,88 @@ describe('projects', () => {
     expect(await store.addProject(`"${join(good, 'nested')}"`)).toBe(null)
     expect(store.project).toBe(join(good, 'nested'))
   })
+
+  test('adding an already existing project switches to it without creating duplicate threads', async () => {
+    const existing = await project('dup')
+    store.newThread(existing)
+    const countBefore = store.threads.filter((t) => t.workspace === existing).length
+
+    // 切换到另一个项目
+    const other = await project('other')
+    store.newThread(other)
+    expect(store.project).toBe(other)
+
+    // 再次添加 existing：应该平滑切换回去，且不会创建多余的空会话
+    const err = await store.addProject(existing)
+    expect(err).toBe(null)
+    expect(store.project).toBe(existing)
+    expect(store.threads.filter((t) => t.workspace === existing).length).toBe(countBefore)
+  })
+
+  test('removing a project cleans threads, tabs and switches project', async () => {
+    const p1 = await project('p1')
+    const p2 = await project('p2')
+
+    const t1 = store.newThread(p1)
+    const t1Newer = store.newThread(p1)
+    const t2 = store.newThread(p2)
+
+    expect(store.projects).toContain(p1)
+    expect(store.projects).toContain(p2)
+    expect(store.project).toBe(p2)
+
+    // 移除当前激活的 p2
+    const err = store.removeProject(p2)
+    expect(err).toBe(null)
+
+    expect(store.projects).not.toContain(p2)
+    expect(store.projects).toContain(p1)
+    expect(store.project).toBe(p1)
+    expect(store.activeId).toBe(t1Newer.id)
+    expect(store.threads.some((t) => t.workspace === p2)).toBe(false)
+    expect(store.openTabs.some((t) => t.workspace === p2)).toBe(false)
+  })
+
+  test('removeProject refuses when only one project remains', async () => {
+    // 保证只剩一个项目
+    while (store.projects.length > 1) {
+      const extra = store.projects[store.projects.length - 1]!
+      store.removeProject(extra)
+    }
+
+    const last = store.projects[0]!
+    expect(store.projects.length).toBe(1)
+    expect(store.removeProject(last)).toBe('至少保留一个工作区')
+    expect(store.projects.length).toBe(1)
+  })
+
+  test('removeProject refuses when a thread in that project is running', async () => {
+    const runProj = await project('run_proj')
+    const otherProj = await project('other_proj')
+    const runningThread = store.newThread(runProj)
+    store.newThread(otherProj)
+
+    const mutable = store as unknown as { runningThreadId: string | null }
+    mutable.runningThreadId = runningThread.id
+
+    expect(store.removeProject(runProj)).toBe('该工作区内有会话正在运行，先停止再移除')
+    expect(store.projects).toContain(runProj)
+
+    mutable.runningThreadId = null
+    expect(store.removeProject(runProj)).toBe(null)
+    expect(store.projects).not.toContain(runProj)
+  })
+
+  test('setThreadWorkspace switches thread workspace and updates active project', async () => {
+    const wsA = await project('ws_a')
+    const wsB = await project('ws_b')
+    const thread = store.newThread(wsA)
+
+    expect(thread.workspace).toBe(wsA)
+    expect(store.project).toBe(wsA)
+
+    store.setThreadWorkspace(thread.id, wsB)
+    expect(thread.workspace).toBe(wsB)
+    expect(store.project).toBe(wsB)
+  })
 })

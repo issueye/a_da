@@ -10,12 +10,13 @@ import { createListTool } from './builtins/list'
 import { createReadTool } from './builtins/read'
 import { createSearchTool } from './builtins/search'
 import { createWriteTool } from './builtins/write'
+import { createTodoTool } from './builtins/todo'
 
 export class ToolRegistry {
   private customTools = new Map<string, AgentTool>()
 
   /** 明确只读的内置工具。名字不在这里的一律按「会改动工作区」处理。 */
-  private static readonly READ_ONLY = new Set(['list_files', 'read_file', 'search_files'])
+  private static readonly READ_ONLY = new Set(['list_files', 'read_file', 'search_files', 'todo'])
 
   /**
    * 注册自定义/扩展工具
@@ -42,6 +43,7 @@ export class ToolRegistry {
       createWriteTool(workspace),
       createEditTool(workspace),
       createBashTool(workspace),
+      createTodoTool(),
     ]
 
     const all = [...builtins]

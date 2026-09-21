@@ -10,7 +10,7 @@
 import React, { useRef } from 'react'
 import { ICONS } from '../icons'
 import { Icon, IconButton } from './controls'
-import { C, M } from '../theme'
+import { C, M, type Appearance } from '../theme'
 import { windowControls } from '../platform/win32'
 
 function WindowButton({
@@ -66,11 +66,15 @@ export function TitleBar({
   title,
   onToggleSidebar,
   onSearch,
+  onToggleAppearance,
+  appearance,
   onDragNotice,
 }: {
   title: string
   onToggleSidebar: () => void
   onSearch: () => void
+  onToggleAppearance: () => void
+  appearance: Appearance
   onDragNotice?: (text: string) => void
 }) {
   /**
@@ -150,6 +154,19 @@ export function TitleBar({
         testId="search"
         label="搜索会话"
         onClick={onSearch}
+        style={{ width: M.barButton, height: M.barButton }}
+      />
+      {/*
+        明暗切换：图标画的是「点下去会变成什么」，而不是当前模式——深色下显示
+        太阳（点了变浅色），浅色下显示月亮。标签同理，所以 aria-label 和图标
+        永远说同一件事。
+      */}
+      <IconButton
+        icon={appearance === 'dark' ? 'sun' : 'moon'}
+        size={13}
+        testId="toggle-appearance"
+        label={appearance === 'dark' ? '切换到浅色模式' : '切换到深色模式'}
+        onClick={onToggleAppearance}
         style={{ width: M.barButton, height: M.barButton }}
       />
       <div

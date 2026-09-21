@@ -16,6 +16,7 @@ import { connectTest } from '@gpuix/react/automation'
 import { createTestRoot, hasNativeTestRenderer } from '@gpuix/react/testing'
 import { AgentWindow } from '../AgentWindow'
 import { getSessionsDir } from '../agent/session/manager'
+import { defaultSessionManager } from '../agent/session/manager'
 import { store } from '../agent/store'
 import { setDirectoryPicker } from '../platform/dialog'
 import { shortPath } from '../theme'
@@ -34,6 +35,24 @@ afterAll(async () => {
   setDirectoryPicker(null)
   for (const dir of dirs) await rm(dir, { recursive: true, force: true })
 })
+
+/**
+ * 等一个会话的流水文件真的写出来，返回它的路径。
+ *
+ * 会话按「工作区/会话」分目录存放，目录名是工作区的散列，所以路径只能问管理器要，
+ * 不能自己拼——拼一个扁平路径会等到超时。
+ */
+async function untilFile(sessionId: string, workspace: string): Promise<string> {
+  const started = Date.now()
+  while (Date.now() - started < 10_000) {
+    const summary = (await defaultSessionManager.listSessionsForWorkspace(workspace)).find(
+      (candidate) => candidate.id === sessionId,
+    )
+    if (summary && existsSync(summary.filePath)) return summary.filePath
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  throw new Error(`the session file for ${sessionId} never appeared under ${getSessionsDir()}`)
+}
 
 async function mount() {
   const { render, renderer } = createTestRoot({ width: 1120, height: 760 })
@@ -83,10 +102,10 @@ describeNative('sidebar sessions', () => {
       const doomed = store.newThread(workspace)
       const { app, painted, gone, until } = await mount()
 
-      // 新建会话会写一份流水；写盘是异步的，先等它真的在。
-      const sessionFile = join(getSessionsDir(), `${doomed.id}.jsonl`)
+      // 新建会话会写一份流水；写盘是异步的，先等它真的在。路径按「工作区/会话」
+      // 分目录，所以这里问管理器要，而不是自己拼一个扁平路径。
+      const sessionFile = await untilFile(doomed.id, workspace)
       await app.getByTestId(`thread-${doomed.id}`).waitFor({ timeoutMs: 10_000 })
-      await until(() => existsSync(sessionFile))
 
       // 第一下只是把垃圾桶变成确认，会话还在。
       await app.getByTestId(`delete-thread-${doomed.id}`).click()
@@ -168,19 +187,41 @@ describeNative('sidebar sessions', () => {
 
 describeNative('sidebar add project', () => {
   test(
-    'a picked directory is added without touching the path field',
+    'sidebar no longer renders add project buttons',
     async () => {
-      const workspace = await project()
-      setDirectoryPicker(async () => ({ status: 'picked', path: workspace }))
+      const { app } = await mount()
+      expect(await app.getByTestId('add-project').count()).toBe(0)
+      expect(await app.getByTestId('header-add-project').count()).toBe(0)
+      await app.close()
+    },
+    30_000,
+  )
 
-      const { app, painted } = await mount()
-      await app.getByTestId('add-project').click()
-      await painted(shortPath(workspace, 2))
+  test(
+    'the trash icon removes a project in two clicks',
+    async () => {
+      const keep = await project()
+      const doomed = await project()
+      store.newThread(keep)
+      store.newThread(doomed)
+      store.selectProject(doomed)
 
-      expect(store.project).toBe(workspace)
-      // 加成功了就没有理由再把输入框留在那儿。
-      await new Promise((resolve) => setTimeout(resolve, 200))
-      expect(await app.getByTestId('project-path').count()).toBe(0)
+      const doomedLabel = shortPath(doomed, 2)
+      const { app, painted, gone, until } = await mount()
+
+      await app.getByTestId(`project-${doomedLabel}`).waitFor({ timeoutMs: 10_000 })
+      expect(await app.getByTestId(`remove-project-${doomedLabel}`).count()).toBe(1)
+
+      // 第一下点击变红提示「确认移除」
+      await app.getByTestId(`remove-project-${doomedLabel}`).click()
+      await painted('确认移除')
+      expect(store.projects).toContain(doomed)
+
+      // 第二下点击正式移除
+      await app.getByTestId(`remove-project-${doomedLabel}`).click()
+      await gone('确认移除')
+      await until(() => !store.projects.includes(doomed))
+      expect(store.projects).not.toContain(doomed)
 
       await app.close()
     },
@@ -188,19 +229,18 @@ describeNative('sidebar add project', () => {
   )
 
   test(
-    'falls back to typing a path when no dialog can open',
+    'sidebar new chat button creates a new thread',
     async () => {
       const workspace = await project()
+      store.newThread(workspace)
+      const countBefore = store.threads.length
+
       const { app, painted } = await mount()
+      await app.getByTestId('sidebar-new-chat').click()
+      await painted('新会话')
 
-      await app.getByTestId('add-project').click()
-      const field = app.getByTestId('project-path')
-      await field.waitFor({ timeoutMs: 10_000 })
-
-      await field.fill(workspace)
-      await field.press('enter')
-      await painted(shortPath(workspace, 2))
-      expect(store.project).toBe(workspace)
+      expect(store.threads.length).toBe(countBefore + 1)
+      expect(store.active.title).toBe('新会话')
 
       await app.close()
     },

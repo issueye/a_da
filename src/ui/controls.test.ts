@@ -6,21 +6,33 @@
  * cut corners show that dark fill and the menu grows black corners — which the
  * GPU renderer tests cannot catch, because they assert text and bounds, not
  * pixels. So the shape is pinned here: a square, opaque layer, with the radius
- * on a card inside it.
+ * on a card inside it — and both follow the installed palette, so a theme switch
+ * does not leave the menu on the old mode's colours.
  */
 
-import { describe, expect, test } from 'bun:test'
-import { MENU_CARD, MENU_LAYER } from './controls'
+import { afterEach, describe, expect, test } from 'bun:test'
+import { menuCard, menuLayer } from './controls'
+import { applyAppearance } from '../theme'
+
+afterEach(() => applyAppearance('light'))
 
 describe('menu surface', () => {
   test('the floating layer is an opaque square that hides the anchored fill', () => {
-    expect(MENU_LAYER.backgroundColor).toBe(MENU_CARD.backgroundColor)
-    expect(MENU_LAYER.borderRadius).toBeUndefined()
+    expect(menuLayer().backgroundColor).toBe(menuCard().backgroundColor)
+    expect(menuLayer().borderRadius).toBeUndefined()
   })
 
   test('the card inside it carries the radius, border and shadow', () => {
-    expect(MENU_CARD.borderRadius).toBeGreaterThan(0)
-    expect(MENU_CARD.borderWidth).toBeGreaterThan(0)
-    expect(MENU_CARD.boxShadow).toBeDefined()
+    const card = menuCard()
+    expect(card.borderRadius).toBeGreaterThan(0)
+    expect(card.borderWidth).toBeGreaterThan(0)
+    expect(card.boxShadow).toBeDefined()
+  })
+
+  test('both boxes repaint when the appearance changes', () => {
+    const light = menuCard().backgroundColor
+    applyAppearance('dark')
+    expect(menuCard().backgroundColor).not.toBe(light)
+    expect(menuLayer().backgroundColor).toBe(menuCard().backgroundColor)
   })
 })

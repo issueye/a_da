@@ -11,6 +11,8 @@ import { Composer } from './ui/Composer'
 import { DebugPanel } from './ui/DebugPanel'
 import { SettingsDialog } from './ui/SettingsDialog'
 import { Sidebar } from './ui/Sidebar'
+import { EmptyConversationView } from './ui/EmptyConversationView'
+import { TabStrip } from './ui/TabStrip'
 import { TitleBar } from './ui/TitleBar'
 import { Transcript } from './ui/Transcript'
 import { C, FONT_SANS } from './theme'
@@ -25,6 +27,7 @@ export function AgentWindow() {
   const agent = useAgentStore()
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [searchOpen, setSearchOpen] = useState(false)
+  const isEmpty = agent.active.items.length === 0
 
   return (
     <div
@@ -42,7 +45,9 @@ export function AgentWindow() {
     >
       <TitleBar
         title={agent.active.title}
+        appearance={agent.appearance}
         onToggleSidebar={() => setSidebarOpen((open) => !open)}
+        onToggleAppearance={() => agent.toggleAppearance()}
         onSearch={() => {
           setSidebarOpen(true)
           setSearchOpen((open) => !open)
@@ -58,8 +63,15 @@ export function AgentWindow() {
           />
         ) : null}
         <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, minWidth: 0 }}>
-          <Transcript store={agent} />
-          <Composer store={agent} />
+          <TabStrip store={agent} />
+          {isEmpty ? (
+            <EmptyConversationView store={agent} />
+          ) : (
+            <>
+              <Transcript store={agent} />
+              <Composer store={agent} />
+            </>
+          )}
         </div>
         {agent.debugOpen ? <DebugPanel store={agent} /> : null}
       </div>
