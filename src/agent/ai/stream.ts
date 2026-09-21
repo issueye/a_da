@@ -108,6 +108,13 @@ export async function* streamModelChat(
     model: config.model,
     messages,
     stream: true,
+    stream_options: { include_usage: true },
+  }
+
+  // 计算提示词字符量用于无 usage 时的保底估算
+  let promptChars = 0
+  for (const m of messages) {
+    if (typeof m.content === 'string') promptChars += m.content.length
   }
 
   if (options.tools && options.tools.length > 0) {
@@ -170,6 +177,9 @@ export async function* streamModelChat(
 
   const queue: StreamDelta[] = []
   let streamError: string | null = null
+  let hasUsage = false
+  let outputChars = 0
+  let thinkingChars = 0
   const thinkFilter = new ThinkTagFilter()
 
   const parser = createParser({
@@ -181,6 +191,7 @@ export async function* streamModelChat(
 
         // 提取 usage 统计（若提供）
         if (chunk.usage) {
+          hasUsage = true
           const usage: TokenUsage = {
             promptTokens: chunk.usage.prompt_tokens ?? 0,
             completionTokens: chunk.usage.completion_tokens ?? 0,
@@ -209,6 +220,7 @@ export async function* streamModelChat(
         // 1. 处理思考链 / Reasoning (DeepSeek-R1 / OpenAI reasoning_content / Anthropic thinking)
         const thinking = delta.reasoning_content || delta.reasoning || delta.thinking
         if (thinking) {
+          thinkingChars += thinking.length
           queue.push({ type: 'thinking', thinking })
         }
 
@@ -217,8 +229,10 @@ export async function* streamModelChat(
           const parts = thinkFilter.feed(delta.content)
           for (const part of parts) {
             if (part.type === 'thinking') {
+              thinkingChars += part.text.length
               queue.push({ type: 'thinking', thinking: part.text })
             } else if (part.text) {
+              outputChars += part.text.length
               queue.push({ type: 'text', text: part.text })
             }
           }
@@ -294,6 +308,23 @@ export async function* streamModelChat(
           args: call.args,
         },
       }
+    }
+  }
+
+  // 若服务端未返回 usage，通过字符数进行兜底估算（约 3.5 字符 / token）
+  if (!hasUsage && (outputChars > 0 || promptChars > 0)) {
+    const promptTokens = Math.max(1, Math.ceil(promptChars / 3.5))
+    const compTokens = Math.ceil(outputChars / 3.5)
+    const thinkTokens = thinkingChars > 0 ? Math.ceil(thinkingChars / 3.5) : undefined
+    const totalTokens = promptTokens + compTokens + (thinkTokens ?? 0)
+    yield {
+      type: 'usage',
+      usage: {
+        promptTokens,
+        completionTokens: compTokens + (thinkTokens ?? 0),
+        totalTokens,
+        thinkingTokens: thinkTokens,
+      },
     }
   }
 

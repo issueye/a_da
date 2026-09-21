@@ -17,6 +17,7 @@ import {
 } from '../agent/store'
 import { ChipButton, ChipSelect, Icon, menuLayer, MenuRow, MenuSurface, menuItemStyle } from './controls'
 import { C, editorTheme, M } from '../theme'
+import { formatDuration, formatNumber, formatTokenShort } from './Transcript'
 
 const DEBUG_OPTIONS = [
   { value: 'off', label: '关闭' },
@@ -224,6 +225,37 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
               {modelLabel}
             </text>
           </div>
+
+          {store.activeThreadStats.totalTokens > 0 ? (
+            <div
+              testId="composer-thread-tokens"
+              aria-label={`会话累计 Token：${formatNumber(store.activeThreadStats.totalTokens)} (输入: ${formatNumber(store.activeThreadStats.totalPromptTokens)} · 输出: ${formatNumber(store.activeThreadStats.totalCompletionTokens)}) · 总耗时: ${formatDuration(store.activeThreadStats.totalDurationMs)} · 共 ${store.activeThreadStats.turnsCount} 轮`}
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 4,
+                height: 22,
+                paddingLeft: 7,
+                paddingRight: 8,
+                borderRadius: 6,
+                backgroundColor: C.chip,
+                borderWidth: 1,
+                borderColor: C.chipBorder,
+              }}
+            >
+              <Icon name="coins" size={11} color={C.tertiary} />
+              <text
+                style={{
+                  fontSize: 11,
+                  color: C.secondary,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {`${formatTokenShort(store.activeThreadStats.totalTokens)} tokens`}
+              </text>
+            </div>
+          ) : null}
 
           <AppendMenu store={store} onPick={(value) => setDraft((text) => `${text}${value} `)} />
           <ChipSelect

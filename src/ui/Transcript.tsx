@@ -150,8 +150,35 @@ function UserRow({ item }: { item: Extract<Item, { kind: 'user' }> }) {
   )
 }
 
+/** 格式化耗时 */
+export function formatDuration(ms?: number): string {
+  if (ms === undefined || ms <= 0) return ''
+  if (ms < 1000) return `${(ms / 1000).toFixed(1)}s`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
+  const minutes = Math.floor(ms / 60_000)
+  const seconds = Math.round((ms % 60_000) / 1000)
+  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`
+}
+
+/** 格式化数字千分位 */
+export function formatNumber(n: number): string {
+  return n.toLocaleString('en-US')
+}
+
+/** 格式化 Token 简写 */
+export function formatTokenShort(n: number): string {
+  if (n < 1000) return String(n)
+  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`
+  return `${Math.round(n / 1000)}k`
+}
+
 function AssistantRow({ item }: { item: Extract<Item, { kind: 'assistant' }> }) {
   if (!item.text.trim() && !item.streaming) return null
+
+  const hasStats = !item.streaming && (item.durationMs !== undefined || item.usage !== undefined)
+  const durationText = formatDuration(item.durationMs)
+  const usage = item.usage
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
       {item.text ? <markdown source={item.text} theme={docTheme()} /> : null}
@@ -167,6 +194,78 @@ function AssistantRow({ item }: { item: Extract<Item, { kind: 'assistant' }> }) 
         >
           <Icon name="dot" size={9} color={C.tertiary} />
           <text style={{ fontSize: 11.5, lineHeight: 16, color: C.tertiary }}>正在生成…</text>
+        </div>
+      ) : null}
+
+      {hasStats ? (
+        <div
+          testId="assistant-meta-bar"
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            paddingTop: 6,
+            marginTop: 4,
+            borderTopWidth: 1,
+            borderColor: C.cardBorder,
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 12,
+              flexWrap: 'wrap',
+            }}
+          >
+            {/* 耗时微徽标 */}
+            {durationText ? (
+              <div
+                testId="message-duration"
+                aria-label={`本次对话花费时间：${durationText}`}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 3.5,
+                }}
+              >
+                <Icon name="clock" size={11} color={C.faint} />
+                <text style={{ fontSize: 11, color: C.tertiary }}>{durationText}</text>
+              </div>
+            ) : null}
+
+            {/* Token 统计徽标 */}
+            {usage && usage.totalTokens > 0 ? (
+              <div
+                testId="message-tokens"
+                aria-label={`总计: ${formatNumber(usage.totalTokens)} tokens (输入: ${formatNumber(usage.promptTokens)} · 输出: ${formatNumber(usage.completionTokens)}${usage.thinkingTokens ? ` · 思考: ${formatNumber(usage.thinkingTokens)}` : ''})`}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 3.5,
+                }}
+              >
+                <Icon name="sparkles" size={11} color={C.faint} />
+                <text style={{ fontSize: 11, color: C.tertiary }}>
+                  {`${formatNumber(usage.totalTokens)} tokens`}
+                </text>
+                <text style={{ fontSize: 10.5, color: C.faint, marginLeft: 1 }}>
+                  {`(${formatNumber(usage.promptTokens)} ↑ / ${formatNumber(usage.completionTokens)} ↓)`}
+                </text>
+              </div>
+            ) : null}
+          </div>
+
+          {/* 快捷复制回复 */}
+          {item.text ? <CopyButton text={item.text} label="复制回复" /> : null}
+        </div>
+      ) : item.text && !item.streaming ? (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: 4 }}>
+          <CopyButton text={item.text} label="复制回复" />
         </div>
       ) : null}
     </div>

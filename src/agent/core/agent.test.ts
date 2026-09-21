@@ -240,4 +240,33 @@ describe('tool event streaming', () => {
     expect(events.filter((event) => event.type === 'tool_execution_start')).toHaveLength(2)
     expect(events.filter((event) => event.type === 'tool_execution_end')).toHaveLength(2)
   })
+
+  test('runAgentLoop records durationMs and token usage on assistant messages', async () => {
+    const mockTool: AgentTool = {
+      name: 'calc',
+      description: '计算工具',
+      parameters: { type: 'object' },
+      async execute(): Promise<AgentToolResult> {
+        return { output: 'result: 10', ok: true }
+      },
+    }
+
+    const events: AgentEvent[] = []
+    for await (const event of runAgentLoop(
+      [{ role: 'user', content: '测试耗时与Token' }],
+      { baseUrl: `http://localhost:${server.port}`, apiKey: 'test', model: 'test' },
+      { tools: [mockTool] }
+    )) {
+      events.push(event)
+    }
+
+    const messageEnd = events.find((e) => e.type === 'message_end' && e.message.role === 'assistant')
+    expect(messageEnd).toBeDefined()
+    if (messageEnd && messageEnd.type === 'message_end' && messageEnd.message.role === 'assistant') {
+      expect(messageEnd.message.durationMs).toBeDefined()
+      expect(messageEnd.message.durationMs).toBeGreaterThan(0)
+      expect(messageEnd.message.usage).toBeDefined()
+      expect(messageEnd.message.usage?.totalTokens).toBeGreaterThan(0)
+    }
+  })
 })

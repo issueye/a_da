@@ -257,4 +257,60 @@ describeNative('Transcript UI 过程收缩交互', () => {
 
     await app.close()
   }, 30_000)
+
+  test('对话耗时与Token统计：在助手回复下方正确渲染耗时与Token统计徽标', async () => {
+    const thread = store.active
+    thread.items = [
+      { kind: 'user', id: 'u-stats-1', at: 1000, text: '请介绍一下 Rust' },
+      {
+        kind: 'assistant',
+        id: 'a-stats-1',
+        at: 2000,
+        text: 'Rust 是一门赋予每个人构建可靠且高效软件能力的语言。',
+        durationMs: 3450,
+        usage: {
+          promptTokens: 820,
+          completionTokens: 460,
+          totalTokens: 1280,
+          thinkingTokens: 150,
+        },
+      },
+    ]
+
+    const { render, renderer } = createTestRoot({ width: 800, height: 600 })
+    render(
+      <div style={{ display: 'flex', flexDirection: 'column', position: 'relative', width: 800, height: 600 }}>
+        <Transcript store={store} />
+      </div>,
+    )
+    const app = await connectTest(renderer)
+
+    const screen = () => renderer.getPaintedText().join('\n')
+    const painted = async (needle: string, timeoutMs = 10_000): Promise<void> => {
+      const started = Date.now()
+      while (Date.now() - started < timeoutMs) {
+        if (screen().includes(needle)) return
+        renderer.flush?.()
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      throw new Error(`never painted ${needle}\n${screen()}`)
+    }
+
+    await painted('Rust 是一门赋予每个人构建可靠且高效软件能力的语言。')
+
+    // 应该渲染耗时微徽章与统计信息
+    expect(await app.getByTestId('message-duration').count()).toBe(1)
+    expect(screen()).toContain('3.5s')
+
+    // 应该渲染 Token 统计徽标与输入输出明细
+    expect(await app.getByTestId('message-tokens').count()).toBe(1)
+    expect(screen()).toContain('1,280 tokens')
+    expect(screen()).toContain('820 ↑')
+    expect(screen()).toContain('460 ↓')
+
+    // 应该渲染快捷复制按钮
+    expect(screen()).toContain('复制回复')
+
+    await app.close()
+  }, 30_000)
 })

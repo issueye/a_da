@@ -40,7 +40,7 @@ import { defaultSessionManager } from './session/manager'
 import type { SessionSummary } from './session/types'
 import { defaultPromptManager } from './prompts/manager'
 import { applyAppearance, appearance, shortPath, type Appearance } from '../theme'
-import type { DebugEntry, Item, Thread } from './types'
+import { computeThreadStats, type DebugEntry, type Item, type Thread, type ThreadStats } from './types'
 
 export type ApprovalMode = 'auto' | 'ask' | 'readonly'
 export type Effort = 'max' | 'high' | 'medium' | 'low'
@@ -136,6 +136,11 @@ export class AgentStore {
   /** 清空已消费的草稿文本 */
   clearPendingDraft() {
     this.pendingDraft = null
+  }
+
+  /** 当前激活会话的累计 Token 与耗时统计 */
+  get activeThreadStats(): ThreadStats {
+    return computeThreadStats(this.active)
   }
 
   get running(): boolean {
@@ -290,6 +295,8 @@ export class AgentStore {
             at,
             text: message.content,
             streaming: false,
+            usage: message.usage,
+            durationMs: message.durationMs,
           })
         }
       } else if (message.role === 'toolResult') {
@@ -911,6 +918,10 @@ export class AgentStore {
             break
 
           case 'message_update':
+            if (event.delta.usage && assistant) {
+              assistant.usage = event.delta.usage
+              this.notifySoon()
+            }
             if (event.delta.thinking) {
               if (!reasoning) {
                 reasoning = { kind: 'thinking', id: nextId('item'), at: Date.now(), text: '' }
@@ -940,7 +951,11 @@ export class AgentStore {
             const message = event.message
             if (message.role !== 'assistant') break
             endReasoning()
-            if (assistant) assistant.streaming = false
+            if (assistant) {
+              assistant.streaming = false
+              if (message.usage) assistant.usage = message.usage
+              if (message.durationMs) assistant.durationMs = message.durationMs
+            }
             if (message.stopReason === 'error') {
               this.fail(thread, `模型请求失败：${message.errorMessage ?? '未知错误'}`)
             } else if (
@@ -1007,6 +1022,7 @@ export class AgentStore {
     })
     this.notify()
 
+    const offlineStartTime = Date.now()
     const callId = nextId('call')
     // 离线也要真的跑一次工具：沙箱和界面都被走通了，而不是只留一句说明。
     await this.runToolDirect(thread, {
@@ -1016,6 +1032,7 @@ export class AgentStore {
       rawArguments: '{"depth":2}',
     })
 
+    const durationMs = Math.max(1, Date.now() - offlineStartTime)
     const info = this.workspaceInfo
     const assistantText = `【离线模式】我扫描了项目 \`${thread.workspace}\`：${info.files} 个文件、${info.dirs} 个目录。配置模型接口后，我会按你的任务在这个目录里读写文件、执行命令。`
     thread.items.push({
@@ -1023,11 +1040,13 @@ export class AgentStore {
       id: nextId('item'),
       at: Date.now(),
       text: assistantText,
+      durationMs,
     })
     const userMessage: AgentMessage = { role: 'user', content: prompt, timestamp: Date.now() }
     const assistantMessage: AgentMessage = {
       role: 'assistant',
       content: assistantText,
+      durationMs,
       toolCalls: [
         {
           id: callId,

@@ -234,4 +234,53 @@ describe('restoring sessions on startup', () => {
       await workspace.cleanup()
     }
   })
+
+  test('restores token usage and durationMs on assistant messages and computes thread stats', async () => {
+    const workspace = await project('stats')
+    try {
+      await defaultSessionManager.createSession('s_stats', workspace.path, '统计恢复会话')
+      await defaultSessionManager.appendMessage(
+        's_stats',
+        { role: 'user', content: '测试耗时与Token' },
+        workspace.path,
+      )
+      await defaultSessionManager.appendMessage(
+        's_stats',
+        {
+          role: 'assistant',
+          content: '回复内容已生成',
+          durationMs: 4200,
+          usage: {
+            promptTokens: 500,
+            completionTokens: 200,
+            totalTokens: 700,
+            thinkingTokens: 50,
+          },
+          timestamp: 3000,
+        },
+        workspace.path,
+      )
+
+      const store = new AgentStore(home)
+      const thread = store.threads.find((t) => t.id === 's_stats')!
+      expect(thread).toBeDefined()
+
+      const assistant = thread.items.find((item) => item.kind === 'assistant')
+      expect(assistant).toBeDefined()
+      if (assistant && assistant.kind === 'assistant') {
+        expect(assistant.durationMs).toBe(4200)
+        expect(assistant.usage?.totalTokens).toBe(700)
+        expect(assistant.usage?.promptTokens).toBe(500)
+        expect(assistant.usage?.completionTokens).toBe(200)
+      }
+
+      // 测试会话累计统计
+      const stats = store.activeThreadStats
+      expect(stats.totalTokens).toBe(700)
+      expect(stats.totalDurationMs).toBe(4200)
+      expect(stats.turnsCount).toBe(1)
+    } finally {
+      await workspace.cleanup()
+    }
+  })
 })

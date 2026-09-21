@@ -6,6 +6,7 @@
  */
 
 import type { AgentMessage } from './core/types'
+import type { TokenUsage } from './ai/types'
 
 export type ToolStatus = 'awaiting' | 'running' | 'done' | 'error' | 'denied'
 
@@ -21,7 +22,17 @@ export type Item =
       /** 这段思考结束的时刻：思考完就不再增长。 */
       endedAt?: number
     }
-  | { kind: 'assistant'; id: string; at: number; text: string; streaming?: boolean }
+  | {
+      kind: 'assistant'
+      id: string
+      at: number
+      text: string
+      streaming?: boolean
+      /** 本次对话消耗的 Token 统计 */
+      usage?: TokenUsage
+      /** 本次对话花费的时间（毫秒） */
+      durationMs?: number
+    }
   | {
       kind: 'tool'
       id: string
@@ -35,6 +46,51 @@ export type Item =
       patch?: string
     }
   | { kind: 'notice'; id: string; at: number; text: string; level: 'info' | 'error' }
+
+export interface ThreadStats {
+  totalPromptTokens: number
+  totalCompletionTokens: number
+  totalTokens: number
+  totalThinkingTokens: number
+  totalDurationMs: number
+  turnsCount: number
+}
+
+/** 汇总计算指定会话的所有已完成轮次的 Token 与耗时 */
+export function computeThreadStats(thread: Thread): ThreadStats {
+  let totalPromptTokens = 0
+  let totalCompletionTokens = 0
+  let totalTokens = 0
+  let totalThinkingTokens = 0
+  let totalDurationMs = 0
+  let turnsCount = 0
+
+  for (const item of thread.items) {
+    if (item.kind === 'assistant' && !item.streaming) {
+      turnsCount++
+      if (item.durationMs) {
+        totalDurationMs += item.durationMs
+      }
+      if (item.usage) {
+        totalPromptTokens += item.usage.promptTokens || 0
+        totalCompletionTokens += item.usage.completionTokens || 0
+        totalTokens += item.usage.totalTokens || (item.usage.promptTokens + item.usage.completionTokens)
+        if (item.usage.thinkingTokens) {
+          totalThinkingTokens += item.usage.thinkingTokens
+        }
+      }
+    }
+  }
+
+  return {
+    totalPromptTokens,
+    totalCompletionTokens,
+    totalTokens,
+    totalThinkingTokens,
+    totalDurationMs,
+    turnsCount,
+  }
+}
 
 export interface Thread {
   id: string

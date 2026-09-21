@@ -3,6 +3,8 @@
  * 参考 @earendil-works/pi-agent-core 架构设计
  */
 
+import type { TokenUsage } from '../ai/types'
+
 export type ToolExecutionMode = 'sequential' | 'parallel'
 export type QueueMode = 'all' | 'one-at-a-time'
 
@@ -40,6 +42,10 @@ export interface AssistantMessage {
   stopReason?: 'stop' | 'tool_use' | 'error' | 'aborted'
   errorMessage?: string
   timestamp?: number
+  /** 本轮/本次对话消耗的 Token 统计 */
+  usage?: TokenUsage
+  /** 本次对话花费的耗时（毫秒） */
+  durationMs?: number
 }
 
 export interface ToolResultMessage {
@@ -120,7 +126,7 @@ export type AgentEvent =
   | {
       type: 'message_update'
       message: AssistantMessage
-      delta: { text?: string; thinking?: string; toolCall?: ToolCallBlock }
+      delta: { text?: string; thinking?: string; toolCall?: ToolCallBlock; usage?: TokenUsage }
     }
   | { type: 'message_end'; message: AgentMessage }
   | { type: 'tool_execution_start'; toolCallId: string; toolName: string; args: Record<string, unknown> }

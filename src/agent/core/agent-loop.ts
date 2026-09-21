@@ -168,6 +168,8 @@ export async function* runAgentLoop(
 
   const workingMessages = [...messages]
   let endReason: AgentEndReason = 'completed'
+  const loopStartTime = Date.now()
+  const accumulatedTokens = { promptTokens: 0, completionTokens: 0, totalTokens: 0, thinkingTokens: 0 }
 
   yield { type: 'agent_start' }
 
@@ -233,6 +235,24 @@ export async function* runAgentLoop(
             message: assistantMessage,
             delta: { toolCall: block },
           }
+        } else if (chunk.type === 'usage' && chunk.usage) {
+          accumulatedTokens.promptTokens += chunk.usage.promptTokens
+          accumulatedTokens.completionTokens += chunk.usage.completionTokens
+          accumulatedTokens.totalTokens += chunk.usage.totalTokens
+          if (chunk.usage.thinkingTokens) {
+            accumulatedTokens.thinkingTokens += chunk.usage.thinkingTokens
+          }
+          assistantMessage.usage = {
+            promptTokens: accumulatedTokens.promptTokens,
+            completionTokens: accumulatedTokens.completionTokens,
+            totalTokens: accumulatedTokens.totalTokens,
+            thinkingTokens: accumulatedTokens.thinkingTokens || undefined,
+          }
+          yield {
+            type: 'message_update',
+            message: assistantMessage,
+            delta: { usage: assistantMessage.usage },
+          }
         } else if (chunk.type === 'error') {
           assistantMessage.stopReason = 'error'
           assistantMessage.errorMessage = chunk.error
@@ -240,6 +260,16 @@ export async function* runAgentLoop(
           if (chunk.stopReason === 'aborted') {
             assistantMessage.stopReason = 'aborted'
           }
+        }
+      }
+
+      assistantMessage.durationMs = Math.max(1, Date.now() - loopStartTime)
+      if (accumulatedTokens.totalTokens > 0) {
+        assistantMessage.usage = {
+          promptTokens: accumulatedTokens.promptTokens,
+          completionTokens: accumulatedTokens.completionTokens,
+          totalTokens: accumulatedTokens.totalTokens,
+          thinkingTokens: accumulatedTokens.thinkingTokens || undefined,
         }
       }
 

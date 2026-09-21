@@ -53,3 +53,94 @@ describe('ThinkTagFilter 正文思考标签抽取', () => {
     expect(outputs[0].text).toBe('你好，这是一个常规回答。')
   })
 })
+
+describe('streamModelChat Token 统计与流式参数', () => {
+  test('发起流式请求时正确设置 stream_options 并解析 usage', async () => {
+    const { streamModelChat } = await import('./stream')
+    const originalFetch = globalThis.fetch
+
+    let sentBody: any = null
+    const sseData = [
+      'data: {"choices":[{"delta":{"content":"你好"}}]}\n\n',
+      'data: {"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"completion_tokens_details":{"reasoning_tokens":2}}}\n\n',
+      'data: [DONE]\n\n',
+    ].join('')
+
+    globalThis.fetch = (async (input: any, init: any) => {
+      sentBody = JSON.parse(init.body)
+      const encoder = new TextEncoder()
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(sseData))
+          controller.close()
+        },
+      })
+      return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    }) as any
+
+    try {
+      const deltas = []
+      for await (const delta of streamModelChat(
+        { baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', model: 'gpt-4o' },
+        [{ role: 'user', content: '测试' }]
+      )) {
+        deltas.push(delta)
+      }
+
+      // 验证 stream_options 配置
+      expect(sentBody).toBeDefined()
+      expect(sentBody.stream).toBe(true)
+      expect(sentBody.stream_options).toEqual({ include_usage: true })
+
+      // 验证 usage 事件正确产出
+      const usageDelta = deltas.find((d) => d.type === 'usage')
+      expect(usageDelta).toBeDefined()
+      expect(usageDelta?.usage?.promptTokens).toBe(10)
+      expect(usageDelta?.usage?.completionTokens).toBe(5)
+      expect(usageDelta?.usage?.totalTokens).toBe(15)
+      expect(usageDelta?.usage?.thinkingTokens).toBe(2)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('服务端无 usage 字段时自动产出字符保底 Token 估算', async () => {
+    const { streamModelChat } = await import('./stream')
+    const originalFetch = globalThis.fetch
+
+    const sseData = [
+      'data: {"choices":[{"delta":{"content":"这是测试回复内容"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ].join('')
+
+    globalThis.fetch = (async () => {
+      const encoder = new TextEncoder()
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(sseData))
+          controller.close()
+        },
+      })
+      return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    }) as any
+
+    try {
+      const deltas = []
+      for await (const delta of streamModelChat(
+        { baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', model: 'gpt-4o' },
+        [{ role: 'user', content: '输入字符' }]
+      )) {
+        deltas.push(delta)
+      }
+
+      // 验证自动产出了兜底的 usage 统计
+      const usageDelta = deltas.find((d) => d.type === 'usage')
+      expect(usageDelta).toBeDefined()
+      expect(usageDelta?.usage?.promptTokens).toBeGreaterThan(0)
+      expect(usageDelta?.usage?.completionTokens).toBeGreaterThan(0)
+      expect(usageDelta?.usage?.totalTokens).toBeGreaterThan(0)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})
