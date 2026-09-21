@@ -38,6 +38,7 @@ import {
 } from './tools'
 import { defaultSessionManager } from './session/manager'
 import type { SessionSummary } from './session/types'
+import { defaultPromptManager } from './prompts/manager'
 import { applyAppearance, appearance, shortPath, type Appearance } from '../theme'
 import type { DebugEntry, Item, Thread } from './types'
 
@@ -64,7 +65,6 @@ const EFFORT_VALUE: Record<Effort, string> = {
   low: 'low',
 }
 
-const MAX_STEPS = 24
 const MAX_LOG = 120
 
 /** 拒绝后回给模型的说明：说清楚行为，而不是只报一个 no。 */
@@ -109,6 +109,7 @@ export class AgentStore {
   effort: Effort = 'max'
   debugOpen = false
   settingsOpen = false
+  pluginsOpen = false
   /** The installed light/dark mode. The palette in `theme.ts` mirrors this. */
   appearance: Appearance = appearance()
   log: DebugEntry[] = []
@@ -122,6 +123,20 @@ export class AgentStore {
   entries: string[] = []
   /** 当前已配置的模型名称，展示在输入框工具栏等位置。 */
   currentModel: string = ''
+  /** 待填入 Composer 的草稿文本回调，用于提示词一键应用到当前输入框 */
+  pendingDraft: string | null = null
+
+  /** 将提示词应用到当前对话输入框并自动关闭插件窗口 */
+  applyPromptToComposer(content: string) {
+    this.pendingDraft = content
+    this.pluginsOpen = false
+    this.notify()
+  }
+
+  /** 清空已消费的草稿文本 */
+  clearPendingDraft() {
+    this.pendingDraft = null
+  }
 
   get running(): boolean {
     return this.isThreadRunning(this.activeId)
@@ -451,6 +466,29 @@ export class AgentStore {
 
   setSettings(open: boolean): void {
     this.settingsOpen = open
+    this.notify()
+  }
+
+  setPlugins(open: boolean): void {
+    this.pluginsOpen = open
+    this.notify()
+  }
+
+  /** 重新扫描并加载所有启用的扩展插件与工具 */
+  async reloadPlugins(): Promise<void> {
+    this.extensionsReady = defaultExtensionLoader
+      .autoLoadExtensions(this.project)
+      .then((loaded) => {
+        if (loaded.length > 0) {
+          this.push({ kind: 'info', text: `已重新加载扩展工具：${loaded.join(', ')}` })
+        } else {
+          this.push({ kind: 'info', text: '已刷新插件列表' })
+        }
+      })
+      .catch((err) => {
+        this.push({ kind: 'error', text: `加载扩展失败：${(err as Error).message}` })
+      })
+    await this.extensionsReady
     this.notify()
   }
 
@@ -846,10 +884,12 @@ export class AgentStore {
       if (reasoning && reasoning.endedAt === undefined) reasoning.endedAt = Date.now()
     }
 
+    const systemPrompt = await defaultPromptManager.getCompositeSystemPrompt(thread.workspace)
+
     const loop = runAgentLoop(thread.messages, config, {
       tools,
+      systemPrompt,
       effort: EFFORT_VALUE[this.effort],
-      maxSteps: MAX_STEPS,
       // 顺序执行：审批一次只该问一件事，命令之间也不该互相抢工作目录。
       toolExecution: 'sequential',
       signal: controller.signal,
@@ -941,7 +981,7 @@ export class AgentStore {
                 kind: 'notice',
                 id: nextId('item'),
                 at: Date.now(),
-                text: `达到单轮 ${MAX_STEPS} 步上限，已停下。可以继续输入让它接着做。`,
+                text: '达到单轮步数上限，已停下。可以继续输入让它接着做。',
                 level: 'info',
               })
             }

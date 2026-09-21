@@ -20,6 +20,81 @@ export interface ChatCompletionMessageParam {
 }
 
 /**
+ * 流式提取正文中的 `<think>...</think>` 标签，将其分离为 thinking 与 text 增量。
+ * 兼容本地 Ollama、vLLM、LM Studio 等直接在 content 字段输出思考标签的模型。
+ */
+export class ThinkTagFilter {
+  private inThink = false
+  private buffer = ''
+
+  feed(content: string): Array<{ type: 'thinking' | 'text'; text: string }> {
+    const results: Array<{ type: 'thinking' | 'text'; text: string }> = []
+    let text = this.buffer + content
+    this.buffer = ''
+
+    while (text.length > 0) {
+      if (!this.inThink) {
+        const startIdx = text.toLowerCase().indexOf('<think>')
+        if (startIdx >= 0) {
+          if (startIdx > 0) {
+            results.push({ type: 'text', text: text.slice(0, startIdx) })
+          }
+          this.inThink = true
+          text = text.slice(startIdx + 7)
+        } else {
+          // 检查结尾是否可能是不完整的 `<think>` 标签前缀（如 `<th`）
+          const match = text.match(/<t(?:h(?:i(?:n(?:k)?)?)?)?$/i)
+          if (match && match.index !== undefined) {
+            this.buffer = text.slice(match.index)
+            const safe = text.slice(0, match.index)
+            if (safe) results.push({ type: 'text', text: safe })
+            text = ''
+          } else {
+            results.push({ type: 'text', text })
+            text = ''
+          }
+        }
+      } else {
+        const endIdx = text.toLowerCase().indexOf('</think>')
+        if (endIdx >= 0) {
+          if (endIdx > 0) {
+            results.push({ type: 'thinking', text: text.slice(0, endIdx) })
+          }
+          this.inThink = false
+          text = text.slice(endIdx + 8)
+        } else {
+          // 检查结尾是否可能是不完整的 `</think>` 标签前缀
+          const match = text.match(/<\/(?:t(?:h(?:i(?:n(?:k)?)?)?)?)?$/i)
+          if (match && match.index !== undefined) {
+            this.buffer = text.slice(match.index)
+            const safe = text.slice(0, match.index)
+            if (safe) results.push({ type: 'thinking', text: safe })
+            text = ''
+          } else {
+            results.push({ type: 'thinking', text })
+            text = ''
+          }
+        }
+      }
+    }
+
+    return results
+  }
+
+  flush(): Array<{ type: 'thinking' | 'text'; text: string }> {
+    if (!this.buffer) return []
+    const res = [
+      {
+        type: this.inThink ? ('thinking' as const) : ('text' as const),
+        text: this.buffer,
+      },
+    ]
+    this.buffer = ''
+    return res
+  }
+}
+
+/**
  * 统一发起流式会话
  */
 export async function* streamModelChat(
@@ -95,6 +170,7 @@ export async function* streamModelChat(
 
   const queue: StreamDelta[] = []
   let streamError: string | null = null
+  const thinkFilter = new ThinkTagFilter()
 
   const parser = createParser({
     onEvent(event: EventSourceMessage) {
@@ -130,15 +206,22 @@ export async function* streamModelChat(
         const delta = choice.delta
         if (!delta) return
 
-        // 1. 处理思考链 / Reasoning (DeepSeek-R1 / OpenAI reasoning_content)
-        const thinking = delta.reasoning_content || delta.reasoning
+        // 1. 处理思考链 / Reasoning (DeepSeek-R1 / OpenAI reasoning_content / Anthropic thinking)
+        const thinking = delta.reasoning_content || delta.reasoning || delta.thinking
         if (thinking) {
           queue.push({ type: 'thinking', thinking })
         }
 
-        // 2. 处理常规正文增量
+        // 2. 处理常规正文增量（支持提取正文内嵌的 <think>...</think> 标签）
         if (delta.content) {
-          queue.push({ type: 'text', text: delta.content })
+          const parts = thinkFilter.feed(delta.content)
+          for (const part of parts) {
+            if (part.type === 'thinking') {
+              queue.push({ type: 'thinking', thinking: part.text })
+            } else if (part.text) {
+              queue.push({ type: 'text', text: part.text })
+            }
+          }
         }
 
         // 3. 处理工具调用增量 (tool_calls)
@@ -189,6 +272,15 @@ export async function* streamModelChat(
     }
     yield { type: 'error', error: `流读取异常：${(error as Error).message}` }
     return
+  }
+
+  // 结算可能残留在 thinkFilter 缓冲区中的思考或文本
+  for (const flushed of thinkFilter.flush()) {
+    if (flushed.type === 'thinking') {
+      yield { type: 'thinking', thinking: flushed.text }
+    } else if (flushed.text) {
+      yield { type: 'text', text: flushed.text }
+    }
   }
 
   // 结算所有聚合后的工具调用

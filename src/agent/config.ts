@@ -50,7 +50,11 @@ export function configPath(): string {
  * the appearance choice and whatever a user hand-wrote. Hence the open index
  * signature — the dialog edits three keys, and everything else must survive it.
  */
-export type SavedConfig = Partial<ProviderConfig> & { appearance?: unknown; [key: string]: unknown }
+export type SavedConfig = Partial<ProviderConfig> & {
+  appearance?: unknown
+  disabledPlugins?: string[]
+  [key: string]: unknown
+}
 
 /** The file alone. The dialog edits this, and it may differ from what a turn uses. */
 export async function readSavedConfig(): Promise<SavedConfig> {
@@ -97,6 +101,17 @@ function mutateSavedConfig(mutate: (current: SavedConfig) => SavedConfig): Promi
 /** Merge into the file so a hand-written key that the dialog does not edit survives. */
 export function writeSavedConfig(patch: Partial<ProviderConfig>): Promise<void> {
   return mutateSavedConfig((current) => ({ ...current, ...patch }))
+}
+
+/** 读取已禁用的扩展插件 ID 列表 */
+export async function readDisabledPlugins(): Promise<string[]> {
+  const cfg = await readSavedConfig()
+  return Array.isArray(cfg.disabledPlugins) ? cfg.disabledPlugins : []
+}
+
+/** 保存已禁用的扩展插件 ID 列表 */
+export function saveDisabledPlugins(disabled: string[]): Promise<void> {
+  return mutateSavedConfig((current) => ({ ...current, disabledPlugins: disabled }))
 }
 
 /**

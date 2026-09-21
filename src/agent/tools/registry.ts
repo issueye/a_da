@@ -26,10 +26,24 @@ export class ToolRegistry {
   }
 
   /**
-   * 取消注册
+   * 取消注册指定工具
    */
   unregister(name: string): void {
     this.customTools.delete(name)
+  }
+
+  /**
+   * 清空所有自定义/扩展工具
+   */
+  clearCustomTools(): void {
+    this.customTools.clear()
+  }
+
+  /**
+   * 获取当前所有已注册的自定义工具
+   */
+  getCustomTools(): AgentTool[] {
+    return Array.from(this.customTools.values())
   }
 
   /**
@@ -66,3 +80,20 @@ export class ToolRegistry {
 }
 
 export const defaultToolRegistry = new ToolRegistry()
+
+export interface BuiltinToolInfo {
+  name: string
+  label: string
+  description: string
+  isReadOnly: boolean
+}
+
+export const BUILTIN_TOOLS_METADATA: BuiltinToolInfo[] = [
+  { name: 'list_files', label: '列出文件', description: '遍历并列出指定目录下的文件与子目录结构', isReadOnly: true },
+  { name: 'read_file', label: '读取文件', description: '安全读取工作区内的代码或文本文件内容', isReadOnly: true },
+  { name: 'search_files', label: '搜索文件', description: '在工作区文件中快速全局搜索指定文本或模式', isReadOnly: true },
+  { name: 'todo', label: '任务清单', description: '管理多步骤编码任务的进度与状态', isReadOnly: true },
+  { name: 'write_file', label: '写入文件', description: '在工作区创建新文件或覆盖已有文件', isReadOnly: false },
+  { name: 'edit_file', label: '编辑文件', description: '通过精准替换文本修改已有代码文件', isReadOnly: false },
+  { name: 'run_command', label: '执行命令', description: '在项目工作区根目录下执行终端命令', isReadOnly: false },
+]

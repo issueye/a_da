@@ -6,7 +6,7 @@
  * three settings the mock shows: approval, event log and reasoning effort.
  */
 
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@gpuix/react'
 import {
   APPROVAL_OPTIONS,
@@ -68,15 +68,34 @@ function AppendMenu({ store, onPick }: { store: AgentStore; onPick: (value: stri
 export function Composer({ store, centered }: { store: AgentStore; centered?: boolean }) {
   const [draft, setDraft] = useState('')
   const [focused, setFocused] = useState(false)
+
+  // 当外部有注入待发送/草稿时（例如提示词一键应用），优先显示与消费
+  const currentDraft = draft || store.pendingDraft || ''
+
+  useEffect(() => {
+    if (store.pendingDraft !== null) {
+      const text = store.pendingDraft
+      setDraft(text)
+      const timer = setTimeout(() => {
+        if (store.pendingDraft === text) {
+          store.clearPendingDraft()
+        }
+      }, 50)
+      return () => clearTimeout(timer)
+    }
+  }, [store.pendingDraft])
+
   const running = store.running
-  const ready = draft.trim().length > 0
+  const ready = currentDraft.trim().length > 0
   const approval = APPROVAL_OPTIONS.find((option) => option.value === store.approval)!
   const effort = EFFORT_OPTIONS.find((option) => option.value === store.effort)!
   const modelLabel = store.currentModel ? store.currentModel : '配置模型'
 
   const send = (text: string) => {
-    if (!text.trim()) return
-    store.send(text)
+    const target = text.trim() ? text : currentDraft
+    if (!target.trim()) return
+    store.clearPendingDraft()
+    store.send(target)
     setDraft('')
   }
 
@@ -128,7 +147,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
       >
         <textarea
           testId="composer"
-          value={draft}
+          value={currentDraft}
           placeholder={
             running
               ? '继续输入以排队后续修改'
@@ -152,8 +171,11 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
           }}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
-          onChange={(event) => setDraft(event.value ?? '')}
-          onSubmit={(event) => send(event.value ?? draft)}
+          onChange={(event) => {
+            if (store.pendingDraft !== null) store.clearPendingDraft()
+            setDraft(event.value ?? '')
+          }}
+          onSubmit={(event) => send(event.value?.trim() ? event.value : currentDraft)}
         />
         <div
           style={{
@@ -287,12 +309,6 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
             </div>
           ) : null}
 
-          <ChipButton
-            testId="composer-refresh"
-            icon="refresh"
-            label="刷新"
-            onClick={() => void store.refresh()}
-          />
           <ChipSelect
             testId="debug"
             value={store.debugOpen ? 'on' : 'off'}
@@ -319,7 +335,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
             testId="send"
             role="button"
             aria-label={running ? '排队这条指令' : '发送'}
-            onClick={() => send(draft)}
+            onClick={() => send(currentDraft)}
             style={{
               display: 'flex',
               flexDirection: 'row',

@@ -466,17 +466,6 @@ function WorkspaceTreeNode({
             </text>
           </div>
 
-          {/* 新建会话按钮（当前项目时附带 testId="new-thread"） */}
-          <Row
-            testId={isCurrent ? 'new-thread' : undefined}
-            icon="plus"
-            label="新建会话"
-            tone="muted"
-            onClick={() => {
-              store.selectProject(workspacePath)
-              store.newThread(workspacePath)
-            }}
-          />
 
           {/* 会话列表项 */}
           {matchingThreads.map((thread) => (
@@ -670,6 +659,12 @@ export function Sidebar({
           {store.workspaceInfo.scanning ? '索引中…' : `${store.workspaceInfo.files} 个文件`}
         </text>
         <IconButton
+          icon={store.appearance === 'dark' ? 'sun' : 'moon'}
+          testId="toggle-appearance"
+          label={store.appearance === 'dark' ? '切换到浅色模式' : '切换到深色模式'}
+          onClick={() => store.toggleAppearance()}
+        />
+        <IconButton
           icon="settings"
           testId="open-settings"
           label="设置"
@@ -677,9 +672,9 @@ export function Sidebar({
         />
         <IconButton
           icon="plug"
-          testId="status"
-          label="工作区状态"
-          onClick={() => void store.refresh()}
+          testId="open-plugins"
+          label="插件管理"
+          onClick={() => store.setPlugins(true)}
         />
         <IconButton
           icon="refresh"

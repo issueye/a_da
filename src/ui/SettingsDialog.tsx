@@ -258,6 +258,7 @@ export function SettingsDialog({ store }: { store: AgentStore }) {
           flexDirection: 'column',
           width: M.settingsWidth,
           maxWidth: '92%',
+          height: '80%',
           backgroundColor: C.raised,
           borderWidth: 1,
           borderColor: C.borderStrong,
@@ -311,7 +312,8 @@ export function SettingsDialog({ store }: { store: AgentStore }) {
           style={{
             display: 'flex',
             flexDirection: 'row',
-            minHeight: M.settingsMinHeight,
+            flexGrow: 1,
+            minHeight: 0,
             alignItems: 'stretch',
           }}
         >
@@ -374,6 +376,7 @@ export function SettingsDialog({ store }: { store: AgentStore }) {
               flexDirection: 'column',
               flexGrow: 1,
               minWidth: 0,
+              overflowY: 'scroll',
               paddingTop: 16,
               paddingBottom: 16,
               paddingLeft: 18,

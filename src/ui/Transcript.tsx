@@ -832,23 +832,455 @@ function ItemRow({ item, store }: { item: Item; store: AgentStore }) {
   return <NoticeRow item={item} />
 }
 
+export type ProcessItem = Item
+
+export interface UserBlock {
+  kind: 'user'
+  id: string
+  item: Extract<Item, { kind: 'user' }>
+}
+
+export interface AssistantBlock {
+  kind: 'assistant'
+  id: string
+  item: Extract<Item, { kind: 'assistant' }>
+}
+
+export interface ThinkingBlock {
+  kind: 'thinking'
+  id: string
+  item: Extract<Item, { kind: 'thinking' }>
+}
+
+export interface ProcessBlock {
+  kind: 'process'
+  id: string
+  items: ProcessItem[]
+  isCompleted: boolean
+}
+
+export type TranscriptBlock = UserBlock | AssistantBlock | ThinkingBlock | ProcessBlock
+
+/**
+ * 将会话消息线性序列整理为结构化的块：
+ * 按用户交互回合（Turn）划分：
+ * - 用户提问独立成块（UserBlock）；
+ * - 回合最终的回复/报告独立成块平铺展示（AssistantBlock）；
+ * - 如果回合仅有思考而无工具调用（问答场景），将思考独立为 ThinkingBlock 突出展示；
+ * - 如果包含工具调用，将思考、工具调用与通知收纳到同一个过程块（ProcessBlock）中，
+ *   在完成后默认折叠，且醒目显示思考耗时与工具统计。
+ */
+export function buildTranscriptBlocks(items: Item[], isRunning: boolean): TranscriptBlock[] {
+  const blocks: TranscriptBlock[] = []
+
+  // 按 user 将 items 切割为回合
+  let currentTurnItems: Item[] = []
+  const turns: Item[][] = []
+
+  for (const item of items) {
+    if (item.kind === 'user') {
+      if (currentTurnItems.length > 0) {
+        turns.push(currentTurnItems)
+      }
+      currentTurnItems = [item]
+    } else {
+      currentTurnItems.push(item)
+    }
+  }
+  if (currentTurnItems.length > 0) {
+    turns.push(currentTurnItems)
+  }
+
+  for (let turnIdx = 0; turnIdx < turns.length; turnIdx++) {
+    const turn = turns[turnIdx]
+    const isLastTurn = turnIdx === turns.length - 1
+
+    let userItem: Extract<Item, { kind: 'user' }> | null = null
+    const nonUserItems: Item[] = []
+
+    for (const it of turn) {
+      if (it.kind === 'user' && !userItem) {
+        userItem = it
+      } else {
+        nonUserItems.push(it)
+      }
+    }
+
+    if (userItem) {
+      blocks.push({
+        kind: 'user',
+        id: userItem.id,
+        item: userItem,
+      })
+    }
+
+    // 寻找该回合的最终报告项（最后一个 assistant 项）
+    let reportIndex = -1
+    for (let i = nonUserItems.length - 1; i >= 0; i--) {
+      if (nonUserItems[i].kind === 'assistant') {
+        reportIndex = i
+        break
+      }
+    }
+
+    const reportItem =
+      reportIndex >= 0 ? (nonUserItems[reportIndex] as Extract<Item, { kind: 'assistant' }>) : null
+    const processItems =
+      reportIndex >= 0
+        ? nonUserItems.filter((_, idx) => idx !== reportIndex)
+        : nonUserItems
+
+    if (processItems.length > 0) {
+      const hasActive = processItems.some((it) => {
+        if (it.kind === 'tool') {
+          return it.status === 'running' || it.status === 'awaiting'
+        }
+        if (it.kind === 'thinking') {
+          return it.endedAt === undefined
+        }
+        return false
+      })
+
+      // 该回合是否已完成：
+      // 1. 没有未完成的 tool 或 thinking；
+      // 2. 并且满足以下之一：历史轮次必完成、会话已结束运行、或当前轮次已进入报告输出阶段。
+      const isCompleted =
+        !hasActive && (!isLastTurn || !isRunning || reportItem !== null)
+
+      blocks.push({
+        kind: 'process',
+        id: `process-${processItems[0].id}`,
+        items: processItems,
+        isCompleted,
+      })
+    }
+
+    if (reportItem) {
+      blocks.push({
+        kind: 'assistant',
+        id: reportItem.id,
+        item: reportItem,
+      })
+    }
+  }
+
+  return blocks
+}
+
+/**
+ * 过程卡片：将中间的思考、工具调用与通知聚合收纳。
+ *
+ * 完成之后默认收缩，点击折叠条可展开查看具体的思考与工具详情；
+ * 正在运行或等待审批时保持展开，便于用户实时查看进度并操作批准/拒绝。
+ */
+function ProcessGroupCard({
+  block,
+  store,
+  isOpen,
+  onToggle,
+}: {
+  block: ProcessBlock
+  store: AgentStore
+  isOpen: boolean
+  onToggle: () => void
+}) {
+  const tools = block.items.filter((it): it is Extract<Item, { kind: 'tool' }> => it.kind === 'tool')
+  const thinkings = block.items.filter((it): it is Extract<Item, { kind: 'thinking' }> => it.kind === 'thinking')
+
+  // 统计修改代码行数
+  let totalAdded = 0
+  let totalRemoved = 0
+  for (const t of tools) {
+    if (t.patch) {
+      const stats = patchStats(t.patch)
+      totalAdded += stats.added
+      totalRemoved += stats.removed
+    }
+  }
+
+  // 统计思考总时长与流式状态
+  let totalThinkingSeconds = 0
+  let isThinkingStreaming = false
+  for (const th of thinkings) {
+    if (th.endedAt !== undefined) {
+      totalThinkingSeconds += Math.max(1, Math.round((th.endedAt - th.at) / 1000))
+    } else {
+      isThinkingStreaming = true
+    }
+  }
+
+  // 概括步骤组成
+  const summaryParts: string[] = []
+  if (tools.length > 0) {
+    summaryParts.push(`${tools.length} 项工具操作`)
+  }
+  const summaryText = summaryParts.join(' · ')
+
+  // 状态显示
+  const hasAwaiting = tools.some((t) => t.status === 'awaiting')
+  const hasDenied = tools.some((t) => t.status === 'denied')
+  const hasError =
+    tools.some((t) => t.status === 'error') ||
+    block.items.some((it) => it.kind === 'notice' && it.level === 'error')
+  const isRunning = !block.isCompleted
+
+  const title = '执行过程'
+
+  return (
+    <div
+      testId={`process-group-${block.id}`}
+      style={{ display: 'flex', flexDirection: 'column', width: '100%' }}
+    >
+      {/* 过程汇总折叠条 */}
+      <div
+        testId={`process-head-${block.id}`}
+        role="button"
+        aria-label={title}
+        onClick={onToggle}
+        style={{
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 7,
+          height: 32,
+          paddingLeft: 8,
+          paddingRight: 10,
+          borderRadius: 8,
+          cursor: 'pointer',
+          backgroundColor: C.raised,
+          borderWidth: 1,
+          borderColor: hasAwaiting ? C.accent : C.cardBorder,
+          hover: { backgroundColor: C.overlay },
+        }}
+      >
+        <Icon
+          name={isOpen ? 'chevronDown' : 'chevronRight'}
+          size={11}
+          color={C.faint}
+        />
+        <Icon
+          name={isRunning ? 'sparkles' : thinkings.length > 0 ? 'brain' : hasError ? 'x' : 'check'}
+          size={12}
+          color={hasAwaiting ? C.accent : isRunning ? C.link : hasError ? C.danger : C.tertiary}
+        />
+        <text
+          style={{
+            fontSize: 12,
+            lineHeight: 16,
+            fontWeight: 500,
+            color: hasAwaiting ? C.accent : isRunning ? C.link : C.text,
+            flexShrink: 0,
+          }}
+        >
+          {title}
+        </text>
+
+        {/* 步骤计数徽章 */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            height: 18,
+            paddingLeft: 6,
+            paddingRight: 6,
+            borderRadius: 4,
+            backgroundColor: C.overlay,
+            flexShrink: 0,
+          }}
+        >
+          <text style={{ fontSize: 10.5, lineHeight: 14, color: C.secondary, whiteSpace: 'nowrap' }}>
+            {`${block.items.length} 个步骤`}
+          </text>
+        </div>
+
+        {/* 醒目的思考耗时徽章 */}
+        {thinkings.length > 0 ? (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+              height: 18,
+              paddingLeft: 6,
+              paddingRight: 6,
+              borderRadius: 4,
+              backgroundColor: C.overlay,
+              flexShrink: 0,
+            }}
+          >
+            <Icon name="brain" size={10} color={isThinkingStreaming ? C.link : C.tertiary} />
+            <text
+              style={{
+                fontSize: 10.5,
+                lineHeight: 14,
+                color: isThinkingStreaming ? C.link : C.secondary,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {isThinkingStreaming ? '推理中…' : `${totalThinkingSeconds}s`}
+            </text>
+          </div>
+        ) : null}
+
+        {/* 步骤成分摘要 */}
+        {summaryText ? (
+          <text
+            style={{
+              fontSize: 11,
+              lineHeight: 15,
+              color: C.faint,
+              whiteSpace: 'nowrap',
+              textOverflow: 'ellipsis',
+              minWidth: 0,
+              flexShrink: 1,
+            }}
+          >
+            {summaryText}
+          </text>
+        ) : null}
+
+        <div style={{ flexGrow: 1 }} />
+
+        {/* 改动统计：+A -B */}
+        {totalAdded > 0 ? (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              height: 18,
+              paddingLeft: 5,
+              paddingRight: 5,
+              borderRadius: 4,
+              backgroundColor: C.overlay,
+              flexShrink: 0,
+            }}
+          >
+            <text style={{ fontSize: 10.5, lineHeight: 14, fontWeight: 500, color: C.success, whiteSpace: 'nowrap' }}>
+              {`+${totalAdded}`}
+            </text>
+          </div>
+        ) : null}
+        {totalRemoved > 0 ? (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              height: 18,
+              paddingLeft: 5,
+              paddingRight: 5,
+              borderRadius: 4,
+              backgroundColor: C.overlay,
+              flexShrink: 0,
+            }}
+          >
+            <text style={{ fontSize: 10.5, lineHeight: 14, fontWeight: 500, color: C.danger, whiteSpace: 'nowrap' }}>
+              {`−${totalRemoved}`}
+            </text>
+          </div>
+        ) : null}
+
+        {/* 状态文字或展开收起提示 */}
+        {hasAwaiting ? (
+          <text style={{ fontSize: 11, lineHeight: 15, fontWeight: 600, color: C.accent, whiteSpace: 'nowrap', flexShrink: 0 }}>
+            等待批准
+          </text>
+        ) : isRunning ? (
+          <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+            <Icon name="dot" size={8} color={C.link} />
+            <text style={{ fontSize: 11, lineHeight: 15, color: C.link, whiteSpace: 'nowrap' }}>
+              执行中…
+            </text>
+          </div>
+        ) : hasError ? (
+          <text style={{ fontSize: 10.5, lineHeight: 14, color: C.danger, whiteSpace: 'nowrap', flexShrink: 0 }}>
+            {isOpen ? '收起' : '失败 · 展开'}
+          </text>
+        ) : hasDenied ? (
+          <text style={{ fontSize: 10.5, lineHeight: 14, color: C.faint, whiteSpace: 'nowrap', flexShrink: 0 }}>
+            {isOpen ? '收起' : '已拒绝 · 展开'}
+          </text>
+        ) : (
+          <text style={{ fontSize: 10.5, lineHeight: 14, color: C.faint, whiteSpace: 'nowrap', flexShrink: 0 }}>
+            {isOpen ? '收起' : '已完成 · 展开'}
+          </text>
+        )}
+      </div>
+
+      {/* 展开内容 */}
+      {isOpen ? (
+        <div
+          testId={`process-body-${block.id}`}
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            width: '100%',
+            marginTop: 4,
+            paddingLeft: 8,
+            borderLeftWidth: 2,
+            borderColor: C.borderStrong,
+            gap: 3,
+          }}
+        >
+          {block.items.map((item) => (
+            <div
+              key={item.id}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                width: '100%',
+                paddingBottom: item.kind === 'notice' ? 6 : 3,
+              }}
+            >
+              <ItemRow item={item} store={store} />
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export function Transcript({ store }: { store: AgentStore }) {
   const items = store.active.items
   // 任务规划步骤不在会话区中展示，由独立的收缩悬浮框呈现
   const displayItems = items.filter((item) => !(item.kind === 'tool' && item.name === 'todo'))
+  const isThreadRunning = store.isThreadRunning(store.activeId)
+  const blocks = buildTranscriptBlocks(displayItems, isThreadRunning)
+
   const { renderer } = useGpuix()
   const listRef = useRef<PublicInstance>(null)
   const [atBottom, setAtBottom] = useState(true)
   const [tailKey, setTailKey] = useState(0)
+  // 记录已完成状态下，用户主动展开的块（未记录的默认收起）
+  const [userExpandedCompletedBlocks, setUserExpandedCompletedBlocks] = useState<Record<string, boolean>>({})
+  // 记录运行中状态下，用户主动折叠的块（未记录的默认展开）
+  const [userCollapsedRunningBlocks, setUserCollapsedRunningBlocks] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     setAtBottom(true)
+    setUserExpandedCompletedBlocks({})
+    setUserCollapsedRunningBlocks({})
   }, [store.activeId])
 
+  const toggleBlock = (block: ProcessBlock, currentOpen: boolean) => {
+    if (block.isCompleted) {
+      setUserExpandedCompletedBlocks((prev) => ({
+        ...prev,
+        [block.id]: !currentOpen,
+      }))
+    } else {
+      setUserCollapsedRunningBlocks((prev) => ({
+        ...prev,
+        [block.id]: currentOpen,
+      }))
+    }
+  }
+
   const scrollToBottom = () => {
-    if (displayItems.length > 0) {
+    if (blocks.length > 0) {
       if (listRef.current && renderer?.scrollToItem) {
-        renderer.scrollToItem(listRef.current.id, displayItems.length - 1)
+        renderer.scrollToItem(listRef.current.id, blocks.length - 1)
       }
       setAtBottom(true)
       setTailKey((k) => k + 1)
@@ -857,8 +1289,8 @@ export function Transcript({ store }: { store: AgentStore }) {
 
   const handleVisibleRange = (event: { endIndex?: number; visibleEnd?: number }) => {
     const end = event.endIndex ?? event.visibleEnd
-    if (typeof end === 'number' && displayItems.length > 0) {
-      setAtBottom(end >= displayItems.length)
+    if (typeof end === 'number' && blocks.length > 0) {
+      setAtBottom(end >= blocks.length)
     }
   }
 
@@ -875,7 +1307,7 @@ export function Transcript({ store }: { store: AgentStore }) {
         position: 'relative',
       }}
     >
-      {displayItems.length === 0 ? (
+      {blocks.length === 0 ? (
         <Welcome />
       ) : (
         <virtual-list
@@ -889,36 +1321,60 @@ export function Transcript({ store }: { store: AgentStore }) {
           onVisibleRange={handleVisibleRange}
           style={{ flexGrow: 1, minHeight: 0, width: '100%' }}
         >
-          {displayItems.map((item) => (
-            <div
-              key={item.id}
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                width: '100%',
-                paddingBottom: GAP_BELOW[item.kind],
-              }}
-            >
+          {blocks.map((block) => {
+            const paddingBottom =
+              block.kind === 'user' ? 18 : block.kind === 'assistant' ? 18 : block.kind === 'thinking' ? 6 : 12
+            const isOpen =
+              block.kind === 'process'
+                ? block.isCompleted
+                  ? Boolean(userExpandedCompletedBlocks[block.id])
+                  : !userCollapsedRunningBlocks[block.id]
+                : false
+
+            return (
               <div
+                key={block.id}
                 style={{
                   display: 'flex',
                   flexDirection: 'column',
+                  alignItems: 'center',
                   width: '100%',
-                  maxWidth: M.transcriptMax,
+                  paddingBottom,
                 }}
               >
-                <ItemRow item={item} store={store} />
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    width: '100%',
+                    maxWidth: M.transcriptMax,
+                  }}
+                >
+                  {block.kind === 'user' ? (
+                    <UserRow item={block.item} />
+                  ) : block.kind === 'assistant' ? (
+                    <AssistantRow item={block.item} />
+                  ) : block.kind === 'thinking' ? (
+                    <ThinkingRow item={block.item} />
+                  ) : (
+                    <ProcessGroupCard
+                      block={block}
+                      store={store}
+                      isOpen={isOpen}
+                      onToggle={() => toggleBlock(block, isOpen)}
+                    />
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </virtual-list>
       )}
 
       {/* 任务规划步骤独立收缩悬浮框 */}
       <TodoFloatingPanel store={store} />
 
-      {!atBottom && displayItems.length > 0 ? (
+      {!atBottom && blocks.length > 0 ? (
         <div
           testId="scroll-to-bottom"
           role="button"

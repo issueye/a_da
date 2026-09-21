@@ -145,7 +145,8 @@ describeNative('the model loop', () => {
       await painted('已写入 note.md。')
       expect(await readFile(join(workspace, FILE), 'utf8')).toBe(CONTENT)
 
-      // 卡片默认收起，只留一行；展开之后 `<diff>` 才把 hunk 头和每一行改动画出来。
+      // 完成后除了报告外的内容收缩到一起，点击过程条展开后，工具卡片默认收起只留一行；再展开 `<diff>`
+      await app.getByText('执行过程').click()
       expect(screen()).not.toContain('@@ -1,0 +1,1 @@')
       await app.getByText('写入文件').click()
       await painted('@@ -1,0 +1,1 @@')
@@ -165,6 +166,10 @@ describeNative('the model loop', () => {
       const { app, screen, painted, ask } = await mount('auto')
 
       await ask('写一个 note.md')
+      await painted('已写入 note.md。')
+
+      // 完成后过程收缩到一起，展开执行过程卡片查看思考持续时长与推理原文
+      await app.getByText('执行过程').click()
       await painted('思考')
       // 收起时只有一行：时长写在标签旁边，推理原文不占地方。
       expect(screen()).toContain('持续')
@@ -173,7 +178,6 @@ describeNative('the model loop', () => {
       await app.getByText('思考').click()
       await painted(REASONING)
 
-      await painted('已写入 note.md。')
       await app.close()
     },
     30_000,
@@ -188,8 +192,9 @@ describeNative('the model loop', () => {
       await painted('等待批准')
       await app.getByTestId('deny').click()
 
-      // 拒绝的理由收在行里，展开才看得到（错误和被拒也默认收起）。
+      // 拒绝后整轮结束，过程收缩到一起，展开执行过程卡片查看拒绝理由
       await painted('已拒绝')
+      await app.getByText('执行过程').click()
       await app.getByText('写入文件').click()
       await painted('已拒绝执行')
       // The refusal is fed back to the model instead of the tool result.

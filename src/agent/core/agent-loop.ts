@@ -150,7 +150,7 @@ export async function* runAgentLoop(
   config: ProviderConfig,
   options: AgentLoopOptions = {}
 ): AsyncGenerator<AgentEvent, AgentMessage[], void> {
-  const maxSteps = options.maxSteps ?? 24
+  const maxSteps = options.maxSteps
   const tools = options.tools ?? []
   const toolMap = new Map<string, AgentTool>()
   for (const tool of tools) {
@@ -167,16 +167,20 @@ export async function* runAgentLoop(
   }))
 
   const workingMessages = [...messages]
-  // 撞满步数上限时循环自然走完，不会被下面任何一支改写。
-  let endReason: AgentEndReason = 'max_steps'
+  let endReason: AgentEndReason = 'completed'
 
   yield { type: 'agent_start' }
 
   try {
-    for (let step = 0; step < maxSteps; step++) {
+    for (let step = 0; maxSteps === undefined || step < maxSteps; step++) {
       if (options.signal?.aborted) {
         endReason = 'aborted'
         break
+      }
+
+      // 若指定了步数上限，且执行完本步后即达到上限，预设结束原因为 max_steps
+      if (maxSteps !== undefined && step + 1 >= maxSteps) {
+        endReason = 'max_steps'
       }
 
       yield { type: 'turn_start' }

@@ -8,7 +8,21 @@ let server: ReturnType<typeof Bun.serve>
 beforeAll(() => {
   server = Bun.serve({
     port: 0,
-    async fetch() {
+    async fetch(req) {
+      let hasToolResult = false
+      try {
+        const body = (await req.json()) as { messages?: Array<{ role: string }> }
+        hasToolResult = Boolean(body.messages?.some((m) => m.role === 'tool'))
+      } catch {}
+
+      if (hasToolResult) {
+        const stream = [
+          `data: ${JSON.stringify({ choices: [{ delta: { content: '计算完成。' } }] })}\n\n`,
+          `data: [DONE]\n\n`,
+        ].join('')
+        return new Response(stream, { headers: { 'content-type': 'text/event-stream' } })
+      }
+
       // 模拟一个带工具调用的 SSE 响应
       const stream = [
         `data: ${JSON.stringify({ choices: [{ delta: { content: '我来计算一下。' } }] })}\n\n`,

@@ -34,12 +34,11 @@ describeNative('agent window', () => {
     for (const label of [
       '工作区',
       '会话',
-      '新建会话',
+      '新建对话',
       '在下方输入任务目标：Agent 会工作区内执行，改动与命令需你批准',
       'Agent 只能访问当前项目内的文件',
       '描述要 Agent 完成的任务',
       '自动批准',
-      '刷新',
       '调试',
       '最高',
     ]) {
@@ -87,29 +86,29 @@ describeNative('agent window', () => {
 
   test('collapses the sidebar', async () => {
     const { app, screen } = await mount()
-    // 「新建会话」只出现在侧边栏：欢迎卡片里也有「工作区」的字样，不能拿它当标记。
-    expect(screen()).toContain('新建会话')
+    // 「新建对话」只出现在侧边栏：欢迎卡片里也有「工作区」的字样，不能拿它当标记。
+    expect(screen()).toContain('新建对话')
 
     await app.getByTestId('toggle-sidebar').click()
-    expect(screen()).not.toContain('新建会话')
+    expect(screen()).not.toContain('新建对话')
 
     await app.getByTestId('toggle-sidebar').click()
-    expect(screen()).toContain('新建会话')
+    expect(screen()).toContain('新建对话')
 
     await app.close()
   })
 
   test('opens a thread and filters the list', async () => {
     const { app, screen } = await mount()
-    await app.getByTestId('new-thread').click()
+    await app.getByTestId('sidebar-new-chat').click()
     await app.getByTestId('search').click()
 
     // The search input replaces the second thread's row, and a query that
-    // matches nothing leaves the list empty while the + action row stays.
+    // matches nothing leaves the list empty while the sidebar header stays.
     expect(screen()).toContain('会话\n2')
     await app.getByTestId('thread-search').fill('没有这个会话')
     expect(screen()).toContain('会话\n0')
-    expect(screen()).toContain('新建会话')
+    expect(screen()).toContain('新建对话')
 
     await app.close()
   })
@@ -144,19 +143,22 @@ describeNative('agent window', () => {
 
     // 模拟向上滚动后触发的 visibleRange 事件（未到末尾）
     const { handleGpuixEvent } = await import('@gpuix/react')
-    handleGpuixEvent(
-      {
-        elementId: list.id,
-        eventType: 'visibleRange',
-        startIndex: 0,
-        endIndex: 5,
-      },
-      renderer,
-    )
-    for (let attempt = 0; attempt < 20; attempt++) {
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const currentList = renderer.findByType('virtual-list')[0]
+      if (currentList) {
+        handleGpuixEvent(
+          {
+            elementId: currentList.id,
+            eventType: 'visibleRange',
+            startIndex: 0,
+            endIndex: 5,
+          },
+          renderer,
+        )
+      }
       renderer.flush()
       if (renderer.getPaintedText().join('\n').includes('回到底部')) break
-      await new Promise((resolve) => setTimeout(resolve, 30))
+      await new Promise((resolve) => setTimeout(resolve, 40))
     }
 
     // 此时应当浮现“回到底部”置底按钮

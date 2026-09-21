@@ -9,6 +9,7 @@ import React, { useEffect, useState } from 'react'
 import { store, type AgentStore } from './agent/store'
 import { Composer } from './ui/Composer'
 import { DebugPanel } from './ui/DebugPanel'
+import { PluginsDialog } from './ui/PluginsDialog'
 import { SettingsDialog } from './ui/SettingsDialog'
 import { Sidebar } from './ui/Sidebar'
 import { EmptyConversationView } from './ui/EmptyConversationView'
@@ -76,6 +77,7 @@ export function AgentWindow() {
         {agent.debugOpen ? <DebugPanel store={agent} /> : null}
       </div>
       {agent.settingsOpen ? <SettingsDialog store={agent} /> : null}
+      {agent.pluginsOpen ? <PluginsDialog store={agent} /> : null}
     </div>
   )
 }
