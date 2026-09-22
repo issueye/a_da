@@ -9,6 +9,7 @@ import { basename, extname, join } from 'node:path'
 import { getAppHome } from '../home'
 import { BUILTIN_PROMPTS } from './builtins'
 import type { CreatePromptOptions, PromptItem, PromptScope } from './types'
+import type { AgentMode } from '../types'
 
 interface PromptsState {
   /** 内置提示词的启停状态重写，key 为 builtin id */
@@ -289,17 +290,46 @@ export class PromptManager {
   /**
    * 合成当前已启用的系统提示词（供 Agent 会话循环消费）
    */
-  async getCompositeSystemPrompt(workspace: string): Promise<string> {
+  async getCompositeSystemPrompt(workspace: string, mode: AgentMode = 'code'): Promise<string> {
     const all = await this.scanPrompts(workspace)
     const enabledSystemPrompts = all.filter((p) => p.enabled && p.isSystem && p.content.trim())
 
-    if (enabledSystemPrompts.length === 0) {
-      return ''
+    const sections: string[] = []
+
+    for (const p of enabledSystemPrompts) {
+      sections.push(`【系统规范/角色预设：${p.name}】\n${p.content.trim()}`)
     }
 
-    const sections = enabledSystemPrompts.map((p) => {
-      return `【系统规范/角色预设：${p.name}】\n${p.content.trim()}`
-    })
+    // 注入协作模式专属指导规范
+    if (mode === 'plan') {
+      sections.push(`【协作模式：Plan 规划模式】
+当前处于只读架构规划模式。
+你的目标是专注于需求分析、技术选型、架构梳理与实施计划设计。
+核心准则：
+1. 本模式下禁止直接修改工作区代码或执行外部命令；
+2. 请调用只读分析工具（read_file, list_files, search_files, read_url_content, Skill 等）深入调研系统现状；
+3. 输出条理清晰、步骤可执行的结构化方案，并引导用户切换到 Code（编码）模式执行具体修改。`)
+    } else if (mode === 'create') {
+      sections.push(`【协作模式：Create 创造与元开发模式】
+当前处于智能体自扩展与元开发模式。
+你被赋予了自我进化的超级能力：
+1. 你可以使用 manage_tool 工具自主编写、调试与更新 TypeScript 扩展工具插件；
+2. 你可以使用 manage_skill 工具自主创建、更新与优化专业领域技能规范（SKILL.md）；
+3. 根据用户的自然语言诉求，规划并生成最适合的自定义工具或技能，并在生成后告知用户其使用方式。`)
+    } else {
+      sections.push(`【协作模式：Code 编码模式 (Vibe Coding)】
+当前处于全能敏捷编码模式。
+遵循 Vibe Coding 核心哲学：极速切入、原子改动、测试驱动、保持代码整洁现代，高质量交付用户所需的功能与修改。`)
+    }
+
+    // 自动接入已启用的专业技能（Skills）元数据摘要段，引导大模型按需调用 Skill 工具
+    try {
+      const { defaultSkillManager } = await import('../skills')
+      const skillsCtx = await defaultSkillManager.buildSkillsPrompt(workspace)
+      if (skillsCtx.prompt) {
+        sections.push(skillsCtx.prompt)
+      }
+    } catch {}
 
     return sections.join('\n\n---\n\n')
   }

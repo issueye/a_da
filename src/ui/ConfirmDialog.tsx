@@ -38,7 +38,7 @@ export function ConfirmDialog({
           width: 360,
           maxWidth: '90%',
           backgroundColor: C.raised,
-          borderRadius: 10,
+          borderRadius: 12,
           borderWidth: 1,
           borderColor: C.borderStrong,
           boxShadow: {
@@ -62,6 +62,8 @@ export function ConfirmDialog({
             paddingRight: 18,
             paddingTop: 16,
             paddingBottom: 8,
+            borderTopLeftRadius: 11,
+            borderTopRightRadius: 11,
           }}
         >
           <Icon name="alertTriangle" size={16} color={C.accent} />
@@ -105,6 +107,8 @@ export function ConfirmDialog({
             borderTopWidth: 1,
             borderColor: C.border,
             backgroundColor: C.sidebar,
+            borderBottomLeftRadius: 11,
+            borderBottomRightRadius: 11,
           }}
         >
           <div

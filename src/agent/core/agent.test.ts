@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { Agent } from './agent'
 import { runAgentLoop } from './agent-loop'
-import type { AgentEvent, AgentTool, AgentToolResult } from './types'
+import type { AgentEvent, AgentTool, AgentToolResult, AssistantMessage } from './types'
 
 let server: ReturnType<typeof Bun.serve>
 
@@ -18,7 +18,7 @@ beforeAll(() => {
       if (hasToolResult) {
         const stream = [
           `data: ${JSON.stringify({ choices: [{ delta: { content: '计算完成。' } }] })}\n\n`,
-          `data: ${JSON.stringify({ usage: { prompt_tokens: 25, completion_tokens: 5, total_tokens: 30 } })}\n\n`,
+          `data: ${JSON.stringify({ usage: { prompt_tokens: 25, completion_tokens: 5, total_tokens: 30, prompt_tokens_details: { cached_tokens: 20 } } })}\n\n`,
           `data: [DONE]\n\n`,
         ].join('')
         return new Response(stream, { headers: { 'content-type': 'text/event-stream' } })
@@ -38,7 +38,7 @@ beforeAll(() => {
             },
           ],
         })}\n\n`,
-        `data: ${JSON.stringify({ usage: { prompt_tokens: 15, completion_tokens: 10, total_tokens: 25 } })}\n\n`,
+        `data: ${JSON.stringify({ usage: { prompt_tokens: 15, completion_tokens: 10, total_tokens: 25, prompt_tokens_details: { cached_tokens: 10 } } })}\n\n`,
         `data: [DONE]\n\n`,
       ].join('')
 
@@ -262,13 +262,45 @@ describe('tool event streaming', () => {
       events.push(event)
     }
 
-    const messageEnd = events.find((e) => e.type === 'message_end' && e.message.role === 'assistant')
-    expect(messageEnd).toBeDefined()
-    if (messageEnd && messageEnd.type === 'message_end' && messageEnd.message.role === 'assistant') {
-      expect(messageEnd.message.durationMs).toBeDefined()
-      expect(messageEnd.message.durationMs).toBeGreaterThan(0)
-      expect(messageEnd.message.usage).toBeDefined()
-      expect(messageEnd.message.usage?.totalTokens).toBeGreaterThan(0)
+    const messageEnds = events.filter(
+      (e): e is Extract<AgentEvent, { type: 'message_end' }> & { message: AssistantMessage } =>
+        e.type === 'message_end' && e.message.role === 'assistant'
+    )
+    expect(messageEnds.length).toBe(2)
+
+    // 第一步（调用工具）：单次耗时与真实单次使用（缓存 10）
+    expect(messageEnds[0].message.durationMs).toBeGreaterThan(0)
+    expect(messageEnds[0].message.usage?.totalTokens).toBe(25)
+    expect(messageEnds[0].message.usage?.cachedTokens).toBe(10)
+
+    // 第二步（工具结果回复）：单次耗时与真实单次使用（缓存 20），严格不累加虚高
+    expect(messageEnds[1].message.durationMs).toBeGreaterThan(0)
+    expect(messageEnds[1].message.usage?.totalTokens).toBe(30)
+    expect(messageEnds[1].message.usage?.cachedTokens).toBe(20)
+  })
+
+  test('runAgentLoop emits llm_request and llm_response events with payload details', async () => {
+    const events: AgentEvent[] = []
+    for await (const event of runAgentLoop(
+      [{ role: 'user', content: '测试请求与响应事件' }],
+      { baseUrl: `http://localhost:${server.port}`, apiKey: 'test', model: 'test' },
+      { systemPrompt: '系统指令' }
+    )) {
+      events.push(event)
+    }
+
+    const reqEvent = events.find((e) => e.type === 'llm_request')
+    expect(reqEvent).toBeDefined()
+    if (reqEvent && reqEvent.type === 'llm_request') {
+      expect(reqEvent.model).toBe('test')
+      expect(reqEvent.messages.length).toBeGreaterThan(0)
+    }
+
+    const resEvent = events.find((e) => e.type === 'llm_response')
+    expect(resEvent).toBeDefined()
+    if (resEvent && resEvent.type === 'llm_response') {
+      expect(resEvent.model).toBe('test')
+      expect(resEvent.message).toBeDefined()
     }
   })
 })

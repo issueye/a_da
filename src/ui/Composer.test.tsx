@@ -182,6 +182,54 @@ describe('Composer 遥测与多模态配置逻辑', () => {
     expect(telemetry.tokPerSec).toBe(0)
   })
 
+  test('computeThreadTelemetry 多轮对话中不累加 Token，只取最后一次请求返回的总 Token', () => {
+    const thread: Thread = {
+      id: 'th-latest-token',
+      title: '多轮请求会话',
+      createdAt: Date.now(),
+      workspace: 'C:/test',
+      messages: [],
+      items: [
+        { kind: 'user', id: 'u1', at: 1000, text: '第一轮提问' },
+        {
+          kind: 'assistant',
+          id: 'a1',
+          at: 2000,
+          text: '第一轮回答',
+          durationMs: 3400,
+          usage: {
+            promptTokens: 2751,
+            completionTokens: 500,
+            totalTokens: 3251,
+          },
+        },
+        { kind: 'user', id: 'u2', at: 3000, text: '第二轮提问' },
+        {
+          kind: 'assistant',
+          id: 'a2',
+          at: 4000,
+          text: '第二轮回答',
+          durationMs: 4811,
+          usage: {
+            promptTokens: 2711,
+            completionTokens: 662,
+            totalTokens: 3373,
+            cachedTokens: 0,
+          },
+        },
+      ],
+    }
+
+    const telemetry = computeThreadTelemetry(thread, false, 'deepseek-flash')
+    expect(telemetry.turns).toBe(2)
+    // 严格验证：总 Token 是最后一次请求的 3373，而不是两轮累加的 6624
+    expect(telemetry.totalTokens).toBe(3373)
+    expect(telemetry.promptTokens).toBe(2711)
+    expect(telemetry.completionTokens).toBe(662)
+    expect(telemetry.cachedTokens).toBe(0)
+    expect(telemetry.durationMs).toBe(4811)
+  })
+
   test('convertMessagesToLlm 正确处理多模态图片输入与降级', () => {
     // 开启支持图片输入
     const llmMessagesVision = convertMessagesToLlm(
@@ -268,13 +316,59 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     expect(screenText).toContain('1 轮 1 步')
     expect(screenText).toContain('150 tok/s')
 
-    // 验证 Token 统计与缓存命中率
-    expect(screenText).toContain('缓存命中 80%')
+    // 验证各部分通过竖线隔开
+    expect(screenText).toContain('|')
+
+    // 验证多维指标：总 Token、提示词、输出、缓存、用时、上下文
+    expect(screenText).toContain('10k tok')
+    expect(screenText).toContain('提示词 10k')
+    expect(screenText).toContain('输出 150')
+    expect(screenText).toContain('缓存 8.0k (80%)')
+    expect(screenText).toContain('用时 1.0s')
+    expect(screenText).toContain('上下文 8%')
 
     // 严格验证：绝不包含费用估计（如「费用」、「¥」、「$」等）
     expect(screenText).not.toContain('费用')
     expect(screenText).not.toContain('¥')
     expect(screenText).not.toContain('$')
+
+    await app.close()
+  })
+
+  test('无缓存命中时展示「缓存 0」，上下文极低时展示「上下文 <1%」', async () => {
+    store.active.items = [
+      {
+        kind: 'user',
+        id: 'u-nocache',
+        at: 1000,
+        text: '调研代码',
+      },
+      {
+        kind: 'assistant',
+        id: 'a-nocache',
+        at: 2000,
+        text: '开始调研分析代码。',
+        durationMs: 1000,
+        usage: {
+          promptTokens: 500,
+          completionTokens: 300,
+          totalTokens: 800,
+          // cachedTokens 为 0 或未提供
+        },
+      },
+    ]
+
+    const { render, renderer } = createTestRoot({ width: 1000, height: 400 })
+    render(<Composer store={store} />)
+    const app = await connectTest(renderer)
+
+    const screenText = renderer.getPaintedText().join(' ')
+    expect(screenText).toContain('800 tok')
+    expect(screenText).toContain('提示词 500')
+    expect(screenText).toContain('输出 300')
+    expect(screenText).toContain('缓存 0')
+    expect(screenText).toContain('用时 1.0s')
+    expect(screenText).toContain('上下文 <1%')
 
     await app.close()
   })
@@ -301,6 +395,72 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     const app = await connectTest(renderer)
 
     expect(await app.getByTestId('composer-attach-image').count()).toBe(1)
+
+    await app.close()
+  })
+
+  test('点击上下文徽标展开 ContextUsagePopover 悬浮面板，展示细分维度与健康度建议', async () => {
+    store.active.items = [
+      { kind: 'user', id: 'u-pop', at: 1000, text: '请介绍一下深度学习' },
+      {
+        kind: 'assistant',
+        id: 'a-pop',
+        at: 2000,
+        text: '深度学习是机器学习的一个分支，基于多层神经网络。',
+        durationMs: 1200,
+        usage: {
+          promptTokens: 3000,
+          completionTokens: 200,
+          totalTokens: 3200,
+          cachedTokens: 2500,
+        },
+      },
+    ]
+
+    const { render, renderer } = createTestRoot({ width: 1000, height: 500 })
+    render(<Composer store={store} />)
+    const app = await connectTest(renderer)
+
+    // 初始状态下 Popover 未展开
+    expect(await app.getByTestId('context-usage-popover').count()).toBe(0)
+
+    // 点击上下文指示器
+    await app.getByTestId('telemetry-context-ratio').click()
+    renderer.flush?.()
+
+    // 验证 Popover 出现并包含深度洞察信息
+    expect(await app.getByTestId('context-usage-popover').count()).toBe(1)
+    const screenText = renderer.getPaintedText().join(' ')
+    expect(screenText).toContain('上下文用量与健康度')
+    expect(screenText).toContain('会话历史')
+    expect(screenText).toContain('缓存命中收益')
+    expect(screenText).toContain('2,500 tok')
+
+    await app.close()
+  })
+
+  test('支持 code、plan、create 三大协作模式切换并联动 store 状态', async () => {
+    store.setMode('code')
+    const { render, renderer } = createTestRoot({ width: 1000, height: 500 })
+    render(<Composer store={store} />)
+    const app = await connectTest(renderer)
+
+    // 默认展示 Code 编码
+    expect(renderer.getPaintedText().join(' ')).toContain('Code 编码')
+
+    // 切换至 Plan 规划模式
+    store.setMode('plan')
+    render(<Composer store={store} />)
+    renderer.flush?.()
+    expect(renderer.getPaintedText().join(' ')).toContain('Plan 规划')
+    expect(store.mode as string).toBe('plan')
+
+    // 切换至 Create 创造模式
+    store.setMode('create')
+    render(<Composer store={store} />)
+    renderer.flush?.()
+    expect(renderer.getPaintedText().join(' ')).toContain('Create 创造')
+    expect(store.mode as string).toBe('create')
 
     await app.close()
   })

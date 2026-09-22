@@ -65,6 +65,7 @@ describeNative('plugins dialog', () => {
 
     expect(text).toContain('插件管理')
     expect(text).toContain('扩展 Agent 工具库与自动化能力')
+    expect(text).toContain('技能库')
     expect(text).toContain('子智能体')
     expect(text).toContain('提示词管理')
     expect(text).toContain('工作区插件')
@@ -201,4 +202,44 @@ describeNative('plugins dialog', () => {
     await app.getByTestId('plugins-close').click()
     await app.close()
   })
+
+  test('switches to skills tab and allows creating and managing skills', async () => {
+    const { app, screen, painted, gone } = await mount()
+    await app.getByTestId('open-plugins').click()
+    await painted('插件管理')
+
+    // 切换到技能库选项卡
+    await app.getByTestId('plugins-nav-skills').click()
+    await painted('新建技能')
+    expect(screen()).toContain('技能库')
+
+    // 点击新建技能按钮展开表单
+    await app.getByTestId('skill-create-btn').click()
+    await painted('新建技能规范 (SKILL.md)')
+
+    // 填入技能信息
+    await app.getByTestId('skill-input-name').fill('rust-linter')
+    await app.getByTestId('skill-input-desc').fill('自动化运行 cargo clippy 并分析警告')
+    await app.getByTestId('skill-submit-create').click()
+
+    // 创建成功后表单收起，列表中出现 rust-linter
+    await gone('新建技能规范 (SKILL.md)')
+    await painted('rust-linter')
+    expect(screen()).toContain('自动化运行 cargo clippy 并分析警告')
+
+    // 切换展开正文
+    await app.getByTestId('skill-expand-rust-linter').click()
+    await painted('SKILL.md 正文指令')
+
+    // 切换启停状态
+    await app.getByTestId('skill-toggle-rust-linter').click()
+
+    // 删除该技能（二次确认防误删）
+    await app.getByTestId('skill-delete-rust-linter').click()
+    await app.getByTestId('skill-delete-rust-linter').click()
+    await gone('rust-linter')
+
+    await app.getByTestId('plugins-close').click()
+    await app.close()
+  }, 30_000)
 })

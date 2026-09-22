@@ -18,7 +18,16 @@ import {
 import { ChipButton, ChipSelect, Icon, menuLayer, MenuRow, MenuSurface, menuItemStyle } from './controls'
 import { C, editorTheme, M } from '../theme'
 import { formatDuration, formatNumber, formatTokenShort } from './Transcript'
-import { computeThreadStats, type Item, type Thread } from '../agent/types'
+import { computeThreadStats, type AgentMode, type Item, type Thread } from '../agent/types'
+import { computeContextBreakdown, type ContextUsageSummary } from '../agent/stats'
+import { ContextUsagePopover } from './ContextUsagePopover'
+import type { IconName } from '../icons'
+
+export const MODE_OPTIONS: { value: AgentMode; label: string; icon: IconName; desc: string }[] = [
+  { value: 'code', label: 'Code 编码', icon: 'code', desc: '全能敏捷编码与工程构建 (默认)' },
+  { value: 'plan', label: 'Plan 规划', icon: 'compass', desc: '只读架构分析与实施计划设计 (只读防写)' },
+  { value: 'create', label: 'Create 创造', icon: 'sparkles', desc: '智能体自我进化与工具/技能 CRUD' },
+]
 
 /** 获取指定模型的上下文窗口 Token 上限（优先使用用户在设置中配置的上限，其次使用预设，默认 128k） */
 export function getModelContextWindow(modelName?: string, configuredLimit?: number): number {
@@ -43,23 +52,34 @@ export interface ThreadTelemetry {
   steps: number
   tokPerSec: number
   totalTokens: number
+  promptTokens: number
+  completionTokens: number
+  cachedTokens: number
   totalPromptTokens: number
   totalCompletionTokens: number
   totalCachedTokens: number
   cacheHitRatio: number
+  durationMs: number
   currentContextTokens: number
   contextLimit: number
   contextRatio: number
+  hasUsage: boolean
+  contextSummary: ContextUsageSummary
 }
 
-/** 实时计算当前会话的遥测指标（轮数、步数、生成速率、Token消耗、缓存命中率、会话上下文占用率） */
+/** 格式化耗时展示 */
+function formatElapsed(ms?: number): string {
+  if (!ms || ms <= 0) return '0s'
+  return formatDuration(ms) || '0s'
+}
+
+/** 实时计算当前会话的遥测指标：只取最后一次请求返回的指标，不进行跨轮累加 */
 export function computeThreadTelemetry(
   thread: Thread,
   isRunning: boolean,
   currentModel?: string,
   configuredLimit?: number,
 ): ThreadTelemetry {
-  const stats = computeThreadStats(thread)
   const userItems = thread.items.filter((it) => it.kind === 'user')
   const toolItems = thread.items.filter((it) => it.kind === 'tool')
   const assistantItems = thread.items.filter(
@@ -72,69 +92,100 @@ export function computeThreadTelemetry(
   // 流式运行中的助手消息
   const streamingAssistant = assistantItems.find((it) => it.streaming)
 
-  // 累计 Token：仅使用模型返回的 Token 计数，不进行前端估算
-  const streamingCompletion = streamingAssistant?.usage?.completionTokens ?? 0
-  const streamingPrompt = streamingAssistant?.usage?.promptTokens ?? 0
-  const streamingCached = streamingAssistant?.usage?.cachedTokens ?? 0
-  const streamingTotal =
-    streamingAssistant?.usage?.totalTokens ?? (streamingPrompt + streamingCompletion)
-
-  const totalPromptTokens = stats.totalPromptTokens + streamingPrompt
-  const totalCompletionTokens = stats.totalCompletionTokens + streamingCompletion
-  const totalTokens = stats.totalTokens + (streamingAssistant ? streamingTotal : 0)
-  const totalCachedTokens = stats.totalCachedTokens + streamingCached
-
-  // 缓存命中率
-  const cacheHitRatio =
-    totalPromptTokens > 0 ? Math.min(100, Math.round((totalCachedTokens / totalPromptTokens) * 100)) : 0
-
-  // 计算 tok/s 生成速率（基于模型返回的补全 Token 与耗时）
-  let tokPerSec = 0
-  if (streamingAssistant) {
-    if (streamingAssistant.usage?.completionTokens) {
-      const elapsedSec = Math.max(0.3, (Date.now() - (streamingAssistant.at || Date.now())) / 1000)
-      tokPerSec = Math.round(streamingAssistant.usage.completionTokens / elapsedSec)
-    }
-  } else {
-    // 获取最近一个已完成且有模型 Token 统计的助手回复
+  // 定位最后一次请求的助手消息：若正在流式以流式消息为准，否则倒序取最近一条有统计数据的回复
+  let latestAssistant = streamingAssistant
+  if (!latestAssistant) {
     for (let i = assistantItems.length - 1; i >= 0; i--) {
       const a = assistantItems[i]
-      if (a.durationMs && a.durationMs > 0 && a.usage?.completionTokens) {
-        tokPerSec = Math.round(a.usage.completionTokens / (a.durationMs / 1000))
+      if (a.usage || a.durationMs) {
+        latestAssistant = a
         break
       }
     }
-    // 若单轮无法算出，尝试用总耗时和总补全 Token
-    if (tokPerSec === 0 && stats.totalDurationMs > 0 && stats.totalCompletionTokens > 0) {
-      tokPerSec = Math.round(stats.totalCompletionTokens / (stats.totalDurationMs / 1000))
-    }
   }
 
-  // 当前会话上下文占用与比率：直接使用模型返回的 promptTokens（取最近一轮助手的模型实际输入消耗）
-  let currentContextTokens = 0
-  for (let i = assistantItems.length - 1; i >= 0; i--) {
-    if (assistantItems[i].usage?.promptTokens) {
-      currentContextTokens = assistantItems[i].usage!.promptTokens
-      break
-    }
+  // 单次请求指标：严格基于最后一次请求返回的真实 Token，不进行跨轮累加
+  const promptTokens = latestAssistant?.usage?.promptTokens ?? 0
+  const completionTokens = latestAssistant?.usage?.completionTokens ?? 0
+  const cachedTokens = latestAssistant?.usage?.cachedTokens ?? 0
+  const totalTokens =
+    latestAssistant?.usage?.totalTokens ?? (promptTokens + completionTokens)
+  const hasUsage = !!latestAssistant?.usage
+
+  // 耗时计算：流式中使用当前流逝时间，已完成使用记录的 durationMs
+  let durationMs = 0
+  if (streamingAssistant) {
+    durationMs = Math.max(100, Date.now() - (streamingAssistant.at || Date.now()))
+  } else if (latestAssistant?.durationMs) {
+    durationMs = latestAssistant.durationMs
   }
+
+  // 缓存命中率
+  const cacheHitRatio =
+    promptTokens > 0 ? Math.min(100, Math.round((cachedTokens / promptTokens) * 100)) : 0
+
+  // 计算 tok/s 生成速率（基于最后一次请求的补全 Token 与耗时）
+  let tokPerSec = 0
+  if (streamingAssistant) {
+    if (completionTokens > 0) {
+      const elapsedSec = Math.max(0.3, durationMs / 1000)
+      tokPerSec = Math.round(completionTokens / elapsedSec)
+    }
+  } else if (latestAssistant && latestAssistant.durationMs && completionTokens > 0) {
+    tokPerSec = Math.round(completionTokens / (latestAssistant.durationMs / 1000))
+  }
+
+  // 当前会话上下文占用与比率：基于最后一次请求模型实际读取的 promptTokens
+  const currentContextTokens = promptTokens
   const contextLimit = getModelContextWindow(currentModel, configuredLimit)
   const contextRatio =
     contextLimit > 0 ? Math.min(100, Math.round((currentContextTokens / contextLimit) * 100)) : 0
+
+  const contextSummary = computeContextBreakdown({
+    items: thread.items,
+    realPromptTokens: promptTokens,
+    realCompletionTokens: completionTokens,
+    realCachedTokens: cachedTokens,
+    contextLimit,
+  })
 
   return {
     turns,
     steps,
     tokPerSec,
     totalTokens,
-    totalPromptTokens,
-    totalCompletionTokens,
-    totalCachedTokens,
+    promptTokens,
+    completionTokens,
+    cachedTokens,
+    totalPromptTokens: promptTokens,
+    totalCompletionTokens: completionTokens,
+    totalCachedTokens: cachedTokens,
     cacheHitRatio,
+    durationMs,
     currentContextTokens,
     contextLimit,
     contextRatio,
+    hasUsage,
+    contextSummary,
   }
+}
+
+/** 遥测信息栏项之间的轻量竖线分隔符 */
+function TelemetryDivider() {
+  return (
+    <text
+      style={{
+        fontSize: 10,
+        color: C.borderStrong,
+        opacity: 0.65,
+        marginLeft: 2,
+        marginRight: 2,
+        userSelect: 'none',
+      }}
+    >
+      |
+    </text>
+  )
 }
 
 export function ComposerTelemetryBar({
@@ -144,6 +195,7 @@ export function ComposerTelemetryBar({
   store: AgentStore
   centered?: boolean
 }) {
+  const [popoverOpen, setPopoverOpen] = useState(false)
   const thread = store.active
   // 空会话初始居中模式时不展示，进入会话或有消息时开始展示
   if (centered && thread.items.length === 0) {
@@ -156,10 +208,11 @@ export function ComposerTelemetryBar({
     steps,
     tokPerSec,
     totalTokens,
-    totalPromptTokens,
-    totalCompletionTokens,
-    totalCachedTokens,
+    promptTokens,
+    completionTokens,
+    cachedTokens,
     cacheHitRatio,
+    durationMs,
     currentContextTokens,
     contextLimit,
     contextRatio,
@@ -171,6 +224,7 @@ export function ComposerTelemetryBar({
     <div
       testId="composer-telemetry"
       style={{
+        position: 'relative',
         display: 'flex',
         flexDirection: 'row',
         alignItems: 'center',
@@ -182,12 +236,12 @@ export function ComposerTelemetryBar({
         paddingRight: 8,
         paddingTop: 6,
         paddingBottom: 2,
-        gap: 16,
+        gap: 8,
         rowGap: 4,
         userSelect: 'none',
       }}
     >
-      {/* 轮数与步数、每秒 Token */}
+      {/* 1. 轮数、步数与生成速率 */}
       <div
         testId="telemetry-turns-steps"
         aria-label={`已进行 ${turns} 轮对话，执行 ${steps} 步操作，生成速率 ${tokPerSec} tok/s`}
@@ -195,7 +249,7 @@ export function ComposerTelemetryBar({
           display: 'flex',
           flexDirection: 'row',
           alignItems: 'center',
-          gap: 5,
+          gap: 4,
           cursor: 'default',
         }}
       >
@@ -205,34 +259,123 @@ export function ComposerTelemetryBar({
         </text>
       </div>
 
-      {/* Token 统计与缓存命中比率 */}
+      <TelemetryDivider />
+
+      {/* 2. 单次总 Token */}
       <div
         testId="telemetry-tokens-cache"
-        aria-label={`累计消耗 ${formatNumber(totalTokens)} Token (输入: ${formatNumber(totalPromptTokens)} · 输出: ${formatNumber(totalCompletionTokens)})，读取缓存 ${formatNumber(totalCachedTokens)} Token (命中率 ${cacheHitRatio}%)`}
-        style={{
-          display: 'flex',
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 5,
-          cursor: 'default',
-        }}
-      >
-        <Icon name="database" size={12} color={C.tertiary} />
-        <text style={{ fontSize: 11.5, color: C.secondary, whiteSpace: 'nowrap' }}>
-          {`${formatTokenShort(totalTokens)} tok · 缓存命中 ${cacheHitRatio}%`}
-        </text>
-      </div>
-
-      {/* 当前会话比率 (上下文窗口占用率) */}
-      <div
-        testId="telemetry-context-ratio"
-        aria-label={`当前上下文占用 ${formatNumber(currentContextTokens)} / ${formatNumber(contextLimit)} (${contextRatio}%)`}
+        aria-label={`最后一次请求总 Token 消耗: ${formatNumber(totalTokens)}`}
         style={{
           display: 'flex',
           flexDirection: 'row',
           alignItems: 'center',
           gap: 4,
           cursor: 'default',
+        }}
+      >
+        <Icon name="database" size={12} color={C.tertiary} />
+        <text style={{ fontSize: 11.5, color: C.secondary, whiteSpace: 'nowrap' }}>
+          {`${formatTokenShort(totalTokens)} tok`}
+        </text>
+      </div>
+
+      <TelemetryDivider />
+
+      {/* 3. 系统提示词与上下文输入 */}
+      <div
+        testId="telemetry-prompt-tokens"
+        aria-label={`系统提示词与输入消耗: ${formatNumber(promptTokens)} Token`}
+        style={{
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'center',
+          cursor: 'default',
+        }}
+      >
+        <text style={{ fontSize: 11.5, color: C.secondary, whiteSpace: 'nowrap' }}>
+          {`提示词 ${formatTokenShort(promptTokens)}`}
+        </text>
+      </div>
+
+      <TelemetryDivider />
+
+      {/* 4. 模型回复输出 */}
+      <div
+        testId="telemetry-completion-tokens"
+        aria-label={`模型生成输出消耗: ${formatNumber(completionTokens)} Token`}
+        style={{
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'center',
+          cursor: 'default',
+        }}
+      >
+        <text style={{ fontSize: 11.5, color: C.secondary, whiteSpace: 'nowrap' }}>
+          {`输出 ${formatTokenShort(completionTokens)}`}
+        </text>
+      </div>
+
+      <TelemetryDivider />
+
+      {/* 5. 缓存命中 */}
+      <div
+        testId="telemetry-cached-tokens"
+        aria-label={`缓存命中读取: ${formatNumber(cachedTokens)} Token (命中率 ${cacheHitRatio}%)`}
+        style={{
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'center',
+          cursor: 'default',
+        }}
+      >
+        <text style={{ fontSize: 11.5, color: C.secondary, whiteSpace: 'nowrap' }}>
+          {cachedTokens > 0
+            ? `缓存 ${formatTokenShort(cachedTokens)} (${cacheHitRatio}%)`
+            : '缓存 0'}
+        </text>
+      </div>
+
+      <TelemetryDivider />
+
+      {/* 6. 单次请求用时 */}
+      <div
+        testId="telemetry-duration"
+        aria-label={`最后一次请求用时: ${durationMs}ms`}
+        style={{
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 4,
+          cursor: 'default',
+        }}
+      >
+        <Icon name="clock" size={12} color={C.tertiary} />
+        <text style={{ fontSize: 11.5, color: C.secondary, whiteSpace: 'nowrap' }}>
+          {`用时 ${formatElapsed(durationMs)}`}
+        </text>
+      </div>
+
+      <TelemetryDivider />
+
+      {/* 7. 上下文窗口占用率与深度洞察触发器 */}
+      <div
+        testId="telemetry-context-ratio"
+        role="button"
+        aria-label={`当前上下文占用 ${formatNumber(currentContextTokens)} / ${formatNumber(contextLimit)} (${contextRatio}%)，点击查看细分构成与深度洞察`}
+        onClick={() => setPopoverOpen((open) => !open)}
+        style={{
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 5,
+          cursor: 'pointer',
+          paddingLeft: 4,
+          paddingRight: 4,
+          paddingTop: 1,
+          paddingBottom: 1,
+          borderRadius: 4,
+          backgroundColor: popoverOpen ? C.chip : 'transparent',
+          hover: { backgroundColor: C.chipHover },
         }}
       >
         <Icon name="pieChart" size={12} color={contextColor} />
@@ -244,9 +387,35 @@ export function ComposerTelemetryBar({
             whiteSpace: 'nowrap',
           }}
         >
-          {`${contextRatio}%`}
+          {`上下文 ${contextRatio === 0 && currentContextTokens > 0 ? '<1%' : `${contextRatio}%`}`}
         </text>
+        {/* 微型进度条 */}
+        <div
+          style={{
+            width: 24,
+            height: 4,
+            borderRadius: 2,
+            backgroundColor: C.overlay,
+            overflow: 'hidden',
+          }}
+        >
+          <div
+            style={{
+              width: `${Math.max(4, Math.min(100, contextRatio))}%`,
+              height: '100%',
+              backgroundColor: contextColor,
+            }}
+          />
+        </div>
       </div>
+
+      {/* 点击弹出的上下文用量与健康度悬浮面板 */}
+      {popoverOpen ? (
+        <ContextUsagePopover
+          summary={telemetry.contextSummary}
+          onClose={() => setPopoverOpen(false)}
+        />
+      ) : null}
     </div>
   )
 }
@@ -323,6 +492,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
   const ready = currentDraft.trim().length > 0 || images.length > 0
   const approval = APPROVAL_OPTIONS.find((option) => option.value === store.approval)!
   const effort = EFFORT_OPTIONS.find((option) => option.value === store.effort)!
+  const modeOption = MODE_OPTIONS.find((m) => m.value === (store.mode ?? 'code')) ?? MODE_OPTIONS[0]!
   const modelLabel = store.currentModel ? store.currentModel : '配置模型'
   const imageEntries = store.entries.filter((f) => /\.(png|jpe?g|webp|gif|svg)$/i.test(f))
 
@@ -362,79 +532,57 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
             justifyContent: 'space-between',
             width: '100%',
             maxWidth: M.composerMax,
-            backgroundColor: C.card,
+            backgroundColor: C.canvas,
             borderWidth: 1,
-            borderColor: C.cardBorder,
+            borderColor: C.borderStrong,
             borderRadius: 14,
             paddingLeft: 16,
-            paddingRight: 16,
-            paddingTop: 12,
-            paddingBottom: 12,
+            paddingRight: 12,
+            paddingTop: 10,
+            paddingBottom: 10,
             gap: 12,
           }}
         >
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 12,
-              minWidth: 0,
-              flexGrow: 1,
-            }}
-          >
+          <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 10, flexGrow: 1, minWidth: 0 }}>
             <div
               style={{
+                width: 26,
+                height: 26,
+                borderRadius: 7,
+                backgroundColor: C.chip,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                width: 32,
-                height: 32,
-                borderRadius: 8,
-                backgroundColor: C.overlay,
                 flexShrink: 0,
               }}
             >
-              <Icon name="bot" size={18} color={C.link} />
+              <Icon name="bot" size={14} color={C.link} />
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-              <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                 <text style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
                   子智能体专属执行会话
                 </text>
                 <div
                   style={{
-                    display: 'flex',
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 4,
                     paddingLeft: 6,
                     paddingRight: 6,
                     height: 18,
                     borderRadius: 4,
-                    backgroundColor: isRunning ? C.chip : C.overlay,
+                    backgroundColor: C.chipHover,
+                    display: 'flex',
+                    alignItems: 'center',
                   }}
                 >
-                  <Icon
-                    name={isRunning ? 'dot' : 'circleCheck'}
-                    size={isRunning ? 6 : 10}
-                    color={isRunning ? C.success : C.faint}
-                  />
-                  <text
-                    style={{
-                      fontSize: 10.5,
-                      lineHeight: 14,
-                      color: isRunning ? C.text : C.faint,
-                    }}
-                  >
-                    {isRunning ? '正在异步运行中' : '执行完毕'}
+                  <text style={{ fontSize: 10, color: C.tertiary, whiteSpace: 'nowrap' }}>
+                    独立工作区
                   </text>
                 </div>
               </div>
               <text
                 style={{
-                  fontSize: 11.5,
-                  color: C.secondary,
+                  fontSize: 11,
+                  color: C.faint,
                   whiteSpace: 'nowrap',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
@@ -568,6 +716,10 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
           placeholder={
             running
               ? '继续输入以排队后续修改'
+              : store.mode === 'plan'
+              ? '描述要 Agent 完成的任务 (Plan 规划模式)'
+              : store.mode === 'create'
+              ? '描述要 Agent 完成的任务 (Create 创造模式)'
               : centered
               ? '描述要 Agent 完成的任务 (Ask anything, @ to mention, / for actions)'
               : '描述要 Agent 完成的任务'
@@ -758,6 +910,27 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
               </div>
             </Select>
           ) : null}
+
+          <ChipSelect
+            testId="mode-select"
+            value={store.mode ?? 'code'}
+            onChange={(next) => store.setMode(next as AgentMode)}
+            items={MODE_OPTIONS}
+            icon={modeOption.icon}
+            label={modeOption.label}
+            menuWidth={250}
+          >
+            {MODE_OPTIONS.map((m) => (
+              <SelectItem key={m.value} testId={`mode-option-${m.value}`} value={m.value} style={menuItemStyle}>
+                <MenuRow
+                  label={m.label}
+                  description={m.desc}
+                  selected={(store.mode ?? 'code') === m.value}
+                />
+              </SelectItem>
+            ))}
+          </ChipSelect>
+
           <ChipSelect
             testId="approval"
             value={store.approval}

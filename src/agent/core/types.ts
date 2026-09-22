@@ -4,6 +4,7 @@
  */
 
 import type { TokenUsage } from '../ai/types'
+import type { ChatCompletionMessageParam } from '../ai/stream'
 
 export type ToolExecutionMode = 'sequential' | 'parallel'
 export type QueueMode = 'all' | 'one-at-a-time'
@@ -134,6 +135,18 @@ export type AgentEvent =
   | { type: 'tool_execution_start'; toolCallId: string; toolName: string; args: Record<string, unknown> }
   | { type: 'tool_execution_update'; toolCallId: string; partialResult: AgentToolResult }
   | { type: 'tool_execution_end'; toolCallId: string; result: AgentToolResult }
+  | {
+      type: 'llm_request'
+      model: string
+      baseUrl: string
+      messages: ChatCompletionMessageParam[]
+      tools?: unknown[]
+    }
+  | {
+      type: 'llm_response'
+      model: string
+      message: AssistantMessage
+    }
 
 export interface AgentState {
   systemPrompt: string

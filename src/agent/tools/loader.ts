@@ -304,7 +304,8 @@ export class ExtensionLoader {
   async createPluginTemplate(
     workspace: string,
     scope: 'workspace' | 'global',
-    rawName: string
+    rawName: string,
+    customCode?: string
   ): Promise<string> {
     const cleanName = rawName.trim().replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_')
     const fileName = `${cleanName || 'my_custom_tool'}.ts`
@@ -317,7 +318,7 @@ export class ExtensionLoader {
     const fullPath = join(targetDir, fileName)
 
     const toolIdentifier = cleanName.replace(/-/g, '_')
-    const code = `/**
+    const code = customCode?.trim() || `/**
  * 扩展工具: ${cleanName}
  *
  * 可以在这里编写自定义逻辑，Agent 会在需要时调用此工具。

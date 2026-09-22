@@ -26,6 +26,7 @@ import {
 import { runAgentLoop } from './core/agent-loop'
 import type {
   AgentMessage,
+  AssistantMessage,
   BeforeToolCallContext,
   BeforeToolCallResult,
   ToolCallBlock,
@@ -49,7 +50,7 @@ import {
   type SubagentStepUpdate,
 } from './subagents'
 import { applyAppearance, appearance, shortPath, type Appearance } from '../theme'
-import { computeThreadStats, type DebugEntry, type Item, type Thread, type ThreadStats } from './types'
+import { computeThreadStats, type AgentMode, type DebugEntry, type Item, type Thread, type ThreadStats } from './types'
 
 export type ApprovalMode = 'auto' | 'ask' | 'readonly'
 export type Effort = 'max' | 'high' | 'medium' | 'low'
@@ -106,6 +107,7 @@ function makeThread(workspace: string): Thread {
     workspace,
     items: [],
     messages: [],
+    mode: 'code',
   }
 }
 
@@ -124,6 +126,8 @@ export class AgentStore {
   openTabIds: string[] = []
   approval: ApprovalMode = 'auto'
   effort: Effort = 'max'
+  /** 协作模式：code (敏捷编码) | plan (规划设计) | create (元开发/智能体自我进化) */
+  mode: AgentMode = 'code'
   debugOpen = false
   settingsOpen = false
   pluginsOpen = false
@@ -147,6 +151,15 @@ export class AgentStore {
   supportsImages: boolean = false
   /** 待填入 Composer 的草稿文本回调，用于提示词一键应用到当前输入框 */
   pendingDraft: string | null = null
+
+  /** 切换当前协作模式 */
+  setMode(mode: AgentMode) {
+    this.mode = mode
+    if (this.active) {
+      this.active.mode = mode
+    }
+    this.notify()
+  }
 
   /** 将提示词应用到当前对话输入框并自动关闭插件窗口 */
   applyPromptToComposer(content: string) {
@@ -574,6 +587,7 @@ export class AgentStore {
   /** A new conversation in the open project, unless another one is named. */
   newThread(workspace: string = this.project): Thread {
     const thread = makeThread(workspace)
+    this.mode = thread.mode ?? 'code'
     this.threads = [thread, ...this.threads]
     this.activeId = thread.id
     this.openTab(thread.id)
@@ -632,6 +646,9 @@ export class AgentStore {
       return
     }
     this.activeId = id
+    if (nextThread) {
+      this.mode = nextThread.mode ?? 'code'
+    }
     if (beforeThread && nextThread && beforeThread.workspace !== nextThread.workspace) {
       void this.refresh()
     }
@@ -1031,6 +1048,14 @@ export class AgentStore {
           if (controller.signal.aborted) break
 
           switch (event.type) {
+            case 'llm_request':
+              this.logLlmRequest(event)
+              break
+
+            case 'llm_response':
+              this.logLlmResponse(event)
+              break
+
             case 'turn_start':
               stepsExecuted += 1
               options.onStepUpdate?.({
@@ -1342,9 +1367,89 @@ export class AgentStore {
 
   // --------------------------------------------------------------------- loop
 
-  private push(entry: { kind: DebugEntry['kind']; text: string }): void {
+  clearLog(): void {
+    this.log = []
+    this.notify()
+  }
+
+  private push(entry: {
+    kind: DebugEntry['kind']
+    text: string
+    payload?: unknown
+    raw?: string
+    model?: string
+    durationMs?: number
+  }): void {
     this.logId += 1
-    this.log = [...this.log.slice(-MAX_LOG), { id: this.logId, at: Date.now(), ...entry }]
+    const raw =
+      entry.raw ??
+      (entry.payload !== undefined ? JSON.stringify(entry.payload, null, 2) : undefined)
+    this.log = [
+      ...this.log.slice(-MAX_LOG),
+      { id: this.logId, at: Date.now(), ...entry, raw },
+    ]
+  }
+
+  private logLlmRequest(event: {
+    model: string
+    baseUrl: string
+    messages: any[]
+    tools?: any[]
+  }): void {
+    const msgCount = event.messages?.length ?? 0
+    const toolCount = event.tools?.length ?? 0
+    const summary = `${event.model} @ ${event.baseUrl}（${msgCount} 条消息${toolCount > 0 ? ` · ${toolCount} 个工具` : ''}）`
+    this.push({
+      kind: 'request',
+      model: event.model,
+      text: summary,
+      payload: {
+        model: event.model,
+        baseUrl: event.baseUrl,
+        messagesCount: msgCount,
+        toolsCount: toolCount,
+        messages: event.messages,
+        tools: event.tools,
+      },
+    })
+    this.notifySoon()
+  }
+
+  private logLlmResponse(event: {
+    model: string
+    message: AssistantMessage
+  }): void {
+    const m = event.message
+    const summaryParts: string[] = []
+    if (m.durationMs) summaryParts.push(`${(m.durationMs / 1000).toFixed(1)}s`)
+    if (m.usage?.totalTokens) summaryParts.push(`${m.usage.totalTokens} tok`)
+    if (m.usage?.cachedTokens) summaryParts.push(`缓存 ${m.usage.cachedTokens}`)
+    if (m.toolCalls && m.toolCalls.length > 0) {
+      summaryParts.push(`调用 ${m.toolCalls.map((c: ToolCallBlock) => c.name).join(', ')}`)
+    } else if (m.content) {
+      summaryParts.push('回复完成')
+    } else if (m.thinking) {
+      summaryParts.push('思考完成')
+    }
+
+    const summary = `${event.model} 响应 · ${summaryParts.join(' · ') || '完成'}`
+    this.push({
+      kind: 'response',
+      model: event.model,
+      durationMs: m.durationMs,
+      text: summary,
+      payload: {
+        model: event.model,
+        content: m.content || undefined,
+        thinking: m.thinking || undefined,
+        toolCalls: m.toolCalls && m.toolCalls.length > 0 ? m.toolCalls : undefined,
+        usage: m.usage,
+        durationMs: m.durationMs,
+        stopReason: m.stopReason,
+        errorMessage: m.errorMessage,
+      },
+    })
+    this.notifySoon()
   }
 
   /** 会话 JSONL 是追加写的流水账，写不进去也不该打断这一轮。 */
@@ -1400,7 +1505,6 @@ export class AgentStore {
       await this.offlineTurn(thread, prompt)
       return
     }
-    this.push({ kind: 'request', text: `${config.model} @ ${config.baseUrl}（${config.source}）` })
 
     const userMessage: AgentMessage = {
       role: 'user',
@@ -1417,8 +1521,9 @@ export class AgentStore {
     // 扩展得先注册完，这一轮的工具表才不会漏掉它们（刚启动就开始打字也不会漏）。
     await this.extensionsReady
 
-    // 每轮重新问注册中心要一次工具：刚加载的扩展工具这一轮就要能被模型看见。
-    const tools = defaultToolRegistry.getToolsForWorkspace(thread.workspace)
+    const currentMode = thread.mode ?? this.mode ?? 'code'
+    // 每轮按当前协作模式重新获取工具：plan 模式只读防写，create 模式激活元开发 CRUD 工具
+    const tools = defaultToolRegistry.getToolsForMode(thread.workspace, currentMode)
     // 助手行和思考行都等到第一段真的到了才建：思考先行，所以思考行会排在回答上
     // 面；只调工具、不说一句话的那一轮则一行都不留（和以前一样什么都不显示）。
     let assistant: Extract<Item, { kind: 'assistant' }> | null = null
@@ -1428,7 +1533,7 @@ export class AgentStore {
       if (reasoning && reasoning.endedAt === undefined) reasoning.endedAt = Date.now()
     }
 
-    const systemPrompt = await defaultPromptManager.getCompositeSystemPrompt(thread.workspace)
+    const systemPrompt = await defaultPromptManager.getCompositeSystemPrompt(thread.workspace, currentMode)
 
     const loop = runAgentLoop(thread.messages, config, {
       tools,
@@ -1448,6 +1553,14 @@ export class AgentStore {
         defaultExtensionLoader.dispatchAgentEvent(event)
 
         switch (event.type) {
+          case 'llm_request':
+            this.logLlmRequest(event)
+            break
+
+          case 'llm_response':
+            this.logLlmResponse(event)
+            break
+
           case 'message_start':
             if (event.message.role === 'assistant') {
               assistant = null
@@ -1620,6 +1733,28 @@ export class AgentStore {
     call: ToolCallBlock,
     signal?: AbortSignal
   ): Promise<BeforeToolCallResult | undefined> {
+    const currentMode = thread.mode ?? this.mode ?? 'code'
+    if (currentMode === 'plan' && defaultToolRegistry.isWriteTool(call.name)) {
+      const card: ToolCard = {
+        kind: 'tool',
+        id: nextId('item'),
+        at: Date.now(),
+        callId: call.id,
+        name: call.name,
+        args: call.arguments,
+        rawArgs: call.rawArguments,
+        status: 'denied',
+        output: '当前处于 Plan 规划模式，只允许只读分析与方案设计，禁止修改工作区或执行外部命令。请输出方案后提示用户切换到 Code 模式。',
+      }
+      thread.items.push(card)
+      this.cards.set(call.id, card)
+      this.notify()
+      return {
+        block: true,
+        reason: '当前处于 Plan 规划模式，只允许只读分析与方案设计，禁止修改工作区或执行外部命令。请输出方案后提示用户切换到 Code 模式。',
+      }
+    }
+
     const card: ToolCard = {
       kind: 'tool',
       id: nextId('item'),

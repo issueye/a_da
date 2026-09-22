@@ -98,6 +98,8 @@ export function computeThreadStats(thread: Thread, _model?: string): ThreadStats
   }
 }
 
+export type AgentMode = 'code' | 'plan' | 'create'
+
 export interface Thread {
   id: string
   title: string
@@ -107,6 +109,7 @@ export interface Thread {
   items: Item[]
   /** Everything the model has been told in this thread, in the core message model. */
   messages: AgentMessage[]
+  mode?: AgentMode
   parentId?: string
   subagentId?: string
   isSubagent?: boolean
@@ -115,8 +118,16 @@ export interface Thread {
 export interface DebugEntry {
   id: number
   at: number
-  kind: 'request' | 'delta' | 'tools' | 'tool' | 'error' | 'info'
+  kind: 'request' | 'response' | 'delta' | 'tools' | 'tool' | 'error' | 'info'
   text: string
+  /** 结构化的完整请求或响应负载（如 messages 列表、回复对象等） */
+  payload?: unknown
+  /** 格式化后的完整 JSON 字符串，便于直接展示与复制 */
+  raw?: string
+  /** 涉及的大模型名称 */
+  model?: string
+  /** 接口调用耗时（毫秒） */
+  durationMs?: number
 }
 
 export interface ToolOutcome {

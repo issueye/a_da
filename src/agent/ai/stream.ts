@@ -218,6 +218,9 @@ export async function* streamModelChat(
             chunk.usage.prompt_tokens_details?.cached_tokens ??
             chunk.usage.prompt_cache_hit_tokens ??
             chunk.usage.cache_read_input_tokens ??
+            chunk.usage.cached_tokens ??
+            chunk.usage.prompt_tokens_details?.cache_read_tokens ??
+            chunk.usage.prompt_cache_tokens ??
             0
           const usage: TokenUsage = {
             promptTokens: chunk.usage.prompt_tokens ?? 0,

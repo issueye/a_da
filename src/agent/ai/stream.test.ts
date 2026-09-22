@@ -140,4 +140,83 @@ describe('streamModelChat Token 统计与流式参数', () => {
       globalThis.fetch = originalFetch
     }
   })
+
+  test('支持从不同格式的 usage 中正确提取 Prompt Cache 命中 Token', async () => {
+    const { streamModelChat } = await import('./stream')
+    const originalFetch = globalThis.fetch
+
+    const sseData = [
+      'data: {"choices":[{"delta":{"content":"测试缓存"}}],"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"cached_tokens":80}}\n\n',
+      'data: [DONE]\n\n',
+    ].join('')
+
+    globalThis.fetch = (async () => {
+      const encoder = new TextEncoder()
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(sseData))
+          controller.close()
+        },
+      })
+      return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    }) as any
+
+    try {
+      const deltas = []
+      for await (const delta of streamModelChat(
+        { baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', model: 'deepseek-chat' },
+        [{ role: 'user', content: '缓存测试' }]
+      )) {
+        deltas.push(delta)
+      }
+
+      const usageDelta = deltas.find((d) => d.type === 'usage')
+      expect(usageDelta).toBeDefined()
+      expect(usageDelta?.usage?.cachedTokens).toBe(80)
+      expect(usageDelta?.usage?.promptTokens).toBe(100)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('支持从 OpenAI / DeepSeek prompt_tokens_details.cached_tokens 中提取缓存命中 Token', async () => {
+    const { streamModelChat } = await import('./stream')
+    const originalFetch = globalThis.fetch
+
+    const sseData = [
+      'data: {"choices":[{"delta":{"content":"好"}}]}\n\n',
+      'data: {"choices":[],"id":"4e0eb98b-c4df-4e91-b834-d536adc3fd65","model":"deepseek-v4.1-flash","object":"chat.completion.chunk","usage":{"prompt_tokens":2485,"completion_tokens":198,"total_tokens":2683,"prompt_tokens_details":{"cached_tokens":2304}}}\n\n',
+      'data: [DONE]\n\n',
+    ].join('')
+
+    globalThis.fetch = (async () => {
+      const encoder = new TextEncoder()
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(sseData))
+          controller.close()
+        },
+      })
+      return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    }) as any
+
+    try {
+      const deltas = []
+      for await (const delta of streamModelChat(
+        { baseUrl: 'https://api.deepseek.com', apiKey: 'test-key', model: 'deepseek-v4.1-flash' },
+        [{ role: 'user', content: '测试' }]
+      )) {
+        deltas.push(delta)
+      }
+
+      const usageDelta = deltas.find((d) => d.type === 'usage')
+      expect(usageDelta).toBeDefined()
+      expect(usageDelta?.usage?.promptTokens).toBe(2485)
+      expect(usageDelta?.usage?.completionTokens).toBe(198)
+      expect(usageDelta?.usage?.totalTokens).toBe(2683)
+      expect(usageDelta?.usage?.cachedTokens).toBe(2304)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
 })

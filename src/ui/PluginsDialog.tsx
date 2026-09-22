@@ -13,6 +13,8 @@ import { BUILTIN_TOOLS_METADATA } from '../agent/tools/registry'
 import { defaultPromptManager } from '../agent/prompts/manager'
 import type { PromptItem } from '../agent/prompts/types'
 import { defaultSubagentManager, type SubagentProfile, SUBAGENT_HEX_COLORS } from '../agent/subagents'
+import { defaultSkillManager, type SkillSummary } from '../agent/skills'
+import { SkillsPanel } from './SkillsPanel'
 import { copyToClipboard } from '../platform/clipboard'
 import { getAppHome } from '../agent/home'
 import { C, docTheme, editorTheme, FONT_MONO, M } from '../theme'
@@ -20,9 +22,10 @@ import { Icon, IconButton } from './controls'
 import type { IconName } from '../icons'
 import { join } from 'node:path'
 
-type TabType = 'subagents' | 'prompts' | 'workspace' | 'global' | 'builtins'
+type TabType = 'skills' | 'subagents' | 'prompts' | 'workspace' | 'global' | 'builtins'
 
 const TABS: { id: TabType; label: string; icon: IconName }[] = [
+  { id: 'skills', label: '技能库 (Skills)', icon: 'zap' },
   { id: 'subagents', label: '子智能体', icon: 'bot' },
   { id: 'prompts', label: '提示词管理', icon: 'sparkles' },
   { id: 'workspace', label: '工作区插件', icon: 'folder' },
@@ -76,18 +79,23 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
   const [newPluginName, setNewPluginName] = useState('')
   const [createNotice, setCreateNotice] = useState<string | null>(null)
 
-  // 加载与刷新插件列表、提示词列表与子智能体列表
+  // 技能库管理状态
+  const [skills, setSkills] = useState<SkillSummary[]>([])
+
+  // 加载与刷新插件列表、提示词列表、子智能体与技能库
   const refreshList = async () => {
     setLoading(true)
     try {
-      const [pluginItems, promptItems, subagentItems] = await Promise.all([
+      const [pluginItems, promptItems, subagentItems, skillItems] = await Promise.all([
         defaultExtensionLoader.scanPlugins(store.project),
         defaultPromptManager.scanPrompts(store.project),
         defaultSubagentManager.getSubagents(store.project),
+        defaultSkillManager.scanSkills(store.project),
       ])
       setPlugins(pluginItems)
       setPrompts(promptItems)
       setSubagents(subagentItems)
+      setSkills(skillItems)
     } finally {
       setLoading(false)
     }
@@ -397,7 +405,9 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
           >
             {TABS.map((item) => {
               const count =
-                item.id === 'subagents'
+                item.id === 'skills'
+                  ? skills.length
+                  : item.id === 'subagents'
                   ? subagents.length
                   : item.id === 'prompts'
                   ? prompts.length
@@ -483,7 +493,15 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
               borderBottomRightRadius: 11,
             }}
           >
-            {tab === 'subagents' ? (
+            {tab === 'skills' ? (
+              <SkillsPanel
+                skills={skills}
+                onRefresh={refreshList}
+                loading={loading}
+                workspaceRoot={store.project}
+                onTrace={(msg) => store.trace(msg)}
+              />
+            ) : tab === 'subagents' ? (
               <SubagentsPanel
                 subagents={subagents}
                 filter={subagentFilter}

@@ -1,0 +1,79 @@
+import { describe, expect, test } from 'bun:test'
+import { computeContextBreakdown } from './context-breakdown'
+import type { Item } from '../types'
+
+describe('上下文分解与统计分析引擎', () => {
+  test('根据真实返回的 usage 与消息构成，准确切分各组成部分与缓存命中率', () => {
+    const items: Item[] = [
+      { kind: 'user', id: 'u1', at: 1000, text: '请帮我实现一个高效的二叉树' },
+      {
+        kind: 'tool',
+        id: 't1',
+        at: 1010,
+        callId: 'c1',
+        name: 'read_file',
+        args: {},
+        rawArgs: '',
+        status: 'done',
+        output: 'struct Node { value: i32, left: Option<Box<Node>>, right: Option<Box<Node>> }',
+      },
+      {
+        kind: 'assistant',
+        id: 'a1',
+        at: 1020,
+        text: '这是基于 Rust 实现的高效二叉树，已经加上了所有权与生命周期管理。',
+      },
+    ]
+
+    const result = computeContextBreakdown({
+      items,
+      systemPrompt: '你是全能代码编程助手，遵守 Rust 最佳安全实践。',
+      skillsPrompt: '- **code-review**: 审查代码内存安全',
+      toolSpecsChars: 200,
+      realPromptTokens: 2485,
+      realCompletionTokens: 198,
+      realCachedTokens: 2304,
+      contextLimit: 128_000,
+    })
+
+    // 验证总体统计
+    expect(result.usedTokens).toBe(2485 + 198)
+    expect(result.maxTokens).toBe(128_000)
+    expect(result.percent).toBeCloseTo((2485 + 198) / 128_000, 4)
+    expect(result.formattedSummary).toContain('2.7k/128k')
+
+    // 验证缓存命中率 (2304 / 2485 ≈ 92.7%)
+    expect(result.cacheHitRate).toBeDefined()
+    expect(result.cacheHitRate!).toBeGreaterThan(0.9)
+    expect(result.cachedTokens).toBe(2304)
+
+    // 验证包含会话历史、系统提示词、技能、工具与本次回复的拆分项
+    const sources = result.breakdown.map((b) => b.source)
+    expect(sources).toContain('messages')
+    expect(sources).toContain('system_prompt')
+    expect(sources).toContain('skills')
+    expect(sources).toContain('tools')
+    expect(sources).toContain('completion')
+
+    // 验证排序：从大到小
+    for (let i = 1; i < result.breakdown.length; i++) {
+      expect(result.breakdown[i - 1].chars).toBeGreaterThanOrEqual(result.breakdown[i].chars)
+    }
+  })
+
+  test('在尚未返回 realPromptTokens 时能够稳健退回字符估算模式', () => {
+    const items: Item[] = [
+      { kind: 'user', id: 'u1', at: 1000, text: '你好' },
+    ]
+
+    const result = computeContextBreakdown({
+      items,
+      contextLimit: 64_000,
+    })
+
+    expect(result.usedTokens).toBeGreaterThan(0)
+    expect(result.maxTokens).toBe(64_000)
+    expect(result.cacheHitRate).toBeNull()
+    expect(result.cachedTokens).toBe(0)
+  })
+})

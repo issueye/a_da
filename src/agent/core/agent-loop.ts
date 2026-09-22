@@ -7,6 +7,7 @@
 import { readFileSync } from 'node:fs'
 import { extname, isAbsolute, join } from 'node:path'
 import type { ProviderConfig } from '../config'
+import type { TokenUsage } from '../ai/types'
 import { streamModelChat, type ChatCompletionMessageParam, type ChatCompletionContentPart } from '../ai/stream'
 import type {
   AgentEndReason,
@@ -222,7 +223,13 @@ export async function* runAgentLoop(
   const workingMessages = [...messages]
   let endReason: AgentEndReason = 'completed'
   const loopStartTime = Date.now()
-  const accumulatedTokens = { promptTokens: 0, completionTokens: 0, totalTokens: 0, thinkingTokens: 0 }
+  const accumulatedTokens = {
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    thinkingTokens: 0,
+    cachedTokens: 0,
+  }
 
   yield { type: 'agent_start' }
 
@@ -256,6 +263,18 @@ export async function* runAgentLoop(
         workspace: options.workspace,
       })
       const rawToolCalls: ToolCallBlock[] = []
+
+      // 派发接口请求事件（记录完整请求 Messages、Tools 与参数）
+      yield {
+        type: 'llm_request',
+        model: config.model,
+        baseUrl: config.baseUrl,
+        messages: llmMessages,
+        tools: toolSpecs.length > 0 ? toolSpecs : undefined,
+      }
+
+      const stepStartTime = Date.now()
+      let stepUsage: TokenUsage | undefined
 
       // 发起流式推理
       for await (const chunk of streamModelChat(config, llmMessages, {
@@ -292,17 +311,24 @@ export async function* runAgentLoop(
             delta: { toolCall: block },
           }
         } else if (chunk.type === 'usage' && chunk.usage) {
+          stepUsage = { ...chunk.usage }
           accumulatedTokens.promptTokens += chunk.usage.promptTokens
           accumulatedTokens.completionTokens += chunk.usage.completionTokens
           accumulatedTokens.totalTokens += chunk.usage.totalTokens
           if (chunk.usage.thinkingTokens) {
             accumulatedTokens.thinkingTokens += chunk.usage.thinkingTokens
           }
+          if (chunk.usage.cachedTokens) {
+            accumulatedTokens.cachedTokens = chunk.usage.cachedTokens
+          }
+
+          // 保持单次请求的真实 TokenUsage（含 cachedTokens），避免覆盖为累加值导致统计虚高
           assistantMessage.usage = {
-            promptTokens: accumulatedTokens.promptTokens,
-            completionTokens: accumulatedTokens.completionTokens,
-            totalTokens: accumulatedTokens.totalTokens,
-            thinkingTokens: accumulatedTokens.thinkingTokens || undefined,
+            promptTokens: chunk.usage.promptTokens,
+            completionTokens: chunk.usage.completionTokens,
+            totalTokens: chunk.usage.totalTokens,
+            thinkingTokens: chunk.usage.thinkingTokens,
+            cachedTokens: chunk.usage.cachedTokens,
           }
           yield {
             type: 'message_update',
@@ -319,17 +345,32 @@ export async function* runAgentLoop(
         }
       }
 
-      assistantMessage.durationMs = Math.max(1, Date.now() - loopStartTime)
-      if (accumulatedTokens.totalTokens > 0) {
+      // 记录单次大模型调用的真实耗时与Token数据
+      assistantMessage.durationMs = Math.max(1, Date.now() - stepStartTime)
+      if (stepUsage) {
+        assistantMessage.usage = {
+          promptTokens: stepUsage.promptTokens,
+          completionTokens: stepUsage.completionTokens,
+          totalTokens: stepUsage.totalTokens,
+          thinkingTokens: stepUsage.thinkingTokens,
+          cachedTokens: stepUsage.cachedTokens,
+        }
+      } else if (accumulatedTokens.totalTokens > 0) {
         assistantMessage.usage = {
           promptTokens: accumulatedTokens.promptTokens,
           completionTokens: accumulatedTokens.completionTokens,
           totalTokens: accumulatedTokens.totalTokens,
           thinkingTokens: accumulatedTokens.thinkingTokens || undefined,
+          cachedTokens: accumulatedTokens.cachedTokens || undefined,
         }
       }
 
       yield { type: 'message_end', message: assistantMessage }
+      yield {
+        type: 'llm_response',
+        model: config.model,
+        message: assistantMessage,
+      }
       workingMessages.push(assistantMessage)
 
       // 如果未产生工具调用，本轮结束
