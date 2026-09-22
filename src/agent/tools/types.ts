@@ -51,3 +51,11 @@ export interface ListToolArgs {
   path?: string
   depth?: number
 }
+
+export interface SubagentToolArgs {
+  subagent_id: string
+  task: string
+  additional_context?: string
+  async?: boolean
+}
+

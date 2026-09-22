@@ -298,18 +298,10 @@ describeNative('Transcript UI 过程收缩交互', () => {
 
     await painted('Rust 是一门赋予每个人构建可靠且高效软件能力的语言。')
 
-    // 应该渲染耗时微徽章与统计信息
-    expect(await app.getByTestId('message-duration').count()).toBe(1)
-    expect(screen()).toContain('3.5s')
-
-    // 应该渲染 Token 统计徽标与输入输出明细
-    expect(await app.getByTestId('message-tokens').count()).toBe(1)
-    expect(screen()).toContain('1,280 tokens')
-    expect(screen()).toContain('820 ↑')
-    expect(screen()).toContain('460 ↓')
-
-    // 应该渲染快捷复制按钮
-    expect(screen()).toContain('复制回复')
+    // 验证回复内容正常渲染，且已移除助手消息下方的冗余统计栏
+    expect(await app.getByTestId('assistant-meta-bar').count()).toBe(0)
+    expect(await app.getByTestId('message-duration').count()).toBe(0)
+    expect(await app.getByTestId('message-tokens').count()).toBe(0)
 
     await app.close()
   }, 30_000)

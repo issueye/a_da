@@ -27,6 +27,8 @@ const TOOL_LABEL: Record<string, string> = {
   edit_file: '修改文件',
   run_command: '执行命令',
   todo: '任务规划',
+  invoke_subagent: '委派子智能体',
+  check_subagent: '查询子智能体',
 }
 
 const TOOL_ICON: Record<string, IconName> = {
@@ -37,6 +39,8 @@ const TOOL_ICON: Record<string, IconName> = {
   edit_file: 'file',
   run_command: 'terminal',
   todo: 'listTodo',
+  invoke_subagent: 'bot',
+  check_subagent: 'bot',
 }
 
 /**
@@ -72,7 +76,7 @@ const PATH_TOOLS = new Set(['read_file', 'write_file', 'edit_file', 'list_files'
  * 排版上的拆分。
  */
 function toolTarget(name: string, args: Record<string, unknown>): { target: string; dir: string } {
-  const summary = describeTool(name, args)
+  const summary = describeTool(name, args).replace(/\r?\n+/g, ' ').trim()
   if (!PATH_TOOLS.has(name)) return { target: summary, dir: '' }
   const cut = summary.lastIndexOf('/')
   if (cut < 0) return { target: summary, dir: '' }
@@ -137,8 +141,55 @@ function UserRow({ item }: { item: Extract<Item, { kind: 'user' }> }) {
           borderRadius: 10,
         }}
       >
+        {item.images && item.images.length > 0 ? (
+          <div
+            testId="user-images"
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              flexWrap: 'wrap',
+              gap: 6,
+              marginBottom: item.text.trim() ? 6 : 0,
+            }}
+          >
+            {item.images.map((img, idx) => (
+              <div
+                key={idx}
+                testId={`user-image-pill-${idx}`}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 4,
+                  paddingLeft: 6,
+                  paddingRight: 8,
+                  height: 22,
+                  borderRadius: 4,
+                  backgroundColor: C.chip,
+                  borderWidth: 1,
+                  borderColor: C.chipBorder,
+                }}
+              >
+                <Icon name="image" size={11} color={C.link} />
+                <text style={{ fontSize: 11, color: C.secondary }}>
+                  {img.startsWith('data:') ? '图片 (Base64)' : img.split(/[/\\]/).pop() ?? img}
+                </text>
+              </div>
+            ))}
+          </div>
+        ) : null}
         {lines.map((line, index) => (
-          <text key={index} style={{ fontSize: 13, lineHeight: 19, color: C.text }}>
+          <text
+            key={index}
+            style={{
+              fontSize: 13,
+              lineHeight: 19,
+              color: C.text,
+              flexGrow: 1,
+              minWidth: 0,
+              whiteSpace: 'normal',
+            }}
+          >
             {line || ' '}
           </text>
         ))}
@@ -169,15 +220,13 @@ export function formatNumber(n: number): string {
 export function formatTokenShort(n: number): string {
   if (n < 1000) return String(n)
   if (n < 10_000) return `${(n / 1000).toFixed(1)}k`
-  return `${Math.round(n / 1000)}k`
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`
+  const m = n / 1_000_000
+  return m >= 10 ? `${Math.round(m)}M` : `${m.toFixed(1).replace(/\.0$/, '')}M`
 }
 
 function AssistantRow({ item }: { item: Extract<Item, { kind: 'assistant' }> }) {
   if (!item.text.trim() && !item.streaming) return null
-
-  const hasStats = !item.streaming && (item.durationMs !== undefined || item.usage !== undefined)
-  const durationText = formatDuration(item.durationMs)
-  const usage = item.usage
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
@@ -194,78 +243,6 @@ function AssistantRow({ item }: { item: Extract<Item, { kind: 'assistant' }> }) 
         >
           <Icon name="dot" size={9} color={C.tertiary} />
           <text style={{ fontSize: 11.5, lineHeight: 16, color: C.tertiary }}>正在生成…</text>
-        </div>
-      ) : null}
-
-      {hasStats ? (
-        <div
-          testId="assistant-meta-bar"
-          style={{
-            display: 'flex',
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            paddingTop: 6,
-            marginTop: 4,
-            borderTopWidth: 1,
-            borderColor: C.cardBorder,
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 12,
-              flexWrap: 'wrap',
-            }}
-          >
-            {/* 耗时微徽标 */}
-            {durationText ? (
-              <div
-                testId="message-duration"
-                aria-label={`本次对话花费时间：${durationText}`}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 3.5,
-                }}
-              >
-                <Icon name="clock" size={11} color={C.faint} />
-                <text style={{ fontSize: 11, color: C.tertiary }}>{durationText}</text>
-              </div>
-            ) : null}
-
-            {/* Token 统计徽标 */}
-            {usage && usage.totalTokens > 0 ? (
-              <div
-                testId="message-tokens"
-                aria-label={`总计: ${formatNumber(usage.totalTokens)} tokens (输入: ${formatNumber(usage.promptTokens)} · 输出: ${formatNumber(usage.completionTokens)}${usage.thinkingTokens ? ` · 思考: ${formatNumber(usage.thinkingTokens)}` : ''})`}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 3.5,
-                }}
-              >
-                <Icon name="sparkles" size={11} color={C.faint} />
-                <text style={{ fontSize: 11, color: C.tertiary }}>
-                  {`${formatNumber(usage.totalTokens)} tokens`}
-                </text>
-                <text style={{ fontSize: 10.5, color: C.faint, marginLeft: 1 }}>
-                  {`(${formatNumber(usage.promptTokens)} ↑ / ${formatNumber(usage.completionTokens)} ↓)`}
-                </text>
-              </div>
-            ) : null}
-          </div>
-
-          {/* 快捷复制回复 */}
-          {item.text ? <CopyButton text={item.text} label="复制回复" /> : null}
-        </div>
-      ) : item.text && !item.streaming ? (
-        <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: 4 }}>
-          <CopyButton text={item.text} label="复制回复" />
         </div>
       ) : null}
     </div>
@@ -415,12 +392,108 @@ function TodoContent({ item }: { item: Extract<Item, { kind: 'tool' }> }) {
   )
 }
 
+function SubagentContent({ item, store }: { item: Extract<Item, { kind: 'tool' }>; store: AgentStore }) {
+  const subagentId = String(item.args?.subagent_id ?? 'subagent')
+  const task = String(item.args?.task ?? '')
+  const context = item.args?.additional_context ? String(item.args.additional_context) : ''
+  const output = item.output ?? ''
+
+  // 查找对应的子智能体会话（从输出中的子会话 ID 或 parentId/subagentId 匹配）
+  const idMatch = output.match(/子会话 ID:\s*([a-zA-Z0-9_\-]+)/)
+  const subagentThreadId = idMatch?.[1]
+  const targetThread = subagentThreadId
+    ? store.threads.find((t) => t.id === subagentThreadId)
+    : store.threads.find((t) => t.parentId === store.activeId && t.subagentId === subagentId)
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        paddingTop: 8,
+        paddingBottom: 8,
+        paddingLeft: 12,
+        paddingRight: 12,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          paddingBottom: 6,
+          borderBottomWidth: 1,
+          borderColor: C.cardBorder,
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Icon name="bot" size={13} color={C.link} />
+          <text style={{ fontSize: 12, fontWeight: 600, color: C.text }}>
+            {`子智能体 [${subagentId}]`}
+          </text>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          {targetThread ? (
+            <div
+              testId={`open-subagent-thread-${targetThread.id}`}
+              role="button"
+              aria-label="打开子会话页签"
+              onClick={() => {
+                store.openTab(targetThread.id)
+                store.selectThread(targetThread.id)
+              }}
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 4,
+                paddingLeft: 6,
+                paddingRight: 6,
+                height: 20,
+                borderRadius: 4,
+                cursor: 'pointer',
+                backgroundColor: C.overlay,
+                hover: { backgroundColor: C.chipHover },
+              }}
+            >
+              <Icon name="bot" size={11} color={C.link} />
+              <text style={{ fontSize: 10.5, lineHeight: 14, color: C.link }}>查看独立页签 →</text>
+            </div>
+          ) : null}
+          {output ? <CopyButton text={output} label="复制结论" /> : null}
+        </div>
+      </div>
+      {task ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <text style={{ fontSize: 11, color: C.tertiary, fontWeight: 500 }}>委派任务目标：</text>
+          <text style={{ fontSize: 11.5, lineHeight: 16, color: C.secondary, flexGrow: 1, minWidth: 0, whiteSpace: 'normal' }}>{task}</text>
+        </div>
+      ) : null}
+      {context ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2 }}>
+          <text style={{ fontSize: 11, color: C.tertiary, fontWeight: 500 }}>参考上下文：</text>
+          <text style={{ fontSize: 11, lineHeight: 15, color: C.faint, flexGrow: 1, minWidth: 0, whiteSpace: 'normal' }}>{context}</text>
+        </div>
+      ) : null}
+      {output ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 4 }}>
+          <text style={{ fontSize: 11, color: C.tertiary, fontWeight: 500 }}>执行过程与结论报告：</text>
+          <MonoBlock text={output} tone={item.status === 'error' ? C.danger : C.secondary} />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; store: AgentStore }) {
   const status = statusOf(item.status)
   /** 折叠 / 展开。默认一律收起：跑完的、失败的、被拒的都只占一行。 */
   const [open, setOpen] = useState(false)
   const stats = item.patch ? patchStats(item.patch) : null
   const isTodo = item.name === 'todo'
+  const isSubagent = item.name === 'invoke_subagent'
   const todos = isTodo ? parseTodos(item) : null
 
   let target = ''
@@ -428,15 +501,19 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
   if (isTodo && todos) {
     const completedCount = todos.filter((t) => t.status === 'completed').length
     const activeStep = todos.find((t) => t.status === 'in_progress') ?? todos.find((t) => t.status !== 'completed')
-    target = activeStep?.title ?? '待办列表'
+    target = (activeStep?.title ?? '待办列表').replace(/\r?\n+/g, ' ').trim()
     dir = `${completedCount}/${todos.length} 已完成`
+  } else if (isSubagent) {
+    const rawTask = String(item.args?.task ?? '').split('\n')[0]!.trim()
+    target = rawTask || '委派任务'
+    dir = item.args?.subagent_id ? `[${String(item.args.subagent_id)}]` : ''
   } else {
     const parsed = toolTarget(item.name, item.args)
-    target = parsed.target
-    dir = parsed.dir
+    target = parsed.target.replace(/\r?\n+/g, ' ').trim()
+    dir = parsed.dir.replace(/\r?\n+/g, ' ').trim()
   }
 
-  const detail = Boolean(item.patch) || Boolean(item.output) || isTodo
+  const detail = Boolean(item.patch) || Boolean(item.output) || isTodo || isSubagent
 
   return (
     <div
@@ -462,6 +539,7 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
           paddingRight: 8,
           borderRadius: 6,
           flexShrink: 0,
+          overflow: 'hidden',
           cursor: detail ? 'pointer' : 'default',
           hover: detail ? { backgroundColor: C.overlay } : undefined,
         }}
@@ -633,6 +711,7 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
           ) : null}
 
           {open && isTodo ? <TodoContent item={item} /> : null}
+          {open && isSubagent ? <SubagentContent item={item} store={store} /> : null}
 
           {open && item.patch ? (
             <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -690,7 +769,7 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
                       minWidth: 0,
                     }}
                   >
-                    {`$ ${String(item.args.command ?? '')}`}
+                    {`$ ${String(item.args.command ?? '').replace(/\r?\n+/g, ' ').trim()}`}
                   </text>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0 }}>
@@ -706,7 +785,7 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
             </div>
           ) : null}
 
-          {open && item.output && !item.patch && !isTodo && item.name !== 'run_command' ? (
+          {open && item.output && !item.patch && !isTodo && !isSubagent && item.name !== 'run_command' ? (
             <div
               style={{
                 display: 'flex',
@@ -854,7 +933,17 @@ function ThinkingBody({ text, isStreaming }: { text: string; isStreaming?: boole
           <CopyButton text={text} label="复制思考" />
         </div>
         {lines.slice(0, limit).map((line, index) => (
-          <text key={index} style={{ fontSize: 12, lineHeight: 18, color: C.secondary }}>
+          <text
+            key={index}
+            style={{
+              fontSize: 12,
+              lineHeight: 18,
+              color: C.secondary,
+              flexGrow: 1,
+              minWidth: 0,
+              whiteSpace: 'normal',
+            }}
+          >
             {line || ' '}
           </text>
         ))}
@@ -873,15 +962,23 @@ function ThinkingBody({ text, isStreaming }: { text: string; isStreaming?: boole
   )
 }
 
+/** 在长连续无空格字符串中的标点（如逗号、冒号、斜杠、花括号）后添加零宽换行机会，避免长 JSON/URL 撑爆单行 */
+function addBreakOpportunities(text: string): string {
+  return text.replace(/([,:{}\[\]/\\_&?=])(?!\s|$)/g, '$1\u200B')
+}
+
 function NoticeRow({ item }: { item: Extract<Item, { kind: 'notice' }> }) {
   const error = item.level === 'error'
+  const textWithBreaks = addBreakOpportunities(item.text)
+  const lines = textWithBreaks.split('\n')
+
   return (
     <div
       style={{
         display: 'flex',
         flexDirection: 'row',
         alignItems: 'flex-start',
-        gap: 7,
+        gap: 8,
         width: '100%',
         paddingTop: 8,
         paddingBottom: 8,
@@ -889,19 +986,43 @@ function NoticeRow({ item }: { item: Extract<Item, { kind: 'notice' }> }) {
         paddingRight: 10,
         borderRadius: 8,
         backgroundColor: error ? C.accentSoft : C.card,
+        borderWidth: error ? 1 : 0,
+        borderColor: error ? C.accent : undefined,
       }}
     >
-      <Icon name={error ? 'x' : 'check'} size={12} color={error ? C.accent : C.tertiary} />
-      <text
+      <div style={{ paddingTop: 3, flexShrink: 0 }}>
+        <Icon name={error ? 'x' : 'check'} size={12} color={error ? C.accent : C.tertiary} />
+      </div>
+      <div
         style={{
-          fontSize: 12,
-          lineHeight: 18,
-          color: error ? C.accent : C.secondary,
-          flexShrink: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          flexGrow: 1,
+          minWidth: 0,
+          gap: 2,
         }}
       >
-        {item.text}
-      </text>
+        {lines.map((line, index) => (
+          <text
+            key={index}
+            style={{
+              fontSize: 12,
+              lineHeight: 18,
+              color: error ? C.accent : C.secondary,
+              flexGrow: 1,
+              minWidth: 0,
+              whiteSpace: 'normal',
+            }}
+          >
+            {line || ' '}
+          </text>
+        ))}
+      </div>
+      {error && item.text.length > 30 ? (
+        <div style={{ flexShrink: 0, alignSelf: 'flex-start', paddingTop: 1 }}>
+          <CopyButton text={item.text} label="复制" />
+        </div>
+      ) : null}
     </div>
   )
 }

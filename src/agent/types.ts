@@ -5,13 +5,13 @@
  * 所以 thread.messages 永远等于真正发出去过的历史，不再有第二套转换。
  */
 
-import type { AgentMessage } from './core/types'
 import type { TokenUsage } from './ai/types'
+import type { AgentMessage } from './core/types'
 
 export type ToolStatus = 'awaiting' | 'running' | 'done' | 'error' | 'denied'
 
 export type Item =
-  | { kind: 'user'; id: string; at: number; text: string; queued?: boolean }
+  | { kind: 'user'; id: string; at: number; text: string; images?: string[]; queued?: boolean }
   | {
       /** 模型的思考链（reasoning_content）。默认折叠，只留一行时长。 */
       kind: 'thinking'
@@ -52,16 +52,18 @@ export interface ThreadStats {
   totalCompletionTokens: number
   totalTokens: number
   totalThinkingTokens: number
+  totalCachedTokens: number
   totalDurationMs: number
   turnsCount: number
 }
 
 /** 汇总计算指定会话的所有已完成轮次的 Token 与耗时 */
-export function computeThreadStats(thread: Thread): ThreadStats {
+export function computeThreadStats(thread: Thread, _model?: string): ThreadStats {
   let totalPromptTokens = 0
   let totalCompletionTokens = 0
   let totalTokens = 0
   let totalThinkingTokens = 0
+  let totalCachedTokens = 0
   let totalDurationMs = 0
   let turnsCount = 0
 
@@ -71,12 +73,15 @@ export function computeThreadStats(thread: Thread): ThreadStats {
       if (item.durationMs) {
         totalDurationMs += item.durationMs
       }
-      if (item.usage) {
+      if (item.usage && (item.usage.totalTokens > 0 || item.usage.promptTokens > 0 || item.usage.completionTokens > 0)) {
         totalPromptTokens += item.usage.promptTokens || 0
         totalCompletionTokens += item.usage.completionTokens || 0
         totalTokens += item.usage.totalTokens || (item.usage.promptTokens + item.usage.completionTokens)
         if (item.usage.thinkingTokens) {
           totalThinkingTokens += item.usage.thinkingTokens
+        }
+        if (item.usage.cachedTokens) {
+          totalCachedTokens += item.usage.cachedTokens
         }
       }
     }
@@ -87,6 +92,7 @@ export function computeThreadStats(thread: Thread): ThreadStats {
     totalCompletionTokens,
     totalTokens,
     totalThinkingTokens,
+    totalCachedTokens,
     totalDurationMs,
     turnsCount,
   }
@@ -101,6 +107,9 @@ export interface Thread {
   items: Item[]
   /** Everything the model has been told in this thread, in the core message model. */
   messages: AgentMessage[]
+  parentId?: string
+  subagentId?: string
+  isSubagent?: boolean
 }
 
 export interface DebugEntry {

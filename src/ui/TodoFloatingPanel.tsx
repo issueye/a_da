@@ -160,6 +160,7 @@ export function TodoFloatingPanel({ store }: { store: AgentStore }) {
               color: C.secondary,
               maxWidth: 160,
               whiteSpace: 'nowrap',
+              overflow: 'hidden',
               textOverflow: 'ellipsis',
             }}
           >

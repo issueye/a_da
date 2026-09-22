@@ -15,6 +15,8 @@ export interface SessionHeader {
   workspace: string
   createdAt: number
   updatedAt: number
+  parentId?: string
+  subagentId?: string
 }
 
 export interface SessionMessageEntry {
@@ -41,4 +43,6 @@ export interface SessionSummary {
   createdAt: number
   updatedAt: number
   filePath: string
+  parentId?: string
+  subagentId?: string
 }

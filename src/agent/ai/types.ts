@@ -8,6 +8,7 @@ export interface TokenUsage {
   completionTokens: number
   totalTokens: number
   thinkingTokens?: number
+  cachedTokens?: number
 }
 
 export interface StreamDelta {

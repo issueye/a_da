@@ -12,6 +12,7 @@ import { Icon, IconButton } from './controls'
 import { C, editorTheme, M, shortPath } from '../theme'
 import type { AgentStore } from '../agent/store'
 import type { Thread } from '../agent/types'
+import { getSubagentColor } from '../agent/subagents/types'
 
 function SectionHeader({
   label,
@@ -115,14 +116,16 @@ function Row({
           lineHeight: 16,
           color: tone === 'muted' ? C.tertiary : C.text,
           whiteSpace: 'nowrap',
+          overflow: 'hidden',
           textOverflow: 'ellipsis',
+          flexGrow: 1,
           flexShrink: 1,
+          minWidth: 0,
         }}
       >
         {label}
       </text>
-      <div style={{ flexGrow: 1 }} />
-      {sub ? <text style={{ fontSize: 11, lineHeight: 15, color: C.faint }}>{sub}</text> : null}
+      {sub ? <text style={{ fontSize: 11, lineHeight: 15, color: C.faint, flexShrink: 0 }}>{sub}</text> : null}
     </div>
   )
 }
@@ -149,21 +152,25 @@ function SessionRow({
   running: boolean
   onNotice: (message: string | null) => void
 }) {
-  const [armed, setArmed] = useState(false)
+  const [hovered, setHovered] = useState(false)
 
-  const remove = (): void => {
-    if (!armed) {
-      setArmed(true)
-      return
-    }
-    onNotice(store.deleteThread(thread.id))
-    setArmed(false)
+  const remove = (e: any): void => {
+    e?.stopPropagation?.()
+    store.showConfirm({
+      title: '删除会话',
+      message: `确定要删除会话「${thread.title}」吗？删除后会话记录将无法恢复。`,
+      confirmText: '确认删除',
+      onConfirm: () => {
+        onNotice(store.deleteThread(thread.id))
+      },
+    })
   }
 
   return (
     <div
       testId={`thread-${thread.id}`}
-      onMouseLeave={() => setArmed(false)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         display: 'flex',
         flexDirection: 'row',
@@ -188,6 +195,8 @@ function SessionRow({
           flexGrow: 1,
           minWidth: 0,
           paddingLeft: 6,
+          paddingRight: 4,
+          overflow: 'hidden',
           cursor: 'pointer',
         }}
       >
@@ -198,13 +207,15 @@ function SessionRow({
             lineHeight: 16,
             color: C.text,
             whiteSpace: 'nowrap',
+            overflow: 'hidden',
             textOverflow: 'ellipsis',
+            flexGrow: 1,
             flexShrink: 1,
+            minWidth: 0,
           }}
         >
           {thread.title}
         </text>
-        <div style={{ flexGrow: 1 }} />
         {running ? (
           <div
             style={{
@@ -230,25 +241,157 @@ function SessionRow({
       <div
         testId={`delete-thread-${thread.id}`}
         role="button"
-        aria-label={armed ? '确认删除会话' : '删除会话'}
+        aria-label="删除会话"
         onClick={remove}
         style={{
           display: 'flex',
           flexDirection: 'row',
           alignItems: 'center',
-          justifyContent: 'flex-end',
-          gap: 4,
+          justifyContent: 'center',
+          width: 24,
           height: '100%',
           flexShrink: 0,
-          paddingLeft: 5,
-          paddingRight: 7,
+          paddingRight: 6,
+          cursor: 'pointer',
+          opacity: hovered ? 1 : 0,
+        }}
+      >
+        <Icon name="trash" size={12} color={C.faint} />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * 子智能体专属会话行：以树形缩进（带左连接竖线与 bot 图标）展示在所属主会话之下。
+ */
+function SubagentSessionRow({
+  thread,
+  store,
+  selected,
+  running,
+  onNotice,
+}: {
+  thread: Thread
+  store: AgentStore
+  selected: boolean
+  running: boolean
+  onNotice: (message: string | null) => void
+}) {
+  const [hovered, setHovered] = useState(false)
+  const agentColor = getSubagentColor(thread.subagentId)
+
+  const remove = (e: any): void => {
+    e?.stopPropagation?.()
+    store.showConfirm({
+      title: '删除子会话',
+      message: `确定要删除子会话「${thread.title}」吗？删除后该子智能体会话记录将无法恢复。`,
+      confirmText: '确认删除',
+      onConfirm: () => {
+        onNotice(store.deleteThread(thread.id))
+      },
+    })
+  }
+
+  return (
+    <div
+      testId={`thread-${thread.id}`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        display: 'flex',
+        flexDirection: 'row',
+        alignItems: 'center',
+        height: 26,
+        marginLeft: 14,
+        paddingLeft: 8,
+        borderLeftWidth: 2,
+        borderColor: selected ? agentColor : C.cardBorder,
+        borderRadius: 5,
+        flexShrink: 0,
+        backgroundColor: selected ? C.tab : '#00000000',
+        hover: { backgroundColor: selected ? C.tab : C.overlay },
+      }}
+    >
+      <div
+        role="button"
+        aria-label={`子智能体: ${thread.title}`}
+        onClick={() => {
+          store.openTab(thread.id)
+          store.selectThread(thread.id)
+        }}
+        style={{
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+          height: '100%',
+          flexGrow: 1,
+          minWidth: 0,
+          paddingRight: 4,
+          overflow: 'hidden',
           cursor: 'pointer',
         }}
       >
-        {armed ? (
-          <text style={{ fontSize: 11, lineHeight: 15, color: C.accent }}>确认删除</text>
+        <Icon name="bot" size={12} color={agentColor} />
+        <text
+          style={{
+            fontSize: 11.5,
+            lineHeight: 15,
+            color: selected ? C.text : C.secondary,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            flexGrow: 1,
+            flexShrink: 1,
+            minWidth: 0,
+          }}
+        >
+          {thread.title}
+        </text>
+        {running ? (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 3,
+              paddingLeft: 4,
+              paddingRight: 4,
+              height: 15,
+              borderRadius: 3,
+              backgroundColor: C.chip,
+              marginRight: 4,
+              flexShrink: 0,
+            }}
+          >
+            <Icon name="dot" size={5} color={C.success} />
+            <text style={{ fontSize: 9.5, lineHeight: 13, color: C.link }}>运行中</text>
+          </div>
         ) : null}
-        <Icon name="trash" size={12} color={armed ? C.accent : C.faint} />
+      </div>
+
+      <div
+        testId={`delete-thread-${thread.id}`}
+        role="button"
+        aria-label="删除子会话"
+        onClick={remove}
+        style={{
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 22,
+          height: '100%',
+          flexShrink: 0,
+          paddingRight: 5,
+          borderRadius: 3,
+          cursor: 'pointer',
+          opacity: hovered ? 1 : 0,
+          hover: { backgroundColor: C.chipHover },
+        }}
+      >
+        <Icon name="trash" size={11} color={C.faint} />
       </div>
     </div>
   )
@@ -269,36 +412,48 @@ function WorkspaceTreeNode({
   onToggleExpand: () => void
   onNotice: (message: string | null) => void
 }) {
-  const [armedRemove, setArmedRemove] = useState(false)
+  const [hovered, setHovered] = useState(false)
   const isCurrent = workspacePath === store.project
   const allWorkspaceThreads = store.threads.filter((t) => t.workspace === workspacePath)
-  const matchingThreads = allWorkspaceThreads.filter((t) =>
-    query.trim() ? t.title.toLowerCase().includes(query.trim().toLowerCase()) : true,
+  const rootThreads = allWorkspaceThreads.filter((t) => !t.parentId)
+  const queryLower = query.trim().toLowerCase()
+  const matchingRootThreads = rootThreads.filter((thread) => {
+    if (!queryLower) return true
+    if (thread.title.toLowerCase().includes(queryLower)) return true
+    return allWorkspaceThreads.some(
+      (child) => child.parentId === thread.id && child.title.toLowerCase().includes(queryLower),
+    )
+  })
+  const orphanedSubagents = allWorkspaceThreads.filter(
+    (t) =>
+      Boolean(t.parentId) &&
+      !rootThreads.some((r) => r.id === t.parentId) &&
+      (!queryLower || t.title.toLowerCase().includes(queryLower)),
   )
 
   const label = shortPath(workspacePath, 2)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100%', flexShrink: 0 }}>
-      {/* 工作区行（树根节点） */}
+      {/* 根节点头部（工作区行） */}
       <div
         testId={`project-${label}`}
-        onMouseLeave={() => setArmedRemove(false)}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
         style={{
           display: 'flex',
           flexDirection: 'row',
           alignItems: 'center',
           gap: 6,
-          height: M.row,
-          paddingLeft: 6,
-          paddingRight: 6,
-          borderRadius: 6,
-          flexShrink: 0,
-          backgroundColor: isCurrent ? C.tab : '#00000000',
-          hover: { backgroundColor: isCurrent ? C.tab : C.overlay },
+          height: 28,
+          paddingLeft: 8,
+          paddingRight: 8,
+          borderRadius: 5,
+          backgroundColor: isCurrent ? C.chip : '#00000000',
+          hover: { backgroundColor: C.chipHover },
         }}
       >
-        {/* 折叠/展开三角箭头 */}
+        {/* 折叠/展开箭头 */}
         <div
           role="button"
           aria-label={expanded ? `折叠工作区 ${label}` : `展开工作区 ${label}`}
@@ -333,6 +488,8 @@ function WorkspaceTreeNode({
             height: '100%',
             flexGrow: 1,
             minWidth: 0,
+            paddingRight: 4,
+            overflow: 'hidden',
             cursor: 'pointer',
           }}
         >
@@ -344,90 +501,96 @@ function WorkspaceTreeNode({
               fontWeight: isCurrent ? 600 : 400,
               color: isCurrent ? C.text : C.secondary,
               whiteSpace: 'nowrap',
+              overflow: 'hidden',
               textOverflow: 'ellipsis',
+              flexGrow: 1,
               flexShrink: 1,
+              minWidth: 0,
             }}
           >
             {label}
           </text>
-          <div style={{ flexGrow: 1 }} />
-          {/* 会话数指示微章 */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              minWidth: 16,
-              height: 16,
-              paddingLeft: 4,
-              paddingRight: 4,
-              borderRadius: 8,
-              backgroundColor: C.chip,
-              marginRight: 4,
-            }}
-          >
-            <text style={{ fontSize: 10, lineHeight: 14, color: C.faint }}>
-              {`${allWorkspaceThreads.length}`}
-            </text>
-          </div>
+          {/* 会话数指示徽章：折叠态显示，展开态已有子列表不重复展示 */}
+          {!expanded && allWorkspaceThreads.length > 0 ? (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minWidth: 16,
+                height: 16,
+                paddingLeft: 4,
+                paddingRight: 4,
+                borderRadius: 8,
+                backgroundColor: C.chip,
+                marginRight: 4,
+                flexShrink: 0,
+              }}
+            >
+              <text style={{ fontSize: 10, lineHeight: 14, color: C.faint }}>
+                {`${allWorkspaceThreads.length}`}
+              </text>
+            </div>
+          ) : null}
         </div>
 
         {/* 右侧操作按钮组：新建会话与移除工作区 */}
         <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 2, flexShrink: 0 }}>
-          {/* 快捷新建会话按钮 (+) */}
-          <div
-            role="button"
-            aria-label={`在 ${label} 中新建会话`}
-            onClick={() => {
-              store.selectProject(workspacePath)
-              store.newThread(workspacePath)
-            }}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 18,
-              height: 18,
-              borderRadius: 4,
-              cursor: 'pointer',
-              hover: { backgroundColor: C.chipHover },
-            }}
-          >
-            <Icon name="plus" size={11} color={C.tertiary} />
-          </div>
+          {/* 快捷新建会话按钮 (+)：仅在展开态展示 */}
+          {expanded ? (
+            <div
+              role="button"
+              aria-label={`在 ${label} 中新建会话`}
+              onClick={() => {
+                store.selectProject(workspacePath)
+                store.newThread(workspacePath)
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 18,
+                height: 18,
+                borderRadius: 4,
+                cursor: 'pointer',
+                opacity: hovered ? 1 : 0,
+                hover: { backgroundColor: C.chipHover },
+              }}
+            >
+              <Icon name="plus" size={11} color={C.tertiary} />
+            </div>
+          ) : null}
 
           {/* 移除工作区按钮 (垃圾桶) */}
           <div
             testId={`remove-project-${label}`}
             role="button"
-            aria-label={armedRemove ? `确认移除工作区 ${label}` : `移除工作区 ${label}`}
+            aria-label={`移除工作区 ${label}`}
             onClick={() => {
-              if (!armedRemove) {
-                setArmedRemove(true)
-                return
-              }
-              const err = store.removeProject(workspacePath)
-              if (err) onNotice(err)
-              setArmedRemove(false)
+              store.showConfirm({
+                title: '移除工作区',
+                message: `确定要从列表中移除工作区「${label}」吗？工作区下的会话历史记录将被清除，但本地实际代码文件不会被删除。`,
+                confirmText: '确认移除',
+                onConfirm: () => {
+                  const err = store.removeProject(workspacePath)
+                  if (err) onNotice(err)
+                },
+              })
             }}
             style={{
               display: 'flex',
               flexDirection: 'row',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: 3,
+              width: 18,
               height: 18,
-              paddingLeft: armedRemove ? 5 : 3,
-              paddingRight: armedRemove ? 5 : 3,
               borderRadius: 4,
               cursor: 'pointer',
+              opacity: hovered ? 1 : 0,
               hover: { backgroundColor: C.chipHover },
             }}
           >
-            {armedRemove ? (
-              <text style={{ fontSize: 10.5, lineHeight: 15, color: C.accent }}>确认移除</text>
-            ) : null}
-            <Icon name="trash" size={11} color={armedRemove ? C.accent : C.faint} />
+            <Icon name="trash" size={11} color={C.faint} />
           </div>
         </div>
       </div>
@@ -462,19 +625,51 @@ function WorkspaceTreeNode({
               会话
             </text>
             <text style={{ fontSize: 10.5, lineHeight: 15, color: C.faint }}>
-              {`${matchingThreads.length}`}
+              {`${matchingRootThreads.length}`}
             </text>
           </div>
 
-
-          {/* 会话列表项 */}
-          {matchingThreads.map((thread) => (
-            <SessionRow
-              key={thread.id}
-              thread={thread}
+          {/* 会话列表项：主会话及嵌套子智能体项 */}
+          {matchingRootThreads.map((thread) => {
+            const childSubagents = allWorkspaceThreads.filter(
+              (t) =>
+                t.parentId === thread.id &&
+                (!queryLower ||
+                  t.title.toLowerCase().includes(queryLower) ||
+                  thread.title.toLowerCase().includes(queryLower)),
+            )
+            return (
+              <div
+                key={thread.id}
+                style={{ display: 'flex', flexDirection: 'column', width: '100%', gap: 1 }}
+              >
+                <SessionRow
+                  thread={thread}
+                  store={store}
+                  selected={thread.id === store.activeId}
+                  running={store.isThreadRunning(thread.id)}
+                  onNotice={onNotice}
+                />
+                {childSubagents.map((child) => (
+                  <SubagentSessionRow
+                    key={child.id}
+                    thread={child}
+                    store={store}
+                    selected={child.id === store.activeId}
+                    running={store.isThreadRunning(child.id)}
+                    onNotice={onNotice}
+                  />
+                ))}
+              </div>
+            )
+          })}
+          {orphanedSubagents.map((child) => (
+            <SubagentSessionRow
+              key={child.id}
+              thread={child}
               store={store}
-              selected={thread.id === store.activeId}
-              running={store.isThreadRunning(thread.id)}
+              selected={child.id === store.activeId}
+              running={store.isThreadRunning(child.id)}
               onNotice={onNotice}
             />
           ))}

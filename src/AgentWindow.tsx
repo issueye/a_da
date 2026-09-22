@@ -11,6 +11,7 @@ import { Composer } from './ui/Composer'
 import { DebugPanel } from './ui/DebugPanel'
 import { PluginsDialog } from './ui/PluginsDialog'
 import { SettingsDialog } from './ui/SettingsDialog'
+import { ConfirmDialog } from './ui/ConfirmDialog'
 import { Sidebar } from './ui/Sidebar'
 import { EmptyConversationView } from './ui/EmptyConversationView'
 import { TabStrip } from './ui/TabStrip'
@@ -78,6 +79,12 @@ export function AgentWindow() {
       </div>
       {agent.settingsOpen ? <SettingsDialog store={agent} /> : null}
       {agent.pluginsOpen ? <PluginsDialog store={agent} /> : null}
+      {agent.confirmModal ? (
+        <ConfirmDialog
+          options={agent.confirmModal}
+          onClose={() => agent.closeConfirm()}
+        />
+      ) : null}
     </div>
   )
 }

@@ -18,6 +18,7 @@ beforeAll(() => {
       if (hasToolResult) {
         const stream = [
           `data: ${JSON.stringify({ choices: [{ delta: { content: '计算完成。' } }] })}\n\n`,
+          `data: ${JSON.stringify({ usage: { prompt_tokens: 25, completion_tokens: 5, total_tokens: 30 } })}\n\n`,
           `data: [DONE]\n\n`,
         ].join('')
         return new Response(stream, { headers: { 'content-type': 'text/event-stream' } })
@@ -37,6 +38,7 @@ beforeAll(() => {
             },
           ],
         })}\n\n`,
+        `data: ${JSON.stringify({ usage: { prompt_tokens: 15, completion_tokens: 10, total_tokens: 25 } })}\n\n`,
         `data: [DONE]\n\n`,
       ].join('')
 

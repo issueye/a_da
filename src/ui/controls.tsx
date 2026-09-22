@@ -305,3 +305,61 @@ export function ChipSelect({
     </Select>
   )
 }
+
+/** 通用复选框组件 */
+export function Checkbox({
+  checked,
+  onChange,
+  label,
+  hint,
+  testId,
+}: {
+  checked: boolean
+  onChange: (checked: boolean) => void
+  label: string
+  hint?: string
+  testId?: string
+}) {
+  return (
+    <div
+      testId={testId}
+      role="checkbox"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      style={{
+        display: 'flex',
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: 9,
+        cursor: 'pointer',
+        userSelect: 'none',
+        paddingTop: 2,
+        paddingBottom: 2,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 16,
+          height: 16,
+          marginTop: 1,
+          borderRadius: 4,
+          borderWidth: 1,
+          borderColor: checked ? C.link : C.borderStrong,
+          backgroundColor: checked ? C.link : C.raised,
+          flexShrink: 0,
+        }}
+      >
+        {checked ? <Icon name="check" size={11} color={C.onInverse} /> : null}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, flexGrow: 1 }}>
+        <text style={{ fontSize: 12.5, lineHeight: 17, fontWeight: 500, color: C.text }}>
+          {label}
+        </text>
+        {hint ? <text style={{ fontSize: 11, lineHeight: 15, color: C.faint }}>{hint}</text> : null}
+      </div>
+    </div>
+  )
+}

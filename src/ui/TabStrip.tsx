@@ -16,6 +16,7 @@ import { Icon } from './controls'
 import { C, M } from '../theme'
 import type { AgentStore } from '../agent/store'
 import type { Thread } from '../agent/types'
+import { getSubagentColor } from '../agent/subagents/types'
 
 /**
  * 一个标签。
@@ -79,13 +80,18 @@ function Tab({
           cursor: 'pointer',
         }}
       >
-        <Icon name="thread" size={11} color={selected ? C.secondary : C.faint} />
+        <Icon
+          name={thread.isSubagent ? 'bot' : 'thread'}
+          size={11}
+          color={thread.isSubagent ? getSubagentColor(thread.subagentId) : selected ? C.secondary : C.faint}
+        />
         <text
           style={{
             fontSize: 12,
             lineHeight: 15,
             color: selected ? C.text : C.secondary,
             whiteSpace: 'nowrap',
+            overflow: 'hidden',
             textOverflow: 'ellipsis',
             // 标签是固定宽度，标题占满剩下的空间，长了才出省略号。
             flexGrow: 1,

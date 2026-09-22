@@ -109,19 +109,27 @@ export async function runTool(root: string, request: ToolRequest): Promise<ToolO
 export function describeTool(name: string, args: Record<string, unknown>): string {
   switch (name) {
     case 'run_command':
-      return String(args.command ?? '')
+      return String(args.command ?? '').replace(/\r?\n+/g, ' ').trim()
     case 'search_files':
-      return `/${String(args.pattern ?? '')}/`
+      return `/${String(args.pattern ?? '').replace(/\r?\n+/g, ' ').trim()}/`
     case 'list_files':
-      return String(args.path || '.')
+      return String(args.path || '.').replace(/\r?\n+/g, ' ').trim()
     case 'read_file':
     case 'write_file':
     case 'edit_file':
-      return String(args.path ?? '')
+      return String(args.path ?? '').replace(/\r?\n+/g, ' ').trim()
     case 'todo': {
       const todos = Array.isArray(args.todos) ? (args.todos as { title?: string; status?: string }[]) : []
       const active = todos.find((t) => t.status === 'in_progress') ?? todos.find((t) => t.status !== 'completed')
-      return active?.title ?? (todos.length ? `${todos.filter((t) => t.status === 'completed').length}/${todos.length}` : '')
+      return (active?.title ?? (todos.length ? `${todos.filter((t) => t.status === 'completed').length}/${todos.length}` : '')).replace(/\r?\n+/g, ' ').trim()
+    }
+    case 'invoke_subagent': {
+      const subagentId = String(args.subagent_id ?? '').trim()
+      const task = String(args.task ?? '').split('\n')[0]!.trim()
+      return `${subagentId}: ${task}`
+    }
+    case 'check_subagent': {
+      return String(args.subagent_thread_id ?? args.subagent_id ?? '查询子智能体').replace(/\r?\n+/g, ' ').trim()
     }
     default:
       return ''

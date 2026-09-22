@@ -104,7 +104,12 @@ export class SessionManager {
   /**
    * 创建新的持久化会话文件并写入首行 Header
    */
-  async createSession(id: string, workspace: string, title: string = '新会话'): Promise<SessionHeader> {
+  async createSession(
+    id: string,
+    workspace: string,
+    title: string = '新会话',
+    meta?: { parentId?: string; subagentId?: string },
+  ): Promise<SessionHeader> {
     await this.rememberWorkspace(workspace)
     const filePath = this.getSessionPath(workspace, id)
     const now = Date.now()
@@ -117,6 +122,8 @@ export class SessionManager {
       workspace,
       createdAt: now,
       updatedAt: now,
+      parentId: meta?.parentId,
+      subagentId: meta?.subagentId,
     }
 
     await writeFile(filePath, `${JSON.stringify(header)}\n`, 'utf-8')
@@ -206,6 +213,24 @@ export class SessionManager {
       : await this.findSessionPath(sessionId)
     if (!filePath || !existsSync(filePath)) return
     await rm(filePath, { force: true })
+
+    // 级联删除名下的所有子智能体会话
+    try {
+      const dir = workspace ? this.workspaceDir(workspace) : await this.findSessionDir(sessionId)
+      if (dir) {
+        const ws = await this.readWorkspacePointer(dir)
+        if (ws) {
+          const summaries = await this.listSessionsForWorkspace(ws)
+          for (const s of summaries) {
+            if (s.parentId === sessionId) {
+              await rm(s.filePath, { force: true })
+            }
+          }
+        }
+      }
+    } catch {
+      // 容错处理
+    }
   }
 
   /**
@@ -289,6 +314,8 @@ export class SessionManager {
           createdAt: header.createdAt,
           updatedAt: fileStat.mtimeMs || header.updatedAt,
           filePath,
+          parentId: header.parentId,
+          subagentId: header.subagentId,
         })
       } catch {
         continue
@@ -388,6 +415,8 @@ export class SessionManager {
           // 同步路径拿 mtime 要额外一次 stat，而 `updatedAt` 已经够排序用了。
           updatedAt: header.updatedAt,
           filePath,
+          parentId: header.parentId,
+          subagentId: header.subagentId,
         })
       } catch {
         continue

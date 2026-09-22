@@ -193,7 +193,10 @@ export function TitleBar({
             lineHeight: 15,
             color: C.text,
             whiteSpace: 'nowrap',
+            overflow: 'hidden',
             textOverflow: 'ellipsis',
+            flexShrink: 1,
+            minWidth: 0,
           }}
         >
           {title}

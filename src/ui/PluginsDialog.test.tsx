@@ -65,6 +65,7 @@ describeNative('plugins dialog', () => {
 
     expect(text).toContain('插件管理')
     expect(text).toContain('扩展 Agent 工具库与自动化能力')
+    expect(text).toContain('子智能体')
     expect(text).toContain('提示词管理')
     expect(text).toContain('工作区插件')
     expect(text).toContain('全局插件')
@@ -175,4 +176,29 @@ describeNative('plugins dialog', () => {
     },
     30_000,
   )
+
+  test('switches to subagents tab and displays subagent profiles', async () => {
+    const { app, screen, painted } = await mount()
+    await app.getByTestId('open-plugins').click()
+    await painted('插件管理')
+
+    // 切换到子智能体选项卡
+    await app.getByTestId('plugins-nav-subagents').click()
+    await painted('代码调研专员')
+    const text = screen()
+
+    expect(text).toContain('子智能体拥有专属提示词、隔离上下文与工具白名单')
+    expect(text).toContain('代码调研专员')
+    expect(text).toContain('代码审查专家')
+    expect(text).toContain('自动化测试专家')
+    expect(text).toContain('researcher')
+    expect(text).toContain('code_reviewer')
+    expect(text).toContain('tester')
+    expect(text).toContain('只读安全')
+    expect(text).toContain('读写模式')
+    expect(text).toContain('查看专属提示词')
+
+    await app.getByTestId('plugins-close').click()
+    await app.close()
+  })
 })

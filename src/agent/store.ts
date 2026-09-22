@@ -10,6 +10,9 @@
  * subscribe 收到通知后重渲染，所以流式回复在到达过程中就是对的。
  */
 
+import { existsSync } from 'node:fs'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import {
   configPath,
   readLlmConfig,
@@ -39,11 +42,25 @@ import {
 import { defaultSessionManager } from './session/manager'
 import type { SessionSummary } from './session/types'
 import { defaultPromptManager } from './prompts/manager'
+import {
+  defaultSubagentManager,
+  type SubagentProfile,
+  type SubagentRunResult,
+  type SubagentStepUpdate,
+} from './subagents'
 import { applyAppearance, appearance, shortPath, type Appearance } from '../theme'
 import { computeThreadStats, type DebugEntry, type Item, type Thread, type ThreadStats } from './types'
 
 export type ApprovalMode = 'auto' | 'ask' | 'readonly'
 export type Effort = 'max' | 'high' | 'medium' | 'low'
+
+export interface ConfirmModalOptions {
+  title: string
+  message: string
+  confirmText?: string
+  cancelText?: string
+  onConfirm: () => void
+}
 
 export const APPROVAL_OPTIONS: { value: ApprovalMode; label: string }[] = [
   { value: 'auto', label: '自动批准' },
@@ -110,6 +127,7 @@ export class AgentStore {
   debugOpen = false
   settingsOpen = false
   pluginsOpen = false
+  confirmModal: ConfirmModalOptions | null = null
   /** The installed light/dark mode. The palette in `theme.ts` mirrors this. */
   appearance: Appearance = appearance()
   log: DebugEntry[] = []
@@ -123,6 +141,10 @@ export class AgentStore {
   entries: string[] = []
   /** 当前已配置的模型名称，展示在输入框工具栏等位置。 */
   currentModel: string = ''
+  /** 配置的模型上下文 Token 上限（若为 0 或未配置则采用模型预设） */
+  contextWindow: number = 0
+  /** 是否开启多模态图片输入支持 */
+  supportsImages: boolean = false
   /** 待填入 Composer 的草稿文本回调，用于提示词一键应用到当前输入框 */
   pendingDraft: string | null = null
 
@@ -159,11 +181,13 @@ export class AgentStore {
   /** 本轮每张工具卡片，按调用 id 找回去更新状态。 */
   private cards = new Map<string, ToolCard>()
   /** 每个会话独立的后续排队指令 */
-  private queues = new Map<string, { thread: Thread; text: string; item: Item }[]>()
+  private queues = new Map<string, { thread: Thread; text: string; images?: string[]; item: Item }[]>()
   /** 每个会话独立的 AbortController */
   private aborts = new Map<string, AbortController>()
   /** 正在并发运行的会话集合 */
   private runningThreadIds = new Set<string>()
+  /** 运行中子智能体的转向指令队列 */
+  private steeringQueues = new Map<string, AgentMessage[]>()
   /** 最近一次工作区扩展加载：跑一轮之前要等它，工具表才完整。 */
   private extensionsReady: Promise<void> = Promise.resolve()
   private notifyTimer: ReturnType<typeof setTimeout> | null = null
@@ -173,10 +197,10 @@ export class AgentStore {
     return this.aborts.get(this.activeId) ?? null
   }
 
-  get queue(): { thread: Thread; text: string; item: Item }[] {
+  get queue(): { thread: Thread; text: string; images?: string[]; item: Item }[] {
     return this.queues.get(this.activeId) ?? []
   }
-  set queue(items: { thread: Thread; text: string; item: Item }[]) {
+  set queue(items: { thread: Thread; text: string; images?: string[]; item: Item }[]) {
     if (items.length === 0) {
       this.queues.delete(this.activeId)
     } else {
@@ -200,8 +224,14 @@ export class AgentStore {
     void readSavedConfig().then((cfg) => {
       if (cfg.model) {
         this.currentModel = cfg.model
-        this.notify()
       }
+      if (typeof cfg.contextWindow === 'number') {
+        this.contextWindow = cfg.contextWindow
+      }
+      if (typeof cfg.supportsImages === 'boolean') {
+        this.supportsImages = cfg.supportsImages
+      }
+      this.notify()
     }).catch(() => {})
   }
 
@@ -332,6 +362,9 @@ export class AgentStore {
       workspace: summary.workspace,
       items,
       messages,
+      parentId: summary.parentId,
+      subagentId: summary.subagentId,
+      isSubagent: Boolean(summary.parentId || summary.subagentId),
     }
   }
 
@@ -481,6 +514,16 @@ export class AgentStore {
     this.notify()
   }
 
+  showConfirm(options: ConfirmModalOptions): void {
+    this.confirmModal = options
+    this.notify()
+  }
+
+  closeConfirm(): void {
+    this.confirmModal = null
+    this.notify()
+  }
+
   /** 重新扫描并加载所有启用的扩展插件与工具 */
   async reloadPlugins(): Promise<void> {
     this.extensionsReady = defaultExtensionLoader
@@ -504,6 +547,8 @@ export class AgentStore {
     try {
       await writeSavedConfig(config)
       this.currentModel = config.model || ''
+      this.contextWindow = config.contextWindow || 0
+      this.supportsImages = Boolean(config.supportsImages)
     } catch (error) {
       const message = `保存失败：${(error as Error).message}`
       this.push({ kind: 'error', text: message })
@@ -608,7 +653,7 @@ export class AgentStore {
   }
 
   /** 把一个会话加进标签栏（已在就不动，保持原顺序）。 */
-  private openTab(id: string): void {
+  openTab(id: string): void {
     if (this.openTabIds.includes(id)) return
     this.openTabIds = [...this.openTabIds, id]
   }
@@ -653,13 +698,25 @@ export class AgentStore {
     if (!thread) return null
     if (this.isThreadRunning(id)) return '这个会话正在运行，先停止再删除'
 
-    this.threads = this.threads.filter((candidate) => candidate.id !== id)
-    this.openTabIds = this.openTabIds.filter((candidate) => candidate !== id)
+    // 级联清理名下的所有子智能体会话
+    const childIds = new Set(this.threads.filter((t) => t.parentId === id).map((t) => t.id))
+    for (const cid of childIds) {
+      if (this.isThreadRunning(cid)) {
+        this.stop(cid)
+      }
+    }
+
+    this.threads = this.threads.filter((candidate) => candidate.id !== id && !childIds.has(candidate.id))
+    this.openTabIds = this.openTabIds.filter((candidate) => candidate !== id && !childIds.has(candidate))
     this.queues.delete(id)
+    for (const cid of childIds) {
+      this.queues.delete(cid)
+    }
+
     this.push({ kind: 'info', text: `已删除会话「${thread.title}」` })
     void defaultSessionManager.deleteSession(id, thread.workspace).catch(() => {})
 
-    if (this.activeId === id) {
+    if (this.activeId === id || childIds.has(this.activeId)) {
       const next = this.threads.find((candidate) => candidate.workspace === thread.workspace)
       if (next) {
         this.selectThread(next.id)
@@ -720,12 +777,12 @@ export class AgentStore {
 
   // ------------------------------------------------------------------ messages
 
-  send(text: string): void {
+  send(text: string, images?: string[]): void {
     const prompt = text.trim()
-    if (!prompt) return
+    if (!prompt && (!images || images.length === 0)) return
     const thread = this.active
     if (thread.title === '新会话') {
-      thread.title = titleFrom(prompt)
+      thread.title = titleFrom(prompt || '图片任务')
       void defaultSessionManager
         .updateSessionTitle(thread.id, thread.title, thread.workspace)
         .catch(() => {})
@@ -736,18 +793,25 @@ export class AgentStore {
       this.queues.set(thread.id, threadQueue)
     }
 
+    const item: Item = {
+      kind: 'user',
+      id: nextId('item'),
+      at: Date.now(),
+      text: prompt,
+      images: images && images.length > 0 ? [...images] : undefined,
+    }
+
     if (this.isThreadRunning(thread.id)) {
-      const item: Item = { kind: 'user', id: nextId('item'), at: Date.now(), text: prompt, queued: true }
+      item.queued = true
       thread.items.push(item)
-      threadQueue.push({ thread, text: prompt, item })
+      threadQueue.push({ thread, text: prompt, images, item })
       this.push({ kind: 'info', text: `已排队第 ${threadQueue.length} 条后续指令` })
       this.notify()
       return
     }
 
-    const item: Item = { kind: 'user', id: nextId('item'), at: Date.now(), text: prompt }
     thread.items.push(item)
-    threadQueue.push({ thread, text: prompt, item })
+    threadQueue.push({ thread, text: prompt, images, item })
     void this.drain(thread)
   }
 
@@ -778,6 +842,474 @@ export class AgentStore {
     if (!resolve) return
     this.approvals.delete(toolItemId)
     resolve(approved)
+  }
+
+  /**
+   * 启动子智能体异步执行会话：
+   * 在 store.threads 中作为 parentThread 的子会话挂载，自动在 TabStrip 中开启独立页签，
+   * 启动独立的 runAgentLoop，将思考过程、工具调用与总结报告实时流式推送到子会话，
+   * 同时向父会话的 onStepUpdate 回传进度。
+   */
+  async startSubagentThread(options: {
+    parentThreadId?: string
+    subagentId: string
+    task: string
+    additionalContext?: string
+    signal?: AbortSignal
+    onStepUpdate?: (update: SubagentStepUpdate) => void
+  }): Promise<{
+    thread: Thread
+    resultPromise: Promise<SubagentRunResult>
+  }> {
+    const parentThread =
+      (options.parentThreadId ? this.threads.find((t) => t.id === options.parentThreadId) : null) ??
+      this.active
+    const workspace = parentThread.workspace
+    const profile = await defaultSubagentManager.getById(options.subagentId, workspace)
+    if (!profile) {
+      throw new Error(`未找到 ID 为 "${options.subagentId}" 的子智能体`)
+    }
+    if (!profile.enabled) {
+      throw new Error(`子智能体 "${profile.name}" 当前处于禁用状态`)
+    }
+
+    const parentConfig = await readLlmConfig()
+    const config: ProviderConfig = parentConfig
+      ? {
+          ...parentConfig,
+          ...(profile.modelOverride?.model ? { model: profile.modelOverride.model } : {}),
+        }
+      : {
+          baseUrl: 'http://localhost/v1',
+          apiKey: '',
+          model: profile.modelOverride?.model ?? 'test-model',
+          source: 'offline',
+        }
+
+    const subId = nextId('subagent')
+    const title = `${profile.name}: ${titleFrom(options.task)}`
+    const subagentThread: Thread = {
+      id: subId,
+      title,
+      createdAt: Date.now(),
+      workspace,
+      items: [],
+      messages: [],
+      parentId: parentThread.id,
+      subagentId: profile.id,
+      isSubagent: true,
+    }
+
+    void defaultSessionManager
+      .createSession(subId, workspace, title, {
+        parentId: parentThread.id,
+        subagentId: profile.id,
+      })
+      .catch(() => {})
+
+    // 挂载到会话列表中，并自动开启独立页签
+    const parentIndex = this.threads.findIndex((t) => t.id === parentThread.id)
+    if (parentIndex >= 0) {
+      this.threads.splice(parentIndex + 1, 0, subagentThread)
+    } else {
+      this.threads.push(subagentThread)
+    }
+    this.openTab(subagentThread.id)
+
+    // 写入首条用户提示词
+    let userPromptText = `【委派任务】\n${options.task}`
+    if (options.additionalContext?.trim()) {
+      userPromptText += `\n\n【参考上下文】\n${options.additionalContext.trim()}`
+    }
+    userPromptText += '\n\n请针对上述任务要求，自主使用工具调研或处理。调研或处理完成后，请不要再调用工具，直接给出结构化、高信息密度的最终总结与建议。'
+
+    const userItem: Item = {
+      kind: 'user',
+      id: nextId('item'),
+      at: Date.now(),
+      text: userPromptText,
+    }
+    subagentThread.items.push(userItem)
+    const userMessage: AgentMessage = { role: 'user', content: userPromptText, timestamp: Date.now() }
+    subagentThread.messages.push(userMessage)
+    this.persist(subagentThread.id, userMessage)
+
+    // 构建中止控制器与运行状态
+    const controller = new AbortController()
+    this.aborts.set(subagentThread.id, controller)
+    if (options.signal) {
+      if (options.signal.aborted) {
+        controller.abort()
+      } else {
+        options.signal.addEventListener('abort', () => controller.abort(), { once: true })
+      }
+    }
+    this.runningThreadIds.add(subagentThread.id)
+    this.push({ kind: 'info', text: `已启动子智能体「${profile.name}」独立会话 (${subagentThread.id})` })
+    this.notify()
+
+    // 准备工具（白名单、黑名单、通配符、只读限制与递归防护）
+    const allTools = defaultToolRegistry.getToolsForWorkspace(workspace)
+    const allowedSet = new Set(profile.allowedTools)
+    const disallowedSet = new Set(profile.disallowedTools ?? [])
+    disallowedSet.add('invoke_subagent')
+    disallowedSet.add('check_subagent')
+    disallowedSet.add('send_subagent_message')
+
+    const subagentTools = allTools.filter((t) => {
+      if (disallowedSet.has(t.name)) return false
+      if (!allowedSet.has('*') && !allowedSet.has(t.name)) return false
+      if (profile.mode === 'readonly' && defaultToolRegistry.isWriteTool(t.name)) return false
+      return true
+    })
+
+    const steeringQueue: AgentMessage[] = []
+    this.steeringQueues.set(subagentThread.id, steeringQueue)
+
+    const resultPromise = (async (): Promise<SubagentRunResult> => {
+      const startTime = Date.now()
+      const maxSteps = profile.maxSteps
+      let stepsExecuted = 0
+      let toolCallsCount = 0
+      let lastAssistantMessage: any = null
+      let latestSummary = ''
+
+      let assistant: Extract<Item, { kind: 'assistant' }> | null = null
+      let reasoning: Extract<Item, { kind: 'thinking' }> | null = null
+      const endReasoning = () => {
+        if (reasoning && reasoning.endedAt === undefined) reasoning.endedAt = Date.now()
+      }
+
+      options.onStepUpdate?.({
+        step: 0,
+        maxSteps,
+        status: 'running',
+        currentAction: `子智能体 [${profile.name}] 已启动`,
+      })
+
+      if (!parentConfig) {
+        const fallbackText = `未配置 LLM 供应商，子智能体 [${profile.name}] 已建立独立会话，模拟任务执行完成。\n任务：${options.task}`
+        const assistantItem: Extract<Item, { kind: 'assistant' }> = {
+          kind: 'assistant',
+          id: nextId('item'),
+          at: Date.now(),
+          text: fallbackText,
+        }
+        subagentThread.items.push(assistantItem)
+        this.notify()
+        return {
+          ok: true,
+          summary: fallbackText,
+          stepsExecuted: 1,
+          durationMs: 10,
+          toolCallsCount: 0,
+          messages: subagentThread.messages,
+        }
+      }
+
+      try {
+        const loop = runAgentLoop(subagentThread.messages, config, {
+          systemPrompt: profile.systemPrompt,
+          tools: subagentTools,
+          maxSteps,
+          effort: profile.modelOverride?.effort ?? 'high',
+          toolExecution: 'sequential',
+          signal: controller.signal,
+          getSteeringMessages: async () => {
+            if (steeringQueue.length === 0) return []
+            return steeringQueue.splice(0, steeringQueue.length)
+          },
+          beforeToolCall: async (context) => {
+            if (profile.mode === 'readonly' && defaultToolRegistry.isWriteTool(context.toolCall.name)) {
+              return { block: true, reason: `子智能体 ${profile.name} 运行在只读安全模式下，禁止执行写操作。` }
+            }
+            return undefined
+          },
+        })
+
+        for await (const event of loop) {
+          if (controller.signal.aborted) break
+
+          switch (event.type) {
+            case 'turn_start':
+              stepsExecuted += 1
+              options.onStepUpdate?.({
+                step: stepsExecuted,
+                maxSteps,
+                status: 'running',
+                currentAction: maxSteps
+                  ? `正在思考第 ${stepsExecuted}/${maxSteps} 步...`
+                  : `正在思考第 ${stepsExecuted} 步...`,
+              })
+              break
+
+            case 'message_start':
+              if (event.message.role === 'assistant') {
+                assistant = null
+                reasoning = null
+              }
+              break
+
+            case 'message_update':
+              if (event.delta.usage && assistant) {
+                assistant.usage = event.delta.usage
+                this.notifySoon()
+              }
+              if (event.delta.thinking) {
+                if (!reasoning) {
+                  reasoning = { kind: 'thinking', id: nextId('item'), at: Date.now(), text: '' }
+                  subagentThread.items.push(reasoning)
+                }
+                reasoning.text += event.delta.thinking
+                this.notifySoon()
+              }
+              if (event.delta.text) {
+                endReasoning()
+                if (!assistant) {
+                  assistant = {
+                    kind: 'assistant',
+                    id: nextId('item'),
+                    at: Date.now(),
+                    text: '',
+                    streaming: true,
+                  }
+                  subagentThread.items.push(assistant)
+                }
+                assistant.text += event.delta.text
+                latestSummary += event.delta.text
+                this.notifySoon()
+              }
+              break
+
+            case 'message_end': {
+              const message = event.message
+              if (message.role !== 'assistant') break
+              endReasoning()
+              if (assistant) {
+                assistant.streaming = false
+                if (message.usage) assistant.usage = message.usage
+                if (message.durationMs) assistant.durationMs = message.durationMs
+              }
+              if (message.content) {
+                latestSummary = message.content
+              }
+              lastAssistantMessage = message
+              if (message.stopReason === 'error') {
+                this.fail(subagentThread, `请求失败: ${message.errorMessage ?? '未知错误'}`)
+              } else if (
+                message.content.trim() ||
+                message.thinking ||
+                (message.toolCalls && message.toolCalls.length > 0)
+              ) {
+                this.persist(subagentThread.id, message)
+              }
+              this.notify()
+              break
+            }
+
+            case 'tool_execution_start': {
+              toolCallsCount += 1
+              const cardId = event.toolCallId
+              const desc = describeTool(event.toolName, event.args)
+              const card: Item = {
+                kind: 'tool',
+                id: nextId('item'),
+                at: Date.now(),
+                callId: cardId,
+                name: event.toolName,
+                args: event.args,
+                rawArgs: JSON.stringify(event.args),
+                status: 'running',
+              }
+              subagentThread.items.push(card)
+              this.cards.set(cardId, card as ToolCard)
+              options.onStepUpdate?.({
+                step: stepsExecuted,
+                maxSteps,
+                status: 'running',
+                currentAction: `[${profile.name}] 执行工具: ${desc}`,
+                toolCallSummary: desc,
+              })
+              this.notify()
+              break
+            }
+
+            case 'tool_execution_update': {
+              const card = this.cards.get(event.toolCallId)
+              if (card && event.partialResult?.output) {
+                card.output = (card.output ?? '') + event.partialResult.output
+                this.notifySoon()
+              }
+              break
+            }
+
+            case 'tool_execution_end': {
+              const card = this.cards.get(event.toolCallId)
+              if (card) {
+                card.status = event.result.ok ? 'done' : 'error'
+                if (event.result.output !== undefined) {
+                  card.output = event.result.output
+                }
+                if (event.result.patch) {
+                  card.patch = event.result.patch
+                }
+              }
+              this.notify()
+              break
+            }
+
+            case 'agent_end':
+              subagentThread.messages.length = 0
+              subagentThread.messages.push(...event.messages)
+              break
+          }
+        }
+
+        const durationMs = Date.now() - startTime
+        const isOk = !controller.signal.aborted && lastAssistantMessage?.stopReason !== 'error'
+        const resultText =
+          latestSummary.trim() ||
+          (isOk
+            ? `[${profile.name}] 任务执行完成（共 ${stepsExecuted} 步，调用工具 ${toolCallsCount} 次）。`
+            : '任务未完成或异常中断。')
+
+        let outputFile: string | undefined = undefined
+        if (resultText.length > 3000) {
+          try {
+            const outDir = join(workspace, '.ada', 'subagent-outputs')
+            if (!existsSync(outDir)) {
+              await mkdir(outDir, { recursive: true })
+            }
+            outputFile = join(outDir, `${subId}.md`)
+            await writeFile(outputFile, `# ${title}\n\n${resultText}`, 'utf8')
+          } catch {
+            // ignore save failure
+          }
+        }
+
+        options.onStepUpdate?.({
+          step: stepsExecuted,
+          maxSteps,
+          status: isOk ? 'done' : 'error',
+          currentAction: `执行结束（耗时 ${(durationMs / 1000).toFixed(1)}s）`,
+        })
+
+        // 异步后台运行完成时，向父会话写入一条完成提示，以便父会话与用户立即感知
+        if (options.onStepUpdate && parentThread && parentThread.id !== subagentThread.id) {
+          const previewText = resultText.length > 180 ? `${resultText.slice(0, 180)}...` : resultText
+          const fileInfo = outputFile ? `\n\n📄 完整报告已保存至：${outputFile}` : ''
+          const noticeItem: Item = {
+            kind: 'notice',
+            level: 'info',
+            id: nextId('item'),
+            at: Date.now(),
+            text: `子智能体「${profile.name}」已在后台完成执行（会话 ID: ${subagentThread.id}，耗时 ${(durationMs / 1000).toFixed(1)}s）。\n成果摘要：${previewText}${fileInfo}`,
+          }
+          parentThread.items.push(noticeItem)
+          this.notify()
+        }
+
+        return {
+          ok: isOk,
+          summary: resultText,
+          outputFile,
+          stepsExecuted,
+          durationMs,
+          toolCallsCount,
+          messages: subagentThread.messages,
+        }
+      } catch (error) {
+        const durationMs = Date.now() - startTime
+        const errorMessage = (error as Error).message || String(error)
+        this.fail(subagentThread, `执行异常: ${errorMessage}`)
+        return {
+          ok: false,
+          summary: `子智能体 [${profile.name}] 执行失败: ${errorMessage}`,
+          stepsExecuted,
+          durationMs,
+          toolCallsCount,
+          errorMessage,
+          messages: subagentThread.messages,
+        }
+      } finally {
+        this.steeringQueues.delete(subagentThread.id)
+        this.runningThreadIds.delete(subagentThread.id)
+        this.aborts.delete(subagentThread.id)
+        this.notify()
+      }
+    })()
+
+    return { thread: subagentThread, resultPromise }
+  }
+
+  /**
+   * 向子智能体会话发送转向指导消息或追加新任务
+   */
+  async steerSubagentThread(options: {
+    subagentThreadId: string
+    message: string
+    summary?: string
+  }): Promise<{ status: 'steered' | 'resumed' | 'not_found'; text: string }> {
+    const thread = this.threads.find((t) => t.id === options.subagentThreadId)
+    if (!thread) {
+      return { status: 'not_found', text: `未找到 ID 为 ${options.subagentThreadId} 的子智能体会话。` }
+    }
+
+    const isRunning = this.isThreadRunning(thread.id)
+    const steeringQueue = this.steeringQueues.get(thread.id)
+
+    const steeringText = options.summary?.trim()
+      ? `【上层协调指令：${options.summary.trim()}】\n${options.message.trim()}`
+      : `【上层协调指令】\n${options.message.trim()}`
+
+    if (isRunning && steeringQueue) {
+      // 正在运行：注入到转向队列，子智能体在当前工具结束后会立即吸收并转向
+      const msg: AgentMessage = {
+        role: 'user',
+        content: steeringText,
+        timestamp: Date.now(),
+      }
+      steeringQueue.push(msg)
+      // 在界面上记录一条提示
+      const noticeItem: Item = {
+        kind: 'notice',
+        level: 'info',
+        id: nextId('item'),
+        at: Date.now(),
+        text: `已向运行中的子智能体发送转向指令：${options.summary ?? options.message}`,
+      }
+      thread.items.push(noticeItem)
+      this.notify()
+      return {
+        status: 'steered',
+        text: `指令已成功发送给运行中的子智能体「${thread.title}」，将在当前工具调用完成后立即生效转向。`,
+      }
+    }
+
+    // 若子智能体已处于停止/完成状态：唤醒续跑
+    const userItem: Item = {
+      kind: 'user',
+      id: nextId('item'),
+      at: Date.now(),
+      text: steeringText,
+    }
+    thread.items.push(userItem)
+    const userMessage: AgentMessage = { role: 'user', content: steeringText, timestamp: Date.now() }
+    thread.messages.push(userMessage)
+    this.persist(thread.id, userMessage)
+
+    let threadQueue = this.queues.get(thread.id)
+    if (!threadQueue) {
+      threadQueue = []
+      this.queues.set(thread.id, threadQueue)
+    }
+    threadQueue.push({ thread, text: steeringText, item: userItem })
+    void this.drain(thread)
+
+    return {
+      status: 'resumed',
+      text: `已向子智能体「${thread.title}」追加新指令并重新启动执行。`,
+    }
   }
 
   /** Re-scan the workspace so the sidebar can show what the agent sees. */
@@ -840,7 +1372,7 @@ export class AgentStore {
           delete next.item.queued
           this.notify()
         }
-        await this.turn(next.thread, next.text)
+        await this.turn(next.thread, next.text, next.images)
       }
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {
@@ -862,7 +1394,7 @@ export class AgentStore {
    * 与模型来回的完整历史由循环维护（它会在 agent_end 交还整份 messages），
    * 所以 thread.messages 永远是真正发出去过的那份。
    */
-  private async turn(thread: Thread, prompt: string): Promise<void> {
+  private async turn(thread: Thread, prompt: string, images?: string[]): Promise<void> {
     const config = await readLlmConfig()
     if (!config) {
       await this.offlineTurn(thread, prompt)
@@ -870,7 +1402,12 @@ export class AgentStore {
     }
     this.push({ kind: 'request', text: `${config.model} @ ${config.baseUrl}（${config.source}）` })
 
-    const userMessage: AgentMessage = { role: 'user', content: prompt, timestamp: Date.now() }
+    const userMessage: AgentMessage = {
+      role: 'user',
+      content: prompt,
+      images: images && images.length > 0 ? [...images] : undefined,
+      timestamp: Date.now(),
+    }
     thread.messages.push(userMessage)
     this.persist(thread.id, userMessage)
 
@@ -896,6 +1433,7 @@ export class AgentStore {
     const loop = runAgentLoop(thread.messages, config, {
       tools,
       systemPrompt,
+      workspace: thread.workspace,
       effort: EFFORT_VALUE[this.effort],
       // 顺序执行：审批一次只该问一件事，命令之间也不该互相抢工作目录。
       toolExecution: 'sequential',
@@ -1035,6 +1573,7 @@ export class AgentStore {
     const durationMs = Math.max(1, Date.now() - offlineStartTime)
     const info = this.workspaceInfo
     const assistantText = `【离线模式】我扫描了项目 \`${thread.workspace}\`：${info.files} 个文件、${info.dirs} 个目录。配置模型接口后，我会按你的任务在这个目录里读写文件、执行命令。`
+    const userMessage: AgentMessage = { role: 'user', content: prompt, timestamp: Date.now() }
     thread.items.push({
       kind: 'assistant',
       id: nextId('item'),
@@ -1042,7 +1581,6 @@ export class AgentStore {
       text: assistantText,
       durationMs,
     })
-    const userMessage: AgentMessage = { role: 'user', content: prompt, timestamp: Date.now() }
     const assistantMessage: AgentMessage = {
       role: 'assistant',
       content: assistantText,

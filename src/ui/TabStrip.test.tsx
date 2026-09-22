@@ -249,4 +249,35 @@ describeNative('tab strip', () => {
     },
     30_000,
   )
+
+  test(
+    'subagent tab opens in tab strip, can be selected and closed',
+    async () => {
+      const workspace = await project()
+      const parent = store.newThread(workspace)
+      store.selectThread(parent.id)
+
+      const { thread: subagent } = await store.startSubagentThread({
+        subagentId: 'code_reviewer',
+        task: '审查代码改动',
+      })
+
+      expect(store.openTabIds).toContain(subagent.id)
+      expect(subagent.isSubagent).toBe(true)
+
+      // 切换到子智能体标签
+      store.selectThread(subagent.id)
+      expect(store.activeId).toBe(subagent.id)
+
+      // 关掉子智能体标签只是关闭视图，会话数据保留
+      store.closeTab(subagent.id)
+      expect(store.openTabIds).not.toContain(subagent.id)
+      expect(store.threads.some((t) => t.id === subagent.id)).toBe(true)
+
+      // 再次 selectThread 会重新打开标签
+      store.selectThread(subagent.id)
+      expect(store.openTabIds).toContain(subagent.id)
+    },
+    30_000,
+  )
 })

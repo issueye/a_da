@@ -18,7 +18,7 @@ import {
 } from '../agent/config'
 import type { AgentStore } from '../agent/store'
 import { C, editorTheme, FONT_MONO, M } from '../theme'
-import { Icon, IconButton } from './controls'
+import { Checkbox, Icon, IconButton } from './controls'
 import type { IconName } from '../icons'
 
 type SectionId = 'provider' | 'workspace'
@@ -196,6 +196,8 @@ export function SettingsDialog({ store }: { store: AgentStore }) {
         baseUrl: saved.baseUrl ?? PROVIDER_PRESETS[0]!.baseUrl,
         apiKey: saved.apiKey ?? '',
         model: saved.model ?? PROVIDER_PRESETS[0]!.model,
+        contextWindow: typeof saved.contextWindow === 'number' ? saved.contextWindow : (PROVIDER_PRESETS[0]!.contextWindow ?? 128000),
+        supportsImages: typeof saved.supportsImages === 'boolean' ? saved.supportsImages : (PROVIDER_PRESETS[0]!.supportsImages ?? false),
       }
       setDraft(next)
       const match = PROVIDER_PRESETS.find((item) => item.baseUrl && item.baseUrl === next.baseUrl)
@@ -209,7 +211,12 @@ export function SettingsDialog({ store }: { store: AgentStore }) {
     setPreset(id)
     const found = PROVIDER_PRESETS.find((item) => item.id === id)
     if (found && found.id !== 'custom') {
-      update({ baseUrl: found.baseUrl, model: found.model })
+      update({
+        baseUrl: found.baseUrl,
+        model: found.model,
+        contextWindow: found.contextWindow,
+        supportsImages: found.supportsImages,
+      })
     }
   }
 
@@ -256,8 +263,9 @@ export function SettingsDialog({ store }: { store: AgentStore }) {
         style={{
           display: 'flex',
           flexDirection: 'column',
-          width: M.settingsWidth,
+          width: '70%',
           maxWidth: '92%',
+          minWidth: 500,
           height: '80%',
           backgroundColor: C.raised,
           borderWidth: 1,
@@ -315,6 +323,9 @@ export function SettingsDialog({ store }: { store: AgentStore }) {
             flexGrow: 1,
             minHeight: 0,
             alignItems: 'stretch',
+            borderBottomLeftRadius: 11,
+            borderBottomRightRadius: 11,
+            overflow: 'hidden',
           }}
         >
           <div
@@ -326,6 +337,7 @@ export function SettingsDialog({ store }: { store: AgentStore }) {
               padding: 10,
               gap: 2,
               backgroundColor: C.sidebar,
+              borderBottomLeftRadius: 11,
             }}
           >
             {SECTIONS.map((item) => (
@@ -382,6 +394,7 @@ export function SettingsDialog({ store }: { store: AgentStore }) {
               paddingLeft: 18,
               paddingRight: 18,
               gap: 13,
+              borderBottomRightRadius: 11,
             }}
           >
             {section === 'provider' ? (
@@ -457,6 +470,25 @@ export function SettingsDialog({ store }: { store: AgentStore }) {
                   mono
                   onChange={(next) => update({ model: next })}
                   onEnter={() => void save()}
+                />
+                <Field
+                  label="上下文上限 (Tokens)"
+                  testId="settings-context-window"
+                  value={draft.contextWindow ? String(draft.contextWindow) : ''}
+                  placeholder="128000"
+                  mono
+                  onChange={(next) => {
+                    const clean = next.replace(/\D/g, '')
+                    update({ contextWindow: clean ? parseInt(clean, 10) : undefined })
+                  }}
+                  hint="模型最大上下文 Token 数（例如 128000、200000、1000000）。用于输入框下方遥测栏精确计算会话占比。"
+                />
+                <Checkbox
+                  testId="settings-supports-images"
+                  checked={Boolean(draft.supportsImages)}
+                  onChange={(checked) => update({ supportsImages: checked })}
+                  label="支持图片输入 (Vision)"
+                  hint="启用多模态图片输入。勾选后输入框可添加并发送图片给视觉多模态大模型。"
                 />
 
                 {overrides.length ? (

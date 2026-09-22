@@ -17,6 +17,10 @@ export interface ProviderConfig {
   baseUrl: string
   apiKey: string
   model: string
+  /** 模型最大上下文窗口（Token），用于遥测比率统计等 */
+  contextWindow?: number
+  /** 是否支持多模态图片输入 */
+  supportsImages?: boolean
 }
 
 export interface LlmConfig extends ProviderConfig {
@@ -29,16 +33,18 @@ export interface ProviderPreset {
   label: string
   baseUrl: string
   model: string
+  contextWindow?: number
+  supportsImages?: boolean
 }
 
 /** Any OpenAI-compatible gateway works; these are the ones with a fixed URL. */
 export const PROVIDER_PRESETS: ProviderPreset[] = [
-  { id: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
-  { id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
-  { id: 'dashscope', label: '阿里云百炼', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' },
-  { id: 'moonshot', label: 'Moonshot', baseUrl: 'https://api.moonshot.cn/v1', model: 'kimi-k2-0905-preview' },
-  { id: 'ollama', label: 'Ollama（本地）', baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5-coder' },
-  { id: 'custom', label: '自定义', baseUrl: '', model: '' },
+  { id: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', contextWindow: 128000, supportsImages: true },
+  { id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', contextWindow: 128000, supportsImages: false },
+  { id: 'dashscope', label: '阿里云百炼', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus', contextWindow: 128000, supportsImages: false },
+  { id: 'moonshot', label: 'Moonshot', baseUrl: 'https://api.moonshot.cn/v1', model: 'kimi-k2-0905-preview', contextWindow: 128000, supportsImages: false },
+  { id: 'ollama', label: 'Ollama（本地）', baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5-coder', contextWindow: 128000, supportsImages: false },
+  { id: 'custom', label: '自定义', baseUrl: '', model: '', contextWindow: 128000, supportsImages: false },
 ]
 
 export function configPath(): string {
@@ -152,6 +158,8 @@ function fromEnv(): Partial<ProviderConfig> {
     apiKey: env.A_DA_API_KEY || env.OPENAI_API_KEY || '',
     baseUrl: env.A_DA_BASE_URL || env.OPENAI_BASE_URL || '',
     model: env.A_DA_MODEL || env.OPENAI_MODEL || '',
+    contextWindow: env.A_DA_CONTEXT_WINDOW ? parseInt(env.A_DA_CONTEXT_WINDOW, 10) : undefined,
+    supportsImages: env.A_DA_SUPPORTS_IMAGES ? env.A_DA_SUPPORTS_IMAGES === '1' || env.A_DA_SUPPORTS_IMAGES === 'true' : undefined,
   }
 }
 
@@ -159,7 +167,7 @@ function fromEnv(): Partial<ProviderConfig> {
 export function envOverrides(): string[] {
   const names: string[] = []
   for (const [key, value] of Object.entries(fromEnv())) {
-    if (value) {
+    if (value !== undefined && value !== '') {
       names.push(
         key === 'apiKey'
           ? process.env.A_DA_API_KEY
@@ -169,9 +177,13 @@ export function envOverrides(): string[] {
             ? process.env.A_DA_BASE_URL
               ? 'A_DA_BASE_URL'
               : 'OPENAI_BASE_URL'
-            : process.env.A_DA_MODEL
-              ? 'A_DA_MODEL'
-              : 'OPENAI_MODEL',
+            : key === 'model'
+              ? process.env.A_DA_MODEL
+                ? 'A_DA_MODEL'
+                : 'OPENAI_MODEL'
+              : key === 'contextWindow'
+                ? 'A_DA_CONTEXT_WINDOW'
+                : 'A_DA_SUPPORTS_IMAGES',
       )
     }
   }
@@ -186,7 +198,25 @@ export async function readLlmConfig(): Promise<LlmConfig | null> {
   const baseUrl = (env.baseUrl || file.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '')
   const model = env.model || file.model || ''
   if (!apiKey || !model) return null
-  return { baseUrl, apiKey, model, source: env.apiKey ? 'env' : configPath() }
+  const contextWindow =
+    env.contextWindow !== undefined
+      ? env.contextWindow
+      : typeof file.contextWindow === 'number'
+        ? file.contextWindow
+        : undefined
+  const supportsImages =
+    env.supportsImages !== undefined
+      ? env.supportsImages
+      : Boolean(file.supportsImages)
+
+  return {
+    baseUrl,
+    apiKey,
+    model,
+    contextWindow,
+    supportsImages,
+    source: env.apiKey ? 'env' : configPath(),
+  }
 }
 
 /** One cheap round trip, so 保存 can be told apart from 保存并可用. */

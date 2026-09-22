@@ -31,6 +31,8 @@ export interface ThinkingBlock {
 export interface UserMessage {
   role: 'user'
   content: string
+  /** 附带的图片路径、URL 或 Base64 Data URL */
+  images?: string[]
   timestamp?: number
 }
 
@@ -155,4 +157,5 @@ export interface AgentLoopOptions {
   getSteeringMessages?: () => Promise<AgentMessage[]>
   getFollowUpMessages?: () => Promise<AgentMessage[]>
   signal?: AbortSignal
+  workspace?: string
 }

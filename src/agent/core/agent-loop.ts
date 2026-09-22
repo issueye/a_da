@@ -4,8 +4,10 @@
  * 实现多轮流式生成、工具并行/顺序调度、生命周期事件派发与钩子拦截
  */
 
+import { readFileSync } from 'node:fs'
+import { extname, isAbsolute, join } from 'node:path'
 import type { ProviderConfig } from '../config'
-import { streamModelChat, type ChatCompletionMessageParam } from '../ai/stream'
+import { streamModelChat, type ChatCompletionMessageParam, type ChatCompletionContentPart } from '../ai/stream'
 import type {
   AgentEndReason,
   AgentEvent,
@@ -27,12 +29,44 @@ function safeParseArgs(raw: string): Record<string, unknown> {
   }
 }
 
+/** 将本地或远程图片路径转换为模型可接收的 data URL */
+export function imageToDataUrl(imagePathOrUrl: string, workspace?: string): string {
+  if (
+    imagePathOrUrl.startsWith('data:') ||
+    imagePathOrUrl.startsWith('http://') ||
+    imagePathOrUrl.startsWith('https://')
+  ) {
+    return imagePathOrUrl
+  }
+  try {
+    const fullPath = workspace && !isAbsolute(imagePathOrUrl) ? join(workspace, imagePathOrUrl) : imagePathOrUrl
+    const ext = extname(fullPath).toLowerCase().replace('.', '')
+    const mime =
+      ext === 'jpg' || ext === 'jpeg'
+        ? 'image/jpeg'
+        : ext === 'png'
+        ? 'image/png'
+        : ext === 'webp'
+        ? 'image/webp'
+        : ext === 'gif'
+        ? 'image/gif'
+        : ext === 'svg'
+        ? 'image/svg+xml'
+        : 'image/png'
+    const buffer = readFileSync(fullPath)
+    return `data:${mime};base64,${buffer.toString('base64')}`
+  } catch {
+    return imagePathOrUrl
+  }
+}
+
 /**
  * 将内部 AgentMessage 列表转换为发送给模型的 ChatCompletionMessageParam 格式
  */
 export function convertMessagesToLlm(
   systemPrompt: string,
-  messages: AgentMessage[]
+  messages: AgentMessage[],
+  options?: { supportsImages?: boolean; workspace?: string },
 ): ChatCompletionMessageParam[] {
   const result: ChatCompletionMessageParam[] = []
 
@@ -42,7 +76,26 @@ export function convertMessagesToLlm(
 
   for (const m of messages) {
     if (m.role === 'user') {
-      result.push({ role: 'user', content: m.content })
+      if (m.images && m.images.length > 0) {
+        if (options?.supportsImages !== false) {
+          const parts: ChatCompletionContentPart[] = []
+          if (m.content) {
+            parts.push({ type: 'text', text: m.content })
+          }
+          for (const img of m.images) {
+            const url = imageToDataUrl(img, options?.workspace)
+            parts.push({ type: 'image_url', image_url: { url } })
+          }
+          result.push({ role: 'user', content: parts })
+        } else {
+          // 模型不支持视觉输入时，将图片作为文字提示降级附加
+          const note = m.images.map((img) => `[附带图片: ${img}]`).join('\n')
+          const text = m.content ? `${m.content}\n\n${note}` : note
+          result.push({ role: 'user', content: text })
+        }
+      } else {
+        result.push({ role: 'user', content: m.content })
+      }
     } else if (m.role === 'assistant') {
       const toolCalls = m.toolCalls?.map((tc) => ({
         id: tc.id,
@@ -198,7 +251,10 @@ export async function* runAgentLoop(
 
       yield { type: 'message_start', message: assistantMessage }
 
-      const llmMessages = convertMessagesToLlm(options.systemPrompt ?? '', workingMessages)
+      const llmMessages = convertMessagesToLlm(options.systemPrompt ?? '', workingMessages, {
+        supportsImages: config.supportsImages,
+        workspace: options.workspace,
+      })
       const rawToolCalls: ToolCallBlock[] = []
 
       // 发起流式推理

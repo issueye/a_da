@@ -8,9 +8,24 @@ import { createParser, type EventSourceMessage } from 'eventsource-parser'
 import type { ProviderConfig } from '../config'
 import type { ModelChatOptions, StreamDelta, TokenUsage } from './types'
 
+export interface ChatCompletionContentPartText {
+  type: 'text'
+  text: string
+}
+
+export interface ChatCompletionContentPartImage {
+  type: 'image_url'
+  image_url: {
+    url: string
+    detail?: 'auto' | 'low' | 'high'
+  }
+}
+
+export type ChatCompletionContentPart = ChatCompletionContentPartText | ChatCompletionContentPartImage
+
 export interface ChatCompletionMessageParam {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content?: string | null
+  content?: string | ChatCompletionContentPart[] | null
   tool_calls?: Array<{
     id: string
     type: 'function'
@@ -111,12 +126,6 @@ export async function* streamModelChat(
     stream_options: { include_usage: true },
   }
 
-  // 计算提示词字符量用于无 usage 时的保底估算
-  let promptChars = 0
-  for (const m of messages) {
-    if (typeof m.content === 'string') promptChars += m.content.length
-  }
-
   if (options.tools && options.tools.length > 0) {
     body.tools = options.tools
   }
@@ -156,6 +165,19 @@ export async function* streamModelChat(
       const parsed = JSON.parse(errorText)
       if (parsed.error?.message) {
         message += `: ${parsed.error.message}`
+      } else if (typeof parsed.message === 'string' && parsed.message) {
+        message += `: ${parsed.message}`
+        if (parsed.code) message += ` (${parsed.code})`
+        if (parsed.data?.detail) {
+          try {
+            const detailObj = typeof parsed.data.detail === 'string' ? JSON.parse(parsed.data.detail) : parsed.data.detail
+            if (detailObj.error?.message && detailObj.error.message !== parsed.message) {
+              message += ` [${detailObj.error.message}]`
+            }
+          } catch {}
+        }
+      } else if (typeof parsed.error === 'string' && parsed.error) {
+        message += `: ${parsed.error}`
       } else if (errorText) {
         message += `: ${errorText.slice(0, 300)}`
       }
@@ -178,8 +200,8 @@ export async function* streamModelChat(
   const queue: StreamDelta[] = []
   let streamError: string | null = null
   let hasUsage = false
-  let outputChars = 0
-  let thinkingChars = 0
+  let accumulatedOutput = ''
+  let accumulatedThinking = ''
   const thinkFilter = new ThinkTagFilter()
 
   const parser = createParser({
@@ -192,11 +214,17 @@ export async function* streamModelChat(
         // 提取 usage 统计（若提供）
         if (chunk.usage) {
           hasUsage = true
+          const cachedTokens =
+            chunk.usage.prompt_tokens_details?.cached_tokens ??
+            chunk.usage.prompt_cache_hit_tokens ??
+            chunk.usage.cache_read_input_tokens ??
+            0
           const usage: TokenUsage = {
             promptTokens: chunk.usage.prompt_tokens ?? 0,
             completionTokens: chunk.usage.completion_tokens ?? 0,
             totalTokens: chunk.usage.total_tokens ?? 0,
             thinkingTokens: chunk.usage.completion_tokens_details?.reasoning_tokens,
+            cachedTokens: cachedTokens > 0 ? cachedTokens : undefined,
           }
           queue.push({ type: 'usage', usage })
         }
@@ -220,7 +248,7 @@ export async function* streamModelChat(
         // 1. 处理思考链 / Reasoning (DeepSeek-R1 / OpenAI reasoning_content / Anthropic thinking)
         const thinking = delta.reasoning_content || delta.reasoning || delta.thinking
         if (thinking) {
-          thinkingChars += thinking.length
+          accumulatedThinking += thinking
           queue.push({ type: 'thinking', thinking })
         }
 
@@ -229,10 +257,10 @@ export async function* streamModelChat(
           const parts = thinkFilter.feed(delta.content)
           for (const part of parts) {
             if (part.type === 'thinking') {
-              thinkingChars += part.text.length
+              accumulatedThinking += part.text
               queue.push({ type: 'thinking', thinking: part.text })
             } else if (part.text) {
-              outputChars += part.text.length
+              accumulatedOutput += part.text
               queue.push({ type: 'text', text: part.text })
             }
           }
@@ -291,8 +319,10 @@ export async function* streamModelChat(
   // 结算可能残留在 thinkFilter 缓冲区中的思考或文本
   for (const flushed of thinkFilter.flush()) {
     if (flushed.type === 'thinking') {
+      accumulatedThinking += flushed.text
       yield { type: 'thinking', thinking: flushed.text }
     } else if (flushed.text) {
+      accumulatedOutput += flushed.text
       yield { type: 'text', text: flushed.text }
     }
   }
@@ -308,23 +338,6 @@ export async function* streamModelChat(
           args: call.args,
         },
       }
-    }
-  }
-
-  // 若服务端未返回 usage，通过字符数进行兜底估算（约 3.5 字符 / token）
-  if (!hasUsage && (outputChars > 0 || promptChars > 0)) {
-    const promptTokens = Math.max(1, Math.ceil(promptChars / 3.5))
-    const compTokens = Math.ceil(outputChars / 3.5)
-    const thinkTokens = thinkingChars > 0 ? Math.ceil(thinkingChars / 3.5) : undefined
-    const totalTokens = promptTokens + compTokens + (thinkTokens ?? 0)
-    yield {
-      type: 'usage',
-      usage: {
-        promptTokens,
-        completionTokens: compTokens + (thinkTokens ?? 0),
-        totalTokens,
-        thinkingTokens: thinkTokens,
-      },
     }
   }
 

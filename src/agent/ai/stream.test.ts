@@ -104,7 +104,7 @@ describe('streamModelChat Token 统计与流式参数', () => {
     }
   })
 
-  test('服务端无 usage 字段时自动产出字符保底 Token 估算', async () => {
+  test('服务端无 usage 字段时不产生伪造 usage，严格依据模型返回', async () => {
     const { streamModelChat } = await import('./stream')
     const originalFetch = globalThis.fetch
 
@@ -133,12 +133,9 @@ describe('streamModelChat Token 统计与流式参数', () => {
         deltas.push(delta)
       }
 
-      // 验证自动产出了兜底的 usage 统计
+      // 验证未产生伪造的 usage 统计，完全依赖模型自身返回
       const usageDelta = deltas.find((d) => d.type === 'usage')
-      expect(usageDelta).toBeDefined()
-      expect(usageDelta?.usage?.promptTokens).toBeGreaterThan(0)
-      expect(usageDelta?.usage?.completionTokens).toBeGreaterThan(0)
-      expect(usageDelta?.usage?.totalTokens).toBeGreaterThan(0)
+      expect(usageDelta).toBeUndefined()
     } finally {
       globalThis.fetch = originalFetch
     }

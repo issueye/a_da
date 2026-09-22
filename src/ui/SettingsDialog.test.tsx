@@ -95,6 +95,8 @@ describeNative('settings', () => {
 
       await app.getByTestId('settings-preset-deepseek').click()
       await app.getByTestId('settings-api-key').fill('sk-test-123')
+      await app.getByTestId('settings-context-window').fill('200000')
+      await app.getByTestId('settings-supports-images').click()
       await app.getByTestId('settings-save').click()
       await app.getByText('已保存，下一轮对话生效').waitFor({ timeoutMs: 10_000 })
 
@@ -103,6 +105,8 @@ describeNative('settings', () => {
         baseUrl: 'https://api.deepseek.com/v1',
         apiKey: 'sk-test-123',
         model: 'deepseek-chat',
+        contextWindow: 200000,
+        supportsImages: true,
       })
 
       // Saving must not disturb the rest of the window. Assert on the window's

@@ -6,7 +6,7 @@
  * `A_DA_NO_DIALOG=1`。
  */
 
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeEach, describe, expect, test } from 'bun:test'
 import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -25,6 +25,10 @@ const describeNative = hasNativeTestRenderer ? describe : describe.skip
 
 const dirs: string[] = []
 
+beforeEach(() => {
+  store.closeConfirm()
+})
+
 async function project(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'a-da-sidebar-'))
   dirs.push(dir)
@@ -33,6 +37,7 @@ async function project(): Promise<string> {
 
 afterAll(async () => {
   setDirectoryPicker(null)
+  store.closeConfirm()
   for (const dir of dirs) await rm(dir, { recursive: true, force: true })
 })
 
@@ -107,12 +112,13 @@ describeNative('sidebar sessions', () => {
       const sessionFile = await untilFile(doomed.id, workspace)
       await app.getByTestId(`thread-${doomed.id}`).waitFor({ timeoutMs: 10_000 })
 
-      // 第一下只是把垃圾桶变成确认，会话还在。
+      // 第一下打开二次确认弹窗，会话还在。
       await app.getByTestId(`delete-thread-${doomed.id}`).click()
       await painted('确认删除')
       expect(store.threads.some((thread) => thread.id === doomed.id)).toBe(true)
 
-      await app.getByTestId(`delete-thread-${doomed.id}`).click()
+      // 在确认弹窗中点击确认删除
+      await app.getByTestId('confirm-dialog-confirm').click()
       await gone('确认删除')
       await until(() => !store.threads.some((thread) => thread.id === doomed.id))
       await until(() => !existsSync(sessionFile))
@@ -138,6 +144,7 @@ describeNative('sidebar sessions', () => {
       // 图标和选择区是兄弟，点它不该顺手把会话切过去。
       expect(store.activeId).toBe(older.id)
 
+      store.closeConfirm()
       await app.close()
     },
     30_000,
@@ -183,6 +190,38 @@ describeNative('sidebar sessions', () => {
     },
     30_000,
   )
+
+  test(
+    'subagent session renders as child item under parent in sidebar and composer is read-only',
+    async () => {
+      const workspace = await project()
+      const parent = store.newThread(workspace)
+      store.selectThread(parent.id)
+      const { thread: subagent } = await store.startSubagentThread({
+        subagentId: 'code_reviewer',
+        task: '审核UI代码',
+      })
+      const { app, painted, until } = await mount()
+      await app.getByTestId(`thread-${parent.id}`).waitFor({ timeoutMs: 10_000 })
+      await app.getByTestId(`thread-${subagent.id}`).waitFor({ timeoutMs: 10_000 })
+
+      // 验证子智能体已作为子项渲染并显示标题
+      await painted('审核UI代码')
+
+      // 验证子智能体会话选中时 Composer 处于只读状态并显示「子智能体专属执行会话」和「返回主会话」
+      store.selectThread(subagent.id)
+      await painted('子智能体专属执行会话')
+      await painted('返回主会话')
+
+      // 点击返回主会话可切回父级会话
+      await app.getByTestId('return-parent-thread').click()
+      await until(() => store.activeId === parent.id)
+      expect(store.activeId).toBe(parent.id)
+
+      await app.close()
+    },
+    30_000,
+  )
 })
 
 describeNative('sidebar add project', () => {
@@ -212,13 +251,13 @@ describeNative('sidebar add project', () => {
       await app.getByTestId(`project-${doomedLabel}`).waitFor({ timeoutMs: 10_000 })
       expect(await app.getByTestId(`remove-project-${doomedLabel}`).count()).toBe(1)
 
-      // 第一下点击变红提示「确认移除」
+      // 第一下点击弹出确认弹窗
       await app.getByTestId(`remove-project-${doomedLabel}`).click()
       await painted('确认移除')
       expect(store.projects).toContain(doomed)
 
-      // 第二下点击正式移除
-      await app.getByTestId(`remove-project-${doomedLabel}`).click()
+      // 在确认弹窗中点击确认移除
+      await app.getByTestId('confirm-dialog-confirm').click()
       await gone('确认移除')
       await until(() => !store.projects.includes(doomed))
       expect(store.projects).not.toContain(doomed)
@@ -241,6 +280,23 @@ describeNative('sidebar add project', () => {
 
       expect(store.threads.length).toBe(countBefore + 1)
       expect(store.active.title).toBe('新会话')
+
+      await app.close()
+    },
+    30_000,
+  )
+
+  test(
+    'long thread and subagent title renders in sidebar with ellipsis truncation',
+    async () => {
+      const workspace = await project()
+      const longTitle = '这是一个非常非常长的会话标题用于测试侧边栏标题超长截断并显示省略号的效果'
+      const thread = store.newThread(workspace)
+      thread.title = longTitle
+
+      const { app, painted } = await mount()
+      await app.getByTestId(`thread-${thread.id}`).waitFor({ timeoutMs: 10_000 })
+      await painted(longTitle)
 
       await app.close()
     },
