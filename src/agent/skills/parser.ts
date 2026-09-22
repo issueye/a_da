@@ -27,7 +27,12 @@ export function expandSkillVariables(content: string, baseDirectory: string): st
  * @param filePath 技能文件绝对路径（用于兜底推导技能名称）
  */
 export function parseSkillMarkdown(rawContent: string, filePath: string): ParsedSkill {
-  const fallbackName = basename(dirname(filePath))
+  const fileName = basename(filePath)
+  const isSkillMd = fileName.toLowerCase() === 'skill.md'
+  const fallbackName = isSkillMd
+    ? basename(dirname(filePath))
+    : fileName.replace(/\.md$/i, '')
+
   const metadata: SkillMetadata = {
     name: fallbackName,
     description: '',
@@ -54,15 +59,37 @@ export function parseSkillMarkdown(rawContent: string, filePath: string): Parsed
         val = val.replace(/^['"]|['"]$/g, '')
 
         if (key === 'name' && val) {
-          metadata.name = val
+          metadata.name = val.trim()
         } else if (key === 'description') {
-          metadata.description = val
+          metadata.description = val.trim()
         } else if (key === 'version') {
           metadata.version = val
         } else if (key === 'author') {
           metadata.author = val
-        } else if (key === 'whenToUse') {
+        } else if (key === 'whenToUse' || key === 'when_to_use') {
           metadata.whenToUse = val
+        } else if (key === 'compatibility') {
+          metadata.compatibility = val
+        } else if (key === 'license') {
+          metadata.license = val
+        } else if (
+          key === 'disable-model-invocation' ||
+          key === 'disable_model_invocation' ||
+          key === 'disableModelInvocation'
+        ) {
+          metadata.disableModelInvocation =
+            val.toLowerCase() === 'true' || val === '1' || val.toLowerCase() === 'yes'
+        } else if (
+          key === 'allowed-tools' ||
+          key === 'allowed_tools' ||
+          key === 'allowedTools'
+        ) {
+          const cleanVal = val.replace(/^\[|\]$/g, '')
+          // 支持逗号或空格分隔
+          metadata.allowedTools = cleanVal
+            .split(/[,\s]+/)
+            .map((t) => t.trim().replace(/^['"]|['"]$/g, ''))
+            .filter(Boolean)
         } else if (key === 'tags') {
           // 处理 [tag1, tag2] 或 tag1, tag2
           const cleanVal = val.replace(/^\[|\]$/g, '')

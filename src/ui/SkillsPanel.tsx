@@ -447,6 +447,40 @@ export function SkillsPanel({
                         {scopeLabel}
                       </text>
                     </div>
+
+                    {skill.disableModelInvocation ? (
+                      <div
+                        style={{
+                          paddingLeft: 5,
+                          paddingRight: 5,
+                          paddingTop: 1,
+                          paddingBottom: 1,
+                          borderRadius: 4,
+                          backgroundColor: `${C.accent}18`,
+                          borderWidth: 1,
+                          borderColor: `${C.accent}30`,
+                        }}
+                      >
+                        <text style={{ fontSize: 9.5, color: C.accent, fontWeight: 500 }}>
+                          仅指令唤醒
+                        </text>
+                      </div>
+                    ) : null}
+
+                    {skill.isFileSkill ? (
+                      <div
+                        style={{
+                          paddingLeft: 4,
+                          paddingRight: 4,
+                          paddingTop: 1,
+                          paddingBottom: 1,
+                          borderRadius: 3,
+                          backgroundColor: C.overlay,
+                        }}
+                      >
+                        <text style={{ fontSize: 9.5, color: C.faint }}>单文件</text>
+                      </div>
+                    ) : null}
                   </div>
 
                   {/* 右侧操作区：Switch、展开正文与删除 */}
@@ -524,12 +558,24 @@ export function SkillsPanel({
                   {skill.description}
                 </text>
 
-                {/* 适用场景 / 标签 */}
-                {skill.metadata?.whenToUse ? (
-                  <text style={{ fontSize: 10.5, color: C.tertiary }}>
-                    {`适用时机：${skill.metadata.whenToUse}`}
-                  </text>
-                ) : null}
+                {/* 适用场景 / 标签 / 插件归属 */}
+                <div style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                  {skill.metadata?.whenToUse ? (
+                    <text style={{ fontSize: 10.5, color: C.tertiary }}>
+                      {`适用时机：${skill.metadata.whenToUse}`}
+                    </text>
+                  ) : null}
+                  {skill.allowedTools && skill.allowedTools.length > 0 ? (
+                    <text style={{ fontSize: 10.5, color: C.link }}>
+                      {`推荐工具：${skill.allowedTools.join(', ')}`}
+                    </text>
+                  ) : null}
+                  {skill.scope === 'plugin' && skill.pluginName ? (
+                    <text style={{ fontSize: 10.5, color: C.faint }}>
+                      {`所属插件包：${skill.pluginName}（在插件管理中联动控制启停）`}
+                    </text>
+                  ) : null}
+                </div>
 
                 {/* 展开的 Markdown 正文视图 */}
                 {isExpanded ? (

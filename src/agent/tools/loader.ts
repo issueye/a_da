@@ -4,13 +4,14 @@
  * 支持动态加载、插件扫描、启用/停用、新建模板以及删除插件。
  */
 
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, type Dirent } from 'node:fs'
 import { basename, join } from 'node:path'
 import { createJiti } from 'jiti'
 import { readDisabledPlugins, saveDisabledPlugins } from '../config'
 import type { AgentEvent, AgentTool } from '../core/types'
 import { getAppHome } from '../home'
 import { defaultToolRegistry } from './registry'
+import { defaultSkillManager, type SkillSummary } from '../skills'
 
 /**
  * 传递给扩展插件的完整上下文 API
@@ -55,6 +56,10 @@ export interface PluginItem {
   scope: 'workspace' | 'global'
   enabled: boolean
   tools: PluginToolInfo[]
+  /** 插件包内包含的技能列表（将 SKILL 归纳到插件系统中） */
+  skills: SkillSummary[]
+  /** 是否为复合插件包目录（包含 skills/ 或独立子目录） */
+  isPackage?: boolean
   error?: string
   sizeBytes: number
   updatedAt: number
@@ -123,75 +128,155 @@ export class ExtensionLoader {
   }
 
   /**
-   * 扫描工作区与全局目录的所有扩展插件元数据
+   * 扫描工作区与全局目录的所有扩展插件元数据（包含单文件插件与复合插件包）
    */
   async scanPlugins(workspace: string): Promise<PluginItem[]> {
     const disabledList = new Set(await readDisabledPlugins())
     const projectExtDir = join(workspace, '.ada', 'extensions')
     const globalExtDir = join(getAppHome(), 'extensions')
+    const allSkills = await defaultSkillManager.scanSkills(workspace)
 
     const items: PluginItem[] = []
 
     const scanDir = async (dirPath: string, scope: 'workspace' | 'global') => {
       if (!existsSync(dirPath)) return
-      let files: string[] = []
+      let entries: Dirent[] = []
       try {
-        files = readdirSync(dirPath)
+        entries = readdirSync(dirPath, { withFileTypes: true })
       } catch {
         return
       }
 
-      for (const file of files) {
-        if (!file.endsWith('.ts') && !file.endsWith('.js')) continue
-        const fullPath = join(dirPath, file)
-        const id = `${scope}:${file}`
-        const name = basename(file).replace(/\.[^.]+$/, '')
-        let sizeBytes = 0
-        let updatedAt = Date.now()
+      for (const entry of entries) {
+        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
+        const fullPath = join(dirPath, entry.name)
 
-        try {
-          const st = statSync(fullPath)
-          sizeBytes = st.size
-          updatedAt = st.mtimeMs
-        } catch {}
+        if (entry.isFile() && (entry.name.endsWith('.ts') || entry.name.endsWith('.js'))) {
+          // 单文件插件
+          const id = `${scope}:${entry.name}`
+          const name = basename(entry.name).replace(/\.[^.]+$/, '')
+          let sizeBytes = 0
+          let updatedAt = Date.now()
 
-        const enabled = !disabledList.has(id)
-        const item: PluginItem = {
-          id,
-          name,
-          fileName: file,
-          filePath: fullPath,
-          scope,
-          enabled,
-          tools: [],
-          sizeBytes,
-          updatedAt,
-        }
+          try {
+            const st = statSync(fullPath)
+            sizeBytes = st.size
+            updatedAt = st.mtimeMs
+          } catch {}
 
-        try {
-          const registeredTools: AgentTool[] = []
-          const mockContext: ExtensionContext = {
-            workspace,
-            trace: () => {},
-            registerTool: (t) => registeredTools.push(t),
-            onEvent: () => () => {},
+          const enabled = !disabledList.has(id)
+          const matchingSkills = allSkills.filter(
+            (s) => s.scope === 'plugin' && (s.pluginId === id || s.pluginName === name)
+          )
+
+          const item: PluginItem = {
+            id,
+            name,
+            fileName: entry.name,
+            filePath: fullPath,
+            scope,
+            enabled,
+            tools: [],
+            skills: matchingSkills,
+            isPackage: false,
+            sizeBytes,
+            updatedAt,
           }
 
-          const mod = (await this.jitiInstance.import(fullPath)) as ExtensionModule
-          const extracted = await this.extractToolsFromModule(mod, mockContext)
-          const allTools = [...registeredTools, ...extracted]
+          try {
+            const registeredTools: AgentTool[] = []
+            const mockContext: ExtensionContext = {
+              workspace,
+              trace: () => {},
+              registerTool: (t) => registeredTools.push(t),
+              onEvent: () => () => {},
+            }
 
-          item.tools = allTools.map((t) => ({
-            name: t.name,
-            description: t.description,
-            parameters: t.parameters as Record<string, unknown> | undefined,
-            isWrite: defaultToolRegistry.isWriteTool(t.name),
-          }))
-        } catch (err) {
-          item.error = (err as Error).message
+            const mod = (await this.jitiInstance.import(fullPath)) as ExtensionModule
+            const extracted = await this.extractToolsFromModule(mod, mockContext)
+            const allTools = [...registeredTools, ...extracted]
+
+            item.tools = allTools.map((t) => ({
+              name: t.name,
+              description: t.description,
+              parameters: t.parameters as Record<string, unknown> | undefined,
+              isWrite: defaultToolRegistry.isWriteTool(t.name),
+            }))
+          } catch (err) {
+            item.error = (err as Error).message
+          }
+
+          items.push(item)
+        } else if (entry.isDirectory()) {
+          // 复合能力插件包目录（支持同时包含 tools 与 skills）
+          const id = `${scope}:${entry.name}`
+          const name = entry.name
+          let sizeBytes = 0
+          let updatedAt = Date.now()
+
+          try {
+            const st = statSync(fullPath)
+            sizeBytes = st.size
+            updatedAt = st.mtimeMs
+          } catch {}
+
+          const enabled = !disabledList.has(id)
+          const matchingSkills = allSkills.filter(
+            (s) => s.scope === 'plugin' && (s.pluginId === id || s.pluginName === name)
+          )
+
+          const candidateFiles = [
+            join(fullPath, 'index.ts'),
+            join(fullPath, 'index.js'),
+            join(fullPath, 'tools.ts'),
+            join(fullPath, 'tool.ts'),
+            join(fullPath, `${name}.ts`),
+          ]
+          const scriptEntry = candidateFiles.find((f) => existsSync(f))
+
+          const item: PluginItem = {
+            id,
+            name,
+            fileName: entry.name,
+            filePath: scriptEntry || fullPath,
+            scope,
+            enabled,
+            tools: [],
+            skills: matchingSkills,
+            isPackage: true,
+            sizeBytes,
+            updatedAt,
+          }
+
+          if (scriptEntry) {
+            try {
+              const registeredTools: AgentTool[] = []
+              const mockContext: ExtensionContext = {
+                workspace,
+                trace: () => {},
+                registerTool: (t) => registeredTools.push(t),
+                onEvent: () => () => {},
+              }
+
+              const mod = (await this.jitiInstance.import(scriptEntry)) as ExtensionModule
+              const extracted = await this.extractToolsFromModule(mod, mockContext)
+              const allTools = [...registeredTools, ...extracted]
+
+              item.tools = allTools.map((t) => ({
+                name: t.name,
+                description: t.description,
+                parameters: t.parameters as Record<string, unknown> | undefined,
+                isWrite: defaultToolRegistry.isWriteTool(t.name),
+              }))
+            } catch (err) {
+              item.error = (err as Error).message
+            }
+          }
+
+          if (item.tools.length > 0 || item.skills.length > 0 || existsSync(join(fullPath, 'skills')) || scriptEntry) {
+            items.push(item)
+          }
         }
-
-        items.push(item)
       }
     }
 
@@ -202,7 +287,7 @@ export class ExtensionLoader {
   }
 
   /**
-   * 从指定目录动态扫描并加载 TypeScript/JavaScript 扩展模块并注册工具
+   * 从指定目录动态扫描并加载 TypeScript/JavaScript 扩展模块并注册工具（支持单文件与目录包）
    */
   async loadExtensionsFromDir(
     dirPath: string,
@@ -213,9 +298,9 @@ export class ExtensionLoader {
     if (!existsSync(dirPath)) return []
 
     const loadedNames: string[] = []
-    let files: string[] = []
+    let entries: Dirent[] = []
     try {
-      files = readdirSync(dirPath)
+      entries = readdirSync(dirPath, { withFileTypes: true })
     } catch {
       return []
     }
@@ -235,21 +320,37 @@ export class ExtensionLoader {
       },
     }
 
-    for (const file of files) {
-      if (!file.endsWith('.ts') && !file.endsWith('.js')) continue
-      const id = `${scope}:${file}`
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
+      const id = `${scope}:${entry.name}`
       if (disabledSet.has(id)) continue
 
-      const fullPath = join(dirPath, file)
+      let scriptToLoad: string | null = null
+      if (entry.isFile() && (entry.name.endsWith('.ts') || entry.name.endsWith('.js'))) {
+        scriptToLoad = join(dirPath, entry.name)
+      } else if (entry.isDirectory()) {
+        const fullDir = join(dirPath, entry.name)
+        const candidates = [
+          join(fullDir, 'index.ts'),
+          join(fullDir, 'index.js'),
+          join(fullDir, 'tools.ts'),
+          join(fullDir, 'tool.ts'),
+          join(fullDir, `${entry.name}.ts`),
+        ]
+        scriptToLoad = candidates.find((f) => existsSync(f)) || null
+      }
+
+      if (!scriptToLoad) continue
+
       try {
-        const mod = (await this.jitiInstance.import(fullPath)) as ExtensionModule
+        const mod = (await this.jitiInstance.import(scriptToLoad)) as ExtensionModule
         const extracted = await this.extractToolsFromModule(mod, context)
         for (const t of extracted) {
           defaultToolRegistry.register(t)
           loadedNames.push(t.name)
         }
       } catch (err) {
-        console.warn(`[ExtensionLoader] 加载扩展失败 ${file}:`, (err as Error).message)
+        console.warn(`[ExtensionLoader] 加载扩展失败 ${entry.name}:`, (err as Error).message)
       }
     }
 
@@ -358,7 +459,12 @@ export default function (context: any) {
   async deletePlugin(filePath: string, workspace: string): Promise<boolean> {
     try {
       if (existsSync(filePath)) {
-        unlinkSync(filePath)
+        const st = statSync(filePath)
+        if (st.isDirectory()) {
+          rmSync(filePath, { recursive: true, force: true })
+        } else {
+          unlinkSync(filePath)
+        }
         await this.autoLoadExtensions(workspace)
         return true
       }

@@ -1785,11 +1785,68 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                             </text>
                           ) : null}
                         </div>
-                      ) : (
+                      ) : null}
+
+                      {/* 携带的技能规范列表（归纳到插件系统中） */}
+                      {item.skills && item.skills.length > 0 ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: item.tools.length > 0 ? 3 : 0 }}>
+                          <div
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'row',
+                              flexWrap: 'wrap',
+                              gap: 4,
+                              alignItems: 'center',
+                            }}
+                          >
+                            <text style={{ fontSize: 10.5, color: C.faint }}>内建技能：</text>
+                            {item.skills.map((s) => (
+                              <div
+                                key={s.name}
+                                style={{
+                                  paddingLeft: 6,
+                                  paddingRight: 6,
+                                  height: 18,
+                                  borderRadius: 4,
+                                  backgroundColor: `${C.accent}14`,
+                                  borderWidth: 1,
+                                  borderColor: `${C.accent}30`,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                }}
+                              >
+                                <text
+                                  style={{
+                                    fontSize: 10.5,
+                                    fontFamily: FONT_MONO,
+                                    color: C.accent,
+                                  }}
+                                >
+                                  {s.name}
+                                </text>
+                              </div>
+                            ))}
+                          </div>
+                          {item.skills[0]?.description ? (
+                            <text
+                              style={{
+                                fontSize: 11,
+                                lineHeight: 15,
+                                color: C.faint,
+                                paddingLeft: 2,
+                              }}
+                            >
+                              {item.skills[0].description}
+                            </text>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {item.tools.length === 0 && (!item.skills || item.skills.length === 0) ? (
                         <text style={{ fontSize: 10.5, color: C.faint }}>
-                          未检测到已导出的 Agent 工具
+                          未检测到已导出的 Agent 工具或技能
                         </text>
-                      )}
+                      ) : null}
 
                       {/* 错误提示 */}
                       {item.error ? (

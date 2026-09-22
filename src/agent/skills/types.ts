@@ -13,6 +13,14 @@ export interface SkillMetadata {
   tags?: string[]
   whenToUse?: string
   disallowedTools?: string[]
+  /** 是否禁止模型在系统提示词中自动感知（true 时仅通过指令唤醒） */
+  disableModelInvocation?: boolean
+  /** 允许或推荐的工具列表 */
+  allowedTools?: string[]
+  /** 兼容性说明 */
+  compatibility?: string
+  /** 许可证 */
+  license?: string
 }
 
 export interface SkillSummary {
@@ -24,7 +32,7 @@ export interface SkillSummary {
   description: string
   /** 技能指令正文（SKILL.md 正文 Markdown 内容） */
   body: string
-  /** 技能根文件 SKILL.md 的绝对路径 */
+  /** 技能根文件 SKILL.md 或 .md 文件的绝对路径 */
   path: string
   /** 技能所在的根目录 */
   baseDirectory: string
@@ -34,6 +42,14 @@ export interface SkillSummary {
   enabled: boolean
   /** 若由插件引入，则记录插件名 */
   pluginName?: string
+  /** 若由插件引入，记录插件唯一 ID（如 workspace:my-plugin 或 global:my-plugin） */
+  pluginId?: string
+  /** 是否为单文件 .md 技能（而非目录下的 SKILL.md） */
+  isFileSkill?: boolean
+  /** 是否禁止模型在系统提示词中自动感知 */
+  disableModelInvocation?: boolean
+  /** 允许或推荐的工具列表 */
+  allowedTools?: string[]
   /** 附加元数据 */
   metadata?: SkillMetadata
 }

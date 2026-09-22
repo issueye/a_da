@@ -8,11 +8,27 @@ import { existsSync, readdirSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { getAppHome } from '../home'
+import { readDisabledPlugins } from '../config'
 import { expandSkillVariables, parseSkillMarkdown } from './parser'
 import { BUILTIN_SKILLS } from './builtins'
 import type { SkillDiagnostic, SkillsPromptContext, SkillSummary } from './types'
 
 export const SKILL_FILE_NAME = 'SKILL.md'
+
+export interface DiscoveredSkillFile {
+  filePath: string
+  baseDir: string
+  isFileSkill: boolean
+}
+
+export function escapeXml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+}
 
 interface SkillsState {
   enabledState: Record<string, boolean>
@@ -64,13 +80,22 @@ export class SkillManager {
   }
 
   /** 获取技能根目录列表 */
-  private getSkillRoots(workspaceRoot?: string): Array<{ path: string; scope: 'workspace' | 'global' | 'plugin'; pluginName?: string }> {
-    const roots: Array<{ path: string; scope: 'workspace' | 'global' | 'plugin'; pluginName?: string }> = []
+  private getSkillRoots(workspaceRoot?: string): Array<{
+    path: string
+    scope: 'workspace' | 'global' | 'plugin'
+    pluginName?: string
+    pluginId?: string
+  }> {
+    const roots: Array<{
+      path: string
+      scope: 'workspace' | 'global' | 'plugin'
+      pluginName?: string
+      pluginId?: string
+    }> = []
 
     if (workspaceRoot) {
-      // 1. 工作区 .ada/skills
+      // 1. 工作区 .ada/skills 与 .agents/skills
       roots.push({ path: join(workspaceRoot, '.ada', 'skills'), scope: 'workspace' })
-      // 兼容 .agents/skills
       roots.push({ path: join(workspaceRoot, '.agents', 'skills'), scope: 'workspace' })
 
       // 2. 工作区插件中的 skills/ 目录: .ada/extensions/<plugin>/skills
@@ -82,7 +107,12 @@ export class SkillManager {
             if (entry.isDirectory()) {
               const pluginSkillDir = join(wsExtDir, entry.name, 'skills')
               if (existsSync(pluginSkillDir)) {
-                roots.push({ path: pluginSkillDir, scope: 'plugin', pluginName: entry.name })
+                roots.push({
+                  path: pluginSkillDir,
+                  scope: 'plugin',
+                  pluginName: entry.name,
+                  pluginId: `workspace:${entry.name}`,
+                })
               }
             }
           }
@@ -90,11 +120,12 @@ export class SkillManager {
       }
     }
 
-    // 3. 用户全局 ~/.ada/skills
+    // 3. 用户全局 ~/.ada/skills 与 ~/.agents/skills
     const appHome = getAppHome()
     roots.push({ path: join(appHome, 'skills'), scope: 'global' })
+    roots.push({ path: join(appHome, '..', '.agents', 'skills'), scope: 'global' })
 
-    // 4. 全局插件目录下的 skills: ~/.ada/extensions/<plugin>/skills
+    // 4. 全局插件目录下的 skills: ~/.a-da/extensions/<plugin>/skills
     const globalExtDir = join(appHome, 'extensions')
     if (existsSync(globalExtDir)) {
       try {
@@ -103,7 +134,12 @@ export class SkillManager {
           if (entry.isDirectory()) {
             const pluginSkillDir = join(globalExtDir, entry.name, 'skills')
             if (existsSync(pluginSkillDir)) {
-              roots.push({ path: pluginSkillDir, scope: 'plugin', pluginName: entry.name })
+              roots.push({
+                path: pluginSkillDir,
+                scope: 'plugin',
+                pluginName: entry.name,
+                pluginId: `global:${entry.name}`,
+              })
             }
           }
         }
@@ -113,18 +149,41 @@ export class SkillManager {
     return roots
   }
 
-  /** 递归发现指定目录下的所有 SKILL.md 文件 */
-  private findSkillFiles(dir: string, depth = 0): string[] {
-    if (depth > 3 || !existsSync(dir)) return []
-    const results: string[] = []
+  /**
+   * 递归发现指定目录下的所有技能（支持目录 SKILL.md 与单文件 .md 双模，对标 pi）
+   * 规则：若目录下存在 SKILL.md，则视为目录技能根，不向下深搜；
+   * 否则检查直接的 .md 文件作为单文件技能，并递归遍历子目录。
+   */
+  private findSkillFiles(dir: string, depth = 0): DiscoveredSkillFile[] {
+    if (depth > 4 || !existsSync(dir)) return []
+    const results: DiscoveredSkillFile[] = []
 
     try {
       const entries = readdirSync(dir, { withFileTypes: true })
+      // 1. 若当前目录下直接存在 SKILL.md，视为标准目录技能根
+      const skillMd = entries.find(
+        (e) => e.isFile() && e.name.toLowerCase() === SKILL_FILE_NAME.toLowerCase()
+      )
+      if (skillMd) {
+        results.push({
+          filePath: join(dir, skillMd.name),
+          baseDir: dir,
+          isFileSkill: false,
+        })
+        return results
+      }
+
+      // 2. 否则收集当前目录下的单文件 .md 技能，并向下递归子目录
       for (const entry of entries) {
+        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
         const fullPath = join(dir, entry.name)
-        if (entry.isFile() && entry.name.toLowerCase() === SKILL_FILE_NAME.toLowerCase()) {
-          results.push(fullPath)
-        } else if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+        if (entry.isFile() && entry.name.endsWith('.md')) {
+          results.push({
+            filePath: fullPath,
+            baseDir: dir,
+            isFileSkill: true,
+          })
+        } else if (entry.isDirectory()) {
           results.push(...this.findSkillFiles(fullPath, depth + 1))
         }
       }
@@ -136,6 +195,7 @@ export class SkillManager {
   /** 扫描并发现所有可用技能 */
   async scanSkills(workspaceRoot?: string): Promise<SkillSummary[]> {
     const state = await this.loadState()
+    const disabledPlugins = new Set(await readDisabledPlugins())
     const roots = this.getSkillRoots(workspaceRoot)
     const skills: SkillSummary[] = []
     const seenNames = new Set<string>()
@@ -144,11 +204,11 @@ export class SkillManager {
       if (!existsSync(root.path)) continue
       const skillFiles = this.findSkillFiles(root.path)
 
-      for (const filePath of skillFiles) {
+      for (const item of skillFiles) {
+        const { filePath, baseDir, isFileSkill } = item
         try {
           const raw = await readFile(filePath, 'utf8')
           const parsed = parseSkillMarkdown(raw, filePath)
-          const baseDir = dirname(filePath)
           const name = parsed.metadata.name.trim()
 
           // 作用域优先级去重：工作区 > 全局 > 插件
@@ -157,7 +217,11 @@ export class SkillManager {
           seenNames.add(dedupeKey)
 
           const id = `${root.scope}:${name}`
-          const enabled = state.enabledState[id] ?? true
+          // 如果该技能所属插件被禁用，则该技能自动随插件联动停用
+          let enabled = state.enabledState[id] ?? true
+          if (root.scope === 'plugin' && root.pluginId && disabledPlugins.has(root.pluginId)) {
+            enabled = false
+          }
 
           skills.push({
             id,
@@ -169,6 +233,10 @@ export class SkillManager {
             scope: root.scope,
             enabled,
             pluginName: root.pluginName,
+            pluginId: root.pluginId,
+            isFileSkill,
+            disableModelInvocation: parsed.metadata.disableModelInvocation,
+            allowedTools: parsed.metadata.allowedTools,
             metadata: parsed.metadata,
           })
         } catch (err) {
@@ -195,6 +263,8 @@ export class SkillManager {
         baseDirectory: '',
         scope: 'builtin',
         enabled,
+        disableModelInvocation: parsed.metadata.disableModelInvocation,
+        allowedTools: parsed.metadata.allowedTools,
         metadata: parsed.metadata,
       })
     }
@@ -248,29 +318,45 @@ export class SkillManager {
 
   /**
    * 生成给大模型系统提示词的可用技能描述段
-   * 遵循 ZCode 与 Claude Code 工业标准
+   * 采用 Agent Skills 工业标准 XML 格式（对标 pi 与 Claude Code）
+   * 过滤掉 disableModelInvocation === true 的技能
    */
   async buildSkillsPrompt(workspaceRoot?: string): Promise<SkillsPromptContext> {
     const enabled = await this.getEnabledSkills(workspaceRoot)
-    if (enabled.length === 0) {
+    const visibleSkills = enabled.filter((s) => !s.disableModelInvocation)
+    if (visibleSkills.length === 0) {
       return { prompt: '', activatedSkillNames: [] }
     }
 
     const lines: string[] = [
       '### 可用技能库 (Available Skills)',
-      '当用户提出相应领域任务，或通过 `/<skill-name>` 提及某项技能时，请调用 `Skill` 工具加载其操作规范：',
+      'The following skills provide specialized instructions for specific tasks.',
+      "Use the Skill tool to load a skill's file when the task matches its description.",
+      '当任务与下列技能描述匹配，或用户通过 /<skill-name> 提及某项技能时，请调用 `Skill` 工具加载其详细操作规范：',
       '',
+      '<available_skills>',
     ]
 
-    for (const skill of enabled) {
+    for (const skill of visibleSkills) {
+      lines.push('  <skill>')
+      lines.push(`    <name>${escapeXml(skill.name)}</name>`)
       const desc = skill.metadata?.whenToUse
         ? `${skill.description}（适用场景：${skill.metadata.whenToUse}）`
         : skill.description
-      lines.push(`- **${skill.name}**: ${desc} (来源: ${skill.scope === 'workspace' ? '工作区' : skill.scope === 'plugin' ? `插件[${skill.pluginName}]` : '全局'})`)
+      lines.push(`    <description>${escapeXml(desc)}</description>`)
+      lines.push(`    <location>${escapeXml(skill.path)}</location>`)
+      if (skill.pluginName) {
+        lines.push(`    <plugin>${escapeXml(skill.pluginName)}</plugin>`)
+      }
+      if (skill.allowedTools && skill.allowedTools.length > 0) {
+        lines.push(`    <allowed_tools>${escapeXml(skill.allowedTools.join(', '))}</allowed_tools>`)
+      }
+      lines.push('  </skill>')
     }
 
+    lines.push('</available_skills>')
     lines.push('')
-    lines.push('【重要】：请在开始执行对应专业任务前先通过 `Skill` 工具加载该技能获取详细步骤。')
+    lines.push('【重要】：请在开始执行对应专业任务前先通过 `Skill` 工具加载该技能获取详细执行步骤。')
 
     return {
       prompt: lines.join('\n'),
@@ -337,7 +423,11 @@ export class SkillManager {
     if (skill.scope === 'builtin') throw new Error('无法删除系统内置预装技能，支持按需停用')
     if (skill.scope === 'plugin') throw new Error('无法删除插件内建的技能，请在插件管理中卸载或停用对应插件')
 
-    await rm(skill.baseDirectory, { recursive: true, force: true })
+    if (skill.isFileSkill) {
+      await rm(skill.path, { force: true })
+    } else {
+      await rm(skill.baseDirectory, { recursive: true, force: true })
+    }
     this.cache.clear()
     this.notify()
   }
@@ -345,7 +435,7 @@ export class SkillManager {
   /** 更新已有技能的元数据或指令正文 */
   async updateSkill(
     id: string,
-    updates: { description?: string; body?: string; whenToUse?: string },
+    updates: { description?: string; body?: string; whenToUse?: string; allowedTools?: string[]; disableModelInvocation?: boolean },
     workspaceRoot?: string
   ): Promise<string> {
     const skills = await this.scanSkills(workspaceRoot)
@@ -362,11 +452,17 @@ export class SkillManager {
     const parsed = parseSkillMarkdown(currentRaw, skill.path)
     if (updates.description !== undefined) parsed.metadata.description = updates.description.trim()
     if (updates.whenToUse !== undefined) parsed.metadata.whenToUse = updates.whenToUse.trim()
+    if (updates.allowedTools !== undefined) parsed.metadata.allowedTools = updates.allowedTools
+    if (updates.disableModelInvocation !== undefined) parsed.metadata.disableModelInvocation = updates.disableModelInvocation
     const nextBody = updates.body !== undefined ? updates.body.trim() : parsed.body
 
     const frontmatterLines = ['---', `name: ${parsed.metadata.name}`]
     if (parsed.metadata.description) frontmatterLines.push(`description: ${parsed.metadata.description}`)
     if (parsed.metadata.whenToUse) frontmatterLines.push(`whenToUse: ${parsed.metadata.whenToUse}`)
+    if (parsed.metadata.disableModelInvocation) frontmatterLines.push(`disable-model-invocation: true`)
+    if (parsed.metadata.allowedTools && parsed.metadata.allowedTools.length > 0) {
+      frontmatterLines.push(`allowed-tools: ${parsed.metadata.allowedTools.join(', ')}`)
+    }
     if (parsed.metadata.version) frontmatterLines.push(`version: ${parsed.metadata.version}`)
     frontmatterLines.push('---', '', nextBody, '')
 
