@@ -12,9 +12,11 @@ import { Icon } from './controls'
 export function ContextUsagePopover({
   summary,
   onClose,
+  onCompact,
 }: {
   summary: ContextUsageSummary
   onClose: () => void
+  onCompact?: () => void
 }) {
   const percentNum = Math.round(summary.percent * 100)
   const isHigh = percentNum > 75
@@ -101,8 +103,8 @@ export function ContextUsagePopover({
         })}
       </div>
 
-      {/* 构成明细 Breakdown 列表 */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 5, paddingTop: 2 }}>
+      {/* 构成维度明细列表 */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
         {summary.breakdown.map((item) => (
           <div
             key={item.source}
@@ -111,7 +113,6 @@ export function ContextUsagePopover({
               flexDirection: 'row',
               alignItems: 'center',
               justifyContent: 'space-between',
-              fontSize: 10.5,
             }}
           >
             <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -119,18 +120,19 @@ export function ContextUsagePopover({
                 style={{
                   width: 7,
                   height: 7,
-                  borderRadius: 2,
+                  borderRadius: 3.5,
                   backgroundColor: item.color,
                 }}
               />
-              <text style={{ color: C.text }}>{item.label}</text>
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <text style={{ fontFamily: FONT_MONO, color: C.secondary }}>
-                {`${item.estimatedTokens.toLocaleString()} tok`}
+              <text style={{ fontSize: 11, color: C.secondary }}>
+                {item.label}
               </text>
-              <text style={{ fontFamily: FONT_MONO, color: C.tertiary, width: 32, textAlign: 'right' }}>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <text style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: C.secondary }}>
+                {item.estimatedTokens.toLocaleString()} tok
+              </text>
+              <text style={{ fontFamily: FONT_MONO, fontSize: 10, color: C.faint, width: 34, textAlign: 'right' }}>
                 {`${Math.round(item.percent * 100)}%`}
               </text>
             </div>
@@ -138,7 +140,7 @@ export function ContextUsagePopover({
         ))}
       </div>
 
-      {/* 缓存收益统计行 */}
+      {/* 缓存收益 */}
       {summary.cachedTokens > 0 ? (
         <div
           style={{
@@ -181,12 +183,47 @@ export function ContextUsagePopover({
         />
         <text style={{ fontSize: 10, color: isWarning ? C.danger : isHigh ? '#f59e0b' : C.tertiary }}>
           {isWarning
-            ? '当前上下文已接近上限，建议新开会话以保障模型推理质量'
+            ? '当前上下文占用已接近红线，建议立即压缩上下文以防超限'
             : isHigh
-              ? '当前上下文占用较高，可按需精简历史或通过新会话整理'
+              ? '当前上下文占用较高，可按需执行压缩以提速降本'
               : `上下文容量充裕（剩余 ${(100 - percentNum)}% 空间）`}
         </text>
       </div>
+
+      {/* 一键压缩操作按钮 */}
+      {onCompact ? (
+        <div
+          testId="context-popover-compact-btn"
+          role="button"
+          onClick={() => {
+            onClose()
+            onCompact()
+          }}
+          style={{
+            marginTop: 2,
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 6,
+            paddingTop: 6,
+            paddingBottom: 6,
+            paddingLeft: 10,
+            paddingRight: 10,
+            borderRadius: 6,
+            backgroundColor: isHigh ? '#10b98120' : C.chip,
+            borderWidth: 1,
+            borderColor: isHigh ? '#10b98150' : C.border,
+            cursor: 'pointer',
+            hover: { backgroundColor: isHigh ? '#10b98135' : C.chipHover },
+          }}
+        >
+          <Icon name="sparkles" size={12} color="#10b981" />
+          <text style={{ fontSize: 11, fontWeight: 600, color: isHigh ? '#10b981' : C.text }}>
+            一键压缩上下文与生成摘要 (/compact)
+          </text>
+        </div>
+      ) : null}
     </div>
   )
 }

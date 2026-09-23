@@ -20,7 +20,8 @@ import { createHash } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import type { AgentMessage } from '../core/types'
 import { getAppHome } from '../home'
-import { CURRENT_SESSION_VERSION, type SessionEntry, type SessionHeader, type SessionSummary } from './types'
+import { CURRENT_SESSION_VERSION, type SessionCompactEntry, type SessionEntry, type SessionHeader, type SessionSummary } from './types'
+import { buildCompactSummaryMessage } from '../compact/prompt'
 
 export function getSessionsDir(): string {
   return join(getAppHome(), 'sessions')
@@ -149,6 +150,26 @@ export class SessionManager {
   }
 
   /**
+   * 向会话以 Append-only 方式追加一条上下文压缩摘要记录
+   */
+  async appendCompactEntry(
+    sessionId: string,
+    entry: Omit<SessionCompactEntry, 'type'>,
+    workspace?: string,
+  ): Promise<void> {
+    const dir = workspace ? this.workspaceDir(workspace) : await this.findSessionDir(sessionId)
+    if (!dir) return
+    if (!existsSync(dir)) await mkdir(dir, { recursive: true })
+    const filePath = join(dir, `${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}.jsonl`)
+    const compactEntry: SessionCompactEntry = {
+      type: 'compact',
+      ...entry,
+    }
+
+    await appendFile(filePath, `${JSON.stringify(compactEntry)}\n`, 'utf-8')
+  }
+
+  /**
    * 一个会话现在在哪个工作区目录下。
    *
    * 追加消息时调用方不一定带着工作区（会话流水是追加写的流水账，写不进去也不该
@@ -187,6 +208,37 @@ export class SessionManager {
         const header = JSON.parse(lines[0]!) as SessionHeader
         if (header.type === 'session') {
           header.title = title
+          header.updatedAt = Date.now()
+          lines[0] = JSON.stringify(header)
+          await writeFile(filePath, lines.join('\n'), 'utf-8')
+        }
+      }
+    } catch {
+      // 忽略非致命读取错误
+    }
+  }
+
+  /**
+   * 更新会话的元数据（如纠正父会话挂载关系）
+   */
+  async updateSessionMeta(
+    sessionId: string,
+    meta: { parentId?: string; subagentId?: string },
+    workspace?: string
+  ): Promise<void> {
+    const filePath = workspace
+      ? this.getSessionPath(workspace, sessionId)
+      : await this.findSessionPath(sessionId)
+    if (!filePath || !existsSync(filePath)) return
+
+    try {
+      const content = await readFile(filePath, 'utf-8')
+      const lines = content.split('\n')
+      if (lines.length > 0 && lines[0]?.trim()) {
+        const header = JSON.parse(lines[0]!) as SessionHeader
+        if (header.type === 'session') {
+          if (meta.parentId !== undefined) header.parentId = meta.parentId
+          if (meta.subagentId !== undefined) header.subagentId = meta.subagentId
           header.updatedAt = Date.now()
           lines[0] = JSON.stringify(header)
           await writeFile(filePath, lines.join('\n'), 'utf-8')
@@ -259,7 +311,7 @@ export class SessionManager {
       const content = await readFile(filePath, 'utf-8')
       const lines = content.split('\n')
       let header: SessionHeader | null = null
-      const messages: AgentMessage[] = []
+      let messages: AgentMessage[] = []
 
       for (const line of lines) {
         if (!line.trim()) continue
@@ -269,6 +321,13 @@ export class SessionManager {
             header = entry
           } else if (entry.type === 'message') {
             messages.push(entry.message)
+          } else if (entry.type === 'compact') {
+            const continuationMsg: AgentMessage = {
+              role: 'user',
+              content: buildCompactSummaryMessage(entry.summary, { recentMessagesPreserved: true }),
+              timestamp: entry.timestamp,
+            }
+            messages = [continuationMsg]
           }
         } catch {
           // 容错跳过损坏单行
@@ -427,31 +486,54 @@ export class SessionManager {
   }
 
   /**
-   * 读一个会话摘要对应的消息流水（同步）。
-   *
-   * 收摘要是因为摘要里已经带了 `filePath`——启动恢复手里就是摘要，按 id 再推一遍
-   * 路径是白费。摘要里没有路径时退回按 id 找。
+   * 读一个会话摘要对应的完整原始条目流水（同步）。
    */
-  loadSummaryMessagesSync(summary: SessionSummary): AgentMessage[] {
+  loadSummaryEntriesSync(summary: SessionSummary): SessionEntry[] {
     const filePath = summary.filePath ?? this.findSessionPathSync(summary.id, summary.workspace)
     if (!filePath) return []
 
     try {
-      const messages: AgentMessage[] = []
+      const entries: SessionEntry[] = []
       for (const line of readFileSync(filePath, 'utf8').split('\n')) {
         if (!line.trim()) continue
         try {
           const entry = JSON.parse(line) as SessionEntry
-          if (entry.type === 'message') messages.push(entry.message)
+          entries.push(entry)
         } catch {
           // 容错跳过损坏单行
         }
       }
-      return messages
+      return entries
     } catch {
-      // 文件被删了、被占了：这个会话就当没有历史，界面照常显示。
       return []
     }
+  }
+
+  /**
+   * 读一个会话摘要对应的消息流水（同步）。
+   *
+   * 若会话中存在 compact 压缩点，则自动将该点之前的消息压缩替换为 Continuation 消息，
+   * 紧接后续追加或保留的消息。
+   */
+  loadSummaryMessagesSync(summary: SessionSummary): AgentMessage[] {
+    const entries = this.loadSummaryEntriesSync(summary)
+    let messages: AgentMessage[] = []
+
+    for (const entry of entries) {
+      if (entry.type === 'message') {
+        messages.push(entry.message)
+      } else if (entry.type === 'compact') {
+        // 当遇到压缩点时，历史早期消息已在当时被压缩归档，由结构化 continuation 消息接续
+        const continuationMsg: AgentMessage = {
+          role: 'user',
+          content: buildCompactSummaryMessage(entry.summary, { recentMessagesPreserved: true }),
+          timestamp: entry.timestamp,
+        }
+        messages = [continuationMsg]
+      }
+    }
+
+    return messages
   }
 
   /** `findSessionPath` 的同步版。 */

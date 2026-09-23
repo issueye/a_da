@@ -398,12 +398,35 @@ function SubagentContent({ item, store }: { item: Extract<Item, { kind: 'tool' }
   const context = item.args?.additional_context ? String(item.args.additional_context) : ''
   const output = item.output ?? ''
 
-  // 查找对应的子智能体会话（从输出中的子会话 ID 或 parentId/subagentId 匹配）
+  // 查找对应的子智能体会话：
+  // 1. 优先从 item.details.subagent_thread_id 获取（工具运行时与收尾时注入）
+  // 2. 其次从 output 中的「子会话 ID: xxx」正则提取（含流式 update 与最终输出）
+  // 3. 再次从 item.args?.subagent_thread_id 提取（针对关联查询工具）
+  const idFromDetails = (item.details as any)?.subagent_thread_id
+  const idFromArgs = item.args?.subagent_thread_id ? String(item.args.subagent_thread_id) : undefined
   const idMatch = output.match(/子会话 ID:\s*([a-zA-Z0-9_\-]+)/)
-  const subagentThreadId = idMatch?.[1]
-  const targetThread = subagentThreadId
-    ? store.threads.find((t) => t.id === subagentThreadId)
-    : store.threads.find((t) => t.parentId === store.activeId && t.subagentId === subagentId)
+  const subagentThreadId = idFromDetails || idMatch?.[1] || idFromArgs
+
+  let targetThread = subagentThreadId ? store.threads.find((t) => t.id === subagentThreadId) : undefined
+
+  // 4. 旧数据或未匹配到 ID 时的回退匹配：
+  //    按父会话过滤并尝试根据委派任务标题精准识别，避免多子智能体同名歧义
+  if (!targetThread) {
+    const parentId = item.threadId || store.activeId
+    const candidates = store.threads.filter((t) => t.parentId === parentId && t.subagentId === subagentId)
+    if (task.trim()) {
+      const cleanTaskPrefix = task.replace(/[\r\n\t]+/g, ' ').trim().slice(0, 15)
+      targetThread = candidates.find((t) => t.title.includes(cleanTaskPrefix))
+    }
+    if (!targetThread && candidates.length === 1) {
+      targetThread = candidates[0]
+    }
+    if (!targetThread && task.trim()) {
+      // 跨层级自愈查找：若因旧 bug 被挂到了其他父级，尝试全局按 title 匹配
+      const cleanTaskPrefix = task.replace(/[\r\n\t]+/g, ' ').trim().slice(0, 15)
+      targetThread = store.threads.find((t) => t.isSubagent && t.subagentId === subagentId && t.title.includes(cleanTaskPrefix))
+    }
+  }
 
   return (
     <div
@@ -1039,12 +1062,196 @@ const GAP_BELOW: Record<Item['kind'], number> = {
   notice: 12,
   tool: 3,
   thinking: 3,
+  compact: 14,
+}
+
+export function CompactCard({ item, store }: { item: Extract<Item, { kind: 'compact' }>; store: AgentStore }) {
+  const [expanded, setExpanded] = useState(false)
+  const [showOriginal, setShowOriginal] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = (e: any) => {
+    e?.stopPropagation?.()
+    void copyToClipboard(item.summary)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  const savedPct = Math.round((item.savedTokens / Math.max(1, item.preTokens)) * 100)
+  const hasPruned = item.prunedItems && item.prunedItems.length > 0
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        width: '100%',
+        backgroundColor: C.raised,
+        borderWidth: 1,
+        borderColor: C.borderStrong,
+        borderRadius: 8,
+        paddingTop: 10,
+        paddingBottom: 10,
+        paddingLeft: 14,
+        paddingRight: 14,
+        marginTop: 6,
+        marginBottom: 6,
+      }}
+    >
+      {/* 头部摘要栏 */}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          cursor: 'pointer',
+        }}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 22,
+              height: 22,
+              borderRadius: 4,
+              backgroundColor: '#10b98120',
+            }}
+          >
+            <Icon name="sparkles" size={13} color="#10b981" />
+          </div>
+          <text style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
+            会话已压缩
+          </text>
+          <div
+            style={{
+              paddingTop: 2,
+              paddingBottom: 2,
+              paddingLeft: 6,
+              paddingRight: 6,
+              borderRadius: 4,
+              backgroundColor: '#10b98115',
+              borderWidth: 1,
+              borderColor: '#10b98135',
+            }}
+          >
+            <text style={{ fontSize: 11, fontWeight: 500, color: '#10b981' }}>
+              节约 {formatTokenShort(item.savedTokens)} tok ({savedPct}%)
+            </text>
+          </div>
+          <text style={{ fontSize: 11.5, color: C.tertiary }}>
+            {formatTokenShort(item.preTokens)} → {formatTokenShort(item.postTokens)} tok
+          </text>
+          {item.turnsSummarized > 0 ? (
+            <text style={{ fontSize: 11.5, color: C.faint }}>
+              · 已汇总 {item.turnsSummarized} 轮
+            </text>
+          ) : null}
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <div
+            role="button"
+            onClick={handleCopy}
+            style={{
+              paddingTop: 3,
+              paddingBottom: 3,
+              paddingLeft: 7,
+              paddingRight: 7,
+              borderRadius: 4,
+              backgroundColor: C.chip,
+              cursor: 'pointer',
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+            }}
+          >
+            <Icon name="copy" size={11} color={C.secondary} />
+            <text style={{ fontSize: 11, color: C.secondary }}>
+              {copied ? '已复制' : '复制摘要'}
+            </text>
+          </div>
+          <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={14} color={C.secondary} />
+        </div>
+      </div>
+
+      {item.customInstructions ? (
+        <div style={{ marginTop: 6, paddingLeft: 30 }}>
+          <text style={{ fontSize: 11.5, color: C.secondary }}>
+            附加要求：{item.customInstructions}
+          </text>
+        </div>
+      ) : null}
+
+      {/* 展开的结构化摘要内容 */}
+      {expanded ? (
+        <div
+          style={{
+            marginTop: 10,
+            paddingTop: 10,
+            borderTopWidth: 1,
+            borderColor: C.border,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+          }}
+        >
+          <div>
+            <markdown source={item.summary} theme={docTheme()} />
+          </div>
+
+          {hasPruned ? (
+            <div style={{ marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderColor: C.border }}>
+              <div
+                style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+                onClick={() => setShowOriginal(!showOriginal)}
+              >
+                <Icon name={showOriginal ? 'chevronDown' : 'chevronRight'} size={12} color={C.tertiary} />
+                <text style={{ fontSize: 11.5, color: C.tertiary }}>
+                  {showOriginal ? '收起压缩前的原始历史' : `查看压缩前的原始历史 (${item.prunedItems?.length} 项)`}
+                </text>
+              </div>
+
+              {showOriginal && item.prunedItems ? (
+                <div
+                  style={{
+                    marginTop: 8,
+                    paddingTop: 8,
+                    paddingBottom: 8,
+                    paddingLeft: 8,
+                    paddingRight: 8,
+                    borderRadius: 6,
+                    backgroundColor: C.canvas,
+                    borderWidth: 1,
+                    borderColor: C.border,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 6,
+                    opacity: 0.85,
+                  }}
+                >
+                  {item.prunedItems.map((p) => (
+                    <ItemRow key={p.id} item={p} store={store} />
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 function ItemRow({ item, store }: { item: Item; store: AgentStore }) {
   if (item.kind === 'user') return <UserRow item={item} />
   if (item.kind === 'thinking') return <ThinkingRow item={item} />
   if (item.kind === 'assistant') return <AssistantRow item={item} />
+  if (item.kind === 'compact') return <CompactCard item={item} store={store} />
   if (item.kind === 'tool') {
     if (item.name === 'todo') return null
     return <ToolCard item={item} store={store} />
@@ -1079,7 +1286,13 @@ export interface ProcessBlock {
   isCompleted: boolean
 }
 
-export type TranscriptBlock = UserBlock | AssistantBlock | ThinkingBlock | ProcessBlock
+export interface CompactBlock {
+  kind: 'compact'
+  id: string
+  item: Extract<Item, { kind: 'compact' }>
+}
+
+export type TranscriptBlock = UserBlock | AssistantBlock | ThinkingBlock | ProcessBlock | CompactBlock
 
 /**
  * 将会话消息线性序列整理为结构化的块：
@@ -1088,7 +1301,8 @@ export type TranscriptBlock = UserBlock | AssistantBlock | ThinkingBlock | Proce
  * - 回合最终的回复/报告独立成块平铺展示（AssistantBlock）；
  * - 如果回合仅有思考而无工具调用（问答场景），将思考独立为 ThinkingBlock 突出展示；
  * - 如果包含工具调用，将思考、工具调用与通知收纳到同一个过程块（ProcessBlock）中，
- *   在完成后默认折叠，且醒目显示思考耗时与工具统计。
+ *   在完成后默认折叠，且醒目显示思考耗时与工具统计；
+ * - 上下文压缩卡片独立成块（CompactBlock）置于会话相应位置。
  */
 export function buildTranscriptBlocks(items: Item[], isRunning: boolean): TranscriptBlock[] {
   const blocks: TranscriptBlock[] = []
@@ -1098,6 +1312,14 @@ export function buildTranscriptBlocks(items: Item[], isRunning: boolean): Transc
   const turns: Item[][] = []
 
   for (const item of items) {
+    if (item.kind === 'compact') {
+      if (currentTurnItems.length > 0) {
+        turns.push(currentTurnItems)
+        currentTurnItems = []
+      }
+      turns.push([item])
+      continue
+    }
     if (item.kind === 'user') {
       if (currentTurnItems.length > 0) {
         turns.push(currentTurnItems)
@@ -1113,6 +1335,14 @@ export function buildTranscriptBlocks(items: Item[], isRunning: boolean): Transc
 
   for (let turnIdx = 0; turnIdx < turns.length; turnIdx++) {
     const turn = turns[turnIdx]
+    if (turn.length === 1 && turn[0]?.kind === 'compact') {
+      blocks.push({
+        kind: 'compact',
+        id: turn[0].id,
+        item: turn[0] as Extract<Item, { kind: 'compact' }>,
+      })
+      continue
+    }
     const isLastTurn = turnIdx === turns.length - 1
 
     let userItem: Extract<Item, { kind: 'user' }> | null = null
@@ -1576,6 +1806,8 @@ export function Transcript({ store }: { store: AgentStore }) {
                     <AssistantRow item={block.item} />
                   ) : block.kind === 'thinking' ? (
                     <ThinkingRow item={block.item} />
+                  ) : block.kind === 'compact' ? (
+                    <CompactCard item={block.item} store={store} />
                   ) : (
                     <ProcessGroupCard
                       block={block}

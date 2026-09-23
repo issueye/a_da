@@ -53,6 +53,30 @@ describe('invoke_subagent tool', () => {
     expect(tool.description).toContain('## 委派准则与最佳实践')
     expect(tool.description).toContain('自包含任务')
   })
+
+  test('invoke_subagent 执行时不会发生 Cannot access thread before initialization 错误', async () => {
+    const parent = store.newThread(process.cwd())
+    store.selectThread(parent.id)
+
+    const updates: any[] = []
+    const result = await tool.execute(
+      'call_test_no_tdz',
+      {
+        subagent_id: 'researcher',
+        task: '测试无 TDZ 异常',
+        async: true,
+      },
+      undefined,
+      (update) => updates.push(update)
+    )
+
+    expect(result.ok).toBe(true)
+    expect(result.output).not.toContain("Cannot access 'thread' before initialization")
+    expect(result.details?.subagent_thread_id).toBeDefined()
+    expect(updates.length).toBeGreaterThan(0)
+
+    store.deleteThread(parent.id)
+  })
 })
 
 describe('check_subagent tool', () => {
@@ -130,5 +154,49 @@ describe('store subagent execution & thread management', () => {
     store.deleteThread(parent.id)
     expect(store.threads.some((t) => t.id === thread.id)).toBe(false)
     expect(store.openTabIds).not.toContain(thread.id)
+  })
+
+  test('startSubagentThread 显式指定 parentThreadId 时不受当前 activeId 切换影响', async () => {
+    const parentA = store.newThread(process.cwd())
+    const parentB = store.newThread(process.cwd())
+    store.selectThread(parentB.id)
+
+    // 虽然当前 active 是 parentB，但显式为 parentA 派发子智能体
+    const { thread } = await store.startSubagentThread({
+      parentThreadId: parentA.id,
+      subagentId: 'researcher',
+      task: '为会话 A 调研代码',
+    })
+
+    expect(thread.parentId).toBe(parentA.id)
+    expect(thread.parentId).not.toBe(parentB.id)
+
+    store.deleteThread(parentA.id)
+    store.deleteThread(parentB.id)
+  })
+
+  test('当 active 处于子智能体会话时派发新子智能体会自动回溯至根会话作为 parentId', async () => {
+    const root = store.newThread(process.cwd())
+    store.selectThread(root.id)
+
+    const { thread: sub1 } = await store.startSubagentThread({
+      subagentId: 'researcher',
+      task: '第一阶段调研',
+    })
+
+    // 用户切换聚焦到了 sub1
+    store.selectThread(sub1.id)
+    expect(store.activeId).toBe(sub1.id)
+
+    // 未传 parentThreadId 时向上回溯，不能把 sub1 当成 parentId 导致孤儿嵌套
+    const { thread: sub2 } = await store.startSubagentThread({
+      subagentId: 'researcher',
+      task: '第二阶段调研',
+    })
+
+    expect(sub2.parentId).toBe(root.id)
+    expect(sub2.parentId).not.toBe(sub1.id)
+
+    store.deleteThread(root.id)
   })
 })

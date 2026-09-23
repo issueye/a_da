@@ -417,17 +417,33 @@ function WorkspaceTreeNode({
   const allWorkspaceThreads = store.threads.filter((t) => t.workspace === workspacePath)
   const rootThreads = allWorkspaceThreads.filter((t) => !t.parentId)
   const queryLower = query.trim().toLowerCase()
+
+  const getRootParentId = (t: Thread): string | undefined => {
+    let curr: Thread | undefined = t
+    const visited = new Set<string>()
+    while (curr && curr.parentId && !visited.has(curr.id)) {
+      visited.add(curr.id)
+      const parent = allWorkspaceThreads.find((p) => p.id === curr!.parentId)
+      if (!parent) return curr.parentId
+      if (!parent.parentId) return parent.id
+      curr = parent
+    }
+    return undefined
+  }
+
   const matchingRootThreads = rootThreads.filter((thread) => {
     if (!queryLower) return true
     if (thread.title.toLowerCase().includes(queryLower)) return true
     return allWorkspaceThreads.some(
-      (child) => child.parentId === thread.id && child.title.toLowerCase().includes(queryLower),
+      (child) =>
+        (child.parentId === thread.id || getRootParentId(child) === thread.id) &&
+        child.title.toLowerCase().includes(queryLower),
     )
   })
   const orphanedSubagents = allWorkspaceThreads.filter(
     (t) =>
       Boolean(t.parentId) &&
-      !rootThreads.some((r) => r.id === t.parentId) &&
+      !rootThreads.some((r) => r.id === t.parentId || r.id === getRootParentId(t)) &&
       (!queryLower || t.title.toLowerCase().includes(queryLower)),
   )
 
@@ -633,7 +649,7 @@ function WorkspaceTreeNode({
           {matchingRootThreads.map((thread) => {
             const childSubagents = allWorkspaceThreads.filter(
               (t) =>
-                t.parentId === thread.id &&
+                (t.parentId === thread.id || getRootParentId(t) === thread.id) &&
                 (!queryLower ||
                   t.title.toLowerCase().includes(queryLower) ||
                   thread.title.toLowerCase().includes(queryLower)),

@@ -305,4 +305,114 @@ describeNative('Transcript UI 过程收缩交互', () => {
 
     await app.close()
   }, 30_000)
+
+  test('同一个会话内派发的多个同类型子智能体，各卡片的独立页签按钮分别对应各自的子会话', async () => {
+    const parent = store.newThread(process.cwd())
+    store.selectThread(parent.id)
+
+    const { thread: sub1 } = await store.startSubagentThread({
+      parentThreadId: parent.id,
+      subagentId: 'researcher',
+      task: '第一项调研任务：分析模块 A',
+    })
+
+    const { thread: sub2 } = await store.startSubagentThread({
+      parentThreadId: parent.id,
+      subagentId: 'researcher',
+      task: '第二项调研任务：分析模块 B',
+    })
+
+    parent.items = [
+      {
+        kind: 'tool',
+        id: 'tool-sub-1',
+        at: 100,
+        callId: 'call-sub-1',
+        name: 'invoke_subagent',
+        args: { subagent_id: 'researcher', task: '第一项调研任务：分析模块 A' },
+        rawArgs: '',
+        status: 'done',
+        output: `模块 A 调研完毕\n\n(子会话 ID: ${sub1.id})`,
+        details: { subagent_thread_id: sub1.id },
+        threadId: parent.id,
+      },
+      {
+        kind: 'tool',
+        id: 'tool-sub-2',
+        at: 200,
+        callId: 'call-sub-2',
+        name: 'invoke_subagent',
+        args: { subagent_id: 'researcher', task: '第二项调研任务：分析模块 B' },
+        rawArgs: '',
+        status: 'done',
+        output: `模块 B 调研完毕\n\n(子会话 ID: ${sub2.id})`,
+        details: { subagent_thread_id: sub2.id },
+        threadId: parent.id,
+      },
+    ]
+
+    const { render, renderer } = createTestRoot({ width: 800, height: 600 })
+    render(
+      <div style={{ display: 'flex', flexDirection: 'column', position: 'relative', width: 800, height: 600 }}>
+        <Transcript store={store} />
+      </div>,
+    )
+    const app = await connectTest(renderer)
+
+    // 展开执行过程折叠条
+    await app.getByTestId('process-head-process-tool-sub-1').click()
+
+    // 展开两个工具卡片
+    await app.getByTestId('tool-head-tool-sub-1').click()
+    await app.getByTestId('tool-head-tool-sub-2').click()
+
+    const btn1 = await app.getByTestId(`open-subagent-thread-${sub1.id}`)
+    expect(await btn1.count()).toBe(1)
+
+    // 第二个工具卡片的独立按钮应对应 sub2
+    const btn2 = await app.getByTestId(`open-subagent-thread-${sub2.id}`)
+    expect(await btn2.count()).toBe(1)
+
+    // 点击第二个子智能体按钮应切换至 sub2，而不是错误跳转到 sub1
+    await btn2.click()
+    await app.close()
+    store.deleteThread(parent.id)
+  }, 30_000)
+
+  test('CompactBlock 与 CompactCard：在会话列表中清晰渲染压缩指标与节约Token', async () => {
+    const thread = store.active
+    thread.items = [
+      {
+        kind: 'compact',
+        id: 'compact-test-1',
+        at: 1000,
+        summary: '1. Primary Request: 测试压缩卡片渲染\n\n9. Next Step: 验证渲染完整性',
+        preTokens: 100_000,
+        postTokens: 10_000,
+        savedTokens: 90_000,
+        turnsSummarized: 3,
+        customInstructions: '重点保留组件测试',
+      },
+      { kind: 'user', id: 'u-after-compact', at: 2000, text: '压缩后的第一条新消息' },
+      { kind: 'assistant', id: 'a-after-compact', at: 3000, text: '我已获取压缩后的上下文并继续执行。' },
+    ]
+
+    const { render, renderer } = createTestRoot({ width: 800, height: 600 })
+    render(
+      <div style={{ display: 'flex', flexDirection: 'column', position: 'relative', width: 800, height: 600 }}>
+        <Transcript store={store} />
+      </div>,
+    )
+    const app = await connectTest(renderer)
+
+    const screen = () => renderer.getPaintedText().join('\n')
+    expect(screen()).toContain('会话已压缩')
+    expect(screen()).toContain('90k')
+    expect(screen()).toContain('已汇总')
+    expect(screen()).toContain('重点保留组件测试')
+    expect(screen()).toContain('压缩后的第一条新消息')
+    expect(screen()).toContain('我已获取压缩后的上下文并继续执行。')
+
+    await app.close()
+  })
 })

@@ -9,7 +9,7 @@ export interface CheckSubagentToolArgs {
   subagent_id?: string
 }
 
-export function createSubagentTool(workspace: string): AgentTool<SubagentToolArgs> {
+export function createSubagentTool(workspace: string, defaultParentThreadId?: string): AgentTool<SubagentToolArgs> {
   const profiles = defaultSubagentManager.getSubagentsSync(workspace)
   const dynamicDesc = formatProfilesPrompt(profiles)
   const description = [
@@ -47,7 +47,7 @@ export function createSubagentTool(workspace: string): AgentTool<SubagentToolArg
       },
       required: ['subagent_id', 'task'],
     },
-    async execute(_callId, args, signal, onUpdate): Promise<AgentToolResult> {
+    async execute(callId, args, signal, onUpdate): Promise<AgentToolResult> {
       try {
         const profile = await defaultSubagentManager.getById(args.subagent_id, workspace)
         if (!profile) {
@@ -62,14 +62,6 @@ export function createSubagentTool(workspace: string): AgentTool<SubagentToolArg
         if (!profile.enabled) {
           return {
             output: `子智能体 "${profile.name}" (${profile.id}) 当前处于禁用状态。`,
-            ok: false,
-          }
-        }
-
-        const config = await readLlmConfig()
-        if (!config) {
-          return {
-            output: '执行失败：当前未配置 LLM 供应商，无法启动子智能体。',
             ok: false,
           }
         }
@@ -89,25 +81,55 @@ export function createSubagentTool(workspace: string): AgentTool<SubagentToolArg
         }
 
         if (appStore && typeof appStore.startSubagentThread === 'function') {
+          const card = appStore.cards?.get?.(callId)
+          const parentThreadId =
+            defaultParentThreadId ??
+            card?.threadId ??
+            appStore.threads.find((t: any) =>
+              t.items?.some((it: any) => it.kind === 'tool' && (it.callId === callId || it.id === callId))
+            )?.id ??
+            appStore.activeId
+
+          let subagentThreadRef: any = null
           const { thread, resultPromise } = await appStore.startSubagentThread({
+            parentThreadId,
             subagentId: profile.id,
             task: args.task,
             additionalContext: args.additional_context,
             signal,
             onStepUpdate: (update: any) => {
+              const currentThreadId = update?.threadId ?? subagentThreadRef?.id
+              const idSuffix = currentThreadId ? `\n(子会话 ID: ${currentThreadId})` : ''
               const stepStr = update.step > 0 ? (update.maxSteps ? `(第 ${update.step}/${update.maxSteps} 步)` : `(第 ${update.step} 步)`) : ''
               const actionStr = update.currentAction ? `\n${update.currentAction}` : ''
               onUpdate?.({
-                output: `[${profile.name}] 正在处理 ${stepStr}${actionStr}`,
+                output: `[${profile.name}] 正在处理 ${stepStr}${actionStr}${idSuffix}`,
                 ok: true,
+                details: {
+                  subagent_id: profile.id,
+                  subagent_name: profile.name,
+                  subagent_thread_id: currentThreadId,
+                },
               })
+            },
+          })
+          subagentThreadRef = thread
+
+          // 立即更新一次卡片，注入明确的 subagent_thread_id
+          onUpdate?.({
+            output: `已委派给 [${profile.name}]（子会话 ID: ${thread.id}）...\n任务: ${args.task}`,
+            ok: true,
+            details: {
+              subagent_id: profile.id,
+              subagent_name: profile.name,
+              subagent_thread_id: thread.id,
             },
           })
 
           // 异步模式：立即返回启动确认与子会话信息
           if (args.async) {
             return {
-              output: `已在后台启动子智能体 [${profile.name}]（会话 ID: ${thread.id}）。已在标签栏与左侧会话树中创建独立子会话并进入后台并发执行。你可以继续处理后续工作，或随时通过 check_subagent 查询进度。`,
+              output: `已在后台启动子智能体 [${profile.name}]（子会话 ID: ${thread.id}）。已在标签栏与左侧会话树中创建独立子会话并进入后台并发执行。你可以继续处理后续工作，或随时通过 check_subagent 查询进度。`,
               ok: true,
               details: {
                 subagent_id: profile.id,
@@ -122,7 +144,7 @@ export function createSubagentTool(workspace: string): AgentTool<SubagentToolArg
           const result = await resultPromise
           const fileNote = result.outputFile ? `\n\n📄 完整详细报告已保存至：${result.outputFile}` : ''
           return {
-            output: `${result.summary}${fileNote}`,
+            output: `${result.summary}${fileNote}\n\n(子会话 ID: ${thread.id})`,
             ok: result.ok,
             details: {
               subagent_id: profile.id,
@@ -136,7 +158,14 @@ export function createSubagentTool(workspace: string): AgentTool<SubagentToolArg
           }
         }
 
-        // 独立运行环境（如单元测试无 store 实例时）的回退路径
+        // 独立运行环境（如无 store 实例时）的回退路径
+        const config = await readLlmConfig()
+        if (!config) {
+          return {
+            output: '执行失败：当前未配置 LLM 供应商，无法启动子智能体。',
+            ok: false,
+          }
+        }
         const result = await defaultSubagentRunner.run({
           profile,
           task: args.task,

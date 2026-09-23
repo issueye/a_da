@@ -34,7 +34,19 @@ export interface SessionNoticeEntry {
   level: 'info' | 'error'
 }
 
-export type SessionEntry = SessionHeader | SessionMessageEntry | SessionNoticeEntry
+export interface SessionCompactEntry {
+  type: 'compact'
+  id: string
+  timestamp: number
+  summary: string
+  preTokens: number
+  postTokens: number
+  savedTokens: number
+  turnsSummarized: number
+  customInstructions?: string
+}
+
+export type SessionEntry = SessionHeader | SessionMessageEntry | SessionNoticeEntry | SessionCompactEntry
 
 export interface SessionSummary {
   id: string

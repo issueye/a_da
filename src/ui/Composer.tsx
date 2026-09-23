@@ -29,23 +29,8 @@ export const MODE_OPTIONS: { value: AgentMode; label: string; icon: IconName; de
   { value: 'create', label: 'Create 创造', icon: 'sparkles', desc: '智能体自我进化与工具/技能 CRUD' },
 ]
 
-/** 获取指定模型的上下文窗口 Token 上限（优先使用用户在设置中配置的上限，其次使用预设，默认 128k） */
-export function getModelContextWindow(modelName?: string, configuredLimit?: number): number {
-  if (configuredLimit && configuredLimit > 0) {
-    return configuredLimit
-  }
-  if (!modelName) return 128_000
-  const m = modelName.toLowerCase()
-  if (m.includes('gemini') || m.includes('qwen-long')) return 1_000_000
-  if (m.includes('claude')) return 200_000
-  if (m.includes('32k')) return 32_000
-  if (m.includes('16k')) return 16_000
-  if (m.includes('8k')) return 8_000
-  if (m.includes('64k')) return 64_000
-  if (m.includes('200k')) return 200_000
-  if (m.includes('128k')) return 128_000
-  return 128_000
-}
+import { getModelContextWindow } from '../agent/compact'
+export { getModelContextWindow }
 
 export interface ThreadTelemetry {
   turns: number
@@ -409,11 +394,55 @@ export function ComposerTelemetryBar({
         </div>
       </div>
 
+      {/* 快捷压缩按钮（当上下文占用达到警戒线 >= 60% 时显式提供直接压缩按钮） */}
+      {contextRatio >= 60 ? (
+        <>
+          <TelemetryDivider />
+          <div
+            testId="telemetry-quick-compact-btn"
+            role="button"
+            aria-label="一键压缩上下文与生成会话摘要"
+            onClick={() => {
+              void store.compactThread(thread.id, { trigger: 'manual' })
+            }}
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+              cursor: 'pointer',
+              paddingLeft: 6,
+              paddingRight: 6,
+              paddingTop: 1,
+              paddingBottom: 1,
+              borderRadius: 4,
+              backgroundColor: contextRatio >= 85 ? '#ef444420' : '#10b98118',
+              borderWidth: 1,
+              borderColor: contextRatio >= 85 ? '#ef444460' : '#10b98140',
+              hover: { backgroundColor: contextRatio >= 85 ? '#ef444435' : '#10b98130' },
+            }}
+          >
+            <Icon name="sparkles" size={11} color={contextRatio >= 85 ? '#ef4444' : '#10b981'} />
+            <text
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                color: contextRatio >= 85 ? '#ef4444' : '#10b981',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              压缩
+            </text>
+          </div>
+        </>
+      ) : null}
+
       {/* 点击弹出的上下文用量与健康度悬浮面板 */}
       {popoverOpen ? (
         <ContextUsagePopover
           summary={telemetry.contextSummary}
           onClose={() => setPopoverOpen(false)}
+          onCompact={() => void store.compactThread(thread.id, { trigger: 'manual' })}
         />
       ) : null}
     </div>

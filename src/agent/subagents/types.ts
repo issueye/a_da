@@ -72,6 +72,7 @@ export interface SubagentProfile {
  * 子智能体单步运行状态快照
  */
 export interface SubagentStepUpdate {
+  threadId?: string
   step: number
   maxSteps?: number
   status: 'running' | 'done' | 'error'

@@ -64,7 +64,7 @@ export class ToolRegistry {
   /**
    * 创建适用于指定工作区的所有工具列表 (包含内置基础工具 + 已注册扩展工具)
    */
-  getToolsForWorkspace(workspace: string): AgentTool[] {
+  getToolsForWorkspace(workspace: string, options?: { parentThreadId?: string }): AgentTool[] {
     const builtins: AgentTool[] = [
       createListTool(workspace),
       createReadTool(workspace),
@@ -75,7 +75,7 @@ export class ToolRegistry {
       createBashTool(workspace),
       createTodoTool(),
       createSkillTool(undefined, workspace),
-      createSubagentTool(workspace),
+      createSubagentTool(workspace, options?.parentThreadId),
       createCheckSubagentTool(),
       createSendSubagentMessageTool(),
     ]
@@ -91,8 +91,12 @@ export class ToolRegistry {
   /**
    * 根据当前会话协作模式 (code / plan / create) 获取精准适配的工具集
    */
-  getToolsForMode(workspace: string, mode: 'code' | 'plan' | 'create' = 'code'): AgentTool[] {
-    const all = this.getToolsForWorkspace(workspace)
+  getToolsForMode(
+    workspace: string,
+    mode: 'code' | 'plan' | 'create' = 'code',
+    options?: { parentThreadId?: string }
+  ): AgentTool[] {
+    const all = this.getToolsForWorkspace(workspace, options)
 
     if (mode === 'plan') {
       // 规划模式：仅提供只读与调研分析工具，过滤直接写文件与命令执行

@@ -44,8 +44,22 @@ export type Item =
       status: ToolStatus
       output?: string
       patch?: string
+      details?: Record<string, any>
+      threadId?: string
     }
   | { kind: 'notice'; id: string; at: number; text: string; level: 'info' | 'error' }
+  | {
+      kind: 'compact'
+      id: string
+      at: number
+      summary: string
+      preTokens: number
+      postTokens: number
+      savedTokens: number
+      turnsSummarized: number
+      customInstructions?: string
+      prunedItems?: Item[]
+    }
 
 export interface ThreadStats {
   totalPromptTokens: number

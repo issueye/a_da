@@ -51,6 +51,14 @@ import {
 } from './subagents'
 import { applyAppearance, appearance, shortPath, type Appearance } from '../theme'
 import { computeThreadStats, type AgentMode, type DebugEntry, type Item, type Thread, type ThreadStats } from './types'
+import {
+  selectCompactSelection,
+  executeCompaction,
+  buildCompactSummaryMessage,
+  shouldAutoCompact,
+  estimateMessageTokens,
+  getModelContextWindow,
+} from './compact'
 
 export type ApprovalMode = 'auto' | 'ask' | 'readonly'
 export type Effort = 'max' | 'high' | 'medium' | 'low'
@@ -266,12 +274,39 @@ export class AgentStore {
 
     // 新的在前，所以排序结果里第一个就是上次用的那个。
     const threads = saved.map((summary) => this.threadFrom(summary))
+
+    // 自动纠偏与自愈：若子智能体会话的 parentId 错误记录为非主会话或未指向其调用者
+    for (const thread of threads) {
+      if (thread.isSubagent) {
+        // 在所有主会话中查找谁在 invoke_subagent 卡片中调用了此子会话
+        const callerThread = threads.find(
+          (t) =>
+            !t.isSubagent &&
+            t.workspace === thread.workspace &&
+            t.items.some(
+              (it) =>
+                it.kind === 'tool' &&
+                it.name === 'invoke_subagent' &&
+                ((it.details as any)?.subagent_thread_id === thread.id ||
+                  it.output?.includes(thread.id))
+            )
+        )
+        if (callerThread && thread.parentId !== callerThread.id) {
+          thread.parentId = callerThread.id
+          void defaultSessionManager
+            .updateSessionMeta(thread.id, { parentId: callerThread.id }, thread.workspace)
+            .catch(() => {})
+        }
+      }
+    }
+
     this.threads = threads
     return { active: threads[0]! }
   }
 
   /** 一个会话摘要 + 它的消息流水 → 界面上的 Thread。 */
   private threadFrom(summary: SessionSummary): Thread {
+    const entries = defaultSessionManager.loadSummaryEntriesSync(summary)
     const messages = defaultSessionManager.loadSummaryMessagesSync(summary)
     const toolResults = new Map<string, Extract<AgentMessage, { role: 'toolResult' }>>()
     for (const m of messages) {
@@ -280,15 +315,39 @@ export class AgentStore {
       }
     }
 
-    const items: Item[] = []
+    let items: Item[] = []
     const renderedToolCallIds = new Set<string>()
 
-    for (let index = 0; index < messages.length; index++) {
-      const message = messages[index]!
+    for (let index = 0; index < entries.length; index++) {
+      const entry = entries[index]!
+      if (entry.type === 'compact') {
+        const pruned = [...items]
+        items = [
+          {
+            kind: 'compact',
+            id: entry.id,
+            at: entry.timestamp,
+            summary: entry.summary,
+            preTokens: entry.preTokens,
+            postTokens: entry.postTokens,
+            savedTokens: entry.savedTokens,
+            turnsSummarized: entry.turnsSummarized,
+            customInstructions: entry.customInstructions,
+            prunedItems: pruned,
+          },
+        ]
+        continue
+      }
+      if (entry.type !== 'message') continue
+      const message = entry.message
       const at = message.timestamp ?? summary.createdAt
 
       if (message.role === 'user') {
         const text = typeof message.content === 'string' ? message.content : ''
+        // 若此消息是紧跟在 compact 后的结构化 continuation 消息，界面已有 compact 卡片呈现，无需重复展示多余气泡
+        if (text.startsWith('This session is being continued from a previous conversation')) {
+          continue
+        }
         items.push({ kind: 'user', id: `${summary.id}_restored_user_${index}`, at, text })
       } else if (message.role === 'assistant') {
         // 恢复思考链
@@ -326,6 +385,7 @@ export class AgentStore {
               status,
               output: res?.content ?? '',
               patch: res?.patch,
+              threadId: summary.id,
             })
           }
         }
@@ -363,6 +423,7 @@ export class AgentStore {
             status,
             output: message.content,
             patch: message.patch,
+            threadId: summary.id,
           })
         }
       }
@@ -878,9 +939,18 @@ export class AgentStore {
     thread: Thread
     resultPromise: Promise<SubagentRunResult>
   }> {
-    const parentThread =
-      (options.parentThreadId ? this.threads.find((t) => t.id === options.parentThreadId) : null) ??
-      this.active
+    let parentCandidate = options.parentThreadId
+      ? this.threads.find((t) => t.id === options.parentThreadId)
+      : null
+    if (!parentCandidate) {
+      // 避免误将当前聚焦的子智能体会话自身作为父级，向上回溯至主会话
+      let curr: Thread | undefined = this.active
+      while (curr && curr.isSubagent && curr.parentId) {
+        curr = this.threads.find((t) => t.id === curr!.parentId)
+      }
+      parentCandidate = curr ?? this.active
+    }
+    const parentThread = parentCandidate
     const workspace = parentThread.workspace
     const profile = await defaultSubagentManager.getById(options.subagentId, workspace)
     if (!profile) {
@@ -998,6 +1068,7 @@ export class AgentStore {
       }
 
       options.onStepUpdate?.({
+        threadId: subagentThread.id,
         step: 0,
         maxSteps,
         status: 'running',
@@ -1059,6 +1130,7 @@ export class AgentStore {
             case 'turn_start':
               stepsExecuted += 1
               options.onStepUpdate?.({
+                threadId: subagentThread.id,
                 step: stepsExecuted,
                 maxSteps,
                 status: 'running',
@@ -1337,6 +1409,135 @@ export class AgentStore {
     }
   }
 
+  /**
+   * 对指定会话执行上下文压缩与结构化摘要
+   */
+  async compactThread(
+    threadId: string = this.activeId,
+    options: {
+      customInstructions?: string
+      trigger?: 'manual' | 'auto'
+    } = {},
+  ): Promise<{ success: boolean; reason?: string }> {
+    const thread = this.threads.find((t) => t.id === threadId)
+    if (!thread) {
+      return { success: false, reason: '未找到指定会话。' }
+    }
+
+    if (this.isThreadRunning(thread.id)) {
+      return { success: false, reason: '当前会话正在运行中，请等待本轮执行完成后再执行压缩。' }
+    }
+
+    // 检查是否有足够的轮次进行压缩
+    const selection = selectCompactSelection(thread.messages, thread.items)
+    if (selection.messagesToSummarize.length === 0) {
+      const noticeText = '当前会话历史较短（少于 2 轮），暂无需压缩的历史消息。'
+      thread.items.push({
+        kind: 'notice',
+        id: nextId('item'),
+        at: Date.now(),
+        text: noticeText,
+        level: 'info',
+      })
+      this.notify()
+      return { success: false, reason: noticeText }
+    }
+
+    const config = await readLlmConfig()
+    if (!config) {
+      this.fail(thread, '未配置模型接口，无法执行上下文压缩。')
+      return { success: false, reason: '未配置模型接口。' }
+    }
+
+    // 标记会话运行状态，避免并发冲突
+    this.runningThreadIds.add(thread.id)
+    const noticeId = nextId('item')
+    const triggerLabel = options.trigger === 'auto' ? '自动' : '手动'
+    thread.items.push({
+      kind: 'notice',
+      id: noticeId,
+      at: Date.now(),
+      text: `正在执行${triggerLabel}上下文压缩与结构化摘要提取...`,
+      level: 'info',
+    })
+    this.notify()
+
+    try {
+      const systemPrompt = await defaultPromptManager.getCompositeSystemPrompt(
+        thread.workspace,
+        thread.mode ?? this.mode ?? 'code',
+      )
+
+      const result = await executeCompaction(thread, config, {
+        customInstructions: options.customInstructions,
+        systemPrompt,
+      })
+
+      // 移除临时 notice
+      thread.items = thread.items.filter((it) => it.id !== noticeId)
+
+      // 构造 compact item
+      const compactId = nextId('compact')
+      const compactItem: Item = {
+        kind: 'compact',
+        id: compactId,
+        at: Date.now(),
+        summary: result.summary,
+        preTokens: result.preTokens,
+        postTokens: result.postTokens,
+        savedTokens: result.savedTokens,
+        turnsSummarized: result.turnsSummarized,
+        customInstructions: options.customInstructions,
+        prunedItems: result.prunedItems,
+      }
+
+      // 重构 thread.items：紧凑卡片 + 保留的近期卡片
+      thread.items = [compactItem, ...result.preservedItems]
+
+      // 构造 continuation 消息并重组 thread.messages
+      const continuationMsg: AgentMessage = {
+        role: 'user',
+        content: buildCompactSummaryMessage(result.summary, {
+          recentMessagesPreserved: result.preservedMessages.length > 0,
+        }),
+        timestamp: Date.now(),
+      }
+      thread.messages = [continuationMsg, ...result.preservedMessages]
+
+      // 持久化到 JSONL 流水
+      await defaultSessionManager.appendCompactEntry(
+        thread.id,
+        {
+          id: compactId,
+          timestamp: Date.now(),
+          summary: result.summary,
+          preTokens: result.preTokens,
+          postTokens: result.postTokens,
+          savedTokens: result.savedTokens,
+          turnsSummarized: result.turnsSummarized,
+          customInstructions: options.customInstructions,
+        },
+        thread.workspace,
+      )
+
+      this.push({
+        kind: 'info',
+        text: `会话上下文压缩成功：节约约 ${result.savedTokens} Tokens（压缩比率 ${Math.round((result.savedTokens / Math.max(1, result.preTokens)) * 100)}%）`,
+      })
+      this.notify()
+      return { success: true }
+    } catch (error) {
+      // 移除临时 notice 并提示错误
+      thread.items = thread.items.filter((it) => it.id !== noticeId)
+      const errText = `上下文压缩失败：${(error as Error).message}`
+      this.fail(thread, errText)
+      return { success: false, reason: errText }
+    } finally {
+      this.runningThreadIds.delete(thread.id)
+      this.notify()
+    }
+  }
+
   /** Re-scan the workspace so the sidebar can show what the agent sees. */
   async refresh(): Promise<void> {
     this.workspaceInfo = { ...this.workspaceInfo, scanning: true }
@@ -1506,6 +1707,18 @@ export class AgentStore {
       return
     }
 
+    const trimmed = prompt.trim()
+    if (
+      trimmed === '/compact' ||
+      trimmed.startsWith('/compact ') ||
+      trimmed === '/summary' ||
+      trimmed.startsWith('/summary ')
+    ) {
+      const customInstructions = trimmed.replace(/^\/(?:compact|summary)\s*/i, '').trim() || undefined
+      await this.compactThread(thread.id, { customInstructions, trigger: 'manual' })
+      return
+    }
+
     const userMessage: AgentMessage = {
       role: 'user',
       content: prompt,
@@ -1523,7 +1736,9 @@ export class AgentStore {
 
     const currentMode = thread.mode ?? this.mode ?? 'code'
     // 每轮按当前协作模式重新获取工具：plan 模式只读防写，create 模式激活元开发 CRUD 工具
-    const tools = defaultToolRegistry.getToolsForMode(thread.workspace, currentMode)
+    const tools = defaultToolRegistry.getToolsForMode(thread.workspace, currentMode, {
+      parentThreadId: thread.id,
+    })
     // 助手行和思考行都等到第一段真的到了才建：思考先行，所以思考行会排在回答上
     // 面；只调工具、不说一句话的那一轮则一行都不留（和以前一样什么都不显示）。
     let assistant: Extract<Item, { kind: 'assistant' }> | null = null
@@ -1631,6 +1846,9 @@ export class AgentStore {
             const card = this.cards.get(event.toolCallId)
             if (card) {
               card.output = event.partialResult.output
+              if (event.partialResult.details !== undefined) {
+                card.details = { ...card.details, ...(event.partialResult.details as Record<string, any>) }
+              }
               this.notifySoon()
             }
             break
@@ -1640,7 +1858,7 @@ export class AgentStore {
             this.finishToolCall(thread, event.toolCallId, event.result)
             break
 
-          case 'agent_end':
+          case 'agent_end': {
             thread.messages = event.messages
             if (event.reason === 'max_steps') {
               thread.items.push({
@@ -1652,7 +1870,23 @@ export class AgentStore {
               })
             }
             this.notify()
+
+            // 检查是否达到自动上下文压缩阈值
+            const contextLimit = this.contextWindow > 0 ? this.contextWindow : getModelContextWindow(this.currentModel)
+            const lastAssistantItem = thread.items.slice().reverse().find((it): it is Extract<Item, { kind: 'assistant' }> => it.kind === 'assistant')
+            const currentTokens = lastAssistantItem?.usage?.promptTokens || estimateMessageTokens(thread.messages)
+            const compactDecision = shouldAutoCompact({
+              messages: thread.messages,
+              currentTokens,
+              config: { contextWindow: contextLimit },
+            })
+            if (compactDecision.shouldCompact) {
+              setTimeout(() => {
+                void this.compactThread(thread.id, { trigger: 'auto' })
+              }, 600)
+            }
             break
+          }
         }
       }
     } finally {
@@ -1745,6 +1979,7 @@ export class AgentStore {
         rawArgs: call.rawArguments,
         status: 'denied',
         output: '当前处于 Plan 规划模式，只允许只读分析与方案设计，禁止修改工作区或执行外部命令。请输出方案后提示用户切换到 Code 模式。',
+        threadId: thread.id,
       }
       thread.items.push(card)
       this.cards.set(call.id, card)
@@ -1764,6 +1999,7 @@ export class AgentStore {
       args: call.arguments,
       rawArgs: call.rawArguments,
       status: this.needsApproval(call.name) ? 'awaiting' : 'running',
+      threadId: thread.id,
     }
     thread.items.push(card)
     this.cards.set(call.id, card)
@@ -1812,7 +2048,7 @@ export class AgentStore {
   private finishToolCall(
     thread: Thread,
     callId: string,
-    result: { output: string; ok: boolean; patch?: string }
+    result: { output: string; ok: boolean; patch?: string; details?: any }
   ): void {
     const card = this.cards.get(callId)
     this.cards.delete(callId)
@@ -1821,6 +2057,9 @@ export class AgentStore {
       card.status = result.ok ? 'done' : 'error'
       card.output = result.output
       card.patch = result.patch
+      if (result.details !== undefined) {
+        card.details = { ...card.details, ...(result.details as Record<string, any>) }
+      }
     }
 
     const name = card?.name ?? 'tool'
