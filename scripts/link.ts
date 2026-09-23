@@ -14,7 +14,7 @@
  * Run `bun run link` once after cloning, and again after moving either folder.
  */
 
-import { cpSync, existsSync, lstatSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 const here = dirname(import.meta.dir)
@@ -64,6 +64,19 @@ const nativeIndex = join(gpuix, 'packages/native/index.js')
 if (!existsSync(nativeIndex)) {
   console.error('@gpuix/native 缺少 index.js，请先在 ../gpuix/packages/native 运行 bun run build')
   process.exit(1)
+}
+
+// 确保 @gpuix/native 的 exports.import 指向 index.cjs，使 bun build --compile 能静态识别 require 并将 .node 二进制内嵌打包
+const nativePkgPath = join(gpuix, 'packages/native/package.json')
+if (existsSync(nativePkgPath)) {
+  try {
+    const pkg = JSON.parse(readFileSync(nativePkgPath, 'utf-8'))
+    if (pkg.exports?.['.']?.import === './index.js') {
+      pkg.exports['.'].import = './index.cjs'
+      pkg.exports['.'].default = './index.cjs'
+      writeFileSync(nativePkgPath, JSON.stringify(pkg, null, 2) + '\n')
+    }
+  } catch {}
 }
 
 console.log(`已连接 ${links.length} 个本地包（新建 ${linked} 个）`)
