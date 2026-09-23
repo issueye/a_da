@@ -35,7 +35,7 @@ export function parseTodosFromItem(item: Extract<Item, { kind: 'tool' }>): TodoS
   return null
 }
 
-/** 获取会话列表中最新的一份待办规划 */
+/** 获取会话列表中最新的一份待办规划（支持穿透搜索已压缩的历史流水） */
 export function getLatestTodoItem(items: Item[]): {
   item: Extract<Item, { kind: 'tool' }>
   todos: TodoStep[]
@@ -56,6 +56,12 @@ export function getLatestTodoItem(items: Item[]): {
           } catch {}
         }
         return { item: it, todos, notes }
+      }
+    } else if (it.kind === 'compact' && it.prunedItems && it.prunedItems.length > 0) {
+      // 穿透搜索已被压缩归档的历史项目，确保压缩后任务规划面板依然常驻有效
+      const found = getLatestTodoItem(it.prunedItems)
+      if (found) {
+        return found
       }
     }
   }

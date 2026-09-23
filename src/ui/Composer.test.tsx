@@ -373,6 +373,41 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     await app.close()
   })
 
+  test('上下文达到警戒线时呈现快捷压缩按钮且遥测栏强制单行不折行', async () => {
+    store.active.items = [
+      {
+        kind: 'user',
+        id: 'u-heavy',
+        at: 1000,
+        text: '海量日志分析',
+      },
+      {
+        kind: 'assistant',
+        id: 'a-heavy',
+        at: 2000,
+        text: '已加载大量上下文',
+        durationMs: 2500,
+        usage: {
+          promptTokens: 85000,
+          completionTokens: 500,
+          totalTokens: 85500,
+          cachedTokens: 20000,
+        },
+      },
+    ]
+
+    const { render, renderer } = createTestRoot({ width: 1000, height: 400 })
+    render(<Composer store={store} />)
+    const app = await connectTest(renderer)
+
+    // 上下文占比 85500 / 128000 = 67% (>= 60%)，触发快捷压缩按钮
+    expect(await app.getByTestId('telemetry-quick-compact-btn').count()).toBe(1)
+    const screenText = renderer.getPaintedText().join(' ')
+    expect(screenText).toContain('压缩')
+
+    await app.close()
+  })
+
   test('居中空会话模式下不渲染遥测栏', async () => {
     store.active.items = []
 

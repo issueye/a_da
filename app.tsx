@@ -50,7 +50,7 @@ try {
   render(<AgentWindow />, {
     title: 'a_da',
     width: 1500,
-    height: 1000,
+    height: 850,
     titlebarTransparent: true,
     windowBackground: 'opaque',
     trafficLightX: 16,

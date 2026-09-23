@@ -109,8 +109,7 @@ describe('会话压缩与持久化端到端集成测试', () => {
     const store = new AgentStore()
     const summary = (await sessionManager.listSessionsForWorkspace(workspace))[0]!
 
-    // @ts-expect-error 调用私有方法测试恢复映射
-    const thread = store['threadFrom'](summary)
+    const thread = (store as any).threadFrom(summary)
 
     expect(thread.items.length).toBe(3) // 1 compact item + 1 user item + 1 assistant item
     expect(thread.items[0]?.kind).toBe('compact')

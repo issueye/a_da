@@ -104,4 +104,39 @@ describe('pickDirectory', () => {
     const result = await pickDirectory()
     expect(result.status).toBe('unavailable')
   })
+
+  test('uses renderer.promptForPaths when available and returns picked path', async () => {
+    setDirectoryPicker(null)
+    const mockRenderer = {
+      promptForPaths: async (options: any) => {
+        expect(options.directories).toBe(true)
+        return ['D:\\selected\\workspace']
+      },
+    } as any
+
+    const prevEnv = process.env.A_DA_NO_DIALOG
+    delete process.env.A_DA_NO_DIALOG
+    try {
+      const result = await pickDirectory(undefined, mockRenderer)
+      expect(result).toEqual({ status: 'picked', path: 'D:\\selected\\workspace' })
+    } finally {
+      process.env.A_DA_NO_DIALOG = prevEnv
+    }
+  })
+
+  test('uses renderer.promptForPaths and handles cancellation', async () => {
+    setDirectoryPicker(null)
+    const mockRenderer = {
+      promptForPaths: async () => null,
+    } as any
+
+    const prevEnv = process.env.A_DA_NO_DIALOG
+    delete process.env.A_DA_NO_DIALOG
+    try {
+      const result = await pickDirectory(undefined, mockRenderer)
+      expect(result).toEqual({ status: 'cancelled' })
+    } finally {
+      process.env.A_DA_NO_DIALOG = prevEnv
+    }
+  })
 })

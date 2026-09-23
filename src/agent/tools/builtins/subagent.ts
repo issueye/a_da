@@ -22,7 +22,7 @@ export function createSubagentTool(workspace: string, defaultParentThreadId?: st
     name: 'invoke_subagent',
     label: '委派子智能体',
     description,
-    executionMode: 'sequential',
+    executionMode: 'parallel',
     parameters: {
       type: 'object',
       properties: {
@@ -42,7 +42,7 @@ export function createSubagentTool(workspace: string, defaultParentThreadId?: st
         async: {
           type: 'boolean',
           description:
-            '是否以异步后台模式运行。若为 true，立即返回并在独立页签与左侧子会话中后台并发执行，主 Agent 无需阻塞即可继续后续工作；若为 false（默认），等待子智能体产出最终总结后再继续。',
+            '是否以后台并发模式运行。系统将始终等待子智能体产出完整报告后再继续推进主对话，避免在子任务尚未完成时过早结案。若为 true，支持与其他子智能体并发执行。',
         },
       },
       required: ['subagent_id', 'task'],
@@ -126,21 +126,7 @@ export function createSubagentTool(workspace: string, defaultParentThreadId?: st
             },
           })
 
-          // 异步模式：立即返回启动确认与子会话信息
-          if (args.async) {
-            return {
-              output: `已在后台启动子智能体 [${profile.name}]（子会话 ID: ${thread.id}）。已在标签栏与左侧会话树中创建独立子会话并进入后台并发执行。你可以继续处理后续工作，或随时通过 check_subagent 查询进度。`,
-              ok: true,
-              details: {
-                subagent_id: profile.id,
-                subagent_name: profile.name,
-                subagent_thread_id: thread.id,
-                async: true,
-              },
-            }
-          }
-
-          // 同步模式：等待子智能体完成并返回报告
+          // 等待子智能体完成并返回真实报告（严禁提前虚假结案）
           const result = await resultPromise
           const fileNote = result.outputFile ? `\n\n📄 完整详细报告已保存至：${result.outputFile}` : ''
           return {

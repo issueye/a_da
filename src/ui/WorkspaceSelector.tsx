@@ -5,13 +5,14 @@
  */
 
 import React from 'react'
-import { Select, SelectTrigger, SelectContent, SelectItem } from '@gpuix/react'
+import { Select, SelectTrigger, SelectContent, SelectItem, useGpuix } from '@gpuix/react'
 import { Icon, MenuSurface, menuItemStyle, MenuRow, menuLayer } from './controls'
 import type { AgentStore } from '../agent/store'
 import { C, shortPath } from '../theme'
 import { pickDirectory } from '../platform/dialog'
 
 export function WorkspaceSelector({ store }: { store: AgentStore }) {
+  const { renderer } = useGpuix()
   const current = store.active.workspace
   const label = shortPath(current, 2)
   const items = [
@@ -21,7 +22,7 @@ export function WorkspaceSelector({ store }: { store: AgentStore }) {
 
   const handleChange = (selected: string) => {
     if (selected === '__add_new__') {
-      void pickDirectory(current).then((result) => {
+      void pickDirectory(current, renderer).then((result) => {
         if (result.status === 'picked') {
           void store.addProject(result.path).then((err) => {
             if (!err) {

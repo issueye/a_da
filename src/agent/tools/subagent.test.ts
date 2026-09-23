@@ -8,7 +8,7 @@ describe('invoke_subagent tool', () => {
 
   test('参数结构与元数据校验（包含 async 参数）', () => {
     expect(tool.name).toBe('invoke_subagent')
-    expect(tool.executionMode).toBe('sequential')
+    expect(tool.executionMode).toBe('parallel')
     expect(tool.parameters.type).toBe('object')
     const props = tool.parameters.properties as Record<string, unknown>
     expect(props.subagent_id).toBeDefined()

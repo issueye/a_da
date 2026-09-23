@@ -126,6 +126,98 @@ describe('TodoFloatingPanel data extraction', () => {
     ]
     expect(getLatestTodoItem(items)).toBeNull()
   })
+
+  test('getLatestTodoItem 穿透搜索已压缩历史节点中的任务规划 (prunedItems)', () => {
+    const items: Item[] = [
+      {
+        kind: 'compact',
+        id: 'compact-1',
+        at: 100,
+        summary: '会话已压缩',
+        preTokens: 50000,
+        postTokens: 2000,
+        savedTokens: 48000,
+        turnsSummarized: 3,
+        prunedItems: [
+          { kind: 'user', id: 'u1', at: 10, text: '开始任务' },
+          {
+            kind: 'tool',
+            id: 't-archived',
+            at: 20,
+            callId: 'c-archived',
+            name: 'todo',
+            args: {
+              todos: [
+                { title: '历史任务步骤 1', status: 'completed' },
+                { title: '历史任务步骤 2', status: 'in_progress' },
+              ],
+              notes: '历史规划',
+            },
+            rawArgs: '',
+            status: 'done',
+          },
+          { kind: 'assistant', id: 'a1', at: 30, text: '正在进行中' },
+        ],
+      },
+      { kind: 'user', id: 'u2', at: 110, text: '压缩后的新消息' },
+      { kind: 'assistant', id: 'a2', at: 120, text: '继续为您服务' },
+    ]
+
+    const latest = getLatestTodoItem(items)
+    expect(latest).not.toBeNull()
+    expect(latest!.item.id).toBe('t-archived')
+    expect(latest!.todos).toHaveLength(2)
+    expect(latest!.todos[0].title).toBe('历史任务步骤 1')
+    expect(latest!.todos[1].title).toBe('历史任务步骤 2')
+    expect(latest!.notes).toBe('历史规划')
+  })
+
+  test('getLatestTodoItem 优先使用压缩后新产生的任务规划而非归档的历史规划', () => {
+    const items: Item[] = [
+      {
+        kind: 'compact',
+        id: 'compact-1',
+        at: 100,
+        summary: '会话已压缩',
+        preTokens: 50000,
+        postTokens: 2000,
+        savedTokens: 48000,
+        turnsSummarized: 3,
+        prunedItems: [
+          {
+            kind: 'tool',
+            id: 't-archived',
+            at: 20,
+            callId: 'c-archived',
+            name: 'todo',
+            args: {
+              todos: [{ title: '老步骤', status: 'completed' }],
+            },
+            rawArgs: '',
+            status: 'done',
+          },
+        ],
+      },
+      {
+        kind: 'tool',
+        id: 't-new',
+        at: 150,
+        callId: 'c-new',
+        name: 'todo',
+        args: {
+          todos: [{ title: '最新步骤', status: 'in_progress' }],
+          notes: '最新规划',
+        },
+        rawArgs: '',
+        status: 'done',
+      },
+    ]
+
+    const latest = getLatestTodoItem(items)
+    expect(latest).not.toBeNull()
+    expect(latest!.item.id).toBe('t-new')
+    expect(latest!.todos[0].title).toBe('最新步骤')
+  })
 })
 
 describeNative('TodoFloatingPanel UI', () => {

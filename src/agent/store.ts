@@ -59,6 +59,7 @@ import {
   estimateMessageTokens,
   getModelContextWindow,
 } from './compact'
+import { showCompletionNotification } from '../platform/notification'
 
 export type ApprovalMode = 'auto' | 'ask' | 'readonly'
 export type Effort = 'max' | 'high' | 'medium' | 'low'
@@ -229,7 +230,7 @@ export class AgentStore {
     }
   }
 
-  constructor(workspace: string) {
+  constructor(workspace: string = process.env.A_DA_WORKSPACE || process.cwd()) {
     defaultExtensionLoader.bindHost((msg) => this.trace(msg))
     // 上次的会话要先摆回来，再决定当前项目是哪一个：恢复完就直接显示，而不是
     // 先给一个空会话、等异步任务回来再换掉。
@@ -1679,6 +1680,20 @@ export class AgentStore {
           this.notify()
         }
         await this.turn(next.thread, next.text, next.images)
+      }
+
+      // 主会话队列处理完毕时，触发完成通知窗口
+      if (!thread.parentId && !thread.isSubagent) {
+        const lastAssistant = thread.items.slice().reverse().find((i) => i.kind === 'assistant')
+        const summaryText =
+          lastAssistant && 'text' in lastAssistant && lastAssistant.text
+            ? lastAssistant.text.slice(0, 120).replace(/\n+/g, ' ').trim()
+            : '会话任务已处理完成。'
+        void showCompletionNotification({
+          title: `任务完成：${thread.title}`,
+          body: summaryText,
+          threadId: thread.id,
+        })
       }
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {

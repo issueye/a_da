@@ -13,6 +13,7 @@ import { C, editorTheme, M, shortPath } from '../theme'
 import type { AgentStore } from '../agent/store'
 import type { Thread } from '../agent/types'
 import { getSubagentColor } from '../agent/subagents/types'
+import { openInExplorer } from '../platform/explorer'
 
 function SectionHeader({
   label,
@@ -145,12 +146,22 @@ function SessionRow({
   selected,
   running,
   onNotice,
+  hasChildren,
+  childCount,
+  isExpanded,
+  onToggleExpand,
+  hasRunningChildren,
 }: {
   thread: Thread
   store: AgentStore
   selected: boolean
   running: boolean
   onNotice: (message: string | null) => void
+  hasChildren?: boolean
+  childCount?: number
+  isExpanded?: boolean
+  onToggleExpand?: () => void
+  hasRunningChildren?: boolean
 }) {
   const [hovered, setHovered] = useState(false)
 
@@ -182,6 +193,33 @@ function SessionRow({
         hover: { backgroundColor: selected ? C.tab : C.overlay },
       }}
     >
+      {/* 若有子智能体会话，最左侧显示折叠/展开切换箭头 */}
+      {hasChildren ? (
+        <div
+          testId={`toggle-subagents-${thread.id}`}
+          role="button"
+          aria-label={isExpanded ? '收起子智能体会话' : '展开子智能体会话'}
+          onClick={(e: any) => {
+            e?.stopPropagation?.()
+            onToggleExpand?.()
+          }}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 16,
+            height: 16,
+            marginLeft: 4,
+            borderRadius: 3,
+            cursor: 'pointer',
+            flexShrink: 0,
+            hover: { backgroundColor: C.chipHover },
+          }}
+        >
+          <Icon name={isExpanded ? 'chevronDown' : 'chevronRight'} size={10} color={C.faint} />
+        </div>
+      ) : null}
+
       <div
         role="button"
         aria-label={thread.title}
@@ -190,11 +228,11 @@ function SessionRow({
           display: 'flex',
           flexDirection: 'row',
           alignItems: 'center',
-          gap: 7,
+          gap: 6,
           height: '100%',
           flexGrow: 1,
           minWidth: 0,
-          paddingLeft: 6,
+          paddingLeft: hasChildren ? 2 : 6,
           paddingRight: 4,
           overflow: 'hidden',
           cursor: 'pointer',
@@ -216,6 +254,30 @@ function SessionRow({
         >
           {thread.title}
         </text>
+
+        {/* 折叠时显示子智能体数量徽标 */}
+        {hasChildren && !isExpanded && childCount ? (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              minWidth: 16,
+              height: 16,
+              paddingLeft: 4,
+              paddingRight: 4,
+              borderRadius: 8,
+              backgroundColor: C.chip,
+              marginRight: 4,
+              flexShrink: 0,
+            }}
+          >
+            <text style={{ fontSize: 9.5, lineHeight: 13, color: C.faint }}>
+              {childCount}
+            </text>
+          </div>
+        ) : null}
+
         {running ? (
           <div
             style={{
@@ -234,6 +296,25 @@ function SessionRow({
           >
             <Icon name="dot" size={6} color={C.success} />
             <text style={{ fontSize: 10, lineHeight: 14, color: C.faint }}>运行中</text>
+          </div>
+        ) : hasChildren && !isExpanded && hasRunningChildren ? (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 3,
+              paddingLeft: 4,
+              paddingRight: 4,
+              height: 15,
+              borderRadius: 3,
+              backgroundColor: C.chip,
+              marginRight: 4,
+              flexShrink: 0,
+            }}
+          >
+            <Icon name="dot" size={5} color={C.success} />
+            <text style={{ fontSize: 9.5, lineHeight: 13, color: C.link }}>运行中</text>
           </div>
         ) : null}
       </div>
@@ -413,6 +494,19 @@ function WorkspaceTreeNode({
   onNotice: (message: string | null) => void
 }) {
   const [hovered, setHovered] = useState(false)
+  const [collapsedParentIds, setCollapsedParentIds] = useState<Set<string>>(new Set())
+
+  const toggleSubagentsExpand = (threadId: string) => {
+    setCollapsedParentIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(threadId)) {
+        next.delete(threadId)
+      } else {
+        next.add(threadId)
+      }
+      return next
+    })
+  }
   const isCurrent = workspacePath === store.project
   const allWorkspaceThreads = store.threads.filter((t) => t.workspace === workspacePath)
   const rootThreads = allWorkspaceThreads.filter((t) => !t.parentId)
@@ -577,6 +671,31 @@ function WorkspaceTreeNode({
             </div>
           ) : null}
 
+          {/* 从文件资源管理器打开 */}
+          <div
+            testId={`open-explorer-${label}`}
+            role="button"
+            aria-label={`在文件资源管理器中打开 ${label}`}
+            onClick={(e: any) => {
+              e?.stopPropagation?.()
+              openInExplorer(workspacePath)
+            }}
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 18,
+              height: 18,
+              borderRadius: 4,
+              cursor: 'pointer',
+              opacity: hovered ? 1 : 0,
+              hover: { backgroundColor: C.chipHover },
+            }}
+          >
+            <Icon name="folderOpen" size={11} color={C.faint} />
+          </div>
+
           {/* 移除工作区按钮 (垃圾桶) */}
           <div
             testId={`remove-project-${label}`}
@@ -654,6 +773,11 @@ function WorkspaceTreeNode({
                   t.title.toLowerCase().includes(queryLower) ||
                   thread.title.toLowerCase().includes(queryLower)),
             )
+            const hasChildren = childSubagents.length > 0
+            const hasActiveChild = childSubagents.some((c) => c.id === store.activeId)
+            const isSubagentsExpanded = hasChildren && (!collapsedParentIds.has(thread.id) || hasActiveChild)
+            const hasRunningChildren = childSubagents.some((c) => store.isThreadRunning(c.id))
+
             return (
               <div
                 key={thread.id}
@@ -665,17 +789,24 @@ function WorkspaceTreeNode({
                   selected={thread.id === store.activeId}
                   running={store.isThreadRunning(thread.id)}
                   onNotice={onNotice}
+                  hasChildren={hasChildren}
+                  childCount={childSubagents.length}
+                  isExpanded={isSubagentsExpanded}
+                  onToggleExpand={() => toggleSubagentsExpand(thread.id)}
+                  hasRunningChildren={hasRunningChildren}
                 />
-                {childSubagents.map((child) => (
-                  <SubagentSessionRow
-                    key={child.id}
-                    thread={child}
-                    store={store}
-                    selected={child.id === store.activeId}
-                    running={store.isThreadRunning(child.id)}
-                    onNotice={onNotice}
-                  />
-                ))}
+                {isSubagentsExpanded
+                  ? childSubagents.map((child) => (
+                      <SubagentSessionRow
+                        key={child.id}
+                        thread={child}
+                        store={store}
+                        selected={child.id === store.activeId}
+                        running={store.isThreadRunning(child.id)}
+                        onNotice={onNotice}
+                      />
+                    ))
+                  : null}
               </div>
             )
           })}

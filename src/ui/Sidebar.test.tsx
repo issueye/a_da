@@ -19,6 +19,7 @@ import { getSessionsDir } from '../agent/session/manager'
 import { defaultSessionManager } from '../agent/session/manager'
 import { store } from '../agent/store'
 import { setDirectoryPicker } from '../platform/dialog'
+import { setExplorerOpener } from '../platform/explorer'
 import { shortPath } from '../theme'
 
 const describeNative = hasNativeTestRenderer ? describe : describe.skip
@@ -37,6 +38,7 @@ async function project(): Promise<string> {
 
 afterAll(async () => {
   setDirectoryPicker(null)
+  setExplorerOpener(null)
   store.closeConfirm()
   for (const dir of dirs) await rm(dir, { recursive: true, force: true })
 })
@@ -222,6 +224,39 @@ describeNative('sidebar sessions', () => {
     },
     30_000,
   )
+
+  test(
+    'supports collapsing and expanding subagent session list under parent thread',
+    async () => {
+      const workspace = await project()
+      const parent = store.newThread(workspace)
+      store.selectThread(parent.id)
+      const { thread: subagent } = await store.startSubagentThread({
+        subagentId: 'code_reviewer',
+        task: '折叠测试任务',
+      })
+      const { app, painted, gone, until } = await mount()
+      await app.getByTestId(`thread-${parent.id}`).waitFor({ timeoutMs: 10_000 })
+      await app.getByTestId(`thread-${subagent.id}`).waitFor({ timeoutMs: 10_000 })
+
+      // 初始默认展开，展示子会话
+      expect(await app.getByTestId(`thread-${subagent.id}`).count()).toBe(1)
+      expect(await app.getByTestId(`toggle-subagents-${parent.id}`).count()).toBe(1)
+
+      // 点击收起箭头
+      await app.getByTestId(`toggle-subagents-${parent.id}`).click()
+      await until(async () => (await app.getByTestId(`thread-${subagent.id}`).count()) === 0)
+      expect(await app.getByTestId(`thread-${subagent.id}`).count()).toBe(0)
+
+      // 再次点击展开箭头
+      await app.getByTestId(`toggle-subagents-${parent.id}`).click()
+      await until(async () => (await app.getByTestId(`thread-${subagent.id}`).count()) === 1)
+      expect(await app.getByTestId(`thread-${subagent.id}`).count()).toBe(1)
+
+      await app.close()
+    },
+    30_000,
+  )
 })
 
 describeNative('sidebar add project', () => {
@@ -262,6 +297,33 @@ describeNative('sidebar add project', () => {
       await until(() => !store.projects.includes(doomed))
       expect(store.projects).not.toContain(doomed)
 
+      await app.close()
+    },
+    30_000,
+  )
+
+  test(
+    'the open in explorer button opens the workspace directory',
+    async () => {
+      const workspace = await project()
+      store.newThread(workspace)
+      store.selectProject(workspace)
+
+      const label = shortPath(workspace, 2)
+      const recorded: string[] = []
+      setExplorerOpener((p) => {
+        recorded.push(p)
+        return true
+      })
+
+      const { app } = await mount()
+      await app.getByTestId(`project-${label}`).waitFor({ timeoutMs: 10_000 })
+      expect(await app.getByTestId(`open-explorer-${label}`).count()).toBe(1)
+
+      await app.getByTestId(`open-explorer-${label}`).click()
+      expect(recorded).toContain(workspace)
+
+      setExplorerOpener(null)
       await app.close()
     },
     30_000,

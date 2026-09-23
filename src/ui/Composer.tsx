@@ -7,7 +7,7 @@
  */
 
 import React, { useEffect, useState } from 'react'
-import { Select, SelectContent, SelectItem, SelectTrigger } from '@gpuix/react'
+import { Select, SelectContent, SelectItem, SelectTrigger, useGpuix } from '@gpuix/react'
 import {
   APPROVAL_OPTIONS,
   EFFORT_OPTIONS,
@@ -158,18 +158,26 @@ export function computeThreadTelemetry(
 /** 遥测信息栏项之间的轻量竖线分隔符 */
 function TelemetryDivider() {
   return (
-    <text
+    <div
       style={{
-        fontSize: 10,
-        color: C.borderStrong,
-        opacity: 0.65,
-        marginLeft: 2,
-        marginRight: 2,
-        userSelect: 'none',
+        width: 6,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
       }}
     >
-      |
-    </text>
+      <text
+        style={{
+          fontSize: 10,
+          color: C.borderStrong,
+          opacity: 0.65,
+          userSelect: 'none',
+        }}
+      >
+        |
+      </text>
+    </div>
   )
 }
 
@@ -214,15 +222,14 @@ export function ComposerTelemetryBar({
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'flex-start',
-        flexWrap: 'wrap',
+        flexWrap: 'nowrap',
         width: '100%',
         maxWidth: M.composerMax,
         paddingLeft: 8,
         paddingRight: 8,
         paddingTop: 6,
         paddingBottom: 2,
-        gap: 8,
-        rowGap: 4,
+        gap: 4,
         userSelect: 'none',
       }}
     >
@@ -235,6 +242,8 @@ export function ComposerTelemetryBar({
           flexDirection: 'row',
           alignItems: 'center',
           gap: 4,
+          width: 128,
+          flexShrink: 0,
           cursor: 'default',
         }}
       >
@@ -255,6 +264,8 @@ export function ComposerTelemetryBar({
           flexDirection: 'row',
           alignItems: 'center',
           gap: 4,
+          width: 68,
+          flexShrink: 0,
           cursor: 'default',
         }}
       >
@@ -274,6 +285,8 @@ export function ComposerTelemetryBar({
           display: 'flex',
           flexDirection: 'row',
           alignItems: 'center',
+          width: 66,
+          flexShrink: 0,
           cursor: 'default',
         }}
       >
@@ -292,6 +305,8 @@ export function ComposerTelemetryBar({
           display: 'flex',
           flexDirection: 'row',
           alignItems: 'center',
+          width: 56,
+          flexShrink: 0,
           cursor: 'default',
         }}
       >
@@ -310,6 +325,8 @@ export function ComposerTelemetryBar({
           display: 'flex',
           flexDirection: 'row',
           alignItems: 'center',
+          width: 100,
+          flexShrink: 0,
           cursor: 'default',
         }}
       >
@@ -331,6 +348,8 @@ export function ComposerTelemetryBar({
           flexDirection: 'row',
           alignItems: 'center',
           gap: 4,
+          width: 66,
+          flexShrink: 0,
           cursor: 'default',
         }}
       >
@@ -352,7 +371,7 @@ export function ComposerTelemetryBar({
           display: 'flex',
           flexDirection: 'row',
           alignItems: 'center',
-          gap: 5,
+          gap: 4,
           cursor: 'pointer',
           paddingLeft: 4,
           paddingRight: 4,
@@ -361,6 +380,8 @@ export function ComposerTelemetryBar({
           borderRadius: 4,
           backgroundColor: popoverOpen ? C.chip : 'transparent',
           hover: { backgroundColor: C.chipHover },
+          width: 110,
+          flexShrink: 0,
         }}
       >
         <Icon name="pieChart" size={12} color={contextColor} />
@@ -377,7 +398,7 @@ export function ComposerTelemetryBar({
         {/* 微型进度条 */}
         <div
           style={{
-            width: 24,
+            width: 20,
             height: 4,
             borderRadius: 2,
             backgroundColor: C.overlay,
@@ -409,13 +430,16 @@ export function ComposerTelemetryBar({
               display: 'flex',
               flexDirection: 'row',
               alignItems: 'center',
-              gap: 4,
+              justifyContent: 'center',
+              gap: 3,
               cursor: 'pointer',
-              paddingLeft: 6,
-              paddingRight: 6,
+              paddingLeft: 4,
+              paddingRight: 4,
               paddingTop: 1,
               paddingBottom: 1,
               borderRadius: 4,
+              width: 52,
+              flexShrink: 0,
               backgroundColor: contextRatio >= 85 ? '#ef444420' : '#10b98118',
               borderWidth: 1,
               borderColor: contextRatio >= 85 ? '#ef444460' : '#10b98140',
@@ -497,9 +521,31 @@ function AppendMenu({ store, onPick }: { store: AgentStore; onPick: (value: stri
 }
 
 export function Composer({ store, centered }: { store: AgentStore; centered?: boolean }) {
+  const { renderer } = useGpuix()
   const [draft, setDraft] = useState('')
   const [images, setImages] = useState<string[]>([])
   const [focused, setFocused] = useState(false)
+
+  const pickImagesFromDisk = async () => {
+    try {
+      const paths = await renderer?.promptForPaths?.({
+        files: true,
+        multiple: true,
+        prompt: '选择图片',
+      })
+      if (paths && paths.length > 0) {
+        setImages((prev) => {
+          const next = [...prev]
+          for (const p of paths) {
+            if (!next.includes(p)) next.push(p)
+          }
+          return next
+        })
+      }
+    } catch (err) {
+      console.error('Failed to prompt for paths:', err)
+    }
+  }
 
   // 当外部有注入待发送/草稿时（例如提示词一键应用），优先显示与消费
   const currentDraft = draft || store.pendingDraft || ''
@@ -893,6 +939,10 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
             <Select
               value=""
               onValueChange={(val) => {
+                if (val === '__pick_from_disk__') {
+                  void pickImagesFromDisk()
+                  return
+                }
                 if (val && val !== '__none' && !images.includes(val)) {
                   setImages((prev) => [...prev, val])
                 }
@@ -919,6 +969,13 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
                 </SelectTrigger>
                 <SelectContent side="top" sideOffset={6} style={{ ...menuLayer(), minWidth: 260 }}>
                   <MenuSurface maxHeight={320}>
+                    <SelectItem value="__pick_from_disk__" style={menuItemStyle}>
+                      <MenuRow
+                        label="从本地选择图片..."
+                        description="打开系统文件选择器"
+                        selected={false}
+                      />
+                    </SelectItem>
                     {imageEntries.length ? (
                       imageEntries.map((entry) => (
                         <SelectItem key={entry} value={entry} style={menuItemStyle}>

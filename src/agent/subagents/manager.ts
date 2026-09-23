@@ -365,7 +365,8 @@ export function formatProfilesPrompt(profiles: SubagentProfile[]): string {
     '## 委派准则与最佳实践 (Delegation Guidelines):',
     '- **自包含任务 (Self-contained task)**：子智能体在全新的独立上下文中启动，任务要求与参考信息必须完整，无法直接读取主会话未传递的隐式上下文。',
     '- **只取结论，不取大文本 (Keep the conclusion)**：子智能体完成后会自动给出精炼的高信息密度总结，主智能体负责将核心结论转述给用户，避免大量过程文本挤占上下文。',
-    '- **并发委派 (Concurrent Delegation)**：若有多个独立、互不依赖的探索或验证子任务，可并发调用 invoke_subagent，系统将自动进行后台并发处理。',
+    '- **等待真实成果 (Wait for completion)**：调用 invoke_subagent 后，系统会在独立会话/页签中运行子智能体并实时同步进度；主 Agent 会等待子智能体执行完成并产出完整成果报告后再继续推理和生成最终总结，切勿在未拿到子智能体结论前臆测或提前结案。',
+    '- **并发委派 (Concurrent Delegation)**：若有多个独立、互不依赖的探索或验证子任务，可并发调用 invoke_subagent，系统将自动进行后台并发处理并等待全部完成。',
     '- **双向交互与纠偏 (Steering)**：对正在运行或已完成的子智能体，可通过 send_subagent_message 发送补充要求或实时转向纠偏。',
   ].join('\n')
 }

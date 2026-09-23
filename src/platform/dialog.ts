@@ -12,6 +12,7 @@
  * `A_DA_NO_DIALOG=1` 直接返回 unavailable：脚本和自动化测试用它来避免真开一个窗口。
  */
 
+import type { NativeRenderer } from '@gpuix/react'
 import { findAppWindow } from './win32'
 
 export type PickDirectoryResult =
@@ -19,7 +20,7 @@ export type PickDirectoryResult =
   | { status: 'cancelled' }
   | { status: 'unavailable'; reason: string }
 
-export type DirectoryPicker = (hint?: string) => Promise<PickDirectoryResult>
+export type DirectoryPicker = (hint?: string, renderer?: NativeRenderer | null) => Promise<PickDirectoryResult>
 
 let injected: DirectoryPicker | null = null
 
@@ -108,11 +109,33 @@ export function pickerCommand(script: string): { cmd: string[]; options: Record<
   }
 }
 
-export async function pickDirectory(hint?: string): Promise<PickDirectoryResult> {
-  if (injected) return injected(hint)
+export async function pickDirectory(
+  hint?: string,
+  renderer?: NativeRenderer | null,
+): Promise<PickDirectoryResult> {
+  if (injected) return injected(hint, renderer)
   if (process.env.A_DA_NO_DIALOG === '1') {
     return { status: 'unavailable', reason: 'A_DA_NO_DIALOG=1' }
   }
+
+  // 1. 优先使用 GPUIX 原生 promptForPaths 接口
+  if (renderer && typeof renderer.promptForPaths === 'function') {
+    try {
+      const paths = await renderer.promptForPaths({
+        directories: true,
+        multiple: false,
+        prompt: '选择工作区目录',
+      })
+      if (paths && paths.length > 0 && paths[0]) {
+        return { status: 'picked', path: paths[0] }
+      }
+      return { status: 'cancelled' }
+    } catch {
+      // 若原生选择器抛错或不支持，平滑回退
+    }
+  }
+
+  // 2. Windows 平台回退至 PowerShell FolderBrowserDialog
   if (process.platform !== 'win32') {
     return { status: 'unavailable', reason: '目录选择弹窗目前只有 Windows 版' }
   }
