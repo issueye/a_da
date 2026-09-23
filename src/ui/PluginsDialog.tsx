@@ -55,11 +55,12 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
 
   // 提示词管理状态
   const [prompts, setPrompts] = useState<PromptItem[]>([])
-  const [promptFilter, setPromptFilter] = useState<'all' | 'builtin' | 'workspace' | 'global'>('all')
+  const [promptFilter, setPromptFilter] = useState<'all' | 'builtin' | 'workspace' | 'global' | 'plugin'>('all')
   const [creatingPrompt, setCreatingPrompt] = useState(false)
   const [editingPromptId, setEditingPromptId] = useState<string | null>(null)
   const [promptName, setPromptName] = useState('')
   const [promptDesc, setPromptDesc] = useState('')
+  const [promptArgumentHint, setPromptArgumentHint] = useState('')
   const [promptContent, setPromptContent] = useState('')
   const [promptScope, setPromptScope] = useState<'workspace' | 'global'>('workspace')
   const [promptIsSystem, setPromptIsSystem] = useState(false)
@@ -204,6 +205,7 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
     setEditingPromptId(item.id)
     setPromptName(item.name)
     setPromptDesc(item.description)
+    setPromptArgumentHint(item.argumentHint || '')
     setPromptContent(item.content)
     setPromptScope(item.scope === 'global' ? 'global' : 'workspace')
     setPromptIsSystem(item.isSystem)
@@ -214,6 +216,7 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
   const cancelPromptForm = () => {
     setCreatingPrompt(false)
     setEditingPromptId(null)
+    setPromptArgumentHint('')
     setPromptNotice(null)
   }
 
@@ -236,6 +239,7 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
         if (target) {
           target.name = name
           target.description = promptDesc.trim()
+          target.argumentHint = promptArgumentHint.trim() || undefined
           target.content = content
           target.isSystem = promptIsSystem
           await defaultPromptManager.updatePrompt(target)
@@ -245,6 +249,7 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
         await defaultPromptManager.createPrompt(store.project, {
           name,
           description: promptDesc.trim(),
+          argumentHint: promptArgumentHint.trim() || undefined,
           content,
           scope: promptScope,
           isSystem: promptIsSystem,
@@ -536,6 +541,7 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                       { id: 'builtin', label: '内置预装' },
                       { id: 'workspace', label: '工作区项目' },
                       { id: 'global', label: '全局通用' },
+                      { id: 'plugin', label: '插件内建' },
                     ].map((f) => {
                       const isFilterActive = promptFilter === f.id
                       const count =
@@ -732,6 +738,26 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                       onChange={(e) => setPromptDesc(e.value ?? '')}
                     />
 
+                    <input
+                      testId="prompt-arghint-input"
+                      value={promptArgumentHint}
+                      placeholder="参数提示占位符（可选，例如：<pr-url> 或 [instructions]，对齐 pi 模板参数规范）"
+                      theme={editorTheme()}
+                      style={{
+                        width: '100%',
+                        height: 28,
+                        paddingLeft: 8,
+                        paddingRight: 8,
+                        borderRadius: 6,
+                        fontSize: 12,
+                        color: C.text,
+                        backgroundColor: C.card,
+                        borderWidth: 1,
+                        borderColor: C.borderStrong,
+                      }}
+                      onChange={(e) => setPromptArgumentHint(e.value ?? '')}
+                    />
+
                     {/* 系统提示词开关 */}
                     <div
                       role="button"
@@ -908,27 +934,66 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                                 {item.name}
                               </text>
 
-                              {/* 作用域徽章 */}
+                                {/* 作用域徽章 */}
                               <div
                                 style={{
                                   paddingLeft: 6,
                                   paddingRight: 6,
                                   height: 18,
                                   borderRadius: 4,
-                                  backgroundColor: C.chip,
+                                  backgroundColor: item.scope === 'plugin' ? '#8b5cf618' : C.chip,
+                                  borderWidth: item.scope === 'plugin' ? 1 : 0,
+                                  borderColor: '#8b5cf640',
                                   display: 'flex',
                                   alignItems: 'center',
                                   flexShrink: 0,
                                 }}
                               >
-                                <text style={{ fontSize: 10, lineHeight: 14, color: C.faint, whiteSpace: 'nowrap' }}>
+                                <text
+                                  style={{
+                                    fontSize: 10,
+                                    lineHeight: 14,
+                                    color: item.scope === 'plugin' ? '#8b5cf6' : C.faint,
+                                    whiteSpace: 'nowrap',
+                                  }}
+                                >
                                   {item.scope === 'builtin'
                                     ? '内置预装'
                                     : item.scope === 'workspace'
                                     ? '工作区'
-                                    : '全局'}
+                                    : item.scope === 'global'
+                                    ? '全局'
+                                    : `插件: ${item.pluginName || '内建'}`}
                                 </text>
                               </div>
+
+                              {/* 参数提示占位符徽标 */}
+                              {item.argumentHint ? (
+                                <div
+                                  style={{
+                                    paddingLeft: 5,
+                                    paddingRight: 5,
+                                    height: 18,
+                                    borderRadius: 4,
+                                    backgroundColor: C.chipHover,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  <text
+                                    style={{
+                                      fontSize: 9.5,
+                                      lineHeight: 14,
+                                      fontFamily: FONT_MONO,
+                                      color: C.secondary,
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    {item.argumentHint}
+                                  </text>
+                                </div>
+                              ) : null}
 
                               {/* 系统提示词徽章 */}
                               {item.isSystem ? (
@@ -1098,8 +1163,8 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
 
                               <div style={{ flexGrow: 1 }} />
 
-                              {/* 编辑与删除（仅自定义提示词可编辑/删除） */}
-                              {!isBuiltin ? (
+                              {/* 编辑与删除（仅工作区与全局自定义提示词可编辑/删除） */}
+                              {!isBuiltin && item.scope !== 'plugin' ? (
                                 <>
                                   <div
                                     testId={`prompt-edit-${item.id}`}
@@ -1842,9 +1907,77 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                         </div>
                       ) : null}
 
-                      {item.tools.length === 0 && (!item.skills || item.skills.length === 0) ? (
+                      {/* 携带的提示词列表（归纳到插件系统中） */}
+                      {item.prompts && item.prompts.length > 0 ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: (item.tools.length > 0 || (item.skills && item.skills.length > 0)) ? 3 : 0 }}>
+                          <div
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'row',
+                              flexWrap: 'wrap',
+                              gap: 4,
+                              alignItems: 'center',
+                            }}
+                          >
+                            <text style={{ fontSize: 10.5, color: C.faint }}>内建提示词：</text>
+                            {item.prompts.map((p) => (
+                              <div
+                                key={p.id}
+                                style={{
+                                  display: 'flex',
+                                  flexDirection: 'row',
+                                  alignItems: 'center',
+                                  gap: 3,
+                                  paddingLeft: 6,
+                                  paddingRight: 6,
+                                  height: 18,
+                                  borderRadius: 4,
+                                  backgroundColor: '#8b5cf614',
+                                  borderWidth: 1,
+                                  borderColor: '#8b5cf630',
+                                }}
+                              >
+                                <text
+                                  style={{
+                                    fontSize: 10.5,
+                                    fontFamily: FONT_MONO,
+                                    color: '#8b5cf6',
+                                  }}
+                                >
+                                  {`/${p.name}`}
+                                </text>
+                                {p.argumentHint ? (
+                                  <text
+                                    style={{
+                                      fontSize: 9.5,
+                                      color: C.faint,
+                                      fontFamily: FONT_MONO,
+                                    }}
+                                  >
+                                    {p.argumentHint}
+                                  </text>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                          {item.prompts[0]?.description ? (
+                            <text
+                              style={{
+                                fontSize: 11,
+                                lineHeight: 15,
+                                color: C.faint,
+                                paddingLeft: 2,
+                              }}
+                            >
+                              {item.prompts[0].description}
+                            </text>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {item.tools.length === 0 && (!item.skills || item.skills.length === 0) && (!item.prompts || item.prompts.length === 0) ? (
                         <text style={{ fontSize: 10.5, color: C.faint }}>
-                          未检测到已导出的 Agent 工具或技能
+                          未检测到已导出的 Agent 工具、技能或提示词
                         </text>
                       ) : null}
 

@@ -12,6 +12,7 @@ import type { AgentEvent, AgentTool } from '../core/types'
 import { getAppHome } from '../home'
 import { defaultToolRegistry } from './registry'
 import { defaultSkillManager, type SkillSummary } from '../skills'
+import { defaultPromptManager, type PromptItem } from '../prompts'
 
 /**
  * 传递给扩展插件的完整上下文 API
@@ -58,7 +59,9 @@ export interface PluginItem {
   tools: PluginToolInfo[]
   /** 插件包内包含的技能列表（将 SKILL 归纳到插件系统中） */
   skills: SkillSummary[]
-  /** 是否为复合插件包目录（包含 skills/ 或独立子目录） */
+  /** 插件包内包含的提示词列表（将提示词归纳到插件系统中） */
+  prompts: PromptItem[]
+  /** 是否为复合插件包目录（包含 skills/、prompts/ 或独立子目录） */
   isPackage?: boolean
   error?: string
   sizeBytes: number
@@ -135,6 +138,7 @@ export class ExtensionLoader {
     const projectExtDir = join(workspace, '.ada', 'extensions')
     const globalExtDir = join(getAppHome(), 'extensions')
     const allSkills = await defaultSkillManager.scanSkills(workspace)
+    const allPrompts = await defaultPromptManager.scanPrompts(workspace)
 
     const items: PluginItem[] = []
 
@@ -168,6 +172,9 @@ export class ExtensionLoader {
           const matchingSkills = allSkills.filter(
             (s) => s.scope === 'plugin' && (s.pluginId === id || s.pluginName === name)
           )
+          const matchingPrompts = allPrompts.filter(
+            (p) => p.scope === 'plugin' && (p.pluginId === id || p.pluginName === name)
+          )
 
           const item: PluginItem = {
             id,
@@ -178,6 +185,7 @@ export class ExtensionLoader {
             enabled,
             tools: [],
             skills: matchingSkills,
+            prompts: matchingPrompts,
             isPackage: false,
             sizeBytes,
             updatedAt,
@@ -208,7 +216,7 @@ export class ExtensionLoader {
 
           items.push(item)
         } else if (entry.isDirectory()) {
-          // 复合能力插件包目录（支持同时包含 tools 与 skills）
+          // 复合能力插件包目录（支持同时包含 tools、skills 与 prompts）
           const id = `${scope}:${entry.name}`
           const name = entry.name
           let sizeBytes = 0
@@ -223,6 +231,9 @@ export class ExtensionLoader {
           const enabled = !disabledList.has(id)
           const matchingSkills = allSkills.filter(
             (s) => s.scope === 'plugin' && (s.pluginId === id || s.pluginName === name)
+          )
+          const matchingPrompts = allPrompts.filter(
+            (p) => p.scope === 'plugin' && (p.pluginId === id || p.pluginName === name)
           )
 
           const candidateFiles = [
@@ -243,6 +254,7 @@ export class ExtensionLoader {
             enabled,
             tools: [],
             skills: matchingSkills,
+            prompts: matchingPrompts,
             isPackage: true,
             sizeBytes,
             updatedAt,
@@ -273,7 +285,14 @@ export class ExtensionLoader {
             }
           }
 
-          if (item.tools.length > 0 || item.skills.length > 0 || existsSync(join(fullPath, 'skills')) || scriptEntry) {
+          if (
+            item.tools.length > 0 ||
+            item.skills.length > 0 ||
+            item.prompts.length > 0 ||
+            existsSync(join(fullPath, 'skills')) ||
+            existsSync(join(fullPath, 'prompts')) ||
+            scriptEntry
+          ) {
             items.push(item)
           }
         }

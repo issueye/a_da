@@ -30,6 +30,7 @@ export const MODE_OPTIONS: { value: AgentMode; label: string; icon: IconName; de
 ]
 
 import { getModelContextWindow } from '../agent/compact'
+import { defaultPromptManager, expandPromptTemplate } from '../agent/prompts'
 export { getModelContextWindow }
 
 export interface ThreadTelemetry {
@@ -528,7 +529,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
 
   const pickImagesFromDisk = async () => {
     try {
-      const paths = await renderer?.promptForPaths?.({
+      const paths = await (renderer as any)?.promptForPaths?.({
         files: true,
         multiple: true,
         prompt: '选择图片',
@@ -571,11 +572,27 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
   const modelLabel = store.currentModel ? store.currentModel : '配置模型'
   const imageEntries = store.entries.filter((f) => /\.(png|jpe?g|webp|gif|svg)$/i.test(f))
 
-  const send = (text: string) => {
+  const send = async (text: string) => {
     const target = text.trim() ? text : currentDraft
     if (!target.trim() && images.length === 0) return
+
+    let finalMessage = target
+    const trimmed = target.trim()
+    if (trimmed.startsWith('/')) {
+      try {
+        const allPrompts = await defaultPromptManager.scanPrompts(store.active.workspace)
+        const priorityOrder: Record<string, number> = { workspace: 0, global: 1, plugin: 2, builtin: 3 }
+        const sortedTemplates = allPrompts.slice().sort(
+          (a, b) => (priorityOrder[a.scope] ?? 99) - (priorityOrder[b.scope] ?? 99)
+        )
+        finalMessage = expandPromptTemplate(target, sortedTemplates)
+      } catch (err) {
+        console.warn('[Composer] 展开提示词模板失败:', err)
+      }
+    }
+
     store.clearPendingDraft()
-    store.send(target, images.length > 0 ? images : undefined)
+    store.send(finalMessage, images.length > 0 ? images : undefined)
     setDraft('')
     setImages([])
   }
@@ -848,7 +865,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
             if (store.pendingDraft !== null) store.clearPendingDraft()
             setDraft(event.value ?? '')
           }}
-          onSubmit={(event) => send(event.value?.trim() ? event.value : currentDraft)}
+          onSubmit={(event) => void send(event.value?.trim() ? event.value : currentDraft)}
         />
         {images.length > 0 ? (
           <div
@@ -1155,7 +1172,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
             testId="send"
             role="button"
             aria-label={running ? '排队这条指令' : '发送'}
-            onClick={() => send(currentDraft)}
+            onClick={() => void send(currentDraft)}
             style={{
               display: 'flex',
               flexDirection: 'row',

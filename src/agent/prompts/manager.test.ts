@@ -171,4 +171,108 @@ describe('PromptManager 提示词管理核心逻辑', () => {
     expect(composite).toContain('必须对所有来自外网的 URL 参数做白名单校验')
     expect(composite).not.toContain('这条不应出现')
   })
+
+  test('支持扫描插件包目录中的提示词并解析 argument-hint', async () => {
+    const { mkdir, writeFile } = await import('node:fs/promises')
+    const pluginPromptsDir = join(workspace, '.ada', 'extensions', 'git-pack', 'prompts')
+    await mkdir(pluginPromptsDir, { recursive: true })
+
+    const promptFile = join(pluginPromptsDir, 'pr-review.md')
+    const mdContent = `---
+name: "代码评审"
+description: "自动化 PR 审查提示词"
+argument-hint: "<pr-url> [branch]"
+isSystem: false
+enabled: true
+---
+
+请对 \${1:-当前分支} 与 \${2:-main} 进行详细审查。
+`
+    await writeFile(promptFile, mdContent, 'utf8')
+
+    const list = await manager.scanPrompts(workspace)
+    const found = list.find((p) => p.name === '代码评审')
+    expect(found).toBeDefined()
+    expect(found?.scope).toBe('plugin')
+    expect(found?.pluginName).toBe('git-pack')
+    expect(found?.pluginId).toBe('workspace:git-pack')
+    expect(found?.argumentHint).toBe('<pr-url> [branch]')
+    expect(found?.enabled).toBe(true)
+
+    // 测试 findPrompt 查找已启用的提示词
+    const matched = await manager.findPrompt('代码评审', workspace)
+    expect(matched).toBeDefined()
+    expect(matched?.id).toBe(found?.id)
+
+    // 通过 slug 文件名查找
+    const matchedSlug = await manager.findPrompt('pr-review', workspace)
+    expect(matchedSlug).toBeDefined()
+    expect(matchedSlug?.name).toBe('代码评审')
+  })
+
+  test('插件提示词在所属插件停用时自动随之联动停用', async () => {
+    const { mkdir, writeFile } = await import('node:fs/promises')
+    const pluginPromptsDir = join(workspace, '.ada', 'extensions', 'helper-pack', 'prompts')
+    await mkdir(pluginPromptsDir, { recursive: true })
+    await writeFile(
+      join(pluginPromptsDir, 'helper.md'),
+      '---\nname: "辅助助手"\ndescription: "帮助"\n---\n正文',
+      'utf8'
+    )
+
+    // 初始状态应为启用
+    let list = await manager.scanPrompts(workspace)
+    let item = list.find((p) => p.name === '辅助助手')
+    expect(item?.enabled).toBe(true)
+
+    // 禁用插件
+    const { saveDisabledPlugins } = await import('../config')
+    await saveDisabledPlugins(['workspace:helper-pack'])
+
+    list = await manager.scanPrompts(workspace)
+    item = list.find((p) => p.name === '辅助助手')
+    expect(item?.enabled).toBe(false)
+
+    // 查找提示词时不应匹配已停用的提示词
+    const matchDisabled = await manager.findPrompt('辅助助手', workspace)
+    expect(matchDisabled).toBeUndefined()
+  })
+
+  test('findPrompt 严格遵循作用域优先级：workspace > global > plugin > builtin', async () => {
+    const { mkdir, writeFile } = await import('node:fs/promises')
+    // 1. 在插件中创建同名提示词 "review"
+    const pluginDir = join(workspace, '.ada', 'extensions', 'pack', 'prompts')
+    await mkdir(pluginDir, { recursive: true })
+    await writeFile(
+      join(pluginDir, 'review.md'),
+      '---\nname: "review"\ndescription: "插件版本"\n---\n来自插件',
+      'utf8'
+    )
+
+    let prompt = await manager.findPrompt('review', workspace)
+    expect(prompt?.scope).toBe('plugin')
+    expect(prompt?.content).toContain('来自插件')
+
+    // 2. 在全局创建同名提示词 "review"
+    await manager.createPrompt(workspace, {
+      name: 'review',
+      content: '来自全局',
+      scope: 'global',
+    })
+
+    prompt = await manager.findPrompt('review', workspace)
+    expect(prompt?.scope).toBe('global')
+    expect(prompt?.content).toContain('来自全局')
+
+    // 3. 在工作区创建同名提示词 "review"
+    await manager.createPrompt(workspace, {
+      name: 'review',
+      content: '来自工作区',
+      scope: 'workspace',
+    })
+
+    prompt = await manager.findPrompt('review', workspace)
+    expect(prompt?.scope).toBe('workspace')
+    expect(prompt?.content).toContain('来自工作区')
+  })
 })

@@ -7,6 +7,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { readdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { getAppHome } from '../home'
+import { readDisabledPlugins } from '../config'
 import { BUILTIN_PROMPTS } from './builtins'
 import type { CreatePromptOptions, PromptItem, PromptScope } from './types'
 import type { AgentMode } from '../types'
@@ -59,11 +60,18 @@ export class PromptManager {
 
   /**
    * 解析 Markdown 提示词文件内容与元数据。
-   * 支持 YAML Frontmatter 或自然标题解析。
+   * 支持 YAML Frontmatter 或自然标题解析，兼容 pi argument-hint 规范。
    */
-  parseMarkdownPrompt(raw: string, defaultId: string, scope: PromptScope, filePath?: string): PromptItem {
+  parseMarkdownPrompt(
+    raw: string,
+    defaultId: string,
+    scope: PromptScope,
+    filePath?: string,
+    extraMeta?: { pluginName?: string; pluginId?: string }
+  ): PromptItem {
     let name = defaultId
     let description = ''
+    let argumentHint: string | undefined = undefined
     let isSystem = false
     let enabled = true
     let content = raw.trim()
@@ -80,7 +88,13 @@ export class PromptManager {
           const val = line.slice(colonIdx + 1).trim().replace(/^['"]|['"]$/g, '')
           if (key === 'name') name = val
           else if (key === 'description') description = val
-          else if (key === 'isSystem') isSystem = val === 'true'
+          else if (
+            key === 'argument-hint' ||
+            key === 'argument_hint' ||
+            key === 'argumentHint'
+          ) {
+            argumentHint = val
+          } else if (key === 'isSystem') isSystem = val === 'true'
           else if (key === 'enabled') enabled = val !== 'false'
         }
       }
@@ -97,15 +111,28 @@ export class PromptManager {
       }
     }
 
+    if (!description) {
+      const firstLine = content.split('\n').find((line) => line.trim())
+      if (firstLine) {
+        description = firstLine.slice(0, 60)
+        if (firstLine.length > 60) description += '...'
+      }
+    }
+
+    const id = extraMeta?.pluginId ? `${extraMeta.pluginId}:${defaultId}` : `${scope}_${defaultId}`
+
     return {
-      id: `${scope}_${defaultId}`,
+      id,
       name: name || defaultId,
       description: description || '自定义提示词',
+      argumentHint,
       content,
       scope,
       enabled,
       isSystem,
       filePath,
+      pluginName: extraMeta?.pluginName,
+      pluginId: extraMeta?.pluginId,
       updatedAt: Date.now(),
     }
   }
@@ -114,29 +141,66 @@ export class PromptManager {
   serializeToMarkdown(item: {
     name: string
     description?: string
+    argumentHint?: string
     isSystem?: boolean
     enabled?: boolean
     content: string
   }): string {
-    const yaml = [
+    const yamlLines = [
       '---',
       `name: "${(item.name || '').replace(/"/g, '\\"')}"`,
       `description: "${(item.description || '').replace(/"/g, '\\"')}"`,
-      `isSystem: ${item.isSystem ? 'true' : 'false'}`,
-      `enabled: ${item.enabled !== false ? 'true' : 'false'}`,
-      '---',
-      '',
-      item.content.trim(),
-      '',
-    ].join('\n')
-    return yaml
+    ]
+    if (item.argumentHint) {
+      yamlLines.push(`argument-hint: "${item.argumentHint.replace(/"/g, '\\"')}"`)
+    }
+    yamlLines.push(`isSystem: ${item.isSystem ? 'true' : 'false'}`)
+    yamlLines.push(`enabled: ${item.enabled !== false ? 'true' : 'false'}`)
+    yamlLines.push('---', '', item.content.trim(), '')
+    return yamlLines.join('\n')
   }
 
   /**
-   * 扫描并汇总所有可用提示词（内置 + 工作区 + 全局）
+   * 从单个目录扫描加载所有 .md 提示词文件
+   */
+  private async scanDirPrompts(
+    dir: string,
+    scope: PromptScope,
+    out: PromptItem[],
+    state: PromptsState,
+    disabledPlugins?: Set<string>,
+    extraMeta?: { pluginName?: string; pluginId?: string }
+  ): Promise<void> {
+    if (!existsSync(dir)) return
+    try {
+      const files = await readdir(dir)
+      for (const file of files) {
+        if (extname(file).toLowerCase() === '.md') {
+          const filePath = join(dir, file)
+          try {
+            const text = await readFile(filePath, 'utf8')
+            const id = basename(file, extname(file))
+            const item = this.parseMarkdownPrompt(text, id, scope, filePath, extraMeta)
+            const overrideEnabled = state.builtinEnabled[item.id]
+            if (overrideEnabled !== undefined) {
+              item.enabled = overrideEnabled
+            }
+            if (scope === 'plugin' && extraMeta?.pluginId && disabledPlugins?.has(extraMeta.pluginId)) {
+              item.enabled = false
+            }
+            out.push(item)
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  /**
+   * 扫描并汇总所有可用提示词（内置 + 工作区 + 全局 + 插件包）
    */
   async scanPrompts(workspace: string): Promise<PromptItem[]> {
     const state = await this.loadState()
+    const disabledPlugins = new Set(await readDisabledPlugins())
     const results: PromptItem[] = []
 
     // 1. 内置提示词（应用用户持久化的启停状态）
@@ -148,43 +212,86 @@ export class PromptManager {
       })
     }
 
-    // 2. 工作区提示词
-    const wsDir = this.getWorkspaceDir(workspace)
-    if (existsSync(wsDir)) {
-      try {
-        const files = await readdir(wsDir)
-        for (const file of files) {
-          if (extname(file).toLowerCase() === '.md') {
-            const filePath = join(wsDir, file)
-            try {
-              const text = await readFile(filePath, 'utf8')
-              const id = basename(file, extname(file))
-              results.push(this.parseMarkdownPrompt(text, id, 'workspace', filePath))
-            } catch {}
-          }
-        }
-      } catch {}
+    // 2. 工作区直接提示词：`${workspace}/.ada/prompts/*.md`
+    if (workspace) {
+      const wsDir = this.getWorkspaceDir(workspace)
+      await this.scanDirPrompts(wsDir, 'workspace', results, state)
     }
 
-    // 3. 全局提示词
+    // 3. 全局直接提示词：`~/.a-da/prompts/*.md`
     const globalDir = this.getGlobalDir()
-    if (existsSync(globalDir)) {
+    await this.scanDirPrompts(globalDir, 'global', results, state)
+
+    // 4. 工作区扩展插件中的提示词目录：`${workspace}/.ada/extensions/<plugin>/prompts/*.md`
+    if (workspace) {
+      const wsExtDir = join(workspace, '.ada', 'extensions')
+      if (existsSync(wsExtDir)) {
+        try {
+          const entries = await readdir(wsExtDir, { withFileTypes: true })
+          for (const entry of entries) {
+            if (entry.isDirectory()) {
+              const pluginPromptsDir = join(wsExtDir, entry.name, 'prompts')
+              if (existsSync(pluginPromptsDir)) {
+                await this.scanDirPrompts(
+                  pluginPromptsDir,
+                  'plugin',
+                  results,
+                  state,
+                  disabledPlugins,
+                  { pluginName: entry.name, pluginId: `workspace:${entry.name}` }
+                )
+              }
+            }
+          }
+        } catch {}
+      }
+    }
+
+    // 5. 用户全局扩展插件中的提示词目录：`~/.a-da/extensions/<plugin>/prompts/*.md`
+    const globalExtDir = join(getAppHome(), 'extensions')
+    if (existsSync(globalExtDir)) {
       try {
-        const files = await readdir(globalDir)
-        for (const file of files) {
-          if (extname(file).toLowerCase() === '.md') {
-            const filePath = join(globalDir, file)
-            try {
-              const text = await readFile(filePath, 'utf8')
-              const id = basename(file, extname(file))
-              results.push(this.parseMarkdownPrompt(text, id, 'global', filePath))
-            } catch {}
+        const entries = await readdir(globalExtDir, { withFileTypes: true })
+        for (const entry of entries) {
+          if (entry.isDirectory()) {
+            const pluginPromptsDir = join(globalExtDir, entry.name, 'prompts')
+            if (existsSync(pluginPromptsDir)) {
+              await this.scanDirPrompts(
+                pluginPromptsDir,
+                'plugin',
+                results,
+                state,
+                disabledPlugins,
+                { pluginName: entry.name, pluginId: `global:${entry.name}` }
+              )
+            }
           }
         }
       } catch {}
     }
 
     return results
+  }
+
+  /**
+   * 按照作用域优先级（workspace > global > plugin > builtin）查找已启用的匹配提示词模板
+   */
+  async findPrompt(commandName: string, workspace: string): Promise<PromptItem | undefined> {
+    const all = await this.scanPrompts(workspace)
+    const target = commandName.trim().toLowerCase()
+    const enabledPrompts = all.filter((p) => p.enabled)
+
+    const priorityOrder: PromptScope[] = ['workspace', 'global', 'plugin', 'builtin']
+    for (const scope of priorityOrder) {
+      const match = enabledPrompts.find((p) => {
+        if (p.scope !== scope) return false
+        const nameMatch = p.name.toLowerCase() === target
+        const fileMatch = p.filePath && basename(p.filePath, extname(p.filePath)).toLowerCase() === target
+        return nameMatch || fileMatch
+      })
+      if (match) return match
+    }
+    return undefined
   }
 
   /**
@@ -214,6 +321,7 @@ export class PromptManager {
     const markdown = this.serializeToMarkdown({
       name: options.name.trim(),
       description: options.description?.trim() || '',
+      argumentHint: options.argumentHint?.trim(),
       isSystem: Boolean(options.isSystem),
       enabled: options.enabled !== false,
       content: options.content,
@@ -244,6 +352,7 @@ export class PromptManager {
     const markdown = this.serializeToMarkdown({
       name: item.name,
       description: item.description,
+      argumentHint: item.argumentHint,
       isSystem: item.isSystem,
       enabled: item.enabled,
       content: item.content,
@@ -257,7 +366,7 @@ export class PromptManager {
    * 快速切换提示词的启用/停用状态
    */
   async togglePrompt(id: string, enabled: boolean, workspace: string): Promise<boolean> {
-    if (id.startsWith('builtin-')) {
+    if (id.startsWith('builtin-') || id.includes(':')) {
       const state = await this.loadState()
       state.builtinEnabled[id] = enabled
       await this.saveState(state)
@@ -266,8 +375,16 @@ export class PromptManager {
 
     const all = await this.scanPrompts(workspace)
     const target = all.find((p) => p.id === id)
-    if (!target || !target.filePath) return false
+    if (!target) return false
 
+    if (target.scope === 'plugin') {
+      const state = await this.loadState()
+      state.builtinEnabled[id] = enabled
+      await this.saveState(state)
+      return true
+    }
+
+    if (!target.filePath) return false
     target.enabled = enabled
     return this.updatePrompt(target)
   }

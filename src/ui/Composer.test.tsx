@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { beforeEach, describe, expect, test } from 'bun:test'
 import React from 'react'
 import { createTestRoot, hasNativeTestRenderer } from '@gpuix/react/testing'
 import { connectTest } from '@gpuix/react/automation'
@@ -272,6 +272,10 @@ describe('Composer 遥测与多模态配置逻辑', () => {
 })
 
 describeNative('ComposerTelemetryBar UI 渲染', () => {
+  beforeEach(() => {
+    store.active.isSubagent = false
+  })
+
   test('渲染输入框底部的遥测栏并验证不包含费用估计', async () => {
     store.active.items = [
       { kind: 'user', id: 'u1', at: 1000, text: '测试遥测渲染' },

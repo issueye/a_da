@@ -119,9 +119,10 @@ export async function pickDirectory(
   }
 
   // 1. 优先使用 GPUIX 原生 promptForPaths 接口
-  if (renderer && typeof renderer.promptForPaths === 'function') {
+  const anyRenderer = renderer as any
+  if (anyRenderer && typeof anyRenderer.promptForPaths === 'function') {
     try {
-      const paths = await renderer.promptForPaths({
+      const paths = await anyRenderer.promptForPaths({
         directories: true,
         multiple: false,
         prompt: '选择工作区目录',
