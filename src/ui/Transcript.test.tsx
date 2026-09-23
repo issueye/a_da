@@ -407,11 +407,19 @@ describeNative('Transcript UI 过程收缩交互', () => {
 
     const screen = () => renderer.getPaintedText().join('\n')
     expect(screen()).toContain('会话已压缩')
-    expect(screen()).toContain('90k')
-    expect(screen()).toContain('已汇总')
+    expect(screen()).toContain('节约 90k tok (90%)')
+    expect(screen()).toContain('100k → 10k tok')
+    expect(screen()).toContain('已汇总 3 轮')
+    expect(screen()).toContain('复制摘要')
+    expect(screen()).toContain('展开')
     expect(screen()).toContain('重点保留组件测试')
     expect(screen()).toContain('压缩后的第一条新消息')
     expect(screen()).toContain('我已获取压缩后的上下文并继续执行。')
+
+    // 点击头部展开摘要详情
+    await app.getByTestId('compact-card-header').click()
+    expect(screen()).toContain('收起')
+    expect(screen()).toContain('测试压缩卡片渲染')
 
     await app.close()
   })

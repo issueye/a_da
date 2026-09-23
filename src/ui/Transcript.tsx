@@ -1088,28 +1088,40 @@ export function CompactCard({ item, store }: { item: Extract<Item, { kind: 'comp
         width: '100%',
         backgroundColor: C.raised,
         borderWidth: 1,
-        borderColor: C.borderStrong,
+        borderColor: C.border,
         borderRadius: 8,
-        paddingTop: 10,
-        paddingBottom: 10,
-        paddingLeft: 14,
-        paddingRight: 14,
+        paddingTop: 8,
+        paddingBottom: 8,
+        paddingLeft: 12,
+        paddingRight: 12,
         marginTop: 6,
         marginBottom: 6,
       }}
     >
-      {/* 头部摘要栏 */}
+      {/* 头部摘要状态栏 */}
       <div
+        testId="compact-card-header"
         style={{
           display: 'flex',
           flexDirection: 'row',
           alignItems: 'center',
           justifyContent: 'space-between',
           cursor: 'pointer',
+          width: '100%',
         }}
         onClick={() => setExpanded(!expanded)}
       >
-        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        {/* 左侧信息区：图标、标题、压缩节约指标、Token跨度、总结轮数 */}
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            flexShrink: 0,
+            flexWrap: 'nowrap',
+          }}
+        >
           <div
             style={{
               display: 'flex',
@@ -1117,42 +1129,115 @@ export function CompactCard({ item, store }: { item: Extract<Item, { kind: 'comp
               justifyContent: 'center',
               width: 22,
               height: 22,
-              borderRadius: 4,
-              backgroundColor: '#10b98120',
+              borderRadius: 5,
+              backgroundColor: '#10b98118',
+              borderWidth: 1,
+              borderColor: '#10b98135',
+              flexShrink: 0,
             }}
           >
-            <Icon name="sparkles" size={13} color="#10b981" />
+            <Icon name="sparkles" size={12} color="#10b981" />
           </div>
-          <text style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
+
+          <text
+            style={{
+              fontSize: 12.5,
+              lineHeight: 16,
+              fontWeight: 600,
+              color: C.text,
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+            }}
+          >
             会话已压缩
           </text>
+
+          {/* 节约 Token 胶囊徽标 */}
           <div
             style={{
-              paddingTop: 2,
-              paddingBottom: 2,
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              height: 20,
               paddingLeft: 6,
               paddingRight: 6,
               borderRadius: 4,
               backgroundColor: '#10b98115',
               borderWidth: 1,
               borderColor: '#10b98135',
+              flexShrink: 0,
             }}
           >
-            <text style={{ fontSize: 11, fontWeight: 500, color: '#10b981' }}>
-              节约 {formatTokenShort(item.savedTokens)} tok ({savedPct}%)
+            <text
+              style={{
+                fontSize: 11,
+                lineHeight: 14,
+                fontWeight: 600,
+                color: '#10b981',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+              }}
+            >
+              {`节约 ${formatTokenShort(item.savedTokens)} tok (${savedPct}%)`}
             </text>
           </div>
-          <text style={{ fontSize: 11.5, color: C.tertiary }}>
-            {formatTokenShort(item.preTokens)} → {formatTokenShort(item.postTokens)} tok
-          </text>
+
+          {/* 压缩前后 Token 跨度 */}
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              height: 20,
+              paddingLeft: 6,
+              paddingRight: 6,
+              borderRadius: 4,
+              backgroundColor: C.overlay,
+              borderWidth: 1,
+              borderColor: C.border,
+              flexShrink: 0,
+            }}
+          >
+            <text
+              style={{
+                fontFamily: FONT_MONO,
+                fontSize: 11,
+                lineHeight: 14,
+                color: C.secondary,
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+              }}
+            >
+              {`${formatTokenShort(item.preTokens)} → ${formatTokenShort(item.postTokens)} tok`}
+            </text>
+          </div>
+
+          {/* 已汇总轮数 */}
           {item.turnsSummarized > 0 ? (
-            <text style={{ fontSize: 11.5, color: C.faint }}>
-              · 已汇总 {item.turnsSummarized} 轮
+            <text
+              style={{
+                fontSize: 11,
+                lineHeight: 14,
+                color: C.faint,
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+              }}
+            >
+              {`· 已汇总 ${item.turnsSummarized} 轮`}
             </text>
           ) : null}
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        {/* 右侧操作区：复制摘要与展开/收起指示 */}
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            flexShrink: 0,
+          }}
+        >
           <div
             role="button"
             onClick={handleCopy}
@@ -1163,26 +1248,90 @@ export function CompactCard({ item, store }: { item: Extract<Item, { kind: 'comp
               paddingRight: 7,
               borderRadius: 4,
               backgroundColor: C.chip,
+              borderWidth: 1,
+              borderColor: C.chipBorder,
               cursor: 'pointer',
               display: 'flex',
               flexDirection: 'row',
               alignItems: 'center',
               gap: 4,
+              flexShrink: 0,
+              hover: { backgroundColor: C.chipHover },
             }}
           >
-            <Icon name="copy" size={11} color={C.secondary} />
-            <text style={{ fontSize: 11, color: C.secondary }}>
+            <Icon name="copy" size={11} color={copied ? '#10b981' : C.secondary} />
+            <text
+              style={{
+                fontSize: 11,
+                lineHeight: 14,
+                color: copied ? '#10b981' : C.secondary,
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+              }}
+            >
               {copied ? '已复制' : '复制摘要'}
             </text>
           </div>
-          <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={14} color={C.secondary} />
+
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 2,
+              flexShrink: 0,
+            }}
+          >
+            <text
+              style={{
+                fontSize: 10.5,
+                lineHeight: 14,
+                color: C.faint,
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+              }}
+            >
+              {expanded ? '收起' : '展开'}
+            </text>
+            <Icon
+              name={expanded ? 'chevronDown' : 'chevronRight'}
+              size={12}
+              color={C.faint}
+            />
+          </div>
         </div>
       </div>
 
+      {/* 附加自定义压缩要求（若存在） */}
       {item.customInstructions ? (
-        <div style={{ marginTop: 6, paddingLeft: 30 }}>
-          <text style={{ fontSize: 11.5, color: C.secondary }}>
-            附加要求：{item.customInstructions}
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 6,
+            marginTop: 6,
+            paddingLeft: 8,
+            paddingRight: 8,
+            paddingTop: 4,
+            paddingBottom: 4,
+            borderRadius: 4,
+            backgroundColor: C.overlay,
+            alignSelf: 'flex-start',
+            flexShrink: 0,
+          }}
+        >
+          <Icon name="sparkles" size={11} color={C.tertiary} />
+          <text
+            style={{
+              fontSize: 11,
+              lineHeight: 14,
+              color: C.secondary,
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+            }}
+          >
+            {`附加要求：${item.customInstructions}`}
           </text>
         </div>
       ) : null}
@@ -1198,20 +1347,35 @@ export function CompactCard({ item, store }: { item: Extract<Item, { kind: 'comp
             display: 'flex',
             flexDirection: 'column',
             gap: 8,
+            width: '100%',
           }}
         >
-          <div>
+          <div style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
             <markdown source={item.summary} theme={docTheme()} />
           </div>
 
           {hasPruned ? (
             <div style={{ marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderColor: C.border }}>
               <div
-                style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 6,
+                  cursor: 'pointer',
+                  paddingLeft: 6,
+                  paddingRight: 8,
+                  paddingTop: 4,
+                  paddingBottom: 4,
+                  borderRadius: 4,
+                  backgroundColor: C.overlay,
+                  alignSelf: 'flex-start',
+                  hover: { backgroundColor: C.overlayStrong },
+                }}
                 onClick={() => setShowOriginal(!showOriginal)}
               >
                 <Icon name={showOriginal ? 'chevronDown' : 'chevronRight'} size={12} color={C.tertiary} />
-                <text style={{ fontSize: 11.5, color: C.tertiary }}>
+                <text style={{ fontSize: 11, color: C.secondary, whiteSpace: 'nowrap' }}>
                   {showOriginal ? '收起压缩前的原始历史' : `查看压缩前的原始历史 (${item.prunedItems?.length} 项)`}
                 </text>
               </div>
