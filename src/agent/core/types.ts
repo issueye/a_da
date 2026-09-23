@@ -47,8 +47,10 @@ export interface AssistantMessage {
   timestamp?: number
   /** 本轮/本次对话消耗的 Token 统计 */
   usage?: TokenUsage
-  /** 本次对话花费的耗时（毫秒） */
+  /** 本次单步对话花费的耗时（毫秒） */
   durationMs?: number
+  /** 整轮对话总耗时（毫秒，包含思考、工具执行与流式生成） */
+  turnDurationMs?: number
 }
 
 export interface ToolResultMessage {

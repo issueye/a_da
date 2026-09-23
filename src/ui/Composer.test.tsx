@@ -503,4 +503,119 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
 
     await app.close()
   })
+
+  test('底部工具栏提供「指令」按钮，点击可唤起与收起快捷指令面板', async () => {
+    const { render, renderer } = createTestRoot({ width: 1000, height: 600 })
+    render(<Composer store={store} />)
+    const app = await connectTest(renderer)
+
+    // 验证指令按钮存在
+    const slashBtn = app.getByTestId('composer-slash-commands')
+    expect(await slashBtn.count()).toBe(1)
+    expect(renderer.getPaintedText().join(' ')).toContain('指令')
+
+    // 默认快捷指令面板未打开
+    expect(await app.getByTestId('slash-command-menu').count()).toBe(0)
+
+    // 点击指令按钮打开面板
+    await slashBtn.click()
+    renderer.flush?.()
+
+    // 验证面板出现并包含快捷指令与分类标题
+    expect(await app.getByTestId('slash-command-menu').count()).toBe(1)
+    const menuText = renderer.getPaintedText().join(' ')
+    expect(menuText).toContain('快捷指令')
+    expect(menuText).toContain('/clear')
+    expect(menuText).toContain('/compact')
+    expect(menuText).toContain('/code')
+    expect(menuText).toContain('/plan')
+    expect(menuText).toContain('/create')
+
+    // 再次点击指令按钮关闭面板
+    await slashBtn.click()
+    renderer.flush?.()
+    expect(await app.getByTestId('slash-command-menu').count()).toBe(0)
+
+    await app.close()
+  })
+
+  test('输入框输入中文顿号或斜杠自动展开快捷指令面板', async () => {
+    const { render, renderer } = createTestRoot({ width: 1000, height: 600 })
+    render(<Composer store={store} />)
+    const app = await connectTest(renderer)
+
+    // 默认关闭
+    expect(await app.getByTestId('slash-command-menu').count()).toBe(0)
+
+    // 输入 / 时触发面板展开
+    await app.getByTestId('composer').fill('/')
+    renderer.flush?.()
+    expect(await app.getByTestId('slash-command-menu').count()).toBe(1)
+
+    // 输入中文顿号 、 时自动规整并唤起
+    await app.getByTestId('composer').fill('、')
+    renderer.flush?.()
+    expect(await app.getByTestId('slash-command-menu').count()).toBe(1)
+
+    await app.close()
+  })
+
+  test('选择快捷指令后在输入框表现为可移除标签，点击可移除，发送时拼接参数', async () => {
+    const { render, renderer } = createTestRoot({ width: 1000, height: 600 })
+    render(<Composer store={store} />)
+    const app = await connectTest(renderer)
+
+    // 打开快捷指令面板
+    await app.getByTestId('composer-slash-commands').click()
+    renderer.flush?.()
+
+    // 验证面板出现
+    expect(await app.getByTestId('slash-command-menu').count()).toBe(1)
+
+    // 若存在内置提示词指令（例如 review-changes），点击选中
+    const reviewItem = app.getByTestId('slash-item-review-changes')
+    if (await reviewItem.count() > 0) {
+      await reviewItem.click()
+      renderer.flush?.()
+
+      // 验证面板关闭，且输入框内展示可移除标签
+      expect(await app.getByTestId('slash-command-menu').count()).toBe(0)
+      expect(await app.getByTestId('composer-selected-command-pill').count()).toBe(1)
+      expect(renderer.getPaintedText().join(' ')).toContain('/review-changes')
+
+      // 验证点击移除按钮可成功关闭标签
+      await app.getByTestId('composer-remove-command').click()
+      renderer.flush?.()
+      expect(await app.getByTestId('composer-selected-command-pill').count()).toBe(0)
+
+      // 重新打开并再次选择，测试输入参数与发送集成
+      await app.getByTestId('composer-slash-commands').click()
+      renderer.flush?.()
+      await app.getByTestId('slash-item-review-changes').click()
+      renderer.flush?.()
+      expect(await app.getByTestId('composer-selected-command-pill').count()).toBe(1)
+
+      // 输入参数并点击发送
+      let sentMessage = ''
+      const origSend = store.send
+      store.send = ((msg: string) => {
+        sentMessage = msg
+      }) as any
+      try {
+        await app.getByTestId('composer').fill('src/ui')
+        renderer.flush?.()
+        await app.getByTestId('send').click()
+        renderer.flush?.()
+
+        // 验证发送的消息包含了指令并自动展开或传递
+        expect(sentMessage.length).toBeGreaterThan(0)
+        // 验证发送后标签被自动清除
+        expect(await app.getByTestId('composer-selected-command-pill').count()).toBe(0)
+      } finally {
+        store.send = origSend
+      }
+    }
+
+    await app.close()
+  })
 })

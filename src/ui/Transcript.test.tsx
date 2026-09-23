@@ -132,6 +132,37 @@ describe('buildTranscriptBlocks 分块逻辑', () => {
     }
     expect(blocks[2].kind).toBe('assistant')
   })
+
+  test('为每一轮对话精准计算并传递整轮总耗时 turnDurationMs', () => {
+    const items: Item[] = [
+      { kind: 'user', id: 'u1', at: 1000, text: '第一轮问题' },
+      { kind: 'tool', id: 't1', at: 2000, callId: 'c1', name: 'read_file', args: {}, rawArgs: '', status: 'done' },
+      { kind: 'assistant', id: 'a1', at: 4000, text: '第一轮回答', durationMs: 2000 }, // 结束时刻: 6000, 总耗时: 6000 - 1000 = 5000ms
+      { kind: 'user', id: 'u2', at: 7000, text: '第二轮问题' },
+      { kind: 'assistant', id: 'a2', at: 8000, text: '第二轮回答', turnDurationMs: 1800 }, // 显式记录的 turnDurationMs 优先
+    ]
+
+    const blocks = buildTranscriptBlocks(items, false)
+    expect(blocks).toHaveLength(5)
+
+    // 第一轮 process 块
+    expect(blocks[1].kind).toBe('process')
+    if (blocks[1].kind === 'process') {
+      expect(blocks[1].turnDurationMs).toBe(5000)
+    }
+
+    // 第一轮 assistant 块
+    expect(blocks[2].kind).toBe('assistant')
+    if (blocks[2].kind === 'assistant') {
+      expect(blocks[2].turnDurationMs).toBe(5000)
+    }
+
+    // 第二轮 assistant 块
+    expect(blocks[4].kind).toBe('assistant')
+    if (blocks[4].kind === 'assistant') {
+      expect(blocks[4].turnDurationMs).toBe(1800)
+    }
+  })
 })
 
 describeNative('Transcript UI 过程收缩交互', () => {
@@ -298,10 +329,50 @@ describeNative('Transcript UI 过程收缩交互', () => {
 
     await painted('Rust 是一门赋予每个人构建可靠且高效软件能力的语言。')
 
-    // 验证回复内容正常渲染，且已移除助手消息下方的冗余统计栏
-    expect(await app.getByTestId('assistant-meta-bar').count()).toBe(0)
-    expect(await app.getByTestId('message-duration').count()).toBe(0)
-    expect(await app.getByTestId('message-tokens').count()).toBe(0)
+    // 验证每轮对话总耗时徽标与Token指标正常渲染
+    expect(await app.getByTestId('turn-duration-a-stats-1').count()).toBe(1)
+    expect(screen()).toContain('总耗时 4.5s')
+    expect(screen()).toContain('1.3k Tokens')
+    expect(screen()).toContain('复制全文')
+
+    await app.close()
+  }, 30_000)
+
+  test('多轮对话分别独立展示各自轮次的总耗时', async () => {
+    const thread = store.active
+    thread.items = [
+      { kind: 'user', id: 'u-multi-1', at: 1000, text: '第一轮用户提问' },
+      { kind: 'assistant', id: 'a-multi-1', at: 2000, text: '第一轮解答内容。', durationMs: 1200, turnDurationMs: 2200 },
+      { kind: 'user', id: 'u-multi-2', at: 4000, text: '第二轮用户提问' },
+      { kind: 'assistant', id: 'a-multi-2', at: 5000, text: '第二轮解答内容。', durationMs: 800, turnDurationMs: 1800 },
+    ]
+
+    const { render, renderer } = createTestRoot({ width: 800, height: 600 })
+    render(
+      <div style={{ display: 'flex', flexDirection: 'column', position: 'relative', width: 800, height: 600 }}>
+        <Transcript store={store} />
+      </div>,
+    )
+    const app = await connectTest(renderer)
+
+    const screen = () => renderer.getPaintedText().join('\n')
+    const painted = async (needle: string, timeoutMs = 10_000): Promise<void> => {
+      const started = Date.now()
+      while (Date.now() - started < timeoutMs) {
+        if (screen().includes(needle)) return
+        renderer.flush?.()
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      throw new Error(`never painted ${needle}\n${screen()}`)
+    }
+
+    await painted('第一轮解答内容。')
+    await painted('第二轮解答内容。')
+
+    expect(screen()).toContain('总耗时 2.2s')
+    expect(screen()).toContain('总耗时 1.8s')
+    expect(await app.getByTestId('turn-duration-a-multi-1').count()).toBe(1)
+    expect(await app.getByTestId('turn-duration-a-multi-2').count()).toBe(1)
 
     await app.close()
   }, 30_000)

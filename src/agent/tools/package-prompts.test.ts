@@ -50,15 +50,13 @@ enabled: true
 
     // 扫描插件
     const plugins = await loader.scanPlugins(workspace)
-    expect(plugins.length).toBe(1)
+    const plugin = plugins.find((p) => p.name === 'dev-toolkit')
+    expect(plugin).toBeDefined()
+    expect(plugin?.isPackage).toBe(true)
+    expect(plugin?.prompts).toBeDefined()
+    expect(plugin?.prompts.length).toBe(1)
 
-    const plugin = plugins[0]
-    expect(plugin.name).toBe('dev-toolkit')
-    expect(plugin.isPackage).toBe(true)
-    expect(plugin.prompts).toBeDefined()
-    expect(plugin.prompts.length).toBe(1)
-
-    const promptItem = plugin.prompts[0]
+    const promptItem = plugin!.prompts[0]
     expect(promptItem.name).toBe('git提交规范')
     expect(promptItem.description).toContain('Conventional Commits')
     expect(promptItem.argumentHint).toBe('[scope]')
@@ -81,18 +79,24 @@ enabled: true
 
     // 初始状态
     let plugins = await loader.scanPlugins(workspace)
-    expect(plugins[0].enabled).toBe(true)
-    expect(plugins[0].prompts[0].enabled).toBe(true)
+    let target = plugins.find((p) => p.name === 'audit-pack')
+    expect(target?.enabled).toBe(true)
+    expect(target?.prompts[0].enabled).toBe(true)
 
     // 禁用插件
     await saveDisabledPlugins(['workspace:audit-pack'])
 
     plugins = await loader.scanPlugins(workspace)
-    expect(plugins[0].enabled).toBe(false)
-    expect(plugins[0].prompts[0].enabled).toBe(false)
+    target = plugins.find((p) => p.name === 'audit-pack')
+    expect(target?.enabled).toBe(false)
+    expect(target?.prompts[0].enabled).toBe(false)
 
     // 重新启用插件
     await saveDisabledPlugins([])
+    plugins = await loader.scanPlugins(workspace)
+    target = plugins.find((p) => p.name === 'audit-pack')
+    expect(target?.enabled).toBe(true)
+    expect(target?.prompts[0].enabled).toBe(true)
     plugins = await loader.scanPlugins(workspace)
     expect(plugins[0].enabled).toBe(true)
     expect(plugins[0].prompts[0].enabled).toBe(true)

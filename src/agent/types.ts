@@ -32,6 +32,8 @@ export type Item =
       usage?: TokenUsage
       /** 本次对话花费的时间（毫秒） */
       durationMs?: number
+      /** 整轮对话总耗时（毫秒，包含思考、工具执行与流式生成） */
+      turnDurationMs?: number
     }
   | {
       kind: 'tool'

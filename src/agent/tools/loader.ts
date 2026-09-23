@@ -13,6 +13,7 @@ import { getAppHome } from '../home'
 import { defaultToolRegistry } from './registry'
 import { defaultSkillManager, type SkillSummary } from '../skills'
 import { defaultPromptManager, type PromptItem } from '../prompts'
+import { BUILTIN_PLUGINS } from './builtin-plugins'
 
 /**
  * 传递给扩展插件的完整上下文 API
@@ -54,7 +55,7 @@ export interface PluginItem {
   name: string
   fileName: string
   filePath: string
-  scope: 'workspace' | 'global'
+  scope: 'builtin' | 'workspace' | 'global'
   enabled: boolean
   tools: PluginToolInfo[]
   /** 插件包内包含的技能列表（将 SKILL 归纳到插件系统中） */
@@ -141,6 +142,41 @@ export class ExtensionLoader {
     const allPrompts = await defaultPromptManager.scanPrompts(workspace)
 
     const items: PluginItem[] = []
+
+    // 0. 系统官方内置插件 (Built-in Plugins)
+    for (const bp of BUILTIN_PLUGINS) {
+      const id = `builtin:${bp.id}`
+      const enabled = !disabledList.has(id)
+      const matchingSkills = allSkills.filter(
+        (s) => s.scope === 'plugin' && (s.pluginId === id || s.pluginName === bp.name)
+      )
+      const matchingPrompts = allPrompts.filter(
+        (p) => p.scope === 'plugin' && (p.pluginId === id || p.pluginName === bp.name)
+      )
+
+      items.push({
+        id,
+        name: bp.name,
+        fileName: `${bp.id} (内置)`,
+        filePath: `(builtin):${bp.id}`,
+        scope: 'builtin',
+        enabled,
+        tools: bp.tools.map((t) => {
+          const toolInst = typeof t === 'function' ? t(workspace) : t
+          return {
+            name: toolInst.name,
+            description: toolInst.description,
+            parameters: toolInst.parameters as Record<string, unknown> | undefined,
+            isWrite: defaultToolRegistry.isWriteTool(toolInst.name),
+          }
+        }),
+        skills: matchingSkills,
+        prompts: matchingPrompts,
+        isPackage: true,
+        sizeBytes: 0,
+        updatedAt: Date.now(),
+      })
+    }
 
     const scanDir = async (dirPath: string, scope: 'workspace' | 'global') => {
       if (!existsSync(dirPath)) return
@@ -384,6 +420,19 @@ export class ExtensionLoader {
     const disabledList = await readDisabledPlugins()
     const disabledSet = new Set(disabledList)
 
+    const loadedNames: string[] = []
+
+    // 0. 加载启用的官方内置插件工具
+    for (const bp of BUILTIN_PLUGINS) {
+      const id = `builtin:${bp.id}`
+      if (disabledSet.has(id)) continue
+      for (const t of bp.tools) {
+        const toolInst = typeof t === 'function' ? t(workspace) : t
+        defaultToolRegistry.register(toolInst)
+        loadedNames.push(toolInst.name)
+      }
+    }
+
     const projectExtDir = join(workspace, '.ada', 'extensions')
     const globalExtDir = join(getAppHome(), 'extensions')
 
@@ -400,7 +449,7 @@ export class ExtensionLoader {
       'global'
     )
 
-    return [...projectLoaded, ...globalLoaded]
+    return [...loadedNames, ...projectLoaded, ...globalLoaded]
   }
 
   /**

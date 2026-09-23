@@ -16,11 +16,12 @@ import {
   type Effort,
 } from '../agent/store'
 import { ChipButton, ChipSelect, Icon, menuLayer, MenuRow, MenuSurface, menuItemStyle } from './controls'
-import { C, editorTheme, M } from '../theme'
+import { C, editorTheme, FONT_MONO, M } from '../theme'
 import { formatDuration, formatNumber, formatTokenShort } from './Transcript'
 import { computeThreadStats, type AgentMode, type Item, type Thread } from '../agent/types'
 import { computeContextBreakdown, type ContextUsageSummary } from '../agent/stats'
 import { ContextUsagePopover } from './ContextUsagePopover'
+import { SlashCommandMenu, type SlashCommandItem } from './SlashCommandMenu'
 import type { IconName } from '../icons'
 
 export const MODE_OPTIONS: { value: AgentMode; label: string; icon: IconName; desc: string }[] = [
@@ -83,7 +84,7 @@ export function computeThreadTelemetry(
   if (!latestAssistant) {
     for (let i = assistantItems.length - 1; i >= 0; i--) {
       const a = assistantItems[i]
-      if (a.usage || a.durationMs) {
+      if (a.usage || a.durationMs || a.turnDurationMs) {
         latestAssistant = a
         break
       }
@@ -98,10 +99,12 @@ export function computeThreadTelemetry(
     latestAssistant?.usage?.totalTokens ?? (promptTokens + completionTokens)
   const hasUsage = !!latestAssistant?.usage
 
-  // 耗时计算：流式中使用当前流逝时间，已完成使用记录的 durationMs
+  // 耗时计算：流式中使用当前助手的流逝时间，已完成优先使用整轮总耗时 turnDurationMs，缺省回退 durationMs
   let durationMs = 0
   if (streamingAssistant) {
     durationMs = Math.max(100, Date.now() - (streamingAssistant.at || Date.now()))
+  } else if (latestAssistant?.turnDurationMs) {
+    durationMs = latestAssistant.turnDurationMs
   } else if (latestAssistant?.durationMs) {
     durationMs = latestAssistant.durationMs
   }
@@ -526,6 +529,9 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
   const [draft, setDraft] = useState('')
   const [images, setImages] = useState<string[]>([])
   const [focused, setFocused] = useState(false)
+  const [slashMenuOpen, setSlashMenuOpen] = useState(false)
+  const [slashFilter, setSlashFilter] = useState('')
+  const [selectedCommand, setSelectedCommand] = useState<SlashCommandItem | null>(null)
 
   const pickImagesFromDisk = async () => {
     try {
@@ -565,7 +571,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
   }, [store.pendingDraft])
 
   const running = store.running
-  const ready = currentDraft.trim().length > 0 || images.length > 0
+  const ready = currentDraft.trim().length > 0 || images.length > 0 || selectedCommand !== null
   const approval = APPROVAL_OPTIONS.find((option) => option.value === store.approval)!
   const effort = EFFORT_OPTIONS.find((option) => option.value === store.effort)!
   const modeOption = MODE_OPTIONS.find((m) => m.value === (store.mode ?? 'code')) ?? MODE_OPTIONS[0]!
@@ -573,7 +579,15 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
   const imageEntries = store.entries.filter((f) => /\.(png|jpe?g|webp|gif|svg)$/i.test(f))
 
   const send = async (text: string) => {
-    const target = text.trim() ? text : currentDraft
+    setSlashMenuOpen(false)
+    setSlashFilter('')
+
+    let target = text.trim() ? text : currentDraft
+    if (selectedCommand) {
+      target = target ? `${selectedCommand.command} ${target}` : selectedCommand.command
+      setSelectedCommand(null)
+    }
+
     if (!target.trim() && images.length === 0) return
 
     let finalMessage = target
@@ -800,7 +814,36 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
         userSelect: 'none',
       }}
     >
+      {slashMenuOpen ? (
+        <SlashCommandMenu
+          store={store}
+          filterQuery={slashFilter}
+          onSelect={(cmd, isActionExecuted) => {
+            setSlashMenuOpen(false)
+            setSlashFilter('')
+            if (isActionExecuted) {
+              setSelectedCommand(null)
+              setDraft('')
+            } else {
+              setSelectedCommand(cmd)
+              setDraft('')
+            }
+          }}
+          onClose={() => {
+            setSlashMenuOpen(false)
+            setSlashFilter('')
+          }}
+        />
+      ) : null}
       <div
+        onKeyDown={(event: any) => {
+          if (event?.key === 'Escape' || event?.key === 'escape') {
+            if (slashMenuOpen) {
+              setSlashMenuOpen(false)
+              setSlashFilter('')
+            }
+          }
+        }}
         style={{
           display: 'flex',
           flexDirection: 'column',
@@ -831,12 +874,76 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
             : undefined,
         }}
       >
+        {/* 选择指令后在输入框内表现为可移除的指令标签 */}
+        {selectedCommand ? (
+          <div
+            testId="composer-selected-command-pill"
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 6,
+              marginLeft: 12,
+              marginRight: 12,
+              marginTop: 2,
+              marginBottom: 4,
+              paddingLeft: 8,
+              paddingRight: 6,
+              paddingTop: 3,
+              paddingBottom: 3,
+              borderRadius: 6,
+              backgroundColor: C.chip,
+              borderWidth: 1,
+              borderColor: C.link,
+              alignSelf: 'flex-start',
+            }}
+          >
+            <Icon name={selectedCommand.icon ?? 'terminal'} size={12} color={C.link} />
+            <text style={{ fontSize: 12, fontWeight: 600, color: C.link }}>
+              {selectedCommand.command}
+            </text>
+            {selectedCommand.argumentHint ? (
+              <text
+                style={{
+                  fontSize: 10.5,
+                  color: C.tertiary,
+                  fontFamily: FONT_MONO,
+                }}
+              >
+                {selectedCommand.argumentHint}
+              </text>
+            ) : null}
+            <div
+              role="button"
+              testId="composer-remove-command"
+              aria-label="移除指令"
+              onClick={() => setSelectedCommand(null)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 15,
+                height: 15,
+                borderRadius: 3,
+                cursor: 'pointer',
+                hover: { backgroundColor: C.overlayStrong },
+              }}
+            >
+              <Icon name="close" size={10} color={C.tertiary} />
+            </div>
+          </div>
+        ) : null}
+
         <textarea
           testId="composer"
           value={currentDraft}
           placeholder={
             running
               ? '继续输入以排队后续修改'
+              : selectedCommand
+              ? selectedCommand.argumentHint
+                ? `输入参数 (${selectedCommand.argumentHint}) 或补充说明，回车直接发送`
+                : '输入补充说明或回车直接发送'
               : store.mode === 'plan'
               ? '描述要 Agent 完成的任务 (Plan 规划模式)'
               : store.mode === 'create'
@@ -861,9 +968,30 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
           }}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
+          onKeyDown={(event: any) => {
+            if (
+              (event?.key === 'Backspace' || event?.key === 'backspace') &&
+              !currentDraft &&
+              selectedCommand
+            ) {
+              setSelectedCommand(null)
+            }
+          }}
           onChange={(event) => {
             if (store.pendingDraft !== null) store.clearPendingDraft()
-            setDraft(event.value ?? '')
+            let val = event.value ?? ''
+            if (val.startsWith('、')) {
+              val = '/' + val.slice(1)
+            }
+            setDraft(val)
+            const trimmed = val.trimStart()
+            if (trimmed.startsWith('/')) {
+              setSlashMenuOpen(true)
+              setSlashFilter(trimmed.slice(1).split(/\s+/)[0] || '')
+            } else if (slashMenuOpen && !trimmed) {
+              setSlashMenuOpen(false)
+              setSlashFilter('')
+            }
           }}
           onSubmit={(event) => void send(event.value?.trim() ? event.value : currentDraft)}
         />
@@ -977,6 +1105,43 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
               }}
             >
               {modelLabel}
+            </text>
+          </div>
+
+          <div
+            testId="composer-slash-commands"
+            role="button"
+            aria-label={slashMenuOpen ? '关闭快捷指令面板' : '打开快捷指令面板 (/)'}
+            onClick={() => {
+              setSlashMenuOpen((open) => !open)
+              setSlashFilter('')
+            }}
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+              height: 22,
+              paddingLeft: 7,
+              paddingRight: 8,
+              borderRadius: 6,
+              cursor: 'pointer',
+              backgroundColor: slashMenuOpen ? C.chipHover : C.chip,
+              borderWidth: 1,
+              borderColor: slashMenuOpen ? C.link : C.chipBorder,
+              hover: { backgroundColor: C.chipHover },
+            }}
+          >
+            <Icon name="terminal" size={12} color={slashMenuOpen ? C.link : C.secondary} />
+            <text
+              style={{
+                fontSize: 11.5,
+                fontWeight: 500,
+                color: slashMenuOpen ? C.link : C.secondary,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              指令
             </text>
           </div>
 

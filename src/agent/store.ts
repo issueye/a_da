@@ -401,6 +401,7 @@ export class AgentStore {
             streaming: false,
             usage: message.usage,
             durationMs: message.durationMs,
+            turnDurationMs: message.turnDurationMs,
           })
         }
       } else if (message.role === 'toolResult') {
@@ -1191,6 +1192,8 @@ export class AgentStore {
                 assistant.streaming = false
                 if (message.usage) assistant.usage = message.usage
                 if (message.durationMs) assistant.durationMs = message.durationMs
+                assistant.turnDurationMs = Math.max(1, Date.now() - startTime)
+                message.turnDurationMs = assistant.turnDurationMs
               }
               if (message.content) {
                 latestSummary = message.content
@@ -1644,6 +1647,8 @@ export class AgentStore {
                 assistant.streaming = false
                 if (message.usage) assistant.usage = message.usage
                 if (message.durationMs) assistant.durationMs = message.durationMs
+                assistant.turnDurationMs = Math.max(1, Date.now() - startTime)
+                message.turnDurationMs = assistant.turnDurationMs
               }
               if (message.content) {
                 latestSummary = message.content
@@ -2130,6 +2135,7 @@ export class AgentStore {
     thread.messages.push(userMessage)
     this.persist(thread.id, userMessage)
 
+    const turnStartTime = userMessage.timestamp || Date.now()
     const controller = new AbortController()
     this.aborts.set(thread.id, controller)
 
@@ -2207,10 +2213,12 @@ export class AgentStore {
                   at: Date.now(),
                   text: '',
                   streaming: true,
+                  turnDurationMs: Math.max(1, Date.now() - turnStartTime),
                 }
                 thread.items.push(assistant)
               }
               assistant.text += event.delta.text
+              assistant.turnDurationMs = Math.max(1, Date.now() - turnStartTime)
               this.notifySoon()
             }
             break
@@ -2223,6 +2231,8 @@ export class AgentStore {
               assistant.streaming = false
               if (message.usage) assistant.usage = message.usage
               if (message.durationMs) assistant.durationMs = message.durationMs
+              assistant.turnDurationMs = Math.max(1, Date.now() - turnStartTime)
+              message.turnDurationMs = assistant.turnDurationMs
             }
             if (message.stopReason === 'error') {
               this.fail(thread, `模型请求失败：${message.errorMessage ?? '未知错误'}`)
@@ -2262,6 +2272,15 @@ export class AgentStore {
 
           case 'agent_end': {
             thread.messages = event.messages
+            const totalTurnDuration = Math.max(1, Date.now() - turnStartTime)
+            const lastAssistantItem = thread.items.slice().reverse().find((it): it is Extract<Item, { kind: 'assistant' }> => it.kind === 'assistant')
+            if (lastAssistantItem) {
+              lastAssistantItem.turnDurationMs = totalTurnDuration
+            }
+            const lastAssistantMsg = thread.messages.slice().reverse().find((m): m is AssistantMessage => m.role === 'assistant')
+            if (lastAssistantMsg) {
+              lastAssistantMsg.turnDurationMs = totalTurnDuration
+            }
             if (event.reason === 'max_steps') {
               thread.items.push({
                 kind: 'notice',
@@ -2275,7 +2294,6 @@ export class AgentStore {
 
             // 检查是否达到自动上下文压缩阈值
             const contextLimit = this.contextWindow > 0 ? this.contextWindow : getModelContextWindow(this.currentModel)
-            const lastAssistantItem = thread.items.slice().reverse().find((it): it is Extract<Item, { kind: 'assistant' }> => it.kind === 'assistant')
             const currentTokens = lastAssistantItem?.usage?.promptTokens || estimateMessageTokens(thread.messages)
             const compactDecision = shouldAutoCompact({
               messages: thread.messages,
@@ -2329,11 +2347,13 @@ export class AgentStore {
       at: Date.now(),
       text: assistantText,
       durationMs,
+      turnDurationMs: durationMs,
     })
     const assistantMessage: AgentMessage = {
       role: 'assistant',
       content: assistantText,
       durationMs,
+      turnDurationMs: durationMs,
       toolCalls: [
         {
           id: callId,

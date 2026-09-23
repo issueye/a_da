@@ -11,6 +11,7 @@ import { getAppHome } from '../home'
 import { readDisabledPlugins } from '../config'
 import { expandSkillVariables, parseSkillMarkdown } from './parser'
 import { BUILTIN_SKILLS } from './builtins'
+import { BUILTIN_PLUGINS } from '../tools/builtin-plugins'
 import type { SkillDiagnostic, SkillsPromptContext, SkillSummary } from './types'
 
 export const SKILL_FILE_NAME = 'SKILL.md'
@@ -267,6 +268,40 @@ export class SkillManager {
         allowedTools: parsed.metadata.allowedTools,
         metadata: parsed.metadata,
       })
+    }
+
+    // 6. 注入官方内置插件中的技能规范
+    for (const bp of BUILTIN_PLUGINS) {
+      const pluginId = `builtin:${bp.id}`
+      const isPluginDisabled = disabledPlugins.has(pluginId)
+      for (const s of bp.skills || []) {
+        const dedupeKey = s.name.toLowerCase()
+        if (seenNames.has(dedupeKey)) continue
+        seenNames.add(dedupeKey)
+
+        const parsed = parseSkillMarkdown(s.content, `(builtin):${bp.id}/${s.name}`)
+        const id = `${pluginId}:${s.name}`
+        let enabled = state.enabledState[id] ?? !isPluginDisabled
+        if (isPluginDisabled) {
+          enabled = false
+        }
+        skills.push({
+          id,
+          name: s.name,
+          description: parsed.metadata.description || s.description,
+          body: parsed.body,
+          path: `(builtin):${bp.id}/${s.name}`,
+          baseDirectory: '',
+          scope: 'plugin',
+          enabled,
+          pluginName: bp.name,
+          pluginId,
+          isFileSkill: false,
+          disableModelInvocation: parsed.metadata.disableModelInvocation,
+          allowedTools: parsed.metadata.allowedTools,
+          metadata: parsed.metadata,
+        })
+      }
     }
 
     // 排序：按名称字母升序

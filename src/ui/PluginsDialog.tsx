@@ -22,12 +22,13 @@ import { Icon, IconButton } from './controls'
 import type { IconName } from '../icons'
 import { join } from 'node:path'
 
-type TabType = 'skills' | 'subagents' | 'prompts' | 'workspace' | 'global' | 'builtins'
+type TabType = 'skills' | 'subagents' | 'prompts' | 'builtin-plugins' | 'workspace' | 'global' | 'builtins'
 
 const TABS: { id: TabType; label: string; icon: IconName }[] = [
   { id: 'skills', label: '技能库 (Skills)', icon: 'zap' },
   { id: 'subagents', label: '子智能体', icon: 'bot' },
   { id: 'prompts', label: '提示词管理', icon: 'sparkles' },
+  { id: 'builtin-plugins', label: '内置辅助插件', icon: 'plug' },
   { id: 'workspace', label: '工作区插件', icon: 'folder' },
   { id: 'global', label: '全局插件', icon: 'settings' },
   { id: 'builtins', label: '内置核心工具', icon: 'shield' },
@@ -300,12 +301,19 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
   }
 
   // 过滤当前作用域的插件
-  const currentPlugins = plugins.filter((p) => p.scope === tab)
+  const currentPlugins =
+    tab === 'builtin-plugins'
+      ? plugins.filter((p) => p.scope === 'builtin')
+      : plugins.filter((p) => p.scope === tab)
+
+  const builtinPluginsCount = plugins.filter((p) => p.scope === 'builtin').length
   const workspaceCount = plugins.filter((p) => p.scope === 'workspace').length
   const globalCount = plugins.filter((p) => p.scope === 'global').length
 
   const currentDir =
-    tab === 'workspace'
+    tab === 'builtin-plugins'
+      ? '系统内置辅助 Coding 插件库（开箱即用，支持单独自由启用/停用）'
+      : tab === 'workspace'
       ? join(store.project, '.ada', 'extensions')
       : join(getAppHome(), 'extensions')
 
@@ -416,6 +424,8 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                   ? subagents.length
                   : item.id === 'prompts'
                   ? prompts.length
+                  : item.id === 'builtin-plugins'
+                  ? builtinPluginsCount
                   : item.id === 'workspace'
                   ? workspaceCount
                   : item.id === 'global'
@@ -1512,29 +1522,31 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                     </text>
                   </div>
 
-                  <div
-                    testId="plugin-create-btn"
-                    role="button"
-                    onClick={() => setCreating((prev) => !prev)}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 4,
-                      height: 26,
-                      paddingLeft: 8,
-                      paddingRight: 8,
-                      borderRadius: 6,
-                      cursor: 'pointer',
-                      backgroundColor: creating ? C.raised : C.link,
-                      hover: { opacity: 0.9 },
-                    }}
-                  >
-                    <Icon name={creating ? 'minus' : 'plus'} size={11} color="#ffffff" />
-                    <text style={{ fontSize: 11, fontWeight: 600, color: '#ffffff' }}>
-                      {creating ? '取消' : '新建插件'}
-                    </text>
-                  </div>
+                  {tab !== 'builtin-plugins' ? (
+                    <div
+                      testId="plugin-create-btn"
+                      role="button"
+                      onClick={() => setCreating((prev) => !prev)}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 4,
+                        height: 26,
+                        paddingLeft: 8,
+                        paddingRight: 8,
+                        borderRadius: 6,
+                        cursor: 'pointer',
+                        backgroundColor: creating ? C.raised : C.link,
+                        hover: { opacity: 0.9 },
+                      }}
+                    >
+                      <Icon name={creating ? 'minus' : 'plus'} size={11} color="#ffffff" />
+                      <text style={{ fontSize: 11, fontWeight: 600, color: '#ffffff' }}>
+                        {creating ? '取消' : '新建插件'}
+                      </text>
+                    </div>
+                  ) : null}
 
                   <div
                     testId="plugin-refresh-btn"
@@ -1701,7 +1713,9 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                             paddingLeft: 6,
                             paddingRight: 6,
                             borderRadius: 4,
-                            backgroundColor: C.chip,
+                            backgroundColor: item.scope === 'builtin' ? '#3b82f618' : C.chip,
+                            borderWidth: item.scope === 'builtin' ? 1 : 0,
+                            borderColor: '#3b82f640',
                             flexShrink: 0,
                           }}
                         >
@@ -1709,11 +1723,11 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                             style={{
                               fontSize: 10,
                               lineHeight: 14,
-                              color: C.faint,
+                              color: item.scope === 'builtin' ? C.link : C.faint,
                               whiteSpace: 'nowrap',
                             }}
                           >
-                            {`${Math.max(1, Math.round(item.sizeBytes / 1024))} KB`}
+                            {item.scope === 'builtin' ? '系统内置' : `${Math.max(1, Math.round(item.sizeBytes / 1024))} KB`}
                           </text>
                         </div>
 
@@ -1759,42 +1773,44 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                           </text>
                         </div>
 
-                        {/* 删除插件按钮 (带二次确认) */}
-                        <div
-                          testId={`plugin-delete-${item.name}`}
-                          role="button"
-                          aria-label={
-                            armedDeleteId === item.id
-                              ? `确认删除 ${item.fileName}`
-                              : `删除 ${item.fileName}`
-                          }
-                          onClick={() => void handleDelete(item)}
-                          style={{
-                            display: 'flex',
-                            flexDirection: 'row',
-                            alignItems: 'center',
-                            gap: 3,
-                            height: 22,
-                            paddingLeft: armedDeleteId === item.id ? 6 : 4,
-                            paddingRight: armedDeleteId === item.id ? 6 : 4,
-                            borderRadius: 4,
-                            cursor: 'pointer',
-                            backgroundColor:
-                              armedDeleteId === item.id ? C.accentSoft : '#00000000',
-                            hover: { backgroundColor: C.chipHover },
-                          }}
-                        >
-                          {armedDeleteId === item.id ? (
-                            <text style={{ fontSize: 10, color: C.accent, fontWeight: 600 }}>
-                              确认删除
-                            </text>
-                          ) : null}
-                          <Icon
-                            name="trash"
-                            size={12}
-                            color={armedDeleteId === item.id ? C.accent : C.faint}
-                          />
-                        </div>
+                        {/* 删除插件按钮 (带二次确认，仅工作区与全局插件可删除) */}
+                        {item.scope !== 'builtin' ? (
+                          <div
+                            testId={`plugin-delete-${item.name}`}
+                            role="button"
+                            aria-label={
+                              armedDeleteId === item.id
+                                ? `确认删除 ${item.fileName}`
+                                : `删除 ${item.fileName}`
+                            }
+                            onClick={() => void handleDelete(item)}
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              gap: 3,
+                              height: 22,
+                              paddingLeft: armedDeleteId === item.id ? 6 : 4,
+                              paddingRight: armedDeleteId === item.id ? 6 : 4,
+                              borderRadius: 4,
+                              cursor: 'pointer',
+                              backgroundColor:
+                                armedDeleteId === item.id ? C.accentSoft : '#00000000',
+                              hover: { backgroundColor: C.chipHover },
+                            }}
+                          >
+                            {armedDeleteId === item.id ? (
+                              <text style={{ fontSize: 10, color: C.accent, fontWeight: 600 }}>
+                                确认删除
+                              </text>
+                            ) : null}
+                            <Icon
+                              name="trash"
+                              size={12}
+                              color={armedDeleteId === item.id ? C.accent : C.faint}
+                            />
+                          </div>
+                        ) : null}
                       </div>
 
                       {/* 导出的工具标签与描述 */}

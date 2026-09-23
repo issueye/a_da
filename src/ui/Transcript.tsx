@@ -225,13 +225,23 @@ export function formatTokenShort(n: number): string {
   return m >= 10 ? `${Math.round(m)}M` : `${m.toFixed(1).replace(/\.0$/, '')}M`
 }
 
-function AssistantRow({ item }: { item: Extract<Item, { kind: 'assistant' }> }) {
+function AssistantRow({
+  item,
+  turnDurationMs,
+}: {
+  item: Extract<Item, { kind: 'assistant' }>
+  turnDurationMs?: number
+}) {
   if (!item.text.trim() && !item.streaming) return null
+
+  const effectiveDuration = turnDurationMs ?? item.turnDurationMs ?? item.durationMs
+  const durationText = formatDuration(effectiveDuration)
+  const isStreaming = item.streaming
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
       {item.text ? <markdown source={item.text} theme={docTheme()} /> : null}
-      {item.streaming ? (
+      {isStreaming ? (
         <div
           style={{
             display: 'flex',
@@ -243,6 +253,92 @@ function AssistantRow({ item }: { item: Extract<Item, { kind: 'assistant' }> }) 
         >
           <Icon name="dot" size={9} color={C.tertiary} />
           <text style={{ fontSize: 11.5, lineHeight: 16, color: C.tertiary }}>正在生成…</text>
+          {durationText ? (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 3.5,
+                paddingLeft: 6,
+                paddingRight: 6,
+                height: 18,
+                borderRadius: 4,
+                backgroundColor: C.overlay,
+              }}
+            >
+              <Icon name="clock" size={10} color={C.link} />
+              <text style={{ fontSize: 10.5, color: C.link }}>{`已用时 ${durationText}`}</text>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {!isStreaming && (durationText || (item.text && item.text.trim())) ? (
+        <div
+          testId={`turn-stats-${item.id}`}
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            paddingTop: 6,
+            marginTop: 4,
+            borderTopWidth: 1,
+            borderColor: C.cardBorder,
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            {/* 每轮对话总耗时徽标 */}
+            {durationText ? (
+              <div
+                testId={`turn-duration-${item.id}`}
+                aria-label={`本轮对话总耗时：${durationText}`}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 4,
+                  paddingLeft: 6,
+                  paddingRight: 6,
+                  height: 20,
+                  borderRadius: 4,
+                  backgroundColor: C.overlay,
+                }}
+              >
+                <Icon name="clock" size={11} color={C.tertiary} />
+                <text style={{ fontSize: 11, color: C.secondary }}>{`总耗时 ${durationText}`}</text>
+              </div>
+            ) : null}
+
+            {/* Token 指标（若有模型返回的 usage） */}
+            {item.usage && (item.usage.totalTokens > 0 || (item.usage.promptTokens > 0 && item.usage.completionTokens > 0)) ? (
+              <div
+                aria-label={`Token 统计：${formatNumber(item.usage.totalTokens || (item.usage.promptTokens + item.usage.completionTokens))}`}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 4,
+                  paddingLeft: 6,
+                  paddingRight: 6,
+                  height: 20,
+                  borderRadius: 4,
+                  backgroundColor: C.overlay,
+                }}
+              >
+                <Icon name="sparkles" size={11} color={C.tertiary} />
+                <text style={{ fontSize: 11, color: C.secondary }}>
+                  {`${formatTokenShort(item.usage.totalTokens || (item.usage.promptTokens + item.usage.completionTokens))} Tokens`}
+                </text>
+              </div>
+            ) : null}
+          </div>
+
+          {/* 快捷复制回复 */}
+          {item.text && item.text.trim() ? (
+            <CopyButton text={item.text} label="复制全文" />
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -1414,7 +1510,7 @@ export function CompactCard({ item, store }: { item: Extract<Item, { kind: 'comp
 function ItemRow({ item, store }: { item: Item; store: AgentStore }) {
   if (item.kind === 'user') return <UserRow item={item} />
   if (item.kind === 'thinking') return <ThinkingRow item={item} />
-  if (item.kind === 'assistant') return <AssistantRow item={item} />
+  if (item.kind === 'assistant') return <AssistantRow item={item} turnDurationMs={item.turnDurationMs} />
   if (item.kind === 'compact') return <CompactCard item={item} store={store} />
   if (item.kind === 'tool') {
     if (item.name === 'todo') return null
@@ -1435,6 +1531,7 @@ export interface AssistantBlock {
   kind: 'assistant'
   id: string
   item: Extract<Item, { kind: 'assistant' }>
+  turnDurationMs?: number
 }
 
 export interface ThinkingBlock {
@@ -1448,6 +1545,7 @@ export interface ProcessBlock {
   id: string
   items: ProcessItem[]
   isCompleted: boolean
+  turnDurationMs?: number
 }
 
 export interface CompactBlock {
@@ -1544,6 +1642,32 @@ export function buildTranscriptBlocks(items: Item[], isRunning: boolean): Transc
         ? nonUserItems.filter((_, idx) => idx !== reportIndex)
         : nonUserItems
 
+    // 计算当轮总耗时：优先使用 reportItem.turnDurationMs，
+    // 否则根据 userItem 与 reportItem/processItems 的时间戳差值做计算；
+    // 流式状态下基于用户输入时刻计算实时流逝时长。
+    let turnDurationMs = reportItem?.turnDurationMs
+    if (turnDurationMs === undefined && userItem) {
+      if (reportItem) {
+        if (reportItem.streaming) {
+          turnDurationMs = Math.max(100, Date.now() - userItem.at)
+        } else {
+          const endTime = reportItem.at + (reportItem.durationMs || 0)
+          if (endTime > userItem.at) {
+            turnDurationMs = Math.max(0, endTime - userItem.at)
+          } else {
+            turnDurationMs = reportItem.durationMs
+          }
+        }
+      } else if (processItems.length > 0) {
+        const lastItem = processItems[processItems.length - 1]
+        if (lastItem && lastItem.at > userItem.at) {
+          turnDurationMs = Math.max(0, lastItem.at - userItem.at)
+        }
+      }
+    } else if (turnDurationMs === undefined && reportItem) {
+      turnDurationMs = reportItem.durationMs
+    }
+
     if (processItems.length > 0) {
       const hasActive = processItems.some((it) => {
         if (it.kind === 'tool') {
@@ -1566,6 +1690,7 @@ export function buildTranscriptBlocks(items: Item[], isRunning: boolean): Transc
         id: `process-${processItems[0].id}`,
         items: processItems,
         isCompleted,
+        turnDurationMs,
       })
     }
 
@@ -1574,6 +1699,7 @@ export function buildTranscriptBlocks(items: Item[], isRunning: boolean): Transc
         kind: 'assistant',
         id: reportItem.id,
         item: reportItem,
+        turnDurationMs,
       })
     }
   }
@@ -1733,6 +1859,33 @@ function ProcessGroupCard({
               }}
             >
               {isThinkingStreaming ? '推理中…' : `${totalThinkingSeconds}s`}
+            </text>
+          </div>
+        ) : block.turnDurationMs && block.turnDurationMs > 0 ? (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+              height: 18,
+              paddingLeft: 6,
+              paddingRight: 6,
+              borderRadius: 4,
+              backgroundColor: C.overlay,
+              flexShrink: 0,
+            }}
+          >
+            <Icon name="clock" size={10} color={C.tertiary} />
+            <text
+              style={{
+                fontSize: 10.5,
+                lineHeight: 14,
+                color: C.secondary,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {formatDuration(block.turnDurationMs)}
             </text>
           </div>
         ) : null}
@@ -1967,7 +2120,7 @@ export function Transcript({ store }: { store: AgentStore }) {
                   {block.kind === 'user' ? (
                     <UserRow item={block.item} />
                   ) : block.kind === 'assistant' ? (
-                    <AssistantRow item={block.item} />
+                    <AssistantRow item={block.item} turnDurationMs={block.turnDurationMs} />
                   ) : block.kind === 'thinking' ? (
                     <ThinkingRow item={block.item} />
                   ) : block.kind === 'compact' ? (

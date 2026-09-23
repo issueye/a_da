@@ -9,6 +9,7 @@ import { basename, extname, join } from 'node:path'
 import { getAppHome } from '../home'
 import { readDisabledPlugins } from '../config'
 import { BUILTIN_PROMPTS } from './builtins'
+import { BUILTIN_PLUGINS } from '../tools/builtin-plugins'
 import type { CreatePromptOptions, PromptItem, PromptScope } from './types'
 import type { AgentMode } from '../types'
 
@@ -268,6 +269,33 @@ export class PromptManager {
           }
         }
       } catch {}
+    }
+
+    // 6. 系统官方内置插件中的提示词模板
+    for (const bp of BUILTIN_PLUGINS) {
+      const pluginId = `builtin:${bp.id}`
+      const isPluginDisabled = disabledPlugins.has(pluginId)
+      for (const p of bp.prompts || []) {
+        const id = `${pluginId}:${p.name}`
+        const overrideEnabled = state.builtinEnabled[id]
+        let enabled = overrideEnabled !== undefined ? overrideEnabled : !isPluginDisabled
+        if (isPluginDisabled) {
+          enabled = false
+        }
+        results.push({
+          id,
+          name: p.name,
+          description: p.description,
+          argumentHint: p.argumentHint,
+          content: p.content,
+          scope: 'plugin',
+          enabled,
+          isSystem: Boolean(p.isSystem),
+          pluginName: bp.name,
+          pluginId,
+          updatedAt: 1720000000000,
+        })
+      }
     }
 
     return results
