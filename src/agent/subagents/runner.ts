@@ -55,6 +55,7 @@ export class SubagentRunner {
     disallowedSet.add('invoke_subagent')
     disallowedSet.add('check_subagent')
     disallowedSet.add('send_subagent_message')
+    disallowedSet.add('resume_subagent')
 
     const subagentTools: AgentTool[] = allTools.filter((t) => {
       // 黑名单排除优先

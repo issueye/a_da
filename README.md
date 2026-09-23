@@ -161,19 +161,16 @@ bun install          # 安装 typescript / 类型
 bun run link         # 把本地 ../gpuix 的两个包连进来（见下）
 bun run icons        # 从 assets/logo.svg 生成 logo.png 与 logo.ico（改了 logo 才需要）
 bun run dev          # 开发：bun --hot app.tsx，保存即重挂载
-bun run build        # 产出 dist/a-da-core.exe（真正的程序）与 dist/a-da.exe（启动器）
+bun run build        # 产出单一独立可执行文件 dist/a-da.exe（Windows）或 dist/a-da
 bun run typecheck    # tsc --noEmit，和 bun test 是两个独立的门，两个都要过
 ```
 
 先决条件：`../gpuix` 已经 `bun install` 且 `bun run build`（编译出
 `packages/native/gpuix-native.*.node` 与 `packages/react/dist`）。
 
-Windows 上 build 产出两个文件：`a-da-core.exe` 是真正的程序（带 native addon 与图标），
-`a-da.exe` 是用 `csc.exe` 编译的 C# 启动器（`scripts/launcher.cs`），它用
-`CREATE_NO_WINDOW` 静默拉起 core，双击时不会弹控制台黑框。构建脚本还会把 core 的 PE 头
-改成 GUI 子系统（`IMAGE_SUBSYSTEM_WINDOWS_GUI`），因为 Bun 的 `windows.hideConsole` 目前
-仍会留下子系统 3。机器上没有 .NET Framework 的 `csc.exe` 时启动器会被跳过（只留一条
-warning），`a-da.exe` 也就不存在；`scripts/binary-check.ts` 因此优先直接启动 core。
+Windows 上 build 产出单一独立可执行文件 `dist/a-da.exe`（内嵌完整 native addon 与图标）。
+构建脚本自动将 PE 头补丁修正为 GUI 子系统（`IMAGE_SUBSYSTEM_WINDOWS_GUI`），双击时原生零黑框
+静默启动图形界面，不再需要任何外部启动器或辅助进程。
 
 ### 为什么要 `bun run link`
 

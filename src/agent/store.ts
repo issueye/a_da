@@ -1043,6 +1043,7 @@ export class AgentStore {
     disallowedSet.add('invoke_subagent')
     disallowedSet.add('check_subagent')
     disallowedSet.add('send_subagent_message')
+    disallowedSet.add('resume_subagent')
 
     const subagentTools = allTools.filter((t) => {
       if (disallowedSet.has(t.name)) return false
@@ -1085,6 +1086,9 @@ export class AgentStore {
           text: fallbackText,
         }
         subagentThread.items.push(assistantItem)
+        this.steeringQueues.delete(subagentThread.id)
+        this.runningThreadIds.delete(subagentThread.id)
+        this.aborts.delete(subagentThread.id)
         this.notify()
         return {
           ok: true,
@@ -1408,6 +1412,389 @@ export class AgentStore {
       status: 'resumed',
       text: `已向子智能体「${thread.title}」追加新指令并重新启动执行。`,
     }
+  }
+
+  /**
+   * 恢复因网络中断、超时或异常停止的子智能体会话
+   */
+  async resumeSubagentThread(options: {
+    subagentThreadId: string
+    instruction?: string
+    signal?: AbortSignal
+    onStepUpdate?: (update: SubagentStepUpdate) => void
+  }): Promise<{ thread: Thread; resultPromise: Promise<SubagentRunResult> }> {
+    const subagentThread = this.threads.find((t) => t.id === options.subagentThreadId)
+    if (!subagentThread) {
+      throw new Error(`未找到 ID 为 ${options.subagentThreadId} 的子智能体会话。`)
+    }
+
+    if (this.isThreadRunning(subagentThread.id)) {
+      throw new Error(
+        `子智能体「${subagentThread.title}」当前正在运行中，无需恢复。若需要追加指导，请使用 send_subagent_message 工具。`
+      )
+    }
+
+    const profile =
+      (await defaultSubagentManager.getById(subagentThread.subagentId ?? '', subagentThread.workspace)) ??
+      (await defaultSubagentManager.getById('general_purpose', subagentThread.workspace))
+
+    if (!profile) {
+      throw new Error(`未能识别子智能体角色配置 (${subagentThread.subagentId ?? '未知'})。`)
+    }
+
+    const parentThread = subagentThread.parentId
+      ? this.threads.find((t) => t.id === subagentThread.parentId)
+      : undefined
+
+    const resumePromptText = options.instruction?.trim()
+      ? `【恢复执行指示】\n${options.instruction.trim()}`
+      : `【系统恢复提示】网络或连接已恢复。请检查当前执行进度与上下文，从上次中断处继续推进任务，并产出完整成果报告。`
+
+    const resumeItem: Item = {
+      kind: 'user',
+      id: nextId('item'),
+      at: Date.now(),
+      text: resumePromptText,
+    }
+    subagentThread.items.push(resumeItem)
+    const userMessage: AgentMessage = { role: 'user', content: resumePromptText, timestamp: Date.now() }
+    subagentThread.messages.push(userMessage)
+    this.persist(subagentThread.id, userMessage)
+
+    this.push({ kind: 'info', text: `已恢复子智能体「${profile.name}」(${subagentThread.id}) 的运行` })
+    this.notify()
+
+    const workspace = subagentThread.workspace
+    const parentConfig = await readLlmConfig()
+    const config: ProviderConfig = parentConfig
+      ? {
+          ...parentConfig,
+          ...(profile.modelOverride?.model ? { model: profile.modelOverride.model } : {}),
+        }
+      : {
+          baseUrl: 'http://localhost/v1',
+          apiKey: '',
+          model: profile.modelOverride?.model ?? 'test-model',
+          source: 'offline',
+        }
+
+    const controller = new AbortController()
+    this.aborts.set(subagentThread.id, controller)
+    if (options.signal) {
+      if (options.signal.aborted) {
+        controller.abort()
+      } else {
+        options.signal.addEventListener('abort', () => controller.abort(), { once: true })
+      }
+    }
+    this.runningThreadIds.add(subagentThread.id)
+    this.notify()
+
+    const allTools = defaultToolRegistry.getToolsForWorkspace(workspace)
+    const allowedSet = new Set(profile.allowedTools)
+    const disallowedSet = new Set(profile.disallowedTools ?? [])
+    disallowedSet.add('invoke_subagent')
+    disallowedSet.add('check_subagent')
+    disallowedSet.add('send_subagent_message')
+    disallowedSet.add('resume_subagent')
+
+    const subagentTools = allTools.filter((t) => {
+      if (disallowedSet.has(t.name)) return false
+      if (!allowedSet.has('*') && !allowedSet.has(t.name)) return false
+      if (profile.mode === 'readonly' && defaultToolRegistry.isWriteTool(t.name)) return false
+      return true
+    })
+
+    const steeringQueue: AgentMessage[] = []
+    this.steeringQueues.set(subagentThread.id, steeringQueue)
+
+    const resultPromise = (async (): Promise<SubagentRunResult> => {
+      const startTime = Date.now()
+      const maxSteps = profile.maxSteps
+      let stepsExecuted = 0
+      let toolCallsCount = 0
+      let lastAssistantMessage: any = null
+      let latestSummary = ''
+
+      let assistant: Extract<Item, { kind: 'assistant' }> | null = null
+      let reasoning: Extract<Item, { kind: 'thinking' }> | null = null
+      const endReasoning = () => {
+        if (reasoning && reasoning.endedAt === undefined) reasoning.endedAt = Date.now()
+      }
+
+      options.onStepUpdate?.({
+        threadId: subagentThread.id,
+        step: 0,
+        maxSteps,
+        status: 'running',
+        currentAction: `子智能体 [${profile.name}] 已恢复运行`,
+      })
+
+      if (!parentConfig) {
+        const fallbackText = `未配置 LLM 供应商，子智能体 [${profile.name}] 模拟恢复执行完成。`
+        const assistantItem: Extract<Item, { kind: 'assistant' }> = {
+          kind: 'assistant',
+          id: nextId('item'),
+          at: Date.now(),
+          text: fallbackText,
+        }
+        subagentThread.items.push(assistantItem)
+        this.notify()
+        this.steeringQueues.delete(subagentThread.id)
+        this.runningThreadIds.delete(subagentThread.id)
+        this.aborts.delete(subagentThread.id)
+        return {
+          ok: true,
+          summary: fallbackText,
+          stepsExecuted: 1,
+          durationMs: 10,
+          toolCallsCount: 0,
+          messages: subagentThread.messages,
+        }
+      }
+
+      try {
+        const loop = runAgentLoop(subagentThread.messages, config, {
+          systemPrompt: profile.systemPrompt,
+          tools: subagentTools,
+          maxSteps,
+          effort: profile.modelOverride?.effort ?? 'high',
+          toolExecution: 'sequential',
+          signal: controller.signal,
+          getSteeringMessages: async () => {
+            if (steeringQueue.length === 0) return []
+            return steeringQueue.splice(0, steeringQueue.length)
+          },
+          beforeToolCall: async (context) => {
+            if (profile.mode === 'readonly' && defaultToolRegistry.isWriteTool(context.toolCall.name)) {
+              return { block: true, reason: `子智能体 ${profile.name} 运行在只读安全模式下，禁止执行写操作。` }
+            }
+            return undefined
+          },
+        })
+
+        for await (const event of loop) {
+          if (controller.signal.aborted) break
+
+          switch (event.type) {
+            case 'llm_request':
+              this.logLlmRequest(event)
+              break
+
+            case 'llm_response':
+              this.logLlmResponse(event)
+              break
+
+            case 'turn_start':
+              stepsExecuted += 1
+              options.onStepUpdate?.({
+                threadId: subagentThread.id,
+                step: stepsExecuted,
+                maxSteps,
+                status: 'running',
+                currentAction: maxSteps
+                  ? `正在思考第 ${stepsExecuted}/${maxSteps} 步...`
+                  : `正在思考第 ${stepsExecuted} 步...`,
+              })
+              break
+
+            case 'message_start':
+              if (event.message.role === 'assistant') {
+                assistant = null
+                reasoning = null
+              }
+              break
+
+            case 'message_update':
+              if (event.delta.usage && assistant) {
+                assistant.usage = event.delta.usage
+                this.notifySoon()
+              }
+              if (event.delta.thinking) {
+                if (!reasoning) {
+                  reasoning = { kind: 'thinking', id: nextId('item'), at: Date.now(), text: '' }
+                  subagentThread.items.push(reasoning)
+                }
+                reasoning.text += event.delta.thinking
+                this.notifySoon()
+              }
+              if (event.delta.text) {
+                endReasoning()
+                if (!assistant) {
+                  assistant = {
+                    kind: 'assistant',
+                    id: nextId('item'),
+                    at: Date.now(),
+                    text: '',
+                    streaming: true,
+                  }
+                  subagentThread.items.push(assistant)
+                }
+                assistant.text += event.delta.text
+                latestSummary += event.delta.text
+                this.notifySoon()
+              }
+              break
+
+            case 'message_end': {
+              const message = event.message
+              if (message.role !== 'assistant') break
+              endReasoning()
+              if (assistant) {
+                assistant.streaming = false
+                if (message.usage) assistant.usage = message.usage
+                if (message.durationMs) assistant.durationMs = message.durationMs
+              }
+              if (message.content) {
+                latestSummary = message.content
+              }
+              lastAssistantMessage = message
+              if (message.stopReason === 'error') {
+                this.fail(subagentThread, `请求失败: ${message.errorMessage ?? '未知错误'}`)
+              } else if (
+                message.content.trim() ||
+                message.thinking ||
+                (message.toolCalls && message.toolCalls.length > 0)
+              ) {
+                this.persist(subagentThread.id, message)
+              }
+              this.notify()
+              break
+            }
+
+            case 'tool_execution_start': {
+              toolCallsCount += 1
+              const cardId = event.toolCallId
+              const desc = describeTool(event.toolName, event.args)
+              const card: Item = {
+                kind: 'tool',
+                id: nextId('item'),
+                at: Date.now(),
+                callId: cardId,
+                name: event.toolName,
+                args: event.args,
+                rawArgs: JSON.stringify(event.args),
+                status: 'running',
+              }
+              subagentThread.items.push(card)
+              this.cards.set(cardId, card as ToolCard)
+              options.onStepUpdate?.({
+                step: stepsExecuted,
+                maxSteps,
+                status: 'running',
+                currentAction: `[${profile.name}] 执行工具: ${desc}`,
+                toolCallSummary: desc,
+              })
+              this.notify()
+              break
+            }
+
+            case 'tool_execution_update': {
+              const card = this.cards.get(event.toolCallId)
+              if (card && event.partialResult?.output) {
+                card.output = (card.output ?? '') + event.partialResult.output
+                this.notifySoon()
+              }
+              break
+            }
+
+            case 'tool_execution_end': {
+              const card = this.cards.get(event.toolCallId)
+              if (card) {
+                card.status = event.result.ok ? 'done' : 'error'
+                if (event.result.output !== undefined) {
+                  card.output = event.result.output
+                }
+                if (event.result.patch) {
+                  card.patch = event.result.patch
+                }
+              }
+              this.notify()
+              break
+            }
+
+            case 'agent_end':
+              subagentThread.messages.length = 0
+              subagentThread.messages.push(...event.messages)
+              break
+          }
+        }
+
+        const durationMs = Date.now() - startTime
+        const isOk = !controller.signal.aborted && lastAssistantMessage?.stopReason !== 'error'
+        const resultText =
+          latestSummary.trim() ||
+          (isOk
+            ? `[${profile.name}] 任务恢复执行完成（共 ${stepsExecuted} 步，调用工具 ${toolCallsCount} 次）。`
+            : '任务未完成或异常中断。')
+
+        let outputFile: string | undefined = undefined
+        if (resultText.length > 3000) {
+          try {
+            const outDir = join(workspace, '.ada', 'subagent-outputs')
+            if (!existsSync(outDir)) {
+              await mkdir(outDir, { recursive: true })
+            }
+            outputFile = join(outDir, `${subagentThread.id}.md`)
+            await writeFile(outputFile, `# ${subagentThread.title}\n\n${resultText}`, 'utf8')
+          } catch {
+            // ignore save failure
+          }
+        }
+
+        options.onStepUpdate?.({
+          step: stepsExecuted,
+          maxSteps,
+          status: isOk ? 'done' : 'error',
+          currentAction: `执行结束（耗时 ${(durationMs / 1000).toFixed(1)}s）`,
+        })
+
+        // 异步后台运行完成时，向父会话写入一条完成提示，以便父会话与用户立即感知
+        if (options.onStepUpdate && parentThread && parentThread.id !== subagentThread.id) {
+          const previewText = resultText.length > 180 ? `${resultText.slice(0, 180)}...` : resultText
+          const fileInfo = outputFile ? `\n\n📄 完整报告已保存至：${outputFile}` : ''
+          const noticeItem: Item = {
+            kind: 'notice',
+            level: 'info',
+            id: nextId('item'),
+            at: Date.now(),
+            text: `子智能体「${profile.name}」已在后台恢复完成执行（会话 ID: ${subagentThread.id}，耗时 ${(durationMs / 1000).toFixed(1)}s）。\n成果摘要：${previewText}${fileInfo}`,
+          }
+          parentThread.items.push(noticeItem)
+          this.notify()
+        }
+
+        return {
+          ok: isOk,
+          summary: resultText,
+          outputFile,
+          stepsExecuted,
+          durationMs,
+          toolCallsCount,
+          messages: subagentThread.messages,
+        }
+      } catch (error) {
+        const durationMs = Date.now() - startTime
+        const errorMessage = (error as Error).message || String(error)
+        this.fail(subagentThread, `执行异常: ${errorMessage}`)
+        return {
+          ok: false,
+          summary: `子智能体 [${profile.name}] 执行失败: ${errorMessage}`,
+          stepsExecuted,
+          durationMs,
+          toolCallsCount,
+          errorMessage,
+          messages: subagentThread.messages,
+        }
+      } finally {
+        this.steeringQueues.delete(subagentThread.id)
+        this.runningThreadIds.delete(subagentThread.id)
+        this.aborts.delete(subagentThread.id)
+        this.notify()
+      }
+    })()
+
+    return { thread: subagentThread, resultPromise }
   }
 
   /**

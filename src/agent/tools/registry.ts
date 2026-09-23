@@ -11,7 +11,12 @@ import { createReadTool } from './builtins/read'
 import { createSearchTool } from './builtins/search'
 import { createWriteTool } from './builtins/write'
 import { createTodoTool } from './builtins/todo'
-import { createSubagentTool, createCheckSubagentTool, createSendSubagentMessageTool } from './builtins/subagent'
+import {
+  createSubagentTool,
+  createCheckSubagentTool,
+  createSendSubagentMessageTool,
+  createResumeSubagentTool,
+} from './builtins/subagent'
 import { createSkillTool, createManageSkillTool } from '../skills'
 import { createReadUrlTool } from './builtins/read-url'
 import { createManageTool } from './builtins/meta-tools'
@@ -29,6 +34,7 @@ export class ToolRegistry {
     'invoke_subagent',
     'check_subagent',
     'send_subagent_message',
+    'resume_subagent',
     'Skill',
     'skill',
   ])
@@ -78,6 +84,7 @@ export class ToolRegistry {
       createSubagentTool(workspace, options?.parentThreadId),
       createCheckSubagentTool(),
       createSendSubagentMessageTool(),
+      createResumeSubagentTool(),
     ]
 
     const all = [...builtins]

@@ -339,3 +339,119 @@ export function createSendSubagentMessageTool(): AgentTool<SendSubagentMessageAr
   }
 }
 
+export interface ResumeSubagentToolArgs {
+  subagent_thread_id: string
+  instruction?: string
+  async?: boolean
+}
+
+export function createResumeSubagentTool(): AgentTool<ResumeSubagentToolArgs> {
+  return {
+    name: 'resume_subagent',
+    label: '恢复子智能体工作',
+    description:
+      '当子智能体因网络波动、超时或异常中断停止时，恢复其运行并让其从上次中断的状态与上下文中继续推进未完成的任务，并最终产出总结报告。支持同步等待结果或异步后台运行。',
+    executionMode: 'parallel',
+    parameters: {
+      type: 'object',
+      properties: {
+        subagent_thread_id: {
+          type: 'string',
+          description: '需要恢复的子智能体会话 ID（由 invoke_subagent 返回或在子智能体会话中展示）。',
+        },
+        instruction: {
+          type: 'string',
+          description:
+            '可选的恢复指导说明或重试要求（例如："网络已恢复，请重试上一步并完成剩余分析"）。若不填则默认让子智能体从中断处继续。',
+        },
+        async: {
+          type: 'boolean',
+          description: '是否在后台异步运行。默认 false（将等待子智能体恢复执行完毕并返回最终报告）。',
+        },
+      },
+      required: ['subagent_thread_id'],
+    },
+    async execute(callId, args, signal, onUpdate): Promise<AgentToolResult> {
+      let appStore: any = null
+      try {
+        const mod = await import('../../store')
+        appStore = mod.store
+      } catch {
+        // ignore
+      }
+
+      if (!appStore) {
+        return {
+          output: '未找到可用会话状态存储。',
+          ok: false,
+        }
+      }
+
+      try {
+        onUpdate?.({
+          output: `正在恢复子智能体会话 [${args.subagent_thread_id}]...`,
+          ok: true,
+        })
+
+        const { thread, resultPromise } = await appStore.resumeSubagentThread({
+          subagentThreadId: args.subagent_thread_id,
+          instruction: args.instruction,
+          signal,
+          onStepUpdate: (update: any) => {
+            const currentThreadId = update?.threadId ?? thread.id
+            const idSuffix = currentThreadId ? `\n(子会话 ID: ${currentThreadId})` : ''
+            const stepStr =
+              update.step > 0
+                ? update.maxSteps
+                  ? `(第 ${update.step}/${update.maxSteps} 步)`
+                  : `(第 ${update.step} 步)`
+                : ''
+            const actionStr = update.currentAction ? `\n${update.currentAction}` : ''
+            onUpdate?.({
+              output: `[${thread.title}] 正在恢复处理 ${stepStr}${actionStr}${idSuffix}`,
+              ok: true,
+              details: {
+                subagent_id: thread.subagentId,
+                subagent_thread_id: thread.id,
+              },
+            })
+          },
+        })
+
+        if (args.async) {
+          return {
+            output: `已成功唤醒并恢复子智能体「${thread.title}」（会话 ID: ${thread.id}）在后台继续执行。你可以随时通过 check_subagent 工具查询进度或报告。`,
+            ok: true,
+            details: {
+              subagent_id: thread.subagentId,
+              subagent_thread_id: thread.id,
+              status: 'resumed_async',
+            },
+          }
+        }
+
+        const result = await resultPromise
+        const fileNote = result.outputFile ? `\n\n📄 完整详细报告已保存至：${result.outputFile}` : ''
+        return {
+          output: `${result.summary}${fileNote}\n\n(子会话 ID: ${thread.id})`,
+          ok: result.ok,
+          details: {
+            subagent_id: thread.subagentId,
+            subagent_thread_id: thread.id,
+            steps: result.stepsExecuted,
+            durationMs: result.durationMs,
+            toolCallsCount: result.toolCallsCount,
+            outputFile: result.outputFile,
+          },
+        }
+      } catch (error) {
+        return {
+          output: `恢复子智能体失败：${(error as Error).message || String(error)}`,
+          ok: false,
+        }
+      }
+    },
+  }
+}
+
+

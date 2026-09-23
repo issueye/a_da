@@ -518,3 +518,15 @@ export function detachConsole(): boolean {
   return Boolean(k32?.symbols?.FreeConsole?.())
 }
 
+/** Check if this process has an attached console window. */
+export function hasConsoleWindow(): boolean {
+  if (process.platform !== 'win32') return true
+  try {
+    const k32 = getKernel32()
+    const hwnd = k32?.symbols?.GetConsoleWindow?.()
+    return Boolean(hwnd && hwnd !== 0n && hwnd !== 0)
+  } catch {
+    return false
+  }
+}
+

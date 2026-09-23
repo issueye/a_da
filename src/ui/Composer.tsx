@@ -702,7 +702,36 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
                 <Icon name="square" size={10} color={C.accent} />
                 <text style={{ fontSize: 11.5, fontWeight: 600, color: C.accent }}>停止</text>
               </div>
-            ) : null}
+            ) : (
+              <div
+                testId="resume-subagent"
+                role="button"
+                aria-label="恢复子智能体"
+                onClick={() => {
+                  void store.resumeSubagentThread({
+                    subagentThreadId: store.active.id,
+                  })
+                }}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 5,
+                  height: 28,
+                  paddingLeft: 10,
+                  paddingRight: 10,
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                  backgroundColor: C.accentSoft,
+                  borderWidth: 1,
+                  borderColor: C.accent,
+                  hover: { opacity: 0.85 },
+                }}
+              >
+                <Icon name="refresh" size={11} color={C.accent} />
+                <text style={{ fontSize: 11.5, fontWeight: 600, color: C.accent }}>恢复执行</text>
+              </div>
+            )}
 
             {store.active.parentId ? (
               <div

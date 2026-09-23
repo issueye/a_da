@@ -9,7 +9,7 @@
  *   bun run build              writes dist/a-da (dist/a-da.exe on Windows)
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 const root = path.join(import.meta.dir, '..')
@@ -24,7 +24,7 @@ mkdirSync(path.dirname(outfile), { recursive: true })
  * IMAGE_SUBSYSTEM_WINDOWS_GUI (subsystem 2) rather than IMAGE_SUBSYSTEM_WINDOWS_CUI (subsystem 3).
  *
  * Bun's `compile.windows.hideConsole` option has an upstream issue where the emitted PE binary
- * still retains Subsystem 3 (console), causing Windows to always pop open a command prompt console.
+ * still retains Subsystem 3 (console), causing Windows to pop open a command prompt console.
  * Patching offset 0x44 in the PE OptionalHeader permanently prevents Windows from allocating a console.
  */
 function patchWindowsGuiSubsystem(targetPath: string): void {
@@ -49,22 +49,17 @@ function patchWindowsGuiSubsystem(targetPath: string): void {
   }
 }
 
-const coreOutfile =
-  process.platform === 'win32'
-    ? (process.env.A_DA_OUT ? `${process.env.A_DA_OUT}-core` : path.join(root, 'dist', 'a-da-core'))
-    : (process.env.A_DA_OUT ?? path.join(root, 'dist', 'a-da'))
-
 async function build() {
   return Bun.build({
     entrypoints: [path.join(root, 'app.tsx')],
     minify: false,
     compile: {
-      outfile: coreOutfile,
+      outfile,
       windows:
         process.platform === 'win32'
           ? {
-              hideConsole: false,
-              title: 'a_da core',
+              hideConsole: true,
+              title: 'a_da',
               publisher: 'a_da',
               version: '0.1.0',
               description: 'A local coding agent rendered with GPUIX',
@@ -90,39 +85,17 @@ if (!result.success) {
   process.exit(1)
 }
 
-const writtenPath = result.outputs[0]?.path ?? (process.platform === 'win32' ? `${coreOutfile}.exe` : coreOutfile)
+const writtenPath = result.outputs[0]?.path ?? (process.platform === 'win32' ? `${outfile}.exe` : outfile)
 console.log(`[build] wrote ${path.relative(root, writtenPath)}`)
 
-// Bun 编出来的 core 带的是控制台子系统，双击会先弹一个黑框再进图形界面。
-// 直接改 PE 头，让 Windows 一开始就不为它分配控制台。
+// 直接将单一二进制文件的 PE Subsystem 修改为 WINDOWS_GUI (2)，
+// 确保 Windows 原生以纯 GUI 程序启动，零控制台黑框、无需外挂任何启动器或多余二进制文件。
 patchWindowsGuiSubsystem(writtenPath)
 
-// 在 Windows 环境下，编译原生 Subsystem 2 (winexe) 纯 GUI 启动器：
-// 用户双击 a-da.exe 时，0 毫秒无黑框，通过 CREATE_NO_WINDOW 静默唤起核心引擎，完美呈现图形界面
+// 清理历史残留的多余核心二进制
 if (process.platform === 'win32') {
-  const cscPaths = [
-    'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe',
-    'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe',
-  ]
-  const csc = cscPaths.find((p) => existsSync(p))
-  const launcherSource = path.join(root, 'scripts', 'launcher.cs')
-  const launcherOut = path.join(root, 'dist', 'a-da.exe')
-
-  if (csc && existsSync(launcherSource)) {
-    const cmd = [
-      csc,
-      '/target:winexe',
-      '/nologo',
-      '/optimize+',
-      ...(existsSync(icon) ? [`/win32icon:${icon}`] : []),
-      `/out:${launcherOut}`,
-      launcherSource,
-    ]
-    const proc = Bun.spawnSync({ cmd })
-    if (proc.exitCode === 0) {
-      console.log(`[build] compiled native GUI launcher: ${path.relative(root, launcherOut)}`)
-    } else {
-      console.warn(`[build] warning: csc compilation exited with ${proc.exitCode}: ${proc.stderr?.toString()}`)
-    }
+  const legacyCore = path.join(root, 'dist', 'a-da-core.exe')
+  if (existsSync(legacyCore)) {
+    try { rmSync(legacyCore, { force: true }) } catch {}
   }
 }

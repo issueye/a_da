@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { createSubagentTool, createCheckSubagentTool } from './builtins/subagent'
+import { createSubagentTool, createCheckSubagentTool, createResumeSubagentTool } from './builtins/subagent'
 import { defaultSubagentManager } from '../subagents/manager'
 import { store } from '../store'
 
@@ -200,3 +200,68 @@ describe('store subagent execution & thread management', () => {
     store.deleteThread(root.id)
   })
 })
+
+describe('resume_subagent tool & store.resumeSubagentThread', () => {
+  const resumeTool = createResumeSubagentTool()
+
+  test('resume_subagent 参数结构与元数据校验', () => {
+    expect(resumeTool.name).toBe('resume_subagent')
+    expect(resumeTool.executionMode).toBe('parallel')
+    expect(resumeTool.parameters.type).toBe('object')
+    const props = resumeTool.parameters.properties as Record<string, unknown>
+    expect(props.subagent_thread_id).toBeDefined()
+    expect(props.instruction).toBeDefined()
+    expect(props.async).toBeDefined()
+    expect(resumeTool.parameters.required).toContain('subagent_thread_id')
+  })
+
+  test('未找到的子智能体会话返回明确错误', async () => {
+    const result = await resumeTool.execute('call_test_resume_fail', {
+      subagent_thread_id: 'non_existent_thread_id',
+    })
+    expect(result.ok).toBe(false)
+    expect(result.output).toContain('未找到 ID 为 non_existent_thread_id 的子智能体会话')
+  })
+
+  test('已停止的子智能体会话可成功被 resumeSubagentThread 恢复执行', async () => {
+    const parent = store.newThread(process.cwd())
+    store.selectThread(parent.id)
+
+    // 启动一个子智能体并等待初始轮次完成
+    const { thread, resultPromise: initialPromise } = await store.startSubagentThread({
+      parentThreadId: parent.id,
+      subagentId: 'researcher',
+      task: '初始调研任务',
+    })
+    await initialPromise
+
+    // 子智能体初始离线执行完毕后处于停止状态
+    expect(store.isThreadRunning(thread.id)).toBe(false)
+
+    // 调用 resumeSubagentThread 恢复执行
+    const { thread: resumedThread, resultPromise } = await store.resumeSubagentThread({
+      subagentThreadId: thread.id,
+      instruction: '网络已恢复，请继续分析',
+    })
+
+    expect(resumedThread.id).toBe(thread.id)
+    // 检查恢复指导消息已写入
+    const lastUserItem = resumedThread.items.slice().reverse().find((it) => it.kind === 'user')
+    expect(lastUserItem?.text).toContain('网络已恢复，请继续分析')
+
+    const result = await resultPromise
+    expect(result.ok).toBe(true)
+
+    // 再次通过 resume_subagent 工具测试工具执行
+    const toolResult = await resumeTool.execute('call_test_resume_tool', {
+      subagent_thread_id: thread.id,
+      instruction: '工具调用恢复测试',
+    })
+
+    expect(toolResult.ok).toBe(true)
+    expect(toolResult.output).toContain(thread.id)
+
+    store.deleteThread(parent.id)
+  })
+})
+
