@@ -443,6 +443,8 @@ let kernel32Lib: {
     SetStdHandle: (n: number, h: bigint | number) => boolean
     CreateFileW: (...args: any[]) => bigint | number
     GetConsoleWindow: () => bigint | number
+    CreatePipe: (hRead: any, hWrite: any, lpPipeAttributes: any, nSize: number) => boolean
+    GetFileType: (h: bigint | number) => number
   }
 } | null = null
 let kernel32Loaded = false
@@ -460,6 +462,11 @@ function getKernel32() {
         returns: FFIType.i64,
       },
       GetConsoleWindow: { args: [], returns: FFIType.i64 },
+      CreatePipe: {
+        args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.u32],
+        returns: FFIType.bool,
+      },
+      GetFileType: { args: [FFIType.i64], returns: FFIType.u32 },
     }) as any
   } catch {
     kernel32Lib = null
@@ -470,9 +477,10 @@ function getKernel32() {
 let stdHandlesInitialized = false
 
 /**
- * 确保在 Windows 纯 GUI 模式下拥有有效的 stdio 底层句柄。
- * 防止 Rust 原生代码（如 gpui_windows 内部日志）调用 eprintln! 时
- * 因 INVALID_HANDLE_VALUE 引发 panic (os error 6) 导致进程退出。
+ * 确保在 Windows 纯 GUI 模式下拥有有效的 stdio 底层管道句柄。
+ * 使用 Win32 CreatePipe 创建匿名管道（FILE_TYPE_PIPE = 3），
+ * 彻底杜绝 NUL 字符设备（FILE_TYPE_CHAR = 2）引发 Bun/libuv uv_pipe_open panic 崩溃并弹 powershell 窗口，
+ * 同时防止 Rust 原生层（如 gpui_windows）向 stderr 输出时因 INVALID_HANDLE 引发 panic (os error 6)。
  */
 export function ensureValidStdHandles(): void {
   if (process.platform !== 'win32' || stdHandlesInitialized) return
@@ -486,24 +494,41 @@ export function ensureValidStdHandles(): void {
     const hStdErr = k32.symbols.GetStdHandle(-12)
     const hStdIn = k32.symbols.GetStdHandle(-10)
 
-    const isInvalid = (h: bigint | number) => !h || h === -1n || h === -1
+    const isInvalid = (h: bigint | number) => {
+      if (!h || h === -1n || h === -1) return true
+      try {
+        const type = k32.symbols.GetFileType(h)
+        return type === 0 // FILE_TYPE_UNKNOWN
+      } catch {
+        return false
+      }
+    }
 
     if (isInvalid(hStdOut) || isInvalid(hStdErr) || isInvalid(hStdIn)) {
-      const nulName = Buffer.from('NUL\0', 'utf-16le')
-      const hNul = k32.symbols.CreateFileW(
-        nulName,
-        0x80000000 | 0x40000000,
-        1 | 2,
-        null,
-        3,
-        0,
-        null
-      )
-
-      if (!isInvalid(hNul)) {
-        if (isInvalid(hStdIn)) k32.symbols.SetStdHandle(-10, hNul)
-        if (isInvalid(hStdOut)) k32.symbols.SetStdHandle(-11, hNul)
-        if (isInvalid(hStdErr)) k32.symbols.SetStdHandle(-12, hNul)
+      const hRead = new BigInt64Array(1)
+      const hWrite = new BigInt64Array(1)
+      // 分配 1MB 管道缓冲，确保即便底层 Rust 或第三方原生组件输出大量 stderr 也绝不阻塞调用线程
+      if (k32.symbols.CreatePipe(hRead, hWrite, null, 1048576)) {
+        if (isInvalid(hStdIn)) k32.symbols.SetStdHandle(-10, hRead[0])
+        if (isInvalid(hStdOut)) k32.symbols.SetStdHandle(-11, hWrite[0])
+        if (isInvalid(hStdErr)) k32.symbols.SetStdHandle(-12, hWrite[0])
+      } else {
+        // 兜底回退：若 CreatePipe 失败，尝试打开 NUL
+        const nulName = Buffer.from('NUL\0', 'utf-16le')
+        const hNul = k32.symbols.CreateFileW(
+          nulName,
+          0x80000000 | 0x40000000,
+          1 | 2,
+          null,
+          3,
+          0,
+          null
+        )
+        if (!isInvalid(hNul)) {
+          if (isInvalid(hStdIn)) k32.symbols.SetStdHandle(-10, hNul)
+          if (isInvalid(hStdOut)) k32.symbols.SetStdHandle(-11, hNul)
+          if (isInvalid(hStdErr)) k32.symbols.SetStdHandle(-12, hNul)
+        }
       }
     }
   } catch {

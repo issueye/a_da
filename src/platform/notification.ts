@@ -55,7 +55,7 @@ export async function showCompletionNotification(options: CompletionNotification
         `[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("A-DA AI").Show($toast)`,
       ].join(';')
 
-      Bun.spawn(['powershell.exe', '-NoProfile', '-STA', '-Command', script], {
+      Bun.spawn(['powershell.exe', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-STA', '-Command', script], {
         stdin: 'ignore',
         stdout: 'ignore',
         stderr: 'ignore',
