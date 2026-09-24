@@ -331,7 +331,7 @@ describe('multi-session concurrency', () => {
     expect(t.messages.map((m) => m.content)).toEqual(['第一条指令', '第一条回复'])
 
     // 验证重新发起了新消息
-    expect(sendCalledWith).toEqual({ text: '第二条指令：修改后的全新内容', images: ['new.png'] })
+    expect(sendCalledWith as any).toEqual({ text: '第二条指令：修改后的全新内容', images: ['new.png'] })
 
     store.send = origSend
   })

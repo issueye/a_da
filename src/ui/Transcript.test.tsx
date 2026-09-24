@@ -531,7 +531,7 @@ describeNative('Transcript UI 过程收缩交互', () => {
 
     // 2. 点击重新发送
     await app.getByTestId('confirm-resend-u-edit-1').click()
-    expect(resendCalledWith).toEqual({ id: 'u-edit-1', text: '旧的用户指令内容' })
+    expect(resendCalledWith as any).toEqual({ id: 'u-edit-1', text: '旧的用户指令内容' })
 
     store.editUserMessageAndResend = origResend
     await app.close()
