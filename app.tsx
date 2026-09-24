@@ -49,8 +49,8 @@ try {
   log('开始调用 render() 挂载界面...')
   render(<AgentWindow />, {
     title: 'a_da',
-    width: 1500,
-    height: 850,
+    width: 1370,
+    height: 950,
     titlebarTransparent: true,
     windowBackground: 'opaque',
     trafficLightX: 16,
