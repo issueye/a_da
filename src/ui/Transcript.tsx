@@ -14,7 +14,7 @@ import type { AgentStore } from '../agent/store'
 import type { Item, ToolStatus } from '../agent/types'
 import { Icon } from './controls'
 import type { IconName } from '../icons'
-import { C, docTheme, FONT_MONO, M } from '../theme'
+import { C, docTheme, editorTheme, FONT_MONO, M } from '../theme'
 import { Welcome } from './Welcome'
 import { copyToClipboard } from '../platform/clipboard'
 import { TodoFloatingPanel } from './TodoFloatingPanel'
@@ -121,11 +121,235 @@ function MonoBlock({ text, tone }: { text: string; tone?: string }) {
   )
 }
 
-/** The user's own turn, right-aligned like a chat bubble. */
-function UserRow({ item }: { item: Extract<Item, { kind: 'user' }> }) {
+/** The user's own turn, right-aligned like a chat bubble, with copy and inline edit actions. */
+function UserRow({
+  item,
+  store,
+}: {
+  item: Extract<Item, { kind: 'user' }>
+  store?: AgentStore
+}) {
+  const [editing, setEditing] = useState(false)
+  const [editText, setEditText] = useState(item.text)
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = (e: any) => {
+    e?.stopPropagation?.()
+    void copyToClipboard(item.text).then((ok) => {
+      if (ok) {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1500)
+      }
+    })
+  }
+
+  const handleStartEdit = (e: any) => {
+    e?.stopPropagation?.()
+    setEditText(item.text)
+    setEditing(true)
+  }
+
+  const handleCancelEdit = (e: any) => {
+    e?.stopPropagation?.()
+    setEditText(item.text)
+    setEditing(false)
+  }
+
+  const handleConfirmResend = (e?: any) => {
+    e?.stopPropagation?.()
+    const trimmed = editText.trim()
+    if (!trimmed && (!item.images || item.images.length === 0)) return
+    if (store) {
+      void store.editUserMessageAndResend(item.id, trimmed, item.images)
+    }
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <div
+        testId={`user-edit-box-${item.id}`}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          width: '100%',
+          maxWidth: 600,
+          alignSelf: 'flex-end',
+          backgroundColor: C.card,
+          borderWidth: 1,
+          borderColor: C.link,
+          borderRadius: 8,
+          padding: 10,
+          gap: 8,
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Icon name="edit" size={13} color={C.link} />
+            <text style={{ fontSize: 12, fontWeight: 'bold', color: C.text }}>
+              编辑并重新发送
+            </text>
+            <text style={{ fontSize: 11, color: C.tertiary }}>
+              (将丢弃此消息之后的所有对话记录)
+            </text>
+          </div>
+        </div>
+
+        {item.images && item.images.length > 0 ? (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              flexWrap: 'wrap',
+              gap: 6,
+            }}
+          >
+            {item.images.map((img, idx) => (
+              <div
+                key={idx}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 4,
+                  paddingLeft: 6,
+                  paddingRight: 8,
+                  height: 22,
+                  borderRadius: 4,
+                  backgroundColor: C.chip,
+                  borderWidth: 1,
+                  borderColor: C.chipBorder,
+                }}
+              >
+                <Icon name="image" size={11} color={C.link} />
+                <text style={{ fontSize: 11, color: C.secondary }}>
+                  {img.startsWith('data:') ? '图片 (Base64)' : img.split(/[/\\]/).pop() ?? img}
+                </text>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        <div
+          style={{
+            borderRadius: 6,
+            borderWidth: 1,
+            borderColor: C.border,
+            backgroundColor: C.card,
+            padding: 4,
+          }}
+        >
+          <textarea
+            testId={`user-edit-textarea-${item.id}`}
+            value={editText}
+            minRows={2}
+            maxRows={8}
+            theme={editorTheme()}
+            style={{
+              width: '100%',
+              fontSize: 13,
+              lineHeight: 19,
+              color: C.text,
+              backgroundColor: '#00000000',
+              borderWidth: 0,
+              padding: 6,
+            }}
+            onChange={(e: any) => {
+              const val = e.value ?? e.target?.value ?? ''
+              setEditText(val)
+            }}
+            onKeyDown={(e: any) => {
+              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault?.()
+                handleConfirmResend()
+              } else if (e.key === 'Escape') {
+                e.preventDefault?.()
+                handleCancelEdit(e)
+              }
+            }}
+          />
+        </div>
+
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'flex-end',
+            gap: 8,
+          }}
+        >
+          <div
+            role="button"
+            aria-label="取消"
+            testId={`cancel-edit-${item.id}`}
+            onClick={handleCancelEdit}
+            style={{
+              paddingLeft: 10,
+              paddingRight: 10,
+              height: 26,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderRadius: 4,
+              cursor: 'pointer',
+              borderWidth: 1,
+              borderColor: C.border,
+              backgroundColor: C.card,
+              hover: { backgroundColor: C.overlay },
+            }}
+          >
+            <text style={{ fontSize: 12, color: C.secondary }}>取消</text>
+          </div>
+
+          <div
+            role="button"
+            aria-label="重新发送"
+            testId={`confirm-resend-${item.id}`}
+            onClick={handleConfirmResend}
+            style={{
+              paddingLeft: 12,
+              paddingRight: 12,
+              height: 26,
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+              borderRadius: 4,
+              cursor: 'pointer',
+              backgroundColor: C.link,
+              hover: { opacity: 0.9 },
+            }}
+          >
+            <Icon name="arrowUp" size={12} color="#ffffff" />
+            <text style={{ fontSize: 12, color: '#ffffff', fontWeight: 'bold' }}>
+              重新发送
+            </text>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   const lines = item.text.split('\n')
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', width: '100%', gap: 4 }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'flex-end',
+        width: '100%',
+        gap: 4,
+      }}
+    >
       <div
         style={{
           display: 'flex',
@@ -194,9 +418,71 @@ function UserRow({ item }: { item: Extract<Item, { kind: 'user' }> }) {
           </text>
         ))}
       </div>
-      {item.queued ? (
-        <text style={{ fontSize: 11, lineHeight: 15, color: C.faint }}>排队中</text>
-      ) : null}
+
+      {/* 底部操作区：复制与编辑按钮 */}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+          marginRight: 2,
+        }}
+      >
+        <div
+          role="button"
+          aria-label={copied ? '已复制' : '复制'}
+          testId={`copy-user-msg-${item.id}`}
+          onClick={handleCopy}
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 3,
+            paddingLeft: 5,
+            paddingRight: 5,
+            height: 18,
+            borderRadius: 3,
+            cursor: 'pointer',
+            backgroundColor: copied ? C.chipHover : 'transparent',
+            hover: { backgroundColor: C.overlay },
+          }}
+        >
+          <Icon name={copied ? 'check' : 'copy'} size={10} color={copied ? C.success : C.tertiary} />
+          <text style={{ fontSize: 10, lineHeight: 14, color: copied ? C.success : C.tertiary }}>
+            {copied ? '已复制' : '复制'}
+          </text>
+        </div>
+
+        {store ? (
+          <div
+            role="button"
+            aria-label="编辑"
+            testId={`edit-user-msg-${item.id}`}
+            onClick={handleStartEdit}
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 3,
+              paddingLeft: 5,
+              paddingRight: 5,
+              height: 18,
+              borderRadius: 3,
+              cursor: 'pointer',
+              backgroundColor: 'transparent',
+              hover: { backgroundColor: C.overlay },
+            }}
+          >
+            <Icon name="edit" size={10} color={C.tertiary} />
+            <text style={{ fontSize: 10, lineHeight: 14, color: C.tertiary }}>编辑</text>
+          </div>
+        ) : null}
+
+        {item.queued ? (
+          <text style={{ fontSize: 11, lineHeight: 15, color: C.faint }}>排队中</text>
+        ) : null}
+      </div>
     </div>
   )
 }
@@ -1508,7 +1794,7 @@ export function CompactCard({ item, store }: { item: Extract<Item, { kind: 'comp
 }
 
 function ItemRow({ item, store }: { item: Item; store: AgentStore }) {
-  if (item.kind === 'user') return <UserRow item={item} />
+  if (item.kind === 'user') return <UserRow item={item} store={store} />
   if (item.kind === 'thinking') return <ThinkingRow item={item} />
   if (item.kind === 'assistant') return <AssistantRow item={item} turnDurationMs={item.turnDurationMs} />
   if (item.kind === 'compact') return <CompactCard item={item} store={store} />
@@ -1569,11 +1855,14 @@ export type TranscriptBlock = UserBlock | AssistantBlock | ThinkingBlock | Proce
 export function buildTranscriptBlocks(items: Item[], isRunning: boolean): TranscriptBlock[] {
   const blocks: TranscriptBlock[] = []
 
+  // 过滤掉尚未执行的排队消息（排队消息只在浮动框展示，待轮到执行时由 drain 挂载入会话）
+  const visibleItems = items.filter((it) => !(it.kind === 'user' && it.queued))
+
   // 按 user 将 items 切割为回合
   let currentTurnItems: Item[] = []
   const turns: Item[][] = []
 
-  for (const item of items) {
+  for (const item of visibleItems) {
     if (item.kind === 'compact') {
       if (currentTurnItems.length > 0) {
         turns.push(currentTurnItems)
@@ -2118,7 +2407,7 @@ export function Transcript({ store }: { store: AgentStore }) {
                   }}
                 >
                   {block.kind === 'user' ? (
-                    <UserRow item={block.item} />
+                    <UserRow item={block.item} store={store} />
                   ) : block.kind === 'assistant' ? (
                     <AssistantRow item={block.item} turnDurationMs={block.turnDurationMs} />
                   ) : block.kind === 'thinking' ? (

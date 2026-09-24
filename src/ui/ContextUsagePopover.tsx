@@ -29,7 +29,7 @@ export function ContextUsagePopover({
         position: 'absolute',
         bottom: 34,
         right: 12,
-        width: 320,
+        width: 350,
         backgroundColor: C.raised,
         borderWidth: 1,
         borderColor: C.borderStrong,
@@ -49,16 +49,16 @@ export function ContextUsagePopover({
       onClick={(e: any) => e?.stopPropagation?.()}
     >
       {/* 头部标题与关闭按钮 */}
-      <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+      <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0 }}>
           <Icon name="brain" size={13} color={isWarning ? C.danger : isHigh ? '#f59e0b' : C.accent} />
-          <text style={{ fontSize: 11.5, fontWeight: 600, color: C.text }}>
+          <text style={{ fontSize: 11.5, fontWeight: 600, color: C.text, whiteSpace: 'nowrap' }}>
             上下文用量与健康度
           </text>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <text style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: C.secondary }}>
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+          <text style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: C.secondary, whiteSpace: 'nowrap' }}>
             {summary.formattedSummary}
           </text>
           <div
@@ -113,26 +113,28 @@ export function ContextUsagePopover({
               flexDirection: 'row',
               alignItems: 'center',
               justifyContent: 'space-between',
+              gap: 8,
             }}
           >
-            <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 1 }}>
               <div
                 style={{
                   width: 7,
                   height: 7,
                   borderRadius: 3.5,
                   backgroundColor: item.color,
+                  flexShrink: 0,
                 }}
               />
-              <text style={{ fontSize: 11, color: C.secondary }}>
+              <text style={{ fontSize: 11, color: C.secondary, whiteSpace: 'nowrap' }}>
                 {item.label}
               </text>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <text style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: C.secondary }}>
-                {item.estimatedTokens.toLocaleString()} tok
+            <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+              <text style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: C.secondary, whiteSpace: 'nowrap' }}>
+                {`${item.estimatedTokens.toLocaleString()} tok`}
               </text>
-              <text style={{ fontFamily: FONT_MONO, fontSize: 10, color: C.faint, width: 34, textAlign: 'right' }}>
+              <text style={{ fontFamily: FONT_MONO, fontSize: 10, color: C.faint, width: 34, textAlign: 'right', whiteSpace: 'nowrap' }}>
                 {`${Math.round(item.percent * 100)}%`}
               </text>
             </div>
@@ -151,14 +153,15 @@ export function ContextUsagePopover({
             paddingTop: 6,
             borderTopWidth: 1,
             borderColor: C.border,
+            gap: 8,
           }}
         >
-          <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-            <text style={{ fontSize: 10.5, color: '#10b981', fontWeight: 500 }}>
+          <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+            <text style={{ fontSize: 10.5, color: '#10b981', fontWeight: 500, whiteSpace: 'nowrap' }}>
               ⚡ 缓存命中收益
             </text>
           </div>
-          <text style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: '#10b981' }}>
+          <text style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: '#10b981', whiteSpace: 'nowrap', flexShrink: 0 }}>
             {`${summary.cachedTokens.toLocaleString()} tok (${Math.round((summary.cacheHitRate ?? 0) * 100)}%)`}
           </text>
         </div>
@@ -181,7 +184,7 @@ export function ContextUsagePopover({
           size={11}
           color={isWarning ? C.danger : isHigh ? '#f59e0b' : '#10b981'}
         />
-        <text style={{ fontSize: 10, color: isWarning ? C.danger : isHigh ? '#f59e0b' : C.tertiary }}>
+        <text style={{ fontSize: 10, color: isWarning ? C.danger : isHigh ? '#f59e0b' : C.tertiary, whiteSpace: 'nowrap' }}>
           {isWarning
             ? '当前上下文占用已接近红线，建议立即压缩上下文以防超限'
             : isHigh
@@ -219,7 +222,7 @@ export function ContextUsagePopover({
           }}
         >
           <Icon name="sparkles" size={12} color="#10b981" />
-          <text style={{ fontSize: 11, fontWeight: 600, color: isHigh ? '#10b981' : C.text }}>
+          <text style={{ fontSize: 11, fontWeight: 600, color: isHigh ? '#10b981' : C.text, whiteSpace: 'nowrap' }}>
             一键压缩上下文与生成摘要 (/compact)
           </text>
         </div>

@@ -249,6 +249,61 @@ export class SessionManager {
     }
   }
 
+  /**
+   * 重写会话的消息列表（截断并重写磁盘 JSONL 文件，保留 SessionHeader）
+   */
+  async rewriteSessionMessages(
+    sessionId: string,
+    messages: AgentMessage[],
+    workspace?: string,
+  ): Promise<void> {
+    const filePath = workspace
+      ? this.getSessionPath(workspace, sessionId)
+      : await this.findSessionPath(sessionId)
+    if (!filePath || !existsSync(filePath)) return
+
+    try {
+      const content = await readFile(filePath, 'utf-8')
+      const lines = content.split('\n')
+      let headerLine = ''
+      if (lines.length > 0 && lines[0]?.trim()) {
+        try {
+          const parsed = JSON.parse(lines[0]!)
+          if (parsed.type === 'session') {
+            parsed.updatedAt = Date.now()
+            headerLine = `${JSON.stringify(parsed)}\n`
+          }
+        } catch {}
+      }
+      if (!headerLine) {
+        headerLine = `${JSON.stringify({
+          type: 'session',
+          version: CURRENT_SESSION_VERSION,
+          id: sessionId,
+          title: '会话',
+          workspace: workspace || process.cwd(),
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        })}\n`
+      }
+
+      let newContent = headerLine
+      for (const msg of messages) {
+        const entry: SessionEntry = {
+          type: 'message',
+          id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: msg.timestamp || Date.now(),
+          message: msg,
+        }
+        newContent += `${JSON.stringify(entry)}\n`
+      }
+
+      await writeFile(filePath, newContent, 'utf-8')
+    } catch (err) {
+      console.warn('[SessionManager] rewriteSessionMessages failed:', err)
+    }
+  }
+
   /** 一个会话文件在哪，`findSessionDir` 的文件版。 */
   private async findSessionPath(sessionId: string): Promise<string | null> {
     const dir = await this.findSessionDir(sessionId)

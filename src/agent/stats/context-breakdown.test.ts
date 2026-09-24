@@ -76,4 +76,61 @@ describe('上下文分解与统计分析引擎', () => {
     expect(result.cacheHitRate).toBeNull()
     expect(result.cachedTokens).toBe(0)
   })
+
+  test('准确呈现正常对话消息、系统提示词与工具的 Token 明细并保证无缝汇总', () => {
+    const items: Item[] = [
+      { kind: 'user', id: 'u1', at: 1000, text: '请查看当前项目的 package.json 并执行测试' },
+      {
+        kind: 'tool',
+        id: 't1',
+        at: 1010,
+        callId: 'c1',
+        name: 'read_file',
+        args: { path: 'package.json' },
+        rawArgs: '{"path":"package.json"}',
+        status: 'done',
+        output: '{\n  "name": "a_da",\n  "version": "1.0.0"\n}',
+      },
+      {
+        kind: 'assistant',
+        id: 'a1',
+        at: 1020,
+        text: '已成功查看 package.json，项目已准备就绪。',
+      },
+    ]
+
+    const result = computeContextBreakdown({
+      items,
+      systemChars: 4000,
+      toolSpecsChars: 3000,
+      realPromptTokens: 6821,
+      realCompletionTokens: 213,
+      contextLimit: 1_000_000,
+    })
+
+    const msgItem = result.breakdown.find((b) => b.source === 'messages')
+    const sysItem = result.breakdown.find((b) => b.source === 'system_prompt')
+    const toolItem = result.breakdown.find((b) => b.source === 'tools')
+    const compItem = result.breakdown.find((b) => b.source === 'completion')
+
+    expect(msgItem).toBeDefined()
+    expect(msgItem!.label).toBe('正常对话消息')
+    expect(msgItem!.estimatedTokens).toBeGreaterThan(0)
+
+    expect(sysItem).toBeDefined()
+    expect(sysItem!.label).toBe('系统提示词')
+    expect(sysItem!.estimatedTokens).toBeGreaterThan(0)
+
+    expect(toolItem).toBeDefined()
+    expect(toolItem!.label).toBe('工具')
+    expect(toolItem!.estimatedTokens).toBeGreaterThan(0)
+
+    expect(compItem).toBeDefined()
+    expect(compItem!.label).toBe('本次回复')
+    expect(compItem!.estimatedTokens).toBe(213)
+
+    // 输入 Prompt 的三个细分 Token 之和必须严格等于真实 PromptTokens (6821)
+    const promptSum = msgItem!.estimatedTokens + sysItem!.estimatedTokens + toolItem!.estimatedTokens
+    expect(promptSum).toBe(6821)
+  })
 })

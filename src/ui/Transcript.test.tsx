@@ -494,4 +494,46 @@ describeNative('Transcript UI 过程收缩交互', () => {
 
     await app.close()
   })
+
+  test('UserRow 支持复制与内联编辑，点击重新发送调用 editUserMessageAndResend', async () => {
+    const thread = store.active
+    thread.items = [
+      { kind: 'user', id: 'u-edit-1', at: 1000, text: '旧的用户指令内容' },
+      { kind: 'assistant', id: 'a-edit-1', at: 2000, text: '旧的回复内容' },
+    ]
+
+    let resendCalledWith: { id: string; text: string } | null = null
+    const origResend = store.editUserMessageAndResend.bind(store)
+    store.editUserMessageAndResend = async (id, text, imgs, tid) => {
+      resendCalledWith = { id, text }
+    }
+
+    const { render, renderer } = createTestRoot({ width: 800, height: 600 })
+    render(
+      <div style={{ display: 'flex', flexDirection: 'column', position: 'relative', width: 800, height: 600 }}>
+        <Transcript store={store} />
+      </div>,
+    )
+    const app = await connectTest(renderer)
+
+    const screen = () => renderer.getPaintedText().join('\n')
+    expect(screen()).toContain('旧的用户指令内容')
+    expect(screen()).toContain('编辑')
+    expect(screen()).toContain('复制')
+
+    // 1. 点击编辑按钮，展开内联编辑框
+    await app.getByTestId('edit-user-msg-u-edit-1').click()
+    expect(await app.getByTestId('user-edit-box-u-edit-1').count()).toBe(1)
+    expect(screen()).toContain('编辑并重新发送')
+    expect(screen()).toContain('将丢弃此消息之后的所有对话记录')
+    expect(screen()).toContain('取消')
+    expect(screen()).toContain('重新发送')
+
+    // 2. 点击重新发送
+    await app.getByTestId('confirm-resend-u-edit-1').click()
+    expect(resendCalledWith).toEqual({ id: 'u-edit-1', text: '旧的用户指令内容' })
+
+    store.editUserMessageAndResend = origResend
+    await app.close()
+  })
 })

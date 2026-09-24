@@ -32,6 +32,7 @@ export const MODE_OPTIONS: { value: AgentMode; label: string; icon: IconName; de
 
 import { getModelContextWindow } from '../agent/compact'
 import { defaultPromptManager, expandPromptTemplate } from '../agent/prompts'
+import { defaultToolRegistry } from '../agent/tools'
 export { getModelContextWindow }
 
 export interface ThreadTelemetry {
@@ -66,6 +67,8 @@ export function computeThreadTelemetry(
   isRunning: boolean,
   currentModel?: string,
   configuredLimit?: number,
+  systemPromptChars?: number,
+  toolSpecsChars?: number,
 ): ThreadTelemetry {
   const userItems = thread.items.filter((it) => it.kind === 'user')
   const toolItems = thread.items.filter((it) => it.kind === 'tool')
@@ -130,8 +133,27 @@ export function computeThreadTelemetry(
   const contextRatio =
     contextLimit > 0 ? Math.min(100, Math.round((currentContextTokens / contextLimit) * 100)) : 0
 
+  const currentMode = thread.mode ?? 'code'
+  const workspace = thread.workspace || process.cwd()
+
+  const effectiveToolSpecsChars =
+    toolSpecsChars !== undefined
+      ? toolSpecsChars
+      : thread.lastToolSpecsChars !== undefined
+        ? thread.lastToolSpecsChars
+        : JSON.stringify(defaultToolRegistry.getToolsForMode(workspace, currentMode)).length
+
+  const effectiveSystemPromptChars =
+    systemPromptChars !== undefined
+      ? systemPromptChars
+      : thread.lastSystemPromptChars !== undefined
+        ? thread.lastSystemPromptChars
+        : defaultPromptManager.getCompositeSystemPromptSync(workspace, currentMode).length
+
   const contextSummary = computeContextBreakdown({
     items: thread.items,
+    systemChars: effectiveSystemPromptChars,
+    toolSpecsChars: effectiveToolSpecsChars,
     realPromptTokens: promptTokens,
     realCompletionTokens: completionTokens,
     realCachedTokens: cachedTokens,
@@ -199,7 +221,23 @@ export function ComposerTelemetryBar({
     return null
   }
 
-  const telemetry = computeThreadTelemetry(thread, store.running, store.currentModel, store.contextWindow)
+  const currentMode = thread.mode ?? store.mode ?? 'code'
+  const workspace = thread.workspace || process.cwd()
+  const toolSpecsChars =
+    thread.lastToolSpecsChars ??
+    JSON.stringify(defaultToolRegistry.getToolsForMode(workspace, currentMode)).length
+  const systemPromptChars =
+    thread.lastSystemPromptChars ??
+    defaultPromptManager.getCompositeSystemPromptSync(workspace, currentMode).length
+
+  const telemetry = computeThreadTelemetry(
+    thread,
+    store.running,
+    store.currentModel,
+    store.contextWindow,
+    systemPromptChars,
+    toolSpecsChars,
+  )
   const {
     turns,
     steps,

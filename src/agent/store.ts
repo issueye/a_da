@@ -894,8 +894,6 @@ export class AgentStore {
     }
 
     if (this.isThreadRunning(thread.id)) {
-      item.queued = true
-      thread.items.push(item)
       threadQueue.push({ thread, text: prompt, images, item })
       this.push({ kind: 'info', text: `已排队第 ${threadQueue.length} 条后续指令` })
       this.notify()
@@ -1012,13 +1010,76 @@ export class AgentStore {
     const threadQueue = this.queues.get(targetId)
     if (!threadQueue || threadQueue.length === 0) return
 
-    const queuedItemIds = new Set(threadQueue.map((q) => q.item.id))
+    const queuedItemIds = new Set(threadQueue.map((q) => q.item?.id).filter(Boolean))
     if (thread) {
       thread.items = thread.items.filter((it) => !queuedItemIds.has(it.id))
     }
     this.queues.delete(targetId)
     this.push({ kind: 'info', text: '已清空所有排队消息' })
     this.notify()
+  }
+
+  /**
+   * 编辑已经发送的用户消息并重新发送：
+   * 将该消息之后的所有历史项（包括之后的助手回复、工具调用、思考过程以及后续用户消息）全部丢弃，
+   * 并在当前截断点重新发起一轮执行。
+   */
+  async editUserMessageAndResend(
+    itemId: string,
+    newText: string,
+    images?: string[],
+    threadId?: string,
+  ): Promise<void> {
+    const targetId = threadId ?? this.active.id
+    const thread = this.threads.find((t) => t.id === targetId)
+    if (!thread) return
+
+    const targetItemIndex = thread.items.findIndex((it) => it.id === itemId)
+    if (targetItemIndex < 0) return
+
+    // 1. 若当前会话正在运行，中止当前执行
+    if (this.isThreadRunning(targetId)) {
+      this.aborts.get(targetId)?.abort()
+      await new Promise((r) => setTimeout(r, 60))
+    }
+
+    // 2. 清空该会话所有待发送的排队任务
+    this.clearQueue(targetId)
+
+    // 3. 计算在当前被编辑的消息之前一共有多少条已发送的用户消息
+    const userCountBefore = thread.items
+      .slice(0, targetItemIndex)
+      .filter((it) => it.kind === 'user').length
+
+    // 4. 在 thread.messages 中截断：保留前 userCountBefore 条用户消息及其对应的轮次历史
+    let userFound = 0
+    let msgTruncateIndex = thread.messages.length
+    for (let i = 0; i < thread.messages.length; i++) {
+      if (thread.messages[i]?.role === 'user') {
+        if (userFound === userCountBefore) {
+          msgTruncateIndex = i
+          break
+        }
+        userFound++
+      }
+    }
+    thread.messages = thread.messages.slice(0, msgTruncateIndex)
+
+    // 5. 在 thread.items 中截断：丢弃 targetItemIndex 及其之后的所有内容
+    thread.items = thread.items.slice(0, targetItemIndex)
+
+    // 6. 重写会话磁盘持久化记录（丢弃截断之后的消息流水）
+    void defaultSessionManager.rewriteSessionMessages(
+      thread.id,
+      thread.messages,
+      thread.workspace,
+    ).catch(() => {})
+
+    this.push({ kind: 'info', text: '已更新用户指令，重新生成回复' })
+    this.notify()
+
+    // 7. 发送修改后的新消息（作为该截断点的新一轮开始执行）
+    this.send(newText, images)
   }
 
   /**
@@ -2164,7 +2225,21 @@ export class AgentStore {
       const q = this.queues.get(thread.id)
       while (q && q.length > 0) {
         const next = q.shift()!
-        if (next.item.kind === 'user' && next.item.queued) {
+        // 关键：若该排队项尚未加入 thread.items（即在会话运行期间被排队进来的消息），
+        // 在真正开始执行该轮时才将其作为用户消息挂入会话流，保证会话时序严谨，不提前堆叠
+        if (!next.item || !thread.items.some((it) => it.id === next.item?.id)) {
+          const userItem: Item = next.item ?? {
+            kind: 'user',
+            id: nextId('item'),
+            at: Date.now(),
+            text: next.text,
+            images: next.images && next.images.length > 0 ? [...next.images] : undefined,
+          }
+          next.item = userItem
+          thread.items.push(userItem)
+          this.notify()
+        }
+        if (next.item?.kind === 'user' && next.item.queued) {
           delete next.item.queued
           this.notify()
         }
@@ -2262,6 +2337,9 @@ export class AgentStore {
     }
 
     const systemPrompt = await defaultPromptManager.getCompositeSystemPrompt(thread.workspace, currentMode)
+    thread.lastSystemPrompt = systemPrompt
+    thread.lastSystemPromptChars = systemPrompt.length
+    thread.lastToolSpecsChars = JSON.stringify(tools).length
 
     const loop = runAgentLoop(thread.messages, config, {
       tools,

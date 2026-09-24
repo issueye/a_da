@@ -129,6 +129,9 @@ export interface Thread {
   parentId?: string
   subagentId?: string
   isSubagent?: boolean
+  lastSystemPrompt?: string
+  lastSystemPromptChars?: number
+  lastToolSpecsChars?: number
 }
 
 export interface DebugEntry {

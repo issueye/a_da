@@ -82,7 +82,7 @@ describe('multi-session concurrency', () => {
 
     expect(store.queue.length).toBe(1)
     expect(store.queue[0]?.text).toBe('queued follow up for t1')
-    expect(t1.items.some((item) => item.kind === 'user' && item.queued)).toBe(true)
+    expect(t1.items.some((item) => item.kind === 'user' && item.queued)).toBe(false)
 
     // Switch to t2 (which is NOT running in this mock, but we don't call offlineTurn directly here)
     store.selectThread(t2.id)
@@ -224,7 +224,7 @@ describe('multi-session concurrency', () => {
     store.send('queued message 3')
 
     expect(store.queue.length).toBe(3)
-    expect(t.items.filter((i) => i.kind === 'user' && i.queued).length).toBe(3)
+    expect(t.items.some((i) => i.kind === 'user' && i.queued)).toBe(false)
 
     // Remove index 1 (message 2)
     const removed = store.removeQueuedItem(1)
@@ -236,15 +236,11 @@ describe('multi-session concurrency', () => {
     expect(store.queue[0]?.text).toBe('queued message 1')
     expect(store.queue[1]?.text).toBe('queued message 3')
 
-    // t.items should no longer contain message 2
-    expect(t.items.some((i) => i.kind === 'user' && i.text === 'queued message 2')).toBe(false)
-    expect(t.items.filter((i) => i.kind === 'user' && i.queued).length).toBe(2)
-
     mutable.runningThreadIds.clear()
     store.stop(t.id)
   })
 
-  test('clearQueue clears all queued items from queue and thread.items', async () => {
+  test('clearQueue clears all queued items from queue', async () => {
     const ws = await project('ws_clear_queue')
     const t = store.newThread(ws)
     const mutable = store as unknown as {
@@ -265,7 +261,7 @@ describe('multi-session concurrency', () => {
     store.stop(t.id)
   })
 
-  test('sendQueuedImmediately promotes item to index 0, reorders thread.items, and aborts running controller', async () => {
+  test('sendQueuedImmediately promotes item to index 0 and aborts running controller', async () => {
     const ws = await project('ws_send_now')
     const t = store.newThread(ws)
     const mutable = store as unknown as {
@@ -294,12 +290,50 @@ describe('multi-session concurrency', () => {
     expect(store.queue.length).toBe(3)
     expect(store.queue.map((q) => q.text)).toEqual(['queued C', 'queued A', 'queued B'])
 
-    // In thread.items, queued C should now appear before queued A and queued B
-    const queuedUserItems = t.items.filter((i) => i.kind === 'user' && i.queued)
-    expect(queuedUserItems.map((i) => (i as any).text)).toEqual(['queued C', 'queued A', 'queued B'])
-
     mutable.runningThreadIds.clear()
     store.stop(t.id)
+  })
+
+  test('editUserMessageAndResend 丢弃目标消息之后的所有历史项并在该点重新发送', async () => {
+    const ws = await project('ws_edit_resend')
+    const t = store.newThread(ws)
+    store.selectThread(t.id)
+
+    // 构建两轮历史对话项
+    t.items = [
+      { kind: 'user', id: 'u-1', at: 1000, text: '第一条指令' },
+      { kind: 'assistant', id: 'a-1', at: 2000, text: '第一条回复' },
+      { kind: 'user', id: 'u-2', at: 3000, text: '第二条指令：需要修改' },
+      { kind: 'thinking', id: 'th-2', at: 3500, text: '思考中...' },
+      { kind: 'assistant', id: 'a-2', at: 4000, text: '第二条回复' },
+    ]
+    t.messages = [
+      { role: 'user', content: '第一条指令' },
+      { role: 'assistant', content: '第一条回复' },
+      { role: 'user', content: '第二条指令：需要修改' },
+      { role: 'assistant', content: '第二条回复' },
+    ]
+
+    // 针对第二条消息进行编辑重发
+    let sendCalledWith: { text: string; images?: string[] } | null = null
+    const origSend = store.send.bind(store)
+    store.send = ((text: string, images?: string[]) => {
+      sendCalledWith = { text, images }
+    }) as any
+
+    await store.editUserMessageAndResend('u-2', '第二条指令：修改后的全新内容', ['new.png'], t.id)
+
+    // 验证截断：u-2 及其之后的内容全部被丢弃
+    expect(t.items.length).toBe(2)
+    expect(t.items.map((i) => i.id)).toEqual(['u-1', 'a-1'])
+
+    expect(t.messages.length).toBe(2)
+    expect(t.messages.map((m) => m.content)).toEqual(['第一条指令', '第一条回复'])
+
+    // 验证重新发起了新消息
+    expect(sendCalledWith).toEqual({ text: '第二条指令：修改后的全新内容', images: ['new.png'] })
+
+    store.send = origSend
   })
 })
 

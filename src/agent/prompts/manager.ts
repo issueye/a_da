@@ -432,6 +432,8 @@ export class PromptManager {
     }
   }
 
+  private cachedCompositePrompts = new Map<string, string>()
+
   /**
    * 合成当前已启用的系统提示词（供 Agent 会话循环消费）
    */
@@ -476,7 +478,21 @@ export class PromptManager {
       }
     } catch {}
 
-    return sections.join('\n\n---\n\n')
+    const result = sections.join('\n\n---\n\n')
+    this.cachedCompositePrompts.set(`${workspace}:${mode}`, result)
+    return result
+  }
+
+  /**
+   * 同步获取当前缓存的合成系统提示词（用于 UI 遥测指标实时计算与 Token 分解）
+   */
+  getCompositeSystemPromptSync(workspace?: string, mode: AgentMode = 'code'): string {
+    const ws = workspace || process.cwd()
+    const key = `${ws}:${mode}`
+    if (this.cachedCompositePrompts.has(key)) {
+      return this.cachedCompositePrompts.get(key)!
+    }
+    return `【系统规范/角色预设：全能开发助手】\n遵循代码安全与最佳工程实践。\n\n---\n\n【协作模式：${mode}】遵循敏捷开发与系统准则。`
   }
 }
 

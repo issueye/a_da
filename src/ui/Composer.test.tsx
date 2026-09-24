@@ -473,7 +473,9 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     expect(await app.getByTestId('context-usage-popover').count()).toBe(1)
     const screenText = renderer.getPaintedText().join(' ')
     expect(screenText).toContain('上下文用量与健康度')
-    expect(screenText).toContain('会话历史')
+    expect(screenText).toContain('正常对话消息')
+    expect(screenText).toContain('系统提示词')
+    expect(screenText).toContain('工具')
     expect(screenText).toContain('缓存命中收益')
     expect(screenText).toContain('2,500 tok')
 
@@ -632,10 +634,12 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     // 2. 模拟设置排队消息
     const mockItems = [
       {
+        thread: store.active,
         text: '第一条排队指令',
         item: { kind: 'user', id: 'q-item-1', text: '第一条排队指令', at: Date.now(), queued: true } as Item,
       },
       {
+        thread: store.active,
         text: '第二条带图指令',
         images: ['test.png'],
         item: { kind: 'user', id: 'q-item-2', text: '第二条带图指令', at: Date.now(), queued: true } as Item,
@@ -672,6 +676,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     let editedImgs: string[] | undefined
 
     const mockItem = {
+      thread: store.active,
       text: '需要插队的紧急任务',
       images: ['urgent.png'],
       item: { kind: 'user', id: 'q-urgent', text: '需要插队的紧急任务', at: Date.now(), queued: true } as Item,
