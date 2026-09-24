@@ -9,6 +9,7 @@ import {
   ComposerTelemetryBar,
   computeThreadTelemetry,
   getModelContextWindow,
+  QueuedMessagesFloatingPanel,
 } from './Composer'
 import { convertMessagesToLlm, imageToDataUrl } from '../agent/core/agent-loop'
 
@@ -274,6 +275,7 @@ describe('Composer 遥测与多模态配置逻辑', () => {
 describeNative('ComposerTelemetryBar UI 渲染', () => {
   beforeEach(() => {
     store.active.isSubagent = false
+    store.clearQueue()
   })
 
   test('渲染输入框底部的遥测栏并验证不包含费用估计', async () => {
@@ -615,6 +617,89 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
         store.send = origSend
       }
     }
+
+    await app.close()
+  })
+
+  test('QueuedMessagesFloatingPanel 浮动面板渲染及管理交互', async () => {
+    // 1. 无排队消息时不渲染
+    const { render, renderer } = createTestRoot({ width: 1000, height: 600 })
+    render(<Composer store={store} />)
+    const app = await connectTest(renderer)
+
+    expect(await app.getByTestId('queued-messages-panel').count()).toBe(0)
+
+    // 2. 模拟设置排队消息
+    const mockItems = [
+      {
+        text: '第一条排队指令',
+        item: { kind: 'user', id: 'q-item-1', text: '第一条排队指令', at: Date.now(), queued: true } as Item,
+      },
+      {
+        text: '第二条带图指令',
+        images: ['test.png'],
+        item: { kind: 'user', id: 'q-item-2', text: '第二条带图指令', at: Date.now(), queued: true } as Item,
+      },
+    ]
+    store.queue = [...mockItems]
+    store.active.items.push(mockItems[0]!.item, mockItems[1]!.item)
+    render(<Composer store={store} />)
+    renderer.flush?.()
+
+    // 验证浮动面板渲染
+    expect(await app.getByTestId('queued-messages-panel').count()).toBe(1)
+    expect(await app.getByTestId('queued-item-0').count()).toBe(1)
+    expect(await app.getByTestId('queued-item-1').count()).toBe(1)
+    expect(renderer.getPaintedText().join(' ')).toContain('排队发送队列')
+    expect(renderer.getPaintedText().join(' ')).toContain('2 条待发送')
+    expect(renderer.getPaintedText().join(' ')).toContain('第一条排队指令')
+    expect(renderer.getPaintedText().join(' ')).toContain('第二条带图指令')
+    expect(renderer.getPaintedText().join(' ')).toContain('1 图')
+
+    // 3. 点击「全部清空」
+    await app.getByTestId('queue-clear-all').click()
+    render(<Composer store={store} />)
+    renderer.flush?.()
+    expect(await app.getByTestId('queued-messages-panel').count()).toBe(0)
+    expect(store.queue.length).toBe(0)
+
+    await app.close()
+  })
+
+  test('QueuedMessagesFloatingPanel 独立组件：立即发送与取出编辑', async () => {
+    const { render, renderer } = createTestRoot({ width: 1000, height: 600 })
+    let editedText = ''
+    let editedImgs: string[] | undefined
+
+    const mockItem = {
+      text: '需要插队的紧急任务',
+      images: ['urgent.png'],
+      item: { kind: 'user', id: 'q-urgent', text: '需要插队的紧急任务', at: Date.now(), queued: true } as Item,
+    }
+    store.queue = [mockItem]
+    store.active.items.push(mockItem.item)
+
+    render(
+      <QueuedMessagesFloatingPanel
+        store={store}
+        onEditItem={(text, imgs) => {
+          editedText = text
+          editedImgs = imgs
+        }}
+      />
+    )
+    const app = await connectTest(renderer)
+
+    expect(await app.getByTestId('queued-messages-panel').count()).toBe(1)
+    expect(await app.getByTestId('queue-send-now-0').count()).toBe(1)
+
+    // 测试点击取出编辑
+    await app.getByTestId('queue-edit-0').click()
+    renderer.flush?.()
+
+    expect(editedText).toBe('需要插队的紧急任务')
+    expect(editedImgs).toEqual(['urgent.png'])
+    expect(store.queue.length).toBe(0)
 
     await app.close()
   })

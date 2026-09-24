@@ -122,6 +122,13 @@ function makeThread(workspace: string): Thread {
 
 type ToolCard = Extract<Item, { kind: 'tool' }>
 
+export interface QueuedItem {
+  thread: Thread
+  text: string
+  images?: string[]
+  item: Item
+}
+
 export class AgentStore {
   threads: Thread[] = []
   activeId: string
@@ -219,14 +226,15 @@ export class AgentStore {
     return this.aborts.get(this.activeId) ?? null
   }
 
-  get queue(): { thread: Thread; text: string; images?: string[]; item: Item }[] {
-    return this.queues.get(this.activeId) ?? []
+  get queue(): QueuedItem[] {
+    return this.queues.get(this.active.id) ?? []
   }
-  set queue(items: { thread: Thread; text: string; images?: string[]; item: Item }[]) {
+  set queue(items: QueuedItem[]) {
+    const activeId = this.active.id
     if (items.length === 0) {
-      this.queues.delete(this.activeId)
+      this.queues.delete(activeId)
     } else {
-      this.queues.set(this.activeId, items)
+      this.queues.set(activeId, items)
     }
   }
 
@@ -458,7 +466,11 @@ export class AgentStore {
   }
 
   get active(): Thread {
-    return this.threads.find((thread) => thread.id === this.activeId) ?? this.threads[0]!
+    const found = this.threads.find((thread) => thread.id === this.activeId)
+    if (found) return found
+    const fallback = this.threads[0]!
+    this.activeId = fallback.id
+    return fallback
   }
 
   /** The project the window is showing. A thread is pinned to one for its whole life. */
@@ -922,6 +934,91 @@ export class AgentStore {
     if (!resolve) return
     this.approvals.delete(toolItemId)
     resolve(approved)
+  }
+
+  /**
+   * 立即发送队列中的指定消息：
+   * 将选中的排队消息提升至队首，并中止当前正在运行的轮次，使执行引擎立即处理该消息。
+   */
+  sendQueuedImmediately(index: number, threadId?: string): void {
+    const targetId = threadId ?? this.active.id
+    const thread = this.threads.find((t) => t.id === targetId)
+    if (!thread) return
+    const threadQueue = this.queues.get(targetId)
+    if (!threadQueue || index < 0 || index >= threadQueue.length) return
+
+    // 取出指定排队项并提升至队首
+    const [targetItem] = threadQueue.splice(index, 1)
+    if (!targetItem) return
+    threadQueue.unshift(targetItem)
+
+    // 同步调整在 thread.items 中的排列位置，保证与执行顺序一致
+    const itemIndex = thread.items.findIndex((it) => it.id === targetItem.item.id)
+    if (itemIndex > -1) {
+      const [it] = thread.items.splice(itemIndex, 1)
+      const firstQueuedIndex = thread.items.findIndex((candidate) => candidate.kind === 'user' && candidate.queued)
+      if (firstQueuedIndex > -1) {
+        thread.items.splice(firstQueuedIndex, 0, it)
+      } else {
+        thread.items.push(it)
+      }
+    }
+
+    if (this.isThreadRunning(targetId)) {
+      this.push({
+        kind: 'info',
+        text: `已插队立即发送：「${targetItem.text.slice(0, 30)}${targetItem.text.length > 30 ? '...' : ''}」`,
+      })
+      // 中止当前轮次，drain 循环自动进入下一轮执行被提前的 targetItem
+      const controller = this.aborts.get(targetId)
+      if (controller) {
+        controller.abort()
+      }
+    } else {
+      void this.drain(thread)
+    }
+    this.notify()
+  }
+
+  /**
+   * 移出队列中的指定排队消息
+   */
+  removeQueuedItem(index: number, threadId?: string): { text: string; images?: string[] } | null {
+    const targetId = threadId ?? this.active.id
+    const thread = this.threads.find((t) => t.id === targetId)
+    const threadQueue = this.queues.get(targetId)
+    if (!threadQueue || index < 0 || index >= threadQueue.length) return null
+
+    const [removed] = threadQueue.splice(index, 1)
+    if (!removed) return null
+
+    if (thread) {
+      thread.items = thread.items.filter((it) => it.id !== removed.item.id)
+    }
+    if (threadQueue.length === 0) {
+      this.queues.delete(targetId)
+    }
+    this.push({ kind: 'info', text: '已移出排队消息' })
+    this.notify()
+    return { text: removed.text, images: removed.images }
+  }
+
+  /**
+   * 清空指定会话的全部排队消息
+   */
+  clearQueue(threadId?: string): void {
+    const targetId = threadId ?? this.active.id
+    const thread = this.threads.find((t) => t.id === targetId)
+    const threadQueue = this.queues.get(targetId)
+    if (!threadQueue || threadQueue.length === 0) return
+
+    const queuedItemIds = new Set(threadQueue.map((q) => q.item.id))
+    if (thread) {
+      thread.items = thread.items.filter((it) => !queuedItemIds.has(it.id))
+    }
+    this.queues.delete(targetId)
+    this.push({ kind: 'info', text: '已清空所有排队消息' })
+    this.notify()
   }
 
   /**
@@ -2071,7 +2168,15 @@ export class AgentStore {
           delete next.item.queued
           this.notify()
         }
-        await this.turn(next.thread, next.text, next.images)
+        try {
+          await this.turn(next.thread, next.text, next.images)
+        } catch (turnErr) {
+          if ((turnErr as Error)?.name === 'AbortError') {
+            // 被立即发送或中断时，若队列中仍有被提前的消息，则继续处理！
+            continue
+          }
+          throw turnErr
+        }
       }
 
       // 主会话队列处理完毕时，触发完成通知窗口

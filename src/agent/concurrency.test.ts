@@ -209,5 +209,98 @@ describe('multi-session concurrency', () => {
       t1Resolve()
     }
   })
+
+  test('removeQueuedItem removes item from queue and thread.items, and returns content for editing', async () => {
+    const ws = await project('ws_remove_queue')
+    const t = store.newThread(ws)
+    const mutable = store as unknown as {
+      runningThreadIds: Set<string>
+    }
+    mutable.runningThreadIds.add(t.id)
+    store.selectThread(t.id)
+
+    store.send('queued message 1')
+    store.send('queued message 2', ['img1.png'])
+    store.send('queued message 3')
+
+    expect(store.queue.length).toBe(3)
+    expect(t.items.filter((i) => i.kind === 'user' && i.queued).length).toBe(3)
+
+    // Remove index 1 (message 2)
+    const removed = store.removeQueuedItem(1)
+    expect(removed).toBeDefined()
+    expect(removed?.text).toBe('queued message 2')
+    expect(removed?.images).toEqual(['img1.png'])
+
+    expect(store.queue.length).toBe(2)
+    expect(store.queue[0]?.text).toBe('queued message 1')
+    expect(store.queue[1]?.text).toBe('queued message 3')
+
+    // t.items should no longer contain message 2
+    expect(t.items.some((i) => i.kind === 'user' && i.text === 'queued message 2')).toBe(false)
+    expect(t.items.filter((i) => i.kind === 'user' && i.queued).length).toBe(2)
+
+    mutable.runningThreadIds.clear()
+    store.stop(t.id)
+  })
+
+  test('clearQueue clears all queued items from queue and thread.items', async () => {
+    const ws = await project('ws_clear_queue')
+    const t = store.newThread(ws)
+    const mutable = store as unknown as {
+      runningThreadIds: Set<string>
+    }
+    mutable.runningThreadIds.add(t.id)
+    store.selectThread(t.id)
+
+    store.send('queued 1')
+    store.send('queued 2')
+    expect(store.queue.length).toBe(2)
+
+    store.clearQueue()
+    expect(store.queue.length).toBe(0)
+    expect(t.items.some((i) => i.kind === 'user' && i.queued)).toBe(false)
+
+    mutable.runningThreadIds.clear()
+    store.stop(t.id)
+  })
+
+  test('sendQueuedImmediately promotes item to index 0, reorders thread.items, and aborts running controller', async () => {
+    const ws = await project('ws_send_now')
+    const t = store.newThread(ws)
+    const mutable = store as unknown as {
+      runningThreadIds: Set<string>
+      aborts: Map<string, AbortController>
+    }
+    mutable.runningThreadIds.add(t.id)
+    const mockAbort = new AbortController()
+    mutable.aborts.set(t.id, mockAbort)
+
+    store.selectThread(t.id)
+    store.send('queued A')
+    store.send('queued B')
+    store.send('queued C')
+
+    expect(store.queue.length).toBe(3)
+    expect(store.queue.map((q) => q.text)).toEqual(['queued A', 'queued B', 'queued C'])
+
+    // Immediately send queued C (index 2)
+    store.sendQueuedImmediately(2)
+
+    // Running turn should have been aborted
+    expect(mockAbort.signal.aborted).toBe(true)
+
+    // In queue, C is promoted to 0
+    expect(store.queue.length).toBe(3)
+    expect(store.queue.map((q) => q.text)).toEqual(['queued C', 'queued A', 'queued B'])
+
+    // In thread.items, queued C should now appear before queued A and queued B
+    const queuedUserItems = t.items.filter((i) => i.kind === 'user' && i.queued)
+    expect(queuedUserItems.map((i) => (i as any).text)).toEqual(['queued C', 'queued A', 'queued B'])
+
+    mutable.runningThreadIds.clear()
+    store.stop(t.id)
+  })
 })
+
 

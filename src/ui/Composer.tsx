@@ -524,8 +524,319 @@ function AppendMenu({ store, onPick }: { store: AgentStore; onPick: (value: stri
   )
 }
 
+/**
+ * 队列消息浮动面板：附着在发送框上方，展示当前处于等待队列中的所有用户指令。
+ * 支持用户查看排队消息摘要、选择「立即发送」插队执行、取出到输入框编辑或移出队列。
+ */
+export function QueuedMessagesFloatingPanel({
+  store,
+  onEditItem,
+}: {
+  store: AgentStore
+  onEditItem?: (text: string, images?: string[]) => void
+}) {
+  const [collapsed, setCollapsed] = useState(false)
+  const [, setTick] = useState(0)
+  useEffect(() => store.subscribe(() => setTick((t) => t + 1)), [store])
+
+  const queue = store.queue
+  if (!queue || queue.length === 0) return null
+
+  return (
+    <div
+      testId="queued-messages-panel"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        width: '100%',
+        maxWidth: M.composerMax,
+        marginBottom: 8,
+        backgroundColor: C.raised,
+        borderWidth: 1,
+        borderColor: C.borderStrong,
+        borderRadius: 12,
+        boxShadow: {
+          offsetX: 0,
+          offsetY: 4,
+          blurRadius: 16,
+          spreadRadius: 0,
+          color: 'rgba(0, 0, 0, 0.16)',
+        },
+        paddingTop: 8,
+        paddingBottom: 8,
+        paddingLeft: 10,
+        paddingRight: 10,
+        gap: 6,
+      }}
+      onClick={(e: any) => e?.stopPropagation?.()}
+    >
+      {/* 顶部标题栏 */}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          paddingLeft: 4,
+          paddingRight: 4,
+          paddingBottom: collapsed ? 0 : 6,
+          borderBottomWidth: collapsed ? 0 : 1,
+          borderColor: C.cardBorder,
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Icon name="clock" size={13} color={C.link} />
+          <text style={{ fontSize: 12, fontWeight: 600, color: C.text }}>
+            排队发送队列
+          </text>
+          <div
+            style={{
+              paddingLeft: 6,
+              paddingRight: 6,
+              height: 18,
+              borderRadius: 9,
+              backgroundColor: C.overlay,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <text style={{ fontSize: 10.5, fontWeight: 500, color: C.secondary }}>
+              {`${queue.length} 条待发送`}
+            </text>
+          </div>
+          <text style={{ fontSize: 11, color: C.faint }}>
+            (当前任务完成后按序发送，也可点击立即发送插队)
+          </text>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          {queue.length > 1 ? (
+            <div
+              testId="queue-clear-all"
+              role="button"
+              aria-label="清空全部排队消息"
+              onClick={() => store.clearQueue()}
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 4,
+                paddingLeft: 6,
+                paddingRight: 6,
+                height: 20,
+                borderRadius: 4,
+                cursor: 'pointer',
+                hover: { backgroundColor: C.overlayStrong },
+              }}
+            >
+              <Icon name="trash" size={10} color={C.tertiary} />
+              <text style={{ fontSize: 10.5, color: C.tertiary }}>全部清空</text>
+            </div>
+          ) : null}
+
+          <div
+            testId="queue-toggle-collapse"
+            role="button"
+            aria-label={collapsed ? '展开队列' : '收起队列'}
+            onClick={() => setCollapsed(!collapsed)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 20,
+              height: 20,
+              borderRadius: 4,
+              cursor: 'pointer',
+              hover: { backgroundColor: C.overlayStrong },
+            }}
+          >
+            <Icon name={collapsed ? 'chevronDown' : 'chevronUp'} size={12} color={C.tertiary} />
+          </div>
+        </div>
+      </div>
+
+      {/* 排队项列表 */}
+      {!collapsed ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {queue.map((q, idx) => (
+            <div
+              key={q.item.id || idx}
+              testId={`queued-item-${idx}`}
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingLeft: 8,
+                paddingRight: 8,
+                paddingTop: 6,
+                paddingBottom: 6,
+                borderRadius: 6,
+                backgroundColor: C.card,
+                borderWidth: 1,
+                borderColor: C.cardBorder,
+                gap: 8,
+              }}
+            >
+              {/* 左侧：序号与文本摘要 */}
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 6,
+                  flexGrow: 1,
+                  minWidth: 0,
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 18,
+                    height: 18,
+                    borderRadius: 4,
+                    backgroundColor: C.overlay,
+                    flexShrink: 0,
+                  }}
+                >
+                  <text style={{ fontSize: 10, fontFamily: FONT_MONO, color: C.tertiary }}>
+                    {`#${idx + 1}`}
+                  </text>
+                </div>
+
+                <text
+                  style={{
+                    fontSize: 12,
+                    lineHeight: 16,
+                    color: C.text,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    flexGrow: 1,
+                    minWidth: 0,
+                  }}
+                >
+                  {q.text || '(图片指令)'}
+                </text>
+
+                {q.images && q.images.length > 0 ? (
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 3,
+                      paddingLeft: 5,
+                      paddingRight: 5,
+                      height: 16,
+                      borderRadius: 4,
+                      backgroundColor: C.chip,
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Icon name="image" size={10} color={C.link} />
+                    <text style={{ fontSize: 10, color: C.link }}>
+                      {`${q.images.length} 图`}
+                    </text>
+                  </div>
+                ) : null}
+              </div>
+
+              {/* 右侧：立即发送、编辑与移出按钮 */}
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 4,
+                  flexShrink: 0,
+                }}
+              >
+                <div
+                  testId={`queue-send-now-${idx}`}
+                  role="button"
+                  aria-label="立即发送该消息"
+                  onClick={() => store.sendQueuedImmediately(idx)}
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 3.5,
+                    paddingLeft: 7,
+                    paddingRight: 8,
+                    height: 22,
+                    borderRadius: 5,
+                    backgroundColor: C.chipHover,
+                    borderWidth: 1,
+                    borderColor: C.link,
+                    cursor: 'pointer',
+                    hover: { backgroundColor: C.overlayStrong },
+                  }}
+                >
+                  <Icon name="zap" size={11} color={C.link} />
+                  <text style={{ fontSize: 11, fontWeight: 600, color: C.link, whiteSpace: 'nowrap' }}>
+                    立即发送
+                  </text>
+                </div>
+
+                <div
+                  testId={`queue-edit-${idx}`}
+                  role="button"
+                  aria-label="取出到输入框编辑"
+                  onClick={() => {
+                    const removed = store.removeQueuedItem(idx)
+                    if (removed && onEditItem) {
+                      onEditItem(removed.text, removed.images)
+                    }
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 22,
+                    height: 22,
+                    borderRadius: 4,
+                    cursor: 'pointer',
+                    hover: { backgroundColor: C.overlayStrong },
+                  }}
+                >
+                  <Icon name="copy" size={11} color={C.tertiary} />
+                </div>
+
+                <div
+                  testId={`queue-delete-${idx}`}
+                  role="button"
+                  aria-label="移出队列"
+                  onClick={() => store.removeQueuedItem(idx)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 22,
+                    height: 22,
+                    borderRadius: 4,
+                    cursor: 'pointer',
+                    hover: { backgroundColor: C.overlayStrong },
+                  }}
+                >
+                  <Icon name="close" size={11} color={C.tertiary} />
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export function Composer({ store, centered }: { store: AgentStore; centered?: boolean }) {
   const { renderer } = useGpuix()
+  const [, setTick] = useState(0)
+  useEffect(() => store.subscribe(() => setTick((t) => t + 1)), [store])
   const [draft, setDraft] = useState('')
   const [images, setImages] = useState<string[]>([])
   const [focused, setFocused] = useState(false)
@@ -794,7 +1105,6 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
             ) : null}
           </div>
         </div>
-        <ComposerTelemetryBar store={store} centered={centered} />
       </div>
     )
   }
@@ -814,6 +1124,17 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
         userSelect: 'none',
       }}
     >
+      {/* 队列中的发送消息以浮动框附着在发送框上方 */}
+      <QueuedMessagesFloatingPanel
+        store={store}
+        onEditItem={(text, imgs) => {
+          setDraft(text)
+          if (imgs && imgs.length > 0) {
+            setImages(imgs)
+          }
+        }}
+      />
+
       {slashMenuOpen ? (
         <SlashCommandMenu
           store={store}
