@@ -678,7 +678,10 @@ function WorkspaceTreeNode({
             aria-label={`在文件资源管理器中打开 ${label}`}
             onClick={(e: any) => {
               e?.stopPropagation?.()
-              openInExplorer(workspacePath)
+              const ok = openInExplorer(workspacePath)
+              if (!ok) {
+                onNotice(`无法在文件资源管理器中打开工作区「${label}」：目标路径不存在或无法访问`)
+              }
             }}
             style={{
               display: 'flex',

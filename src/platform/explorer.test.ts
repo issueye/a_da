@@ -17,7 +17,7 @@ describe('explorer helper', () => {
     if (process.platform === 'win32') {
       expect(cmd[0]).toBe('explorer.exe')
       expect(cmd[1]).toBe('C:\\codes\\project')
-      expect(options.windowsHide).toBe(true)
+      expect(options.windowsHide).toBeUndefined()
     } else if (process.platform === 'darwin') {
       expect(cmd[0]).toBe('open')
       expect(cmd[1]).toBe(target)
