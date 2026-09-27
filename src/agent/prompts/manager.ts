@@ -4,14 +4,18 @@
  */
 
 import { existsSync, mkdirSync } from 'node:fs'
-import { readdir, readFile, unlink, writeFile } from 'node:fs/promises'
+import { readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { getAppHome } from '../home'
 import { readDisabledPlugins } from '../config'
+import { checkWorkspaceSandbox } from '../tools/workspace'
 import { BUILTIN_PROMPTS } from './builtins'
 import { BUILTIN_PLUGINS } from '../tools/builtin-plugins'
 import type { CreatePromptOptions, PromptItem, PromptScope } from './types'
 import type { AgentMode } from '../types'
+
+/** 项目约定文件的大小上限：超过就截断，别让一份超长说明吃掉半个上下文窗口。 */
+const PROJECT_INSTRUCTIONS_MAX_CHARS = 32_000
 
 interface PromptsState {
   /** 内置提示词的启停状态重写，key 为 builtin id */
@@ -435,6 +439,29 @@ export class PromptManager {
   private cachedCompositePrompts = new Map<string, string>()
 
   /**
+   * 读取项目约定文件：AGENTS.md 优先，其次 CLAUDE.md。
+   * 路径经沙箱解析（真实落点必须仍在工作区内）；文件缺失返回 null。
+   */
+  async readProjectInstructions(workspace: string): Promise<{ file: string; content: string } | null> {
+    for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+      try {
+        const absolute = checkWorkspaceSandbox(workspace, name)
+        const info = await stat(absolute).catch(() => null)
+        if (!info || !info.isFile()) continue
+        let content = await readFile(absolute, 'utf-8')
+        if (content.length > PROJECT_INSTRUCTIONS_MAX_CHARS) {
+          content = `${content.slice(0, PROJECT_INSTRUCTIONS_MAX_CHARS)}\n\n…（${name} 过长，已截断）`
+        }
+        if (!content.trim()) continue
+        return { file: name, content }
+      } catch {
+        continue
+      }
+    }
+    return null
+  }
+
+  /**
    * 合成当前已启用的系统提示词（供 Agent 会话循环消费）
    */
   async getCompositeSystemPrompt(workspace: string, mode: AgentMode = 'code'): Promise<string> {
@@ -446,6 +473,14 @@ export class PromptManager {
     for (const p of enabledSystemPrompts) {
       sections.push(`【系统规范/角色预设：${p.name}】\n${p.content.trim()}`)
     }
+
+    // 项目约定文件（AGENTS.md / CLAUDE.md）：打开任意项目就先懂它的规矩
+    try {
+      const instructions = await this.readProjectInstructions(workspace)
+      if (instructions) {
+        sections.push(`【项目说明（来自 ${instructions.file}）】\n以下是本项目的约定与背景，优先级高于通用偏好：\n${instructions.content.trim()}`)
+      }
+    } catch {}
 
     // 注入协作模式专属指导规范
     if (mode === 'plan') {

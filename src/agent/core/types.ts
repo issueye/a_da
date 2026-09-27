@@ -61,6 +61,8 @@ export interface ToolResultMessage {
   isError?: boolean
   details?: unknown
   patch?: string
+  /** 执行前的检查点记录 id：有它才有「撤销此次改动」（见 agent/checkpoint.ts） */
+  checkpointId?: string
   timestamp?: number
 }
 

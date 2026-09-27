@@ -112,6 +112,138 @@ export class ThinkTagFilter {
 /**
  * 统一发起流式会话
  */
+
+/** 这些状态码意味着请求本身没有被处理或可安全重发（429 限流、网关抖动等）。 */
+const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 529])
+const DEFAULT_MAX_RETRIES = 3
+const DEFAULT_RETRY_BASE_MS = 800
+
+function isAbortError(error: unknown): boolean {
+  return (error as Error)?.name === 'AbortError'
+}
+
+/** 可被 signal 打断的 sleep：中止时抛 AbortError，与 fetch 的中止语义一致。 */
+function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms))
+  if (signal.aborted) {
+    return Promise.reject(new DOMException('This operation was aborted', 'AbortError'))
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      reject(new DOMException('This operation was aborted', 'AbortError'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+/** 429/503 响应的 Retry-After 头：秒数或 HTTP 日期，解析不出就返回 undefined。 */
+function parseRetryAfterMs(headerValue: string | null): number | undefined {
+  if (!headerValue) return undefined
+  const seconds = Number(headerValue)
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000
+  const date = Date.parse(headerValue)
+  if (!Number.isNaN(date)) return Math.max(0, date - Date.now())
+  return undefined
+}
+
+/** 把 HTTP 错误体整理成人类可读的一行说明（沿用原有的多供应商格式兼容）。 */
+function formatHttpError(status: number, errorText: string): string {
+  let message = `API 错误（HTTP ${status}）`
+  try {
+    const parsed = JSON.parse(errorText)
+    if (parsed.error?.message) {
+      message += `: ${parsed.error.message}`
+    } else if (typeof parsed.message === 'string' && parsed.message) {
+      message += `: ${parsed.message}`
+      if (parsed.code) message += ` (${parsed.code})`
+      if (parsed.data?.detail) {
+        try {
+          const detailObj = typeof parsed.data.detail === 'string' ? JSON.parse(parsed.data.detail) : parsed.data.detail
+          if (detailObj.error?.message && detailObj.error.message !== parsed.message) {
+            message += ` [${detailObj.error.message}]`
+          }
+        } catch {}
+      }
+    } else if (typeof parsed.error === 'string' && parsed.error) {
+      message += `: ${parsed.error}`
+    } else if (errorText) {
+      message += `: ${errorText.slice(0, 300)}`
+    }
+  } catch {
+    if (errorText) message += `: ${errorText.slice(0, 300)}`
+  }
+  return message
+}
+
+/**
+ * 建立到模型的流式连接：带重试与指数退避。
+ *
+ * 只在「请求还没被受理」的阶段重试——连接失败、可重试的 HTTP 状态码。一旦拿到
+ * OK 响应进入读流阶段就绝不重发：OpenAI 兼容接口没有断点续传，重发会把已输出
+ * 的内容输出第二遍。
+ */
+async function openStreamingResponse(
+  url: string,
+  config: ProviderConfig,
+  body: Record<string, unknown>,
+  options: ModelChatOptions
+): Promise<{ response?: Response; errorMessage?: string }> {
+  const maxRetries = Math.max(0, options.retry?.maxRetries ?? DEFAULT_MAX_RETRIES)
+  const baseDelayMs = Math.max(0, options.retry?.baseDelayMs ?? DEFAULT_RETRY_BASE_MS)
+
+  let lastStatus = 0
+  let lastErrorText = ''
+  let lastRetryAfterMs: number | undefined
+  let networkErrorMessage: string | null = null
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (attempt > 0) {
+      const backoff = lastRetryAfterMs ?? baseDelayMs * 2 ** (attempt - 1) + Math.random() * 250
+      try {
+        await sleepWithSignal(backoff, options.signal)
+      } catch {
+        return { errorMessage: undefined, response: undefined }
+      }
+    }
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${config.apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: options.signal,
+      })
+
+      if (response.ok) return { response }
+      lastErrorText = await response.text().catch(() => '')
+      lastStatus = response.status
+      lastRetryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'))
+      if (!RETRYABLE_STATUS.has(response.status)) break
+    } catch (error) {
+      if (isAbortError(error)) {
+        return { errorMessage: undefined, response: undefined }
+      }
+      networkErrorMessage = (error as Error).message
+    }
+  }
+
+  if (networkErrorMessage !== null && lastStatus === 0) {
+    return { errorMessage: `网络请求失败：${networkErrorMessage}` }
+  }
+  if (lastStatus !== 0) {
+    return { errorMessage: formatHttpError(lastStatus, lastErrorText) }
+  }
+  return { errorMessage: `网络请求失败：${networkErrorMessage ?? '未知错误'}` }
+}
+
 export async function* streamModelChat(
   config: ProviderConfig,
   messages: ChatCompletionMessageParam[],
@@ -138,55 +270,17 @@ export async function* streamModelChat(
     body.temperature = options.temperature
   }
 
-  let response: Response
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify(body),
-      signal: options.signal,
-    })
-  } catch (error) {
-    if ((error as Error).name === 'AbortError') {
+  const opened = await openStreamingResponse(url, config, body, options)
+  if (opened.errorMessage !== undefined || !opened.response) {
+    // undefined 的 errorMessage 配合空 response 表示调用方主动中止
+    if (opened.errorMessage !== undefined) {
+      yield { type: 'error', error: opened.errorMessage }
+    } else {
       yield { type: 'done', stopReason: 'aborted' }
-      return
     }
-    yield { type: 'error', error: `网络请求失败：${(error as Error).message}` }
     return
   }
-
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => '')
-    let message = `API 错误（HTTP ${response.status}）`
-    try {
-      const parsed = JSON.parse(errorText)
-      if (parsed.error?.message) {
-        message += `: ${parsed.error.message}`
-      } else if (typeof parsed.message === 'string' && parsed.message) {
-        message += `: ${parsed.message}`
-        if (parsed.code) message += ` (${parsed.code})`
-        if (parsed.data?.detail) {
-          try {
-            const detailObj = typeof parsed.data.detail === 'string' ? JSON.parse(parsed.data.detail) : parsed.data.detail
-            if (detailObj.error?.message && detailObj.error.message !== parsed.message) {
-              message += ` [${detailObj.error.message}]`
-            }
-          } catch {}
-        }
-      } else if (typeof parsed.error === 'string' && parsed.error) {
-        message += `: ${parsed.error}`
-      } else if (errorText) {
-        message += `: ${errorText.slice(0, 300)}`
-      }
-    } catch {
-      if (errorText) message += `: ${errorText.slice(0, 300)}`
-    }
-    yield { type: 'error', error: message }
-    return
-  }
+  const response = opened.response
 
   if (!response.body) {
     yield { type: 'error', error: '模型响应为空正文' }

@@ -709,3 +709,27 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     await app.close()
   })
 })
+
+describe('pickImagePaths 拖放与附件过滤', () => {
+  test('只挑图片扩展名，去重并丢弃坏值', () => {
+    const { pickImagePaths } = require('./Composer') as { pickImagePaths: (paths: unknown) => string[] }
+    const picked = pickImagePaths([
+      'C:/shots/a.png',
+      'C:/docs/readme.md',
+      123,
+      null,
+      'C:/shots/a.png',
+      'C:/shots/b.JPEG',
+      'C:/shots/c.webp',
+      'C:/code/app.tsx',
+    ])
+    expect(picked).toEqual(['C:/shots/a.png', 'C:/shots/b.JPEG', 'C:/shots/c.webp'])
+  })
+
+  test('非数组输入返回空列表', () => {
+    const { pickImagePaths } = require('./Composer') as { pickImagePaths: (paths: unknown) => string[] }
+    expect(pickImagePaths(undefined)).toEqual([])
+    expect(pickImagePaths('a.png')).toEqual([])
+    expect(pickImagePaths(null)).toEqual([])
+  })
+})

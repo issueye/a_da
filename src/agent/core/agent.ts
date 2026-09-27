@@ -1,6 +1,11 @@
 /**
  * Agent 状态机与控制器
  * 参考 @earendil-works/pi-agent-core/src/agent.ts 设计
+ *
+ * 注意定位：这是**库级 API**——把事件订阅、转向（steer）、后续消息队列包装成
+ * 一个类，供外部以编程方式驱动一轮对话（agent.test.ts 钉住其行为）。
+ * 桌面应用本身不走这里：store.ts 直接驱动 runAgentLoop，因为它要往事件流里
+ * 插审批闸门、按事件逐条落盘 JSONL，那层细节不该被控制器类挡住。
  */
 
 import type { ProviderConfig } from '../config'

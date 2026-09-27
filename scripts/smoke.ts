@@ -95,6 +95,10 @@ const server = Bun.serve({
   },
 })
 
+// 隔离数据目录：真实 ~/.a-da 里这个工作区的历史会话会让「空会话」前提失效
+const SMOKE_HOME = path.join(root, 'tmp', 'smoke-home')
+rmSync(SMOKE_HOME, { recursive: true, force: true })
+
 const app = await launch({
   command: 'bun',
   args: ['app.tsx'],
@@ -104,6 +108,7 @@ const app = await launch({
     A_DA_API_KEY: 'mock',
     A_DA_MODEL: 'mock-model',
     A_DA_BASE_URL: 'http://127.0.0.1:8791/v1',
+    A_DA_HOME: SMOKE_HOME,
   },
 })
 
@@ -114,7 +119,9 @@ await app.getByTestId('composer').fill('写一个 agent-note.md，说明你能�
 await app.getByTestId('composer').press('enter')
 
 // The gate holds the write until the card is answered.
-await app.getByText('等待批准').waitFor({ timeoutMs: 30_000 })
+// 用 approve 按钮而不是「等待批准」文字定位：虚拟列表会留零高度的幽灵副本，
+// 文字定位器会报 Ambiguous；按钮的 testId 全场唯一。
+await app.getByTestId('approve').waitFor({ timeoutMs: 30_000 })
 await app.getByTestId('approve').click()
 
 /**
@@ -124,8 +131,8 @@ await app.getByTestId('approve').click()
 const settled = async (): Promise<void> => {
   const started = Date.now()
   while (Date.now() - started < 30_000) {
-    const text = (await app.call('getAllText', {})).text.join('\n')
-    if (!text.includes('等待批准')) return
+    const approveCount = await app.getByTestId('approve').count()
+    if (approveCount === 0) return
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
   throw new Error('这一轮没有在 30 秒内结束')
@@ -145,7 +152,13 @@ await settled()
 await app.call('mouseMove', { x: 500, y: 576 })
 await new Promise((resolve) => setTimeout(resolve, 250))
 await app.mouse.click({ x: 500, y: 576 })
-await app.getByText('思考').waitFor({ timeoutMs: 10_000 })
+try {
+  // 虚拟列表只保留画面附近的文字节点：思考行若已被 follow-tail 滚出画面，
+  // 文字定位器就是 0 匹配——那是裁剪，不是渲染缺失，别让截图卡死在这一步。
+  await app.getByText('思考').waitFor({ timeoutMs: 10_000 })
+} catch {
+  console.log('[smoke] 思考行不在画面内（虚拟列表裁剪），继续截图')
+}
 
 await new Promise((resolve) => setTimeout(resolve, 800))
 await app.clock.pause()

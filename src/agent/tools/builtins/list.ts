@@ -7,7 +7,7 @@ import { readdir, stat } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import type { AgentTool, AgentToolResult } from '../../core/types'
 import type { ListToolArgs } from '../types'
-import { SKIP_DIRS, checkWorkspaceSandbox } from '../workspace'
+import { SKIP_DIRS, checkWorkspaceSandbox, isPathInsideWorkspace, resolveRealWorkspace } from '../workspace'
 
 const MAX_LIST_ENTRIES = 200
 
@@ -45,6 +45,10 @@ async function walkDir(
     if (dirent.name.startsWith('.') && dirent.name !== '.github') continue
     const absolute = join(dir, dirent.name)
 
+    if (dirent.isDirectory() || dirent.isSymbolicLink()) {
+      // 目录（含 junction/symlink）按真实落点把关：指到工作区外的链接整枝跳过
+      if (!isPathInsideWorkspace(root, absolute)) continue
+    }
     if (dirent.isDirectory()) {
       if (SKIP_DIRS.has(dirent.name)) continue
       budget.left -= 1
@@ -81,11 +85,13 @@ export function createListTool(workspace: string): AgentTool<ListToolArgs> {
     },
     async execute(_callId, args): Promise<AgentToolResult> {
       try {
-        const targetDir = args.path ? checkWorkspaceSandbox(workspace, args.path) : workspace
+        // 相对路径的计算基准用真实根目录，和 checkWorkspaceSandbox 返回的真实落点一致
+        const rootDir = resolveRealWorkspace(workspace)
+        const targetDir = args.path ? checkWorkspaceSandbox(workspace, args.path) : rootDir
         const depth = typeof args.depth === 'number' ? Math.min(Math.max(args.depth, 1), 6) : 3
         const budget = { left: MAX_LIST_ENTRIES }
 
-        const entries = await walkDir(workspace, targetDir, 1, depth, budget)
+        const entries = await walkDir(rootDir, targetDir, 1, depth, budget)
         if (!entries.length) {
           return { ok: true, output: '(空目录)' }
         }

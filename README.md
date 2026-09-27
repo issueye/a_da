@@ -52,18 +52,22 @@ GPUI 渲染到 GPU（Windows 上是 DirectX），没有 Electron、没有 WebVie
 |---|---|
 | `list_files` | 列目录（跳过 `node_modules`、`.git`、`dist`、`build`、`coverage` 等） |
 | `read_file` | 读文本文件，支持 `offset`/`limit` 按行段读（默认 400 行）；超 512KB、二进制、目录都拒绝 |
-| `search_files` | 用正则搜索代码（最多 200 条命中） |
+| `search_files` | 用正则搜索代码（最多 200 条命中）；支持 `literal` 纯文本、`case_sensitive`、`context` 上下文行与 `path` 子目录限定 |
+| `find_symbol` | 按名字查函数/类/结构体定义的位置与签名（TS/JS、Python、Rust、Go、Java、C#；60s 内存索引） |
 | `write_file` | 新建或整体覆盖文件，返回 unified diff |
 | `edit_file` | 精确替换一段文本，要求 `old_string` 唯一；也可以一次给多组 `edits` |
-| `run_command` | 在工作区内执行 shell 命令（默认 120s 超时，可延长到 600s，输出截断） |
+| `run_command` | 在工作区内执行 shell 命令（默认 120s 超时，可延长到 600s，超时杀整棵进程树，输出截断） |
+| `run_background` / `check_task` / `kill_task` | dev server、watcher 这类长命令：后台启动立即返回任务 id，轮询状态与输出，按需整树终止 |
+| `todo` | 多步骤任务规划，会话区右上角的悬浮面板呈现进度 |
 
 这份工具表不是写死的常量：每轮开始时向 `ToolRegistry` 要一次，所以扩展注册的工具也会
 出现在模型的工具表里（见下面的「扩展」）。
 
 所有路径都会被解析回该会话所属项目的根目录，任何指到项目外的路径都会被拒绝——
 包括 `run_command` 的 `cwd`。这是侧边栏红字那句承诺的实现位置：
-`src/agent/tools/workspace.ts`。它按路径字符串判断，不解析符号链接：工作区内一个指向
-外面的 symlink 仍会被放行。
+`src/agent/tools/workspace.ts`。字符串级检查之后还会 realpath 解析符号链接：工作区内
+指向外面的 symlink（含 Windows junction）按**真实落点**拒绝，目录遍历对链接条目做
+同样的把关。唯一有意留下的口子：`run_command` 是真 shell，逃逸沙箱的命令它管不了。
 
 ### 一轮对话是怎么跑的
 
@@ -125,6 +129,50 @@ bun scripts/extension-check.ts   # 加载 → 进工具表 → 真调一次 → 
 > ⚠️ 项目里那份是随仓库克隆进来的第三方代码，**打开项目就会被执行**。因此「只读」模式下
 > 扩展工具一律要审批：只读白名单是写死的三个内置名字，名单之外的一律当成写操作。
 
+### 检查点与改动审阅
+
+批准即落盘，但随时有得退。`write_file` / `edit_file` 获准执行**前**，目标文件的内容会
+快照一份（检查点，追加进 `~/.a-da/checkpoints/<threadId>.jsonl`；单文件上限 5MB）：
+
+- 工具卡展开后有「撤销此次改动」：恢复该次调用前的内容（新文件则删除）
+- 输入框下方出现「改动」角标芯片，打开**改动审阅面板**：本会话所有被跟踪的改动按文件
+  聚合，逐文件看 diff、恢复到 Agent 动手之前的样子，或「全部恢复原状」
+- 回滚只认**被跟踪**的改动：`run_command` 里发生的（git、构建脚本）不在快照范围内
+
+### 用户钩子（hooks）
+
+在 `~/.a-da/hooks.json`（全局）或 `<项目>/.ada/hooks.json` 里声明「某事件发生时跑这条
+shell 命令」，Agent 在对应点位代为执行；命令从 stdin 收到 JSON 载荷（tool / args /
+thread_id / workspace），并注入 `A_DA_HOOK_EVENT` / `A_DA_HOOK_TOOL` 环境变量：
+
+```json
+{ "hooks": [
+  { "event": "before_tool", "tool": "edit_file", "command": "node check.js" },
+  { "event": "after_tool",  "tool": "edit_file, write_file", "command": "prettier --write ." },
+  { "event": "agent_end",   "command": "echo done" }
+] }
+```
+
+- `before_tool`：工具获准执行后、真正执行前。**退出码非零 = 拦截这次调用**，stderr 成为
+  回给模型的理由（守门用）
+- `after_tool`：执行完（自动格式化用）；返回值不影响结果
+- `agent_end`：一轮结束
+- `tool` 省略或 `*` 匹配所有；逗号分隔精确匹配多个。坏条目跳过并在调试日志给警告，
+  不会让整个配置作废
+
+### 快捷键与命令面板
+
+`Ctrl+K` 打开命令面板：输入过滤、上下键/回车导航，面板本身就是一份可执行的快捷键清单。
+全局快捷键（窗口级监听，无需聚焦）：`Ctrl+T` 新建对话、`Ctrl+B` 侧边栏、`Ctrl+D`
+调试日志、`Ctrl+R` 改动审阅、`Ctrl+W` 关闭标签、`Ctrl+,` 设置、`Ctrl+Shift+P` 插件管理、
+`Esc` 关浮层。定义集中在 `src/ui/shortcuts.ts`。
+
+### 项目说明（AGENTS.md）
+
+打开项目时，工作区根目录的 `AGENTS.md`（没有则 `CLAUDE.md`）会自动注入系统提示词的
+「项目说明」段，之后的每轮对话模型都看得见（超过 32k 字符截断）。输入 `/init` 让模型
+调研项目并生成这份文件。
+
 ### 工作区与会话
 
 一个会话（Thread）从建立那一刻起就绑定一个工作区目录，之后切换工作区不会改变它：
@@ -152,7 +200,9 @@ bun scripts/extension-check.ts   # 加载 → 进工具表 → 真调一次 → 
 - **最高 / 高 / 中 / 低** —— 传给接口的 `reasoning_effort`。
 
 一轮还没跑完时继续输入，指令会排队（输入框会提示“继续输入以排队后续修改”），
-同时芯片区会出现“停止”。
+同时芯片区会出现“停止”。模型配置开了 Vision 时，输入框支持图片附件：点 `+` 从
+文件选择器挑、把图片文件**拖进输入框**、或直接 **Ctrl+V 粘贴**剪贴板里的截图
+（纯文本粘贴不受影响；GPUX 没有剪贴板 API，粘贴走 PowerShell 读 Windows 剪贴板兜底）。
 
 ## 运行
 
@@ -215,11 +265,14 @@ src/agent/config.ts         供应商配置：环境变量 / 配置文件 / 预�
 src/agent/core/agent-loop.ts  事件循环：多轮流式、工具调度、生命周期事件与钩子
 src/agent/core/agent.ts     Agent 控制器：订阅事件、维护状态、转向/后续消息队列
 src/agent/core/types.ts     消息与事件模型（AgentMessage / AgentEvent / AgentTool）
-src/agent/ai/stream.ts      OpenAI 兼容的流式客户端（SSE、思考链、工具调用分片累积）
+src/agent/ai/stream.ts      OpenAI 兼容的流式客户端（SSE、思考链、工具调用分片累积、请求重试退避）
+src/agent/checkpoint.ts     写操作检查点与回滚（~/.a-da/checkpoints）
+src/agent/hooks.ts          用户钩子：hooks.json 的 before_tool / after_tool / agent_end
+src/agent/tools/proc.ts       进程树清理（taskkill /T 或 POSIX 进组信号）
 src/agent/tools/registry.ts   工具注册中心（内置 + 扩展）与只读白名单
-src/agent/tools/workspace.ts  路径沙箱与遍历跳过清单（所有工具共用一份）
+src/agent/tools/workspace.ts  路径沙箱（字符串检查 + realpath 符号链接把关）与遍历跳过清单
 src/agent/tools/loader.ts     用 jiti 加载工作区 / 全局的 .ts 扩展工具
-src/agent/tools/builtins/*    六个内置工具
+src/agent/tools/builtins/*    内置工具（读/写/搜/命令/后台任务/符号索引/子代理/todo 等）
 src/agent/tools.ts          对外适配层：runTool / describeTool / scanWorkspace
 src/agent/session/manager.ts  会话 JSONL 落盘（~/.a-da/sessions）
 src/agent/patch.ts          行级 LCS → unified diff（给 <diff> 渲染）
@@ -293,9 +346,8 @@ bun scripts/binary-check.ts     # 启动 dist/a-da-core.exe，等待首帧并截
 - 拖动从固定的拖拽区开始（标签页也可以）。这块区域不能有可点子元素：同时监听
   down 与 move 会让 GPUIX 在这棵子树上装 pointer capture，祖先一旦捕获，
   最小化/最大化/关闭的点击就被吞掉了——这三个按钮曾经真的因此失效
-- 项目与会话只存在于本次运行：退出后列表清空。会话其实已经写进
-  `~/.a-da/sessions/*.jsonl`（一行一条的追加流水），但还没有恢复入口——重启后列表仍会
-  清空，磁盘上那份目前只增不读
+- 项目与会话跨启动保留：会话写进 `~/.a-da/sessions/*.jsonl`（一行一条的追加流水），
+  启动时全量恢复（消息、工具卡、压缩点、被拒状态都还原）
 - **目录选择弹窗是 Windows 专有**，而且用的是 PowerShell 5.1 + `FolderBrowserDialog`
   （旧式树状选择器，不是 Vista 之后那个新对话框；后者要走 COM 的 `IFileOpenDialog`，
   在 FFI 里代价太大）。它靠一个临时进程开窗，所以从点击到弹窗出现大约 1.4 秒——这段
@@ -310,4 +362,5 @@ bun scripts/binary-check.ts     # 启动 dist/a-da-core.exe，等待首帧并截
   圆角 / 描边 / 阴影都在内层卡片上（`src/ui/controls.tsx` 有说明，`controls.test.ts`
   钉住了这个不变量，`scripts/menu-check.ts` 用来肉眼复核）
 - 没有语法树感知的编辑，`edit_file` 是精确字符串替换
-- 命令超时后只杀 shell 本身，不保证杀掉整棵进程树
+- ~~命令超时后只杀 shell 本身~~：已改为整树清理（Windows `taskkill /T /F`，
+  POSIX 进组信号，见 `src/agent/tools/proc.ts`）

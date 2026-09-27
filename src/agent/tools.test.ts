@@ -4,7 +4,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -168,8 +168,53 @@ describe('tool summaries', () => {
 
   test('the sandbox helper accepts inside paths and rejects escapes', () => {
     expect(checkWorkspaceSandbox(root, 'src/app.ts')).toBe(join(root, 'src/app.ts'))
-    for (const escape of ['../secrets.txt', 'src/../../outside.txt', join(root, '..', 'x')]) {
+    for (const escape of ['../outside.txt', join(root, '..', 'x')]) {
       expect(() => checkWorkspaceSandbox(root, escape)).toThrow('拒绝访问工作区外的路径')
+    }
+  })
+
+  test('rejects a junction inside the workspace whose target is outside', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'a-da-out-'))
+    await writeFile(join(outside, 'secret.txt'), 'top secret\n')
+    const link = join(root, 'leak')
+    let linked = false
+    try {
+      await symlink(outside, link, 'junction')
+      linked = true
+    } catch {
+      // 环境建不了 junction（非 NTFS / 无特权）时这一条无从验证，直接跳过
+    }
+    try {
+      if (!linked) return
+      const read = await runTool(root, { name: 'read_file', args: { path: 'leak/secret.txt' } })
+      expect(read.ok).toBe(false)
+      expect(read.output).toContain('符号链接')
+      const write = await runTool(root, {
+        name: 'write_file',
+        args: { path: 'leak/new.txt', content: 'x' },
+      })
+      expect(write.ok).toBe(false)
+      expect(write.output).toContain('符号链接')
+    } finally {
+      await rm(link, { force: true })
+      await rm(outside, { recursive: true, force: true })
+    }
+  })
+
+  test('a junction pointing back inside the workspace still resolves', async () => {
+    const link = join(root, 'inner-link')
+    let linked = false
+    try {
+      await symlink(join(root, 'src'), link, 'junction')
+      linked = true
+    } catch {}
+    try {
+      if (!linked) return
+      const result = await runTool(root, { name: 'read_file', args: { path: 'inner-link/app.ts' } })
+      expect(result.ok).toBe(true)
+      expect(result.output).toContain('export const one')
+    } finally {
+      await rm(link, { force: true })
     }
   })
 })

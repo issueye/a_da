@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process'
 import { truncateTail } from '../../core/truncate'
 import type { AgentTool, AgentToolResult } from '../../core/types'
 import type { BashToolArgs } from '../types'
+import { killProcessTree } from '../proc'
 import { checkWorkspaceSandbox } from '../workspace'
 
 /** 默认两分钟：构建、测试、安装依赖都不该被一刀切掉。 */
@@ -43,6 +44,8 @@ export function createBashTool(workspace: string): AgentTool<BashToolArgs> {
         const shell = isWin ? process.env.COMSPEC || 'cmd.exe' : '/bin/sh'
         // /d 关掉 AutoRun 注册表项，/s 固定引号处理规则——两条都是让命令按字面执行。
         const shellArgs = isWin ? ['/d', '/s', '/c', args.command] : ['-c', args.command]
+        // POSIX 上让 shell 成为进程组长，超时/中止时才能连子进程一起清掉。
+        const posixDetached = !isWin
 
         const requested = args.timeout ?? DEFAULT_TIMEOUT_S
         const timeoutS = Math.min(Math.max(requested, 1), MAX_TIMEOUT_S)
@@ -58,6 +61,7 @@ export function createBashTool(workspace: string): AgentTool<BashToolArgs> {
             // A_DA_AGENT 让工作区里的脚本能识别「这次是被 Agent 调起的」。
             env: { ...process.env, A_DA_AGENT: '1' },
             windowsHide: true,
+            detached: posixDetached || undefined,
           })
 
           const finish = (result: AgentToolResult): void => {
@@ -66,19 +70,19 @@ export function createBashTool(workspace: string): AgentTool<BashToolArgs> {
             resolveResult(result)
           }
 
-          const timer = setTimeout(() => {
+          /** 只杀 shell 会留下孤儿（构建脚本、dev server 照样活着），必须整棵清。 */
+          const killTree = (): void => {
             killed = true
-            try {
-              child.kill()
-            } catch {}
+            killProcessTree({ pid: child.pid })
+          }
+
+          const timer = setTimeout(() => {
+            killTree()
             finish({ output: `命令执行超时（超过 ${timeoutS} 秒）`, ok: false })
           }, timeoutMs)
 
           const onAbort = (): void => {
-            killed = true
-            try {
-              child.kill()
-            } catch {}
+            killTree()
             finish({ output: '用户中止了命令执行。', ok: false })
           }
 

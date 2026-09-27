@@ -18,14 +18,19 @@ import { C, docTheme, editorTheme, FONT_MONO, M } from '../theme'
 import { Welcome } from './Welcome'
 import { copyToClipboard } from '../platform/clipboard'
 import { TodoFloatingPanel } from './TodoFloatingPanel'
+import { ChangesPanel } from './ChangesPanel'
 
 const TOOL_LABEL: Record<string, string> = {
   list_files: '列出文件',
   read_file: '读取文件',
   search_files: '搜索代码',
+  find_symbol: '查找符号',
   write_file: '写入文件',
   edit_file: '修改文件',
   run_command: '执行命令',
+  run_background: '后台命令',
+  check_task: '查看后台任务',
+  kill_task: '停止后台任务',
   todo: '任务规划',
   invoke_subagent: '委派子智能体',
   check_subagent: '查询子智能体',
@@ -35,9 +40,13 @@ const TOOL_ICON: Record<string, IconName> = {
   list_files: 'folder',
   read_file: 'file',
   search_files: 'search',
+  find_symbol: 'code',
   write_file: 'file',
   edit_file: 'file',
   run_command: 'terminal',
+  run_background: 'terminal',
+  check_task: 'clock',
+  kill_task: 'square',
   todo: 'listTodo',
   invoke_subagent: 'bot',
   check_subagent: 'bot',
@@ -1035,6 +1044,24 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
             {status.label}
           </text>
         ) : null}
+        {item.reverted ? (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              height: 18,
+              paddingLeft: 5,
+              paddingRight: 5,
+              borderRadius: 4,
+              backgroundColor: C.overlay,
+              flexShrink: 0,
+            }}
+          >
+            <text style={{ fontSize: 11, lineHeight: 15, color: C.success, whiteSpace: 'nowrap' }}>
+              已撤销
+            </text>
+          </div>
+        ) : null}
       </div>
 
       {/*
@@ -1141,6 +1168,54 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
                 <CopyButton text={item.patch} label="复制 Diff" />
               </div>
               <diff patch={item.patch} wordDiff maxLines={24} theme={docTheme()} />
+            </div>
+          ) : null}
+
+          {open && (item.name === 'write_file' || item.name === 'edit_file') && item.checkpointId && item.status === 'done' ? (
+            /*
+             * 回滚条：这次改动已经落盘，但检查点还在——随时可以退回去。
+             * 已撤销过的显示终态，不再给按钮。
+             */
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+                paddingTop: 7,
+                paddingBottom: 7,
+                paddingLeft: 10,
+                paddingRight: 10,
+                backgroundColor: C.raised,
+                borderTopWidth: 1,
+                borderColor: C.cardBorder,
+              }}
+            >
+              <text style={{ fontSize: 11.5, lineHeight: 16, color: C.secondary, flexShrink: 1 }}>
+                {item.reverted ? '此次改动已撤销，文件已恢复原状。' : '此次改动已写入工作区，可随时撤销。'}
+              </text>
+              <div style={{ flexGrow: 1 }} />
+              {item.reverted ? null : (
+                <div
+                  testId={`revert-card-${item.id}`}
+                  role="button"
+                  aria-label="撤销此次改动"
+                  onClick={() => void store.revertCard(item.threadId ?? store.activeId, item.id)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    height: 22,
+                    paddingLeft: 9,
+                    paddingRight: 9,
+                    borderRadius: 5,
+                    cursor: 'pointer',
+                    backgroundColor: C.overlay,
+                    hover: { backgroundColor: C.chipHover },
+                  }}
+                >
+                  <text style={{ fontSize: 11.5, lineHeight: 16, color: C.danger }}>撤销此次改动</text>
+                </div>
+              )}
             </div>
           ) : null}
 
@@ -1799,7 +1874,7 @@ function ItemRow({ item, store }: { item: Item; store: AgentStore }) {
   if (item.kind === 'assistant') return <AssistantRow item={item} turnDurationMs={item.turnDurationMs} />
   if (item.kind === 'compact') return <CompactCard item={item} store={store} />
   if (item.kind === 'tool') {
-    if (item.name === 'todo') return null
+    // todo 卡只活在「压缩前的原始历史」重放里：主线流程由 TodoFloatingPanel 呈现
     return <ToolCard item={item} store={store} />
   }
   return <NoticeRow item={item} />
@@ -2431,6 +2506,9 @@ export function Transcript({ store }: { store: AgentStore }) {
 
       {/* 任务规划步骤独立收缩悬浮框 */}
       <TodoFloatingPanel store={store} />
+
+      {/* 改动审阅面板：逐文件查看 diff、恢复原状（含一键全部恢复） */}
+      {store.changesOpen ? <ChangesPanel store={store} /> : null}
 
       {!atBottom && blocks.length > 0 ? (
         <div

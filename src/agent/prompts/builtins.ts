@@ -100,4 +100,26 @@ export const BUILTIN_PROMPTS: PromptItem[] = [
     isSystem: false,
     updatedAt: 1720000000000,
   },
+  {
+    id: 'builtin-init-project-instructions',
+    name: '生成项目说明 (AGENTS.md)',
+    description: '分析当前项目并生成 AGENTS.md 约定文件，之后的每轮对话都会自动注入。',
+    content: `# 生成项目说明（AGENTS.md）
+
+请调研当前工作区并生成一份 AGENTS.md，放在项目根目录。这份文件会在之后的每轮对话里自动注入系统提示词，所以只写「接手这个项目的人必须知道的事」：
+
+1. **先调研再动笔**：用 list_files 看结构、read_file 读 README / package.json / 配置文件，弄清技术栈、构建与测试方式；
+2. **必写内容**：
+   - 项目一句话简介与技术栈；
+   - 常用命令（安装、构建、测试、启动，逐条带上真实命令）；
+   - 代码结构与关键目录的职责；
+   - 项目特有的约定（命名、分支、提交、目录规矩等，若有）；
+3. **不要写**：大段代码示例、和仓库现状不符的愿望清单、README 里已有的长篇背景；
+4. **篇幅控制**：正文控制在 60 行以内，宁可短而准；
+5. **写入后**：用 write_file 落盘为 AGENTS.md，并向用户概括你写了什么、为什么。`,
+    scope: 'builtin',
+    enabled: true,
+    isSystem: false,
+    updatedAt: 1720000000000,
+  },
 ]

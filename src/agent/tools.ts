@@ -8,7 +8,7 @@ import { join, relative, resolve } from 'node:path'
 import type { ToolOutcome } from './types'
 import { defaultToolRegistry, ToolRegistry } from './tools/registry'
 import { defaultExtensionLoader } from './tools/loader'
-import { SKIP_DIRS } from './tools/workspace'
+import { SKIP_DIRS, isPathInsideWorkspace } from './tools/workspace'
 
 export { defaultToolRegistry, ToolRegistry, defaultExtensionLoader }
 
@@ -48,6 +48,10 @@ async function walk(
     if (budget.left <= 0) return entries
     if (dirent.name.startsWith('.') && dirent.name !== '.github') continue
     const absolute = join(dir, dirent.name)
+    if (dirent.isDirectory() || dirent.isSymbolicLink()) {
+      // 指到工作区外的 symlink/junction 整枝跳过，不让索引和附件清单泄出内容
+      if (!isPathInsideWorkspace(root, absolute)) continue
+    }
     if (dirent.isDirectory()) {
       if (SKIP_DIRS.has(dirent.name)) continue
       budget.left -= 1
@@ -110,8 +114,21 @@ export function describeTool(name: string, args: Record<string, unknown>): strin
   switch (name) {
     case 'run_command':
       return String(args.command ?? '').replace(/\r?\n+/g, ' ').trim()
+    case 'run_background':
+      return String(args.command ?? '').replace(/\r?\n+/g, ' ').trim()
+    case 'check_task': {
+      const taskId = String(args.task_id ?? '').trim()
+      return taskId || '全部任务'
+    }
+    case 'kill_task':
+      return String(args.task_id ?? '').replace(/\r?\n+/g, ' ').trim()
     case 'search_files':
       return `/${String(args.pattern ?? '').replace(/\r?\n+/g, ' ').trim()}/`
+    case 'find_symbol': {
+      const query = String(args.query ?? '').replace(/\r?\n+/g, ' ').trim()
+      const kind = typeof args.kind === 'string' && args.kind ? `:${args.kind}` : ''
+      return `@${query}${kind}`
+    }
     case 'list_files':
       return String(args.path || '.').replace(/\r?\n+/g, ' ').trim()
     case 'read_file':

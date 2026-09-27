@@ -42,6 +42,10 @@ import {
 } from './tools'
 import { defaultSessionManager } from './session/manager'
 import type { SessionSummary } from './session/types'
+import { defaultCheckpointManager } from './checkpoint'
+import { checkWorkspaceSandbox } from './tools/workspace'
+import { patchStats } from './patch'
+import { defaultHooks } from './hooks'
 import { defaultPromptManager } from './prompts/manager'
 import {
   defaultSubagentManager,
@@ -97,6 +101,9 @@ const MAX_LOG = 120
 /** 拒绝后回给模型的说明：说清楚行为，而不是只报一个 no。 */
 const DENIED_REASON = '用户拒绝了这次调用。不要重试同样的调用，先说明原因或换一种做法。'
 
+/** 会做检查点的内置写工具：执行前把目标文件快照一份，才有「撤销此次改动」。 */
+const CHECKPOINT_TOOLS = new Set(['write_file', 'edit_file'])
+
 let counter = 0
 const nextId = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${++counter}`
 
@@ -147,6 +154,14 @@ export class AgentStore {
   debugOpen = false
   settingsOpen = false
   pluginsOpen = false
+  /** 改动审阅面板（逐文件保留/恢复原状）的开关；纯视图状态，不落盘 */
+  changesOpen = false
+  /** 命令面板（Ctrl+K）；纯视图状态 */
+  paletteOpen = false
+  /** 侧边栏与搜索框的展开状态：从 AgentWindow 的局部 state 上收过来，
+   * 这样窗口级快捷键（Ctrl+B / Ctrl+F）才够得着。纯视图状态。 */
+  sidebarOpen = true
+  searchOpen = false
   confirmModal: ConfirmModalOptions | null = null
   /** The installed light/dark mode. The palette in `theme.ts` mirrors this. */
   appearance: Appearance = appearance()
@@ -181,6 +196,31 @@ export class AgentStore {
   applyPromptToComposer(content: string) {
     this.pendingDraft = content
     this.pluginsOpen = false
+    this.notify()
+  }
+
+  /** 开关改动审阅面板 */
+  setChangesOpen(open: boolean) {
+    this.changesOpen = open
+    this.notify()
+  }
+
+  /** 开关命令面板 */
+  setPaletteOpen(open: boolean) {
+    this.paletteOpen = open
+    this.notify()
+  }
+
+  /** 开关侧边栏（快捷键 Ctrl+B 与标题栏按钮共用） */
+  toggleSidebar() {
+    this.sidebarOpen = !this.sidebarOpen
+    this.notify()
+  }
+
+  /** 设置侧边栏搜索框状态 */
+  setSearchOpen(open: boolean) {
+    this.searchOpen = open
+    if (open) this.sidebarOpen = true
     this.notify()
   }
 
@@ -394,6 +434,7 @@ export class AgentStore {
               status,
               output: res?.content ?? '',
               patch: res?.patch,
+              checkpointId: res?.checkpointId,
               threadId: summary.id,
             })
           }
@@ -433,6 +474,7 @@ export class AgentStore {
             status,
             output: message.content,
             patch: message.patch,
+            checkpointId: message.checkpointId,
             threadId: summary.id,
           })
         }
@@ -807,6 +849,11 @@ export class AgentStore {
 
     this.push({ kind: 'info', text: `已删除会话「${thread.title}」` })
     void defaultSessionManager.deleteSession(id, thread.workspace).catch(() => {})
+    // 检查点流水是会话的附属品，会话没了就一起清
+    void defaultCheckpointManager.discard(id).catch(() => {})
+    for (const cid of childIds) {
+      void defaultCheckpointManager.discard(cid).catch(() => {})
+    }
 
     if (this.activeId === id || childIds.has(this.activeId)) {
       const next = this.threads.find((candidate) => candidate.workspace === thread.workspace)
@@ -862,6 +909,10 @@ export class AgentStore {
     }
 
     void defaultSessionManager.deleteWorkspace(workspace).catch(() => {})
+    // 该工作区所有会话的检查点流水一并清理
+    for (const t of doomed) {
+      void defaultCheckpointManager.discard(t.id).catch(() => {})
+    }
     this.push({ kind: 'info', text: `已移除工作区「${shortPath(workspace, 2)}」` })
     this.notify()
     return null
@@ -932,6 +983,145 @@ export class AgentStore {
     if (!resolve) return
     this.approvals.delete(toolItemId)
     resolve(approved)
+  }
+
+  // ---------------------------------------------------------------- 改动回滚
+
+  /** 会话里有多少个「仍有效」的文件改动（审阅入口的角标用）。 */
+  getThreadChangeCount(threadId: string): number {
+    return this.getThreadFileChanges(threadId).filter((change) => !change.reverted).length
+  }
+
+  /**
+   * 汇总一个会话的文件改动（write_file / edit_file 卡片），按文件聚合：
+   * 每个文件保留最近一次的 patch 与累计改动量，供改动审阅面板逐文件
+   * 「保留 / 恢复原状」。run_command 里的改动不在此列。
+   */
+  getThreadFileChanges(threadId: string): Array<{
+    path: string
+    latestPatch: string
+    additions: number
+    deletions: number
+    editsCount: number
+    reverted: boolean
+    cardIds: string[]
+  }> {
+    const thread = this.threads.find((t) => t.id === threadId)
+    if (!thread) return []
+    const byPath = new Map<
+      string,
+      { path: string; latestPatch: string; additions: number; deletions: number; editsCount: number; reverted: boolean; cardIds: string[] }
+    >()
+    for (const item of thread.items) {
+      if (item.kind !== 'tool' || (item.name !== 'write_file' && item.name !== 'edit_file')) continue
+      if (item.status !== 'done' && item.status !== 'error') continue
+      const path = String(item.args?.path ?? '').replace(/\\/g, '/')
+      if (!path) continue
+      const stats = item.patch ? patchStats(item.patch) : { added: 0, removed: 0 }
+      const existing = byPath.get(path)
+      if (existing) {
+        existing.editsCount += 1
+        existing.additions += stats.added
+        existing.deletions += stats.removed
+        existing.reverted = existing.reverted && Boolean(item.reverted)
+        existing.cardIds.push(item.id)
+        if (item.patch) existing.latestPatch = item.patch
+      } else {
+        byPath.set(path, {
+          path,
+          latestPatch: item.patch ?? '',
+          additions: stats.added,
+          deletions: stats.removed,
+          editsCount: 1,
+          reverted: Boolean(item.reverted),
+          cardIds: [item.id],
+        })
+      }
+    }
+    return [...byPath.values()]
+  }
+
+  private revertGuard(threadId: string): Thread | null {
+    const thread = this.threads.find((t) => t.id === threadId)
+    if (!thread) return null
+    if (this.isThreadRunning(threadId)) {
+      this.push({ kind: 'info', text: '会话正在运行，先停止再回滚改动。' })
+      this.notify()
+      return null
+    }
+    return thread
+  }
+
+  /** 把回滚结果标回卡片（checkpointId 命中被作废的记录就算已撤销）并通知界面。 */
+  private markCardsReverted(thread: Thread, invalidated: string[]): void {
+    if (invalidated.length === 0) return
+    const set = new Set(invalidated)
+    for (const item of thread.items) {
+      if (item.kind === 'tool' && item.checkpointId && set.has(item.checkpointId)) {
+        item.reverted = true
+      }
+    }
+  }
+
+  /** 撤销单次写工具调用：恢复那张卡片快照里的文件内容。 */
+  async revertCard(threadId: string, cardId: string): Promise<boolean> {
+    const thread = this.revertGuard(threadId)
+    if (!thread) return false
+    const card = thread.items.find((it): it is ToolCard => it.kind === 'tool' && it.id === cardId)
+    if (!card?.checkpointId || card.reverted) return false
+
+    const outcome = await defaultCheckpointManager.revertCheckpoint(threadId, card.checkpointId)
+    if (!outcome) return false
+    this.markCardsReverted(thread, outcome.invalidated)
+    const summary = this.describeRevertOutcome(outcome)
+    this.push({ kind: 'info', text: `已撤销 ${card.name} 的改动${summary}` })
+    this.notify()
+    return true
+  }
+
+  /** 把一个文件恢复到 Agent 第一次修改它之前的样子。 */
+  async revertFile(threadId: string, path: string): Promise<boolean> {
+    const thread = this.revertGuard(threadId)
+    if (!thread) return false
+    let absolute: string
+    try {
+      absolute = checkWorkspaceSandbox(thread.workspace, path)
+    } catch (error) {
+      // 文件可能已被删除（新建后又回滚），沙箱仍能按真实落点判断；彻底越界才拦
+      this.push({ kind: 'error', text: `无法回滚 ${path}：${(error as Error).message}` })
+      this.notify()
+      return false
+    }
+    const outcome = await defaultCheckpointManager.revertFile(threadId, absolute)
+    if (!outcome) return false
+    this.markCardsReverted(thread, outcome.invalidated)
+    this.push({ kind: 'info', text: `已把 ${path} 恢复到改动前${this.describeRevertOutcome(outcome)}` })
+    this.notify()
+    return true
+  }
+
+  /** 一键恢复：撤销本会话 Agent 造成的一切被跟踪的文件改动。 */
+  async revertAllChanges(threadId: string): Promise<boolean> {
+    const thread = this.revertGuard(threadId)
+    if (!thread) return false
+    const outcome = await defaultCheckpointManager.revertAll(threadId)
+    if (!outcome) {
+      this.push({ kind: 'info', text: '没有可回滚的改动。' })
+      this.notify()
+      return false
+    }
+    this.markCardsReverted(thread, outcome.invalidated)
+    this.push({ kind: 'info', text: `已恢复本会话的全部文件改动${this.describeRevertOutcome(outcome)}` })
+    this.notify()
+    return true
+  }
+
+  private describeRevertOutcome(outcome: { restored: string[]; deleted: string[]; skipped: string[] }): string {
+    const parts: string[] = []
+    if (outcome.restored.length) parts.push(`恢复 ${outcome.restored.length} 个文件`)
+    if (outcome.deleted.length) parts.push(`删除 ${outcome.deleted.length} 个新文件`)
+    if (outcome.skipped.length) parts.push(`${outcome.skipped.length} 个文件过大未能还原`)
+    return parts.length ? `（${parts.join('，')}）` : ''
   }
 
   /**
@@ -1275,6 +1465,8 @@ export class AgentStore {
             if (profile.mode === 'readonly' && defaultToolRegistry.isWriteTool(context.toolCall.name)) {
               return { block: true, reason: `子智能体 ${profile.name} 运行在只读安全模式下，禁止执行写操作。` }
             }
+            // 子智能体同样在工作区里写文件，改动一样要留回滚的退路
+            await this.captureCheckpoint(subagentThread, context.toolCall)
             return undefined
           },
         })
@@ -1730,6 +1922,8 @@ export class AgentStore {
             if (profile.mode === 'readonly' && defaultToolRegistry.isWriteTool(context.toolCall.name)) {
               return { block: true, reason: `子智能体 ${profile.name} 运行在只读安全模式下，禁止执行写操作。` }
             }
+            // 子智能体同样在工作区里写文件，改动一样要留回滚的退路
+            await this.captureCheckpoint(subagentThread, context.toolCall)
             return undefined
           },
         })
@@ -2351,6 +2545,22 @@ export class AgentStore {
       signal: controller.signal,
       beforeToolCall: (context: BeforeToolCallContext) =>
         this.gate(thread, context.toolCall, controller.signal),
+      // 用户钩子（hooks.json）的 after_tool 事件：工具执行完代跑自动格式化之类的命令
+      afterToolCall: async (context) => {
+        try {
+          const result = await defaultHooks.run(thread.workspace, 'after_tool', context.toolCall.name, {
+            args: context.toolCall.arguments,
+            ok: !context.isError,
+            output: context.result.output,
+          })
+          for (const run of result.runs) {
+            this.push({ kind: 'tool', text: `钩子 after_tool · ${context.toolCall.name} · 退出码 ${run.exitCode ?? 'err'}` })
+          }
+        } catch {
+          // 钩子失败不影响工具结果
+        }
+        return undefined
+      },
     })
 
     try {
@@ -2473,6 +2683,10 @@ export class AgentStore {
                 level: 'info',
               })
             }
+            // 用户钩子：一轮结束（agent_end 事件）
+            void defaultHooks
+              .run(thread.workspace, 'agent_end', null, { reason: event.reason, thread_id: thread.id })
+              .catch(() => {})
             this.notify()
 
             // 检查是否达到自动上下文压缩阈值
@@ -2555,10 +2769,56 @@ export class AgentStore {
     this.notify()
   }
 
+  /**
+   * 用户钩子（hooks.json）的 before_tool 事件：工具获准后、执行前代跑守门命令。
+   * 退出码非零 = 拦截，stderr（或默认文案）作为拒绝理由回给模型。
+   */
+  private async runBeforeToolHook(thread: Thread, call: ToolCallBlock): Promise<string | null> {
+    try {
+      const result = await defaultHooks.run(thread.workspace, 'before_tool', call.name, {
+        args: call.arguments,
+        thread_id: thread.id,
+        workspace: thread.workspace,
+      })
+      for (const run of result.runs) {
+        this.push({ kind: 'tool', text: `钩子 before_tool · ${call.name} · 退出码 ${run.exitCode ?? 'err'}` })
+      }
+      if (result.blocked) {
+        this.push({ kind: 'info', text: `钩子拦截了 ${call.name}：${result.reason ?? ''}` })
+        return result.reason ?? `用户配置的钩子拦截了这次 ${call.name} 调用。`
+      }
+    } catch {
+      // 钩子体系本身出错不阻塞工具执行
+    }
+    return null
+  }
+
   private needsApproval(name: string): boolean {
     if (this.approval === 'ask') return true
     if (this.approval === 'readonly') return isWriteTool(name)
     return false
+  }
+
+  /**
+   * 写工具执行前抓检查点：把目标文件当下的内容快照一份并挂到卡片上。
+   * 主循环与子智能体循环都走这里。快照失败不拦截执行——安全网失效时
+   * 写操作本身照常工作（沙箱拒绝之类的错误让工具自己报）。
+   */
+  private async captureCheckpoint(thread: Thread, call: ToolCallBlock): Promise<void> {
+    if (!CHECKPOINT_TOOLS.has(call.name)) return
+    const card = this.cards.get(call.id)
+    if (card?.checkpointId) return
+    try {
+      const relative = String(call.arguments.path ?? '').trim()
+      if (!relative) return
+      const absolute = checkWorkspaceSandbox(thread.workspace, relative)
+      const record = await defaultCheckpointManager.capture(thread.id, call.id, [
+        { path: relative.replace(/\\/g, '/'), absolute },
+      ])
+      if (card) card.checkpointId = record.id
+    } catch {
+      // 快照失败不阻塞工具执行
+    }
   }
 
   /**
@@ -2610,7 +2870,17 @@ export class AgentStore {
     this.cards.set(call.id, card)
     this.notify()
 
-    if (card.status !== 'awaiting') return undefined
+    if (card.status !== 'awaiting') {
+      await this.captureCheckpoint(thread, call)
+      const hookBlock = await this.runBeforeToolHook(thread, call)
+      if (hookBlock) {
+        card.status = 'denied'
+        card.output = hookBlock
+        this.notify()
+        return { block: true, reason: hookBlock }
+      }
+      return undefined
+    }
 
     const approved = await new Promise<boolean>((resolve) => {
       const finish = (result: boolean) => {
@@ -2624,7 +2894,17 @@ export class AgentStore {
         signal.addEventListener('abort', () => finish(false), { once: true })
       }
     })
-    if (approved) return undefined
+    if (approved) {
+      await this.captureCheckpoint(thread, call)
+      const hookBlock = await this.runBeforeToolHook(thread, call)
+      if (hookBlock) {
+        card.status = 'denied'
+        card.output = hookBlock
+        this.notify()
+        return { block: true, reason: hookBlock }
+      }
+      return undefined
+    }
 
     card.status = 'denied'
     card.output = '已拒绝执行'
@@ -2675,6 +2955,8 @@ export class AgentStore {
       content: result.output,
       patch: result.patch,
       isError: !result.ok,
+      // 检查点 id 跟着流水走：重启恢复之后「撤销此次改动」仍然可用
+      checkpointId: card?.checkpointId,
       timestamp: Date.now(),
     })
     this.push({

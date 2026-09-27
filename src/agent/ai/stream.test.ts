@@ -220,3 +220,164 @@ describe('streamModelChat Token 统计与流式参数', () => {
     }
   })
 })
+
+describe('streamModelChat 请求重试与退避', () => {
+  const sseData = [
+    'data: {"choices":[{"delta":{"content":"重试成功"}}]}\n\n',
+    'data: [DONE]\n\n',
+  ].join('')
+
+  function sseResponse(): Response {
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(sseData))
+        controller.close()
+      },
+    })
+    return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  }
+
+  test('可重试状态码（503）之后重新发起请求，最终正常产出流', async () => {
+    const { streamModelChat } = await import('./stream')
+    const originalFetch = globalThis.fetch
+    let attempts = 0
+
+    globalThis.fetch = (async () => {
+      attempts += 1
+      if (attempts < 3) return new Response('service unavailable', { status: 503 })
+      return sseResponse()
+    }) as any
+
+    try {
+      const deltas = []
+      for await (const delta of streamModelChat(
+        { baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', model: 'gpt-4o' },
+        [{ role: 'user', content: '测试' }],
+        { retry: { maxRetries: 3, baseDelayMs: 1 } }
+      )) {
+        deltas.push(delta)
+      }
+
+      expect(attempts).toBe(3)
+      expect(deltas.find((d) => d.type === 'text')?.text).toBe('重试成功')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('网络异常（fetch 抛错）同样触发重试', async () => {
+    const { streamModelChat } = await import('./stream')
+    const originalFetch = globalThis.fetch
+    let attempts = 0
+
+    globalThis.fetch = (async () => {
+      attempts += 1
+      if (attempts === 1) throw new TypeError('fetch failed: ECONNRESET')
+      return sseResponse()
+    }) as any
+
+    try {
+      const deltas = []
+      for await (const delta of streamModelChat(
+        { baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', model: 'gpt-4o' },
+        [{ role: 'user', content: '测试' }],
+        { retry: { maxRetries: 2, baseDelayMs: 1 } }
+      )) {
+        deltas.push(delta)
+      }
+
+      expect(attempts).toBe(2)
+      expect(deltas.find((d) => d.type === 'text')?.text).toBe('重试成功')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('永久性错误（401）不重试', async () => {
+    const { streamModelChat } = await import('./stream')
+    const originalFetch = globalThis.fetch
+    let attempts = 0
+
+    globalThis.fetch = (async () => {
+      attempts += 1
+      return new Response(JSON.stringify({ error: { message: 'bad key' } }), { status: 401 })
+    }) as any
+
+    try {
+      const deltas = []
+      for await (const delta of streamModelChat(
+        { baseUrl: 'https://api.example.com/v1', apiKey: 'wrong', model: 'gpt-4o' },
+        [{ role: 'user', content: '测试' }],
+        { retry: { maxRetries: 3, baseDelayMs: 1 } }
+      )) {
+        deltas.push(delta)
+      }
+
+      expect(attempts).toBe(1)
+      const errorDelta = deltas.find((d) => d.type === 'error')
+      expect(errorDelta?.error).toContain('HTTP 401')
+      expect(errorDelta?.error).toContain('bad key')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('重试耗尽后产出最后一次的 HTTP 错误信息', async () => {
+    const { streamModelChat } = await import('./stream')
+    const originalFetch = globalThis.fetch
+    let attempts = 0
+
+    globalThis.fetch = (async () => {
+      attempts += 1
+      return new Response('still down', { status: 503 })
+    }) as any
+
+    try {
+      const deltas = []
+      for await (const delta of streamModelChat(
+        { baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', model: 'gpt-4o' },
+        [{ role: 'user', content: '测试' }],
+        { retry: { maxRetries: 2, baseDelayMs: 1 } }
+      )) {
+        deltas.push(delta)
+      }
+
+      expect(attempts).toBe(3)
+      const errorDelta = deltas.find((d) => d.type === 'error')
+      expect(errorDelta?.error).toContain('HTTP 503')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('中止信号在退避等待期间生效', async () => {
+    const { streamModelChat } = await import('./stream')
+    const originalFetch = globalThis.fetch
+    const controller = new AbortController()
+    let attempts = 0
+
+    globalThis.fetch = (async () => {
+      attempts += 1
+      return new Response('overloaded', { status: 429 })
+    }) as any
+
+    try {
+      // 第一次 429 之后进入 5 秒退避，中止信号应在退避期内生效并直接收尾
+      setTimeout(() => controller.abort(), 50)
+      const deltas = []
+      for await (const delta of streamModelChat(
+        { baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', model: 'gpt-4o' },
+        [{ role: 'user', content: '测试' }],
+        { signal: controller.signal, retry: { maxRetries: 3, baseDelayMs: 5000 } }
+      )) {
+        deltas.push(delta)
+        if (delta.type === 'done') break
+      }
+      expect(attempts).toBe(1)
+      expect(deltas.at(-1)?.type).toBe('done')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})

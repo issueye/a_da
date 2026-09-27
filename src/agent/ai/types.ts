@@ -38,4 +38,11 @@ export interface ModelChatOptions {
   effort?: string
   signal?: AbortSignal
   temperature?: number
+  /** 请求阶段的自动重试；仅在响应头到达之前生效，流已开始后绝不重发。 */
+  retry?: {
+    /** 最多重试几次（默认 3，0 表示不重试）。 */
+    maxRetries?: number
+    /** 首次重试的基础等待毫秒数（默认 800，之后指数退避）。 */
+    baseDelayMs?: number
+  }
 }

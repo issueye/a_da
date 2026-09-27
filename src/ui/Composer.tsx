@@ -6,7 +6,7 @@
  * three settings the mock shows: approval, event log and reasoning effort.
  */
 
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Select, SelectContent, SelectItem, SelectTrigger, useGpuix } from '@gpuix/react'
 import {
   APPROVAL_OPTIONS,
@@ -18,6 +18,7 @@ import {
 import { ChipButton, ChipSelect, Icon, menuLayer, MenuRow, MenuSurface, menuItemStyle } from './controls'
 import { C, editorTheme, FONT_MONO, M } from '../theme'
 import { formatDuration, formatNumber, formatTokenShort } from './Transcript'
+import { saveClipboardImageToTemp } from '../platform/clipboard'
 import { computeThreadStats, type AgentMode, type Item, type Thread } from '../agent/types'
 import { computeContextBreakdown, type ContextUsageSummary } from '../agent/stats'
 import { ContextUsagePopover } from './ContextUsagePopover'
@@ -871,6 +872,21 @@ export function QueuedMessagesFloatingPanel({
   )
 }
 
+/** 输入框可接受的图片扩展名（附件 pill 与拖放共用一份判断）。 */
+const IMAGE_EXTENSIONS = /\.(png|jpe?g|webp|gif|svg)$/i
+
+/** 从拖放/选择的路径里挑出图片；坏值与非图片一律丢弃。 */
+export function pickImagePaths(paths: unknown): string[] {
+  if (!Array.isArray(paths)) return []
+  const picked: string[] = []
+  for (const raw of paths) {
+    const p = String(raw ?? '')
+    if (!p || !IMAGE_EXTENSIONS.test(p)) continue
+    if (!picked.includes(p)) picked.push(p)
+  }
+  return picked
+}
+
 export function Composer({ store, centered }: { store: AgentStore; centered?: boolean }) {
   const { renderer } = useGpuix()
   const [, setTick] = useState(0)
@@ -903,6 +919,42 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
     }
   }
 
+  // Ctrl+V 粘贴图片期间防重入：PowerShell 读剪贴板要几百毫秒
+  const pasteBusy = useRef(false)
+
+  /** Ctrl+V 时兜底取剪贴板里的图片。纯文本粘贴由原生 textarea 自己处理，互不干扰。 */
+  const pasteImageFromClipboard = async () => {
+    if (pasteBusy.current) return
+    if (!store.supportsImages || store.active.isSubagent) return
+    if (process.platform !== 'win32') return
+    pasteBusy.current = true
+    try {
+      const result = await saveClipboardImageToTemp()
+      if (result.saved && result.path) {
+        setImages((prev) => (prev.includes(result.path!) ? prev : [...prev, result.path!]))
+      }
+    } catch {
+      // 剪贴板读取失败静默：粘贴文本不能因此受影响
+    } finally {
+      pasteBusy.current = false
+    }
+  }
+
+  /** 拖放到输入框的文件里挑出图片附件；非图片忽略。 */
+  const handleDroppedFiles = (event: any): void => {
+    if (!store.supportsImages || store.active.isSubagent) return
+    const paths: string[] = event?.paths ?? event?.detail?.paths ?? []
+    const images = pickImagePaths(paths)
+    if (images.length === 0) return
+    setImages((prev) => {
+      const next = [...prev]
+      for (const p of images) {
+        if (!next.includes(p)) next.push(p)
+      }
+      return next
+    })
+  }
+
   // 当外部有注入待发送/草稿时（例如提示词一键应用），优先显示与消费
   const currentDraft = draft || store.pendingDraft || ''
 
@@ -920,6 +972,8 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
   }, [store.pendingDraft])
 
   const running = store.running
+  // 本会话待保留的文件改动数：有改动才显示「改动」审阅入口
+  const changesCount = store.getThreadChangeCount(store.activeId)
   const ready = currentDraft.trim().length > 0 || images.length > 0 || selectedCommand !== null
   const approval = APPROVAL_OPTIONS.find((option) => option.value === store.approval)!
   const effort = EFFORT_OPTIONS.find((option) => option.value === store.effort)!
@@ -1203,6 +1257,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
             }
           }
         }}
+        onFileDrop={handleDroppedFiles}
         style={{
           display: 'flex',
           flexDirection: 'column',
@@ -1335,7 +1390,15 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
             ) {
               setSelectedCommand(null)
             }
+            // Ctrl+V / Cmd+V：文本粘贴交给原生，图片由剪贴板兜底
+            if (
+              (event?.key === 'v' || event?.key === 'V') &&
+              (event?.modifiers?.ctrl || event?.modifiers?.cmd)
+            ) {
+              void pasteImageFromClipboard()
+            }
           }}
+          onFileDrop={handleDroppedFiles}
           onChange={(event) => {
             if (store.pendingDraft !== null) store.clearPendingDraft()
             let val = event.value ?? ''
@@ -1667,6 +1730,49 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
             >
               <Icon name="square" size={10} color={C.accent} />
               <text style={{ fontSize: 11.5, fontWeight: 600, color: C.accent }}>停止</text>
+            </div>
+          ) : null}
+
+          {/* 改动审阅入口：本会话有被跟踪的文件改动时出现，角标是待保留文件数 */}
+          {changesCount > 0 ? (
+            <div
+              testId="changes-chip"
+              role="button"
+              aria-label={`改动审阅：${changesCount} 个文件待保留`}
+              onClick={() => store.setChangesOpen(!store.changesOpen)}
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 4,
+                height: 24,
+                paddingLeft: 8,
+                paddingRight: 9,
+                borderRadius: 6,
+                cursor: 'pointer',
+                backgroundColor: store.changesOpen ? C.chipHover : C.chip,
+                borderWidth: 1,
+                borderColor: store.changesOpen ? C.borderStrong : C.chipBorder,
+                hover: { backgroundColor: C.chipHover },
+              }}
+            >
+              <Icon name="edit" size={11} color={C.tertiary} />
+              <text style={{ fontSize: 11.5, color: C.secondary }}>改动</text>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  minWidth: 14,
+                  height: 14,
+                  paddingLeft: 3,
+                  paddingRight: 3,
+                  borderRadius: 7,
+                  backgroundColor: C.overlay,
+                }}
+              >
+                <text style={{ fontSize: 9.5, fontFamily: FONT_MONO, color: C.link }}>{String(changesCount)}</text>
+              </div>
             </div>
           ) : null}
 

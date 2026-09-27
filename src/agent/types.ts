@@ -48,6 +48,10 @@ export type Item =
       patch?: string
       details?: Record<string, any>
       threadId?: string
+      /** 执行前快照的检查点 id（仅 write_file / edit_file）；有它才能「撤销此次改动」 */
+      checkpointId?: string
+      /** 该检查点已被回滚 */
+      reverted?: boolean
     }
   | { kind: 'notice'; id: string; at: number; text: string; level: 'info' | 'error' }
   | {

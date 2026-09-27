@@ -45,6 +45,14 @@ export interface BashToolArgs {
 export interface SearchToolArgs {
   pattern: string
   glob?: string
+  /** 限定搜索的子目录（相对工作区） */
+  path?: string
+  /** 把 pattern 当纯文本而不是正则 */
+  literal?: boolean
+  /** 区分大小写（默认不区分） */
+  case_sensitive?: boolean
+  /** 每个匹配附带的上下文行数（0-3） */
+  context?: number
 }
 
 export interface ListToolArgs {

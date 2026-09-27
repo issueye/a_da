@@ -20,6 +20,8 @@ import {
 import { createSkillTool, createManageSkillTool } from '../skills'
 import { createReadUrlTool } from './builtins/read-url'
 import { createManageTool } from './builtins/meta-tools'
+import { createRunBackgroundTool, createCheckTaskTool, createKillTaskTool } from './builtins/background'
+import { createFindSymbolTool } from './builtins/symbols'
 
 export class ToolRegistry {
   private customTools = new Map<string, AgentTool>()
@@ -37,6 +39,10 @@ export class ToolRegistry {
     'resume_subagent',
     'Skill',
     'skill',
+    // 查看后台任务只读状态与输出，不产生任何写副作用
+    'check_task',
+    // 符号索引只做内存扫描与查询
+    'find_symbol',
   ])
 
   /**
@@ -79,6 +85,10 @@ export class ToolRegistry {
       createWriteTool(workspace),
       createEditTool(workspace),
       createBashTool(workspace),
+      createRunBackgroundTool(workspace),
+      createCheckTaskTool(),
+      createKillTaskTool(),
+      createFindSymbolTool(workspace),
       createTodoTool(),
       createSkillTool(undefined, workspace),
       createSubagentTool(workspace, options?.parentThreadId),
@@ -147,6 +157,7 @@ export const BUILTIN_TOOLS_METADATA: BuiltinToolInfo[] = [
   { name: 'list_files', label: '列出文件', description: '遍历并列出指定目录下的文件与子目录结构', isReadOnly: true },
   { name: 'read_file', label: '读取文件', description: '安全读取工作区内的代码或文本文件内容', isReadOnly: true },
   { name: 'search_files', label: '搜索文件', description: '在工作区文件中快速全局搜索指定文本或模式', isReadOnly: true },
+  { name: 'find_symbol', label: '查找符号', description: '按名字查找函数/类/结构体等定义的位置与签名', isReadOnly: true },
   { name: 'read_url_content', label: '读取网页', description: '抓取技术文档与开源库链接内容并提取为 Markdown', isReadOnly: true },
   { name: 'todo', label: '任务清单', description: '管理多步骤编码任务的进度与状态', isReadOnly: true },
   { name: 'Skill', label: '加载技能', description: '按需加载专业技能规范与操作流程指南（SKILL.md）', isReadOnly: true },
@@ -156,6 +167,9 @@ export const BUILTIN_TOOLS_METADATA: BuiltinToolInfo[] = [
   { name: 'write_file', label: '写入文件', description: '在工作区创建新文件或覆盖已有文件', isReadOnly: false },
   { name: 'edit_file', label: '编辑文件', description: '通过精准替换文本修改已有代码文件', isReadOnly: false },
   { name: 'run_command', label: '执行命令', description: '在项目工作区根目录下执行终端命令', isReadOnly: false },
+  { name: 'run_background', label: '后台命令', description: '后台启动长运行命令（dev server 等），立即返回任务 id', isReadOnly: false },
+  { name: 'check_task', label: '查看后台任务', description: '查询后台任务的状态与输出', isReadOnly: true },
+  { name: 'kill_task', label: '停止后台任务', description: '终止后台任务及其子进程', isReadOnly: false },
   { name: 'manage_tool', label: '工具管理', description: '在 Create 模式下自发编写、更新与管理工具扩展插件', isReadOnly: false },
   { name: 'manage_skill', label: '技能管理', description: '在 Create 模式下自发创建、更新与管理技能规范 (SKILL.md)', isReadOnly: false },
 ]
