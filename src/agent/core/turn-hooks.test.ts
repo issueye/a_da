@@ -332,6 +332,17 @@ describe('beforeAgentStart / afterAgentEnd', () => {
     const endIndex = types.lastIndexOf('agent_end')
     expect(types.slice(endIndex - 3, endIndex)).toEqual(['message_start', 'message_update', 'message_end'])
   })
+  test('ctx.trace 把插件自己的说明送到调试日志通道', async () => {
+    const { notices, events } = await run({
+      beforeTurn: async (ctx) => {
+        ctx.trace?.('[示例插件] 本轮按配置收窄了工具表')
+        return undefined
+      },
+    })
+
+    expect(notices.some((line) => line.includes('[示例插件]'))).toBe(true)
+    expect(events.at(-1)!.type).toBe('agent_end')
+  })
 })
 
 describe('零钩子时零额外开销', () => {
