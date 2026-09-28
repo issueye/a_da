@@ -6,6 +6,7 @@ import { gitToolsPlugin } from './git-tools'
 import { codeOutlinePlugin } from './code-outline'
 import { projectInspectorPlugin } from './project-inspector'
 import { testRunnerPlugin } from './test-runner'
+import { batchOpsPlugin } from './batch-ops'
 import type { BuiltinPluginPackage } from './types'
 
 export * from './types'
@@ -13,6 +14,7 @@ export { gitToolsPlugin } from './git-tools'
 export { codeOutlinePlugin } from './code-outline'
 export { projectInspectorPlugin } from './project-inspector'
 export { testRunnerPlugin } from './test-runner'
+export { batchOpsPlugin } from './batch-ops'
 
 /** 系统预置的官方内置插件包清单 */
 export const BUILTIN_PLUGINS: BuiltinPluginPackage[] = [
@@ -20,4 +22,5 @@ export const BUILTIN_PLUGINS: BuiltinPluginPackage[] = [
   codeOutlinePlugin,
   projectInspectorPlugin,
   testRunnerPlugin,
+  batchOpsPlugin,
 ]

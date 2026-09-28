@@ -102,7 +102,24 @@ const MAX_LOG = 120
 const DENIED_REASON = '用户拒绝了这次调用。不要重试同样的调用，先说明原因或换一种做法。'
 
 /** 会做检查点的内置写工具：执行前把目标文件快照一份，才有「撤销此次改动」。 */
-const CHECKPOINT_TOOLS = new Set(['write_file', 'edit_file'])
+const CHECKPOINT_TOOLS = new Set(['write_file', 'edit_file', 'edit_files'])
+
+/**
+ * 从一次写工具调用里取出它要触碰的所有文件路径。
+ *
+ * 单文件工具用 args.path；批量工具（edit_files）用 args.files，一次会改多个文件，
+ * 每个都得进快照，否则批量改动就没有回滚的退路。
+ */
+function checkpointPathsOf(name: string, args: Record<string, unknown>): string[] {
+  if (name === 'edit_files') {
+    const files = Array.isArray(args.files) ? args.files : []
+    return files
+      .map((entry) => String((entry as { path?: unknown })?.path ?? '').trim())
+      .filter(Boolean)
+  }
+  const single = String(args.path ?? '').trim()
+  return single ? [single] : []
+}
 
 let counter = 0
 const nextId = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${++counter}`
@@ -1012,24 +1029,27 @@ export class AgentStore {
       string,
       { path: string; latestPatch: string; additions: number; deletions: number; editsCount: number; reverted: boolean; cardIds: string[] }
     >()
-    for (const item of thread.items) {
-      if (item.kind !== 'tool' || (item.name !== 'write_file' && item.name !== 'edit_file')) continue
-      if (item.status !== 'done' && item.status !== 'error') continue
-      const path = String(item.args?.path ?? '').replace(/\\/g, '/')
-      if (!path) continue
-      const stats = item.patch ? patchStats(item.patch) : { added: 0, removed: 0 }
+
+    /** 把一次调用里某个文件的 patch 累加进聚合表。 */
+    const accumulate = (
+      path: string,
+      patch: string | undefined,
+      item: ToolCard
+    ): void => {
+      if (!path) return
+      const stats = patch ? patchStats(patch) : { added: 0, removed: 0 }
       const existing = byPath.get(path)
       if (existing) {
         existing.editsCount += 1
         existing.additions += stats.added
         existing.deletions += stats.removed
         existing.reverted = existing.reverted && Boolean(item.reverted)
-        existing.cardIds.push(item.id)
-        if (item.patch) existing.latestPatch = item.patch
+        if (!existing.cardIds.includes(item.id)) existing.cardIds.push(item.id)
+        if (patch) existing.latestPatch = patch
       } else {
         byPath.set(path, {
           path,
-          latestPatch: item.patch ?? '',
+          latestPatch: patch ?? '',
           additions: stats.added,
           deletions: stats.removed,
           editsCount: 1,
@@ -1037,6 +1057,32 @@ export class AgentStore {
           cardIds: [item.id],
         })
       }
+    }
+
+    for (const item of thread.items) {
+      if (item.kind !== 'tool') continue
+      if (item.name !== 'write_file' && item.name !== 'edit_file' && item.name !== 'edit_files') continue
+      if (item.status !== 'done' && item.status !== 'error') continue
+
+      // 批量编辑：一次调用动多个文件，每个文件带自己的分段 patch，
+      // 拆开逐文件入账，改动审阅面板才能逐个文件看 diff 与回滚。
+      if (item.name === 'edit_files') {
+        const files = Array.isArray((item.details as any)?.files) ? ((item.details as any).files as any[]) : []
+        if (files.length > 0) {
+          for (const entry of files) {
+            accumulate(String(entry?.path ?? '').replace(/\\/g, '/'), entry?.patch, item)
+          }
+          continue
+        }
+        // 老流水没有 details.files：退回按参数里的路径记账，至少不丢文件
+        for (const relative of checkpointPathsOf(item.name, item.args)) {
+          accumulate(relative.replace(/\\/g, '/'), undefined, item)
+        }
+        continue
+      }
+
+      const path = String(item.args?.path ?? '').replace(/\\/g, '/')
+      accumulate(path, item.patch, item)
     }
     return [...byPath.values()]
   }
@@ -2541,6 +2587,8 @@ export class AgentStore {
       workspace: thread.workspace,
       effort: EFFORT_VALUE[this.effort],
       // 顺序执行：审批一次只该问一件事，命令之间也不该互相抢工作目录。
+      // 例外见 agent-loop：整批调用都显式声明 parallel（如并发委派多个只读子智能体）
+      // 时仍会重叠执行——那类调用既不弹审批也不抢目录。
       toolExecution: 'sequential',
       signal: controller.signal,
       beforeToolCall: (context: BeforeToolCallContext) =>
@@ -2809,12 +2857,21 @@ export class AgentStore {
     const card = this.cards.get(call.id)
     if (card?.checkpointId) return
     try {
-      const relative = String(call.arguments.path ?? '').trim()
-      if (!relative) return
-      const absolute = checkWorkspaceSandbox(thread.workspace, relative)
-      const record = await defaultCheckpointManager.capture(thread.id, call.id, [
-        { path: relative.replace(/\\/g, '/'), absolute },
-      ])
+      const relatives = checkpointPathsOf(call.name, call.arguments)
+      if (relatives.length === 0) return
+      const targets: Array<{ path: string; absolute: string }> = []
+      for (const relative of relatives) {
+        try {
+          targets.push({
+            path: relative.replace(/\\/g, '/'),
+            absolute: checkWorkspaceSandbox(thread.workspace, relative),
+          })
+        } catch {
+          // 单个路径越界不该拖累同批其它文件的快照；越界的那个由工具自己报错
+        }
+      }
+      if (targets.length === 0) return
+      const record = await defaultCheckpointManager.capture(thread.id, call.id, targets)
       if (card) card.checkpointId = record.id
     } catch {
       // 快照失败不阻塞工具执行

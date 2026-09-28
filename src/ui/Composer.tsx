@@ -972,8 +972,6 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
   }, [store.pendingDraft])
 
   const running = store.running
-  // 本会话待保留的文件改动数：有改动才显示「改动」审阅入口
-  const changesCount = store.getThreadChangeCount(store.activeId)
   const ready = currentDraft.trim().length > 0 || images.length > 0 || selectedCommand !== null
   const approval = APPROVAL_OPTIONS.find((option) => option.value === store.approval)!
   const effort = EFFORT_OPTIONS.find((option) => option.value === store.effort)!
@@ -1733,48 +1731,8 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
             </div>
           ) : null}
 
-          {/* 改动审阅入口：本会话有被跟踪的文件改动时出现，角标是待保留文件数 */}
-          {changesCount > 0 ? (
-            <div
-              testId="changes-chip"
-              role="button"
-              aria-label={`改动审阅：${changesCount} 个文件待保留`}
-              onClick={() => store.setChangesOpen(!store.changesOpen)}
-              style={{
-                display: 'flex',
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 4,
-                height: 24,
-                paddingLeft: 8,
-                paddingRight: 9,
-                borderRadius: 6,
-                cursor: 'pointer',
-                backgroundColor: store.changesOpen ? C.chipHover : C.chip,
-                borderWidth: 1,
-                borderColor: store.changesOpen ? C.borderStrong : C.chipBorder,
-                hover: { backgroundColor: C.chipHover },
-              }}
-            >
-              <Icon name="edit" size={11} color={C.tertiary} />
-              <text style={{ fontSize: 11.5, color: C.secondary }}>改动</text>
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  minWidth: 14,
-                  height: 14,
-                  paddingLeft: 3,
-                  paddingRight: 3,
-                  borderRadius: 7,
-                  backgroundColor: C.overlay,
-                }}
-              >
-                <text style={{ fontSize: 9.5, fontFamily: FONT_MONO, color: C.link }}>{String(changesCount)}</text>
-              </div>
-            </div>
-          ) : null}
+          {/* 改动审阅入口已移到会话标签栏（TabStrip）：改动属于会话状态，
+              和「这条指令怎么发」的输入框工具栏不是一类东西。 */}
 
           <ChipSelect
             testId="debug"

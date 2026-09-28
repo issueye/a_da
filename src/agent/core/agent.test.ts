@@ -243,6 +243,77 @@ describe('tool event streaming', () => {
     expect(events.filter((event) => event.type === 'tool_execution_end')).toHaveLength(2)
   })
 
+  test('全局 sequential 下，整批显式 parallel 的工具仍会重叠执行', async () => {
+    const { baseUrl, stop } = await serveToolCalls([
+      { id: 'call_a', name: 'a' },
+      { id: 'call_b', name: 'b' },
+    ])
+    const order: string[] = []
+    const slow = (name: string): AgentTool => ({
+      name,
+      description: name,
+      parameters: { type: 'object' },
+      // 显式声明 parallel：并发委派子智能体就是这类调用
+      executionMode: 'parallel',
+      async execute(): Promise<AgentToolResult> {
+        order.push(`${name}:start`)
+        await new Promise((resolve) => setTimeout(resolve, 80))
+        order.push(`${name}:end`)
+        return { output: name, ok: true }
+      },
+    })
+
+    try {
+      for await (const _event of runAgentLoop([{ role: 'user', content: '并发委派' }], config(baseUrl), {
+        tools: [slow('a'), slow('b')],
+        maxSteps: 1,
+        // 主会话的保守默认值：不该把整批 parallel 的工具压成串行
+        toolExecution: 'sequential',
+      })) {
+        // 只关心执行次序
+      }
+    } finally {
+      stop()
+    }
+
+    expect(order).toEqual(['a:start', 'b:start', 'a:end', 'b:end'])
+  })
+
+  test('混合批次里只要有一个 sequential，整批仍走串行', async () => {
+    const { baseUrl, stop } = await serveToolCalls([
+      { id: 'call_a', name: 'a' },
+      { id: 'call_b', name: 'b' },
+    ])
+    const order: string[] = []
+    const make = (name: string, mode: 'parallel' | 'sequential'): AgentTool => ({
+      name,
+      description: name,
+      parameters: { type: 'object' },
+      executionMode: mode,
+      async execute(): Promise<AgentToolResult> {
+        order.push(`${name}:start`)
+        await new Promise((resolve) => setTimeout(resolve, 40))
+        order.push(`${name}:end`)
+        return { output: name, ok: true }
+      },
+    })
+
+    try {
+      for await (const _event of runAgentLoop([{ role: 'user', content: '混合批次' }], config(baseUrl), {
+        tools: [make('a', 'parallel'), make('b', 'sequential')],
+        maxSteps: 1,
+        toolExecution: 'sequential',
+      })) {
+        // 只关心执行次序
+      }
+    } finally {
+      stop()
+    }
+
+    // 写工具混在里头时不能抢跑：a 跑完才轮到 b
+    expect(order).toEqual(['a:start', 'a:end', 'b:start', 'b:end'])
+  })
+
   test('runAgentLoop records durationMs and token usage on assistant messages', async () => {
     const mockTool: AgentTool = {
       name: 'calc',

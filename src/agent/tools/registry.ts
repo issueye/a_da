@@ -43,6 +43,8 @@ export class ToolRegistry {
     'check_task',
     // 符号索引只做内存扫描与查询
     'find_symbol',
+    // 批量读取与 list_files 同类，纯只读（批量修改是另一个工具 edit_files）
+    'read_files',
   ])
 
   /**

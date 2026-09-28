@@ -42,6 +42,7 @@ describe('系统官方内置辅助 Coding 插件系统', () => {
     expect(ids).toContain('code-outline')
     expect(ids).toContain('project-inspector')
     expect(ids).toContain('test-runner')
+    expect(ids).toContain('batch-ops')
 
     for (const plugin of BUILTIN_PLUGINS) {
       expect(plugin.name).toBeDefined()

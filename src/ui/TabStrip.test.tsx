@@ -280,4 +280,46 @@ describeNative('tab strip', () => {
     },
     30_000,
   )
+
+  test(
+    '改动审阅入口在标签栏，有改动才出现，点击开关面板',
+    async () => {
+      const workspace = await project()
+      const thread = store.newThread(workspace)
+      store.selectThread(thread.id)
+      store.setChangesOpen(false)
+
+      const { app } = await mount()
+      await app.getByTestId('tab-strip').waitFor({ timeoutMs: 10_000 })
+
+      // 没有改动时不该出现入口
+      expect(await app.getByTestId('changes-chip').count()).toBe(0)
+
+      // 造一次被跟踪的文件改动
+      thread.items.push({
+        kind: 'tool',
+        id: 'card-chip',
+        at: Date.now(),
+        callId: 'call-chip',
+        name: 'write_file',
+        args: { path: 'src/a.ts' },
+        rawArgs: '{}',
+        status: 'done',
+        patch: '+one\n',
+      } as any)
+
+      await app.getByTestId('changes-chip').waitFor({ timeoutMs: 10_000 })
+      expect(store.getThreadChangeCount(thread.id)).toBe(1)
+
+      await app.getByTestId('changes-chip').click()
+      expect(store.changesOpen).toBe(true)
+
+      await app.getByTestId('changes-chip').click()
+      expect(store.changesOpen).toBe(false)
+
+      store.setChangesOpen(false)
+      await app.close()
+    },
+    30_000,
+  )
 })

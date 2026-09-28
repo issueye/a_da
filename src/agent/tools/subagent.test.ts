@@ -77,6 +77,43 @@ describe('invoke_subagent tool', () => {
 
     store.deleteThread(parent.id)
   })
+
+  test('async: true 时立即返回，并把会话 ID 交给调用方后续查询', async () => {
+    const parent = store.newThread(process.cwd())
+    store.selectThread(parent.id)
+
+    const result = await tool.execute('call_test_async', {
+      subagent_id: 'researcher',
+      task: '后台调研任务',
+      async: true,
+    })
+
+    // 关键契约：后台模式下调用本身立刻返回，而不是一直 await 到子任务跑完
+    expect(result.ok).toBe(true)
+    expect(result.details?.status).toBe('started_async')
+    expect(result.details?.subagent_thread_id).toBeDefined()
+    expect(result.output).toContain('已在后台启动')
+    expect(result.output).toContain('check_subagent')
+
+    store.deleteThread(parent.id)
+  })
+
+  test('未指定 async 时仍同步等待并直接给出报告', async () => {
+    const parent = store.newThread(process.cwd())
+    store.selectThread(parent.id)
+
+    const result = await tool.execute('call_test_sync', {
+      subagent_id: 'researcher',
+      task: '同步调研任务',
+    })
+
+    expect(result.ok).toBe(true)
+    // 同步路径不返回 started_async，而是带着报告（离线环境为兜底总结）
+    expect(result.details?.status).toBeUndefined()
+    expect(result.details?.subagent_thread_id).toBeDefined()
+
+    store.deleteThread(parent.id)
+  })
 })
 
 describe('check_subagent tool', () => {

@@ -135,6 +135,18 @@ export function describeTool(name: string, args: Record<string, unknown>): strin
     case 'write_file':
     case 'edit_file':
       return String(args.path ?? '').replace(/\r?\n+/g, ' ').trim()
+    case 'read_files': {
+      const paths = Array.isArray(args.paths) ? (args.paths as unknown[]) : []
+      const files = Array.isArray(args.files) ? (args.files as { path?: unknown }[]) : []
+      const count = paths.length + files.length
+      const first = String(paths[0] ?? files[0]?.path ?? '').replace(/\r?\n+/g, ' ').trim()
+      return count > 0 ? `${first}${count > 1 ? ` 等 ${count} 个文件` : ''}` : ''
+    }
+    case 'edit_files': {
+      const files = Array.isArray(args.files) ? (args.files as { path?: unknown }[]) : []
+      const first = String(files[0]?.path ?? '').replace(/\r?\n+/g, ' ').trim()
+      return files.length > 0 ? `${first}${files.length > 1 ? ` 等 ${files.length} 个文件` : ''}` : ''
+    }
     case 'todo': {
       const todos = Array.isArray(args.todos) ? (args.todos as { title?: string; status?: string }[]) : []
       const active = todos.find((t) => t.status === 'in_progress') ?? todos.find((t) => t.status !== 'completed')

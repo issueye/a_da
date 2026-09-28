@@ -13,7 +13,7 @@
 
 import React from 'react'
 import { Icon } from './controls'
-import { C, M } from '../theme'
+import { C, FONT_MONO, M } from '../theme'
 import type { AgentStore } from '../agent/store'
 import type { Thread } from '../agent/types'
 import { getSubagentColor } from '../agent/subagents/types'
@@ -151,6 +151,11 @@ function Tab({
 
 export function TabStrip({ store }: { store: AgentStore }) {
   const tabs = store.openTabs
+  // 本会话待保留的文件改动数。改动是「会话的」状态，所以入口放在会话标签栏，
+  // 而不是输入框工具栏——后者是「这条指令怎么发」的地方，两者不该混在一排。
+  const changesCount = store.getThreadChangeCount(store.activeId)
+  // 全撤完后角标归零，但面板还开着：这时仍要留下入口，否则只能靠快捷键关。
+  const showChanges = changesCount > 0 || store.changesOpen
 
   return (
     <div
@@ -197,6 +202,52 @@ export function TabStrip({ store }: { store: AgentStore }) {
           />
         ))}
       </div>
+
+      {/* 改动审阅入口：本会话有被跟踪的文件改动时出现，角标是待保留文件数 */}
+      {showChanges ? (
+        <div
+          testId="changes-chip"
+          role="button"
+          aria-label={`改动审阅：${changesCount} 个文件待保留`}
+          onClick={() => store.setChangesOpen(!store.changesOpen)}
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 4,
+            height: 22,
+            paddingLeft: 8,
+            paddingRight: 8,
+            marginLeft: 2,
+            borderRadius: 6,
+            flexShrink: 0,
+            cursor: 'pointer',
+            backgroundColor: store.changesOpen ? C.chipHover : C.chip,
+            borderWidth: 1,
+            borderColor: store.changesOpen ? C.borderStrong : C.chipBorder,
+            hover: { backgroundColor: C.chipHover },
+          }}
+        >
+          <Icon name="edit" size={11} color={C.tertiary} />
+          <text style={{ fontSize: 11.5, color: C.secondary }}>改动</text>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              minWidth: 14,
+              height: 14,
+              paddingLeft: 3,
+              paddingRight: 3,
+              borderRadius: 7,
+              backgroundColor: C.overlay,
+            }}
+          >
+            <text style={{ fontSize: 9.5, fontFamily: FONT_MONO, color: C.link }}>{String(changesCount)}</text>
+          </div>
+        </div>
+      ) : null}
+
       <div
         testId="new-tab"
         role="button"
@@ -209,6 +260,7 @@ export function TabStrip({ store }: { store: AgentStore }) {
           justifyContent: 'center',
           width: M.tab,
           height: M.tab,
+          marginLeft: 2,
           borderRadius: 6,
           flexShrink: 0,
           cursor: 'pointer',

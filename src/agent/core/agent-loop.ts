@@ -399,10 +399,18 @@ export async function* runAgentLoop(
         break
       }
 
-      // 依据执行模式：若任一工具为 sequential 或全局指定 sequential 则顺序执行
+      // 依据执行模式决定串行还是并行。
+      //
+      // 全局 'sequential' 是保守的默认值：审批一次只该问一件事，命令之间也不该抢
+      // 工作目录。但「整批调用都是显式声明 parallel 的安全工具」是另一回事——并发
+      // 委派多个只读子智能体正是这种情况，默认值不该把它们压成一条队列。所以这里
+      // 只在「全批显式 parallel」时放行重叠，混合批次（写工具 + 子智能体）仍走串行。
+      const allExplicitlyParallel =
+        rawToolCalls.length > 1 &&
+        rawToolCalls.every((c) => toolMap.get(c.name)?.executionMode === 'parallel')
       const isSequential =
-        options.toolExecution === 'sequential' ||
-        rawToolCalls.some((c) => toolMap.get(c.name)?.executionMode === 'sequential')
+        rawToolCalls.some((c) => toolMap.get(c.name)?.executionMode === 'sequential') ||
+        (options.toolExecution === 'sequential' && !allExplicitlyParallel)
 
       let terminateBatch = false
 

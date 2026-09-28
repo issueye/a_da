@@ -42,7 +42,7 @@ export function createSubagentTool(workspace: string, defaultParentThreadId?: st
         async: {
           type: 'boolean',
           description:
-            '是否以后台并发模式运行。系统将始终等待子智能体产出完整报告后再继续推进主对话，避免在子任务尚未完成时过早结案。若为 true，支持与其他子智能体并发执行。',
+            '是否以后台并发模式运行。默认 false：同步等待子智能体产出完整报告后再返回，适合单个必须拿到结论才能继续的任务。置为 true 时立即返回并让子智能体在后台独立页签中继续跑，主对话不被阻塞——有多个互不依赖的子任务时，请在**同一批**里并发发起多个 async 调用，随后用 check_subagent 查询进度与结论。',
         },
       },
       required: ['subagent_id', 'task'],
@@ -91,13 +91,21 @@ export function createSubagentTool(workspace: string, defaultParentThreadId?: st
             appStore.activeId
 
           let subagentThreadRef: any = null
+          // 后台模式下工具已经返回：再回调 onUpdate 只会把增量堆进一个没人消费的
+          // 缓冲区（runOneTool 的 updates 数组），直到子任务结束才释放。进度在子会话
+          // 页签里本就实时可见，check_subagent 也能查状态，所以返回后直接静音。
+          let detached = false
           const { thread, resultPromise } = await appStore.startSubagentThread({
             parentThreadId,
             subagentId: profile.id,
             task: args.task,
             additionalContext: args.additional_context,
-            signal,
+            // 后台模式不继承父轮次的 signal：插队或停止主对话会 abort 该 controller，
+            // 继承的话后台子任务会被连带杀掉，那就不是「后台」了。后台会话有自己
+            // 的 controller，用户可在它的页签里单独停止。
+            signal: args.async ? undefined : signal,
             onStepUpdate: (update: any) => {
+              if (detached) return
               const currentThreadId = update?.threadId ?? subagentThreadRef?.id
               const idSuffix = currentThreadId ? `\n(子会话 ID: ${currentThreadId})` : ''
               const stepStr = update.step > 0 ? (update.maxSteps ? `(第 ${update.step}/${update.maxSteps} 步)` : `(第 ${update.step} 步)`) : ''
@@ -126,6 +134,26 @@ export function createSubagentTool(workspace: string, defaultParentThreadId?: st
             },
           })
 
+          // 后台模式：不 await，让子智能体在自己的驱动任务里继续跑。返回时明确给出
+          // 会话 ID，主对话据此用 check_subagent 查询结论，而不是在这里干等。
+          if (args.async) {
+            detached = true
+            void resultPromise.catch(() => {
+              // 失败已记录在子会话与父会话通知里，这里只是别让 rejection 变成
+              // unhandled。成功路径不需要回调：结论可经 check_subagent 取回。
+            })
+            return {
+              output: `已在后台启动子智能体 [${profile.name}]（子会话 ID: ${thread.id}）。它会在独立页签中继续执行，现在可以并行推进其他工作，稍后用 check_subagent（subagent_thread_id: ${thread.id}）查询进度与结论。`,
+              ok: true,
+              details: {
+                subagent_id: profile.id,
+                subagent_name: profile.name,
+                subagent_thread_id: thread.id,
+                status: 'started_async',
+              },
+            }
+          }
+
           // 等待子智能体完成并返回真实报告（严禁提前虚假结案）
           const result = await resultPromise
           const fileNote = result.outputFile ? `\n\n📄 完整详细报告已保存至：${result.outputFile}` : ''
@@ -144,7 +172,10 @@ export function createSubagentTool(workspace: string, defaultParentThreadId?: st
           }
         }
 
-        // 独立运行环境（如无 store 实例时）的回退路径
+        // 独立运行环境（如无 store 实例时）的回退路径。
+        // 这里没有会话存储，子智能体不会挂出页签，check_subagent 也就查不到它——
+        // 所以即便请求了 async 也只能同步等待，并在结果里说明这一点，而不是假装
+        // 它已经在后台跑（那会让调用方去查一个永远不会存在的会话）。
         const config = await readLlmConfig()
         if (!config) {
           return {
@@ -170,8 +201,11 @@ export function createSubagentTool(workspace: string, defaultParentThreadId?: st
         })
 
         const fileNote = result.outputFile ? `\n\n📄 完整详细报告已保存至：${result.outputFile}` : ''
+        const asyncNote = args.async
+          ? '\n\n（注意：当前运行环境没有会话存储，无法后台并行，本次已同步执行完毕。）'
+          : ''
         return {
-          output: `${result.summary}${fileNote}`,
+          output: `${result.summary}${fileNote}${asyncNote}`,
           ok: result.ok,
           details: {
             subagent_id: profile.id,
@@ -393,11 +427,15 @@ export function createResumeSubagentTool(): AgentTool<ResumeSubagentToolArgs> {
           ok: true,
         })
 
+        let detached = false
         const { thread, resultPromise } = await appStore.resumeSubagentThread({
           subagentThreadId: args.subagent_thread_id,
           instruction: args.instruction,
-          signal,
+          // 后台恢复同样不继承父轮次 signal，理由见 invoke_subagent：否则主对话
+          // 一旦插队或停止，后台子任务会被一起 abort 掉。
+          signal: args.async ? undefined : signal,
           onStepUpdate: (update: any) => {
+            if (detached) return
             const currentThreadId = update?.threadId ?? thread.id
             const idSuffix = currentThreadId ? `\n(子会话 ID: ${currentThreadId})` : ''
             const stepStr =
@@ -419,6 +457,10 @@ export function createResumeSubagentTool(): AgentTool<ResumeSubagentToolArgs> {
         })
 
         if (args.async) {
+          detached = true
+          void resultPromise.catch(() => {
+            // 失败已落盘到子会话，这里只需要吞掉 rejection
+          })
           return {
             output: `已成功唤醒并恢复子智能体「${thread.title}」（会话 ID: ${thread.id}）在后台继续执行。你可以随时通过 check_subagent 工具查询进度或报告。`,
             ok: true,
