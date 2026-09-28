@@ -17,6 +17,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { cleanupTempDir } from '../../scripts/test-preload'
 import { AgentStore } from './store'
 import { defaultSessionManager } from './session/manager'
 
@@ -48,7 +49,7 @@ afterEach(async () => {
   if (suiteHome === undefined) delete process.env.A_DA_HOME
   else process.env.A_DA_HOME = suiteHome
   // 删不干净（Windows 上刚写过会 EBUSY）只是留个临时目录，不该把测试判红。
-  await rm(home, { recursive: true, force: true }).catch(() => {})
+  await cleanupTempDir(home)
 })
 
 /** 建一个临时项目目录，用完删掉。 */
@@ -162,7 +163,7 @@ describe('restoring sessions on startup', () => {
       const after = new AgentStore(home)
       expect(after.threads.map((thread) => thread.id)).toContain('s_deleted')
     } finally {
-      await rm(workspace.path, { recursive: true, force: true }).catch(() => {})
+      await cleanupTempDir(workspace.path)
     }
   })
 

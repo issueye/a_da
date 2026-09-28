@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { cleanupTempDir } from '../../../../../scripts/test-preload'
 import {
   DESIGN_SYSTEM_PROMPT,
   LocalEngine,
@@ -58,7 +59,7 @@ afterEach(async () => {
   delete process.env.A_DA_PLUGIN_DECISION_API_KEY
   if (oldHome === undefined) delete process.env.A_DA_HOME
   else process.env.A_DA_HOME = oldHome
-  await rm(home, { recursive: true, force: true })
+  await cleanupTempDir(home)
 })
 
 /** 造一个假采样器：按顺序返回预设文本，用光后重复最后一个。 */

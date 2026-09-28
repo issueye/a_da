@@ -11,6 +11,7 @@
  */
 
 import { mkdtempSync, rmSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll } from 'bun:test'
@@ -18,6 +19,27 @@ import { afterAll } from 'bun:test'
 const home = mkdtempSync(join(tmpdir(), 'a-da-test-home-'))
 process.env.A_DA_HOME = home
 process.env.A_DA_NO_DIALOG = '1'
+
+/**
+ * 删临时目录，**失败时容忍**。
+ *
+ * 测试里的每个 `afterEach` 都会删自己去临时目录，而 Windows 上这很容易撞
+ * `EBUSY: resource busy or locked`：应用里有些写入是刻意 fire-and-forget 的
+ * （`newThread` 里的 `refresh()`、扩展加载器写状态），清理时那个句柄可能还没释放。
+ *
+ * 撞上时**不该让测试失败**——用例本身已经跑完并通过了，红的只是收尾。
+ * 这与本文件末尾 `cleanup()` 的取向一致，只是那个只处理套件级的 home，
+ * 各测试文件自己建的 home/workspace 需要同一个待遇。
+ *
+ * 真正的目录残留由操作系统在重启时清理，代价远小于一个随机翻红的测试套件。
+ */
+export async function cleanupTempDir(dir: string): Promise<void> {
+  try {
+    await rm(dir, { recursive: true, force: true })
+  } catch {
+    // 见上：清理失败不该影响测试结果
+  }
+}
 
 function cleanup(): void {
   try {

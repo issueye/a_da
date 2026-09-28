@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { cleanupTempDir } from '../../../scripts/test-preload'
 import type { Item, Thread } from '../types'
 import { AgentStore, store as singleton, type SubagentWake } from '../store'
 import {
@@ -45,8 +46,8 @@ beforeEach(async () => {
 afterEach(async () => {
   if (oldHome === undefined) delete process.env.A_DA_HOME
   else process.env.A_DA_HOME = oldHome
-  await rm(workspace, { recursive: true, force: true })
-  await rm(home, { recursive: true, force: true })
+  await cleanupTempDir(workspace)
+  await cleanupTempDir(home)
 })
 
 /** 造一个父会话 + 一个「正在运行」的子会话，返回两者。 */

@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { cleanupTempDir } from '../../../scripts/test-preload'
 import { BUILTIN_PLUGINS } from './builtin-plugins'
 import type { AgentTool } from '../core/types'
 import { defaultCheckpointManager } from '../checkpoint'
@@ -40,8 +41,8 @@ beforeEach(async () => {
 afterEach(async () => {
   if (oldHome === undefined) delete process.env.A_DA_HOME
   else process.env.A_DA_HOME = oldHome
-  await rm(workspace, { recursive: true, force: true })
-  await rm(home, { recursive: true, force: true })
+  await cleanupTempDir(workspace)
+  await cleanupTempDir(home)
 })
 
 describe('batch-ops 插件注册', () => {
