@@ -15,7 +15,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import type { AgentEndReason, AgentMessage, AgentTool, AgentToolResult } from './types'
 import type { AgentHooks } from './events'
-import { HOOK_PAIRS } from './events'
+import { HOOK_PAIRS, UNPAIRED_HOOKS } from './events'
 import { runAgentLoop } from './agent-loop'
 
 /**
@@ -37,6 +37,11 @@ const HOOK_KEYS: Record<keyof AgentHooks, true> = {
   afterApproval: true,
   beforeCompaction: true,
   afterCompaction: true,
+  beforeThreadCreate: true,
+  afterThreadCreate: true,
+  beforeThreadDelete: true,
+  afterThreadDelete: true,
+  onThreadSwitch: true,
 }
 
 let server: ReturnType<typeof Bun.serve>
@@ -132,12 +137,13 @@ afterAll(() => {
 })
 
 describe('成对性：契约层面', () => {
-  test('配对表覆盖契约里的每一个点位，方向正确且没有自配对', () => {
+  test('配对表覆盖契约里的每一个点位（含刻意不成对的），方向正确且没有自配对', () => {
     const registered = Object.keys(HOOK_KEYS)
     const paired = HOOK_PAIRS.flatMap((pair) => [pair.before, pair.after])
 
-    expect(registered.sort()).toEqual([...new Set(paired)].sort())
-    expect(HOOK_PAIRS).toHaveLength(registered.length / 2)
+    // 契约里的点位 = 成对的 ∪ 刻意不成对的（纯判定 / 纯通知），不允许有漏网的
+    expect(registered.sort()).toEqual([...new Set([...paired, ...UNPAIRED_HOOKS])].sort())
+    expect(HOOK_PAIRS).toHaveLength((registered.length - UNPAIRED_HOOKS.length) / 2)
     for (const pair of HOOK_PAIRS) {
       expect(String(pair.before).startsWith('before')).toBe(true)
       expect(String(pair.after).startsWith('after')).toBe(true)

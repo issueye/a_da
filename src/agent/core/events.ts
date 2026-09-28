@@ -296,6 +296,81 @@ export interface AfterApprovalContext extends AgentHookContextBase {
 /** 事后钩子是纯观察：审批已经发生，插件没有可改变的东西。 */
 export type AfterApprovalResult = void
 
+// ─────────────────────────────── 会话生命周期
+
+/**
+ * 会话将要建立。
+ *
+ * 插件可以建议标题、也可以往 `Thread.pluginData[自己的 id]` 里塞数据——**核心永不
+ * 读取它**（§6.7.3）：一旦核心去解释它，插件数据就变成了隐式契约，插件作者再也没法
+ * 自由改自己的结构。它随会话持久化、随会话删除。
+ */
+export interface BeforeThreadCreateContext extends AgentHookContextBase {
+  /** 会话将要在哪个工作区建立 */
+  workspace: string
+  /** 只有主会话会走这条链路；子会话的标题由角色与任务推导 */
+  isSubagent: boolean
+}
+
+export interface BeforeThreadCreateResult {
+  /** 建议的标题。**空串或纯空白会被忽略**——不产生无名会话 */
+  title?: string
+  /** 该插件要写进 `Thread.pluginData[id]` 的数据（核心不解释） */
+  data?: unknown
+  /** 由钩子运行层填写（哪个插件写的） */
+  by?: string
+}
+
+export interface AfterThreadCreateContext extends AgentHookContextBase {
+  /** 已就绪的会话：能读到 id 与 workspace */
+  threadId: string
+  title: string
+  workspace: string
+  isSubagent: boolean
+}
+
+export type AfterThreadCreateResult = void
+
+export interface BeforeThreadDeleteContext extends AgentHookContextBase {
+  threadId: string
+  title: string
+  workspace: string
+  isSubagent: boolean
+  /** 因为父会话被删而级联删除（此时每个子会话各调一次，见 §10 的验收） */
+  cascaded: boolean
+}
+
+export interface BeforeThreadDeleteResult {
+  /** 阻止删除。受 `allowThreadDeleteBlock` 约束（默认开），关掉时只能归档 */
+  block?: boolean
+  blockReason?: string
+  /** 删除前先归档一份（默认关：它不阻止删除，只是留个副本） */
+  archiveBeforeDelete?: boolean
+  /** 由钩子运行层填写 */
+  blockedBy?: string
+}
+
+export interface AfterThreadDeleteContext extends BeforeThreadDeleteContext {
+  /** 是否被插件拦下（拦下时删除并没有发生） */
+  blocked: boolean
+  archived: boolean
+}
+
+export type AfterThreadDeleteResult = void
+
+/**
+ * 会话切换（纯通知）。
+ *
+ * **刻意不成对**：切换是瞬时事件，没有"后续状态"可观察，强行配对只会加重插件负担
+ * （§6.0 的边界：有状态延续的点位才需要成对）。
+ */
+export interface ThreadSwitchContext extends AgentHookContextBase {
+  /** 切到的会话 id */
+  threadId: string
+  workspace: string
+  isSubagent: boolean
+}
+
 // ─────────────────────────────── 工具调用（既有，M2 开放给插件）
 
 export interface AgentHooks {
@@ -311,7 +386,20 @@ export interface AgentHooks {
   afterApproval?: (ctx: AfterApprovalContext) => Promise<AfterApprovalResult>
   beforeCompaction?: (ctx: BeforeCompactionContext) => Promise<BeforeCompactionResult | undefined>
   afterCompaction?: (ctx: AfterCompactionContext) => Promise<AfterCompactionResult>
+  beforeThreadCreate?: (ctx: BeforeThreadCreateContext) => Promise<BeforeThreadCreateResult | undefined>
+  afterThreadCreate?: (ctx: AfterThreadCreateContext) => Promise<AfterThreadCreateResult>
+  beforeThreadDelete?: (ctx: BeforeThreadDeleteContext) => Promise<BeforeThreadDeleteResult | undefined>
+  afterThreadDelete?: (ctx: AfterThreadDeleteContext) => Promise<AfterThreadDeleteResult>
+  onThreadSwitch?: (ctx: ThreadSwitchContext) => Promise<void>
 }
+
+/**
+ * 刻意**不成对**的点位：纯判定（`check_gate` 类）与纯通知（`onThreadSwitch`）。
+ *
+ * 它们没有"后续状态"可观察，强行配对只会加重插件负担——成对原则的准确表述是
+ * "有状态延续的点位都应成对"，而不是"一切都必须成对"（§6.0）。
+ */
+export const UNPAIRED_HOOKS: ReadonlyArray<keyof AgentHooks> = ['onThreadSwitch']
 
 /**
  * 系统提示词被插件替换时，核心仍在末尾附上的不可协商段落。
@@ -336,4 +424,6 @@ export const HOOK_PAIRS: ReadonlyArray<{ before: keyof AgentHooks; after: keyof 
   { before: 'beforeSubagentStart', after: 'afterSubagentEnd' },
   { before: 'beforeApproval', after: 'afterApproval' },
   { before: 'beforeCompaction', after: 'afterCompaction' },
+  { before: 'beforeThreadCreate', after: 'afterThreadCreate' },
+  { before: 'beforeThreadDelete', after: 'afterThreadDelete' },
 ]

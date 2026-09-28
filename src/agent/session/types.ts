@@ -17,6 +17,8 @@ export interface SessionHeader {
   updatedAt: number
   parentId?: string
   subagentId?: string
+  /** 插件自己的会话级数据（核心不解释：见 Thread.pluginData 的说明） */
+  pluginData?: Record<string, unknown>
 }
 
 export interface SessionMessageEntry {

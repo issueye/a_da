@@ -14,7 +14,7 @@
  * 散列也让目录名不会长到踩到 Windows 的路径上限。
  */
 
-import { appendFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { appendFile, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join, resolve } from 'node:path'
@@ -113,6 +113,19 @@ export class SessionManager {
   ): Promise<SessionHeader> {
     await this.rememberWorkspace(workspace)
     const filePath = this.getSessionPath(workspace, id)
+
+    // 已经存在就**不动它**：这个调用在多处是 fire-and-forget 的（`makeThread`、
+    // 会话落盘），而它写的是文件第一行。重复写会把已经追加进去的消息和插件写的
+    // 标题/数据一起抹掉——"创建"应当是幂等的，不是"重置"。
+    if (existsSync(filePath)) {
+      try {
+        const header = JSON.parse((await readFile(filePath, 'utf-8')).split('\n')[0] ?? '') as SessionHeader
+        if (header?.type === 'session') return header
+      } catch {
+        // 头部坏了就按下面重建一份
+      }
+    }
+
     const now = Date.now()
 
     const header: SessionHeader = {
@@ -195,11 +208,26 @@ export class SessionManager {
   /**
    * 更新会话标题
    */
-  async updateSessionTitle(sessionId: string, title: string, workspace?: string): Promise<void> {
-    const filePath = workspace
+  /**
+   * 确保会话文件存在（不存在就按默认标题建一个），返回它的路径。
+   *
+   * 头部更新（改标题、写 pluginData）此前是"文件不存在就静默跳过"，而新建会话的头部
+   * 由**异步**落盘路径创建——插件在会话刚建好时建议的标题与数据就会当场丢掉（实测：
+   * 标题改了、文件里还是"新会话"）。改成按需创建之后，调用方不必关心落盘时序。
+   */
+  private async ensureSessionFile(sessionId: string, workspace?: string): Promise<string | null> {
+    const existing = workspace
       ? this.getSessionPath(workspace, sessionId)
       : await this.findSessionPath(sessionId)
-    if (!filePath || !existsSync(filePath)) return
+    if (existing && existsSync(existing)) return existing
+    if (!workspace) return null
+    await this.createSession(sessionId, workspace)
+    return this.getSessionPath(workspace, sessionId)
+  }
+
+  async updateSessionTitle(sessionId: string, title: string, workspace?: string): Promise<void> {
+    const filePath = await this.ensureSessionFile(sessionId, workspace)
+    if (!filePath) return
 
     try {
       const content = await readFile(filePath, 'utf-8')
@@ -223,7 +251,7 @@ export class SessionManager {
    */
   async updateSessionMeta(
     sessionId: string,
-    meta: { parentId?: string; subagentId?: string },
+    meta: { parentId?: string; subagentId?: string; pluginData?: Record<string, unknown> },
     workspace?: string
   ): Promise<void> {
     const filePath = workspace
@@ -239,6 +267,10 @@ export class SessionManager {
         if (header.type === 'session') {
           if (meta.parentId !== undefined) header.parentId = meta.parentId
           if (meta.subagentId !== undefined) header.subagentId = meta.subagentId
+          if (meta.pluginData !== undefined) {
+            // 合并而不是覆盖：不同插件各写各的键，谁都不该把别人的数据抹掉
+            header.pluginData = { ...(header.pluginData ?? {}), ...meta.pluginData }
+          }
           header.updatedAt = Date.now()
           lines[0] = JSON.stringify(header)
           await writeFile(filePath, lines.join('\n'), 'utf-8')
@@ -314,6 +346,24 @@ export class SessionManager {
   /**
    * 删掉一个会话的流水文件。删一个本来就不存在的会话不算错。
    */
+  /**
+   * 归档一份会话副本（`<id>.jsonl.archived`），供插件要求"删除前留档"用。
+   *
+   * 扩展名刻意不是 `.jsonl`：列表扫描只认 `.jsonl`，归档件不该出现在会话列表里。
+   */
+  async archiveSession(sessionId: string, workspace?: string): Promise<boolean> {
+    const filePath = workspace
+      ? this.getSessionPath(workspace, sessionId)
+      : await this.findSessionPath(sessionId)
+    if (!filePath || !existsSync(filePath)) return false
+    try {
+      await copyFile(filePath, `${filePath}.archived`)
+      return true
+    } catch {
+      return false
+    }
+  }
+
   async deleteSession(sessionId: string, workspace?: string): Promise<void> {
     const filePath = workspace
       ? this.getSessionPath(workspace, sessionId)

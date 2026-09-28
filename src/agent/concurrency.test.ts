@@ -146,7 +146,7 @@ describe('multi-session concurrency', () => {
     mutable.runningThreadIds.add(t1.id)
 
     // t1 is running -> cannot delete t1
-    expect(store.deleteThread(t1.id)).toBe('这个会话正在运行，先停止再删除')
+    expect(await store.deleteThread(t1.id)).toBe('这个会话正在运行，先停止再删除')
     // ws1 has running thread -> cannot remove ws1
     expect(store.removeProject(ws1)).toBe('该工作区内有会话正在运行，先停止再移除')
 

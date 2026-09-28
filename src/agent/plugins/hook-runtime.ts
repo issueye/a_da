@@ -26,6 +26,7 @@ import type {
   BeforeAgentStartResult,
   BeforeApprovalResult,
   BeforeCompactionResult,
+  BeforeThreadCreateResult,
   BeforeTurnResult,
   SubagentGateResult,
 } from '../core/events'
@@ -424,6 +425,96 @@ export function composePluginHooks(options: HookRuntimeOptions): AgentHooks {
     hooks.afterCompaction = async (ctx) => {
       for (const contributor of compactionEndContributors) {
         await runHook(contributor, 'afterCompaction', () => contributor.hooks.afterCompaction!(ctx))
+      }
+    }
+  }
+
+  // ── 会话创建：可建议标题、可写自己的 pluginData
+  const createContributors = contributorsOf('beforeThreadCreate')
+  if (createContributors.length > 0) {
+    hooks.beforeThreadCreate = async (ctx) => {
+      let merged: BeforeThreadCreateResult | undefined
+      let by: string | undefined
+      for (const contributor of createContributors) {
+        const result = await runHook(contributor, 'beforeThreadCreate', () =>
+          contributor.hooks.beforeThreadCreate!(ctx)
+        )
+        if (!result) continue
+
+        const title = result.title?.trim()
+        // 空标题被忽略：宁可用默认的"新会话"，也不产生一个没名字的会话
+        if (title) merged = { ...merged, title }
+
+        if (result.data !== undefined) {
+          by = contributor.pluginId
+          merged = {
+            ...merged,
+            // 每个插件各写各的键，核心只负责搬运
+            data: { ...((merged?.data as Record<string, unknown> | undefined) ?? {}), [contributor.pluginId]: result.data },
+            by,
+          }
+        }
+      }
+      return merged
+    }
+  }
+
+  const createdContributors = contributorsOf('afterThreadCreate')
+  if (createdContributors.length > 0) {
+    hooks.afterThreadCreate = async (ctx) => {
+      for (const contributor of createdContributors) {
+        await runHook(contributor, 'afterThreadCreate', () => contributor.hooks.afterThreadCreate!(ctx))
+      }
+    }
+  }
+
+  // ── 会话删除：可阻止（受开关约束）、可先归档
+  const deleteContributors = contributorsOf('beforeThreadDelete')
+  if (deleteContributors.length > 0) {
+    hooks.beforeThreadDelete = async (ctx) => {
+      let archive = false
+      for (const contributor of deleteContributors) {
+        const result = await runHook(contributor, 'beforeThreadDelete', () =>
+          contributor.hooks.beforeThreadDelete!(ctx)
+        )
+        if (!result) continue
+
+        if (result.archiveBeforeDelete) archive = true
+
+        if (result.block) {
+          if (contributor.capabilities.allowThreadDeleteBlock) {
+            // 第一个拦下的即定稿：删除是不可逆操作，没必要继续问
+            return {
+              block: true,
+              blockReason: result.blockReason ?? `插件「${contributor.pluginId}」阻止了删除`,
+              blockedBy: contributor.pluginId,
+              archiveBeforeDelete: archive,
+            }
+          }
+          trace(
+            `[插件] ${contributor.pluginId} 想阻止删除会话，但 allowThreadDeleteBlock 已关闭，已忽略（只能归档）`
+          )
+        }
+      }
+      return archive ? { archiveBeforeDelete: true } : undefined
+    }
+  }
+
+  const deletedContributors = contributorsOf('afterThreadDelete')
+  if (deletedContributors.length > 0) {
+    hooks.afterThreadDelete = async (ctx) => {
+      for (const contributor of deletedContributors) {
+        await runHook(contributor, 'afterThreadDelete', () => contributor.hooks.afterThreadDelete!(ctx))
+      }
+    }
+  }
+
+  // ── 会话切换：纯通知，不短路、不看返回值
+  const switchContributors = contributorsOf('onThreadSwitch')
+  if (switchContributors.length > 0) {
+    hooks.onThreadSwitch = async (ctx) => {
+      for (const contributor of switchContributors) {
+        await runHook(contributor, 'onThreadSwitch', () => contributor.hooks.onThreadSwitch!(ctx))
       }
     }
   }

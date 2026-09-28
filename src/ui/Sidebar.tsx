@@ -174,7 +174,8 @@ function SessionRow({
       message: `确定要删除会话「${thread.title}」吗？删除后会话记录将无法恢复。`,
       confirmText: '确认删除',
       onConfirm: () => {
-        onNotice(store.deleteThread(thread.id))
+        // 删除可能被插件拦下（beforeThreadDelete），所以要等结论再提示
+        void store.deleteThread(thread.id).then(onNotice)
       },
     })
   }
@@ -379,7 +380,8 @@ function SubagentSessionRow({
       message: `确定要删除子会话「${thread.title}」吗？删除后该子智能体会话记录将无法恢复。`,
       confirmText: '确认删除',
       onConfirm: () => {
-        onNotice(store.deleteThread(thread.id))
+        // 删除可能被插件拦下（beforeThreadDelete），所以要等结论再提示
+        void store.deleteThread(thread.id).then(onNotice)
       },
     })
   }

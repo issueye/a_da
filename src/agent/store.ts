@@ -58,6 +58,7 @@ import {
   type SubagentStepUpdate,
 } from './subagents'
 import { resolveSubagentTools, runSubagentGate, type SubagentGateOutcome } from './subagents/access'
+import { getLoadedPlugins } from './plugins/registry'
 import { applyCompactionVerdict } from './compact/verdict'
 import { applyAppearance, appearance, shortPath, type Appearance } from '../theme'
 import { computeThreadStats, type AgentMode, type DebugEntry, type Item, type Thread, type ThreadStats } from './types'
@@ -1055,6 +1056,243 @@ export class AgentStore {
   }
 
   /**
+   * 这个工作区里有没有插件在用会话生命周期点位。
+   *
+   * **同步判断**（读的是已加载插件索引，不是配置文件）：`deleteThread` 在绝大多数
+   * 情况下要维持"同步删完"的语义——几十处调用点都是不等它的。有插件参与时才走
+   * 异步链路，没有时行为与改动前逐字节相同。
+   */
+  private usesThreadLifecycleHooks(workspace: string): boolean {
+    return getLoadedPlugins(workspace).some((plugin) => {
+      const hooks = plugin.contributions.hooks
+      if (!hooks) return false
+      return Boolean(hooks.beforeThreadDelete || hooks.afterThreadDelete)
+    })
+  }
+
+  /**
+   * 会话建立后的钩子：建议标题、写 pluginData、通知 afterThreadCreate。
+   *
+   * 异步执行（`newThread` 是同步 API，被几十处调用）：效果在随后一瞬间落地——标题
+   * 先显示默认值、随即改成插件建议的，pluginData 也是稍后写进会话与落盘文件。这样做
+   * 而不是把 `newThread` 改成 async，是因为后者要改动所有调用点，收益不抵风险。
+   */
+  private async runThreadCreateHooks(thread: Thread): Promise<void> {
+    try {
+      const hooks = await this.composeHooks({
+        workspace: thread.workspace,
+        kind: 'main',
+        threadId: thread.id,
+        mode: thread.mode ?? this.mode ?? 'code',
+      })
+      if (hooks.beforeThreadCreate) {
+        const verdict = await hooks.beforeThreadCreate({
+          kind: 'main',
+          workspace: thread.workspace,
+          threadId: thread.id,
+          isSubagent: false,
+          trace: (message) => this.trace(message),
+        })
+        // 两次头部写入必须**串行**：它们各自是"读文件 → 改第一行 → 写回"，
+        // 并发跑会互相把对方那次修改覆盖掉（实测：标题写进去了、pluginData 丢了）
+        if (verdict?.title) {
+          thread.title = verdict.title
+          await defaultSessionManager
+            .updateSessionTitle(thread.id, verdict.title, thread.workspace)
+            .catch(() => {})
+          this.trace(`[插件] 会话标题由插件建议：${verdict.title}`)
+        }
+        if (verdict?.data) {
+          // 插件自己的数据，按插件 id 分键；核心只负责搬运，不解释
+          const data = verdict.data as Record<string, unknown>
+          thread.pluginData = { ...(thread.pluginData ?? {}), ...data }
+          await defaultSessionManager
+            .updateSessionMeta(thread.id, { pluginData: data }, thread.workspace)
+            .catch(() => {})
+          this.trace(`[插件] 已写入 ${Object.keys(data).length} 个插件数据键`)
+        }
+        this.notify()
+      }
+
+      if (hooks.afterThreadCreate) {
+        await hooks.afterThreadCreate({
+          kind: 'main',
+          workspace: thread.workspace,
+          threadId: thread.id,
+          title: thread.title,
+          isSubagent: false,
+          trace: (message) => this.trace(message),
+        })
+      }
+    } catch (error) {
+      // 插件是可选增强：创建会话这件事不该因为插件出问题而失败
+      this.trace(`[插件] 会话创建钩子出错，已忽略：${(error as Error).message}`)
+    }
+  }
+
+  /**
+   * 机械删除：把原 `deleteThread` 的主体原样搬过来，不含任何钩子。
+   *
+   * 与它配对的 `deleteThread` 负责"要不要删"，这里只负责"怎么删"。
+   */
+  private deleteThreadNow(id: string): string | null {
+    const thread = this.threads.find((candidate) => candidate.id === id)
+    if (!thread) return null
+
+    // 级联清理名下的所有子智能体会话
+    const childIds = new Set(this.threads.filter((t) => t.parentId === id).map((t) => t.id))
+    for (const cid of childIds) {
+      if (this.isThreadRunning(cid)) {
+        this.stop(cid)
+      }
+    }
+
+    this.threads = this.threads.filter((candidate) => candidate.id !== id && !childIds.has(candidate.id))
+    this.openTabIds = this.openTabIds.filter((candidate) => candidate !== id && !childIds.has(candidate))
+    this.queues.delete(id)
+    for (const cid of childIds) {
+      this.queues.delete(cid)
+    }
+    // 等待与缓冲是内存态：会话没了就一并清掉，别留下永远不 resolve 的 promise
+    this.discardSubagentWaits(id)
+    for (const cid of childIds) {
+      this.discardSubagentWaits(cid)
+    }
+
+    this.push({ kind: 'info', text: `已删除会话「${thread.title}」` })
+    void defaultSessionManager.deleteSession(id, thread.workspace).catch(() => {})
+    // 检查点流水是会话的附属品，会话没了就一起清
+    void defaultCheckpointManager.discard(id).catch(() => {})
+    for (const cid of childIds) {
+      void defaultCheckpointManager.discard(cid).catch(() => {})
+    }
+
+    if (this.activeId === id || childIds.has(this.activeId)) {
+      const next = this.threads.find((candidate) => candidate.workspace === thread.workspace)
+      if (next) {
+        this.selectThread(next.id)
+      } else {
+        const fresh = makeThread(thread.workspace)
+        this.threads = [fresh, ...this.threads]
+        this.selectThread(fresh.id)
+      }
+    }
+
+    this.notify()
+    return null
+  }
+
+  /**
+   * 会话删除（设计文档 §6.7.2）。
+   *
+   * **没有插件参与时是同步完成的**：开头那次判断不涉及 await，所以整个删除动作在
+   * 第一次 `await` 之前就做完了——几十处不等返回值的调用点因此完全不受影响。
+   * 只有真的有插件在用 `beforeThreadDelete`/`afterThreadDelete` 时才走异步链路：
+   * 先问（可 block、可先归档），再删，最后通知。
+   */
+  async deleteThread(id: string): Promise<string | null> {
+    const thread = this.threads.find((candidate) => candidate.id === id)
+    if (!thread) return null
+    if (this.isThreadRunning(id)) return '这个会话正在运行，先停止再删除'
+
+    // 级联的子会话（勾子要对每一个都调一次，见 §10 的验收）
+    const children = this.threads.filter((candidate) => candidate.parentId === id)
+
+    if (!this.usesThreadLifecycleHooks(thread.workspace)) {
+      this.deleteThreadNow(id)
+      return null
+    }
+
+    const hooks = await this.composeHooks({
+      workspace: thread.workspace,
+      kind: 'main',
+      threadId: thread.id,
+    })
+
+    const targets: Array<{ thread: Thread; cascaded: boolean }> = [
+      { thread, cascaded: false },
+      ...children.map((child) => ({ thread: child, cascaded: true })),
+    ]
+
+    let archiveRequested = false
+    let archived = false
+    const blocked: Array<{ title: string; reason: string }> = []
+
+    for (const target of targets) {
+      if (!hooks.beforeThreadDelete) break
+      const verdict = await hooks.beforeThreadDelete({
+        kind: 'main',
+        workspace: target.thread.workspace,
+        threadId: target.thread.id,
+        title: target.thread.title,
+        isSubagent: Boolean(target.thread.isSubagent),
+        cascaded: target.cascaded,
+        trace: (message) => this.trace(message),
+      })
+      if (!verdict) continue
+      if (verdict.archiveBeforeDelete) archiveRequested = true
+      if (verdict.block) {
+        blocked.push({
+          title: target.thread.title,
+          reason: verdict.blockReason ?? `插件「${verdict.blockedBy ?? '未知'}」阻止了删除`,
+        })
+      }
+    }
+
+    if (blocked.length > 0) {
+      const reason = blocked[0]!.reason
+      this.push({ kind: 'info', text: `删除被插件拦下：${reason}` })
+      // 拦下也要跑 after*：插件可能在事前分配了资源
+      if (hooks.afterThreadDelete) {
+        for (const target of targets) {
+          await hooks.afterThreadDelete({
+            kind: 'main',
+            workspace: target.thread.workspace,
+            threadId: target.thread.id,
+            title: target.thread.title,
+            isSubagent: Boolean(target.thread.isSubagent),
+            cascaded: target.cascaded,
+            blocked: true,
+            archived: false,
+            trace: (message) => this.trace(message),
+          })
+        }
+      }
+      this.notify()
+      return reason
+    }
+
+    if (archiveRequested) {
+      for (const target of targets) {
+        const ok = await defaultSessionManager
+          .archiveSession(target.thread.id, target.thread.workspace)
+          .catch(() => false)
+        archived = archived || ok
+      }
+      if (archived) this.trace('[插件] 已在删除前归档会话副本（*.jsonl.archived）')
+    }
+
+    this.deleteThreadNow(id)
+
+    if (hooks.afterThreadDelete) {
+      for (const target of targets) {
+        await hooks.afterThreadDelete({
+          kind: 'main',
+          workspace: target.thread.workspace,
+          threadId: target.thread.id,
+          title: target.thread.title,
+          isSubagent: Boolean(target.thread.isSubagent),
+          cascaded: target.cascaded,
+          blocked: false,
+          archived,
+          trace: (message) => this.trace(message),
+        })
+      }
+    }
+    return null
+  }
+
+  /**
    * 跑一次子智能体启动门禁（设计文档 §6.3）。
    *
    * 判定本身交给插件的 `beforeSubagentStart`（核心不该内置"怎么判断"），核心只做两件事：
@@ -1206,6 +1444,10 @@ export class AgentStore {
     this.openTab(thread.id)
     this.push({ kind: 'info', text: `新建会话 · ${workspace}` })
     void this.refresh()
+    // 建会话的钩子异步落地：标题先显示默认值、随即可能被插件建议改掉，
+    // pluginData 也是稍后写进会话与落盘文件。保持 newThread 同步是有意的——
+    // 它有几十处调用点，改成 async 的收益不抵风险
+    void this.runThreadCreateHooks(thread)
     this.notify()
     return thread
   }
@@ -1265,7 +1507,33 @@ export class AgentStore {
     if (beforeThread && nextThread && beforeThread.workspace !== nextThread.workspace) {
       void this.refresh()
     }
+    if (nextThread) void this.runThreadSwitchHook(nextThread)
     this.notify()
+  }
+
+  /**
+   * 会话切换的**纯通知**钩子：没有返回值、不能阻止切换。
+   *
+   * 刻意不成对（§6.0 的边界）：切换是瞬时事件，没有"后续状态"可观察。
+   */
+  private async runThreadSwitchHook(thread: Thread): Promise<void> {
+    try {
+      const hooks = await this.composeHooks({
+        workspace: thread.workspace,
+        kind: 'main',
+        threadId: thread.id,
+      })
+      if (!hooks.onThreadSwitch) return
+      await hooks.onThreadSwitch({
+        kind: 'main',
+        workspace: thread.workspace,
+        threadId: thread.id,
+        isSubagent: Boolean(thread.isSubagent),
+        trace: (message) => this.trace(message),
+      })
+    } catch (error) {
+      this.trace(`[插件] onThreadSwitch 抛错，已忽略：${(error as Error).message}`)
+    }
   }
 
   /**
@@ -1323,53 +1591,6 @@ export class AgentStore {
    *
    * @returns 出错时返回要显示给用户的理由，成功返回 null。
    */
-  deleteThread(id: string): string | null {
-    const thread = this.threads.find((candidate) => candidate.id === id)
-    if (!thread) return null
-    if (this.isThreadRunning(id)) return '这个会话正在运行，先停止再删除'
-
-    // 级联清理名下的所有子智能体会话
-    const childIds = new Set(this.threads.filter((t) => t.parentId === id).map((t) => t.id))
-    for (const cid of childIds) {
-      if (this.isThreadRunning(cid)) {
-        this.stop(cid)
-      }
-    }
-
-    this.threads = this.threads.filter((candidate) => candidate.id !== id && !childIds.has(candidate.id))
-    this.openTabIds = this.openTabIds.filter((candidate) => candidate !== id && !childIds.has(candidate))
-    this.queues.delete(id)
-    for (const cid of childIds) {
-      this.queues.delete(cid)
-    }
-    // 等待与缓冲是内存态：会话没了就一并清掉，别留下永远不 resolve 的 promise
-    this.discardSubagentWaits(id)
-    for (const cid of childIds) {
-      this.discardSubagentWaits(cid)
-    }
-
-    this.push({ kind: 'info', text: `已删除会话「${thread.title}」` })
-    void defaultSessionManager.deleteSession(id, thread.workspace).catch(() => {})
-    // 检查点流水是会话的附属品，会话没了就一起清
-    void defaultCheckpointManager.discard(id).catch(() => {})
-    for (const cid of childIds) {
-      void defaultCheckpointManager.discard(cid).catch(() => {})
-    }
-
-    if (this.activeId === id || childIds.has(this.activeId)) {
-      const next = this.threads.find((candidate) => candidate.workspace === thread.workspace)
-      if (next) {
-        this.selectThread(next.id)
-      } else {
-        const fresh = makeThread(thread.workspace)
-        this.threads = [fresh, ...this.threads]
-        this.selectThread(fresh.id)
-      }
-    }
-
-    this.notify()
-    return null
-  }
 
   /**
    * 移除一个工作区：清理其所属的所有会话、标签与任务队列，并删除磁盘落盘目录。

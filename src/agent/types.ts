@@ -136,6 +136,13 @@ export interface Thread {
   lastSystemPrompt?: string
   lastSystemPromptChars?: number
   lastToolSpecsChars?: number
+  /**
+   * 插件自己的会话级数据，按插件 id 分键。
+   *
+   * **核心永不读取它**（设计文档 §6.7.3）：一旦核心去解释它，插件数据就变成了隐式
+   * 契约，插件作者再也没法自由改自己的结构。它随会话持久化、随会话删除。
+   */
+  pluginData?: Record<string, unknown>
 }
 
 export interface DebugEntry {
