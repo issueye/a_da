@@ -7,6 +7,7 @@ import { codeOutlinePlugin } from './code-outline'
 import { projectInspectorPlugin } from './project-inspector'
 import { testRunnerPlugin } from './test-runner'
 import { batchOpsPlugin } from './batch-ops'
+import { decisionPlugin } from './decision'
 import type { BuiltinPluginPackage } from './types'
 
 export * from './types'
@@ -15,6 +16,7 @@ export { codeOutlinePlugin } from './code-outline'
 export { projectInspectorPlugin } from './project-inspector'
 export { testRunnerPlugin } from './test-runner'
 export { batchOpsPlugin } from './batch-ops'
+export { decisionPlugin } from './decision'
 
 /** 系统预置的官方内置插件包清单 */
 export const BUILTIN_PLUGINS: BuiltinPluginPackage[] = [
@@ -23,4 +25,5 @@ export const BUILTIN_PLUGINS: BuiltinPluginPackage[] = [
   projectInspectorPlugin,
   testRunnerPlugin,
   batchOpsPlugin,
+  decisionPlugin,
 ]

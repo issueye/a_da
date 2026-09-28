@@ -88,6 +88,23 @@ git-tools / code-outline / project-inspector / test-runner 四个官方插件也
 每一次轮询都是一整轮模型请求、要把整个上下文重发一遍。模型的行为由提示词和工具描述共同
 塑造（`src/agent/subagents/manager.ts` 的委派准则），改机制时别忘了同步改引导文案。
 
+### 9. 决策插件：绝不捏造确定性
+
+`src/agent/tools/builtin-plugins/decision/` 是给智能体补「结构化判断」的地方。改它时守住三条：
+
+- **拿不到真实判断就失败，不要编数字。** 启发式引擎只产出刻意中性的占位值（confidence 0）
+  并标注「请勿据此决策」；`decide` 在没有可用引擎时返回 `ok: false`。
+- **概率必须标注 `calibrated`。** `true` 仅限 Jev 引擎（专用 System One 模型，概率是校准的）；
+  本地自评是**多次采样的投票占比**，`calibrated` 恒为 `false`。聊天模型自报的概率普遍虚高，
+  所以 `LocalEngine` 刻意不采信它，只作参考放进 `confidence`——**不要"优化"成直接采信自报值**，
+  那会让校准性名存实亡。
+- **失败方向按场景分。** `decide` 失败即失败；`check_gate` 默认 fail-close（无引擎时判不通过），
+  因为「门禁永远放行」比「要求复核」危险。改动这个默认值要先想清代价不对称。
+
+另注意：`design_decision` 与 `decide` 收到的是**模型生成的 JSON**，必须过
+`validateDesign` / `normalizeQuestions` 的严格校验（`choice` 的 criteria 是对象、`score` 是数组、
+`noul` 不带 criteria）。校验规则在两处各有一份实现，改一处要同步另一处。
+
 ## 二、开发与验证
 
 ```bash
@@ -111,6 +128,46 @@ bun run build       # 产出单一可执行文件 dist/a-da.exe
 
 ## 三、已知问题
 
-- `src/ui/PluginsDialog.test.tsx` 的 `creates custom prompt and applies prompt content to
-  composer` 是一个**既有失败**（在未改动的 HEAD 上同样失败，与改动无关）。改动前后跑全量
-  测试都会看到这 1 个红，不必为此改代码——但如果你碰巧修好了，记得说一声。
+### 1. `PluginsDialog` 的既有失败（与本仓库改动无关）
+
+`src/ui/PluginsDialog.test.tsx` 的 `creates custom prompt and applies prompt content to
+composer` 是一个**既有失败**（在未改动的 HEAD 上同样失败）。改动前后跑全量测试都会看到
+这 1 个红，不必为此改代码——但如果你碰巧修好了，记得说一声。
+
+### 2. 【待解决】新增一个插件技能会让 `src/ui/` 成组测试退化
+
+**状态：已定位，未修复。触发条件明确，根因在测试基建，不在插件本身。**
+
+现象：只要存在一个**新增的、未被去重的插件技能**，`bun test src/ui/` 就会从
+`98 pass / 1 fail / ~30s` 退化为 `81 pass / 18 fail / ~110s`（全量测试同比例退化）。
+失败形式是 GPU 测试渲染器的超时，不是逻辑断言错误：
+
+```
+condition never became true        （等 15s 超时）
+at async <anonymous> (src/ui/Sidebar.test.tsx:98)
+at async fill (gpuix/packages/native/dist/automation/client.js:325)
+```
+
+**已排除**（都逐一实测过，均仍然 18 失败）：
+
+- 工具数量：把插件的 `tools` 全删照样失败
+- 提示词：把 `prompts` 全删照样失败
+- 技能正文：把技能 body 压成一行照样失败
+- 重依赖：把 `ai/stream`（SSE 客户端）、`node:child_process` 换成桩照样失败
+- 技能扫描性能：`scanSkills` 20ms / 63 个技能、`parseSkillMarkdown` 0ms，都不是瓶颈
+
+**决定性证据**：把技能 `name` 改成一个已存在的名字（如 `batch-efficiency`，命中
+`skills/manager.ts` 的去重逻辑从而被跳过）→ 立刻恢复 `98 pass / 1 fail / ~29s`。
+反过来，单独跑任何一个 UI 测试文件都是绿的，**只有成组/全量跑才炸**。
+
+**结论**：触发条件是「多了一个非重复的插件技能」这一事实本身，与技能内容无关。
+最可能是窗口初始化时某项工作在多技能下越过了阈值或产生了竞争（渲染器被拖住），
+属于测试基建的潜在约束。
+
+**修的方向**（尚未动手）：查 `createTestRoot` / `connectTest` / `AgentWindow` 首帧路径里
+消费技能列表的地方，找出随技能数增长的那一步。需要把技能列表与窗口初始化解耦，或给
+测试渲染器更宽松的预算。
+
+**在这之前**：往 `BUILTIN_PLUGINS` 里加带技能的新插件（或给现有插件加技能）都会踩到它。
+如果只是加工具、不加技能，不受影响。
+

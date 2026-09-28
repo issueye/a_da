@@ -59,6 +59,11 @@ export class ToolRegistry {
     'git_log',
     'get_outline',
     'inspect_project',
+    // 决策工具：只发模型请求与读 git diff，不改工作区。check_gate 虽然读 diff，
+    // 但只是读——与 run_test_focused 不同，它不执行任何命令产生副作用。
+    'decide',
+    'design_decision',
+    'check_gate',
   ])
 
   /**
@@ -193,4 +198,7 @@ export const BUILTIN_TOOLS_METADATA: BuiltinToolInfo[] = [
   { name: 'kill_task', label: '停止后台任务', description: '终止后台任务及其子进程', isReadOnly: false },
   { name: 'manage_tool', label: '工具管理', description: '在 Create 模式下自发编写、更新与管理工具扩展插件', isReadOnly: false },
   { name: 'manage_skill', label: '技能管理', description: '在 Create 模式下自发创建、更新与管理技能规范 (SKILL.md)', isReadOnly: false },
+  { name: 'decide', label: '类型化决策', description: '对材料做结构化判断（多选一 / 是-否概率 / 按档位评分）', isReadOnly: true },
+  { name: 'design_decision', label: '设计并执行决策', description: '把自由描述的需求自动翻译成决策问题并判定', isReadOnly: true },
+  { name: 'check_gate', label: '验收门禁', description: '按验收标准判定 git 改动 / 文件 / 文本是否通过', isReadOnly: true },
 ]

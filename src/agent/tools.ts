@@ -168,6 +168,18 @@ export function describeTool(name: string, args: Record<string, unknown>): strin
     }
     case 'notify_parent':
       return String(args.summary ?? '').replace(/\r?\n+/g, ' ').trim().slice(0, 60)
+    case 'decide': {
+      const questions = args.questions && typeof args.questions === 'object' ? Object.keys(args.questions) : []
+      if (questions.length === 0) return '类型化决策'
+      return questions.length > 1 ? `${questions[0]} 等 ${questions.length} 个判定` : String(questions[0])
+    }
+    case 'design_decision':
+      return String(args.prompt ?? '').replace(/\r?\n+/g, ' ').trim().slice(0, 60)
+    case 'check_gate': {
+      const criteria = String(args.criteria ?? '').replace(/\r?\n+/g, ' ').trim()
+      const source = typeof args.source === 'string' && args.source !== 'diff' ? `（${args.source}）` : ''
+      return `${criteria.slice(0, 50)}${source}`
+    }
     default:
       return ''
   }

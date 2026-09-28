@@ -139,11 +139,52 @@ bun scripts/extension-check.ts   # 加载 → 进工具表 → 真调一次 → 
 - **project-inspector** —— `inspect_project`：探测技术栈、可用 scripts 与工具链
 - **test-runner** —— `run_test_focused`：剥离通过日志，只抓失败断言与堆栈
 - **batch-ops** —— `read_files` / `edit_files`：**一次调用覆盖多个文件**
+- **decision** —— `decide` / `design_decision` / `check_gate`：**类型化判断**（见下）
 
 `batch-ops` 是专门治「步数」的：一次 `read_file` 只够读一个文件、一次 `edit_file` 只够改
 一处，于是「看 8 个文件再改 3 个」要来回 11 轮模型请求，每轮都要重发整个上下文。把它们压成
 一次调用后，一轮就能看全或落下一整批。写入侧没有绕开安全网：`edit_files` 动到的每个文件都
 会分别建检查点，改动审阅面板也按文件拆开入账，可逐文件回滚。
+
+### 决策插件（decision）
+
+模型侧默认是「生成文本」范式。当任务需要的是**判断**而不是**生成**时，判断结论应当是可比、
+可设阈值、可累计的，而不是埋在散文里等下一轮重新解析。`decision` 提供三种类型化问题：
+
+| 类型 | 语义 | criteria |
+|---|---|---|
+| `choice` | 从若干选项选一个 | 选项 key → 说明的对象 |
+| `noul` | 是/否概率（0–1） | 无（纯问题，不要给 criteria） |
+| `score` | 按档位打分 | 档位数组，**最高档在前** |
+
+三个工具：`decide`（直接问）、`design_decision`（给一段自由描述，自动设计出问题再判定）、
+`check_gate`（按验收标准判定 git 改动 / 文件 / 文本是否通过）。均为**按需触发**，不产生每轮开销。
+
+**三级引擎回退**（`auto`，可用 `decision.engine` 或 `A_DA_DECISION_ENGINE` 固定）：
+
+1. `jev` —— Jev 兼容端点（`/systemOne`）。专用 System One 模型，**概率是校准的**。
+   端点与密钥依次读 `A_DA_DECISION_BASE_URL` → `PI_JEV_BASE_URL` → `TYPESAFE_BASE_URL`、
+   `A_DA_DECISION_API_KEY` → `TYPESAFE_API_KEY` → `~/.a-da/secrets/decision_api_key`
+   （兼容 pi-jev 的变量名，已配好 Jev 的人不用重配）。
+2. `local` —— 复用你自己配置的模型自评。**不采信它自报的概率**（聊天模型报的数普遍虚高），
+   而是采样 N 次（默认 3）取**投票占比**：`noul` 用 yes 票占比、`choice` 用众数（平票取
+   criteria 里靠前的 key）、`score` 用加权期望档位。
+3. `heuristic` —— 确定性兜底，永远可用，但产出**刻意中性**的值（confidence 为 0）并明确
+   标注「请勿据此决策」。
+
+**概率的可靠性看 `calibrated` 字段**：`true` 才是可当概率用的（仅 Jev 引擎）；`false` 表示
+未经校准（本地自评）或没有依据（启发式）。这是本插件的核心契约——**拿不到真实判断时宁可失败，
+绝不编造一个看起来合理的概率**。
+
+失败方向刻意分场景：`decide` 没有引擎时**直接失败**；`check_gate` 则默认 **fail-close**
+（视为未通过），因为「门禁永远放行」比「要求人工复核」危险得多——需要放宽时显式传
+`fail_open: true`，但结果会标注无判定依据。
+
+配置写在 `config.json` 的 `decision` 块（`engine` / `baseUrl` / `apiKey` / `threshold` /
+`samples` / `sampleTimeoutMs`）。默认阈值 0.65，门禁 0.70。
+
+**开销**（按需触发，无每轮固定成本）：`decide` 与 `check_gate` 在 Jev 引擎下各 1 次请求，
+在本地引擎下各 N 次（默认 3）；`design_decision` 为 1 次设计 + N 次评估；启发式 0 次。
 
 ### 子智能体与并发委派
 

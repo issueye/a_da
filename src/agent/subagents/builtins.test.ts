@@ -127,6 +127,38 @@ describe('内置子智能体的工具表守门', () => {
     }
   })
 
+  test('决策工具按角色最小授权', async () => {
+    const all = await fullToolTable()
+    const researcher = BUILTIN_SUBAGENTS.find((p) => p.id === 'researcher')!
+    const reviewer = BUILTIN_SUBAGENTS.find((p) => p.id === 'code_reviewer')!
+    const tester = BUILTIN_SUBAGENTS.find((p) => p.id === 'tester')!
+
+    const researcherTools = toolsForProfile(researcher, all).map((t) => t.name)
+    const reviewerTools = toolsForProfile(reviewer, all).map((t) => t.name)
+    const testerTools = toolsForProfile(tester, all).map((t) => t.name)
+
+    // 三个角色都能做类型化判定：归属/分类/分级是调研与审查的通用需求
+    for (const [id, names] of [
+      ['researcher', researcherTools],
+      ['code_reviewer', reviewerTools],
+      ['tester', testerTools],
+    ] as const) {
+      expect({ id, hasDecide: names.includes('decide') }).toEqual({ id, hasDecide: true })
+    }
+
+    // 只读角色：不得拿到写工具；这个描述里出现的 edit_files 必须不在表里
+    expect(researcherTools).not.toContain('write_file')
+    expect(researcherTools).not.toContain('edit_files')
+    expect(reviewerTools).not.toContain('write_file')
+    expect(reviewerTools).not.toContain('edit_files')
+
+    // 审查者能自行探索判断维度
+    expect(reviewerTools).toContain('design_decision')
+    // 测试者能跑收尾门禁；它是 readwrite，所以批量编辑也在
+    expect(testerTools).toContain('check_gate')
+    expect(testerTools).toContain('edit_files')
+  })
+
   test('子智能体一律拿不到嵌套委派与等待工具（防套娃）', async () => {
     const all = await fullToolTable()
     for (const profile of BUILTIN_SUBAGENTS) {

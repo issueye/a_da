@@ -66,6 +66,8 @@ export const BUILTIN_SUBAGENTS: SubagentProfile[] = [
       'read_url_content',
       // 只有拿到 Skill 才能加载 batch-efficiency 等技能规范
       'Skill',
+      // 决策工具：可做归属/分类判定（只读，无工作区副作用）
+      'decide',
       'todo',
     ],
     disallowedTools: ['invoke_subagent', 'check_subagent', 'send_subagent_message', 'write_file', 'edit_file'],
@@ -108,6 +110,9 @@ export const BUILTIN_SUBAGENTS: SubagentProfile[] = [
       'git_diff',
       'git_log',
       'Skill',
+      // 决策工具：严重度分级与自定义评分维度；design_decision 让审查者自行探索判断维度
+      'decide',
+      'design_decision',
       'todo',
     ],
     disallowedTools: ['invoke_subagent', 'check_subagent', 'send_subagent_message', 'write_file', 'edit_file'],
@@ -154,6 +159,9 @@ export const BUILTIN_SUBAGENTS: SubagentProfile[] = [
       'git_status',
       'git_diff',
       'Skill',
+      // 决策工具：失败归因分类（choice）+ 收尾自检门禁（check_gate）
+      'decide',
+      'check_gate',
       'todo',
     ],
     disallowedTools: ['invoke_subagent', 'check_subagent', 'send_subagent_message'],
