@@ -19,8 +19,24 @@ import { copyToClipboard } from '../platform/clipboard'
 import { getAppHome } from '../agent/home'
 import { C, docTheme, editorTheme, FONT_MONO, M } from '../theme'
 import { Icon, IconButton } from './controls'
+import type { PluginStatus } from '../agent/plugins/types'
+
 import type { IconName } from '../icons'
 import { join } from 'node:path'
+
+/**
+ * 插件状态徽标（M3-1）。
+ *
+ * 只给"不是就绪"的状态做徽标——每个正常插件卡上都挂一个"就绪"纯属噪音。
+ * `conflict` 单列一种颜色：它不致命（后注册者生效），但会让模型看到的名字与
+ * 预期不符，属于"能用但要你知道"。
+ */
+const PLUGIN_STATUS_BADGE: Partial<Record<PluginStatus, { label: string; color: string; background: string }>> = {
+  'not-ready': { label: '待配置', color: '#b45309', background: '#f59e0b18' },
+  incompatible: { label: '版本不兼容', color: '#b45309', background: '#f59e0b18' },
+  broken: { label: '加载失败', color: '#b91c1c', background: '#ef444418' },
+  conflict: { label: '工具名冲突', color: '#7c3aed', background: '#8b5cf618' },
+}
 
 type TabType = 'skills' | 'subagents' | 'prompts' | 'builtin-plugins' | 'workspace' | 'global' | 'builtins'
 
@@ -1663,7 +1679,10 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                     </text>
                   </div>
                 ) : (
-                  currentPlugins.map((item) => (
+                  currentPlugins.map((item) => {
+                    // 只在"不是就绪"时挂徽标：正常插件卡上多一行"就绪"纯属噪音
+                    const statusBadge = PLUGIN_STATUS_BADGE[item.status]
+                    return (
                     <div
                       key={item.id}
                       style={{
@@ -1997,14 +2016,67 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                         </text>
                       ) : null}
 
-                      {/* 错误提示 */}
-                      {item.error ? (
-                        <text style={{ fontSize: 10.5, color: C.accent }}>
-                          {`加载告警: ${item.error}`}
-                        </text>
+                      {/* 加载状态与诊断（M3-1）：不只在出问题时才有话说——
+                          正常情况下这里什么都不显示，出问题时用户要能一眼看出
+                          是"待配置""版本不兼容"还是"加载失败"，以及为什么 */}
+                      {statusBadge ? (
+                        <div
+                          style={{
+                            display: 'flex',
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: 6,
+                            flexWrap: 'wrap',
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              height: 18,
+                              paddingLeft: 6,
+                              paddingRight: 6,
+                              borderRadius: 4,
+                              backgroundColor: statusBadge.background,
+                              flexShrink: 0,
+                            }}
+                          >
+                            <text
+                              style={{
+                                fontSize: 10,
+                                lineHeight: 14,
+                                color: statusBadge.color,
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {statusBadge.label}
+                            </text>
+                          </div>
+                          {item.version ? (
+                            <text style={{ fontSize: 10, color: C.faint }}>
+                              {`v${item.version}`}
+                            </text>
+                          ) : null}
+                        </div>
                       ) : null}
+
+                      {item.diagnostics.map((diagnostic, index) => (
+                        <text
+                          key={`diag-${index}`}
+                          style={{
+                            fontSize: 10.5,
+                            color: diagnostic.level === 'error' ? C.accent : C.faint,
+                          }}
+                        >
+                          {`${diagnostic.level === 'error' ? '✕' : '!'} ${diagnostic.message}${
+                            diagnostic.hint ? ` —— ${diagnostic.hint}` : ''
+                          }`}
+                        </text>
+                      ))}
                     </div>
-                  ))
+                    )
+                  })
                 )}
               </div>
             )}

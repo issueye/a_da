@@ -3,7 +3,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import React from 'react'
@@ -19,6 +19,28 @@ let dir = ''
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), 'a-da-plugins-test-'))
   process.env.A_DA_CONFIG = join(dir, 'config.json')
+  // 一个"缺必填配置"的插件：状态徽标与诊断那一组断言靠它（写在 beforeAll 里是为了
+  // 不额外开窗口——GPU 测试渲染器开真窗口，两个窗口同时活着时按坐标派发的 click
+  // 会落到另一个窗口上，实测会让标签栏那组用例集体翻红）
+  const extensions = join(dir, '.ada', 'extensions')
+  await mkdir(extensions, { recursive: true })
+  await writeFile(
+    join(extensions, 'needs-token.ts'),
+    `export default {
+  name: '需要密钥的插件',
+  configSchema: { properties: { token: { type: 'string', title: '访问令牌', required: true } } },
+  tools: [{
+    name: 'needs_token_probe',
+    description: '探针工具',
+    parameters: { type: 'object' },
+    async execute() {
+      return { output: 'ok', ok: true }
+    },
+  }],
+}
+`,
+    'utf-8'
+  )
   store.newThread(dir)
 })
 
@@ -128,6 +150,14 @@ describeNative('plugins dialog', () => {
     await painted('插件管理')
 
     // 切换到内置核心工具选项卡
+    // 先看一眼工作区页：缺配置的插件要显示"待配置"徽标与原因（M3-1）。
+    // 断言挂在已有用例里而不是新开一条：少开一个窗口就少一次上面注释里那种碰撞
+    await app.getByTestId('plugins-nav-workspace').click()
+    await painted('needs-token.ts')
+    await painted('待配置')
+    expect(screen()).toContain('缺少必填配置：token')
+    expect(screen()).toContain('pluginConfig')
+
     await app.getByTestId('plugins-nav-builtins').click()
     await painted('核心内置工具')
     const text = screen()
