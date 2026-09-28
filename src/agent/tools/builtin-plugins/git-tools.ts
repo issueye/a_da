@@ -4,7 +4,7 @@
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import type { BuiltinPluginPackage } from './types'
+import type { PluginDescriptor } from './types'
 
 const execFileAsync = promisify(execFile)
 
@@ -26,7 +26,7 @@ async function runGit(args: string[], cwd: string): Promise<{ stdout: string; st
   }
 }
 
-export const gitToolsPlugin: BuiltinPluginPackage = {
+export const gitToolsPlugin: PluginDescriptor = {
   id: 'git-tools',
   name: 'Git 变更与协作工具 (git-tools)',
   description: '提供结构化 Git 状态、安全限长 Diff 提取与近期提交历史检索能力，辅助精准掌握版本改动。',

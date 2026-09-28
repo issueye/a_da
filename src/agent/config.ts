@@ -7,7 +7,7 @@
  * the real one.
  */
 
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { getAppHome } from './home'
@@ -59,6 +59,12 @@ export function configPath(): string {
 export type SavedConfig = Partial<ProviderConfig> & {
   appearance?: unknown
   disabledPlugins?: string[]
+  /** 按工作区覆盖的插件启停状态：workspace 路径 → 该工作区下额外禁用的插件 id */
+  workspacePluginState?: Record<string, { disabledPlugins?: string[] }>
+  /** 每个插件的配置块：pluginId → 键值对 */
+  pluginConfig?: Record<string, Record<string, unknown>>
+  /** 插件能力开关（见 docs/plugin-system-design.md §6.4.2） */
+  pluginCapabilities?: Record<string, unknown>
   [key: string]: unknown
 }
 
@@ -118,6 +124,92 @@ export async function readDisabledPlugins(): Promise<string[]> {
 /** 保存已禁用的扩展插件 ID 列表 */
 export function saveDisabledPlugins(disabled: string[]): Promise<void> {
   return mutateSavedConfig((current) => ({ ...current, disabledPlugins: disabled }))
+}
+
+/**
+ * 某个插件在当前工作区是否被停用。
+ *
+ * 解析顺序刻意与"全局默认 + 工作区覆盖"一致：全局 `disabledPlugins` 是默认值，
+ * `workspacePluginState[workspace]` 在其之上追加（只做追加，不做取消——
+ * 全局禁用的插件不该被某个工作区重新启用，那会让"我明明关了它"变成难查的问题）。
+ */
+export async function readPluginDisabled(
+  pluginId: string,
+  workspace?: string,
+): Promise<boolean> {
+  const cfg = await readSavedConfig()
+  const global = Array.isArray(cfg.disabledPlugins) ? cfg.disabledPlugins : []
+  if (global.includes(pluginId)) return true
+  if (!workspace) return false
+  const perWorkspace = cfg.workspacePluginState?.[workspace]?.disabledPlugins
+  return Array.isArray(perWorkspace) ? perWorkspace.includes(pluginId) : false
+}
+
+/**
+ * 把插件的配置键名转成环境变量片段：`baseUrl` → `BASE_URL`、`sampleTimeoutMs` → `SAMPLE_TIMEOUT_MS`。
+ *
+ * 必须按驼峰拆词，不能只做大写——否则 `baseUrl` 会变成 `BASEURL`，
+ * 用户按直觉写的 `..._BASE_URL` 永远匹配不上，而且不报错，只是"设了没生效"。
+ */
+function envKeyOf(key: string): string {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[^A-Za-z0-9]+/g, '_')
+    .toUpperCase()
+}
+
+/**
+ * 读某个插件的配置块。
+ *
+ * 这是插件配置的**统一入口**——插件不再各自去翻 `config.json` 的顶层键，
+ * 而是声明 `configSchema` 后从这里取。优先级：
+ * 环境变量 `A_DA_PLUGIN_<ID>_<KEY>` > `config.json` 的 `pluginConfig[pluginId]` > 默认值。
+ *
+ * 环境变量覆盖的对象是 `defaults` 与文件块的**并集**（不是二者之一）：
+ * 只配了默认值的键、以及只写在 config.json 里的键，都要能被环境变量覆盖——
+ * 否则"设了环境变量却没生效"会变成很难查的问题。取值时沿用该键原有值的类型
+ * （数字键转数字），避免把 `samples` 变成字符串 `"3"`。
+ *
+ * 密钥类的值（`type: 'secret'`）按约定放在 `~/.a-da/secrets/<pluginId>_<key>`，
+ * 由插件自己用 {@link readPluginSecret} 读，不进 config.json。
+ */
+export async function readPluginConfig<T extends Record<string, unknown>>(
+  pluginId: string,
+  defaults: T = {} as T,
+): Promise<T> {
+  const cfg = await readSavedConfig()
+  const block = cfg.pluginConfig?.[pluginId]
+  const fromFile = block && typeof block === 'object' ? (block as Record<string, unknown>) : {}
+
+  const merged: Record<string, unknown> = { ...defaults, ...fromFile }
+
+  const prefix = `A_DA_PLUGIN_${envKeyOf(pluginId)}_`
+  // 键名来自两处的并集：默认值里有、文件里有，都要能被环境变量覆盖。
+  for (const key of new Set([...Object.keys(defaults), ...Object.keys(fromFile)])) {
+    const env = process.env[`${prefix}${envKeyOf(key)}`]
+    if (env === undefined || env.trim() === '') continue
+    // 类型沿用该键在默认值里的声明；默认值没声明就看文件里那个值的类型。
+    const sample = defaults[key] ?? fromFile[key]
+    merged[key] = typeof sample === 'number' ? Number(env) : env.trim()
+  }
+  return merged as T
+}
+
+/**
+ * 读插件的密钥文件 `~/.a-da/secrets/<pluginId>_<key>`。
+ *
+ * 单独一个函数而不是塞进 `readPluginConfig`：密钥的存储位置与普通配置不同
+ * （刻意不进 config.json，因为它会被复制、被截图、被提交），
+ * 调用方需要显式表达"这是敏感值"。
+ */
+export function readPluginSecret(pluginId: string, key: string): string {
+  try {
+    const path = join(getAppHome(), 'secrets', `${pluginId}_${key}`)
+    if (!existsSync(path)) return ''
+    return readFileSync(path, 'utf8').trim()
+  } catch {
+    return ''
+  }
 }
 
 /**

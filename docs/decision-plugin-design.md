@@ -3,6 +3,12 @@
 > 参考项目：[`E:\code\github\pi-jev`](E:/code/github/pi-jev)（pi-jev v0.6.0，2304 行）
 > 目标项目：a_da
 > 状态：**设计待评审**，尚未实现
+>
+> **⚠ 契约名与配置读取已变更**（后续决策见 `docs/plugin-system-design.md`）：
+> - `BuiltinPluginPackage` 已**重命名为 `PluginDescriptor`**（新文件 §4.1/§4.3，不留别名）；
+> - 插件配置不再"自助读 `saved.decision`"——改为统一的 `readPluginConfig('decision')`
+>   （新文件 §5.2），并**不保留**旧变量名与旧 config 块的双读路径（新文件 §4.3.1）。
+> 本文 §5、§7、§8.2 中与之相关的描述请以新文件为准。
 
 ---
 

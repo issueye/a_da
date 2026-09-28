@@ -16,7 +16,7 @@ import { readFile, stat, writeFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { unifiedPatch } from '../../patch'
 import { checkWorkspaceSandbox } from '../workspace'
-import type { BuiltinPluginPackage } from './types'
+import type { PluginDescriptor } from './types'
 
 /** 与 read_file 一致的单文件上限：批量不能让单个大文件把整批拖垮。 */
 const MAX_FILE_BYTES = 512 * 1024
@@ -52,7 +52,7 @@ function normalizePair(pair: EditPair): { oldStr: string; newStr: string } | nul
   return oldStr ? { oldStr, newStr } : null
 }
 
-export const batchOpsPlugin: BuiltinPluginPackage = {
+export const batchOpsPlugin: PluginDescriptor = {
   id: 'batch-ops',
   name: '批量读写提效 (batch-ops)',
   description:

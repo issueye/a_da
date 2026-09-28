@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import type { BuiltinPluginPackage } from './types'
+import type { PluginDescriptor } from './types'
 
 const execFileAsync = promisify(execFile)
 
@@ -20,7 +20,7 @@ async function checkCmd(cmd: string): Promise<string | null> {
   }
 }
 
-export const projectInspectorPlugin: BuiltinPluginPackage = {
+export const projectInspectorPlugin: PluginDescriptor = {
   id: 'project-inspector',
   name: '项目工程与依赖诊断 (project-inspector)',
   description: '自动检测工作区的技术栈类型、包管理工具、可用 scripts 指令与关键依赖，一键生成诊断报告。',

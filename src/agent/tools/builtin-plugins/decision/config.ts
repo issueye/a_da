@@ -1,18 +1,15 @@
 /**
  * 决策插件的配置解析。
  *
- * 优先级顺序与 a_da 既有约定一致：环境变量 > `config.json`。此外额外兼容 pi-jev
- * 的变量名（`PI_JEV_BASE_URL` / `TYPESAFE_BASE_URL` / `TYPESAFE_API_KEY`），
- * 让已经配好 Jev 端点的人不必重配一遍。
+ * 配置读取已统一到核心的 `readPluginConfig`（见 docs/plugin-system-design.md §5.2）：
+ * 插件声明需求，核心负责优先级与环境变量映射。优先级：
+ * `A_DA_PLUGIN_DECISION_<KEY>` 环境变量 > `config.json` 的 `pluginConfig.decision` > 默认值。
  *
- * 密钥不写进 config.json 的话，可以放 `~/.a-da/secrets/decision_api_key`
- * （对齐 pi-jev 的 `~/.pi/agent/secrets/typesafe_api_key`）。
+ * 密钥放 `~/.a-da/secrets/decision_api_key`（对齐 pi-jev 的
+ * `~/.pi/agent/secrets/typesafe_api_key`），不进 config.json。
  */
 
-import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { readSavedConfig } from '../../../config'
-import { getAppHome } from '../../../home'
+import { readPluginConfig, readPluginSecret } from '../../../config'
 import type { EngineId } from './types'
 
 /** 单一阈值常量：所有路径都读它，避免各处理解不一致。 */
@@ -33,6 +30,9 @@ export const DEFAULT_DECISION_BUDGET_MS = 60_000
 /** 送进引擎的 state 上限：避免把整个文件/仓库塞进请求。 */
 export const MAX_STATE_CHARS = 24_000
 
+/** 插件 id：同时用于 `pluginConfig` 键名与环境变量前缀 `A_DA_PLUGIN_DECISION_*`。 */
+export const DECISION_PLUGIN_ID = 'decision'
+
 export type EnginePreference = 'auto' | EngineId
 
 export interface DecisionConfig {
@@ -44,26 +44,6 @@ export interface DecisionConfig {
   threshold: number
   samples: number
   sampleTimeoutMs: number
-}
-
-function envValue(...names: string[]): string {
-  for (const name of names) {
-    const raw = process.env[name]
-    if (raw && raw.trim()) return raw.trim()
-  }
-  return ''
-}
-
-/** 从 `~/.a-da/secrets/decision_api_key` 读密钥（存在且非空才认）。 */
-function readSecretFile(): string {
-  try {
-    const path = join(getAppHome(), 'secrets', 'decision_api_key')
-    if (!existsSync(path)) return ''
-    const content = readFileSync(path, 'utf8').trim()
-    return content
-  } catch {
-    return ''
-  }
 }
 
 function asEnginePreference(raw: unknown): EnginePreference | undefined {
@@ -84,25 +64,19 @@ function asPositiveNumber(raw: unknown): number | undefined {
 /**
  * 解析决策配置。
  *
- * 环境变量整体优先于文件；文件里的 `decision` 块缺失时各项回落到默认值。
- * 密钥的来源顺序：`A_DA_DECISION_API_KEY` → `TYPESAFE_API_KEY` → secrets 文件。
+ * 环境变量整体优先于文件（由 `readPluginConfig` 实现）；文件里的 `pluginConfig.decision`
+ * 块缺失时各项回落到默认值。密钥顺序：`A_DA_PLUGIN_DECISION_API_KEY` 环境变量 >
+ * `pluginConfig.decision.apiKey` > secrets 文件。
  */
 export async function readDecisionConfig(): Promise<DecisionConfig> {
-  const saved = await readSavedConfig()
-  const block = (saved.decision ?? {}) as Record<string, unknown>
+  const block = await readPluginConfig<Record<string, unknown>>(DECISION_PLUGIN_ID)
 
-  const engine =
-    asEnginePreference(envValue('A_DA_DECISION_ENGINE')) ??
-    asEnginePreference(block.engine) ??
-    'auto'
+  const engine = asEnginePreference(block.engine) ?? 'auto'
 
-  const baseUrl =
-    envValue('A_DA_DECISION_BASE_URL', 'PI_JEV_BASE_URL', 'TYPESAFE_BASE_URL') ||
-    (typeof block.baseUrl === 'string' ? block.baseUrl.trim() : '')
+  const baseUrl = typeof block.baseUrl === 'string' ? block.baseUrl.trim() : ''
   const apiKey =
-    envValue('A_DA_DECISION_API_KEY', 'TYPESAFE_API_KEY') ||
     (typeof block.apiKey === 'string' ? block.apiKey.trim() : '') ||
-    readSecretFile()
+    readPluginSecret(DECISION_PLUGIN_ID, 'api_key')
 
   const threshold = asPositiveNumber(block.threshold) ?? DEFAULT_DECISION_THRESHOLD
   const samples = Math.max(1, Math.min(9, Math.round(asPositiveNumber(block.samples) ?? DEFAULT_SAMPLES)))

@@ -9,7 +9,7 @@ import {
   defaultExtensionLoader,
   type PluginItem,
 } from '../agent/tools/loader'
-import { BUILTIN_TOOLS_METADATA } from '../agent/tools/registry'
+import { BUILTIN_TOOLS_CATALOG } from '../agent/tools/registry'
 import { defaultPromptManager } from '../agent/prompts/manager'
 import type { PromptItem } from '../agent/prompts/types'
 import { defaultSubagentManager, type SubagentProfile, SUBAGENT_HEX_COLORS } from '../agent/subagents'
@@ -430,7 +430,7 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                   ? workspaceCount
                   : item.id === 'global'
                   ? globalCount
-                  : BUILTIN_TOOLS_METADATA.length
+                  : BUILTIN_TOOLS_CATALOG.length
               const isSelected = tab === item.id
               return (
                 <div
@@ -1338,7 +1338,7 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
 
                 {/* 工具列表渲染 */}
                 {(() => {
-                  const filteredTools = BUILTIN_TOOLS_METADATA.filter((bt) => {
+                  const filteredTools = BUILTIN_TOOLS_CATALOG.filter((bt) => {
                     if (toolFilter === 'readonly') return bt.isReadOnly
                     if (toolFilter === 'write') return !bt.isReadOnly
                     return true

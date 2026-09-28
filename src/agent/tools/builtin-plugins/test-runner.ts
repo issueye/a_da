@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { exec } from 'node:child_process'
 import { promisify } from 'node:util'
-import type { BuiltinPluginPackage } from './types'
+import type { PluginDescriptor } from './types'
 
 const execAsync = promisify(exec)
 
@@ -49,7 +49,7 @@ function extractFailures(output: string): string {
   return lines.slice(-60).join('\n')
 }
 
-export const testRunnerPlugin: BuiltinPluginPackage = {
+export const testRunnerPlugin: PluginDescriptor = {
   id: 'test-runner',
   name: '测试执行与失败精准归因 (test-runner)',
   description: '自动探测并执行项目单元测试，智能过滤杂质日志，精准抓取失败用例断言与错误堆栈。',

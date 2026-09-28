@@ -12,7 +12,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -47,21 +47,15 @@ beforeEach(async () => {
   oldHome = process.env.A_DA_HOME
   process.env.A_DA_HOME = home
   // 清掉可能影响解析的环境变量，测试自己按需设置
-  delete process.env.A_DA_DECISION_ENGINE
-  delete process.env.A_DA_DECISION_BASE_URL
-  delete process.env.A_DA_DECISION_API_KEY
-  delete process.env.PI_JEV_BASE_URL
-  delete process.env.TYPESAFE_BASE_URL
-  delete process.env.TYPESAFE_API_KEY
+  delete process.env.A_DA_PLUGIN_DECISION_ENGINE
+  delete process.env.A_DA_PLUGIN_DECISION_BASE_URL
+  delete process.env.A_DA_PLUGIN_DECISION_API_KEY
 })
 
 afterEach(async () => {
-  delete process.env.A_DA_DECISION_ENGINE
-  delete process.env.A_DA_DECISION_BASE_URL
-  delete process.env.A_DA_DECISION_API_KEY
-  delete process.env.PI_JEV_BASE_URL
-  delete process.env.TYPESAFE_BASE_URL
-  delete process.env.TYPESAFE_API_KEY
+  delete process.env.A_DA_PLUGIN_DECISION_ENGINE
+  delete process.env.A_DA_PLUGIN_DECISION_BASE_URL
+  delete process.env.A_DA_PLUGIN_DECISION_API_KEY
   if (oldHome === undefined) delete process.env.A_DA_HOME
   else process.env.A_DA_HOME = oldHome
   await rm(home, { recursive: true, force: true })
@@ -93,11 +87,13 @@ describe('决策配置解析', () => {
   test('环境变量优先于 config.json', async () => {
     await writeFile(
       join(home, 'config.json'),
-      JSON.stringify({ decision: { engine: 'local', threshold: 0.9, baseUrl: 'http://from-file' } }),
+      JSON.stringify({
+        pluginConfig: { decision: { engine: 'local', threshold: 0.9, baseUrl: 'http://from-file' } },
+      }),
       'utf8',
     )
-    process.env.A_DA_DECISION_ENGINE = 'heuristic'
-    process.env.A_DA_DECISION_BASE_URL = 'http://from-env'
+    process.env.A_DA_PLUGIN_DECISION_ENGINE = 'heuristic'
+    process.env.A_DA_PLUGIN_DECISION_BASE_URL = 'http://from-env'
 
     const config = await readDecisionConfig()
     expect(config.engine).toBe('heuristic')
@@ -106,22 +102,18 @@ describe('决策配置解析', () => {
     expect(config.threshold).toBe(0.9)
   })
 
-  test('兼容 pi-jev 的旧变量名（PI_JEV_BASE_URL / TYPESAFE_*）', async () => {
-    process.env.PI_JEV_BASE_URL = 'http://jev-local:8000'
-    process.env.TYPESAFE_API_KEY = 'ts_from_old_env'
-    const config = await readDecisionConfig()
-    expect(config.baseUrl).toBe('http://jev-local:8000')
-    expect(config.apiKey).toBe('ts_from_old_env')
-  })
-
-  test('A_DA_DECISION_BASE_URL 优先于 PI_JEV_BASE_URL', async () => {
-    process.env.A_DA_DECISION_BASE_URL = 'http://new'
-    process.env.PI_JEV_BASE_URL = 'http://old'
-    expect((await readDecisionConfig()).baseUrl).toBe('http://new')
+  test('密钥可从 secrets 文件读（不进 config.json）', async () => {
+    await mkdir(join(home, 'secrets'), { recursive: true })
+    await writeFile(join(home, 'secrets', 'decision_api_key'), 'from_secret_file\n', 'utf8')
+    expect((await readDecisionConfig()).apiKey).toBe('from_secret_file')
   })
 
   test('采样次数被夹在 1..9', async () => {
-    await writeFile(join(home, 'config.json'), JSON.stringify({ decision: { samples: 99 } }), 'utf8')
+    await writeFile(
+      join(home, 'config.json'),
+      JSON.stringify({ pluginConfig: { decision: { samples: 99 } } }),
+      'utf8',
+    )
     expect((await readDecisionConfig()).samples).toBe(9)
   })
 })

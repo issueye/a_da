@@ -8,7 +8,7 @@ import { projectInspectorPlugin } from './project-inspector'
 import { testRunnerPlugin } from './test-runner'
 import { batchOpsPlugin } from './batch-ops'
 import { decisionPlugin } from './decision'
-import type { BuiltinPluginPackage } from './types'
+import type { PluginDescriptor } from './types'
 
 export * from './types'
 export { gitToolsPlugin } from './git-tools'
@@ -19,7 +19,7 @@ export { batchOpsPlugin } from './batch-ops'
 export { decisionPlugin } from './decision'
 
 /** 系统预置的官方内置插件包清单 */
-export const BUILTIN_PLUGINS: BuiltinPluginPackage[] = [
+export const BUILTIN_PLUGINS: PluginDescriptor[] = [
   gitToolsPlugin,
   codeOutlinePlugin,
   projectInspectorPlugin,

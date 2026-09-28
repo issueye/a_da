@@ -177,7 +177,15 @@ export interface BuiltinToolInfo {
   isReadOnly: boolean
 }
 
-export const BUILTIN_TOOLS_METADATA: BuiltinToolInfo[] = [
+/**
+ * 核心内置工具的展示目录（标签 + 说明 + 是否只读）。
+ *
+ * 只收录 `getToolsForWorkspace` 里那批**由引擎内置托管**的核心工具——插件提供的
+ * 工具不在这里，它们从各自的 `PluginDescriptor` 读（见 README「扩展」与
+ * `src/agent/plugins/types.ts`）。这份目录用于插件管理页的「内置工具」清单：
+ * 那里需要在不实例化工具的前提下展示标签与说明。
+ */
+export const BUILTIN_TOOLS_CATALOG: BuiltinToolInfo[] = [
   { name: 'list_files', label: '列出文件', description: '遍历并列出指定目录下的文件与子目录结构', isReadOnly: true },
   { name: 'read_file', label: '读取文件', description: '安全读取工作区内的代码或文本文件内容', isReadOnly: true },
   { name: 'search_files', label: '搜索文件', description: '在工作区文件中快速全局搜索指定文本或模式', isReadOnly: true },
@@ -198,7 +206,4 @@ export const BUILTIN_TOOLS_METADATA: BuiltinToolInfo[] = [
   { name: 'kill_task', label: '停止后台任务', description: '终止后台任务及其子进程', isReadOnly: false },
   { name: 'manage_tool', label: '工具管理', description: '在 Create 模式下自发编写、更新与管理工具扩展插件', isReadOnly: false },
   { name: 'manage_skill', label: '技能管理', description: '在 Create 模式下自发创建、更新与管理技能规范 (SKILL.md)', isReadOnly: false },
-  { name: 'decide', label: '类型化决策', description: '对材料做结构化判断（多选一 / 是-否概率 / 按档位评分）', isReadOnly: true },
-  { name: 'design_decision', label: '设计并执行决策', description: '把自由描述的需求自动翻译成决策问题并判定', isReadOnly: true },
-  { name: 'check_gate', label: '验收门禁', description: '按验收标准判定 git 改动 / 文件 / 文本是否通过', isReadOnly: true },
 ]

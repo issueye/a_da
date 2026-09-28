@@ -5,7 +5,7 @@
 import { existsSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import { extname, isAbsolute, join } from 'node:path'
-import type { BuiltinPluginPackage } from './types'
+import type { PluginDescriptor } from './types'
 
 interface SymbolItem {
   kind: 'class' | 'interface' | 'type' | 'function' | 'method' | 'struct' | 'enum' | 'trait' | 'impl' | 'key'
@@ -128,7 +128,7 @@ function extractSymbols(content: string, ext: string): SymbolItem[] {
   return symbols
 }
 
-export const codeOutlinePlugin: BuiltinPluginPackage = {
+export const codeOutlinePlugin: PluginDescriptor = {
   id: 'code-outline',
   name: '代码大纲与符号导航 (code-outline)',
   description: '快速提取源码文件的符号大纲（类、函数、类型定义及所在行号），省去大文件全量读取消耗，极速定位代码。',

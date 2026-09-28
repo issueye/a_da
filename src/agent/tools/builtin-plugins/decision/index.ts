@@ -9,7 +9,7 @@
  */
 
 import { createCheckGateTool, createDecideTool, createDesignDecisionTool } from './tools'
-import type { BuiltinPluginPackage } from '../types'
+import type { PluginDescriptor } from '../types'
 
 export * from './types'
 export { createDecideTool, createDesignDecisionTool, createCheckGateTool } from './tools'
@@ -41,7 +41,7 @@ export {
 } from './designer'
 export { runGate, readGitDiff, resolveGateState, type GateOptions, type GateSource } from './gate'
 
-export const decisionPlugin: BuiltinPluginPackage = {
+export const decisionPlugin: PluginDescriptor = {
   id: 'decision',
   name: '决策与判定 (decision)',
   description:
