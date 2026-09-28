@@ -50,7 +50,48 @@ async function mount() {
     }
     throw new Error(`still paints ${needle}\n${screen()}`)
   }
-  return { app, screen, renderer, painted, gone }
+  /**
+   * 把列表里的某个元素滚进可视区再交互。
+   *
+   * 弹窗主体是滚动容器：新建的提示词/技能排在十几个内置项之后，初始都在
+   * 可视区外（实测 apply 按钮 y≈947 > 窗口 760）。文字仍会出现在 painted
+   * 文本里，但 click() 按窗口坐标派发，点在窗口外等于没点——handler 不执行、
+   * 也不报错。bounds() 是滚动感知的窗口坐标，滚到位后普通 click 即可命中。
+   *
+   * 方向约定（实测）：wheel deltaY 为**负**是向下滚；且滚到顶/底时同向滚轮
+   * 是无操作——所以"连续无位移"也要翻向，不能只看 y 是否反向。
+   */
+  const scrollIntoView = async (
+    locator: { bounds: () => Promise<{ y: number; height: number }> },
+    maxSteps = 12,
+  ) => {
+    let dy = -300
+    let idle = 0
+    for (let i = 0; i < maxSteps; i++) {
+      const b = await locator.bounds()
+      // 可视区间取保守值：避开弹窗头部与底部按钮栏
+      if (b.y > 180 && b.y + b.height < 680) return
+      const before = b.y
+      await app.mouse.wheel({ x: 560, y: 400 }, 0, dy)
+      await new Promise((resolve) => setTimeout(resolve, 90))
+      renderer.flush?.()
+      const after = (await locator.bounds()).y
+      if (Math.abs(after - before) < 1) {
+        // 同向滚到头是无操作：翻向试另一边
+        idle += 1
+        if (idle >= 2) {
+          dy = -dy
+          idle = 0
+        }
+        continue
+      }
+      idle = 0
+      if (after > before && dy < 0) dy = -dy // 越滚越远，反向
+      if (after < before && dy > 0) dy = -dy
+    }
+    // 滚完仍不在区间内也不报错：让后续点击自己暴露问题
+  }
+  return { app, screen, renderer, painted, gone, scrollIntoView }
 }
 
 describeNative('plugins dialog', () => {
@@ -139,35 +180,39 @@ describeNative('plugins dialog', () => {
     await app.close()
   }, 30_000)
 
-  test(
-    'creates custom prompt and applies prompt content to composer',
-    async () => {
-      const { app, screen, painted, gone } = await mount()
-      await app.getByTestId('open-plugins').click()
-      await painted('插件管理')
+    test(
+      'creates custom prompt and applies prompt content to composer',
+      async () => {
+        const { app, screen, painted, gone, scrollIntoView } = await mount()
+        await app.getByTestId('open-plugins').click()
+        await painted('插件管理')
 
-      // 切换到提示词管理标签页
-      await app.getByTestId('plugins-nav-prompts').click()
-      await painted('新建提示词')
+        // 切换到提示词管理标签页
+        await app.getByTestId('plugins-nav-prompts').click()
+        await painted('新建提示词')
 
-      // 点击新建提示词
-      await app.getByTestId('prompt-create-btn').click()
-      await painted('快速新建提示词模板 (.md)')
+        // 点击新建提示词
+        await app.getByTestId('prompt-create-btn').click()
+        await painted('快速新建提示词模板 (.md)')
 
-      // 填写名称与正文
-      await app.getByTestId('prompt-name-input').fill('ui_review')
-      await app.getByTestId('prompt-desc-input').fill('重点检查组件拆分与无障碍支持')
-      await app.getByTestId('prompt-content-input').fill('请审查前端组件的可访问性与重渲染性能。')
+        // 填写名称与正文
+        await app.getByTestId('prompt-name-input').fill('ui_review')
+        await app.getByTestId('prompt-desc-input').fill('重点检查组件拆分与无障碍支持')
+        await app.getByTestId('prompt-content-input').fill('请审查前端组件的可访问性与重渲染性能。')
 
-      // 提交创建
-      await app.getByTestId('prompt-submit-btn').click()
-      await gone('快速新建提示词模板 (.md)')
-      expect(screen()).toContain('ui_review')
-      expect(screen()).toContain('重点检查组件拆分与无障碍支持')
+        // 提交创建
+        await app.getByTestId('prompt-submit-btn').click()
+        await gone('快速新建提示词模板 (.md)')
+        expect(screen()).toContain('ui_review')
+        expect(screen()).toContain('重点检查组件拆分与无障碍支持')
 
-      // 点击应用到输入框：弹窗自动关闭且内容进入 Composer
-      await app.getByTestId('prompt-apply-workspace_ui_review').click()
-      await gone('插件管理')
+        // 新建的提示词排在内置项之后，多半在滚动容器可视区外，先滚进来再点
+        const applyButton = app.getByTestId('prompt-apply-workspace_ui_review')
+        await scrollIntoView(applyButton)
+
+        // 点击应用到输入框：弹窗自动关闭且内容进入 Composer
+        await applyButton.click()
+        await gone('插件管理')
 
       // 点击发送按钮以验证草稿已成功填入 Composer 并发送上屏
       await app.getByTestId('send').click()
@@ -204,7 +249,7 @@ describeNative('plugins dialog', () => {
   })
 
   test('switches to skills tab and allows creating and managing skills', async () => {
-    const { app, screen, painted, gone } = await mount()
+    const { app, screen, painted, gone, scrollIntoView } = await mount()
     await app.getByTestId('open-plugins').click()
     await painted('插件管理')
 
@@ -227,8 +272,12 @@ describeNative('plugins dialog', () => {
     await painted('rust-linter')
     expect(screen()).toContain('自动化运行 cargo clippy 并分析警告')
 
+    // 新建的技能排在既有技能之后，先滚进可视区再交互
+    const expandButton = app.getByTestId('skill-expand-rust-linter')
+    await scrollIntoView(expandButton)
+
     // 切换展开正文
-    await app.getByTestId('skill-expand-rust-linter').click()
+    await expandButton.click()
     await painted('SKILL.md 正文指令')
 
     // 切换启停状态
