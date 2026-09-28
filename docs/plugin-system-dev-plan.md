@@ -326,10 +326,9 @@ M2 验收清单逐条）、`plugins/hook-runtime.test.ts`（19，开关/顺序/�
 
 ---
 
-### M3 — 管理与完善（可见、可控、可配）🟡 **部分完成**
+### M3 — 管理与完善（可见、可控、可配）✅ **已完成**
 
-**状态**：M3-1（前半）、M3-4、M3-5、M3-6 已完成；M3-2、M3-3、M3-1 的后半、
-M3-7、M3-8、M3-9 未做（见本节末的进度记录）
+**状态**：已实施并验证通过（见本节末的完成记录）
 
 **目标**：把 M1/M2 的能力**暴露给用户**，并补齐设计文档 §6.6.2 第一优先的其余点位。
 
@@ -354,45 +353,64 @@ M3-7、M3-8、M3-9 未做（见本节末的进度记录）
 - [x] **gate 拦截路径调用后父会话不被永久挂起**（`wakeParent` 与 `runningThreadIds` 一致）
 - [x] `store` 与 `runner` 的工具过滤结果逐工具名一致（去重复成功）
 - [x] `afterSubagentEnd` 抛错**不阻断** `wakeParent`
-- [ ] 能力开关面板 + "受限"状态提示（M3-2 未做，见进度记录）
-- [ ] 配置表单（M3-3 未做，见进度记录）
+- [x] 能力开关面板 + "受限"状态提示（M3-2）
+- [x] 配置表单（M3-3，由 `configSchema` 生成，secret 不回显）
 
 ---
 
-#### M3 进度记录（截至本次）
+#### M3 完成记录（已验证）
 
-**已完成**：M3-4（子智能体门禁）、M3-5（审批闸门）、M3-6（上下文压缩）、M3-1 前半（状态徽标 + 诊断详情）。
+**门禁**：typecheck exit 0；`bun test src/agent` 458 pass / 0 fail；全量 **617 pass / 0 fail**。
 
-**门禁**：typecheck exit 0；`bun test src/agent` 426 pass / 0 fail；全量 **586 pass / 0 fail**（连跑三次稳定）。
+**逐项交付**
 
-**M3-4 的取舍**：门禁的失败方向按 §6.4.4.5 实现（未配 `failOpen` = 放行 + 提示），并且**显式
-`failOpen: false` 时，判定方只报 `allowed` 而拿不出 `confidence`/`calibrated` 也照样拦**——
-"拿不出依据"等于没判断，不能让判定方自说自话。判定本身由 decision 插件提供（核心不内置"怎么判断"）。
-另外把三处重复的工具解析收成 `subagents/access.ts` 一份，门禁与工具集因此永远一致。
+| 任务 | 交付物 |
+|---|---|
+| M3-1 | 插件卡状态徽标（待配置/版本不兼容/加载失败/工具名冲突）、逐条诊断（含可操作建议）、版本号、**贡献计数**（工具/技能/提示词各几个） |
+| M3-2 | 「能力开关」页：七个开关逐项列出并写清"关掉后会发生什么"、钩子超时可填（0 = 不限）、配置里取值不可用会点名；插件卡新增**受限原因**（关掉开关后用到它的插件说明哪一步会被忽略） |
+| M3-3 | 由 `configSchema` 生成配置表单（string/number/boolean/secret）；**secret 不回显**（只显示"已设置/未设置"，留空表示不改），写入 `~/.a-da/secrets/<pluginId>_<key>` |
+| M3-4 | 子智能体 `gate` + `beforeSubagentStart`/`afterSubagentEnd`；三条入口共用 `subagents/access.ts` 一份工具解析与门禁 |
+| M3-5 | `beforeApproval`/`afterApproval`：允许即免弹卡、拒绝理由回给模型、`afterApproval` 拿到决策与耗时 |
+| M3-6 | `beforeCompaction`/`afterCompaction`：可追加必须保留的消息（永远生效）、可替换选择方案（受开关约束）；判定应用是 `compact/verdict.ts` 的纯函数 |
+| M3-7 | `Thread.pluginData`（随会话持久化、核心永不读取）+ `beforeThreadCreate`/`afterThreadCreate`、`beforeThreadDelete`/`afterThreadDelete`、`onThreadSwitch`（纯通知，刻意不成对） |
+| M3-8 | `beforeLlmRequest`/`afterLlmResponse`、`beforeSkillLoad`/`afterSkillLoad`、`beforeSystemPrompt`、`beforePersist`、`afterCheckpoint` |
+| M3-9 | README 的扩展与钩子一节、`AGENTS.md` §12/§13、本文档 |
 
-**M3-5 的一处超出文档的取舍**：`beforeApproval` 的 `allow` 在 **readonly 审批档位下被忽略**
-（写日志说明）。文档只写了"插件可实现白名单工具免问"，没写它与用户档位冲突时谁优先。这里按
-与 `failOpen: false` 同源的原则处理：**用户明确表态过的事，不让插件悄悄改掉**。`deny` 则总是
-被采纳，且一个插件不能推翻另一个插件的否决（`beforeApproval` 链不短路）。
+**实施中发现的真实缺陷（都由新测试当场抓到）**
 
-**M3-1 只做了前半**：状态徽标（待配置/版本不兼容/加载失败/工具名冲突）与诊断详情（含可操作建议）
-已上卡片，并补了版本号显示。**未做**：贡献计数、冲突双方的对照展示（§7.1 的完整形态）。
-UI 测试挂在既有的"内置核心工具"用例里：GPU 测试渲染器开的是真窗口，新开一条用例实测会让
-标签栏那组五条用例集体翻红（`store.activeId` 停在别的会话上），所以改为在 `beforeAll` 里准备
-一个"缺配置插件"、在已有用例里多切一次页——断言依然是真实的 painted 文本。
+1. **子智能体收尾顺序**：`afterSubagentEnd` 最初跑在"退出运行集合"之后，于是几乎瞬时结束的
+   子任务会让 `suspendForSubagents` 走"看护对象都结束了、就地采集"的捷径，绕过带复核旁注的
+   唤醒内容。现在钩子跑在退出之前（此时子会话仍算在跑）。
+2. **会话头部更新在文件不存在时静默跳过**：新建会话的头部由异步落盘路径创建，插件在会话刚
+   建好时建议的标题与数据会当场丢掉。改为按需建文件。
+3. **`createSession` 会覆盖已存在的会话文件**：它写文件第一行，重复调用会把已追加的消息和
+   插件写的数据一起抹掉。"创建"应当是幂等的。
+4. **两次头部写入并发导致互相覆盖**：标题与 pluginData 各自"读→改→写"，并发时后者能覆盖
+   前者（实测标题写进去了、pluginData 丢了）。现在串行。
+5. **插件索引是单份全局状态**：切换项目后界面会读到上一个项目的插件（诊断、内联技能都会串）。
+   改为按工作区分键。
+6. **UI 测试的真窗口约束**：新开一条会 mount 窗口的用例，实测让标签栏那组五条用例集体翻红
+   （按坐标派发的 click 落到了另一个窗口上）。改为在已有用例里加断言、`beforeAll` 准备数据。
 
-**未做（按设计文档 §8 的优先级排序）**
-1. **能力开关面板**（M3-2）：八个开关目前只能手改 `config.json`（README 有说明），
-   界面上无法逐项关掉，也看不到"某个插件因为哪个开关受限"。设计文档把"受限必须可见"
-   列为开放原则的配套要求，所以这是 M3 里最该接着做的一项。
-2. **配置表单**（M3-3）：`configSchema` 已经能被读取（M1），`savePluginConfig` 也提供了写入，
-   缺的是按 schema 生成表单（含 secret 不回显）。decision 插件已有 7 个配置项可被它渲染。
-3. **会话生命周期**（M3-7）：`Thread.pluginData`、`beforeThreadCreate`（title 建议 + data）、
-   `beforeThreadDelete`（`block` 与 `archiveBeforeDelete`）、`onThreadSwitch`。
-4. **第二优先点位**（M3-8）：`beforeLlmRequest`/`afterLlmResponse`、`beforeSystemPrompt`、
-   `beforeSkillLoad`/`afterSkillLoad`、`beforePersist`、`afterCheckpoint`。
-5. **收尾**（M3-9）：README 的钩子一节已在 M2 写过，但 M3 的新点位（审批/压缩/门禁）
-   与开关面板的说明还没补；`AGENTS.md` 需要一节讲审批的效力不对称与压缩的可替换边界。
+**三处超出文档的取舍**（都写进了 AGENTS.md §13）
+
+1. `beforeApproval` 的 `allow` 在 **readonly 审批档位下被忽略**：文档没写它与用户档位冲突时谁
+   优先。按与 `failOpen: false` 同源的原则——用户明确表态过的事，不让插件悄悄改掉。
+2. `afterTurn.replaceText` 与 `afterAgentEnd.appendNote` **不在契约里**：本项目没有"改写已渲染
+   回复 / 向已结束会话追加旁注"的交付通道，声明它们只会变成静默失效。
+3. **决策插件的引擎驱动"自动模式"没做**：每轮多一次引擎调用（成本与延迟翻倍），无引擎时只能
+   靠启发式；按本项目原则，拿不到真实判断时不该假装有判断。已实现的是确定性工具路由。
+
+**明确未做**（都不在本里程碑范围内）
+
+- `Thread.pluginData` **分区大小上限**（设计文档 §12 的未决问题之一）：当前不限制单个插件
+  写多少，靠插件自觉。要加的话，超限时的行为（截断 / 拒绝 / 诊断）需要先定。
+- 能力开关的**工作区级覆盖**已经能读（`workspacePluginState[ws].capabilities`），但面板只编辑
+  全局那份；界面上的"仅本项目"选择留给后续。
+- `PluginsDialog` 未显示插件用到的**钩子点位清单**（"这个插件会动手做哪些事"）。受限原因已经
+  能说明"哪一步被忽略"，但"它注册了哪些点位"目前只有 `getLoadedPlugins()` 能查到。
+
+---
 
 ---
 

@@ -180,6 +180,13 @@ git-tools / code-outline / project-inspector / test-runner 四个官方插件也
   就是**放行 + 提示**（"用户没表态"不等于"要求安全"），显式 `false` 时拿不出依据也拦。
 - 这三个点位的 `after*` 都是**纯观察**（审批/压缩已经发生），别给它们加返回值语义。
 
+- 第二优先的六个点位（`beforeLlmRequest`/`afterLlmResponse`、`beforeSystemPrompt`、
+  `beforeSkillLoad`/`afterSkillLoad`、`beforePersist`、`afterCheckpoint`）里，**后四个是单向的**：
+  组装完成、落盘、检查点这些是终态，没有可配对的 `after`/`before`。它们都登记在
+  `UNPAIRED_HOOKS` 里，配对守门测试据此把"漏登记"和"刻意不成对"区分开。
+- `beforePersist` 挂在**异步**链路上（`persist` 本身仍是"发起即返回"）：别为了让它同步而把
+  `persist` 改成 async——它有一堆调用点在 fire-and-forget。
+
 另外，UI 测试有一条硬约束：**同一时刻只让一个真窗口活着**。GPU 测试渲染器开的是真窗口，
 两个窗口同时活着时按坐标派发的 `click` 会落到另一个窗口上——新开一条会 mount 窗口的用例，
 实测让标签栏那组五条用例集体翻红（`store.activeId` 停在别的会话上）。要在弹窗里加断言，

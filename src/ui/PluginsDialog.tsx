@@ -2321,6 +2321,11 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                         </div>
                       ) : null}
 
+                      {/* 贡献计数（M3-1 后半）：一眼看清这个插件到底带来了什么 */}
+                      <text style={{ fontSize: 10.5, color: C.faint }}>
+                        {`贡献：工具 ${item.tools.length} · 技能 ${item.skills.length} · 提示词 ${item.prompts.length}`}
+                      </text>
+
                       {item.diagnostics.map((diagnostic, index) => (
                         <text
                           key={`diag-${index}`}
