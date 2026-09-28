@@ -165,6 +165,26 @@ git-tools / code-outline / project-inspector / test-runner 四个官方插件也
 - `afterTurn.replaceText` / `afterAgentEnd.appendNote` **没有进契约**：本项目没有"改写已渲染
   回复"与"向已结束会话追加旁注"的交付通道，声明它们只会变成静默失效。要加就得先有通道。
 
+### 13. 审批与压缩：两个方向的效力刻意不对称
+
+这两处是 M3 新开的干预点，规则和其它 before* 不一样，改的时候别改成"对称"的：
+
+- **`beforeApproval`**：`deny` 总是被采纳（收窄），且**链不短路**——一个插件不该能推翻另一个
+  插件的否决；`allow` 在 **readonly 审批档位下被忽略**并写日志（那一档的语义就是"写操作必须经
+  我确认"）。与 `failOpen: false` 同源的原则：**用户明确表态过的事，不让插件悄悄改掉**。
+  审批**只在闸门本来要问用户时才跑**——不问就没有"免问"可言。
+- **`beforeCompaction`**：追加保留消息**任何配置下都生效**（只会让压缩少做点）；整体替换
+  `CompactSelection` 受 `allowCompactionReplace` 约束（默认开）。判定应用是 `compact/verdict.ts`
+  里的纯函数，按**对象引用**匹配要保留的消息。
+- **`beforeSubagentStart`** 的失败方向见 §12 与 `subagents/access.ts` 的判定表：未配 `failOpen`
+  就是**放行 + 提示**（"用户没表态"不等于"要求安全"），显式 `false` 时拿不出依据也拦。
+- 这三个点位的 `after*` 都是**纯观察**（审批/压缩已经发生），别给它们加返回值语义。
+
+另外，UI 测试有一条硬约束：**同一时刻只让一个真窗口活着**。GPU 测试渲染器开的是真窗口，
+两个窗口同时活着时按坐标派发的 `click` 会落到另一个窗口上——新开一条会 mount 窗口的用例，
+实测让标签栏那组五条用例集体翻红（`store.activeId` 停在别的会话上）。要在弹窗里加断言，
+就写进已有的那条用例里（见 `PluginsDialog.test.tsx` 的做法：`beforeAll` 准备数据、已有用例多切一次页）。
+
 ## 二、开发与验证
 ```bash
 bun install

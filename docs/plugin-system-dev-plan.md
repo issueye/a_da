@@ -326,7 +326,10 @@ M2 验收清单逐条）、`plugins/hook-runtime.test.ts`（19，开关/顺序/�
 
 ---
 
-### M3 — 管理与完善（可见、可控、可配）
+### M3 — 管理与完善（可见、可控、可配）🟡 **部分完成**
+
+**状态**：M3-1（前半）、M3-4、M3-5、M3-6 已完成；M3-2、M3-3、M3-1 的后半、
+M3-7、M3-8、M3-9 未做（见本节末的进度记录）
 
 **目标**：把 M1/M2 的能力**暴露给用户**，并补齐设计文档 §6.6.2 第一优先的其余点位。
 
@@ -345,12 +348,51 @@ M2 验收清单逐条）、`plugins/hook-runtime.test.ts`（19，开关/顺序/�
 | M3-9 | README 重写「扩展」一节 + `AGENTS.md` 四条约定 | §7 / §11 |
 
 **验收标准**
-- [ ] UI 测试：插件卡显示状态、冲突、受限原因
-- [ ] `gate` 未配 `failOpen` + 无引擎 → **放行**，且有"门禁未生效"提示
-- [ ] `gate.failOpen: false` + 无引擎 → 拦截
-- [ ] **gate 拦截路径调用后父会话不被永久挂起**（`wakeParent` 与 `runningThreadIds` 一致）
-- [ ] `store` 与 `runner` 的工具过滤结果逐工具名一致（去重复成功）
-- [ ] `afterSubagentEnd` 抛错**不阻断** `wakeParent`
+- [x] UI 测试：插件卡显示状态与诊断原因（沿用既有弹窗用例，见进度记录的说明）
+- [x] `gate` 未配 `failOpen` + 无引擎 → **放行**，且有"门禁未生效"提示
+- [x] `gate.failOpen: false` + 无引擎 → 拦截
+- [x] **gate 拦截路径调用后父会话不被永久挂起**（`wakeParent` 与 `runningThreadIds` 一致）
+- [x] `store` 与 `runner` 的工具过滤结果逐工具名一致（去重复成功）
+- [x] `afterSubagentEnd` 抛错**不阻断** `wakeParent`
+- [ ] 能力开关面板 + "受限"状态提示（M3-2 未做，见进度记录）
+- [ ] 配置表单（M3-3 未做，见进度记录）
+
+---
+
+#### M3 进度记录（截至本次）
+
+**已完成**：M3-4（子智能体门禁）、M3-5（审批闸门）、M3-6（上下文压缩）、M3-1 前半（状态徽标 + 诊断详情）。
+
+**门禁**：typecheck exit 0；`bun test src/agent` 426 pass / 0 fail；全量 **586 pass / 0 fail**（连跑三次稳定）。
+
+**M3-4 的取舍**：门禁的失败方向按 §6.4.4.5 实现（未配 `failOpen` = 放行 + 提示），并且**显式
+`failOpen: false` 时，判定方只报 `allowed` 而拿不出 `confidence`/`calibrated` 也照样拦**——
+"拿不出依据"等于没判断，不能让判定方自说自话。判定本身由 decision 插件提供（核心不内置"怎么判断"）。
+另外把三处重复的工具解析收成 `subagents/access.ts` 一份，门禁与工具集因此永远一致。
+
+**M3-5 的一处超出文档的取舍**：`beforeApproval` 的 `allow` 在 **readonly 审批档位下被忽略**
+（写日志说明）。文档只写了"插件可实现白名单工具免问"，没写它与用户档位冲突时谁优先。这里按
+与 `failOpen: false` 同源的原则处理：**用户明确表态过的事，不让插件悄悄改掉**。`deny` 则总是
+被采纳，且一个插件不能推翻另一个插件的否决（`beforeApproval` 链不短路）。
+
+**M3-1 只做了前半**：状态徽标（待配置/版本不兼容/加载失败/工具名冲突）与诊断详情（含可操作建议）
+已上卡片，并补了版本号显示。**未做**：贡献计数、冲突双方的对照展示（§7.1 的完整形态）。
+UI 测试挂在既有的"内置核心工具"用例里：GPU 测试渲染器开的是真窗口，新开一条用例实测会让
+标签栏那组五条用例集体翻红（`store.activeId` 停在别的会话上），所以改为在 `beforeAll` 里准备
+一个"缺配置插件"、在已有用例里多切一次页——断言依然是真实的 painted 文本。
+
+**未做（按设计文档 §8 的优先级排序）**
+1. **能力开关面板**（M3-2）：八个开关目前只能手改 `config.json`（README 有说明），
+   界面上无法逐项关掉，也看不到"某个插件因为哪个开关受限"。设计文档把"受限必须可见"
+   列为开放原则的配套要求，所以这是 M3 里最该接着做的一项。
+2. **配置表单**（M3-3）：`configSchema` 已经能被读取（M1），`savePluginConfig` 也提供了写入，
+   缺的是按 schema 生成表单（含 secret 不回显）。decision 插件已有 7 个配置项可被它渲染。
+3. **会话生命周期**（M3-7）：`Thread.pluginData`、`beforeThreadCreate`（title 建议 + data）、
+   `beforeThreadDelete`（`block` 与 `archiveBeforeDelete`）、`onThreadSwitch`。
+4. **第二优先点位**（M3-8）：`beforeLlmRequest`/`afterLlmResponse`、`beforeSystemPrompt`、
+   `beforeSkillLoad`/`afterSkillLoad`、`beforePersist`、`afterCheckpoint`。
+5. **收尾**（M3-9）：README 的钩子一节已在 M2 写过，但 M3 的新点位（审批/压缩/门禁）
+   与开关面板的说明还没补；`AGENTS.md` 需要一节讲审批的效力不对称与压缩的可替换边界。
 
 ---
 
