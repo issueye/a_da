@@ -10,6 +10,8 @@ import { basename, dirname, join } from 'node:path'
 import { getAppHome } from '../home'
 import { createPluginDisabledResolver } from '../config'
 import { getLoadedPlugins } from '../plugins/registry'
+import { composePluginHooks } from '../plugins/hook-runtime'
+import { readPluginCapabilities } from '../config'
 import { expandSkillVariables, parseSkillMarkdown } from './parser'
 import { BUILTIN_SKILLS } from './builtins'
 import { BUILTIN_PLUGINS } from '../tools/builtin-plugins'
@@ -378,10 +380,53 @@ export class SkillManager {
     name: string,
     workspaceRoot?: string
   ): Promise<{ name: string; content: string; baseDirectory: string; path: string } | null> {
-    const skill = await this.findSkillByName(name, workspaceRoot)
-    if (!skill) return null
+    // 技能加载的成对点位：插件可以拦下、也可以替换注入的正文（脱敏/裁剪）
+    const hooks = await composePluginHooks({
+      kind: 'main',
+      workspace: workspaceRoot,
+      capabilities: await readPluginCapabilities(workspaceRoot),
+    })
 
-    const content = expandSkillVariables(skill.body, skill.baseDirectory)
+    if (hooks.beforeSkillLoad) {
+      const verdict = await hooks.beforeSkillLoad({ kind: 'main', workspace: workspaceRoot, skillName: name })
+      if (verdict?.block) {
+        throw new Error(verdict.blockReason ?? `插件阻止了加载技能「${name}」`)
+      }
+    }
+
+    const skill = await this.findSkillByName(name, workspaceRoot)
+    if (!skill) {
+      if (hooks.afterSkillLoad) {
+        await hooks.afterSkillLoad({ kind: 'main', workspace: workspaceRoot, skillName: name, loaded: false, chars: 0 })
+      }
+      return null
+    }
+
+    let content = expandSkillVariables(skill.body, skill.baseDirectory)
+
+    // 插件可以替换要注入的正文（脱敏/裁剪）。技能正文是给模型看的建议文本，
+    // 不是权限授予，所以替换不需要额外开关——但要说出来，别让它变成隐式行为
+    if (hooks.beforeSkillLoad) {
+      const verdict = await hooks.beforeSkillLoad({
+        kind: 'main',
+        workspace: workspaceRoot,
+        skillName: name,
+      })
+      if (verdict?.content !== undefined) {
+        content = verdict.content
+      }
+    }
+
+    if (hooks.afterSkillLoad) {
+      await hooks.afterSkillLoad({
+        kind: 'main',
+        workspace: workspaceRoot,
+        skillName: name,
+        loaded: true,
+        chars: content.length,
+      })
+    }
+
     return {
       name: skill.name,
       content,

@@ -42,6 +42,13 @@ const HOOK_KEYS: Record<keyof AgentHooks, true> = {
   beforeThreadDelete: true,
   afterThreadDelete: true,
   onThreadSwitch: true,
+  beforeLlmRequest: true,
+  afterLlmResponse: true,
+  beforeSystemPrompt: true,
+  beforeSkillLoad: true,
+  afterSkillLoad: true,
+  beforePersist: true,
+  afterCheckpoint: true,
 }
 
 let server: ReturnType<typeof Bun.serve>

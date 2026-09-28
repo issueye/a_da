@@ -26,6 +26,8 @@ import type {
   BeforeAgentStartResult,
   BeforeApprovalResult,
   BeforeCompactionResult,
+  BeforeSkillLoadResult,
+  BeforeSystemPromptResult,
   BeforeThreadCreateResult,
   BeforeTurnResult,
   SubagentGateResult,
@@ -515,6 +517,126 @@ export function composePluginHooks(options: HookRuntimeOptions): AgentHooks {
     hooks.onThreadSwitch = async (ctx) => {
       for (const contributor of switchContributors) {
         await runHook(contributor, 'onThreadSwitch', () => contributor.hooks.onThreadSwitch!(ctx))
+      }
+    }
+  }
+
+  // ── 模型请求：最后一刻的裁剪/脱敏（替换后的数组整体生效）
+  const llmContributors = contributorsOf('beforeLlmRequest')
+  if (llmContributors.length > 0) {
+    hooks.beforeLlmRequest = async (ctx) => {
+      let messages = ctx.messages
+      for (const contributor of llmContributors) {
+        const result = await runHook(contributor, 'beforeLlmRequest', () =>
+          contributor.hooks.beforeLlmRequest!({ ...ctx, messages })
+        )
+        if (!result?.messages?.length) continue
+        messages = result.messages
+        trace(`[插件] ${contributor.pluginId} 替换了本次请求的消息数组（${messages.length} 条）`)
+      }
+      return messages === ctx.messages ? undefined : { messages }
+    }
+  }
+
+  const llmEndContributors = contributorsOf('afterLlmResponse')
+  if (llmEndContributors.length > 0) {
+    hooks.afterLlmResponse = async (ctx) => {
+      for (const contributor of llmEndContributors) {
+        await runHook(contributor, 'afterLlmResponse', () => contributor.hooks.afterLlmResponse!(ctx))
+      }
+    }
+  }
+
+  // ── 系统提示词（单向）
+  const promptContributors = contributorsOf('beforeSystemPrompt')
+  if (promptContributors.length > 0) {
+    hooks.beforeSystemPrompt = async (ctx) => {
+      let merged: BeforeSystemPromptResult | undefined
+      for (const contributor of promptContributors) {
+        const result = await runHook(contributor, 'beforeSystemPrompt', () =>
+          contributor.hooks.beforeSystemPrompt!(ctx)
+        )
+        if (!result) continue
+
+        if (result.append) {
+          merged = {
+            ...merged,
+            append: [merged?.append, result.append].filter(Boolean).join('\n\n'),
+          }
+        }
+        if (result.replace !== undefined) {
+          if (contributor.capabilities.allowSystemPromptReplace) {
+            merged = { ...merged, replace: result.replace }
+          } else {
+            trace(
+              `[插件] ${contributor.pluginId} 想替换系统提示词，但 allowSystemPromptReplace 已关闭，已忽略（追加仍生效）`
+            )
+          }
+        }
+      }
+      return merged
+    }
+  }
+
+  // ── 技能加载
+  const skillContributors = contributorsOf('beforeSkillLoad')
+  if (skillContributors.length > 0) {
+    hooks.beforeSkillLoad = async (ctx) => {
+      let content: string | undefined
+      for (const contributor of skillContributors) {
+        const result = await runHook(contributor, 'beforeSkillLoad', () =>
+          contributor.hooks.beforeSkillLoad!(ctx)
+        )
+        if (!result) continue
+        if (result.content !== undefined) {
+          content = result.content
+          trace(`[插件] ${contributor.pluginId} 替换了技能「${ctx.skillName}」的正文`)
+        }
+        if (result.block) {
+          // 拦下即定稿：技能看不到就是看不到，没必要继续问
+          return {
+            block: true,
+            blockReason: result.blockReason ?? `插件「${contributor.pluginId}」阻止了加载技能「${ctx.skillName}」`,
+            content,
+          }
+        }
+      }
+      return content === undefined ? undefined : { content }
+    }
+  }
+
+  const skillEndContributors = contributorsOf('afterSkillLoad')
+  if (skillEndContributors.length > 0) {
+    hooks.afterSkillLoad = async (ctx) => {
+      for (const contributor of skillEndContributors) {
+        await runHook(contributor, 'afterSkillLoad', () => contributor.hooks.afterSkillLoad!(ctx))
+      }
+    }
+  }
+
+  // ── 落盘前脱敏（单向）
+  const persistContributors = contributorsOf('beforePersist')
+  if (persistContributors.length > 0) {
+    hooks.beforePersist = async (ctx) => {
+      let content: string | undefined
+      for (const contributor of persistContributors) {
+        const result = await runHook(contributor, 'beforePersist', () =>
+          contributor.hooks.beforePersist!(ctx)
+        )
+        if (!result?.content) continue
+        content = result.content
+        trace(`[插件] ${contributor.pluginId} 替换了落盘内容（${result.content.length} 字）`)
+      }
+      return content === undefined ? undefined : { content }
+    }
+  }
+
+  // ── 检查点已建立（单向）
+  const checkpointContributors = contributorsOf('afterCheckpoint')
+  if (checkpointContributors.length > 0) {
+    hooks.afterCheckpoint = async (ctx) => {
+      for (const contributor of checkpointContributors) {
+        await runHook(contributor, 'afterCheckpoint', () => contributor.hooks.afterCheckpoint!(ctx))
       }
     }
   }

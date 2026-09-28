@@ -462,12 +462,31 @@ export async function* runAgentLoop(
       })
       const rawToolCalls: ToolCallBlock[] = []
 
+      // 模型请求前的最后一刻：插件可以裁剪/脱敏即将发出的消息。它改的是**真正
+      // 发出去的那份**，所以下面的 llm_request 事件也随之反映实际内容（遥测要如实）。
+      let outboundMessages = llmMessages
+      if (hooks?.beforeLlmRequest) {
+        const verdict = await callHook('beforeLlmRequest', () =>
+          hooks.beforeLlmRequest!({
+            model: config.model,
+            messages: llmMessages,
+            toolNames: toolSpecs.map((spec) => spec.function.name),
+            step,
+            ...hookBase,
+          })
+        )
+        const replaced = verdict?.messages
+        if (Array.isArray(replaced) && replaced.length > 0) {
+          outboundMessages = replaced
+        }
+      }
+
       // 派发接口请求事件（记录完整请求 Messages、Tools 与参数）
       yield {
         type: 'llm_request',
         model: config.model,
         baseUrl: config.baseUrl,
-        messages: llmMessages,
+        messages: outboundMessages,
         tools: toolSpecs.length > 0 ? toolSpecs : undefined,
       }
 
@@ -475,7 +494,7 @@ export async function* runAgentLoop(
       let stepUsage: TokenUsage | undefined
 
       // 发起流式推理
-      for await (const chunk of streamModelChat(config, llmMessages, {
+      for await (const chunk of streamModelChat(config, outboundMessages, {
         tools: toolSpecs.length > 0 ? toolSpecs : undefined,
         effort: options.effort,
         signal: options.signal,
@@ -564,6 +583,20 @@ export async function* runAgentLoop(
       }
 
       yield { type: 'message_end', message: assistantMessage }
+
+      // 模型响应后的观察点：拿得到定稿消息与本次耗时（不含钩子自身开销）
+      if (hooks?.afterLlmResponse) {
+        await callHook('afterLlmResponse', () =>
+          hooks.afterLlmResponse!({
+            model: config.model,
+            message: assistantMessage,
+            step,
+            durationMs: assistantMessage.durationMs ?? 0,
+            ...hookBase,
+          })
+        )
+      }
+
       yield {
         type: 'llm_response',
         model: config.model,

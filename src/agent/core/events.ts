@@ -15,6 +15,8 @@
  */
 
 import type { CompactSelection } from '../compact/types'
+import type { ChatCompletionMessageParam } from '../ai/stream'
+import type { AgentMode } from '../types'
 import type {
   AgentEndReason,
   AgentMessage,
@@ -296,6 +298,111 @@ export interface AfterApprovalContext extends AgentHookContextBase {
 /** 事后钩子是纯观察：审批已经发生，插件没有可改变的东西。 */
 export type AfterApprovalResult = void
 
+// ─────────────────────────────── 第二优先点位（暴露但需谨慎，§6.6.2）
+
+/**
+ * 模型请求前：**最后一刻**的裁剪与脱敏。
+ *
+ * 比 `beforeTurn` 更晚：那里改的是"这一轮用哪些工具、注入什么"，这里拿到的是**即将
+ * 发出去的完整消息数组**，适合做"别把这段发出去"这类判断。
+ */
+export interface BeforeLlmRequestContext extends AgentHookContextBase {
+  model: string
+  /** 即将下发的完整消息（含系统提示词） */
+  messages: ChatCompletionMessageParam[]
+  toolNames: string[]
+  step: number
+}
+
+export interface BeforeLlmRequestResult {
+  /** 替换要下发的消息。**系统提示词会被核心放回最前面**，插件不必自己保证顺序 */
+  messages?: ChatCompletionMessageParam[]
+}
+
+export interface AfterLlmResponseContext extends AgentHookContextBase {
+  model: string
+  message: AssistantMessage
+  step: number
+  /** 本次调用耗时（模型侧），不含钩子自身开销 */
+  durationMs: number
+}
+
+export type AfterLlmResponseResult = void
+
+/**
+ * 系统提示词组装完成、即将被这一轮使用（**单向**：组装即终态，没有可配对的 after）。
+ *
+ * 实现在 store 里、紧跟 `getCompositeSystemPrompt()` 之后：插件看到的是**最终**文本
+ * （含项目说明与模式规范），这对"脱敏"和"补一句"都是最有用的时机。
+ */
+export interface BeforeSystemPromptContext extends AgentHookContextBase {
+  systemPrompt: string
+  mode: AgentMode
+}
+
+export interface BeforeSystemPromptResult {
+  /** 追加在末尾 */
+  append?: string
+  /** 整体替换，受 `allowSystemPromptReplace` 约束（默认开） */
+  replace?: string
+}
+
+/**
+ * 技能加载前：能看到要加载哪个技能，可以拦下、也可以替换正文（脱敏/裁剪）。
+ *
+ * 技能正文是**给模型看的建议文本**，不是权限授予，所以替换正文不需要额外开关；
+ * 但拦下（block）会改变模型能看到什么，理由会回给模型。
+ */
+export interface BeforeSkillLoadContext extends AgentHookContextBase {
+  skillName: string
+}
+
+export interface BeforeSkillLoadResult {
+  block?: boolean
+  blockReason?: string
+  /** 替换要注入的正文 */
+  content?: string
+}
+
+export interface AfterSkillLoadContext extends AgentHookContextBase {
+  skillName: string
+  /** 是否真的加载到了 */
+  loaded: boolean
+  /** 注入正文的长度（0 表示没加载到） */
+  chars: number
+}
+
+export type AfterSkillLoadResult = void
+
+/**
+ * 落盘前（**单向**）：最后一道脱敏关。
+ *
+ * 与 `beforeLlmRequest` 的区别：那个管"发给模型的"，这个管"写进磁盘的"——两者可以
+ * 不一致（例如发给模型的要完整，落盘的要去掉敏感片段）。
+ */
+export interface BeforePersistContext extends AgentHookContextBase {
+  /** 即将写入会话文件的消息 */
+  message: AgentMessage
+}
+
+export interface BeforePersistResult {
+  /** 替换落盘的正文（jsonl 里存替换后的内容） */
+  content?: string
+}
+
+/**
+ * 检查点已建立（**单向**：它本身就是 `after*`，没有配对的 before——检查点的"事前"
+ * 是工具执行，那已经由 `beforeToolCall` 覆盖）。
+ */
+export interface AfterCheckpointContext extends AgentHookContextBase {
+  /** 检查点 id；跳过快照时为 undefined */
+  checkpointId?: string
+  /** 本次纳入快照的工作区相对路径 */
+  paths: string[]
+}
+
+export type AfterCheckpointResult = void
+
 // ─────────────────────────────── 会话生命周期
 
 /**
@@ -391,6 +498,13 @@ export interface AgentHooks {
   beforeThreadDelete?: (ctx: BeforeThreadDeleteContext) => Promise<BeforeThreadDeleteResult | undefined>
   afterThreadDelete?: (ctx: AfterThreadDeleteContext) => Promise<AfterThreadDeleteResult>
   onThreadSwitch?: (ctx: ThreadSwitchContext) => Promise<void>
+  beforeLlmRequest?: (ctx: BeforeLlmRequestContext) => Promise<BeforeLlmRequestResult | undefined>
+  afterLlmResponse?: (ctx: AfterLlmResponseContext) => Promise<AfterLlmResponseResult>
+  beforeSystemPrompt?: (ctx: BeforeSystemPromptContext) => Promise<BeforeSystemPromptResult | undefined>
+  beforeSkillLoad?: (ctx: BeforeSkillLoadContext) => Promise<BeforeSkillLoadResult | undefined>
+  afterSkillLoad?: (ctx: AfterSkillLoadContext) => Promise<AfterSkillLoadResult>
+  beforePersist?: (ctx: BeforePersistContext) => Promise<BeforePersistResult | undefined>
+  afterCheckpoint?: (ctx: AfterCheckpointContext) => Promise<AfterCheckpointResult>
 }
 
 /**
@@ -399,7 +513,12 @@ export interface AgentHooks {
  * 它们没有"后续状态"可观察，强行配对只会加重插件负担——成对原则的准确表述是
  * "有状态延续的点位都应成对"，而不是"一切都必须成对"（§6.0）。
  */
-export const UNPAIRED_HOOKS: ReadonlyArray<keyof AgentHooks> = ['onThreadSwitch']
+export const UNPAIRED_HOOKS: ReadonlyArray<keyof AgentHooks> = [
+  'onThreadSwitch',
+  'beforeSystemPrompt',
+  'beforePersist',
+  'afterCheckpoint',
+]
 
 /**
  * 系统提示词被插件替换时，核心仍在末尾附上的不可协商段落。
@@ -426,4 +545,6 @@ export const HOOK_PAIRS: ReadonlyArray<{ before: keyof AgentHooks; after: keyof 
   { before: 'beforeCompaction', after: 'afterCompaction' },
   { before: 'beforeThreadCreate', after: 'afterThreadCreate' },
   { before: 'beforeThreadDelete', after: 'afterThreadDelete' },
+  { before: 'beforeLlmRequest', after: 'afterLlmResponse' },
+  { before: 'beforeSkillLoad', after: 'afterSkillLoad' },
 ]

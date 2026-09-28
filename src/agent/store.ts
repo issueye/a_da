@@ -3284,7 +3284,39 @@ export class AgentStore {
   private persist(threadId: string, message: AgentMessage): void {
     // 带着工作区：会话按「工作区/会话」分目录存，带上它就不用每次扫目录找。
     const workspace = this.threads.find((thread) => thread.id === threadId)?.workspace
-    void defaultSessionManager.appendMessage(threadId, message, workspace).catch(() => {})
+    // 落盘前的脱敏挂在异步链路里：`persist` 本身仍是"发起即返回"，调用方不受影响
+    void this.persistWithHooks(threadId, message, workspace)
+  }
+
+  /**
+   * 落盘（可被 `beforePersist` 改写正文）。
+   *
+   * 与 `beforeLlmRequest` 的分工：那个管"发给模型的"，这个管"写进磁盘的"——两者
+   * 可以不一致（发给模型的要完整，落盘的去敏感片段）。
+   */
+  private async persistWithHooks(
+    threadId: string,
+    message: AgentMessage,
+    workspace?: string
+  ): Promise<void> {
+    try {
+      const hooks = await this.composeHooks({ workspace: workspace ?? this.project, kind: 'main', threadId })
+      if (hooks.beforePersist) {
+        const verdict = await hooks.beforePersist({
+          kind: 'main',
+          workspace,
+          threadId,
+          message,
+          trace: (line) => this.trace(line),
+        })
+        if (verdict?.content !== undefined) {
+          message = { ...message, content: verdict.content } as AgentMessage
+        }
+      }
+    } catch (error) {
+      this.trace(`[插件] beforePersist 抛错，按原文落盘：${(error as Error).message}`)
+    }
+    await defaultSessionManager.appendMessage(threadId, message, workspace).catch(() => {})
   }
 
   private fail(thread: Thread, text: string): void {
@@ -3412,7 +3444,7 @@ export class AgentStore {
       if (reasoning && reasoning.endedAt === undefined) reasoning.endedAt = Date.now()
     }
 
-    const systemPrompt = await defaultPromptManager.getCompositeSystemPrompt(thread.workspace, currentMode)
+    let systemPrompt = await defaultPromptManager.getCompositeSystemPrompt(thread.workspace, currentMode)
     thread.lastSystemPrompt = systemPrompt
     thread.lastSystemPromptChars = systemPrompt.length
     thread.lastToolSpecsChars = JSON.stringify(tools).length
@@ -3424,6 +3456,30 @@ export class AgentStore {
       threadId: thread.id,
       mode: currentMode,
     })
+
+    // 系统提示词组装完成、即将使用（单向点位）：插件看到的是**最终**文本
+    if (hooks.beforeSystemPrompt) {
+      try {
+        const verdict = await hooks.beforeSystemPrompt({
+          kind: 'main',
+          workspace: thread.workspace,
+          threadId: thread.id,
+          systemPrompt,
+          mode: currentMode,
+          trace: (message) => this.trace(message),
+        })
+        if (verdict?.replace !== undefined) systemPrompt = verdict.replace
+        if (verdict?.append) {
+          systemPrompt = systemPrompt ? `${systemPrompt}\n\n${verdict.append}` : verdict.append
+        }
+        if (verdict) {
+          thread.lastSystemPrompt = systemPrompt
+          thread.lastSystemPromptChars = systemPrompt.length
+        }
+      } catch (error) {
+        this.trace(`[插件] beforeSystemPrompt 抛错，已忽略：${(error as Error).message}`)
+      }
+    }
 
     const loop = runAgentLoop(thread.messages, config, {
       tools,
@@ -3720,6 +3776,22 @@ export class AgentStore {
       if (targets.length === 0) return
       const record = await defaultCheckpointManager.capture(thread.id, call.id, targets)
       if (card) card.checkpointId = record.id
+      // 检查点已建立（单向观察点）：录了哪些文件、id 是多少
+      const hooks = await this.composeHooks({
+        workspace: thread.workspace,
+        kind: 'main',
+        threadId: thread.id,
+      })
+      if (hooks.afterCheckpoint) {
+        await hooks.afterCheckpoint({
+          kind: 'main',
+          workspace: thread.workspace,
+          threadId: thread.id,
+          checkpointId: record.id,
+          paths: targets.map((target) => target.path),
+          trace: (message) => this.trace(message),
+        })
+      }
     } catch {
       // 快照失败不阻塞工具执行
     }

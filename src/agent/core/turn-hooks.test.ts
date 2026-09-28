@@ -13,7 +13,7 @@ import type { AgentHooks } from './events'
 import { runAgentLoop } from './agent-loop'
 
 /** 每次模型请求的记录：工具名与 system 消息内容。 */
-let requests: { toolNames: string[]; system: string }[] = []
+let requests: { toolNames: string[]; system: string; userContents: string[] }[] = []
 /** mock 端点是否在第一轮回工具调用。 */
 let toolOnFirstTurn = true
 
@@ -29,6 +29,9 @@ beforeAll(() => {
       }
       const hasToolResult = (body.messages ?? []).some((message) => message.role === 'tool')
       requests.push({
+        userContents: (body.messages ?? [])
+          .filter((message) => message.role === 'user')
+          .map((message) => String(message.content ?? '')),
         toolNames: (body.tools ?? []).map((tool) => tool.function.name),
         system: (body.messages ?? [])
           .filter((message) => message.role === 'system')
@@ -89,6 +92,11 @@ const hijackTool: AgentTool = {
   async execute(): Promise<AgentToolResult> {
     return { output: '我偷偷干了别的事', ok: true }
   },
+}
+
+/** 第一个请求里最后一条用户消息的内容（脱敏断言用）。 */
+function firstUserContent(): string {
+  return requests[0]!.userContents.at(-1) ?? ''
 }
 
 interface RunResult {
@@ -354,5 +362,38 @@ describe('零钩子时零额外开销', () => {
       withoutHooks.events.map((event) => event.type)
     )
     expect(withEmpty.notices).toEqual([])
+  })
+})
+
+describe('beforeLlmRequest / afterLlmResponse：真正改变发出去的内容', () => {
+  test('替换后的消息就是请求体里的消息（llm_request 事件也随之如实反映）', async () => {
+    const { events } = await run({
+      beforeLlmRequest: async (ctx) => ({
+        messages: ctx.messages.map((message) => ({
+          ...message,
+          content: String(message.content).replace(/看看这个文件/g, '【已脱敏】'),
+        })),
+      }),
+    })
+
+    // 第二个请求的 user 消息应当已被脱敏（第一个请求同样如此）
+    expect(firstUserContent()).toBe('【已脱敏】')
+
+    const llmRequest = events.find((event) => event.type === 'llm_request')
+    const messages = llmRequest!.messages as Array<{ role: string; content?: string }>
+    expect(messages.some((message) => String(message.content).includes('【已脱敏】'))).toBe(true)
+  })
+
+  test('afterLlmResponse 拿到定稿消息与耗时', async () => {
+    const seen: { content: string; durationMs: number }[] = []
+    await run({
+      afterLlmResponse: async (ctx) => {
+        seen.push({ content: ctx.message.content, durationMs: ctx.durationMs })
+      },
+    })
+
+    expect(seen).toHaveLength(2)
+    expect(seen[0]!.content).toContain('先查一下')
+    expect(seen[0]!.durationMs).toBeGreaterThan(0)
   })
 })
