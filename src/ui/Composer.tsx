@@ -391,7 +391,7 @@ export function ComposerTelemetryBar({
           flexDirection: 'row',
           alignItems: 'center',
           gap: 4,
-          width: 66,
+          width: 90,
           flexShrink: 0,
           cursor: 'default',
         }}
