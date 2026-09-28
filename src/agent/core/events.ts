@@ -139,6 +139,70 @@ export interface AfterTurnResult {
   terminateBy?: string
 }
 
+// ─────────────────────────────── 子智能体（启动判定 + 结束复核）
+
+/**
+ * 子智能体启动前的**门禁**（设计文档 §6.3）。
+ *
+ * 只有当 profile 配了 `gate.criteria` 时才会跑：没有判定标准就没有要判的事。
+ * 判定本身由插件提供（决策插件用它的引擎实现），核心只负责**失败方向**与把结论
+ * 透传给 `invoke_subagent`——核心不该内置"怎么判断"。
+ */
+export interface SubagentGateContext extends AgentHookContextBase {
+  profileId: string
+  profileName: string
+  task: string
+  /** 用户写的验收标准 */
+  criteria: string
+  /** 判定阈值（默认由判定方决定） */
+  threshold?: number
+  /**
+   * 用户是否显式要求"拿不到判定时也要拦"。
+   *
+   * `undefined` = 没表态 → 核心按**放行**处理并提示"门禁未生效"（§6.4.4.5：
+   * "用户没表态"不该被核心解读成"要求安全"）。显式 `false` 时，即使判定方给了
+   * 一个"通过"，只要它拿不出校准信息，核心也**拦**——这是防止判定方自说自话。
+   */
+  failOpen?: boolean
+}
+
+export interface SubagentGateResult {
+  allowed: boolean
+  /**
+   * 置信度（0-1）。**拿不到真实判断时必须是 `undefined`**，不许编一个看起来合理的数
+   * ——与决策插件的契约一致（AGENTS.md §9）。
+   */
+  confidence?: number
+  /** 该置信度是否经过校准；本地自评是多次采样的投票占比，恒为 false */
+  calibrated?: boolean
+  reason?: string
+  /** 收窄该子智能体的工具集（只能收窄，§6.4.3） */
+  tools?: AgentTool[]
+}
+
+export interface SubagentEndContext extends AgentHookContextBase {
+  profileId: string
+  /** 子会话 id */
+  subagentThreadId: string
+  status: 'done' | 'error'
+  summary: string
+  stepsExecuted: number
+  durationMs: number
+  /** 本次委派若走了门禁，把结论一并带上，供事后复核"放行的是否真是需要的" */
+  gate?: {
+    allowed: boolean
+    /** 是否真的做了判定（没有判定能力时为 false，即"门禁未生效"） */
+    judged: boolean
+    reason?: string
+    calibrated?: boolean
+  }
+}
+
+export interface AfterSubagentEndResult {
+  /** 给父会话的旁注（父智能体下一轮能看到） */
+  appendParentNote?: string
+}
+
 // ─────────────────────────────── 工具调用（既有，M2 开放给插件）
 
 export interface AgentHooks {
@@ -148,6 +212,8 @@ export interface AgentHooks {
   afterTurn?: (ctx: AfterTurnContext) => Promise<AfterTurnResult | undefined>
   beforeToolCall?: (ctx: BeforeToolCallContext) => Promise<BeforeToolCallResult | undefined>
   afterToolCall?: (ctx: AfterToolCallContext) => Promise<AfterToolCallResult | undefined>
+  beforeSubagentStart?: (ctx: SubagentGateContext) => Promise<SubagentGateResult | undefined>
+  afterSubagentEnd?: (ctx: SubagentEndContext) => Promise<AfterSubagentEndResult | undefined>
 }
 
 /**
@@ -170,4 +236,5 @@ export const HOOK_PAIRS: ReadonlyArray<{ before: keyof AgentHooks; after: keyof 
   { before: 'beforeAgentStart', after: 'afterAgentEnd' },
   { before: 'beforeTurn', after: 'afterTurn' },
   { before: 'beforeToolCall', after: 'afterToolCall' },
+  { before: 'beforeSubagentStart', after: 'afterSubagentEnd' },
 ]

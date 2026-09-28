@@ -311,7 +311,7 @@ export class SkillManager {
     // 但单文件扩展没法带目录，只能在自己的描述符里内联写 `skills: [...]`——不接这一条，
     // 「单文件扩展无法贡献技能」这个老缺陷就还在（设计文档 §3 缺陷 7）。
     // 内联声明排在目录扫描之后：同名时以文件为准，文件是插件作者更明确的表达。
-    for (const plugin of getLoadedPlugins()) {
+    for (const plugin of getLoadedPlugins(workspaceRoot)) {
       if (plugin.manifest.scope === 'builtin') continue
       const pluginId = plugin.manifest.id
       const isPluginDisabled = pluginDisabled(pluginId)

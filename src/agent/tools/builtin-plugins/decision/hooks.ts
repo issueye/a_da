@@ -15,6 +15,7 @@
 
 import type { AgentHooks } from '../../../core/events'
 import { readToolRouting } from './config'
+import { createSubagentGateHook, createSubagentReviewHook } from './gate-hook'
 
 /** 请求与实际生效的对照表：`threadId:step` → 本插件请求保留的工具名。 */
 const requestedTools = new Map<string, string[]>()
@@ -34,6 +35,10 @@ function keyOf(threadId: string | undefined, step: number): string {
  */
 export function createDecisionHooks(): AgentHooks {
   return {
+    // 子智能体启动门禁与结束复核（成对）见 gate-hook.ts
+    beforeSubagentStart: createSubagentGateHook(),
+    afterSubagentEnd: createSubagentReviewHook(),
+
     beforeTurn: async (ctx) => {
       const routing = await readToolRouting()
       if (routing.length === 0) return undefined

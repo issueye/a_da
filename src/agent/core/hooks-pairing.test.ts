@@ -31,6 +31,8 @@ const HOOK_KEYS: Record<keyof AgentHooks, true> = {
   afterTurn: true,
   beforeToolCall: true,
   afterToolCall: true,
+  beforeSubagentStart: true,
+  afterSubagentEnd: true,
 }
 
 let server: ReturnType<typeof Bun.serve>
@@ -249,5 +251,39 @@ describe('成对性：循环里真的配得起来', () => {
 
     expect(end).toBe(1)
     expect(reason).toBe('max_steps')
+  })
+})
+
+describe('成对性：子智能体门禁与结束复核', () => {
+  test('门禁只在配了 criteria 时才跑；没有门禁时 afterSubagentEnd 仍可独立工作', async () => {
+    // 门禁的成对性由 subagents/access.ts 的判定表 + 下面这两条语义钉住：
+    // beforeSubagentStart 是纯判定点位（没有标准就没有要判的事），
+    // afterSubagentEnd 是生命周期收尾（每次结束都该有机会被看到）。
+    const { runSubagentGate } = await import('../subagents/access')
+    const profile = {
+      id: 'probe',
+      name: '探针',
+      description: '',
+      systemPrompt: '',
+      allowedTools: ['*'],
+      mode: 'readwrite' as const,
+      enabled: true,
+      scope: 'builtin' as const,
+    }
+
+    // 没配 gate → 不跑判定，返回 undefined（不是失败）
+    expect(await runSubagentGate({ profile, task: 't', authorizedTools: [] })).toBeUndefined()
+
+    // 配了 gate 但没有插件提供判定能力 → 放行 + 提示"门禁未生效"
+    const notices: string[] = []
+    const outcome = await runSubagentGate({
+      profile: { ...profile, gate: { criteria: '必须通过测试' } },
+      task: 't',
+      authorizedTools: [],
+      notice: (message) => notices.push(message),
+    })
+    expect(outcome?.allowed).toBe(true)
+    expect(outcome?.judged).toBe(false)
+    expect(notices.some((line) => line.includes('门禁未生效'))).toBe(true)
   })
 })

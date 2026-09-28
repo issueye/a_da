@@ -58,6 +58,22 @@ export interface SubagentProfile {
     model?: string
     effort?: 'max' | 'high' | 'medium' | 'low'
   }
+  /**
+   * 启动前的判定门禁（设计文档 §6.3）。
+   *
+   * 配了 `criteria` 才会在每次委派前跑一次 `beforeSubagentStart` 钩子（判定由插件
+   * 提供，决策插件用它的引擎实现）。没有插件能判定时，失败方向由 `failOpen` 决定——
+   * **未配置 = 放行**，但会在调试日志里提示"门禁未生效"（用户没表态，核心不替他
+   * 要求安全；但他得知道自己的门禁没生效）。
+   */
+  gate?: {
+    /** 验收标准（自然语言） */
+    criteria: string
+    /** 判定阈值，默认由判定方决定 */
+    threshold?: number
+    /** 拿不到判定时是否仍放行。未配置 = 放行；显式 false 时即使判定方说通过也拦 */
+    failOpen?: boolean
+  }
   /** 是否启用 */
   enabled: boolean
   /** 作用域：内置预设、全局用户自定义、当前工作区自定义 */

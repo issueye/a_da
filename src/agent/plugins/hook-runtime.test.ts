@@ -14,7 +14,7 @@ import type { AgentHooks } from '../core/events'
 import type { AgentTool } from '../core/types'
 import { ExtensionLoader } from '../tools/loader'
 import { composePluginHooks } from './hook-runtime'
-import { getLoadedPlugins } from './registry'
+import { clearLoadedPlugins, getLoadedPlugins } from './registry'
 import type { LoadedPlugin, PluginScope } from './types'
 
 function plugin(id: string, hooks: AgentHooks, scope: PluginScope = 'builtin'): LoadedPlugin {
@@ -421,6 +421,7 @@ describe('从加载器到运行层：钩子的来源与失效', () => {
   const teardown = async (): Promise<void> => {
     if (oldHome !== undefined) process.env.A_DA_HOME = oldHome
     else delete process.env.A_DA_HOME
+    clearLoadedPlugins(workspace)
     await rm(workspace, { recursive: true, force: true }).catch(() => {})
     await rm(homeDir, { recursive: true, force: true }).catch(() => {})
   }

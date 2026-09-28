@@ -21,9 +21,11 @@ import type {
   AgentHooks,
   AgentHookKind,
   AfterAgentEndResult,
+  AfterSubagentEndResult,
   AfterTurnResult,
   BeforeAgentStartResult,
   BeforeTurnResult,
+  SubagentGateResult,
 } from '../core/events'
 import { getLoadedPlugins } from './registry'
 import type { LoadedPlugin, PluginScope } from './types'
@@ -72,7 +74,8 @@ export function composePluginHooks(options: HookRuntimeOptions): AgentHooks {
   const trace = options.trace ?? ((): void => {})
   const contributors: Contributor[] = []
 
-  for (const plugin of options.plugins ?? getLoadedPlugins()) {
+  // 插件来源按**工作区**取：切项目时不会读到上一个项目的插件清单
+  for (const plugin of options.plugins ?? getLoadedPlugins(options.workspace)) {
     const hooks = plugin.contributions.hooks
     if (!hooks || Object.keys(hooks).length === 0) continue
 
@@ -284,6 +287,58 @@ export function composePluginHooks(options: HookRuntimeOptions): AgentHooks {
         )
         if (!result) continue
         merged = { ...merged, ...result }
+      }
+      return merged
+    }
+  }
+
+  // ── 子智能体启动门禁：纯判定类点位，第一个"不放行"即短路
+  const gateContributors = contributorsOf('beforeSubagentStart')
+  if (gateContributors.length > 0) {
+    hooks.beforeSubagentStart = async (ctx) => {
+      let merged: SubagentGateResult | undefined
+      let tools: AgentTool[] | undefined
+      for (const contributor of gateContributors) {
+        const result = await runHook(contributor, 'beforeSubagentStart', () =>
+          contributor.hooks.beforeSubagentStart!(ctx)
+        )
+        if (!result) continue
+
+        if (result.tools) {
+          // 折叠：下一个判定方看到的是上一个收窄后的集合（与 beforeTurn 同一套规则）
+          tools = result.tools
+        }
+        merged = {
+          ...merged,
+          ...result,
+          // 置信度/校准信息取**第一个给出依据**的判定方；
+          // 只报 allowed 而不报依据的，等于没判断（见 access.ts 的判定表）
+          confidence: merged?.confidence ?? result.confidence,
+          calibrated: merged?.calibrated ?? result.calibrated,
+        }
+
+        if (!result.allowed) break
+      }
+      if (merged && tools) merged.tools = tools
+      return merged
+    }
+  }
+
+  // ── 子智能体结束：清理与复核（事前被短路时照跑，与其它 after* 一致）
+  const subagentEndContributors = contributorsOf('afterSubagentEnd')
+  if (subagentEndContributors.length > 0) {
+    hooks.afterSubagentEnd = async (ctx) => {
+      let merged: AfterSubagentEndResult | undefined
+      for (const contributor of subagentEndContributors) {
+        const result = await runHook(contributor, 'afterSubagentEnd', () =>
+          contributor.hooks.afterSubagentEnd!(ctx)
+        )
+        if (!result?.appendParentNote) continue
+        merged = {
+          appendParentNote: [merged?.appendParentNote, result.appendParentNote]
+            .filter(Boolean)
+            .join('\n\n'),
+        }
       }
       return merged
     }

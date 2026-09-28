@@ -307,7 +307,7 @@ export class PromptManager {
     //
     // 与技能那侧同理：插件包目录里的 `prompts/*.md` 由上面的目录扫描收走，单文件
     // 扩展只能内联声明。排在目录扫描之后，同名时文件优先。
-    for (const plugin of getLoadedPlugins()) {
+    for (const plugin of getLoadedPlugins(workspace)) {
       if (plugin.manifest.scope === 'builtin') continue
       const pluginId = plugin.manifest.id
       const isPluginDisabled = pluginDisabled(pluginId)

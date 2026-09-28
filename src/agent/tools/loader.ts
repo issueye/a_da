@@ -327,8 +327,8 @@ export class ExtensionLoader {
    * 全部加载诊断（error 在前）。数据来自最近一次 `autoLoadExtensions` 写进插件索引
    * 的结果；`scanPlugins` 只做展示投影，不覆盖它。
    */
-  async getDiagnostics(): Promise<PluginDiagnostic[]> {
-    return getPluginDiagnostics()
+  async getDiagnostics(workspace?: string): Promise<PluginDiagnostic[]> {
+    return getPluginDiagnostics(workspace)
   }
 
   private trace(message: string): void {
@@ -987,7 +987,7 @@ export class ExtensionLoader {
     ].filter((item) => !isDisabled(item.manifest.id))
 
     const { plugins, names } = await this.loadCandidates(candidates, workspace)
-    setLoadedPlugins(plugins)
+    setLoadedPlugins(workspace, plugins)
     this.reportLoad(plugins)
     return names
   }

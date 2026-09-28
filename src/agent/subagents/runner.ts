@@ -8,6 +8,7 @@ import type { ProviderConfig } from '../config'
 import { readPluginCapabilities } from '../config'
 import { runAgentLoop } from '../core/agent-loop'
 import { composePluginHooks } from '../plugins/hook-runtime'
+import { resolveSubagentTools, runSubagentGate } from './access'
 import type {
   AgentMessage,
   AgentTool,
@@ -49,25 +50,37 @@ export class SubagentRunner {
     const startTime = Date.now()
     const maxSteps = profile.maxSteps
 
-    // 1. 获取工作区全量工具并实施白名单、黑名单与安全模式过滤
-    const allTools = defaultToolRegistry.getToolsForWorkspace(workspace)
-    const allowedSet = new Set(profile.allowedTools)
-    const disallowedSet = new Set(profile.disallowedTools ?? [])
-    // 绝对防御：杜绝子智能体再次调用子智能体与通信工具 (防套娃防递归死锁)
-    disallowedSet.add('invoke_subagent')
-    disallowedSet.add('check_subagent')
-    disallowedSet.add('send_subagent_message')
-    disallowedSet.add('resume_subagent')
+    // 1. 工具解析与 store 共用一份实现（subagents/access.ts）：白名单、黑名单、
+    // 通配符、只读模式与防递归在这三条入口上必须完全一致，否则"只读模式漏了个工具"
+    // 只会出现在其中之一
+    let subagentTools = resolveSubagentTools(profile, workspace)
 
-    const subagentTools: AgentTool[] = allTools.filter((t) => {
-      // 黑名单排除优先
-      if (disallowedSet.has(t.name)) return false
-      // 白名单与通配符过滤
-      if (!allowedSet.has('*') && !allowedSet.has(t.name)) return false
-      // 只读模式过滤：若为只读智能体，则严格禁止一切产生写副作用的工具
-      if (profile.mode === 'readonly' && defaultToolRegistry.isWriteTool(t.name)) return false
-      return true
+    // 2. 启动门禁：与 store 同一条实现，插在解析之后、执行之前
+    const gateOutcome = await runSubagentGate({
+      profile,
+      task,
+      authorizedTools: subagentTools,
+      hooks: await composePluginHooks({
+        kind: 'subagent',
+        workspace,
+        subagentId: profile.id,
+        capabilities: await readPluginCapabilities(workspace),
+      }),
+      workspace,
     })
+    if (gateOutcome && !gateOutcome.allowed) {
+      return {
+        ok: false,
+        summary: `子智能体 [${profile.name}] 未通过启动门禁：${gateOutcome.reason ?? '判定不通过'}`,
+        stepsExecuted: 0,
+        durationMs: Date.now() - startTime,
+        toolCallsCount: 0,
+        errorMessage: '未通过启动门禁',
+      }
+    }
+    if (gateOutcome?.tools && gateOutcome.tools.length > 0) {
+      subagentTools = gateOutcome.tools
+    }
 
     // 2. 准备子智能体专属配置与独立消息历史
     const config: ProviderConfig = {
