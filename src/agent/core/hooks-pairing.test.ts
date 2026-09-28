@@ -33,6 +33,10 @@ const HOOK_KEYS: Record<keyof AgentHooks, true> = {
   afterToolCall: true,
   beforeSubagentStart: true,
   afterSubagentEnd: true,
+  beforeApproval: true,
+  afterApproval: true,
+  beforeCompaction: true,
+  afterCompaction: true,
 }
 
 let server: ReturnType<typeof Bun.serve>

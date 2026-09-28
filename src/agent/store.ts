@@ -25,7 +25,7 @@ import {
   type ProviderConfig,
 } from './config'
 import { runAgentLoop } from './core/agent-loop'
-import type { AgentHooks, SubagentEndContext } from './core/events'
+import type { AgentHooks, BeforeCompactionResult, SubagentEndContext } from './core/events'
 import { composePluginHooks } from './plugins/hook-runtime'
 import type {
   AgentMessage,
@@ -58,6 +58,7 @@ import {
   type SubagentStepUpdate,
 } from './subagents'
 import { resolveSubagentTools, runSubagentGate, type SubagentGateOutcome } from './subagents/access'
+import { applyCompactionVerdict } from './compact/verdict'
 import { applyAppearance, appearance, shortPath, type Appearance } from '../theme'
 import { computeThreadStats, type AgentMode, type DebugEntry, type Item, type Thread, type ThreadStats } from './types'
 import {
@@ -2772,7 +2773,47 @@ export class AgentStore {
     }
 
     // 检查是否有足够的轮次进行压缩
-    const selection = selectCompactSelection(thread.messages, thread.items)
+    let selection = selectCompactSelection(thread.messages, thread.items)
+    const beforeCompaction = {
+      messages: thread.messages.length,
+      items: thread.items.length,
+    }
+
+    // 插件可以在压缩前**追加必须保留的消息**，或整体替换选择方案（受
+    // allowCompactionReplace 约束，见 hook-runtime）。没历史可压时不打扰插件。
+    let compactionHooks: AgentHooks = {}
+    if (selection.messagesToSummarize.length > 0) {
+      compactionHooks = await this.composeHooks({
+        workspace: thread.workspace,
+        kind: 'main',
+        threadId: thread.id,
+        mode: thread.mode ?? this.mode ?? 'code',
+      })
+      if (compactionHooks.beforeCompaction) {
+        const verdict = await compactionHooks.beforeCompaction({
+          kind: 'main',
+          workspace: thread.workspace,
+          threadId: thread.id,
+          trigger: options.trigger === 'auto' ? 'auto' : 'manual',
+          selection,
+          messageCount: thread.messages.length,
+          itemCount: thread.items.length,
+          trace: (message) => this.trace(message),
+        })
+        if (verdict) {
+          selection = applyCompactionVerdict(selection, verdict)
+          if (verdict.keepMessages?.length) {
+            this.trace(
+              `[插件] 压缩前追加保留 ${verdict.keepMessages.length} 条消息（否则它们会被总结掉）`
+            )
+          }
+          if (verdict.selection) {
+            this.trace(`[插件] 压缩选择方案被「${verdict.by ?? '未知插件'}」整体替换`)
+          }
+        }
+      }
+    }
+
     if (selection.messagesToSummarize.length === 0) {
       const noticeText = '当前会话历史较短（少于 2 轮），暂无需压缩的历史消息。'
       thread.items.push({
@@ -2791,6 +2832,8 @@ export class AgentStore {
       this.fail(thread, '未配置模型接口，无法执行上下文压缩。')
       return { success: false, reason: '未配置模型接口。' }
     }
+
+    const compactionStartedAt = Date.now()
 
     // 标记会话运行状态，避免并发冲突
     this.runningThreadIds.add(thread.id)
@@ -2867,6 +2910,16 @@ export class AgentStore {
         kind: 'info',
         text: `会话上下文压缩成功：节约约 ${result.savedTokens} Tokens（压缩比率 ${Math.round((result.savedTokens / Math.max(1, result.preTokens)) * 100)}%）`,
       })
+      await this.runAfterCompactionHooks(compactionHooks, {
+        thread,
+        trigger: options.trigger === 'auto' ? 'auto' : 'manual',
+        before: beforeCompaction,
+        after: { messages: thread.messages.length, items: thread.items.length },
+        turnsSummarized: result.turnsSummarized,
+        savedTokens: result.savedTokens,
+        durationMs: Date.now() - compactionStartedAt,
+        success: true,
+      })
       this.notify()
       return { success: true }
     } catch (error) {
@@ -2874,6 +2927,16 @@ export class AgentStore {
       thread.items = thread.items.filter((it) => it.id !== noticeId)
       const errText = `上下文压缩失败：${(error as Error).message}`
       this.fail(thread, errText)
+      await this.runAfterCompactionHooks(compactionHooks, {
+        thread,
+        trigger: options.trigger === 'auto' ? 'auto' : 'manual',
+        before: beforeCompaction,
+        after: { messages: thread.messages.length, items: thread.items.length },
+        turnsSummarized: 0,
+        savedTokens: 0,
+        durationMs: Date.now() - compactionStartedAt,
+        success: false,
+      })
       return { success: false, reason: errText }
     } finally {
       this.runningThreadIds.delete(thread.id)
@@ -3442,6 +3505,83 @@ export class AgentStore {
   }
 
   /**
+   * 压缩已发生，跑一遍 `afterCompaction`（纯观察：前后规模、省下的 token 与耗时）。
+   *
+   * 前后规模是刻意给出来的：插件替换选择方案过激时，压缩会"白做"——用户看不出
+   * 原因，但"压缩前后差不多长"这件事本身能提示他去查是哪个插件干的（日志里有）。
+   */
+  private async runAfterCompactionHooks(
+    hooks: AgentHooks,
+    outcome: {
+      thread: Thread
+      trigger: 'manual' | 'auto'
+      before: { messages: number; items: number }
+      after: { messages: number; items: number }
+      turnsSummarized: number
+      savedTokens: number
+      durationMs: number
+      success: boolean
+    }
+  ): Promise<void> {
+    if (!hooks.afterCompaction) return
+    try {
+      await hooks.afterCompaction({
+        kind: 'main',
+        workspace: outcome.thread.workspace,
+        threadId: outcome.thread.id,
+        trigger: outcome.trigger,
+        before: outcome.before,
+        after: outcome.after,
+        turnsSummarized: outcome.turnsSummarized,
+        savedTokens: outcome.savedTokens,
+        durationMs: outcome.durationMs,
+        success: outcome.success,
+        trace: (message) => this.trace(message),
+      })
+    } catch (error) {
+      this.trace(`[插件] afterCompaction 抛错，已忽略：${(error as Error).message}`)
+    }
+  }
+
+  /**
+   * 审批决策已定，跑一遍 `afterApproval`（纯观察：决策与耗时）。
+   *
+   * 只在闸门真的走过审批时调用——"自动批准"的工具没有审批这回事，把每个工具调用都
+   * 报一遍只会把信号淹没。
+   */
+  private async runAfterApprovalHooks(
+    hooks: AgentHooks,
+    outcome: {
+      thread: Thread
+      call: ToolCallBlock
+      approved: boolean
+      decidedBy: 'user' | 'plugin' | 'aborted'
+      pluginId?: string
+      reason?: string
+      durationMs: number
+    }
+  ): Promise<void> {
+    if (!hooks.afterApproval) return
+    try {
+      await hooks.afterApproval({
+        kind: 'main',
+        workspace: outcome.thread.workspace,
+        threadId: outcome.thread.id,
+        toolCall: outcome.call,
+        approved: outcome.approved,
+        decidedBy: outcome.decidedBy,
+        pluginId: outcome.pluginId,
+        reason: outcome.reason,
+        durationMs: outcome.durationMs,
+        trace: (message) => this.trace(message),
+      })
+    } catch (error) {
+      // 事后钩子不改写既成事实，抛错只记一行
+      this.trace(`[插件] afterApproval 抛错，已忽略：${(error as Error).message}`)
+    }
+  }
+
+  /**
    * 审批闸门：卡片在这里出现，等待也在这里发生。
    *
    * 挂在 beforeToolCall 上，所以拒绝走的不是「工具执行失败」而是 block——循环会把
@@ -3475,6 +3615,41 @@ export class AgentStore {
       }
     }
 
+    // 插件的前置判定：只在闸门本来要问用户时才跑（不问就没有"免问"可言）。
+    // 必须在建卡片之前跑：插件放行时卡片不该显示成"等你点"。
+    const asksUser = this.needsApproval(call.name)
+    const approvalStartedAt = Date.now()
+    const approvalHooks = asksUser
+      ? await this.composeHooks({ workspace: thread.workspace, kind: 'main', threadId: thread.id, mode: currentMode })
+      : {}
+    let pluginApproval: { decision: 'allow' | 'deny'; reason?: string; pluginId?: string } | undefined
+    if (asksUser && approvalHooks.beforeApproval) {
+      const verdict = await approvalHooks.beforeApproval({
+        kind: 'main',
+        workspace: thread.workspace,
+        threadId: thread.id,
+        toolCall: call,
+        approvalMode: this.approval === 'readonly' ? 'readonly' : 'ask',
+        isWrite: defaultToolRegistry.isWriteTool(call.name),
+        trace: (message) => this.trace(message),
+      })
+      if (verdict?.decision) {
+        if (verdict.decision === 'allow' && this.approval === 'readonly') {
+          // 只读档位的语义就是"写操作必须经我确认"，插件不该替用户取消它。
+          // 不静默：说出来，然后照常问用户。
+          this.trace(
+            `[插件] ${verdict.decidedBy ?? '(未知插件)'} 想自动批准 ${call.name}，但当前是只读审批档位，已忽略`
+          )
+        } else {
+          pluginApproval = {
+            decision: verdict.decision,
+            reason: verdict.reason,
+            pluginId: verdict.decidedBy,
+          }
+        }
+      }
+    }
+
     const card: ToolCard = {
       kind: 'tool',
       id: nextId('item'),
@@ -3483,12 +3658,46 @@ export class AgentStore {
       name: call.name,
       args: call.arguments,
       rawArgs: call.rawArguments,
-      status: this.needsApproval(call.name) ? 'awaiting' : 'running',
+      status: asksUser && !pluginApproval ? 'awaiting' : 'running',
       threadId: thread.id,
     }
     thread.items.push(card)
     this.cards.set(call.id, card)
     this.notify()
+
+    if (pluginApproval) {
+      await this.runAfterApprovalHooks(approvalHooks, {
+        thread,
+        call,
+        approved: pluginApproval.decision === 'allow',
+        decidedBy: 'plugin',
+        pluginId: pluginApproval.pluginId,
+        reason: pluginApproval.reason,
+        durationMs: Date.now() - approvalStartedAt,
+      })
+    }
+
+    if (pluginApproval?.decision === 'deny') {
+      const reason = pluginApproval.reason ?? '被插件策略拒绝'
+      card.status = 'denied'
+      card.output = reason
+      this.cards.delete(call.id)
+      this.push({
+        kind: 'tool',
+        text: `${call.name} 被插件「${pluginApproval.pluginId ?? '未知'}」拒绝：${reason}`,
+      })
+      this.persist(thread.id, {
+        role: 'toolResult',
+        toolCallId: call.id,
+        toolName: call.name,
+        // 理由要回给模型（设计文档 §10：不能变成"工具执行失败"那种无从纠正的错误）
+        content: reason,
+        isError: true,
+        timestamp: Date.now(),
+      })
+      this.notify()
+      return { block: true, reason }
+    }
 
     if (card.status !== 'awaiting') {
       await this.captureCheckpoint(thread, call)
@@ -3514,6 +3723,14 @@ export class AgentStore {
         signal.addEventListener('abort', () => finish(false), { once: true })
       }
     })
+    await this.runAfterApprovalHooks(approvalHooks, {
+      thread,
+      call,
+      approved,
+      decidedBy: signal?.aborted ? 'aborted' : 'user',
+      durationMs: Date.now() - approvalStartedAt,
+    })
+
     if (approved) {
       await this.captureCheckpoint(thread, call)
       const hookBlock = await this.runBeforeToolHook(thread, call)

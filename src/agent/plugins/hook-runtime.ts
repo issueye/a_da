@@ -24,6 +24,8 @@ import type {
   AfterSubagentEndResult,
   AfterTurnResult,
   BeforeAgentStartResult,
+  BeforeApprovalResult,
+  BeforeCompactionResult,
   BeforeTurnResult,
   SubagentGateResult,
 } from '../core/events'
@@ -341,6 +343,88 @@ export function composePluginHooks(options: HookRuntimeOptions): AgentHooks {
         }
       }
       return merged
+    }
+  }
+
+  // ── 审批闸门：allow / deny 的效力刻意不对称（见 events.ts 的说明）
+  const approvalContributors = contributorsOf('beforeApproval')
+  if (approvalContributors.length > 0) {
+    hooks.beforeApproval = async (ctx) => {
+      let allowed: BeforeApprovalResult | undefined
+      for (const contributor of approvalContributors) {
+        const result = await runHook(contributor, 'beforeApproval', () =>
+          contributor.hooks.beforeApproval!(ctx)
+        )
+        if (!result?.decision) continue
+        const tagged: BeforeApprovalResult = { ...result, decidedBy: contributor.pluginId }
+        if (result.decision === 'deny') {
+          // 否决压倒放行：一个插件不该能推翻另一个插件的拒绝，所以这里不短路、
+          // 继续看完，遇到 deny 立刻定稿
+          return tagged
+        }
+        allowed ??= tagged
+      }
+      return allowed
+    }
+  }
+
+  const approvalEndContributors = contributorsOf('afterApproval')
+  if (approvalEndContributors.length > 0) {
+    hooks.afterApproval = async (ctx) => {
+      // 纯观察：审批已经发生，返回值没有语义
+      for (const contributor of approvalEndContributors) {
+        await runHook(contributor, 'afterApproval', () => contributor.hooks.afterApproval!(ctx))
+      }
+    }
+  }
+
+  // ── 上下文压缩：可追加保留消息，也可替换选择方案（受开关约束）
+  const compactionContributors = contributorsOf('beforeCompaction')
+  if (compactionContributors.length > 0) {
+    hooks.beforeCompaction = async (ctx) => {
+      let keepMessages: BeforeCompactionResult['keepMessages'] = []
+      let selection: BeforeCompactionResult['selection']
+      let by: string | undefined
+
+      for (const contributor of compactionContributors) {
+        const result = await runHook(contributor, 'beforeCompaction', () =>
+          contributor.hooks.beforeCompaction!(ctx)
+        )
+        if (!result) continue
+
+        if (result.keepMessages?.length) {
+          // 追加保留**永远**生效：它只会让压缩少做点，不会让插件超出授权
+          keepMessages = [...(keepMessages ?? []), ...result.keepMessages]
+        }
+
+        if (result.selection) {
+          if (contributor.capabilities.allowCompactionReplace) {
+            selection = result.selection
+            by = contributor.pluginId
+          } else {
+            trace(
+              `[插件] ${contributor.pluginId} 想替换压缩选择方案，但 allowCompactionReplace 已关闭，已忽略（追加保留仍生效）`
+            )
+          }
+        }
+      }
+
+      const merged: BeforeCompactionResult = {}
+      if (keepMessages && keepMessages.length > 0) merged.keepMessages = keepMessages
+      if (selection) {
+        merged.selection = selection
+        merged.by = by
+      }
+      return Object.keys(merged).length > 0 ? merged : undefined
+    }
+  }
+
+  const compactionEndContributors = contributorsOf('afterCompaction')
+  if (compactionEndContributors.length > 0) {
+    hooks.afterCompaction = async (ctx) => {
+      for (const contributor of compactionEndContributors) {
+        await runHook(contributor, 'afterCompaction', () => contributor.hooks.afterCompaction!(ctx))
+      }
     }
   }
 

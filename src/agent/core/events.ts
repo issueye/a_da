@@ -14,6 +14,7 @@
  *    这一条不可配置（§6.4.3）。
  */
 
+import type { CompactSelection } from '../compact/types'
 import type {
   AgentEndReason,
   AgentMessage,
@@ -23,6 +24,7 @@ import type {
   BeforeToolCallResult,
   AfterToolCallContext,
   AfterToolCallResult,
+  ToolCallBlock,
   ToolResultMessage,
 } from './types'
 
@@ -203,6 +205,97 @@ export interface AfterSubagentEndResult {
   appendParentNote?: string
 }
 
+// ─────────────────────────────── 上下文压缩（能决定保留什么）
+
+/**
+ * 压缩前：插件可以**追加必须保留的消息**（任何配置下都生效——它只会让压缩少做点，
+ * 不会多做），也可以整体替换选择方案（受 `allowCompactionReplace` 约束，默认开）。
+ *
+ * 风险提示：替换过激会让压缩白做，所以 `afterCompaction` 会把前后消息数摆出来，
+ * 让用户看得出"某个插件让压缩几乎没生效"。
+ */
+export interface BeforeCompactionContext extends AgentHookContextBase {
+  trigger: 'manual' | 'auto'
+  /** 当前的选择方案（插件拿到的是真实对象，可以直接只做微调） */
+  selection: CompactSelection
+  messageCount: number
+  itemCount: number
+}
+
+export interface BeforeCompactionResult {
+  /**
+   * 必须保留的消息。按**对象引用**匹配当前待总结的消息（插件拿到的就是同一批对象）：
+   * 命中的会被移出"待总结"、按原顺序并入"保留"。
+   */
+  keepMessages?: AgentMessage[]
+  /** 整体替换选择方案；受 `allowCompactionReplace` 约束，关掉时被忽略并说明 */
+  selection?: CompactSelection
+  /** 由钩子运行层填写 */
+  by?: string
+}
+
+export interface AfterCompactionContext extends AgentHookContextBase {
+  trigger: 'manual' | 'auto'
+  /** 压缩前后的规模：让"压缩几乎没生效"这种情况看得见 */
+  before: { messages: number; items: number }
+  after: { messages: number; items: number }
+  turnsSummarized: number
+  savedTokens: number
+  durationMs: number
+  success: boolean
+}
+
+/** 事后钩子是纯观察：压缩已经发生。 */
+export type AfterCompactionResult = void
+
+// ─────────────────────────────── 审批闸门（能实现"白名单工具免问"）
+
+/**
+ * 审批闸门的前置判定。
+ *
+ * **只在闸门本来要问用户时才会被调用**（`needsApproval` 为真）：用户选了"自动批准"
+ * 的工具本来就不问，也就没有"免问"可言。插件因此能用它实现"白名单工具免问"这类
+ * 自动批准策略，而不必去改用户的审批档位。
+ */
+export interface BeforeApprovalContext extends AgentHookContextBase {
+  toolCall: ToolCallBlock
+  /** 为什么会问：ask = 用户要求每个工具都确认；readonly = 用户要求写操作都确认 */
+  approvalMode: 'ask' | 'readonly'
+  /** 这个工具是否会产生写副作用（`isWriteTool` 的静态判定） */
+  isWrite: boolean
+}
+
+export interface BeforeApprovalResult {
+  /**
+   * `'allow'` = 免问直接放行；`'deny'` = 直接拒绝（理由会作为工具结果回给模型）；
+   * `undefined` = 照常问用户。
+   *
+   * 两个方向的效力刻意不对称（见 store 的实现）：
+   * - `deny` **总是**被采纳——它是收窄，任何插件都不该能推翻另一个插件的否决；
+   * - `allow` 在 `readonly` 档位下**被忽略**：那一档的语义就是"写操作必须经我确认"，
+   *   插件不该替用户取消它（忽略时会写进调试日志，不静默）。
+   */
+  decision?: 'allow' | 'deny'
+  reason?: string
+  /** 由钩子运行层填写（哪个插件做的决定） */
+  decidedBy?: string
+}
+
+export interface AfterApprovalContext extends AgentHookContextBase {
+  toolCall: ToolCallBlock
+  /** 决策是谁做的：用户、插件，或调用被中止（等同于拒绝） */
+  decidedBy: 'user' | 'plugin' | 'aborted'
+  approved: boolean
+  reason?: string
+  /** 从进入闸门到决策完成（含用户思考时间；插件决策很快） */
+  durationMs: number
+  /** `decidedBy: 'plugin'` 时是哪个插件 */
+  pluginId?: string
+}
+
+/** 事后钩子是纯观察：审批已经发生，插件没有可改变的东西。 */
+export type AfterApprovalResult = void
+
 // ─────────────────────────────── 工具调用（既有，M2 开放给插件）
 
 export interface AgentHooks {
@@ -214,6 +307,10 @@ export interface AgentHooks {
   afterToolCall?: (ctx: AfterToolCallContext) => Promise<AfterToolCallResult | undefined>
   beforeSubagentStart?: (ctx: SubagentGateContext) => Promise<SubagentGateResult | undefined>
   afterSubagentEnd?: (ctx: SubagentEndContext) => Promise<AfterSubagentEndResult | undefined>
+  beforeApproval?: (ctx: BeforeApprovalContext) => Promise<BeforeApprovalResult | undefined>
+  afterApproval?: (ctx: AfterApprovalContext) => Promise<AfterApprovalResult>
+  beforeCompaction?: (ctx: BeforeCompactionContext) => Promise<BeforeCompactionResult | undefined>
+  afterCompaction?: (ctx: AfterCompactionContext) => Promise<AfterCompactionResult>
 }
 
 /**
@@ -237,4 +334,6 @@ export const HOOK_PAIRS: ReadonlyArray<{ before: keyof AgentHooks; after: keyof 
   { before: 'beforeTurn', after: 'afterTurn' },
   { before: 'beforeToolCall', after: 'afterToolCall' },
   { before: 'beforeSubagentStart', after: 'afterSubagentEnd' },
+  { before: 'beforeApproval', after: 'afterApproval' },
+  { before: 'beforeCompaction', after: 'afterCompaction' },
 ]
