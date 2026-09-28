@@ -105,6 +105,36 @@ git-tools / code-outline / project-inspector / test-runner 四个官方插件也
 `validateDesign` / `normalizeQuestions` 的严格校验（`choice` 的 criteria 是对象、`score` 是数组、
 `noul` 不带 criteria）。校验规则在两处各有一份实现，改一处要同步另一处。
 
+### 10. 插件系统有一串"必须同时改"的白名单，每个都有守门测试
+
+插件要真正生效，往往要在**多个各自独立的位置**同时登记。漏掉任何一处的表现都是
+"看起来装上了、就是没用"，而且不报错：
+
+| 位置 | 漏了会怎样 | 守门测试 |
+|---|---|---|
+| `ToolRegistry.READ_ONLY`（`tools/registry.ts`） | 只读工具被当成写工具，plan 模式与只读子智能体拿不到 | `plugins/equivalence.test.ts`、子智能体测试 |
+| `BUILTIN_TOOLS_CATALOG`（`tools/registry.ts`） | 插件管理页的「内置核心工具」清单缺条目（`resume_subagent` 就是这么漏的） | `plugins/equivalence.test.ts` 的「目录与真实工具表对得上」 |
+| `BUILTIN_SUBAGENTS[].allowedTools`（`subagents/builtins.ts`） | 子智能体调不到该工具，退化成一轮读一个文件 | `subagents/builtins.test.ts` |
+
+新增核心工具时**三处都要过一遍**，然后跑 `bun test src/agent/plugins/equivalence.test.ts`
+让它替你确认。
+
+### 11. 插件契约：`LoadedPlugin` 是唯一产物，id 由加载器决定
+
+- 两条加载路径（内置 `BUILTIN_PLUGINS` 数组、工作区/全局的 jiti 扫描）都必须产出
+  `LoadedPlugin`（`plugins/types.ts`）。新增能力字段时同步改 `PluginContributions`
+  **和** `loader.ts` 的 `parseExtensionModule` / `finalizePlugins`，并考虑
+  `plugin-system-dev-plan.md` 里的下一个里程碑是否已有约定。
+- 第三方插件的 `manifest.id` **一律由加载器按「scope:文件名」生成**，插件自报的 id 会被覆盖
+  ——id 是启停表、诊断、工具溯源的键，允许自报会让它们对不上。
+- 状态判定集中在 `finalizePlugins`：依赖缺失/初始化抛错 → `broken`、缺必填配置 → `not-ready`
+  （这两种**不注册工具**）、版本不匹配 → `incompatible`（仍加载）、工具名冲突 → `conflict`。
+  判定顺序是 broken > not-ready > incompatible > conflict。
+- 插件之间的名字冲突**只记录不拒绝**（后注册者胜 + `console.warn` + 诊断）。"是否允许遮蔽
+  内置"是 M2 能力开关的事，加载层别自作主张拦下来。
+- 事件监听器按插件分组持有（`eventListeners: Map<pluginId, Set>`）。`autoLoadExtensions`
+  开始时必须 `clearListeners()`：只清工具不清监听器，`onEvent` 订阅会一轮一轮累积。
+
 ## 二、开发与验证
 
 ```bash

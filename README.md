@@ -104,11 +104,32 @@ GPUI 渲染到 GPU（Windows 上是 DirectX），没有 Electron、没有 WebVie
 - `<项目>/.ada/extensions/*.ts`
 - `~/.a-da/extensions/*.ts`
 
-扩展拿到一个 `ExtensionContext`：`registerTool` 注册工具、`onEvent` 订阅 Agent 生命周期
-事件、`trace` 往调试面板打点。注册进来的工具会和内置工具一起发给模型，也能被调用。
+**首选写法是声明式描述符**——一个纯数据对象，加载器直接读它：
 
-仓库里带了一个能跑的例子：**`.ada/extensions/web-search.ts`**（联网搜索）。它演示了
-整套 API，也刻意不 import 应用里的任何东西——扩展是要能被复制的独立文件。想让它对
+```ts
+export default {
+  name: '我的插件',
+  description: '做什么用的',
+  tools: [ myTool ],            // 也可以省，只贡献 skills / prompts
+  skills: [ { name, description, content } ],
+}
+```
+
+需要运行时上下文（订阅事件、按工作区动态建工具）时才用函数形态，它在两种情况下都会被
+调用：`export default (ctx) => { ctx.registerTool(...); ctx.onEvent(...) }`。`ctx` 提供
+`registerTool` 注册工具、`onEvent` 订阅 Agent 生命周期事件、`trace` 往调试面板打点。
+两种形态产出的插件对象完全一样，`id` 由加载器按「目录作用域 + 文件名」决定（写成
+`workspace:我的插件.ts`），插件自己不必知道装在哪。
+
+扩展还可以声明 `dependsOn: ['builtin:git-tools']`（依赖缺失或未启用会被跳过并在日志里
+说明）、`engines: { a_da: '>=0.1.0' }`（不匹配只警告，仍加载）、以及 `configSchema`
+（声明需要用户提供的配置项；缺 `required` 项时插件标记为「待配置」且不注册它的工具）。
+
+注册进来的工具会和内置工具一起发给模型，也能被调用。同名工具的覆盖规则是**后注册者胜**，
+但覆盖会被记成冲突并警告（插件工具顶掉内置工具是最容易被误当成「内置工具坏了」的一种）。
+
+仓库里带了一个能跑的例子：**`.ada/extensions/web-search.ts`**（联网搜索）。它就是上面的
+声明式形态，也刻意不 import 应用里的任何东西——扩展是要能被复制的独立文件。想让它对
 每个项目都生效，把它拷到全局目录：
 
 ```bash
@@ -127,7 +148,10 @@ bun scripts/extension-check.ts   # 加载 → 进工具表 → 真调一次 → 
 ```
 
 > ⚠️ 项目里那份是随仓库克隆进来的第三方代码，**打开项目就会被执行**。因此「只读」模式下
-> 扩展工具一律要审批：只读白名单是写死的三个内置名字，名单之外的一律当成写操作。
+> 扩展工具一律要审批：只读白名单是写死的一小批内置名字，名单之外的一律当成写操作。
+
+插件的加载状态与诊断（缺依赖、缺配置、版本不匹配、工具名冲突）会写进调试面板的事件日志，
+前缀 `[插件]`；`defaultExtensionLoader.getDiagnostics()` 也能按插件取到同一份数据。
 
 ### 内置辅助插件
 
@@ -393,7 +417,7 @@ scripts/*                   一套对着真实窗口 / 真实进程的检查，�
 ## 测试
 
 ```bash
-bun test                        # 85 个用例：沙箱与 diff、读取守卫、工具权限、事件循环与工具事件的实时性、扩展加载、思考行、会话落盘与删除、目录选择、工作区隔离、设置弹窗、菜单浮层、logo 资产、窗口 GPU 渲染、mock 模型的完整回合
+bun test                        # 全量用例（数量以运行输出为准）：沙箱与 diff、读取守卫、工具权限、事件循环与工具事件的实时性、扩展加载与插件契约（溯源/冲突/依赖/必填配置）、思考行、会话落盘与删除、目录选择、工作区隔离、设置弹窗、菜单浮层、logo 资产、窗口 GPU 渲染、mock 模型的完整回合
 bun run screenshot out.png      # 启动真实窗口并截图（GPUIX_BACKGROUND=1，不抢焦点）
 bun scripts/smoke.ts            # 真实窗口里跑完整回合：输入 → 批准 → 写入 → diff 卡片
 bun scripts/projects-check.ts   # 真实窗口里加项目：坏路径报错，好路径切换并重新扫描

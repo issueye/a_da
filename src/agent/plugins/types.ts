@@ -67,8 +67,9 @@ export interface PluginConfigSchema {
 /**
  * 插件提供的全部能力，每一项都可选。
  *
- * 注意：钩子（hooks）与子智能体（subagents）在后续里程碑接入，
- * 此处先预留字段，避免契约再次变更。
+ * 钩子（hooks）与子智能体（subagents）属于 M2 的范围，**尚未**在这里声明——
+ * 届时会新增字段并同步加载器，也就是说契约还会再变一次，别以为它已经冻结。
+ * 加载器对未知字段一律忽略，所以插件多写字段不会报错，但也不会生效。
  */
 export interface PluginContributions {
   /** 工具集（支持实例或按 workspace 初始化的工厂函数） */
@@ -93,6 +94,27 @@ export interface PluginContributions {
 export interface PluginDescriptor extends PluginManifest, PluginContributions {
   tools: PluginToolFactory[]
 }
+
+/**
+ * 第三方扩展的**声明式导出**形态（首选写法）：
+ *
+ * ```ts
+ * export default {
+ *   name: '我的插件',
+ *   description: '做什么用的',
+ *   tools: [ myTool ],
+ * } satisfies PluginDescriptorExport
+ * ```
+ *
+ * 与内置插件的 `PluginDescriptor` 是同一套字段，区别只在 `id` / `scope` 允许省略
+ * ——由加载器按「目录作用域 + 文件名」填写，插件自己不必知道装在哪。`tools` 也可以
+ * 省，只贡献技能或提示词的插件是合法的。
+ *
+ * 需要运行时上下文（订阅事件、按工作区动态建工具）时改用函数形态：
+ * `export default (ctx) => { ctx.registerTool(...); ctx.onEvent(...) }`。
+ * 两种形态产出的 {@link LoadedPlugin} 完全一样。
+ */
+export type PluginDescriptorExport = Partial<PluginDescriptor>
 
 /** 加载诊断级别 */
 export type PluginDiagnosticLevel = 'info' | 'warn' | 'error'

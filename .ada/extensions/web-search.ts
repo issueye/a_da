@@ -1,11 +1,17 @@
 /**
- * 一个用到扩展 API 的真实例子：给 Agent 加一个联网搜索工具。
+ * 一个用到插件 API 的真实例子：给 Agent 加一个联网搜索工具。
  *
  * 放在项目的 `.ada/extensions/` 下，打开这个项目时会自动加载（jiti 直接跑 .ts）。
  * 想让每个项目都有它，把文件复制到 `~/.a-da/extensions/` 就行。
  *
  * 刻意不 import 应用里的任何东西：扩展是可以被复制到别处的独立文件，一旦依赖
- * 仓库内的相对路径，复制出去就废了。
+ * 仓库内的相对路径，复制出去就废了——所以下面那个描述符是**纯数据字面量**，
+ * 没有 `satisfies PluginDescriptorExport` 之类的类型引用，全靠字段形状被识别。
+ *
+ * 导出的是**声明式描述符**（`export default { name, tools }`），这也是新写法的首选：
+ * 加载器直接读对象，不依赖任何初始化代码。需要订阅事件或按工作区动态建工具时，
+ * 才改成函数形态 `export default (context) => { context.registerTool(...) }`——
+ * 两种形态产出的插件对象完全一样。
  *
  * 搜索引擎默认用 Bing，因为它不需要 API key、在国内也直连得到（DuckDuckGo 实测连不上，
  * 超时）。要换引擎，改 ENDPOINT 和 parseResults 两个地方。
@@ -78,54 +84,58 @@ export function parseResults(html) {
   return results
 }
 
-export default function (api) {
-  api.trace('web-search 扩展已加载：联网搜索可用')
-
-  api.registerTool({
-    name: 'web_search',
-    label: '联网搜索',
-    description:
-      '用搜索引擎（Bing）查互联网。工作区里翻不到答案时用它：库的最新用法、报错信息、某个接口的现状。',
-    parameters: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: '搜索词。' },
+export default {
+  name: '联网搜索 (web-search)',
+  description: '用 Bing 搜索互联网，补上模型知识截止之后的信息',
+  tools: [
+    {
+      name: 'web_search',
+      label: '联网搜索',
+      description:
+        '用搜索引擎（Bing）查互联网。工作区里翻不到答案时用它：库的最新用法、报错信息、某个接口的现状。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '搜索词。' },
+        },
+        required: ['query'],
       },
-      required: ['query'],
-    },
-    async execute(_callId, args, signal) {
-      const query = String(args?.query ?? '').trim()
-      if (!query) return { output: '缺少 query 参数。', ok: false }
+      async execute(_callId, args, signal) {
+        const query = String(args?.query ?? '').trim()
+        if (!query) return { output: '缺少 query 参数。', ok: false }
 
-      const timeout = AbortSignal.timeout(TIMEOUT_MS)
-      try {
-        const response = await fetch(`${ENDPOINT}?q=${encodeURIComponent(query)}`, {
-          headers: { 'user-agent': USER_AGENT, 'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8' },
-          signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-        })
-        if (!response.ok) {
-          return { output: `搜索失败：HTTP ${response.status}`, ok: false }
-        }
-
-        const results = parseResults(await response.text())
-        if (results.length === 0) {
-          return {
-            output: `没有从结果页里解析出条目（${query}）。搜索引擎的页面结构可能变了，改一下扩展里的 parseResults。`,
-            ok: false,
+        const timeout = AbortSignal.timeout(TIMEOUT_MS)
+        try {
+          const response = await fetch(`${ENDPOINT}?q=${encodeURIComponent(query)}`, {
+            headers: { 'user-agent': USER_AGENT, 'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8' },
+            signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+          })
+          if (!response.ok) {
+            return { output: `搜索失败：HTTP ${response.status}`, ok: false }
           }
-        }
 
-        const text = results
-          .map((result, index) => `${index + 1}. ${result.title}\n   ${result.url}\n   ${result.snippet}`)
-          .join('\n\n')
-        return {
-          output: text.slice(0, MAX_OUTPUT),
-          ok: true,
-          details: { count: results.length, query },
+          const results = parseResults(await response.text())
+          if (results.length === 0) {
+            return {
+              output: `没有从结果页里解析出条目（${query}）。搜索引擎的页面结构可能变了，改一下扩展里的 parseResults。`,
+              ok: false,
+            }
+          }
+
+          const text = results
+            .map(
+              (result, index) => `${index + 1}. ${result.title}\n   ${result.url}\n   ${result.snippet}`
+            )
+            .join('\n\n')
+          return {
+            output: text.slice(0, MAX_OUTPUT),
+            ok: true,
+            details: { count: results.length, query },
+          }
+        } catch (error) {
+          return { output: `搜索失败：${error?.message ?? error}`, ok: false }
         }
-      } catch (error) {
-        return { output: `搜索失败：${error?.message ?? error}`, ok: false }
-      }
+      },
     },
-  })
+  ],
 }

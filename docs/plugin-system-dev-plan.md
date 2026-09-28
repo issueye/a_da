@@ -125,7 +125,9 @@ M2 引入新能力但受开关控制，M3 补齐可见性与配置。任一里�
 
 ---
 
-### M1 — 契约与加载层（可安装、可诊断、可重载）
+### M1 — 契约与加载层（可安装、可诊断、可重载）✅ **已完成**
+
+**状态**：已实施并验证通过（见本节末的完成记录）
 
 **目标**：插件系统的**基础设施**就位——插件身份可追踪、冲突可见、失败可诊断、
 配置可声明、可干净重载。**能力上限与现状相同**（插件仍只是工具+技能+提示词）。
@@ -146,16 +148,68 @@ M2 引入新能力但受开关控制，M3 补齐可见性与配置。任一里�
 | M1-10 | 自身诊断接入 `scripts/extension-check.ts` | §7.3 | `scripts/extension-check.ts` |
 
 **验收标准**
-- [ ] `typecheck` exit 0；`bun test src/agent` 0 fail
-- [ ] 同名工具冲突：产生可见警告，工具表**不出现同名两份**
-- [ ] `getToolOrigin` 对内置/工作区/全局工具都返回正确 `pluginId`
-- [ ] 缺失依赖 → 插件标记 `broken`，其工具**不注册**
-- [ ] 缺必填配置 → `not-ready`，其工具**不注册**
-- [ ] 重载后**旧事件监听器已退订**（缺陷 4 回归测试）
-- [ ] 两种导出形态（描述符 / 函数）产出**等价的 `LoadedPlugin`**
-- [ ] 内置与第三方加载后**字段结构一致**
+- [x] `typecheck` exit 0；`bun test src/agent` 0 fail
+- [x] 同名工具冲突：产生可见警告，工具表**不出现同名两份**
+- [x] `getToolOrigin` 对内置/工作区/全局工具都返回正确 `pluginId`
+- [x] 缺失依赖 → 插件标记 `broken`，其工具**不注册**
+- [x] 缺必填配置 → `not-ready`，其工具**不注册**
+- [x] 重载后**旧事件监听器已退订**（缺陷 4 回归测试）
+- [x] 两种导出形态（描述符 / 函数）产出**等价的 `LoadedPlugin`**
+- [x] 内置与第三方加载后**字段结构一致**
 
 **里程碑价值**：插件作者第一次能知道"我的插件为什么没生效"。
+
+#### M1 完成记录（已验证）
+
+**门禁结果**
+
+| 门 | 验收线 | M1 后 | 判定 |
+|---|---|---|---|
+| `bun run typecheck` | exit 0 | exit 0 | ✅ |
+| `bun test src/agent` | 0 fail | **355 pass / 0 fail** | ✅ |
+| `bun test` | 0 fail（见下方"验收门收紧"） | **502 pass / 0 fail** | ✅ |
+
+**实际改动**
+
+| 文件 | 改动 |
+|---|---|
+| `src/agent/plugins/types.ts` | 修掉"已预留 hooks/subagents 字段"的错误注释（字段并不存在）；新增 `PluginDescriptorExport`（第三方声明式导出形态） |
+| `src/agent/plugins/registry.ts` | **新增**：已加载插件的索引（`setLoadedPlugins` / `getLoadedPlugins` / `getPluginDiagnostics`）。独立成模块是为了不让管理器反向 import 加载器（那会成环） |
+| `src/agent/version.ts` | **新增**：`APP_VERSION` + `parseVersion` / `satisfiesRange`；`version.test.ts` 钉住它与 package.json 一致 |
+| `src/agent/tools/registry.ts` | `register(tool, origin)` 记录 `pluginId`/`scope` 并返回冲突；新增 `getToolOrigin` / `listByPlugin` / `getConflicts` / `unregisterPlugin`；`getToolsForWorkspace` 按名字去重；`BUILTIN_TOOLS_CATALOG` 补上漏登记的 `resume_subagent` |
+| `src/agent/tools/loader.ts` | 两条加载路径统一产出 `LoadedPlugin`；`parseExtensionModule` 识别描述符/函数/工具/数组四种导出；`finalizePlugins` 集中判定状态（依赖、版本、必填配置、冲突）；监听器改为 `Map<pluginId, Set>` 并在重载时退订；`getDiagnostics()`；诊断写事件日志（`[插件]` 前缀） |
+| `src/agent/config.ts` | 新增 `setPluginDisabled`（按作用域写入）与 `savePluginConfig`（配置写入侧）；`createPluginDisabledResolver`（一次读取 + 判定函数）；`readPluginDisabled` 改为它的包装 |
+| `src/agent/skills/manager.ts`、`src/agent/prompts/manager.ts` | 改为按工作区判定停用；新增第三方插件**内联** skills/prompts 的归纳（修缺陷 7） |
+| `.ada/extensions/web-search.ts` | 迁移到声明式描述符形态（与内置插件同构） |
+| `scripts/extension-check.ts` | 增加"插件诊断无 error"检查 |
+
+**新增测试**（29 条）：`tools/registry.test.ts`（溯源/冲突/去重 7 条）、`plugins/loader.test.ts`
+（9 条，逐条对应 M1 验收清单）、`version.test.ts`（9 条）、`plugins/equivalence.test.ts`
+（+3 条：核心工具目录与真实工具表的一致性守门）、既有测试回归。
+
+**实施中发现并修正的三处偏差**
+
+1. **验收门收紧（推翻本文档 §2 的基线）**：§2 把 `bun test` 的线画在"失败数 ≤ 18"，前提是
+   "UI 有 18 条既有失败"。该前提已被证伪——那 18 条是一条泄漏窗口造成的连带污染，修掉后
+   全量测试是 0 fail。因此 M1 的验收门改用**全量 0 fail**，比原计划严格得多。
+2. **一致性守门测试立刻抓到一处真实漏登记**：`resume_subagent` 是真实核心工具但不在
+   `BUILTIN_TOOLS_CATALOG` 里，插件管理页的"内置核心工具"清单缺它。这正是缺陷 9 想防的漂移，
+   已补上（新增的两条守门测试会长期盯着目录与工具表的双向一致）。
+3. **"必填配置"缺一个真实消费者**：6 个内置插件里只有 decision 读配置，而它**不该**有任何
+   必填项（没配密钥时它靠本地自评与启发式照样能用，设成必填会让整个插件消失）。因此
+   `configSchema` 落在 decision 上只作**声明**（含 `apiKey` 的 `secret` 类型），`required` 的
+   行为由合成插件在 `loader.test.ts` 里覆盖。
+
+**一处刻意留下的产品决定**：`togglePlugin` 写的是**全局**停用表（插件管理页的开关是应用级
+偏好），工作区级的 `workspacePluginState` 已可读写并生效，但"仅本工作区停用"的选择权在界面上
+（M3）。两侧 API 都已落定，见 `config.ts` 的 `setPluginDisabled`。
+
+**未在本次验证的一项**：`bun scripts/extension-check.ts` 需要联网 + 真窗口，其新增的
+"诊断无 error"断言已写好但**未实跑**。
+
+**明确不做**（仍属 M2/M3）：钩子与能力开关（M2）、插件卡状态徽标/诊断详情/配置表单（M3）。
+界面上目前的可见改进只有一处：`broken` / `not-ready` 的诊断会汇总进插件卡的"加载告警"一行
+（那是 `PluginItem.error` 的既有展示位）。
 
 ---
 

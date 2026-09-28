@@ -13,7 +13,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { BUILTIN_PLUGINS } from '../tools/builtin-plugins'
-import { BUILTIN_TOOLS_CATALOG } from '../tools/registry'
+import { BUILTIN_TOOLS_CATALOG, ToolRegistry } from '../tools/registry'
 
 /** 把插件的 tools 就地实例化，拿到工具名集合（工厂按 workspace 调用）。 */
 function toolNamesOf(plugin: (typeof BUILTIN_PLUGINS)[number]): string[] {
@@ -115,5 +115,45 @@ describe('M0 等价性：核心工具目录与插件工具的边界', () => {
       expect(info.description.length).toBeGreaterThan(0)
       expect(typeof info.isReadOnly).toBe('boolean')
     }
+  })
+})
+
+describe('M1 一致性：核心工具目录与真实工具表对得上', () => {
+  /**
+   * 由上下文（而非注册表）注入的工具。
+   *
+   * `notify_parent` 只对「作为子智能体运行」的身份有意义，由 store 在建子智能体
+   * 工具表时单独追加（见 registry.ts 里 `getToolsForWorkspace` 的注释），所以它
+   * 在目录里、但不在通用工具表里。
+   */
+  const CONTEXT_INJECTED = ['notify_parent']
+
+  test('目录里声明的工具都真的拿得到（声明了就得能注册）', () => {
+    const registry = new ToolRegistry()
+    const actual = new Set([
+      ...registry.getToolsForMode('/tmp/ws', 'create').map((tool) => tool.name),
+      ...CONTEXT_INJECTED,
+    ])
+
+    const missing = BUILTIN_TOOLS_CATALOG.map((info) => info.name).filter(
+      (name) => !actual.has(name),
+    )
+    expect(missing).toEqual([])
+  })
+
+  test('工具表里的每个核心工具都进了目录（目录不能落后于实现）', () => {
+    const registry = new ToolRegistry()
+    const documented = new Set(BUILTIN_TOOLS_CATALOG.map((info) => info.name))
+
+    const undocumented = registry
+      .getToolsForMode('/tmp/ws', 'create')
+      .map((tool) => tool.name)
+      .filter((name) => !documented.has(name))
+    expect(undocumented).toEqual([])
+  })
+
+  test('核心工具目录不重复（重名会让插件卡显示错位）', () => {
+    const names = BUILTIN_TOOLS_CATALOG.map((info) => info.name)
+    expect(new Set(names).size).toBe(names.length)
   })
 })

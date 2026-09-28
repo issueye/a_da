@@ -7,7 +7,8 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { getAppHome } from '../home'
-import { readDisabledPlugins } from '../config'
+import { createPluginDisabledResolver } from '../config'
+import { getLoadedPlugins } from '../plugins/registry'
 import { checkWorkspaceSandbox } from '../tools/workspace'
 import { BUILTIN_PROMPTS } from './builtins'
 import { BUILTIN_PLUGINS } from '../tools/builtin-plugins'
@@ -173,7 +174,7 @@ export class PromptManager {
     scope: PromptScope,
     out: PromptItem[],
     state: PromptsState,
-    disabledPlugins?: Set<string>,
+    pluginDisabled?: (pluginId: string) => boolean,
     extraMeta?: { pluginName?: string; pluginId?: string }
   ): Promise<void> {
     if (!existsSync(dir)) return
@@ -190,7 +191,7 @@ export class PromptManager {
             if (overrideEnabled !== undefined) {
               item.enabled = overrideEnabled
             }
-            if (scope === 'plugin' && extraMeta?.pluginId && disabledPlugins?.has(extraMeta.pluginId)) {
+            if (scope === 'plugin' && extraMeta?.pluginId && pluginDisabled?.(extraMeta.pluginId)) {
               item.enabled = false
             }
             out.push(item)
@@ -205,7 +206,7 @@ export class PromptManager {
    */
   async scanPrompts(workspace: string): Promise<PromptItem[]> {
     const state = await this.loadState()
-    const disabledPlugins = new Set(await readDisabledPlugins())
+    const pluginDisabled = await createPluginDisabledResolver(workspace)
     const results: PromptItem[] = []
 
     // 1. 内置提示词（应用用户持久化的启停状态）
@@ -242,7 +243,7 @@ export class PromptManager {
                   'plugin',
                   results,
                   state,
-                  disabledPlugins,
+                  pluginDisabled,
                   { pluginName: entry.name, pluginId: `workspace:${entry.name}` }
                 )
               }
@@ -266,7 +267,7 @@ export class PromptManager {
                 'plugin',
                 results,
                 state,
-                disabledPlugins,
+                pluginDisabled,
                 { pluginName: entry.name, pluginId: `global:${entry.name}` }
               )
             }
@@ -278,7 +279,7 @@ export class PromptManager {
     // 6. 系统官方内置插件中的提示词模板
     for (const bp of BUILTIN_PLUGINS) {
       const pluginId = `builtin:${bp.id}`
-      const isPluginDisabled = disabledPlugins.has(pluginId)
+      const isPluginDisabled = pluginDisabled(pluginId)
       for (const p of bp.prompts || []) {
         const id = `${pluginId}:${p.name}`
         const overrideEnabled = state.builtinEnabled[id]
@@ -298,6 +299,37 @@ export class PromptManager {
           pluginName: bp.name,
           pluginId,
           updatedAt: 1720000000000,
+        })
+      }
+    }
+
+    // 7. 第三方插件**内联**声明的提示词模板
+    //
+    // 与技能那侧同理：插件包目录里的 `prompts/*.md` 由上面的目录扫描收走，单文件
+    // 扩展只能内联声明。排在目录扫描之后，同名时文件优先。
+    for (const plugin of getLoadedPlugins()) {
+      if (plugin.manifest.scope === 'builtin') continue
+      const pluginId = plugin.manifest.id
+      const isPluginDisabled = pluginDisabled(pluginId)
+      for (const prompt of plugin.contributions.prompts ?? []) {
+        const id = `${pluginId}:${prompt.name}`
+        const overrideEnabled = state.builtinEnabled[id]
+        let enabled = overrideEnabled !== undefined ? overrideEnabled : !isPluginDisabled
+        if (isPluginDisabled) enabled = false
+        results.push({
+          id,
+          name: prompt.name,
+          description: prompt.description,
+          argumentHint: prompt.argumentHint,
+          content: prompt.content,
+          scope: 'plugin',
+          enabled,
+          isSystem: Boolean(prompt.isSystem),
+          pluginName: plugin.manifest.name,
+          pluginId,
+          // 内联声明没有对应的文件时间（插件是加载进内存的），如实给 0 而不是
+          // 一个"刚刚更新过"的假时间
+          updatedAt: 0,
         })
       }
     }

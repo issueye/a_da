@@ -8,7 +8,8 @@ import { existsSync, readdirSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { getAppHome } from '../home'
-import { readDisabledPlugins } from '../config'
+import { createPluginDisabledResolver } from '../config'
+import { getLoadedPlugins } from '../plugins/registry'
 import { expandSkillVariables, parseSkillMarkdown } from './parser'
 import { BUILTIN_SKILLS } from './builtins'
 import { BUILTIN_PLUGINS } from '../tools/builtin-plugins'
@@ -196,7 +197,7 @@ export class SkillManager {
   /** 扫描并发现所有可用技能 */
   async scanSkills(workspaceRoot?: string): Promise<SkillSummary[]> {
     const state = await this.loadState()
-    const disabledPlugins = new Set(await readDisabledPlugins())
+    const pluginDisabled = await createPluginDisabledResolver(workspaceRoot)
     const roots = this.getSkillRoots(workspaceRoot)
     const skills: SkillSummary[] = []
     const seenNames = new Set<string>()
@@ -220,7 +221,7 @@ export class SkillManager {
           const id = `${root.scope}:${name}`
           // 如果该技能所属插件被禁用，则该技能自动随插件联动停用
           let enabled = state.enabledState[id] ?? true
-          if (root.scope === 'plugin' && root.pluginId && disabledPlugins.has(root.pluginId)) {
+          if (root.scope === 'plugin' && root.pluginId && pluginDisabled(root.pluginId)) {
             enabled = false
           }
 
@@ -273,7 +274,7 @@ export class SkillManager {
     // 6. 注入官方内置插件中的技能规范
     for (const bp of BUILTIN_PLUGINS) {
       const pluginId = `builtin:${bp.id}`
-      const isPluginDisabled = disabledPlugins.has(pluginId)
+      const isPluginDisabled = pluginDisabled(pluginId)
       for (const s of bp.skills || []) {
         const dedupeKey = s.name.toLowerCase()
         if (seenNames.has(dedupeKey)) continue
@@ -295,6 +296,44 @@ export class SkillManager {
           scope: 'plugin',
           enabled,
           pluginName: bp.name,
+          pluginId,
+          isFileSkill: false,
+          disableModelInvocation: parsed.metadata.disableModelInvocation,
+          allowedTools: parsed.metadata.allowedTools,
+          metadata: parsed.metadata,
+        })
+      }
+    }
+
+    // 7. 第三方插件**内联**声明的技能规范
+    //
+    // 插件包目录里的 `skills/*/SKILL.md` 由上面的目录扫描收走（scope 为 plugin），
+    // 但单文件扩展没法带目录，只能在自己的描述符里内联写 `skills: [...]`——不接这一条，
+    // 「单文件扩展无法贡献技能」这个老缺陷就还在（设计文档 §3 缺陷 7）。
+    // 内联声明排在目录扫描之后：同名时以文件为准，文件是插件作者更明确的表达。
+    for (const plugin of getLoadedPlugins()) {
+      if (plugin.manifest.scope === 'builtin') continue
+      const pluginId = plugin.manifest.id
+      const isPluginDisabled = pluginDisabled(pluginId)
+      for (const skill of plugin.contributions.skills ?? []) {
+        const dedupeKey = skill.name.toLowerCase()
+        if (seenNames.has(dedupeKey)) continue
+        seenNames.add(dedupeKey)
+
+        const parsed = parseSkillMarkdown(skill.content, `(plugin):${pluginId}/${skill.name}`)
+        const id = `${pluginId}:${skill.name}`
+        let enabled = state.enabledState[id] ?? !isPluginDisabled
+        if (isPluginDisabled) enabled = false
+        skills.push({
+          id,
+          name: skill.name,
+          description: parsed.metadata.description || skill.description,
+          body: parsed.body,
+          path: `(plugin):${pluginId}/${skill.name}`,
+          baseDirectory: '',
+          scope: 'plugin',
+          enabled,
+          pluginName: plugin.manifest.name,
           pluginId,
           isFileSkill: false,
           disableModelInvocation: parsed.metadata.disableModelInvocation,

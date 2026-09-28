@@ -4,6 +4,7 @@
  */
 
 import type { AgentTool } from '../core/types'
+import type { PluginScope } from '../plugins/types'
 import { createBashTool } from './builtins/bash'
 import { createEditTool } from './builtins/edit'
 import { createListTool } from './builtins/list'
@@ -24,8 +25,31 @@ import { createManageTool } from './builtins/meta-tools'
 import { createRunBackgroundTool, createCheckTaskTool, createKillTaskTool } from './builtins/background'
 import { createFindSymbolTool } from './builtins/symbols'
 
+/** 工具从哪来。`pluginId` 缺省表示核心自身注册（目前没有这种工具，留作区分）。 */
+export interface ToolOrigin {
+  pluginId?: string
+  scope?: PluginScope
+}
+
+/** 一次注册把已在同一名字上的工具覆盖掉了。 */
+export interface ToolConflict {
+  name: string
+  /** 后注册者（胜出的一方）的插件 id */
+  pluginId?: string
+  /** 被覆盖者的插件 id；被覆盖者是核心内置工具时为 undefined */
+  shadowedPluginId?: string
+  /** 被覆盖的是核心内置工具——比插件之间互相覆盖更值得警告 */
+  shadowedBuiltin: boolean
+}
+
+interface RegisteredTool {
+  tool: AgentTool
+  origin: ToolOrigin
+}
+
 export class ToolRegistry {
-  private customTools = new Map<string, AgentTool>()
+  private customTools = new Map<string, RegisteredTool>()
+  private conflicts: ToolConflict[] = []
 
   /** 明确只读的内置工具。名字不在这里的一律按「会改动工作区」处理。 */
   private static readonly READ_ONLY = new Set([
@@ -67,31 +91,108 @@ export class ToolRegistry {
   ])
 
   /**
-   * 注册自定义/扩展工具
+   * 注册自定义/扩展工具。
+   *
+   * 同名覆盖的规则：**后注册者胜**，但覆盖必须被看见——返回值与
+   * {@link getConflicts} 都会带上冲突信息，加载器据此产生插件诊断，插件管理页
+   * 就能显示"谁遮蔽了谁"。遮蔽**核心内置工具**会额外 `console.warn`：这类冲突
+   * 最容易被误当成"内置工具坏了"。
+   *
+   * 这里只记录、不拒绝。是否允许遮蔽内置是 M2 的能力开关
+   * （`allowBuiltinShadow`，默认开）的事，加载层先把事实摆出来。
    */
-  register(tool: AgentTool): void {
-    this.customTools.set(tool.name, tool)
+  register(tool: AgentTool, origin: ToolOrigin = {}): ToolConflict | undefined {
+    const previous = this.customTools.get(tool.name)
+    const shadowsBuiltin = !previous && this.isCoreToolName(tool.name)
+    this.customTools.set(tool.name, { tool, origin })
+
+    let conflict: ToolConflict | undefined
+    if (previous) {
+      conflict = {
+        name: tool.name,
+        pluginId: origin.pluginId,
+        shadowedPluginId: previous.origin.pluginId,
+        shadowedBuiltin: false,
+      }
+    } else if (shadowsBuiltin) {
+      conflict = { name: tool.name, pluginId: origin.pluginId, shadowedBuiltin: true }
+    }
+
+    // 同名工具只保留最新那条冲突：重载后旧记录会先被 clearCustomTools 清掉，
+    // 这里再按名字去重，避免反复注册同一个名字累积出一串历史。
+    this.conflicts = this.conflicts.filter((item) => item.name !== tool.name)
+    if (conflict) {
+      this.conflicts.push(conflict)
+      const from = origin.pluginId ?? '(未知来源)'
+      const over = previous
+        ? `插件 ${previous.origin.pluginId ?? '(未知来源)'}`
+        : '核心内置工具'
+      console.warn(`[ToolRegistry] 工具名冲突：「${from}」的 "${tool.name}" 覆盖了${over}`)
+    }
+    return conflict
   }
 
-  /**
-   * 取消注册指定工具
-   */
+  /** 取消注册指定工具 */
   unregister(name: string): void {
     this.customTools.delete(name)
+    this.conflicts = this.conflicts.filter((item) => item.name !== name)
   }
 
-  /**
-   * 清空所有自定义/扩展工具
-   */
+  /** 清空所有自定义/扩展工具 */
   clearCustomTools(): void {
     this.customTools.clear()
+    this.conflicts = []
   }
 
   /**
-   * 获取当前所有已注册的自定义工具
+   * 清空指定插件注册的工具。
+   *
+   * 按插件重载（而不是整表清空）时需要它：`clearCustomTools` 会把内置插件的工具
+   * 一起清掉，而内置插件并不需要重新执行。
    */
+  unregisterPlugin(pluginId: string): void {
+    for (const [name, entry] of this.customTools) {
+      if (entry.origin.pluginId === pluginId) {
+        this.customTools.delete(name)
+        this.conflicts = this.conflicts.filter((item) => item.name !== name)
+      }
+    }
+  }
+
+  /** 获取当前所有已注册的自定义工具 */
   getCustomTools(): AgentTool[] {
-    return Array.from(this.customTools.values())
+    return Array.from(this.customTools.values()).map((entry) => entry.tool)
+  }
+
+  /** 某个工具是哪个插件注册的；核心内置工具（未注册进插件）返回 undefined。 */
+  getToolOrigin(name: string): ToolOrigin | undefined {
+    return this.customTools.get(name)?.origin
+  }
+
+  /** 某个插件注册的全部工具名，按注册顺序。 */
+  listByPlugin(pluginId: string): string[] {
+    const names: string[] = []
+    for (const [name, entry] of this.customTools) {
+      if (entry.origin.pluginId === pluginId) names.push(name)
+    }
+    return names
+  }
+
+  /** 当前存在的工具名冲突（重载会重新计算）。 */
+  getConflicts(): ToolConflict[] {
+    return [...this.conflicts]
+  }
+
+  /**
+   * 这个名字是否为**核心内置工具**。
+   *
+   * 判据是展示目录 `BUILTIN_TOOLS_CATALOG`——它收录的正是 `getToolsForWorkspace`
+   * 与 create 模式注入的那批名字，且只收录它们（插件工具一律不在其中）。
+   * `equivalence.test.ts` 有一条测试钉住"目录里的名字都真实注册"，所以这份判据
+   * 不会悄悄漂移。
+   */
+  private isCoreToolName(name: string): boolean {
+    return BUILTIN_TOOLS_CATALOG.some((item) => item.name === name)
   }
 
   /**
@@ -121,12 +222,14 @@ export class ToolRegistry {
       // 由 store 在建子智能体工具表时单独追加（见 startSubagentThread）。
     ]
 
-    const all = [...builtins]
-    for (const custom of this.customTools.values()) {
-      all.push(custom)
-    }
+    // 按名字合并，**不出现同名两份**：内置工具先占位，插件工具覆盖同名项。
+    // 之前这里是"内置一批 + 插件一批"直接拼接，一个名叫 read_file 的插件工具
+    // 会让工具表里出现两条同名记录——模型看到两条，审批按名字判断，都会乱。
+    const byName = new Map<string, AgentTool>()
+    for (const tool of builtins) byName.set(tool.name, tool)
+    for (const entry of this.customTools.values()) byName.set(entry.tool.name, entry.tool)
 
-    return all
+    return Array.from(byName.values())
   }
 
   /**
@@ -196,6 +299,7 @@ export const BUILTIN_TOOLS_CATALOG: BuiltinToolInfo[] = [
   { name: 'invoke_subagent', label: '委派子智能体', description: '委派专项任务给隔离运行的专用子智能体', isReadOnly: true },
   { name: 'check_subagent', label: '查询子智能体', description: '查询异步子智能体的运行状态与总结报告', isReadOnly: true },
   { name: 'send_subagent_message', label: '智能体通讯', description: '向子智能体发送消息以动态纠偏或唤醒续跑', isReadOnly: true },
+  { name: 'resume_subagent', label: '恢复子智能体工作', description: '恢复被中断的子智能体，让它从上次的状态与上下文继续推进', isReadOnly: true },
   { name: 'await_subagents', label: '等待子智能体', description: '挂起等待子智能体送回结论，替代反复轮询查询', isReadOnly: true },
   { name: 'notify_parent', label: '唤醒上级智能体', description: '子智能体把结论或待决策问题送回主智能体（仅子智能体可用）', isReadOnly: true },
   { name: 'write_file', label: '写入文件', description: '在工作区创建新文件或覆盖已有文件', isReadOnly: false },

@@ -111,6 +111,20 @@ try {
     }
     console.log('ok   事件日志里有「已加载扩展工具」')
 
+    // M1 起，加载器把插件状态与诊断也写进同一条事件日志（前缀 `[插件]`）。
+    // 这里检查的是"加载这件事没有静默地出问题"：error 级诊断意味着某个插件缺依赖、
+    // 缺必填配置或文件跑不起来，它会被跳过注册——模型那边看起来只是"少了个工具"，
+    // 很容易被当成模型没学会用。
+    const pluginLines = log
+      .split('\n')
+      .filter((line) => line.includes('[插件]'))
+      .map((line) => line.replace(/^.*?\[插件\]\s*/, ''))
+    const pluginErrors = pluginLines.filter((line) => line.includes('[error]'))
+    if (pluginErrors.length > 0) {
+      throw new Error(`插件加载出现错误级诊断：\n${pluginErrors.join('\n')}`)
+    }
+    console.log(`ok   插件诊断无 error（共 ${pluginLines.length} 行插件日志）`)
+
     if (!toolResult) {
       throw new Error('等了一分钟也没等到 web_search 的结果')
     }

@@ -9,6 +9,12 @@
  */
 
 import { createCheckGateTool, createDecideTool, createDesignDecisionTool } from './tools'
+import {
+  DEFAULT_DECISION_THRESHOLD,
+  DEFAULT_SAMPLE_TIMEOUT_MS,
+  DEFAULT_SAMPLES,
+  MAX_STATE_CHARS,
+} from './config'
 import type { PluginDescriptor } from '../types'
 
 export * from './types'
@@ -47,6 +53,55 @@ export const decisionPlugin: PluginDescriptor = {
   description:
     '类型化决策（choice / noul / score）、自由提示词决策设计器与验收门禁。支持 Jev 兼容端点、本地模型自评与确定性兜底三级引擎，概率均标注是否已校准。',
   tools: [createDecideTool, createDesignDecisionTool, createCheckGateTool],
+  // 配置项声明（设计文档 §5.2）。**全部可选**：这个插件在没有任何配置时也能跑
+  // （回退到本地自评与启发式兜底），所以没有一项是 required——把 apiKey 设成必填
+  // 会让没配密钥的用户整个插件消失，那是错的。
+  //
+  // 默认值直接引用 config.ts 的常量，避免同一个数字在两处各写一遍。
+  configSchema: {
+    properties: {
+      engine: {
+        type: 'string',
+        title: '决策引擎',
+        description: 'auto 按 jev → local → heuristic 依次回退；也可以钉死其中一个。',
+        default: 'auto',
+      },
+      baseUrl: {
+        type: 'string',
+        title: 'Jev 兼容端点',
+        description: '配了才启用 Jev 引擎；留空则只用本地模型自评。',
+        default: '',
+      },
+      apiKey: {
+        type: 'secret',
+        title: 'Jev API 密钥',
+        description: '存在 ~/.a-da/secrets/decision_api_key，不进 config.json。',
+      },
+      threshold: {
+        type: 'number',
+        title: '决策通过阈值',
+        description: '通用决策的默认阈值；门禁用的是更严的那个。',
+        default: DEFAULT_DECISION_THRESHOLD,
+      },
+      samples: {
+        type: 'number',
+        title: '本地自评采样次数',
+        description: `多次采样后取投票占比，默认 ${DEFAULT_SAMPLES}。`,
+        default: DEFAULT_SAMPLES,
+      },
+      sampleTimeoutMs: {
+        type: 'number',
+        title: '单次采样超时（毫秒）',
+        default: DEFAULT_SAMPLE_TIMEOUT_MS,
+      },
+      maxStateChars: {
+        type: 'number',
+        title: '判定材料字符上限',
+        description: '超过就截断，避免把整个仓库塞进请求。',
+        default: MAX_STATE_CHARS,
+      },
+    },
+  },
   skills: [
     {
       name: 'decision-discipline',

@@ -127,6 +127,42 @@ export function saveDisabledPlugins(disabled: string[]): Promise<void> {
 }
 
 /**
+ * 写入某个插件的配置项（合并进 `pluginConfig[pluginId]`）。
+ *
+ * 与 {@link readPluginConfig} 配对：M1 先把读写两侧都落定，插件配置表单（M3）与
+ * 脚本化写入都走这里——插件自己不该直接改 config.json，否则优先级（环境变量 >
+ * 文件 > 默认值）就被绕过了。
+ *
+ * 密钥类（`type: 'secret'`）刻意不在这里写：它按约定放密钥文件。
+ */
+export function savePluginConfig(
+  pluginId: string,
+  values: Record<string, unknown>,
+): Promise<void> {
+  return mutateSavedConfig((current) => {
+    const all = { ...(current.pluginConfig ?? {}) }
+    all[pluginId] = { ...(all[pluginId] ?? {}), ...values }
+    return { ...current, pluginConfig: all }
+  })
+}
+
+/**
+ * 读一次配置，返回一个「某插件在这个工作区是否停用」的判断函数。
+ *
+ * 扫描与加载会逐个插件问同一件事，而每次 {@link readPluginDisabled} 都要重读一遍
+ * 配置文件——插件多起来就是几十次无谓的文件读取（还夹着 JSON.parse）。
+ */
+export async function createPluginDisabledResolver(
+  workspace?: string,
+): Promise<(pluginId: string) => boolean> {
+  const cfg = await readSavedConfig()
+  const global = new Set(Array.isArray(cfg.disabledPlugins) ? cfg.disabledPlugins : [])
+  const wsList = workspace ? cfg.workspacePluginState?.[workspace]?.disabledPlugins : undefined
+  const perWorkspace = new Set(Array.isArray(wsList) ? wsList : [])
+  return (pluginId: string) => global.has(pluginId) || perWorkspace.has(pluginId)
+}
+
+/**
  * 某个插件在当前工作区是否被停用。
  *
  * 解析顺序刻意与"全局默认 + 工作区覆盖"一致：全局 `disabledPlugins` 是默认值，
@@ -137,12 +173,42 @@ export async function readPluginDisabled(
   pluginId: string,
   workspace?: string,
 ): Promise<boolean> {
-  const cfg = await readSavedConfig()
-  const global = Array.isArray(cfg.disabledPlugins) ? cfg.disabledPlugins : []
-  if (global.includes(pluginId)) return true
-  if (!workspace) return false
-  const perWorkspace = cfg.workspacePluginState?.[workspace]?.disabledPlugins
-  return Array.isArray(perWorkspace) ? perWorkspace.includes(pluginId) : false
+  const disabled = await createPluginDisabledResolver(workspace)
+  return disabled(pluginId)
+}
+
+/**
+ * 写入某个插件的启停状态。
+ *
+ * **作用域与读取保持一致**：给了 `workspace` 就只动这个工作区那份，没给就动全局
+ * 默认。刻意不做跨作用域删除——在工作区里"启用"只清掉工作区那条记录，全局那份
+ * 仍然生效，否则一次项目内的勾选会悄悄改掉全局设置，而用户在别处看不到这个改动。
+ *
+ * 谁用全局、谁用工作区是个产品决定（插件管理页目前写全局，见
+ * `ExtensionLoader.togglePlugin`）：M1 先把两侧的读写 API 都落定，界面上给用户
+ * 选"仅本工作区"是 M3 的事。
+ */
+export function setPluginDisabled(
+  pluginId: string,
+  disabled: boolean,
+  workspace?: string,
+): Promise<void> {
+  return mutateSavedConfig((current) => {
+    if (!workspace) {
+      const global = new Set(Array.isArray(current.disabledPlugins) ? current.disabledPlugins : [])
+      if (disabled) global.add(pluginId)
+      else global.delete(pluginId)
+      return { ...current, disabledPlugins: [...global] }
+    }
+
+    const all = { ...(current.workspacePluginState ?? {}) }
+    const existing = all[workspace]?.disabledPlugins
+    const list = new Set(Array.isArray(existing) ? existing : [])
+    if (disabled) list.add(pluginId)
+    else list.delete(pluginId)
+    all[workspace] = { ...all[workspace], disabledPlugins: [...list] }
+    return { ...current, workspacePluginState: all }
+  })
 }
 
 /**
