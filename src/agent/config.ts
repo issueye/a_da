@@ -8,7 +8,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { getAppHome } from './home'
 import { APPEARANCES, type Appearance } from '../theme'
@@ -254,6 +254,28 @@ export function saveDisabledPlugins(disabled: string[]): Promise<void> {
 }
 
 /**
+ * 写入插件的密钥文件 `~/.a-da/secrets/<pluginId>_<key>`。
+ *
+ * 与 {@link readPluginSecret} 配对。刻意不走 config.json：那个文件会被复制、被截图、
+ * 被提交，密钥不该出现在里面。空值视为"清除"。
+ */
+export async function savePluginSecret(
+  pluginId: string,
+  key: string,
+  value: string,
+): Promise<void> {
+  const dir = join(getAppHome(), 'secrets')
+  await mkdir(dir, { recursive: true })
+  const path = join(dir, `${pluginId}_${key}`)
+  if (value.trim() === '') {
+    await rm(path, { force: true })
+    return
+  }
+  await writeFile(path, `${value.trim()}
+`, 'utf8')
+}
+
+/**
  * 写入某个插件的配置项（合并进 `pluginConfig[pluginId]`）。
  *
  * 与 {@link readPluginConfig} 配对：M1 先把读写两侧都落定，插件配置表单（M3）与
@@ -270,6 +292,28 @@ export function savePluginConfig(
     const all = { ...(current.pluginConfig ?? {}) }
     all[pluginId] = { ...(all[pluginId] ?? {}), ...values }
     return { ...current, pluginConfig: all }
+  })
+}
+
+/**
+ * 写入插件能力开关（只写传进来的项，其余保持原样）。
+ *
+ * 刻意**只接受合法的布尔值与非负整数**：写进去一个 `"false"` 或 `-1` 会让读取侧的
+ * `coerceCapabilities` 把它记成 invalid，用户看到的是"我明明改了却没生效"。
+ * 这里在写入前就挡住，非法值由调用方（界面）负责提示。
+ */
+export function savePluginCapabilities(patch: Partial<PluginCapabilities>): Promise<void> {
+  return mutateSavedConfig((current) => {
+    const existing =
+      current.pluginCapabilities && typeof current.pluginCapabilities === 'object'
+        ? { ...(current.pluginCapabilities as Record<string, unknown>) }
+        : {}
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === undefined) continue
+      if (typeof value === 'boolean') existing[key] = value
+      else if (typeof value === 'number' && Number.isFinite(value) && value >= 0) existing[key] = value
+    }
+    return { ...current, pluginCapabilities: existing }
   })
 }
 

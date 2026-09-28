@@ -20,6 +20,21 @@ import { getAppHome } from '../agent/home'
 import { C, docTheme, editorTheme, FONT_MONO, M } from '../theme'
 import { Icon, IconButton } from './controls'
 import type { PluginStatus } from '../agent/plugins/types'
+import {
+  CAPABILITY_SWITCHES,
+  describePluginRestrictions,
+  parseHookTimeout,
+} from '../agent/plugins/capabilities-view'
+import {
+  readPluginCapabilities,
+  readPluginConfig,
+  readPluginSecret,
+  savePluginSecret,
+  savePluginCapabilities,
+  savePluginConfig,
+  DEFAULT_PLUGIN_CAPABILITIES,
+  type PluginCapabilities,
+} from '../agent/config'
 
 import type { IconName } from '../icons'
 import { join } from 'node:path'
@@ -38,7 +53,15 @@ const PLUGIN_STATUS_BADGE: Partial<Record<PluginStatus, { label: string; color: 
   conflict: { label: '工具名冲突', color: '#7c3aed', background: '#8b5cf618' },
 }
 
-type TabType = 'skills' | 'subagents' | 'prompts' | 'builtin-plugins' | 'workspace' | 'global' | 'builtins'
+type TabType =
+  | 'skills'
+  | 'subagents'
+  | 'prompts'
+  | 'builtin-plugins'
+  | 'workspace'
+  | 'global'
+  | 'builtins'
+  | 'capabilities'
 
 const TABS: { id: TabType; label: string; icon: IconName }[] = [
   { id: 'skills', label: '技能库 (Skills)', icon: 'zap' },
@@ -48,6 +71,7 @@ const TABS: { id: TabType; label: string; icon: IconName }[] = [
   { id: 'workspace', label: '工作区插件', icon: 'folder' },
   { id: 'global', label: '全局插件', icon: 'settings' },
   { id: 'builtins', label: '内置核心工具', icon: 'shield' },
+  { id: 'capabilities', label: '能力开关', icon: 'settings' },
 ]
 
 const TOOL_ICONS: Record<string, IconName> = {
@@ -100,6 +124,18 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
   // 技能库管理状态
   const [skills, setSkills] = useState<SkillSummary[]>([])
 
+  // 能力开关状态（M3-2）：全局默认值 + 手输的超时
+  const [capabilities, setCapabilities] = useState<PluginCapabilities>(DEFAULT_PLUGIN_CAPABILITIES)
+  const [capabilityOverrides, setCapabilityOverrides] = useState<Record<string, Partial<PluginCapabilities>>>({})
+  const [invalidCapabilityKeys, setInvalidCapabilityKeys] = useState<string[]>([])
+  const [hookTimeoutDraft, setHookTimeoutDraft] = useState('500')
+  const [capabilityNotice, setCapabilityNotice] = useState<string | null>(null)
+
+  // 插件配置表单（M3-3）：pluginId → 键值草稿；secret 单独存"是否已设置"
+  const [configDrafts, setConfigDrafts] = useState<Record<string, Record<string, string>>>({})
+  const [secretSet, setSecretSet] = useState<Record<string, boolean>>({})
+  const [configNotice, setConfigNotice] = useState<Record<string, string | null>>({})
+
   // 加载与刷新插件列表、提示词列表、子智能体与技能库
   const refreshList = async () => {
     setLoading(true)
@@ -114,6 +150,33 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
       setPrompts(promptItems)
       setSubagents(subagentItems)
       setSkills(skillItems)
+
+      const resolved = await readPluginCapabilities(store.project)
+      setCapabilities(resolved.capabilities)
+      setHookTimeoutDraft(String(resolved.capabilities.hookTimeoutMs))
+      setInvalidCapabilityKeys(resolved.invalid)
+
+      // 每个插件的配置草稿：文件里有值就用它，否则用 schema 里的默认值。
+      // secret 类型**不回显**——只记"是否已设置"，避免密钥出现在界面上
+      const drafts: Record<string, Record<string, string>> = {}
+      const secrets: Record<string, boolean> = {}
+      for (const item of pluginItems) {
+        const properties = item.plugin.contributions.configSchema?.properties
+        if (!properties) continue
+        const stored = await readPluginConfig<Record<string, unknown>>(item.id)
+        drafts[item.id] = {}
+        for (const [key, property] of Object.entries(properties)) {
+          if (property.type === 'secret') {
+            drafts[item.id]![key] = ''
+            secrets[`${item.id}:${key}`] = readPluginSecret(item.id, key).length > 0
+            continue
+          }
+          const value = stored[key] ?? property.default
+          drafts[item.id]![key] = value === undefined || value === null ? '' : String(value)
+        }
+      }
+      setConfigDrafts(drafts)
+      setSecretSet(secrets)
     } finally {
       setLoading(false)
     }
@@ -122,6 +185,77 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
   useEffect(() => {
     void refreshList()
   }, [store.project])
+
+  /** 切换一个能力开关并落盘：关掉之后用到它的插件会显示"受限"。 */
+  const handleToggleCapability = async (key: keyof Omit<PluginCapabilities, 'hookTimeoutMs'>) => {
+    const next = { ...capabilities, [key]: !capabilities[key] }
+    setCapabilities(next)
+    await savePluginCapabilities({ [key]: next[key] })
+    store.trace(
+      `[插件] 能力开关 ${key} 已${next[key] ? '开启' : '关闭'}${
+        next[key] ? '' : '——用到它的插件会显示受限原因'
+      }`
+    )
+  }
+
+  /** 保存超时值：非法输入当场说明，不写进配置（写进去只会变成"设了没生效"）。 */
+  const handleSaveHookTimeout = async () => {
+    const parsed = parseHookTimeout(hookTimeoutDraft)
+    if (!parsed.ok) {
+      setCapabilityNotice(parsed.reason)
+      return
+    }
+    setCapabilityNotice(null)
+    setCapabilities((current) => ({ ...current, hookTimeoutMs: parsed.value }))
+    await savePluginCapabilities({ hookTimeoutMs: parsed.value })
+    store.trace(`[插件] 钩子超时已设为 ${parsed.value === 0 ? '不限' : `${parsed.value}ms`}`)
+  }
+
+  /** 保存某个插件的配置项（非 secret 与 secret 分开写）。 */
+  const handleSavePluginConfig = async (item: PluginItem) => {
+    const properties = item.plugin.contributions.configSchema?.properties
+    if (!properties) return
+    const draft = configDrafts[item.id] ?? {}
+
+    const values: Record<string, unknown> = {}
+    const secrets: Record<string, string> = {}
+    for (const [key, property] of Object.entries(properties)) {
+      const raw = draft[key] ?? ''
+      if (property.type === 'secret') {
+        // 空着就是"不改"，避免每次保存都把密钥清掉
+        if (raw.trim()) secrets[key] = raw.trim()
+        continue
+      }
+      if (property.type === 'number') {
+        const parsed = Number(raw)
+        if (raw.trim() === '' || !Number.isFinite(parsed)) {
+          setConfigNotice((current) => ({
+            ...current,
+            [item.id]: `${property.title} 需要一个数字`,
+          }))
+          return
+        }
+        values[key] = parsed
+      } else if (property.type === 'boolean') {
+        values[key] = raw === 'true'
+      } else {
+        values[key] = raw
+      }
+    }
+
+    await savePluginConfig(item.id, values)
+    for (const [key, value] of Object.entries(secrets)) await savePluginSecret(item.id, key, value)
+    if (Object.keys(secrets).length > 0) {
+      setSecretSet((current) => {
+        const next = { ...current }
+        for (const key of Object.keys(secrets)) next[`${item.id}:${key}`] = true
+        return next
+      })
+    }
+    setConfigNotice((current) => ({ ...current, [item.id]: '已保存' }))
+    store.trace(`[插件] 已保存「${item.name}」的配置`)
+    await refreshList()
+  }
 
   // 切换子智能体启用状态
   const handleToggleSubagent = async (item: SubagentProfile) => {
@@ -1267,6 +1401,127 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                   )
                 })()}
               </div>
+            ) : tab === 'capabilities' ? (
+              /* 能力开关（M3-2）：默认全开，关掉后用到的插件会显示受限原因 */
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <text style={{ fontSize: 11.5, color: C.faint }}>
+                  插件能做什么由这里决定。默认全部开放，关掉后用到的插件会在卡片上显示受限原因——
+                  不允许静默失效。
+                </text>
+
+                {invalidCapabilityKeys.length > 0 ? (
+                  <text style={{ fontSize: 11, color: C.accent }}>
+                    {`配置文件里有 ${invalidCapabilityKeys.length} 处取值不可用，已按默认值处理：${invalidCapabilityKeys.join('、')}`}
+                  </text>
+                ) : null}
+
+                {CAPABILITY_SWITCHES.map((item) => {
+                  const enabled = capabilities[item.key]
+                  return (
+                    <div
+                      key={item.key}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'row',
+                        alignItems: 'flex-start',
+                        gap: 10,
+                        paddingTop: 8,
+                        paddingBottom: 8,
+                        borderBottomWidth: 1,
+                        borderColor: C.border,
+                      }}
+                    >
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flexGrow: 1 }}>
+                        <text style={{ fontSize: 12.5, color: C.text }}>{item.label}</text>
+                        <text style={{ fontSize: 11, color: C.faint }}>{item.description}</text>
+                        {!enabled ? (
+                          <text style={{ fontSize: 11, color: C.accent }}>{`关掉后：${item.effect}`}</text>
+                        ) : null}
+                      </div>
+                      <div
+                        testId={`capability-toggle-${item.key}`}
+                        role="button"
+                        aria-label={enabled ? `关闭 ${item.label}` : `开启 ${item.label}`}
+                        onClick={() => void handleToggleCapability(item.key)}
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          height: 22,
+                          paddingLeft: 8,
+                          paddingRight: 8,
+                          borderRadius: 11,
+                          cursor: 'pointer',
+                          flexShrink: 0,
+                          backgroundColor: enabled ? '#10b98126' : C.chip,
+                          borderWidth: 1,
+                          borderColor: enabled ? C.success : C.borderStrong,
+                        }}
+                      >
+                        <text
+                          style={{
+                            fontSize: 10,
+                            color: enabled ? C.success : C.faint,
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {enabled ? '已开启' : '已关闭'}
+                        </text>
+                      </div>
+                    </div>
+                  )
+                })}
+
+                {/* 钩子超时：0 = 不限。超时一律**放行**并记 trace，不变成隐式拒绝 */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <text style={{ fontSize: 12.5, color: C.text }}>单个钩子的超时（毫秒）</text>
+                  <text style={{ fontSize: 11, color: C.faint }}>
+                    超时后按"没有意见"放行并写进调试日志——超时不该变成隐式拒绝。0 表示不限。
+                  </text>
+                  <div style={{ display: 'flex', flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                    <input
+                      testId="capability-hook-timeout-input"
+                      value={hookTimeoutDraft}
+                      placeholder="500"
+                      theme={editorTheme()}
+                      style={{
+                        width: 110,
+                        height: 28,
+                        paddingLeft: 8,
+                        paddingRight: 8,
+                        borderRadius: 6,
+                        fontSize: 12,
+                        color: C.text,
+                        backgroundColor: C.card,
+                        borderWidth: 1,
+                        borderColor: C.borderStrong,
+                      }}
+                      onChange={(e) => setHookTimeoutDraft(e.value ?? '')}
+                    />
+                    <div
+                      testId="capability-hook-timeout-save"
+                      role="button"
+                      onClick={() => void handleSaveHookTimeout()}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        height: 28,
+                        paddingLeft: 10,
+                        paddingRight: 10,
+                        borderRadius: 6,
+                        cursor: 'pointer',
+                        backgroundColor: C.link,
+                      }}
+                    >
+                      <text style={{ fontSize: 11.5, color: '#fff' }}>保存</text>
+                    </div>
+                    {capabilityNotice ? (
+                      <text style={{ fontSize: 11, color: C.accent }}>{capabilityNotice}</text>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
             ) : tab === 'builtins' ? (
               /* 内置核心工具展示 */
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -1682,6 +1937,11 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                   currentPlugins.map((item) => {
                     // 只在"不是就绪"时挂徽标：正常插件卡上多一行"就绪"纯属噪音
                     const statusBadge = PLUGIN_STATUS_BADGE[item.status]
+                    // 这个插件被哪些能力开关限制（关掉开关后必须说出来）
+                    const restrictions = describePluginRestrictions(item.plugin, {
+                      ...capabilities,
+                      ...(capabilityOverrides[item.id] ?? {}),
+                    })
                     return (
                     <div
                       key={item.id}
@@ -2074,6 +2334,145 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                           }`}
                         </text>
                       ))}
+
+                      {/* 受限原因（M3-2）：关掉某个开关后，用到它的插件必须说清楚
+                          自己哪一步会被忽略，而不是静默失效 */}
+                      {restrictions.length > 0 ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          {restrictions.map((reason, index) => (
+                            <text key={`limit-${index}`} style={{ fontSize: 10.5, color: '#b45309' }}>
+                              {`受限：${reason}`}
+                            </text>
+                          ))}
+                        </div>
+                      ) : null}
+
+                      {/* 配置表单（M3-3）：由 configSchema 生成；secret 不回显，
+                          只显示"已设置/未设置"，留空表示不改 */}
+                      {item.plugin.contributions.configSchema ? (
+                        <div
+                          style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 6,
+                            paddingTop: 6,
+                            borderTopWidth: 1,
+                            borderColor: C.border,
+                          }}
+                        >
+                          <text style={{ fontSize: 11, color: C.faint }}>插件配置</text>
+                          {Object.entries(item.plugin.contributions.configSchema.properties).map(
+                            ([key, property]) => {
+                              const draft = (configDrafts[item.id] ?? {})[key] ?? ''
+                              const isSecret = property.type === 'secret'
+                              const alreadySet = secretSet[`${item.id}:${key}`]
+                              return (
+                                <div
+                                  key={key}
+                                  style={{
+                                    display: 'flex',
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    gap: 6,
+                                  }}
+                                >
+                                  <text
+                                    style={{ fontSize: 11, color: C.text, width: 130, whiteSpace: 'nowrap' }}
+                                  >
+                                    {property.title}
+                                  </text>
+                                  {property.type === 'boolean' ? (
+                                    <div
+                                      testId={`plugin-config-${item.id}-${key}`}
+                                      role="button"
+                                      onClick={() =>
+                                        setConfigDrafts((current) => ({
+                                          ...current,
+                                          [item.id]: {
+                                            ...(current[item.id] ?? {}),
+                                            [key]: draft === 'true' ? 'false' : 'true',
+                                          },
+                                        }))
+                                      }
+                                      style={{
+                                        display: 'flex',
+                                        flexDirection: 'row',
+                                        alignItems: 'center',
+                                        height: 22,
+                                        paddingLeft: 8,
+                                        paddingRight: 8,
+                                        borderRadius: 11,
+                                        cursor: 'pointer',
+                                        backgroundColor: draft === 'true' ? '#10b98126' : C.chip,
+                                        borderWidth: 1,
+                                        borderColor: draft === 'true' ? C.success : C.borderStrong,
+                                      }}
+                                    >
+                                      <text style={{ fontSize: 10, color: draft === 'true' ? C.success : C.faint }}>
+                                        {draft === 'true' ? '开' : '关'}
+                                      </text>
+                                    </div>
+                                  ) : (
+                                    <input
+                                      testId={`plugin-config-${item.id}-${key}`}
+                                      value={isSecret ? '' : draft}
+                                      placeholder={
+                                        isSecret
+                                          ? alreadySet
+                                            ? '已设置（留空表示不改）'
+                                            : '未设置'
+                                          : property.description || property.title
+                                      }
+                                      theme={editorTheme()}
+                                      style={{
+                                        flexGrow: 1,
+                                        height: 26,
+                                        paddingLeft: 8,
+                                        paddingRight: 8,
+                                        borderRadius: 6,
+                                        fontSize: 11.5,
+                                        color: C.text,
+                                        backgroundColor: C.card,
+                                        borderWidth: 1,
+                                        borderColor: C.borderStrong,
+                                      }}
+                                      onChange={(e) =>
+                                        setConfigDrafts((current) => ({
+                                          ...current,
+                                          [item.id]: { ...(current[item.id] ?? {}), [key]: e.value ?? '' },
+                                        }))
+                                      }
+                                    />
+                                  )}
+                                </div>
+                              )
+                            }
+                          )}
+                          <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <div
+                              testId={`plugin-config-save-${item.id}`}
+                              role="button"
+                              onClick={() => void handleSavePluginConfig(item)}
+                              style={{
+                                display: 'flex',
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                height: 24,
+                                paddingLeft: 10,
+                                paddingRight: 10,
+                                borderRadius: 6,
+                                cursor: 'pointer',
+                                backgroundColor: C.link,
+                              }}
+                            >
+                              <text style={{ fontSize: 11, color: '#fff' }}>保存配置</text>
+                            </div>
+                            {configNotice[item.id] ? (
+                              <text style={{ fontSize: 11, color: C.faint }}>{configNotice[item.id]}</text>
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                     )
                   })

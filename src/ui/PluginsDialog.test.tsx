@@ -158,6 +158,13 @@ describeNative('plugins dialog', () => {
     expect(screen()).toContain('缺少必填配置：token')
     expect(screen()).toContain('pluginConfig')
 
+    // 能力开关面板（M3-2）：七个开关 + 超时输入都要在，且默认显示"已开启"
+    await app.getByTestId('plugins-nav-capabilities').click()
+    await painted('能力开关')
+    await painted('第三方扩展可注册钩子')
+    await painted('单个钩子的超时')
+    expect(screen()).toContain('已开启')
+
     await app.getByTestId('plugins-nav-builtins').click()
     await painted('核心内置工具')
     const text = screen()
