@@ -6,6 +6,9 @@
 项目速览：Bun + TypeScript 的本地 AI 编码 Agent，UI 用 GPUIX（React 风格 GPU 渲染）。
 模型侧全部在 `src/agent/core`，`src/agent/store.ts` 是运行时与界面之间的状态层。
 
+**功能缺口清单在 `docs/unfinished-features.md`**（每条都带现状证据、影响、最小实现路径与状态）：
+接活之前先看一眼，别把"已知未做"当成 bug 去修；做完一项顺手把它划掉。
+
 ## 一、改动前必读：几条会咬人的约定
 
 ### 1. 子智能体的工具白名单与插件注册表是**脱钩**的（踩过这个坑）

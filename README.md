@@ -554,3 +554,7 @@ bun scripts/binary-check.ts     # 启动 dist/a-da-core.exe，等待首帧并截
 - 没有语法树感知的编辑，`edit_file` 是精确字符串替换
 - ~~命令超时后只杀 shell 本身~~：已改为整树清理（Windows `taskkill /T /F`，
   POSIX 进组信号，见 `src/agent/tools/proc.ts`）
+
+上面这些是**实现层面**的限制。**功能层面**的缺口（还没做的功能、以及刻意不做的）单独维护在
+[`docs/unfinished-features.md`](./docs/unfinished-features.md)：每一条都写了现状证据、影响与最小
+实现路径。目前排在最前面的是 `@` 提及——输入框的占位文本在承诺它，但功能还没实现。
