@@ -21,6 +21,12 @@ import type {
   ToolResultMessage,
 } from './types'
 
+/** 下发给模型的一份工具声明（OpenAI 兼容形态）。 */
+type ToolSpec = {
+  type: 'function'
+  function: { name: string; description: string; parameters: Record<string, unknown> }
+}
+
 function safeParseArgs(raw: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(raw)
@@ -205,20 +211,45 @@ export async function* runAgentLoop(
   options: AgentLoopOptions = {}
 ): AsyncGenerator<AgentEvent, AgentMessage[], void> {
   const maxSteps = options.maxSteps
-  const tools = options.tools ?? []
-  const toolMap = new Map<string, AgentTool>()
-  for (const tool of tools) {
-    toolMap.set(tool.name, tool)
+
+  /**
+   * 工具表**每轮算一次**（原先在循环外只算一次）。
+   *
+   * 这是 M2 的破坏性重构：插件要在 `beforeTurn` 里按轮次收窄工具集，工具表就必须
+   * 在循环内部可变。为了不给"没有插件干预"的常见情况引入开销，以**工具名集合**为
+   * 签名做缓存——集合没变就复用同一份 `toolSpecs` 引用，模型请求体因此逐轮完全相同
+   * （对提示缓存友好），行为与重构前逐事件等价（见 `loop-equivalence.test.ts`）。
+   *
+   * 同名工具视为等价：实例由 `ToolRegistry` 说了算，钩子只改"这一轮用哪些名字"。
+   */
+  /**
+   * 本轮**期望**的工具集（`applyTools` 的输入）。
+   *
+   * 目前只有 `options.tools` 一个来源；M2 起 `beforeTurn` 钩子的返回值会写到这里，
+   * 所以它是 `let`——每轮开头都由"当前期望值"重算一次工具表，而不是循环外算死。
+   */
+  let desiredTools: AgentTool[] = options.tools ?? []
+
+  let toolMap = new Map<string, AgentTool>()
+  let toolSpecs: ToolSpec[] = []
+  let toolSig = ''
+
+  const applyTools = (next: AgentTool[]): void => {
+    const sig = next.map((tool) => tool.name).join('\n')
+    if (sig === toolSig) return
+    toolSig = sig
+    toolMap = new Map(next.map((tool) => [tool.name, tool]))
+    toolSpecs = next.map((tool) => ({
+      type: 'function' as const,
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      },
+    }))
   }
 
-  const toolSpecs = tools.map((t) => ({
-    type: 'function' as const,
-    function: {
-      name: t.name,
-      description: t.description,
-      parameters: t.parameters,
-    },
-  }))
+  applyTools(desiredTools)
 
   const workingMessages = [...messages]
   let endReason: AgentEndReason = 'completed'
@@ -246,6 +277,9 @@ export async function* runAgentLoop(
       }
 
       yield { type: 'turn_start' }
+
+      // 本轮的工具表：期望值没变时复用同一份 specs，行为与重构前逐事件等价
+      applyTools(desiredTools)
 
       // 构造当前助手消息容器
       const assistantMessage: AssistantMessage = {
