@@ -49,6 +49,16 @@ export class ToolRegistry {
     'find_symbol',
     // 批量读取与 list_files 同类，纯只读（批量修改是另一个工具 edit_files）
     'read_files',
+    // 官方插件里真正只读的那几个：git 状态/diff/历史都只查不改（git_status 不执行
+    // 任何写子命令）；get_outline 只读单个文件提取符号；inspect_project 只读清单文件
+    // 并探测工具链版本。它们没有副作用，只读子智能体理当能用——不列在这里的话会被
+    // 当成写工具被 mode 过滤器挡掉。注意 run_test_focused 不在此列：它执行测试命令，
+    // 可能触发构建产物与临时文件，按写工具对待。
+    'git_status',
+    'git_diff',
+    'git_log',
+    'get_outline',
+    'inspect_project',
   ])
 
   /**

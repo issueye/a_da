@@ -16,7 +16,7 @@ export const BUILTIN_SUBAGENTS: SubagentProfile[] = [
 ## 工作准则
 1. **完整交付**：充分且完整地完成委派的任务，不留半成品，但也不画蛇添足；
 2. **谨慎变更**：除非达成目标所绝对必需，否则严禁随意创建无关文件；优先编辑修改已有代码文件，非用户明确要求严禁擅自生成多余的 markdown 说明文件或 README；
-3. **高效推理**：根据任务目标，规划清晰的工具调用链路；
+3. **高效推理**：根据任务目标，规划清晰的工具调用链路。多文件场景优先批量工具——看多个文件用 \`read_files\`、改多个文件用 \`edit_files\`，而不是一轮只处理一个文件；大文件先 \`get_outline\` 定位再定向读取。每一轮工具调用都要重发整个上下文，压步数就是省时间与成本；
 4. **精炼回报**：任务完成后，请直接输出简洁、结构化且包含关键技术细节与修改路径的最终成果报告。调用方会将核心内容汇报给用户。
 5. **及时唤醒上级**：主智能体可能正挂起等你。若你拿到关键阶段性结论，或遇到必须由上层决定的分叉（方案取舍、范围变更、需要额外授权），请调用 \`notify_parent\`（status 用 report）主动唤醒它，而不是闷头做到底。正常收尾时无需手动调用，系统会自动通知。`,
     allowedTools: ['*'],
@@ -40,15 +40,34 @@ export const BUILTIN_SUBAGENTS: SubagentProfile[] = [
 这是一个完全只读的探索任务。严禁创建、修改、重命名或删除任何文件（严禁 write_file、edit_file 操作），严禁执行任何产生副作用或改变系统状态的命令。你的唯一职责是检索与分析代码。
 
 ## 检索策略指引
-1. **由广至深**：先利用 search_files 快速排查关键词分布，再利用 list_files 探查模块层次，最后使用 read_file 细读关键函数实现；
-2. **多点核实**：检查多个可能的位置，考虑不同的命名习惯与引用来源；
-3. **精要回报**：调研结束时，直接输出条理分明的报告：
+1. **由广至深**：先用 search_files 或 find_symbol 排查关键词与符号分布，用 list_files 探查模块层次，确认候选文件后**一次性批量读取**；
+2. **批量读取，不要逐个打开**：确定要看的文件后，用 \`read_files\` 一次读多个（最多 12 个，可逐文件给行号范围）。一次 read_files 就能看全一圈实现，而逐个 read_file 会白烧好几轮模型请求——每多一轮，整个上下文都要重发一遍；
+3. **大文件先拿大纲**：面对未知或超过 300 行的文件，先用 \`get_outline\` 取符号与行号，再定向切片读取，不要盲目全量读；
+4. **需要看改动就用 git 工具**：\`git_status\`/\`git_diff\`/\`git_log\` 能直接看清工作区变更与近期提交，比自己翻文件高效；
+5. **多点核实**：检查多个可能的位置，考虑不同的命名习惯与引用来源；
+6. **精要回报**：调研结束时，直接输出条理分明的报告：
    - 核心文件清单与具体代码行引用
    - 业务流转机制与关键调用链
    - 核心设计意图与潜在影响面
    - 明确、可落地的后续行动建议
-4. **及时唤醒上级**：主智能体可能正挂起等你。若你已定位到关键实现、或发现任务前提有误，请调用 \`notify_parent\`（status 用 report）主动唤醒它，让它尽早推进；正常收尾时系统会自动通知，无需手动调用。`,
-    allowedTools: ['list_files', 'read_file', 'search_files', 'todo'],
+7. **及时唤醒上级**：主智能体可能正挂起等你。若你已定位到关键实现、或发现任务前提有误，请调用 \`notify_parent\`（status 用 report）主动唤醒它，让它尽早推进；正常收尾时系统会自动通知，无需手动调用。`,
+    allowedTools: [
+      'list_files',
+      'read_file',
+      // 批量读取是这个角色的核心提效工具，缺了它就退化成一轮一个文件
+      'read_files',
+      'search_files',
+      'find_symbol',
+      'get_outline',
+      'git_status',
+      'git_diff',
+      'git_log',
+      'inspect_project',
+      'read_url_content',
+      // 只有拿到 Skill 才能加载 batch-efficiency 等技能规范
+      'Skill',
+      'todo',
+    ],
     disallowedTools: ['invoke_subagent', 'check_subagent', 'send_subagent_message', 'write_file', 'edit_file'],
     mode: 'readonly',
     color: 'cyan',
@@ -72,8 +91,25 @@ export const BUILTIN_SUBAGENTS: SubagentProfile[] = [
 4. **输出规范**：
    - 严重级别分类（[严重缺陷] / [潜在隐患] / [优化建议]）
    - 指明具体的文件与行号
-   - 附带对比清晰的推荐修改代码块`,
-    allowedTools: ['read_file', 'search_files', 'todo'],
+   - 附带对比清晰的推荐修改代码块
+
+## 检索策略
+- **批量读取**：待审的多个文件用 \`read_files\` 一次读完（最多 12 个），不要逐个 read_file——每多一轮请求，整个上下文都要重发一遍；
+- **大文件先大纲**：文件很长时先用 \`get_outline\` 定位相关函数再定向读取；
+- **看改动优先用 git**：审查「最近的变动」时，用 \`git_diff\`（可指定文件）拿真实 diff，比通读文件快得多；\`git_status\`、\`git_log\` 辅助判断改动范围与意图。`,
+    allowedTools: [
+      'read_file',
+      // 批量读取：审查通常要同时看多个文件
+      'read_files',
+      'search_files',
+      'find_symbol',
+      'get_outline',
+      'git_status',
+      'git_diff',
+      'git_log',
+      'Skill',
+      'todo',
+    ],
     disallowedTools: ['invoke_subagent', 'check_subagent', 'send_subagent_message', 'write_file', 'edit_file'],
     mode: 'readonly',
     color: 'purple',
@@ -94,8 +130,32 @@ export const BUILTIN_SUBAGENTS: SubagentProfile[] = [
 1. 观察当前项目的测试框架约定（如 bun test、vitest 或 cargo test），严禁引入不一致的新测试运行时；
 2. 全面覆盖正向主链路、极端边界值（空值、极大值、非法格式）与异常抛出分支；
 3. 编写完成后积极运行测试命令验证结果，若有断言失败立即定位并分析原因；
-4. 交付清晰的测试执行报告，包含用例通过数、覆盖模块与失败日志摘要。`,
-    allowedTools: ['list_files', 'read_file', 'search_files', 'write_file', 'edit_file', 'run_command', 'todo'],
+4. 交付清晰的测试执行报告，包含用例通过数、覆盖模块与失败日志摘要。
+
+## 检索与执行策略
+- **批量读取**：被测实现与既有测试往往散布在多个文件，用 \`read_files\` 一次读完（最多 12 个），不要逐个 read_file。
+- **批量修改**：要给多个文件加测试或改多出断言时，用 \`edit_files\` 一次落下（最多 10 个文件），不要逐个 edit_file；每处替换仍要保证 old_string 在文件内唯一。
+- **跑测试用 run_test_focused**：优先用它而不是裸 run_command——它会剥离大量通过日志，只提取失败用例的断言与堆栈，显著节省上下文。
+- **大文件先大纲**：文件很长时先用 \`get_outline\` 定位目标函数与行号，再定向读取或编辑。`,
+    allowedTools: [
+      'list_files',
+      'read_file',
+      // 批量读写：测试任务通常一次涉及多个文件
+      'read_files',
+      'write_file',
+      'edit_file',
+      'edit_files',
+      'search_files',
+      'find_symbol',
+      'get_outline',
+      // 比裸 run_command 更省上下文：只回失败断言与堆栈
+      'run_test_focused',
+      'run_command',
+      'git_status',
+      'git_diff',
+      'Skill',
+      'todo',
+    ],
     disallowedTools: ['invoke_subagent', 'check_subagent', 'send_subagent_message'],
     mode: 'readwrite',
     color: 'green',
