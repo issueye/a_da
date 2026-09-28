@@ -17,6 +17,7 @@
 import type { CompactSelection } from '../compact/types'
 import type { ChatCompletionMessageParam } from '../ai/stream'
 import type { AgentMode } from '../types'
+import type { TodoStep } from '../tools/builtins/todo'
 import type {
   AgentEndReason,
   AgentMessage,
@@ -298,6 +299,57 @@ export interface AfterApprovalContext extends AgentHookContextBase {
 /** 事后钩子是纯观察：审批已经发生，插件没有可改变的东西。 */
 export type AfterApprovalResult = void
 
+// ─────────────────────────────── 任务清单（todo 工具）
+
+/**
+ * 任务清单即将被写入（模型刚给出新的清单）。
+ *
+ * 为什么这个点位值得成对：清单是**有状态延续**的东西——它留在工具卡片里、被界面读出来
+ * 显示成"当前进度"，也被模型在后续轮次里当作计划引用。插件在这里可以补上模型漏掉的
+ * 验收项、拆掉过碎的步骤，也可以直接拦下（例如"没有验收标准之前不许改计划"）。
+ *
+ * 清单本身不是授权、不参与审批，所以替换不需要额外开关；但拦下会改变模型接下来的行为，
+ * 理由会回给模型（作为工具结果，而不是"执行失败"那种无从纠正的错误）。
+ */
+export interface BeforeTodoUpdateContext extends AgentHookContextBase {
+  /** 这次要写入的清单（模型给的） */
+  todos: TodoStep[]
+  /** 当前生效的清单（上一次调用留下的），首次为空数组 */
+  previous: TodoStep[]
+}
+
+export interface BeforeTodoUpdateResult {
+  /** 替换要写入的清单 */
+  todos?: TodoStep[]
+  /** 拦下这次更新（理由回给模型） */
+  block?: boolean
+  blockReason?: string
+  /** 由钩子运行层填写 */
+  by?: string
+}
+
+/**
+ * 清单已写入（**回执**：实际生效的是哪一份，以及相对上次变了什么）。
+ *
+ * 与 `beforeTodoUpdate` 成对的理由和轮次钩子一样：插件得知道自己的修改是否真的生效，
+ * 也能在这里发现"模型在偷偷把已完成的项改回 pending"这类事。
+ */
+export interface AfterTodoUpdateContext extends AgentHookContextBase {
+  /** 实际生效的清单 */
+  todos: TodoStep[]
+  /** 本次调用之前的清单 */
+  previous: TodoStep[]
+  /** 有变化的项数（新增 / 删除 / 改了标题或状态） */
+  changed: number
+  /** 已经完成、但这次被改回未完成（或反之）的项标题 */
+  reopened: string[]
+}
+
+export interface AfterTodoUpdateResult {
+  /** 追加到工具结果里的旁注（模型看得到，例如"第 3 项没有验收标准"） */
+  appendNote?: string
+}
+
 // ─────────────────────────────── 第二优先点位（暴露但需谨慎，§6.6.2）
 
 /**
@@ -505,6 +557,8 @@ export interface AgentHooks {
   afterSkillLoad?: (ctx: AfterSkillLoadContext) => Promise<AfterSkillLoadResult>
   beforePersist?: (ctx: BeforePersistContext) => Promise<BeforePersistResult | undefined>
   afterCheckpoint?: (ctx: AfterCheckpointContext) => Promise<AfterCheckpointResult>
+  beforeTodoUpdate?: (ctx: BeforeTodoUpdateContext) => Promise<BeforeTodoUpdateResult | undefined>
+  afterTodoUpdate?: (ctx: AfterTodoUpdateContext) => Promise<AfterTodoUpdateResult | undefined>
 }
 
 /**
@@ -547,4 +601,5 @@ export const HOOK_PAIRS: ReadonlyArray<{ before: keyof AgentHooks; after: keyof 
   { before: 'beforeThreadDelete', after: 'afterThreadDelete' },
   { before: 'beforeLlmRequest', after: 'afterLlmResponse' },
   { before: 'beforeSkillLoad', after: 'afterSkillLoad' },
+  { before: 'beforeTodoUpdate', after: 'afterTodoUpdate' },
 ]

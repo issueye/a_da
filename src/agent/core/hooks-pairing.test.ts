@@ -49,6 +49,8 @@ const HOOK_KEYS: Record<keyof AgentHooks, true> = {
   afterSkillLoad: true,
   beforePersist: true,
   afterCheckpoint: true,
+  beforeTodoUpdate: true,
+  afterTodoUpdate: true,
 }
 
 let server: ReturnType<typeof Bun.serve>

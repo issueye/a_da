@@ -211,7 +211,8 @@ export class ToolRegistry {
       createCheckTaskTool(),
       createKillTaskTool(),
       createFindSymbolTool(workspace),
-      createTodoTool(),
+      // 传 workspace 与 threadId：任务清单的钩子要靠它们定位上一次是什么
+      createTodoTool(workspace, options?.parentThreadId),
       createSkillTool(undefined, workspace),
       createSubagentTool(workspace, options?.parentThreadId),
       createCheckSubagentTool(),

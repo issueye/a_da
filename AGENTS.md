@@ -144,9 +144,11 @@ git-tools / code-outline / project-inspector / test-runner 四个官方插件也
 `onEvent` 刻意分开。改这一层时守住六条：
 
 1. **成对**：凡是有状态延续的点位，`before*` 必须有配对的 `after*`，且 `after*` 在
-   `before*` 被短路时**照常执行**。新增点位要同步三处：`AgentHooks`、`HOOK_PAIRS`、
-   `hooks-pairing.test.ts` 的 `HOOK_KEYS`（后者会让 typecheck 直接红）。漏配是最难发现的
-   缺陷——插件会在"以为自己生效了"的状态下工作。
+   `before*` 被短路时**照常执行**。新增点位要同步四处：`AgentHooks`、`HOOK_PAIRS`
+   （或 `UNPAIRED_HOOKS`——纯判定/纯通知/O 单向点位进这里）、`hooks-pairing.test.ts` 的
+   `HOOK_KEYS`（后两者会让 typecheck 或测试直接红）、以及**点位真正被调用的地方**
+   （循环 / store / 工具 / 管理器）。漏配是最难发现的缺陷——插件会在"以为自己生效了"的
+   状态下工作；而"接了契约却没人调用"同样静默。
 2. **工具集只能收窄**（唯一不可配置项）：收窄在 `agent-loop.ts` 的 `narrowTools()` 里做，
    取的是**授权实例**而不是钩子递过来的实例（否则插件能顶着 `read_file` 的名字塞自己的
    实现）。工具名按集合语义处理，`applyTools` 的签名与 specs 都**从去重后的 map 生成**。

@@ -173,7 +173,12 @@ export default function (context) {
 ```
 
 点位成对：`beforeAgentStart`/`afterAgentEnd`、`beforeTurn`/`afterTurn`、
-`beforeToolCall`/`afterToolCall`。`after*` 即使 `before*` 被短路也会执行——不然被短路插件的
+`beforeToolCall`/`afterToolCall`、`beforeSubagentStart`/`afterSubagentEnd`、
+`beforeApproval`/`afterApproval`、`beforeCompaction`/`afterCompaction`、
+`beforeThreadCreate`/`afterThreadCreate`、`beforeThreadDelete`/`afterThreadDelete`、
+`beforeLlmRequest`/`afterLlmResponse`、`beforeSkillLoad`/`afterSkillLoad`、
+`beforeTodoUpdate`/`afterTodoUpdate`；另有四个刻意不成对的单向点位
+（`onThreadSwitch`、`beforeSystemPrompt`、`beforePersist`、`afterCheckpoint`）。`after*` 即使 `before*` 被短路也会执行——不然被短路插件的
 清理逻辑就没了。钩子抛错或超时都只当作"没有意见"并记进调试日志，**绝不打崩主循环**。
 
 能力开关写在 `config.json` 的 `pluginCapabilities`，**默认全开**：
@@ -212,6 +217,11 @@ export default function (context) {
 关掉后用到它的插件会在卡片上写出**受限原因**（哪一步会被忽略），不允许静默失效；
 声明了 `configSchema` 的插件会在卡片上生成**配置表单**，四种类型都支持，其中密钥类
 （`type: 'secret'`）**不回显**——只显示"已设置/未设置"，写入 `~/.a-da/secrets/<插件id>_<键名>`。
+
+任务清单（`todo` 工具）也能干预：`beforeTodoUpdate` 可以补上模型漏掉的验收项、拆掉过碎的步骤，
+或者直接拦下（例如"没有验收标准之前不许改计划"，理由会回给模型）；`afterTodoUpdate` 拿的是
+**回执**——实际生效的清单、变了多少项，以及"完成了又被改回未完成"的那些项（计划被悄悄回滚，
+是这类状态最容易出的问题），它还能往工具结果里追加一句旁注给模型看。
 
 插件还能参与会话生命周期：建议新会话的标题、在会话里保存自己的数据（`Thread.pluginData`，
 核心不解释、随会话持久化与删除）、在删除会话时拦下或要求先归档，以及订阅会话切换通知。

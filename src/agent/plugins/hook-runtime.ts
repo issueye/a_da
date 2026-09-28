@@ -29,6 +29,7 @@ import type {
   BeforeSkillLoadResult,
   BeforeSystemPromptResult,
   BeforeThreadCreateResult,
+  BeforeTodoUpdateResult,
   BeforeTurnResult,
   SubagentGateResult,
 } from '../core/events'
@@ -638,6 +639,53 @@ export function composePluginHooks(options: HookRuntimeOptions): AgentHooks {
       for (const contributor of checkpointContributors) {
         await runHook(contributor, 'afterCheckpoint', () => contributor.hooks.afterCheckpoint!(ctx))
       }
+    }
+  }
+
+  // ── 任务清单：可改写清单、可拦下；事后拿回执
+  const todoContributors = contributorsOf('beforeTodoUpdate')
+  if (todoContributors.length > 0) {
+    hooks.beforeTodoUpdate = async (ctx) => {
+      let todos = ctx.todos
+      let blocked: BeforeTodoUpdateResult | undefined
+      for (const contributor of todoContributors) {
+        const result = await runHook(contributor, 'beforeTodoUpdate', () =>
+          contributor.hooks.beforeTodoUpdate!({ ...ctx, todos })
+        )
+        if (!result) continue
+
+        if (Array.isArray(result.todos)) {
+          todos = result.todos
+          trace(`[插件] ${contributor.pluginId} 改写了任务清单（${todos.length} 项）`)
+        }
+        if (result.block) {
+          blocked = {
+            block: true,
+            blockReason: result.blockReason ?? `插件「${contributor.pluginId}」拦下了这次清单更新`,
+            by: contributor.pluginId,
+          }
+          // 拦下即定稿：清单不该被写入，也没必要继续问别人
+          break
+        }
+      }
+
+      if (blocked) return blocked
+      return todos === ctx.todos ? undefined : { todos }
+    }
+  }
+
+  const todoEndContributors = contributorsOf('afterTodoUpdate')
+  if (todoEndContributors.length > 0) {
+    hooks.afterTodoUpdate = async (ctx) => {
+      let appendNote: string | undefined
+      for (const contributor of todoEndContributors) {
+        const result = await runHook(contributor, 'afterTodoUpdate', () =>
+          contributor.hooks.afterTodoUpdate!(ctx)
+        )
+        if (!result?.appendNote) continue
+        appendNote = [appendNote, result.appendNote].filter(Boolean).join('\n')
+      }
+      return appendNote === undefined ? undefined : { appendNote }
     }
   }
 
