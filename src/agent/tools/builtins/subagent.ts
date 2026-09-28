@@ -230,7 +230,8 @@ export function createCheckSubagentTool(): AgentTool<CheckSubagentToolArgs> {
   return {
     name: 'check_subagent',
     label: '查询子智能体进度',
-    description: '查询先前以异步模式启动的子智能体的执行状态、当前进度或产出报告。',
+    description:
+      '单次查询某个子智能体的执行状态、当前进度或产出报告。注意：**不要用本工具轮询等待子智能体**——那会反复发起整轮模型请求。要等结果请用 await_subagents，由子智能体主动唤醒主智能体。本工具适合等待超时后确认状态，或查看某个子会话的既有结论。',
     executionMode: 'sequential',
     parameters: {
       type: 'object',
@@ -491,6 +492,228 @@ export function createResumeSubagentTool(): AgentTool<ResumeSubagentToolArgs> {
           output: `恢复子智能体失败：${(error as Error).message || String(error)}`,
           ok: false,
         }
+      }
+    },
+  }
+}
+
+export interface AwaitSubagentsToolArgs {
+  subagent_thread_ids?: string[]
+  timeout_ms?: number
+}
+
+/**
+ * 等待子智能体唤醒的阻塞式工具。
+ *
+ * 这是治「主智能体反复 check_subagent 轮询」的正解：轮询的每一圈都是一整轮模型请求，
+ * 要把整个上下文重发一遍，又慢又贵。这里让 `execute` 干脆不返回，一直挂在等待上，
+ * 直到某个子智能体把结论送回来——结论随后以**工具结果**的形式回到模型手里，和
+ * check_subagent 的输出形状一致，模型接着推理即可。
+ *
+ * `defaultParentThreadId` 由主循环在建工具表时注入，用来确定「我在替哪个会话等」。
+ */
+export function createAwaitSubagentsTool(workspace: string, defaultParentThreadId?: string): AgentTool<AwaitSubagentsToolArgs> {
+  return {
+    name: 'await_subagents',
+    label: '等待子智能体',
+    description: [
+      '挂在等待上，直到子智能体把结论送回或全部执行结束，然后一次性拿到它们的成果。',
+      '',
+      '**派发 async 子智能体后应当调用本工具等待，而不是反复调用 check_subagent 轮询**：',
+      '每一次轮询都是一整轮模型请求，会把整个上下文重发一遍，既慢又贵，而且大概率拿到的',
+      '还是「仍在运行中」。调用本工具后主对话会真正停下来等，子智能体一有结论就会唤醒它。',
+      '',
+      '返回条件（任一满足）：某个子智能体主动唤醒主智能体、所有被等待的子智能体都结束、',
+      '或等待超时。不指定 subagent_thread_ids 时，等待当前会话下全部正在运行的子智能体。',
+    ].join('\n'),
+    executionMode: 'sequential',
+    parameters: {
+      type: 'object',
+      properties: {
+        subagent_thread_ids: {
+          type: 'array',
+          description: '可选，要等待的子会话 ID 列表（由 invoke_subagent 返回）。不传则等待当前会话下所有正在运行的子智能体。',
+          items: { type: 'string' },
+        },
+        timeout_ms: {
+          type: 'number',
+          description: '可选，最长等待毫秒数。默认 1 小时，仅作防死锁兜底；正常情况下子智能体一结束就会自动唤醒。',
+        },
+      },
+    },
+    async execute(_callId, args, signal, onUpdate): Promise<AgentToolResult> {
+      let appStore: any = null
+      try {
+        const mod = await import('../../store')
+        appStore = mod.store
+      } catch {
+        // ignore
+      }
+
+      if (!appStore || typeof appStore.suspendForSubagents !== 'function') {
+        return { output: '未找到可用会话状态存储，无法等待子智能体。', ok: false }
+      }
+
+      const thread =
+        (defaultParentThreadId && appStore.threads?.find?.((t: any) => t.id === defaultParentThreadId)) ??
+        appStore.active
+      if (!thread) {
+        return { output: '未找到当前会话，无法等待子智能体。', ok: false }
+      }
+
+      // 先给出一帧进度，让卡片立刻显示「等待中」，而不是空白停着
+      onUpdate?.({ output: '正在等待子智能体送回结论...', ok: true })
+
+      const outcome = await appStore.suspendForSubagents(thread, {
+        threadIds: args?.subagent_thread_ids,
+        timeoutMs: args?.timeout_ms,
+        signal,
+      })
+
+      const wakes = (outcome.wakes ?? []) as Array<{
+        threadId: string
+        subagentId?: string
+        name?: string
+        summary: string
+        status: string
+      }>
+
+      if (outcome.aborted) {
+        return {
+          output: '等待子智能体已被中止（当前轮次已停止）。',
+          ok: false,
+          details: { status: 'aborted', received: wakes.length },
+        }
+      }
+
+      if (wakes.length === 0) {
+        return {
+          output: outcome.timedOut
+            ? '等待子智能体超时（默认 1 小时），期间没有收到任何结论。可以用 check_subagent 查询它们的状态，或重新调用本工具继续等待。'
+            : '当前没有正在运行的子智能体可等待。如果确实需要它们的结果，请先用 check_subagent 查询状态；若它们已在更早的轮次结束，其结论可能已被取走。',
+          ok: true,
+          details: { status: outcome.timedOut ? 'timeout' : 'nothing_to_wait', received: 0 },
+        }
+      }
+
+      const sections = wakes.map((wake) => {
+        const label = wake.name ?? wake.subagentId ?? wake.threadId
+        const tag = wake.status === 'error' ? '（异常结束）' : wake.status === 'report' ? '（中途回报）' : '（已完成）'
+        return `### ${label}${tag}\n子会话 ID: ${wake.threadId}\n\n${wake.summary}`
+      })
+
+      const timeoutNote = outcome.timedOut
+        ? '\n\n> 注意：本次等待已超时，以上是超时前收到的部分结论，可能仍有子任务在运行。'
+        : ''
+
+      return {
+        output: `已收到 ${wakes.length} 个子智能体的结论：\n\n${sections.join('\n\n---\n\n')}${timeoutNote}`,
+        ok: true,
+        details: {
+          status: outcome.timedOut ? 'timeout' : 'received',
+          received: wakes.length,
+          subagent_thread_ids: wakes.map((wake) => wake.threadId),
+        },
+      }
+    },
+  }
+}
+
+export interface NotifyParentToolArgs {
+  summary: string
+  message?: string
+  status?: 'report' | 'done' | 'error'
+}
+
+/**
+ * 子智能体唤醒父智能体的工具。
+ *
+ * 让子智能体在「需要上层拍板」或「拿到了阶段性结论」时主动把主智能体叫醒，而不是让
+ * 主智能体守在那边一轮轮轮询。这个工具被刻意排除在通用工具表之外（见 registry 与
+ * store 的子智能体工具表接线）：它对主智能体没有意义，只在子智能体身份下才存在，
+ * 因此也不受子智能体 profile 的白名单限制。
+ *
+ * `subagentThreadId` 由 store 在建子智能体工具表时注入——不能靠在运行时「找唯一正在
+ * 运行的子会话」来推断，并发跑多个子智能体时会认错人。
+ */
+export function createNotifyParentTool(subagentThreadId: string): AgentTool<NotifyParentToolArgs> {
+  return {
+    name: 'notify_parent',
+    label: '唤醒上级智能体',
+    description: [
+      '把结论或需要上层决策的问题送回主智能体，主动把它从等待中唤醒。',
+      '',
+      '什么时候用：',
+      '- 你拿到了足以让主智能体继续推进的阶段性结论或关键发现；',
+      '- 你遇到必须由上层决定的分叉（方案取舍、范围变更、需要额外授权）；',
+      '- 你发现任务前提有误，继续做下去没有意义。',
+      '',
+      'status 为 report 时主智能体会被立即唤醒（不必等其余子任务结束）；选 done/error 则',
+      '表示你自认为已经收尾，主智能体可在所有子任务都结束后一并收到。仅当你确实要收尾时',
+      '才用 done——正常收尾时系统会自动通知主智能体，无需你手动调用。',
+    ].join('\n'),
+    executionMode: 'sequential',
+    parameters: {
+      type: 'object',
+      properties: {
+        summary: {
+          type: 'string',
+          description: '要送回主智能体的内容：结论、发现或需要它决策的问题。应当精炼且信息密度高。',
+        },
+        message: {
+          type: 'string',
+          description: '可选，更详细的过程说明（摘要里放不下的补充信息）。',
+        },
+        status: {
+          type: 'string',
+          enum: ['report', 'done', 'error'],
+          description: 'report（默认，中途回报并立即唤醒主智能体）/ done（已收尾）/ error（执行失败）。',
+        },
+      },
+      required: ['summary'],
+    },
+    async execute(_callId, args): Promise<AgentToolResult> {
+      let appStore: any = null
+      try {
+        const mod = await import('../../store')
+        appStore = mod.store
+      } catch {
+        // ignore
+      }
+
+      if (!appStore || typeof appStore.wakeParent !== 'function') {
+        return { output: '未找到可用会话状态存储，无法唤醒父智能体。', ok: false }
+      }
+
+      const summary = String(args?.summary ?? '').trim()
+      if (!summary) {
+        return { output: '缺少 summary 参数：需要说明要送回主智能体的内容。', ok: false }
+      }
+      const combined = args?.message?.trim() ? `${summary}\n\n${args.message.trim()}` : summary
+
+      const self = appStore.threads?.find?.((t: any) => t.id === subagentThreadId)
+      if (!self) {
+        return {
+          output: '子智能体会话已不存在，无法唤醒父智能体。',
+          ok: false,
+        }
+      }
+
+      const result = appStore.wakeParent({
+        threadId: self.id,
+        subagentId: self.subagentId,
+        name: self.title,
+        summary: combined,
+        status: (args?.status as 'report' | 'done' | 'error') ?? 'report',
+        at: Date.now(),
+      })
+
+      return {
+        output: result.delivered
+          ? `已将内容送达主智能体。${result.reason}`
+          : `内容已记录，但${result.reason}你可以继续推进手上的工作。`,
+        ok: true,
+        details: { delivered: result.delivered, reason: result.reason },
       }
     },
   }

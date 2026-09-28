@@ -160,6 +160,14 @@ export function describeTool(name: string, args: Record<string, unknown>): strin
     case 'check_subagent': {
       return String(args.subagent_thread_id ?? args.subagent_id ?? '查询子智能体').replace(/\r?\n+/g, ' ').trim()
     }
+    case 'await_subagents': {
+      const ids = Array.isArray(args.subagent_thread_ids) ? (args.subagent_thread_ids as unknown[]) : []
+      if (ids.length === 0) return '全部运行中的子智能体'
+      const first = String(ids[0] ?? '').replace(/\r?\n+/g, ' ').trim()
+      return ids.length > 1 ? `${first} 等 ${ids.length} 个` : first
+    }
+    case 'notify_parent':
+      return String(args.summary ?? '').replace(/\r?\n+/g, ' ').trim().slice(0, 60)
     default:
       return ''
   }

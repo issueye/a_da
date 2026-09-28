@@ -164,6 +164,8 @@ function SessionRow({
   hasRunningChildren?: boolean
 }) {
   const [hovered, setHovered] = useState(false)
+  // 停在那儿等子智能体唤醒：仍在运行，但不在思考，徽章该和「运行中」区分开
+  const waiting = store.isThreadWaiting(thread.id)
 
   const remove = (e: any): void => {
     e?.stopPropagation?.()
@@ -294,8 +296,14 @@ function SessionRow({
               flexShrink: 0,
             }}
           >
-            <Icon name="dot" size={6} color={C.success} />
-            <text style={{ fontSize: 10, lineHeight: 14, color: C.faint }}>运行中</text>
+            <Icon
+              name={waiting ? 'clock' : 'dot'}
+              size={waiting ? 8 : 6}
+              color={waiting ? C.link : C.success}
+            />
+            <text style={{ fontSize: 10, lineHeight: 14, color: C.faint }}>
+              {waiting ? '等待子智能体' : '运行中'}
+            </text>
           </div>
         ) : hasChildren && !isExpanded && hasRunningChildren ? (
           <div
@@ -361,6 +369,8 @@ function SubagentSessionRow({
 }) {
   const [hovered, setHovered] = useState(false)
   const agentColor = getSubagentColor(thread.subagentId)
+  // 子智能体自己也可能在等它的下级（正常不会，但状态标识保持一致更不容易误解）
+  const waiting = store.isThreadWaiting(thread.id)
 
   const remove = (e: any): void => {
     e?.stopPropagation?.()
@@ -446,8 +456,14 @@ function SubagentSessionRow({
               flexShrink: 0,
             }}
           >
-            <Icon name="dot" size={5} color={C.success} />
-            <text style={{ fontSize: 9.5, lineHeight: 13, color: C.link }}>运行中</text>
+            <Icon
+              name={waiting ? 'clock' : 'dot'}
+              size={waiting ? 7 : 5}
+              color={waiting ? C.link : C.success}
+            />
+            <text style={{ fontSize: 9.5, lineHeight: 13, color: C.link }}>
+              {waiting ? '等待中' : '运行中'}
+            </text>
           </div>
         ) : null}
       </div>

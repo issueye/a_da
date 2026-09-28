@@ -367,7 +367,7 @@ export function formatProfilesPrompt(profiles: SubagentProfile[]): string {
     '- **只取结论，不取大文本 (Keep the conclusion)**：子智能体完成后会自动给出精炼的高信息密度总结，主智能体负责将核心结论转述给用户，避免大量过程文本挤占上下文。',
     '- **默认同步等待 (Default: wait)**：不传 async 时，调用 invoke_subagent 会阻塞直到子智能体产出完整报告，适合「必须先拿到结论才能决定下一步」的任务。',
     '- **多个独立子任务一律并发 (Batch independent work)**：当存在两个及以上互不依赖的调研/验证子任务时，**不要**逐个串行等待——在**同一轮**里并发发起多个 `invoke_subagent` 调用（每个都传 `async: true`），它们会各自在独立页签中同时执行，主对话立即继续。',
-    '- **异步后主动回收结论 (Collect async results)**：以 async 发起的子任务不会自动把报告塞回主对话；请在需要时用 check_subagent（带上返回的 subagent_thread_id）查询进度或取回最终报告，再据此继续推理。',
+    '- **并发之后调 await_subagents 等待，绝不轮询 (Wait, do not poll)**：派发 async 子智能体后，调用 **await_subagents** 挂起等待。子智能体一有结论就会唤醒你，由它把成果送回。**严禁**用多次 check_subagent 反复查询来等结果：每一次轮询都是一整轮模型请求、要把整个上下文重发一遍，又慢又贵，而且大概率仍只得到「正在运行中」。check_subagent 只用于「等待超时后确认状态」这类明确的单次查询。',
     '- **双向交互与纠偏 (Steering)**：对正在运行或已完成的子智能体，可通过 send_subagent_message 发送补充要求或实时转向纠偏。',
   ].join('\n')
 }

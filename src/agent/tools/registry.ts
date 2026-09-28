@@ -16,6 +16,7 @@ import {
   createCheckSubagentTool,
   createSendSubagentMessageTool,
   createResumeSubagentTool,
+  createAwaitSubagentsTool,
 } from './builtins/subagent'
 import { createSkillTool, createManageSkillTool } from '../skills'
 import { createReadUrlTool } from './builtins/read-url'
@@ -37,6 +38,9 @@ export class ToolRegistry {
     'check_subagent',
     'send_subagent_message',
     'resume_subagent',
+    // 等待子智能体只是挂在内存里等唤醒，不碰工作区
+    'await_subagents',
+    'notify_parent',
     'Skill',
     'skill',
     // 查看后台任务只读状态与输出，不产生任何写副作用
@@ -97,6 +101,9 @@ export class ToolRegistry {
       createCheckSubagentTool(),
       createSendSubagentMessageTool(),
       createResumeSubagentTool(),
+      createAwaitSubagentsTool(workspace, options?.parentThreadId),
+      // 注意：notify_parent 刻意不在这里。它只对「作为子智能体运行」的身份有意义，
+      // 由 store 在建子智能体工具表时单独追加（见 startSubagentThread）。
     ]
 
     const all = [...builtins]
@@ -166,6 +173,8 @@ export const BUILTIN_TOOLS_METADATA: BuiltinToolInfo[] = [
   { name: 'invoke_subagent', label: '委派子智能体', description: '委派专项任务给隔离运行的专用子智能体', isReadOnly: true },
   { name: 'check_subagent', label: '查询子智能体', description: '查询异步子智能体的运行状态与总结报告', isReadOnly: true },
   { name: 'send_subagent_message', label: '智能体通讯', description: '向子智能体发送消息以动态纠偏或唤醒续跑', isReadOnly: true },
+  { name: 'await_subagents', label: '等待子智能体', description: '挂起等待子智能体送回结论，替代反复轮询查询', isReadOnly: true },
+  { name: 'notify_parent', label: '唤醒上级智能体', description: '子智能体把结论或待决策问题送回主智能体（仅子智能体可用）', isReadOnly: true },
   { name: 'write_file', label: '写入文件', description: '在工作区创建新文件或覆盖已有文件', isReadOnly: false },
   { name: 'edit_file', label: '编辑文件', description: '通过精准替换文本修改已有代码文件', isReadOnly: false },
   { name: 'run_command', label: '执行命令', description: '在项目工作区根目录下执行终端命令', isReadOnly: false },

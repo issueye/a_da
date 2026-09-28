@@ -17,7 +17,8 @@ export const BUILTIN_SUBAGENTS: SubagentProfile[] = [
 1. **完整交付**：充分且完整地完成委派的任务，不留半成品，但也不画蛇添足；
 2. **谨慎变更**：除非达成目标所绝对必需，否则严禁随意创建无关文件；优先编辑修改已有代码文件，非用户明确要求严禁擅自生成多余的 markdown 说明文件或 README；
 3. **高效推理**：根据任务目标，规划清晰的工具调用链路；
-4. **精炼回报**：任务完成后，请直接输出简洁、结构化且包含关键技术细节与修改路径的最终成果报告。调用方会将核心内容汇报给用户。`,
+4. **精炼回报**：任务完成后，请直接输出简洁、结构化且包含关键技术细节与修改路径的最终成果报告。调用方会将核心内容汇报给用户。
+5. **及时唤醒上级**：主智能体可能正挂起等你。若你拿到关键阶段性结论，或遇到必须由上层决定的分叉（方案取舍、范围变更、需要额外授权），请调用 \`notify_parent\`（status 用 report）主动唤醒它，而不是闷头做到底。正常收尾时无需手动调用，系统会自动通知。`,
     allowedTools: ['*'],
     disallowedTools: ['invoke_subagent', 'check_subagent', 'send_subagent_message'],
     mode: 'readwrite',
@@ -45,7 +46,8 @@ export const BUILTIN_SUBAGENTS: SubagentProfile[] = [
    - 核心文件清单与具体代码行引用
    - 业务流转机制与关键调用链
    - 核心设计意图与潜在影响面
-   - 明确、可落地的后续行动建议`,
+   - 明确、可落地的后续行动建议
+4. **及时唤醒上级**：主智能体可能正挂起等你。若你已定位到关键实现、或发现任务前提有误，请调用 \`notify_parent\`（status 用 report）主动唤醒它，让它尽早推进；正常收尾时系统会自动通知，无需手动调用。`,
     allowedTools: ['list_files', 'read_file', 'search_files', 'todo'],
     disallowedTools: ['invoke_subagent', 'check_subagent', 'send_subagent_message', 'write_file', 'edit_file'],
     mode: 'readonly',

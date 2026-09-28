@@ -40,6 +40,7 @@ import {
   defaultToolRegistry,
   defaultExtensionLoader,
 } from './tools'
+import { createNotifyParentTool } from './tools/builtins/subagent'
 import { defaultSessionManager } from './session/manager'
 import type { SessionSummary } from './session/types'
 import { defaultCheckpointManager } from './checkpoint'
@@ -100,6 +101,27 @@ const MAX_LOG = 120
 
 /** 拒绝后回给模型的说明：说清楚行为，而不是只报一个 no。 */
 const DENIED_REASON = '用户拒绝了这次调用。不要重试同样的调用，先说明原因或换一种做法。'
+
+/** 等待子智能体唤醒的默认超时：仅作防死锁兜底，正常由子智能体完成时自动唤醒。 */
+export const DEFAULT_SUBAGENT_WAIT_MS = 60 * 60 * 1000
+
+/**
+ * 子智能体送回给父智能体的一份唤醒负载。
+ *
+ * `report` 是子智能体中途主动唤醒（要求主智能体做下一步决策）；`done`/`error` 是它
+ * 执行结束时的自动唤醒，保证主智能体不会因为子智能体忘了调用唤醒工具而永久挂起。
+ */
+export interface SubagentWake {
+  /** 子会话 id */
+  threadId: string
+  subagentId?: string
+  /** 子智能体的展示名 */
+  name?: string
+  /** 带回主智能体的内容 */
+  summary: string
+  status: 'report' | 'done' | 'error'
+  at: number
+}
 
 /** 会做检查点的内置写工具：执行前把目标文件快照一份，才有「撤销此次改动」。 */
 const CHECKPOINT_TOOLS = new Set(['write_file', 'edit_file', 'edit_files'])
@@ -274,6 +296,35 @@ export class AgentStore {
   private runningThreadIds = new Set<string>()
   /** 运行中子智能体的转向指令队列 */
   private steeringQueues = new Map<string, AgentMessage[]>()
+  /**
+   * 每个父会话至多一个「等待子智能体唤醒」的挂起。
+   *
+   * 主智能体派发完后台子智能体后不再轮询 check_subagent，而是调 await_subagents
+   * 阻塞在这里，等子智能体把结论送回来。挂起是短暂的、只存在于内存：进程退出即
+   * 消失，会话本身不受影响。
+   */
+  private subagentWaits = new Map<
+    string,
+    {
+      watching: Set<string>
+      wakes: SubagentWake[]
+      /** 已被显式唤醒（子智能体主动要求主智能体做下一步），可立即结束等待 */
+      woken: boolean
+      startedAt: number
+      timer: ReturnType<typeof setTimeout> | null
+      resolve: (outcome: { wakes: SubagentWake[]; timedOut: boolean; aborted: boolean }) => void
+    }
+  >()
+  /**
+   * 主智能体还没开始等就到达的唤醒负载。
+   *
+   * 并发派发时子智能体可能远早于主智能体调 await_subagents 就完成了（离线或极快的
+   * 任务尤其如此）。这些结论先缓冲，等挂起发生的那一刻立即交付——丢掉它们会让主
+   * 智能体误以为子任务还在跑。
+   */
+  private bufferedWakes = new Map<string, SubagentWake[]>()
+  /** 主智能体真正停在那儿等子智能体（仍在 runningThreadIds 里，但不在思考） */
+  private waitingThreadIds = new Set<string>()
   /** 最近一次工作区扩展加载：跑一轮之前要等它，工具表才完整。 */
   private extensionsReady: Promise<void> = Promise.resolve()
   private notifyTimer: ReturnType<typeof setTimeout> | null = null
@@ -575,6 +626,270 @@ export class AgentStore {
   }
 
   /**
+   * 指定会话是否正停在那儿等子智能体唤醒。
+   *
+   * 这种会话仍在 runningThreadIds 里（那一轮还没结束），但它不在思考、也没在执行
+   * 工具，所以界面该把它和「运行中」区分开。
+   */
+  isThreadWaiting(threadId: string): boolean {
+    return this.waitingThreadIds.has(threadId)
+  }
+
+  // ------------------------------------------------ 子智能体等待 / 唤醒
+
+  /**
+   * 阻塞等待子智能体把结论送回来。
+   *
+   * 主智能体派发完后台子智能体后调这个（await_subagents 工具），而不是反复
+   * check_subagent 轮询——每一次轮询都是一整轮模型请求，要把整个上下文重发一遍。
+   *
+   * 返回条件（任一满足即返回）：
+   * - 某个子智能体**显式唤醒**：它主动要求主智能体做下一步，不必等其余子任务
+   * - 看护的子智能体**全部终止**：全部有了结论，等下去没有意义
+   * - 超时：仅防死锁兜底
+   * - 主轮次被中止
+   *
+   * 没有任何可等待对象时立即返回，而不是干等到超时——那只会白等一小时。
+   */
+  suspendForSubagents(
+    thread: Thread,
+    options: { threadIds?: string[]; timeoutMs?: number; signal?: AbortSignal } = {}
+  ): Promise<{ wakes: SubagentWake[]; timedOut: boolean; aborted: boolean }> {
+    // 同一父会话同时只允许一个挂起。工具本身是阻塞的，走到这里说明有并发调用，
+    // 直接返回而不是覆盖掉前一个等待（覆盖会让前一个 promise 永远悬着）。
+    if (this.subagentWaits.has(thread.id)) {
+      return Promise.resolve({ wakes: [], timedOut: false, aborted: false })
+    }
+
+    // 看护范围：显式指定的子会话；未指定则取该父会话当前所有运行中的子会话。
+    // 一个都没在跑时退而取它的全部子会话——这样「事后才想起来等」也能从缓冲或子会话
+    // 的最终报告里把结论捞回来，而不是空手返回。
+    const watching = new Set<string>()
+    if (options.threadIds && options.threadIds.length > 0) {
+      for (const id of options.threadIds) {
+        const target = this.threads.find((t) => t.id === id)
+        if (target) watching.add(target.id)
+      }
+    } else {
+      const children = this.threads.filter((t) => t.parentId === thread.id)
+      for (const candidate of children) {
+        if (this.isThreadRunning(candidate.id)) watching.add(candidate.id)
+      }
+      if (watching.size === 0) {
+        for (const candidate of children) watching.add(candidate.id)
+      }
+    }
+
+    // 先收取缓冲里属于看护范围的结论：子智能体可能早就跑完了。
+    const buffered = this.takeBufferedWakes(thread.id, watching)
+    if (buffered.length > 0) {
+      return Promise.resolve({ wakes: buffered, timedOut: false, aborted: false })
+    }
+
+    // 没有可等的对象：立刻返回，别干等。
+    if (watching.size === 0) {
+      return Promise.resolve({ wakes: [], timedOut: false, aborted: false })
+    }
+
+    // 看护对象全都已经不在运行了：没有可等的事件，但结论可能已经躺在各自的会话里
+    // （自动唤醒只对有等待的父会话投递，其余情况落在缓冲或被丢掉）。这里直接就地
+    // 采集，免得调用方为早已完成的子任务再等一次超时。
+    const stillRunning = [...watching].filter((id) => this.isThreadRunning(id))
+    if (stillRunning.length === 0) {
+      const harvested = this.harvestFinishedWakes(watching)
+      return Promise.resolve({ wakes: harvested, timedOut: false, aborted: false })
+    }
+
+    return new Promise((resolve) => {
+      const finish = (outcome: { wakes: SubagentWake[]; timedOut: boolean; aborted: boolean }) => {
+        const entry = this.subagentWaits.get(thread.id)
+        if (!entry) return
+        if (entry.timer) clearTimeout(entry.timer)
+        this.subagentWaits.delete(thread.id)
+        this.waitingThreadIds.delete(thread.id)
+        this.notify()
+        resolve(outcome)
+      }
+
+      const entry = {
+        watching,
+        wakes: [] as SubagentWake[],
+        woken: false,
+        startedAt: Date.now(),
+        timer: null as ReturnType<typeof setTimeout> | null,
+        resolve: finish,
+      }
+      this.subagentWaits.set(thread.id, entry)
+      this.waitingThreadIds.add(thread.id)
+      this.notify()
+
+      const timeoutMs = options.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : DEFAULT_SUBAGENT_WAIT_MS
+      entry.timer = setTimeout(() => {
+        const current = this.subagentWaits.get(thread.id)
+        if (!current || current !== entry) return
+        finish({ wakes: entry.wakes.splice(0, entry.wakes.length), timedOut: true, aborted: false })
+      }, timeoutMs)
+
+      if (options.signal) {
+        if (options.signal.aborted) {
+          finish({ wakes: entry.wakes.splice(0, entry.wakes.length), timedOut: false, aborted: true })
+        } else {
+          options.signal.addEventListener(
+            'abort',
+            () => {
+              const current = this.subagentWaits.get(thread.id)
+              if (!current || current !== entry) return
+              finish({ wakes: entry.wakes.splice(0, entry.wakes.length), timedOut: false, aborted: true })
+            },
+            { once: true }
+          )
+        }
+      }
+    })
+  }
+
+  /** 从缓冲里取出属于指定看护范围的唤醒负载，取走即删除。 */
+  private takeBufferedWakes(parentThreadId: string, watching: Set<string>): SubagentWake[] {
+    const buffered = this.bufferedWakes.get(parentThreadId)
+    if (!buffered || buffered.length === 0) return []
+    const taken: SubagentWake[] = []
+    const remaining: SubagentWake[] = []
+    for (const wake of buffered) {
+      if (watching.has(wake.threadId)) taken.push(wake)
+      else remaining.push(wake)
+    }
+    if (remaining.length > 0) this.bufferedWakes.set(parentThreadId, remaining)
+    else this.bufferedWakes.delete(parentThreadId)
+    return taken
+  }
+
+  /**
+   * 就地采集已结束子智能体的结论。
+   *
+   * 用于「挂起时看护对象都已经结束了」：没有事件可等，但结论未必还在缓冲里（自动唤醒
+   * 只投递给有等待的父会话，未等待时那份会进缓冲，但也有可能已被消费）。所以先翻缓冲，
+   * 再退一步从子会话的最终报告里取，尽量不让调用方空手而归。
+   */
+  private harvestFinishedWakes(watching: Set<string>): SubagentWake[] {
+    const found = new Map<string, SubagentWake>()
+    for (const wake of this.bufferedWakes.values()) {
+      for (const item of wake) {
+        if (watching.has(item.threadId) && !found.has(item.threadId)) found.set(item.threadId, item)
+      }
+    }
+    for (const id of watching) {
+      if (found.has(id)) continue
+      const thread = this.threads.find((t) => t.id === id)
+      if (!thread) continue
+      // 取最后一条助手消息作为它的报告（和 check_subagent 的取法一致）
+      const reports = thread.items.filter(
+        (it): it is Extract<Item, { kind: 'assistant' }> => it.kind === 'assistant'
+      )
+      const summary = reports.length > 0 ? reports[reports.length - 1]!.text : ''
+      if (!summary) continue
+      found.set(id, {
+        threadId: id,
+        subagentId: thread.subagentId,
+        name: thread.title,
+        summary,
+        status: 'done',
+        at: Date.now(),
+      })
+    }
+    return [...found.values()]
+  }
+
+  /**
+   * 子智能体唤醒父智能体。这是「无需轮询」的另一半：结论由子智能体推回来。
+   *
+   * 父智能体没在等待时**不启动新轮次**——它可能已经正常收尾，凭空开一轮会烧掉
+   * 用户没预期的 token，还会和「任务完成」通知打架。这种情况只缓冲结论 + 留一条
+   * 可见记录，并如实告知子智能体。
+   */
+  wakeParent(wake: SubagentWake): { delivered: boolean; reason: string } {
+    const child = this.threads.find((t) => t.id === wake.threadId)
+    const parentId = child?.parentId
+    if (!parentId) {
+      return { delivered: false, reason: '该子会话没有父会话，唤醒请求无处投递。' }
+    }
+    if (!this.threads.some((t) => t.id === parentId)) {
+      return { delivered: false, reason: '父会话已不存在，唤醒请求已丢弃。' }
+    }
+
+    const entry = this.subagentWaits.get(parentId)
+    if (!entry || !this.waitingThreadIds.has(parentId)) {
+      // 父智能体没在等：只回报，不启动新轮次。
+      const list = this.bufferedWakes.get(parentId) ?? []
+      list.push(wake)
+      // 缓冲上限：同父会话最多留 50 条，防止极端情况下无限堆积
+      if (list.length > 50) list.splice(0, list.length - 50)
+      this.bufferedWakes.set(parentId, list)
+
+      const parentThread = this.threads.find((t) => t.id === parentId)
+      if (parentThread) {
+        this.push({
+          kind: 'info',
+          text: `子智能体「${wake.name ?? wake.subagentId ?? wake.threadId}」回报：${wake.summary.slice(0, 80)}`,
+        })
+        const preview = wake.summary.length > 200 ? `${wake.summary.slice(0, 200)}...` : wake.summary
+        parentThread.items.push({
+          kind: 'notice',
+          level: wake.status === 'error' ? 'error' : 'info',
+          id: nextId('item'),
+          at: Date.now(),
+          text: `子智能体「${wake.name ?? wake.subagentId ?? wake.threadId}」回报内容已记录（父智能体当前未在等待，不会因此启动新一轮）。\n${preview}`,
+        })
+        this.notify()
+      }
+      return {
+        delivered: false,
+        reason: '父智能体当前未挂起等待；内容已记录在父会话中，待其下次等待时交付。',
+      }
+    }
+
+    // 父智能体正在等：收下这份结论。
+    entry.wakes.push(wake)
+
+    // 显式唤醒（子智能体主动要求主智能体做下一步）立即结束等待；完成类唤醒则等
+    // 看护对象全部终止——这样主智能体拿到的是一整批结论，而不是零散半份。
+    if (wake.status === 'report') {
+      entry.woken = true
+    }
+    const allSettled = [...entry.watching].every((id) => !this.isThreadRunning(id))
+    if (entry.woken || allSettled) {
+      entry.resolve({ wakes: entry.wakes.splice(0, entry.wakes.length), timedOut: false, aborted: false })
+      return { delivered: true, reason: '已唤醒父智能体。' }
+    }
+
+    // 还有子任务在跑：结论先攒着，等全部结束一并交付。进度推给父会话卡片。
+    this.notify()
+    return {
+      delivered: true,
+      reason: `内容已送达父智能体的等待队列（尚有 ${[...entry.watching].filter((id) => this.isThreadRunning(id)).length} 个子任务在运行，将一并交付）。`,
+    }
+  }
+
+  /** 清理某个会话的等待与缓冲（会话被删除/移除时调用），避免留下悬挂的 promise。 */
+  private discardSubagentWaits(threadId: string): void {
+    const entry = this.subagentWaits.get(threadId)
+    if (entry) {
+      // 交给它自己的 finish 收尾：finish 会清 timer、删表项并 resolve。
+      // 这里不能先删表项——finish 开头就是查表，查不到就直接 return，promise 会永远悬着。
+      entry.resolve({ wakes: entry.wakes.splice(0, entry.wakes.length), timedOut: false, aborted: true })
+    }
+    this.waitingThreadIds.delete(threadId)
+    this.bufferedWakes.delete(threadId)
+    // 子会话被删掉时，父会话缓冲里它的那份也一并清掉
+    for (const [parentId, list] of this.bufferedWakes) {
+      const remaining = list.filter((wake) => wake.threadId !== threadId)
+      if (remaining.length !== list.length) {
+        if (remaining.length > 0) this.bufferedWakes.set(parentId, remaining)
+        else this.bufferedWakes.delete(parentId)
+      }
+    }
+  }
+
+  /**
    * 兼容旧版单一运行会话接口：若当前激活会话在运行则返回其 id，否则返回任一正在运行的会话 id。
    */
   get runningThreadId(): string | null {
@@ -863,6 +1178,11 @@ export class AgentStore {
     for (const cid of childIds) {
       this.queues.delete(cid)
     }
+    // 等待与缓冲是内存态：会话没了就一并清掉，别留下永远不 resolve 的 promise
+    this.discardSubagentWaits(id)
+    for (const cid of childIds) {
+      this.discardSubagentWaits(cid)
+    }
 
     this.push({ kind: 'info', text: `已删除会话「${thread.title}」` })
     void defaultSessionManager.deleteSession(id, thread.workspace).catch(() => {})
@@ -913,6 +1233,8 @@ export class AgentStore {
     this.openTabIds = this.openTabIds.filter((candidate) => !doomedIds.has(candidate))
     for (const t of doomed) {
       this.queues.delete(t.id)
+      // 内存里的等待/缓冲同样要清，否则被移除会话的等待会一直悬着
+      this.discardSubagentWaits(t.id)
     }
 
     // 若移除的是当前激活的工作区，将焦点转移到剩余工作区
@@ -1439,6 +1761,8 @@ export class AgentStore {
     disallowedSet.add('check_subagent')
     disallowedSet.add('send_subagent_message')
     disallowedSet.add('resume_subagent')
+    // 子智能体不该再去等别的子智能体（防套娃）
+    disallowedSet.add('await_subagents')
 
     const subagentTools = allTools.filter((t) => {
       if (disallowedSet.has(t.name)) return false
@@ -1446,6 +1770,10 @@ export class AgentStore {
       if (profile.mode === 'readonly' && defaultToolRegistry.isWriteTool(t.name)) return false
       return true
     })
+    // notify_parent 是「作为子智能体运行」自带的能力，不是普通工具：它绕过了 profile
+    // 白名单（否则只读 profile 就唤醒不了父智能体，整个委派机制就断了），也刻意不在
+    // 通用工具表里（主智能体调它没有意义）。会话 id 在这里注入，避免运行时认错人。
+    subagentTools.push(createNotifyParentTool(subagentThread.id))
 
     const steeringQueue: AgentMessage[] = []
     this.steeringQueues.set(subagentThread.id, steeringQueue)
@@ -1457,6 +1785,9 @@ export class AgentStore {
       let toolCallsCount = 0
       let lastAssistantMessage: any = null
       let latestSummary = ''
+      /** 结束时交给父智能体的结论（唤醒兜底用），见 finally。 */
+      let wakeStatus: 'done' | 'error' = 'done'
+      let wakeSummary = ''
 
       let assistant: Extract<Item, { kind: 'assistant' }> | null = null
       let reasoning: Extract<Item, { kind: 'thinking' }> | null = null
@@ -1484,6 +1815,18 @@ export class AgentStore {
         this.steeringQueues.delete(subagentThread.id)
         this.runningThreadIds.delete(subagentThread.id)
         this.aborts.delete(subagentThread.id)
+        // 离线兜底路径从 return 出去，走不到 finally：唤醒兜底得在这里补上，
+        // 否则主智能体等着一个永远不会到来的唤醒。
+        if (options.onStepUpdate && parentThread && parentThread.id !== subagentThread.id) {
+          this.wakeParent({
+            threadId: subagentThread.id,
+            subagentId: profile.id,
+            name: profile.name,
+            summary: fallbackText,
+            status: 'done',
+            at: Date.now(),
+          })
+        }
         this.notify()
         return {
           ok: true,
@@ -1709,6 +2052,9 @@ export class AgentStore {
           parentThread.items.push(noticeItem)
           this.notify()
         }
+        // 唤醒兜底在 finally 里发（那时它已移出 runningThreadIds，全部终止才算得准）
+        wakeStatus = isOk ? 'done' : 'error'
+        wakeSummary = `${resultText}${outputFile ? `\n\n完整报告：${outputFile}` : ''}`
 
         return {
           ok: isOk,
@@ -1723,6 +2069,8 @@ export class AgentStore {
         const durationMs = Date.now() - startTime
         const errorMessage = (error as Error).message || String(error)
         this.fail(subagentThread, `执行异常: ${errorMessage}`)
+        wakeStatus = 'error'
+        wakeSummary = `执行异常中断：${errorMessage}`
         return {
           ok: false,
           summary: `子智能体 [${profile.name}] 执行失败: ${errorMessage}`,
@@ -1736,6 +2084,18 @@ export class AgentStore {
         this.steeringQueues.delete(subagentThread.id)
         this.runningThreadIds.delete(subagentThread.id)
         this.aborts.delete(subagentThread.id)
+        // 自动唤醒：子智能体跑完（含失败）时把结论推给正等待的父智能体。没有它的话，
+        // 子智能体一旦忘了调 notify_parent，主智能体就会一直挂到超时。
+        if (options.onStepUpdate && parentThread && parentThread.id !== subagentThread.id && wakeSummary) {
+          this.wakeParent({
+            threadId: subagentThread.id,
+            subagentId: profile.id,
+            name: profile.name,
+            summary: wakeSummary,
+            status: wakeStatus,
+            at: Date.now(),
+          })
+        }
         this.notify()
       }
     })()
@@ -1896,6 +2256,8 @@ export class AgentStore {
     disallowedSet.add('check_subagent')
     disallowedSet.add('send_subagent_message')
     disallowedSet.add('resume_subagent')
+    // 子智能体不该再去等别的子智能体（防套娃）
+    disallowedSet.add('await_subagents')
 
     const subagentTools = allTools.filter((t) => {
       if (disallowedSet.has(t.name)) return false
@@ -1903,6 +2265,8 @@ export class AgentStore {
       if (profile.mode === 'readonly' && defaultToolRegistry.isWriteTool(t.name)) return false
       return true
     })
+    // notify_parent 绕过 profile 白名单，理由见 startSubagentThread
+    subagentTools.push(createNotifyParentTool(subagentThread.id))
 
     const steeringQueue: AgentMessage[] = []
     this.steeringQueues.set(subagentThread.id, steeringQueue)
@@ -1914,6 +2278,9 @@ export class AgentStore {
       let toolCallsCount = 0
       let lastAssistantMessage: any = null
       let latestSummary = ''
+      /** 结束时交给父智能体的结论（唤醒兜底用），见 finally。 */
+      let wakeStatus: 'done' | 'error' = 'done'
+      let wakeSummary = ''
 
       let assistant: Extract<Item, { kind: 'assistant' }> | null = null
       let reasoning: Extract<Item, { kind: 'thinking' }> | null = null
@@ -1942,6 +2309,17 @@ export class AgentStore {
         this.steeringQueues.delete(subagentThread.id)
         this.runningThreadIds.delete(subagentThread.id)
         this.aborts.delete(subagentThread.id)
+        // 离线兜底从 return 出去走不到 finally：唤醒兜底在这里补上
+        if (options.onStepUpdate && parentThread && parentThread.id !== subagentThread.id) {
+          this.wakeParent({
+            threadId: subagentThread.id,
+            subagentId: profile.id,
+            name: profile.name,
+            summary: fallbackText,
+            status: 'done',
+            at: Date.now(),
+          })
+        }
         return {
           ok: true,
           summary: fallbackText,
@@ -2166,6 +2544,8 @@ export class AgentStore {
           parentThread.items.push(noticeItem)
           this.notify()
         }
+        wakeStatus = isOk ? 'done' : 'error'
+        wakeSummary = `${resultText}${outputFile ? `\n\n完整报告：${outputFile}` : ''}`
 
         return {
           ok: isOk,
@@ -2180,6 +2560,8 @@ export class AgentStore {
         const durationMs = Date.now() - startTime
         const errorMessage = (error as Error).message || String(error)
         this.fail(subagentThread, `执行异常: ${errorMessage}`)
+        wakeStatus = 'error'
+        wakeSummary = `执行异常中断：${errorMessage}`
         return {
           ok: false,
           summary: `子智能体 [${profile.name}] 执行失败: ${errorMessage}`,
@@ -2193,6 +2575,17 @@ export class AgentStore {
         this.steeringQueues.delete(subagentThread.id)
         this.runningThreadIds.delete(subagentThread.id)
         this.aborts.delete(subagentThread.id)
+        // 自动唤醒：恢复执行结束（含失败）时把结论推给正等待的父智能体
+        if (options.onStepUpdate && parentThread && parentThread.id !== subagentThread.id && wakeSummary) {
+          this.wakeParent({
+            threadId: subagentThread.id,
+            subagentId: profile.id,
+            name: profile.name,
+            summary: wakeSummary,
+            status: wakeStatus,
+            at: Date.now(),
+          })
+        }
         this.notify()
       }
     })()

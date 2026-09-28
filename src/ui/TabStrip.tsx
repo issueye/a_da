@@ -29,6 +29,7 @@ function Tab({
   thread,
   selected,
   running,
+  waiting,
   closable,
   onSelect,
   onClose,
@@ -36,6 +37,8 @@ function Tab({
   thread: Thread
   selected: boolean
   running: boolean
+  /** 正在等子智能体唤醒：仍在运行，但不在推进 */
+  waiting: boolean
   /** 关不掉的不显示 ×：只有当前项目最后一个标签会这样，见 store.closeTab。 */
   closable: boolean
   onSelect: () => void
@@ -118,7 +121,12 @@ function Tab({
             flexShrink: 0,
           }}
         >
-          <Icon name="dot" size={7} color={C.success} />
+          {/* 等待子智能体唤醒时不点亮绿灯：它没在推进，只是一个时钟在走 */}
+          {waiting ? (
+            <Icon name="clock" size={9} color={C.link} />
+          ) : (
+            <Icon name="dot" size={7} color={C.success} />
+          )}
         </div>
       ) : closable ? (
         <div
@@ -196,6 +204,7 @@ export function TabStrip({ store }: { store: AgentStore }) {
             thread={thread}
             selected={thread.id === store.activeId}
             running={store.isThreadRunning(thread.id)}
+            waiting={store.isThreadWaiting(thread.id)}
             closable={tabs.length > 1}
             onSelect={() => store.selectThread(thread.id)}
             onClose={() => store.closeTab(thread.id)}
