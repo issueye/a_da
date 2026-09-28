@@ -135,8 +135,37 @@ git-tools / code-outline / project-inspector / test-runner 四个官方插件也
 - 事件监听器按插件分组持有（`eventListeners: Map<pluginId, Set>`）。`autoLoadExtensions`
   开始时必须 `clearListeners()`：只清工具不清监听器，`onEvent` 订阅会一轮一轮累积。
 
-## 二、开发与验证
+### 12. 钩子层：成对是硬约束，工具集只能收窄
 
+钩子（`core/events.ts` 的 `AgentHooks`）是插件**能改变控制流**的通道，与只读的
+`onEvent` 刻意分开。改这一层时守住六条：
+
+1. **成对**：凡是有状态延续的点位，`before*` 必须有配对的 `after*`，且 `after*` 在
+   `before*` 被短路时**照常执行**。新增点位要同步三处：`AgentHooks`、`HOOK_PAIRS`、
+   `hooks-pairing.test.ts` 的 `HOOK_KEYS`（后者会让 typecheck 直接红）。漏配是最难发现的
+   缺陷——插件会在"以为自己生效了"的状态下工作。
+2. **工具集只能收窄**（唯一不可配置项）：收窄在 `agent-loop.ts` 的 `narrowTools()` 里做，
+   取的是**授权实例**而不是钩子递过来的实例（否则插件能顶着 `read_file` 的名字塞自己的
+   实现）。工具名按集合语义处理，`applyTools` 的签名与 specs 都**从去重后的 map 生成**。
+3. **循环里的钩子调用必须走 `callHook()`**：它兜住异常并记 trace。别直接 `await hooks.x()`——
+   插件打崩主循环是这里最容易犯且最难查的错。
+4. **无钩子时整体跳过**：每个调用点都写成 `if (hooks?.beforeTurn)`；点位缺席时**不进
+   try/catch、不计时**。这是"没有插件时零额外开销"的实现方式，`turn-hooks.test.ts` 有一条
+   空对象与不传钩子的对照用例。
+5. **能力开关关掉后必须可见**：`hook-runtime.ts` 负责过滤，并在丢弃某个插件的意图时写一条
+   trace 说明原因。新增开关时，要在 `PluginCapabilities` + `coerceCapabilities` + 读取
+   路径三处都接上——用户改了配置却看不出任何变化，等于没实现。
+6. **子循环也要挂钩子**：主循环、`store` 的两条子智能体循环、`subagents/runner.ts` 的同步
+   兜底，四处都要带上 `hooks` / `hookContext`（`kind` + `subagentId`）。漏一处的表现是
+   "插件在某些场景下莫名其妙不生效"。
+
+**两处与设计文档的刻意偏差**（写在这里免得后来者当成 bug 去"修"）：
+- `afterToolCall` 在工具被拦截时**不触发**：什么都没执行，没有需要清理的状态；让 shell 钩子
+  对一个从未运行的命令触发反而是错的。
+- `afterTurn.replaceText` / `afterAgentEnd.appendNote` **没有进契约**：本项目没有"改写已渲染
+  回复"与"向已结束会话追加旁注"的交付通道，声明它们只会变成静默失效。要加就得先有通道。
+
+## 二、开发与验证
 ```bash
 bun install
 bun run link        # 把本地 ../gpuix 的包连进来，克隆后必做一次

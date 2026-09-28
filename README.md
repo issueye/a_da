@@ -153,6 +153,56 @@ bun scripts/extension-check.ts   # 加载 → 进工具表 → 真调一次 → 
 插件的加载状态与诊断（缺依赖、缺配置、版本不匹配、工具名冲突）会写进调试面板的事件日志，
 前缀 `[插件]`；`defaultExtensionLoader.getDiagnostics()` 也能按插件取到同一份数据。
 
+#### 插件钩子（可干预的决策点）
+
+除注册工具，插件还能注册**钩子**——返回值会改变控制流，所以和只读的 `onEvent` 分开：
+
+```ts
+export default function (context) {
+  context.registerHooks({
+    beforeTurn: async (ctx) => ({
+      // 只能**收窄**：新工具名会被核心剔除（工具集是审批闸门的依据）
+      tools: ctx.tools.filter((tool) => tool.name !== 'run_command'),
+    }),
+    afterTurn: async (ctx) => {
+      // ctx.effectiveToolNames 是**实际下发**的工具名（回执）：据此校验自己的决策是否生效
+      ctx.trace?.(`本轮实际工具：${ctx.effectiveToolNames.join('、')}`)
+    },
+  })
+}
+```
+
+点位成对：`beforeAgentStart`/`afterAgentEnd`、`beforeTurn`/`afterTurn`、
+`beforeToolCall`/`afterToolCall`。`after*` 即使 `before*` 被短路也会执行——不然被短路插件的
+清理逻辑就没了。钩子抛错或超时都只当作"没有意见"并记进调试日志，**绝不打崩主循环**。
+
+能力开关写在 `config.json` 的 `pluginCapabilities`，**默认全开**：
+
+```jsonc
+{
+  "pluginCapabilities": {
+    "allowSystemPromptReplace": true,  // beforeAgentStart 可整体替换系统提示词
+    "allowTextRewrite": true,          // afterAgentEnd 可追加收尾文本
+    "allowPlanModeHooks": true,        // 钩子在 plan 模式也生效
+    "allowThirdPartyHooks": true,      // 第三方扩展可注册钩子
+    "allowBuiltinShadow": true,        // 插件工具可覆盖同名内置工具
+    "hookTimeoutMs": 500,              // 0 = 不限；超时放行并记 trace
+    "overrides": { "workspace:web-search.ts": { "allowPlanModeHooks": false } }
+  }
+}
+```
+
+关掉某个开关时，用到它的插件会显示"受限"并在日志里说明原因——不允许静默失效。
+`tools` 只能收窄这一条**不在此表中**，因为它不可配置（能扩张就等于绕过审批）。
+
+内置的 **decision** 插件是这套机制的第一个消费者：配 `pluginConfig.decision.toolRouting`
+（空格或逗号分隔的工具名）可以按轮次收窄工具表，并在下一轮用它自己的回执核对是否真的生效。
+留空表示不干预。
+
+两处**刻意没有做**的能力，写在这里免得被当成 bug：`afterTurn` 不能改写本轮回答
+（文本早已流式送达界面，没有替换通道）、`afterAgentEnd` 不能向已结束的会话追加旁注
+（同样没有交付通道）。只声明不兑现的字段等于静默失效，所以契约里干脆没有它们。
+
 ### 内置辅助插件
 
 除用户扩展外，系统自带一组官方插件包（`src/agent/tools/builtin-plugins/`），每个都按

@@ -16,6 +16,7 @@ import { join } from 'node:path'
 import {
   configPath,
   readLlmConfig,
+  readPluginCapabilities,
   readSavedConfig,
   readSavedAppearance,
   testConnection,
@@ -24,6 +25,8 @@ import {
   type ProviderConfig,
 } from './config'
 import { runAgentLoop } from './core/agent-loop'
+import type { AgentHooks } from './core/events'
+import { composePluginHooks } from './plugins/hook-runtime'
 import type {
   AgentMessage,
   AssistantMessage,
@@ -966,6 +969,38 @@ export class AgentStore {
     this.notify()
   }
 
+  /**
+   * 合成这一轮要用的插件钩子（设计文档 §6.4）。
+   *
+   * **每轮重新合成**：插件可能中途被启停、能力开关可能被改，这些都不该要求重启应用。
+   * 合成本身很便宜（过滤 + 闭包），贵的是插件自己的钩子体，那部分由运行层计时与超时。
+   *
+   * 出错时返回空对象——所有点位整体跳过，等于"没有插件"，且会说一声。插件是可选
+   * 增强，绝不该让主循环起不来。
+   */
+  private async composeHooks(options: {
+    workspace: string
+    kind: 'main' | 'subagent'
+    threadId?: string
+    subagentId?: string
+    mode?: AgentMode
+  }): Promise<AgentHooks> {
+    try {
+      const capabilities = await readPluginCapabilities(options.workspace)
+      for (const key of capabilities.invalid) {
+        this.trace(`[插件] 能力开关 ${key} 的值不可用，已按默认值处理`)
+      }
+      return composePluginHooks({
+        ...options,
+        capabilities,
+        trace: (message) => this.trace(message),
+      })
+    } catch (error) {
+      this.trace(`[插件] 钩子合成失败，本轮按无钩子运行：${(error as Error).message}`)
+      return {}
+    }
+  }
+
   setSettings(open: boolean): void {
     this.settingsOpen = open
     this.notify()
@@ -1839,6 +1874,14 @@ export class AgentStore {
       }
 
       try {
+        // 子智能体循环同样派发钩子（设计文档 §5.5）：kind/subagentId 让插件能分辨
+        // "这次是主会话还是某个子智能体的回合"
+        const hooks = await this.composeHooks({
+          workspace: subagentThread.workspace,
+          kind: 'subagent',
+          threadId: subagentThread.id,
+          subagentId: profile.id,
+        })
         const loop = runAgentLoop(subagentThread.messages, config, {
           systemPrompt: profile.systemPrompt,
           tools: subagentTools,
@@ -1846,6 +1889,9 @@ export class AgentStore {
           effort: profile.modelOverride?.effort ?? 'high',
           toolExecution: 'sequential',
           signal: controller.signal,
+          hooks,
+          hookContext: { kind: 'subagent', threadId: subagentThread.id, subagentId: profile.id },
+          onNotice: (message) => this.trace(message),
           getSteeringMessages: async () => {
             if (steeringQueue.length === 0) return []
             return steeringQueue.splice(0, steeringQueue.length)
@@ -2331,6 +2377,14 @@ export class AgentStore {
       }
 
       try {
+        // 子智能体循环同样派发钩子（设计文档 §5.5）：kind/subagentId 让插件能分辨
+        // "这次是主会话还是某个子智能体的回合"
+        const hooks = await this.composeHooks({
+          workspace: subagentThread.workspace,
+          kind: 'subagent',
+          threadId: subagentThread.id,
+          subagentId: profile.id,
+        })
         const loop = runAgentLoop(subagentThread.messages, config, {
           systemPrompt: profile.systemPrompt,
           tools: subagentTools,
@@ -2338,6 +2392,9 @@ export class AgentStore {
           effort: profile.modelOverride?.effort ?? 'high',
           toolExecution: 'sequential',
           signal: controller.signal,
+          hooks,
+          hookContext: { kind: 'subagent', threadId: subagentThread.id, subagentId: profile.id },
+          onNotice: (message) => this.trace(message),
           getSteeringMessages: async () => {
             if (steeringQueue.length === 0) return []
             return steeringQueue.splice(0, steeringQueue.length)
@@ -2974,10 +3031,21 @@ export class AgentStore {
     thread.lastSystemPromptChars = systemPrompt.length
     thread.lastToolSpecsChars = JSON.stringify(tools).length
 
+    // 插件钩子：能收窄本轮工具表、注入消息、替换/追加系统提示词、收尾时再补一段
+    const hooks = await this.composeHooks({
+      workspace: thread.workspace,
+      kind: 'main',
+      threadId: thread.id,
+      mode: currentMode,
+    })
+
     const loop = runAgentLoop(thread.messages, config, {
       tools,
       systemPrompt,
       workspace: thread.workspace,
+      hooks,
+      hookContext: { kind: 'main', threadId: thread.id },
+      onNotice: (message) => this.trace(message),
       effort: EFFORT_VALUE[this.effort],
       // 顺序执行：审批一次只该问一件事，命令之间也不该互相抢工作目录。
       // 例外见 agent-loop：整批调用都显式声明 parallel（如并发委派多个只读子智能体）

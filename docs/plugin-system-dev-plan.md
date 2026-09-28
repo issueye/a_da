@@ -213,7 +213,9 @@ M2 引入新能力但受开关控制，M3 补齐可见性与配置。任一里�
 
 ---
 
-### M2 — 运行时干预 + 能力开关（**MVP 核心**）
+### M2 — 运行时干预 + 能力开关（**MVP 核心**）✅ **已完成**
+
+**状态**：已实施并验证通过（见本节末的完成记录）
 
 **目标**：插件第一次能**影响模型看到什么**。这是本项目的价值拐点，也是设计文档
 两条核心原则（成对、开放）的落地。
@@ -236,23 +238,91 @@ M2 引入新能力但受开关控制，M3 补齐可见性与配置。任一里�
 | M2-12 | 决策插件作为第一个消费者接入（自动模式 / 工具路由） | §6.5 | `decision/` |
 
 **验收标准**
-- [ ] `typecheck` exit 0；`bun test src/agent` 0 fail
-- [ ] **无钩子时行为与改动前逐事件等价**（钉住工具表重构）
-- [ ] 返回 `tools` → 本轮 `llm_request.tools` 与 `streamModelChat` 收到该数组
-- [ ] **钩子抛错 → 沿用上一轮工具，循环继续**（不让插件打崩主循环）
-- [ ] `afterTurn` 在**两个 `turn_end` 出口都触发**（纯文本轮 + 带工具轮）
-- [ ] `afterTurn.effectiveToolNames` = **实际下发**的工具名，非意图
-- [ ] `afterTurn` 抛错不影响本轮结果；其耗时不计入 `llmDurationMs`
-- [ ] `terminate` → **跑完本轮后** break（不是当前批就断）
-- [ ] 任何开关组合下，钩子返回超集**必被裁回子集**
-- [ ] 每个 `pluginCapabilities` 开关关掉后确实生效，且**开/关行为可区分**
-- [ ] `after*` 在 `before*` 被短路时仍执行
-- [ ] 无插件注册钩子时零额外开销（可用计数断言）
+- [x] `typecheck` exit 0；`bun test src/agent` 0 fail
+- [x] **无钩子时行为与改动前逐事件等价**（钉住工具表重构）
+- [x] 返回 `tools` → 本轮 `llm_request.tools` 与 `streamModelChat` 收到该数组
+- [x] **钩子抛错 → 沿用上一轮工具，循环继续**（不让插件打崩主循环）
+- [x] `afterTurn` 在**两个 `turn_end` 出口都触发**（纯文本轮 + 带工具轮）
+- [x] `afterTurn.effectiveToolNames` = **实际下发**的工具名，非意图
+- [x] `afterTurn` 抛错不影响本轮结果；其耗时不计入 `llmDurationMs`
+- [x] `terminate` → **跑完本轮后** break（不是当前批就断）
+- [x] 任何开关组合下，钩子返回超集**必被裁回子集**
+- [x] 每个 `pluginCapabilities` 开关关掉后确实生效，且**开/关行为可区分**
+- [x] `after*` 在 `before*` 被短路时仍执行
+- [x] 无插件注册钩子时零额外开销（可用计数断言）
+
+> 两条与设计文档的**明确偏差**（都在完成记录里写了原因）：
+> 1. `afterToolCall` 在工具被拦截时不触发——什么都没执行，没有需要清理的状态；
+> 2. `afterTurn.replaceText` 与 `afterAgentEnd.appendNote` **未进契约**：本项目没有
+>    "改写已渲染回复 / 向已结束的会话追加旁注"的交付通道，声明它们等于静默失效。
 
 **这是 MVP 的最小可用形态**：M0-M2 完成后，一个插件已经能按轮次干预工具表、
 能在会话开始时追加提示词、能在轮次结束时校验自己的决策是否生效。
 
 **明确不做**：审批闸门、压缩、会话生命周期（留到 M3）。
+
+#### M2 完成记录（已验证）
+
+**门禁结果**
+
+| 门 | 验收线 | M2 后 | 判定 |
+|---|---|---|---|
+| `bun run typecheck` | exit 0 | exit 0 | ✅ |
+| `bun test src/agent` | 0 fail | **409 pass / 0 fail** | ✅ |
+| `bun test` | 0 fail | **556 pass / 0 fail** | ✅ |
+
+**分两个 commit 实施**（按本文档 §5 的风险对策："先重构后加钩子，两步分开"）
+
+1. `2155990 refactor(agent-loop): 工具表改为每轮计算（行为等价）`——先立基线再改：
+   新增 `core/loop-equivalence.test.ts`，在**改动前**跑通并把实际值抄下来（第一版凭直觉
+   写的期望序列错了 4 处，全靠实跑纠正），然后才动 `agent-loop.ts`。
+2. 本提交——钩子契约、运行层、能力开关、两个循环的挂载。
+
+**实际改动**
+
+| 文件 | 改动 |
+|---|---|
+| `src/agent/core/events.ts` | **新增**：`AgentHooks` 成对契约、各点位上下文/结果类型、`HOOK_PAIRS`、`NON_NEGOTIABLE_TOOL_TAIL`。与 `AgentEvent`（只读事实）刻意分开 |
+| `src/agent/plugins/hook-runtime.ts` | **新增**：把多个插件的钩子合成一份给循环用。负责能力开关过滤、按加载顺序串行、`before*` 短路、逐点位超时（超时**放行**不视为拒绝）、耗时打点、**受限必须可见**（关掉的开关会写明原因） |
+| `src/agent/core/agent-loop.ts` | 每轮 `beforeTurn` / 两个 `turn_end` 出口都发 `afterTurn`；`beforeAgentStart`（agent_start 之前）/ `afterAgentEnd`（`finally` 里，保证成对）；工具集**只能收窄**（取授权实例，防同名劫持）；按名字去重（防重复声明）；`toolsDurationMs`；钩子调用的 try/catch |
+| `src/agent/core/types.ts` | `AgentLoopOptions` 增加 `hooks` / `hookContext` / `onNotice` |
+| `src/agent/config.ts` | `PluginCapabilities` 八项开关 + `DEFAULT_PLUGIN_CAPABILITIES`（全开）+ `readPluginCapabilities`（三层：默认 → 全局 → 按插件/按工作区）；取值不合法会记进 `invalid` 由调用方说出来 |
+| `src/agent/plugins/types.ts` | `PluginContributions.hooks` |
+| `src/agent/tools/loader.ts` | 描述符里的 `hooks`、模块级 `hooks`、`ctx.registerHooks` 三种来源合并进 `contributions.hooks`；**broken / not-ready 的插件不接管决策点** |
+| `src/agent/store.ts` | `composeHooks()`（每轮重新合成：中途启停与开关改动下一轮就生效）；主循环与两条子智能体循环都挂上，带 `kind`/`subagentId` |
+| `src/agent/subagents/runner.ts` | 同步兜底路径同样挂钩子（插件不该因为"这次没挂会话"被跳过） |
+| `decision/hooks.ts`（新）| **第一个真实消费者**：工具路由 + 回执核对，默认不干预 |
+
+**新增测试（54 条）**：`core/loop-equivalence.test.ts`（6，行为基线）、
+`core/hooks-pairing.test.ts`（6，成对性：接口层 + 循环层）、`core/turn-hooks.test.ts`（14，
+M2 验收清单逐条）、`plugins/hook-runtime.test.ts`（19，开关/顺序/超时/异常 + 加载器集成）、
+`decision/hooks.test.ts`（9，工具路由与回执）。
+
+**实施中发现并修掉的两个真实缺陷**（都由新测试当场抓到）
+
+1. **`afterTurn` 抛错会掀掉整个回合**：循环直接 `await` 钩子，异常一路冒到 `for await`，
+   后续轮次全没了。设计文档 §6.2 改造点 3 要求的是**机制性**兜底，不是"运行层应该会兜住"
+   ——现在循环有自己的 `callHook()`，抛错一律当"没有意见"并记 trace。
+2. **钩子递回重复名字会让模型收到两条同名工具声明**：`toolSpecs` 从原始数组生成，
+   而 `toolMap` 是 Map（去重）。现在签名与 specs 都**由收好的 map 生成**，工具名按集合语义处理。
+
+**一处刻意的例外**（与设计文档 §6.4.4.1 的偏差，写在配对测试里）
+`afterToolCall` 在工具被拦截时**不触发**：什么都没执行，没有需要清理的状态；让 shell 钩子
+对一个从未运行的命令触发反而是错的。其余三对（agent / turn / 工具调用链的 before）都严格成对。
+
+**明确未做**（留给 M3 或需要先拍板）
+
+- `afterTurn.replaceText`：文本此刻早已流式送达界面，本项目没有"改写已渲染回复"的通道，
+  声明它会变成静默失效——契约里**没有**这个字段，何时做取决于是否新增替换事件。
+- `afterAgentEnd.appendNote`：同上，会话已结束、store 也不消费循环的最终消息，没有交付通道。
+  （`appendText` 已实现：以再发一条助手消息的方式交付。）
+- `beforeSubagentStart` / `afterSubagentEnd`（子智能体门禁）属 M3-4；`beforeApproval` /
+  `beforeCompaction` 属 M3-5/6。这三个点位对应的能力开关（`allowThreadDeleteBlock` /
+  `allowCompactionReplace`）已在配置里解析，但**钩子本身还没有**，因此开关暂时没有可关的对象。
+- **决策插件的"自动模式"（每轮调一次引擎决定工具表）没有做**：那要让每轮多一次引擎调用
+  （成本与延迟都翻倍），没有引擎时只能靠启发式——按本项目的原则，拿不到真实判断时不该假装
+  有判断。已实现的是**确定性工具路由**（配置白名单，默认关），它是钩子机制的第一个真实消费者。
+  要不要做引擎驱动的自动模式，需要先定一个明确的收益场景。
 
 ---
 

@@ -48,6 +48,7 @@ import type {
   PluginStatus,
   PluginToolFactory,
 } from '../plugins/types'
+import type { AgentHooks } from '../core/events'
 import { defaultToolRegistry, type ToolConflict } from './registry'
 
 /**
@@ -62,6 +63,17 @@ export interface ExtensionContext {
   registerTool: (tool: AgentTool) => void
   /** 订阅 Agent 生命周期事件点位 (agent_start, turn_end, tool_execution_* 等) */
   onEvent: (listener: (event: AgentEvent) => void) => () => void
+  /**
+   * 注册**可干预**的钩子（设计文档 §6.1）。
+   *
+   * 与 `onEvent` 刻意分开：`onEvent` 只读观察、丢弃返回值；这里注册的钩子返回值会
+   * 改变控制流（收窄工具集、注入消息、改写系统提示词、阻止工具调用）。分开声明，
+   * 用户与审查者一眼能看出这个插件是"会动手"的。
+   *
+   * 受能力开关约束：`allowThirdPartyHooks` 关掉后第三方注册的钩子不生效，
+   * plan 模式下看 `allowPlanModeHooks`；钩子里返回的工具只能收窄。
+   */
+  registerHooks: (hooks: AgentHooks) => void
 }
 
 export type ExtensionFunction = (
@@ -94,6 +106,7 @@ export interface ExtensionModule {
   version?: string
   author?: string
   engines?: { a_da?: string }
+  hooks?: AgentHooks
   default?:
     | PluginToolFactory
     | ExtensionFunction
@@ -139,10 +152,11 @@ export interface PluginItem {
   updatedAt: number
 }
 
-/** 加载一个插件时收集到的注册请求（工具与事件监听器）。 */
+/** 加载一个插件时收集到的注册请求（工具、事件监听器与钩子）。 */
 interface RegistrationSink {
   tools: AgentTool[]
   listeners: Set<(event: AgentEvent) => void>
+  hooks: AgentHooks[]
 }
 
 /** 解析一个插件来源之后、判定状态之前的中间形态。 */
@@ -163,6 +177,20 @@ interface PluginCandidate {
     updatedAt: number
     isPackage: boolean
   }
+}
+/**
+ * 合并同一个插件给出的多份钩子声明：描述符里的在前，`registerHooks` 注册的在后。
+ *
+ * 同一个点位只保留**最后一次**声明——一个插件对同一点位有两种意见是插件自己的 bug，
+ * 与其猜它想要哪个，不如按"后写的覆盖先写的"这个通用规则走（与工具名冲突同一取向）。
+ */
+function mergeHooks(
+  declared: AgentHooks | undefined,
+  registered: AgentHooks[]
+): AgentHooks | undefined {
+  const merged: AgentHooks = { ...(declared ?? {}) }
+  for (const hooks of registered) Object.assign(merged, hooks)
+  return Object.keys(merged).length > 0 ? merged : undefined
 }
 
 /**
@@ -307,7 +335,7 @@ export class ExtensionLoader {
     if (this.traceHandler) this.traceHandler(`[插件] ${message}`)
   }
 
-  /** 造一个给插件用的上下文：把工具与监听器收进 sink，由加载器统一落位。 */
+  /** 造一个给插件用的上下文：把工具、监听器与钩子收进 sink，由加载器统一落位。 */
   private createContext(workspace: string, pluginId: string, sink: RegistrationSink): ExtensionContext {
     return {
       workspace,
@@ -321,6 +349,9 @@ export class ExtensionLoader {
           sink.listeners.delete(listener)
           this.eventListeners.get(pluginId)?.delete(listener)
         }
+      },
+      registerHooks: (hooks: AgentHooks) => {
+        sink.hooks.push(hooks)
       },
     }
   }
@@ -434,6 +465,7 @@ export class ExtensionLoader {
     if (mod.version) descriptor.version = mod.version
     if (mod.author) descriptor.author = mod.author
     if (mod.engines) descriptor.engines = mod.engines
+    if (mod.hooks) descriptor.hooks = mod.hooks
 
     if (tools.length > 0) descriptor.tools = [...(descriptor.tools ?? []), ...tools]
     if (skills.length > 0) descriptor.skills = skills
@@ -463,12 +495,12 @@ export class ExtensionLoader {
           prompts: plugin.prompts,
           configSchema: plugin.configSchema,
           dependsOn: plugin.dependsOn,
+          hooks: plugin.hooks,
         },
         declarative: true,
         diagnostics: [],
         listeners: new Set(),
-        source: {
-          fileName: `${plugin.id} (内置)`,
+        source: {          fileName: `${plugin.id} (内置)`,
           filePath: `(builtin):${plugin.id}`,
           sizeBytes: 0,
           updatedAt: Date.now(),
@@ -527,7 +559,7 @@ export class ExtensionLoader {
 
       // 没有任何入口脚本的插件包（纯技能/提示词目录）也要能被看到
       const fallbackName = isPackage ? entry.name : basename(entry.name).replace(/\.[^.]+$/, '')
-      const sink: RegistrationSink = { tools: [], listeners: new Set() }
+      const sink: RegistrationSink = { tools: [], listeners: new Set(), hooks: [] }
       const candidate: PluginCandidate = {
         manifest: {
           id,
@@ -574,6 +606,7 @@ export class ExtensionLoader {
             prompts: descriptor.prompts,
             configSchema: descriptor.configSchema,
             dependsOn: descriptor.dependsOn,
+            hooks: mergeHooks(descriptor.hooks, sink.hooks),
           }
           if (initError) candidate.loadError = initError.message
         } catch (err) {
@@ -703,9 +736,15 @@ export class ExtensionLoader {
         }
       }
 
+      // broken / not-ready 的插件既不注册工具，也**不接管任何决策点**：一个缺配置的
+      // 插件每轮都来干预工具表，比它干脆不出现更难查（诊断里已经说明原因）
+      const usable = status !== 'broken' && status !== 'not-ready'
+
       loaded.push({
         manifest: candidate.manifest,
-        contributions: candidate.contributions,
+        contributions: usable
+          ? candidate.contributions
+          : { ...candidate.contributions, hooks: undefined },
         declarative: candidate.declarative,
         status,
         diagnostics,

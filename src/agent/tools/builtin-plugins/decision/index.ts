@@ -9,6 +9,7 @@
  */
 
 import { createCheckGateTool, createDecideTool, createDesignDecisionTool } from './tools'
+import { createDecisionHooks } from './hooks'
 import {
   DEFAULT_DECISION_THRESHOLD,
   DEFAULT_SAMPLE_TIMEOUT_MS,
@@ -53,6 +54,9 @@ export const decisionPlugin: PluginDescriptor = {
   description:
     '类型化决策（choice / noul / score）、自由提示词决策设计器与验收门禁。支持 Jev 兼容端点、本地模型自评与确定性兜底三级引擎，概率均标注是否已校准。',
   tools: [createDecideTool, createDesignDecisionTool, createCheckGateTool],
+  // 钩子机制的第一个真实消费者：按配置收窄本轮工具表，并在下一轮核对回执
+  // （见 hooks.ts 的说明与 docs/plugin-system-design.md §6.5）
+  hooks: createDecisionHooks(),
   // 配置项声明（设计文档 §5.2）。**全部可选**：这个插件在没有任何配置时也能跑
   // （回退到本地自评与启发式兜底），所以没有一项是 required——把 apiKey 设成必填
   // 会让没配密钥的用户整个插件消失，那是错的。
@@ -99,6 +103,13 @@ export const decisionPlugin: PluginDescriptor = {
         title: '判定材料字符上限',
         description: '超过就截断，避免把整个仓库塞进请求。',
         default: MAX_STATE_CHARS,
+      },
+      toolRouting: {
+        type: 'string',
+        title: '工具路由白名单',
+        description:
+          '空格或逗号分隔的工具名：只保留这些工具（可按轮次收窄，用于限制插件自己或省 token）。留空 = 不干预工具表。',
+        default: '',
       },
     },
   },

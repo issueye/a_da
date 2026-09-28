@@ -9,6 +9,7 @@
  */
 
 import type { AgentTool } from '../core/types'
+import type { AgentHooks } from '../core/events'
 
 /** 插件工具：实例，或按 workspace 初始化的工厂 */
 export type PluginToolFactory = AgentTool | ((workspace: string) => AgentTool)
@@ -67,8 +68,8 @@ export interface PluginConfigSchema {
 /**
  * 插件提供的全部能力，每一项都可选。
  *
- * 钩子（hooks）与子智能体（subagents）属于 M2 的范围，**尚未**在这里声明——
- * 届时会新增字段并同步加载器，也就是说契约还会再变一次，别以为它已经冻结。
+ * 钩子（hooks）自 M2 起可用；子智能体 profile（subagents）尚未声明——届时会新增
+ * 字段并同步加载器，也就是说契约还会再变一次，别以为它已经冻结。
  * 加载器对未知字段一律忽略，所以插件多写字段不会报错，但也不会生效。
  */
 export interface PluginContributions {
@@ -80,6 +81,15 @@ export interface PluginContributions {
   configSchema?: PluginConfigSchema
   /** 依赖的其他插件 id；缺失时标记 broken 且不注册工具 */
   dependsOn?: string[]
+  /**
+   * 可干预的决策点（设计文档 §6.1）。返回值能改变控制流，因此受能力开关约束：
+   * 第三方插件受 `allowThirdPartyHooks`，plan 模式下受 `allowPlanModeHooks`，
+   * 钩子里返回的工具**只能收窄**（唯一不可配置的强制项，§6.4.3）。
+   *
+   * 只读观察请用 `ExtensionContext.onEvent`——两者刻意分开声明：用户与审查者
+   * 一眼就能看出哪些插件是"会动手"的。
+   */
+  hooks?: AgentHooks
 }
 
 /**

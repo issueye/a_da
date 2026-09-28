@@ -94,3 +94,28 @@ export function clampState(raw: string): { text: string; truncated: boolean } {
     truncated: true,
   }
 }
+
+/**
+ * 解析工具路由白名单：空格、逗号（含中文逗号）分隔。
+ *
+ * 只认字符串是刻意的：配置表单按 `PluginConfigProperty` 的四种标量类型渲染
+ * （string / number / boolean / secret），数组类型要到真正需要时再扩契约。
+ */
+export function parseToolRouting(raw: unknown): string[] {
+  if (typeof raw !== 'string') return []
+  return raw
+    .split(/[\s,，]+/)
+    .map((name) => name.trim())
+    .filter(Boolean)
+}
+
+/**
+ * 读工具路由白名单。
+ *
+ * 每次调用读一次配置（不缓存）：用户改完配置应当下一轮就生效，而不是重启应用。
+ * 留空表示**不干预**工具表——这是默认状态。
+ */
+export async function readToolRouting(): Promise<string[]> {
+  const block = await readPluginConfig<Record<string, unknown>>(DECISION_PLUGIN_ID)
+  return parseToolRouting(block.toolRouting)
+}

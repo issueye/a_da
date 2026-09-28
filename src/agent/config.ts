@@ -60,12 +60,139 @@ export type SavedConfig = Partial<ProviderConfig> & {
   appearance?: unknown
   disabledPlugins?: string[]
   /** 按工作区覆盖的插件启停状态：workspace 路径 → 该工作区下额外禁用的插件 id */
-  workspacePluginState?: Record<string, { disabledPlugins?: string[] }>
+  workspacePluginState?: Record<string, { disabledPlugins?: string[]; capabilities?: Record<string, unknown> }>
   /** 每个插件的配置块：pluginId → 键值对 */
   pluginConfig?: Record<string, Record<string, unknown>>
   /** 插件能力开关（见 docs/plugin-system-design.md §6.4.2） */
   pluginCapabilities?: Record<string, unknown>
   [key: string]: unknown
+}
+
+/**
+ * 插件能力开关（设计文档 §6.4.2）。
+ *
+ * **默认全部开放**，用户可以逐项关掉——核心不替用户做安全判断，但要让他看得见后果
+ * （关掉后用到的插件显示"受限"状态，不允许静默失效）。
+ */
+export interface PluginCapabilities {
+  /** `beforeAgentStart` 可整体替换系统提示词 */
+  allowSystemPromptReplace: boolean
+  /** `afterAgentEnd.appendText` 可追加文本到本次会话 */
+  allowTextRewrite: boolean
+  /** `beforeThreadDelete` 可阻止删除（钩子本身属 M3） */
+  allowThreadDeleteBlock: boolean
+  /** `beforeCompaction` 可替换选择策略（钩子本身属 M3） */
+  allowCompactionReplace: boolean
+  /** 钩子在 plan 模式也生效 */
+  allowPlanModeHooks: boolean
+  /** 第三方扩展可注册钩子 */
+  allowThirdPartyHooks: boolean
+  /** 插件工具可覆盖同名核心内置工具 */
+  allowBuiltinShadow: boolean
+  /** 单个钩子的超时毫秒数；0 = 不限。超时**放行并记 trace**，不变成隐式拒绝 */
+  hookTimeoutMs: number
+}
+
+export const DEFAULT_PLUGIN_CAPABILITIES: PluginCapabilities = {
+  allowSystemPromptReplace: true,
+  allowTextRewrite: true,
+  allowThreadDeleteBlock: true,
+  allowCompactionReplace: true,
+  allowPlanModeHooks: true,
+  allowThirdPartyHooks: true,
+  allowBuiltinShadow: true,
+  hookTimeoutMs: 500,
+}
+
+const CAPABILITY_BOOLEAN_KEYS = [
+  'allowSystemPromptReplace',
+  'allowTextRewrite',
+  'allowThreadDeleteBlock',
+  'allowCompactionReplace',
+  'allowPlanModeHooks',
+  'allowThirdPartyHooks',
+  'allowBuiltinShadow',
+] as const satisfies ReadonlyArray<keyof PluginCapabilities>
+
+/**
+ * 把配置里的原始值收敛成可用的开关值。
+ *
+ * 只接受真正的布尔与 >= 0 的数字：`"false"`、`1`、`"500"` 这类手写出来的值一律不收，
+ * 并把键名记进 `invalid`——用户手改 config.json 写错了却毫无反馈，比写错本身更麻烦。
+ */
+function coerceCapabilities(raw: unknown): { values: Partial<PluginCapabilities>; invalid: string[] } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { values: {}, invalid: [] }
+  const source = raw as Record<string, unknown>
+  const values: Partial<PluginCapabilities> = {}
+  const invalid: string[] = []
+
+  for (const key of CAPABILITY_BOOLEAN_KEYS) {
+    const value = source[key]
+    if (value === undefined) continue
+    if (typeof value === 'boolean') values[key] = value
+    else invalid.push(key)
+  }
+
+  const timeout = source.hookTimeoutMs
+  if (timeout !== undefined) {
+    if (typeof timeout === 'number' && Number.isFinite(timeout) && timeout >= 0) {
+      values.hookTimeoutMs = timeout
+    } else {
+      invalid.push('hookTimeoutMs')
+    }
+  }
+
+  return { values, invalid }
+}
+
+export interface ResolvedPluginCapabilities {
+  /** 全局默认叠加工作区覆盖之后的最终值 */
+  capabilities: PluginCapabilities
+  /** 某个插件的有效值（再叠加 `pluginCapabilities.overrides[pluginId]`） */
+  forPlugin: (pluginId: string) => PluginCapabilities
+  /** 取值不合法、被忽略的键（调用方应当把它说出来，别静默） */
+  invalid: string[]
+}
+
+/**
+ * 读插件能力开关。
+ *
+ * 三层叠加：内置默认（全开）→ `pluginCapabilities`（全局）→
+ * `pluginCapabilities.overrides[pluginId]`（按插件）与
+ * `workspacePluginState[workspace].capabilities`（按工作区）。
+ */
+export async function readPluginCapabilities(
+  workspace?: string,
+): Promise<ResolvedPluginCapabilities> {
+  const cfg = await readSavedConfig()
+  const global = coerceCapabilities(cfg.pluginCapabilities)
+  const perWorkspace = coerceCapabilities(cfg.workspacePluginState?.[workspace ?? '']?.capabilities)
+
+  const rawOverrides = (cfg.pluginCapabilities as Record<string, unknown> | undefined)?.overrides
+  const overrideMap: Record<string, Partial<PluginCapabilities>> = {}
+  const invalid = [...global.invalid.map((key) => `pluginCapabilities.${key}`)]
+  if (rawOverrides && typeof rawOverrides === 'object' && !Array.isArray(rawOverrides)) {
+    for (const [pluginId, raw] of Object.entries(rawOverrides as Record<string, unknown>)) {
+      const coerced = coerceCapabilities(raw)
+      overrideMap[pluginId] = coerced.values
+      invalid.push(...coerced.invalid.map((key) => `pluginCapabilities.overrides.${pluginId}.${key}`))
+    }
+  }
+  invalid.push(
+    ...perWorkspace.invalid.map((key) => `workspacePluginState.${workspace}.capabilities.${key}`),
+  )
+
+  const capabilities: PluginCapabilities = {
+    ...DEFAULT_PLUGIN_CAPABILITIES,
+    ...global.values,
+    ...perWorkspace.values,
+  }
+
+  return {
+    capabilities,
+    forPlugin: (pluginId: string) => ({ ...capabilities, ...(overrideMap[pluginId] ?? {}) }),
+    invalid,
+  }
 }
 
 /** The file alone. The dialog edits this, and it may differ from what a turn uses. */

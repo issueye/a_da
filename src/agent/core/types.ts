@@ -5,6 +5,7 @@
 
 import type { TokenUsage } from '../ai/types'
 import type { ChatCompletionMessageParam } from '../ai/stream'
+import type { AgentHookKind, AgentHooks } from './events'
 
 export type ToolExecutionMode = 'sequential' | 'parallel'
 export type QueueMode = 'all' | 'one-at-a-time'
@@ -175,4 +176,23 @@ export interface AgentLoopOptions {
   getFollowUpMessages?: () => Promise<AgentMessage[]>
   signal?: AbortSignal
   workspace?: string
+  /**
+   * 插件钩子（由 `plugins/hook-runtime` 合成后注入）。
+   *
+   * 不传、或某个点位缺席时，主循环**完全跳过**该点位（不进 try/catch、不计时）——
+   * 这就是"没有插件注册钩子时零额外开销"的实现方式。循环本身不认识插件，只认这份
+   * 已合成的契约；依赖注入也让循环能脱离插件系统单独测试。
+   */
+  hooks?: AgentHooks
+  /** 钩子上下文里的身份信息（主循环 / 子循环）。 */
+  hookContext?: {
+    kind: AgentHookKind
+    threadId?: string
+    subagentId?: string
+  }
+  /**
+   * 插件钩子相关的提醒出口：被剔除的越权工具、被能力开关拦下的意图等。
+   * 循环自己不写日志，去哪里由调用方决定（应用里进调试面板）。
+   */
+  onNotice?: (message: string) => void
 }

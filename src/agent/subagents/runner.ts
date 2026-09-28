@@ -5,7 +5,9 @@
  */
 
 import type { ProviderConfig } from '../config'
+import { readPluginCapabilities } from '../config'
 import { runAgentLoop } from '../core/agent-loop'
+import { composePluginHooks } from '../plugins/hook-runtime'
 import type {
   AgentMessage,
   AgentTool,
@@ -117,6 +119,14 @@ export class SubagentRunner {
         effort: profile.modelOverride?.effort ?? 'high',
         toolExecution: 'sequential',
         signal: abortController.signal,
+        // 这条路径（`invoke_subagent` 的同步兜底）同样派发插件钩子：插件不该因为
+        // "这次没挂会话"而被跳过。没有会话，所以 threadId 缺省。
+        hooks: await composePluginHooks({
+          kind: 'subagent',
+          workspace,
+          subagentId: profile.id,
+          capabilities: await readPluginCapabilities(workspace),
+        }),
         beforeToolCall: async (context, toolSignal) => {
           if (profile.mode === 'readonly' && defaultToolRegistry.isWriteTool(context.toolCall.name)) {
             return { block: true, reason: `子智能体 ${profile.name} 运行在只读安全模式下，禁止执行写操作。` }
