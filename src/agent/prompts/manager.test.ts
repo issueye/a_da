@@ -3,6 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PromptManager } from './manager'
+import { BUILTIN_PROMPTS } from './builtins'
+import { BUILTIN_SKILLS } from '../skills/builtins'
 
 describe('PromptManager 提示词管理核心逻辑', () => {
   let workspace: string
@@ -274,5 +276,39 @@ enabled: true
     prompt = await manager.findPrompt('review', workspace)
     expect(prompt?.scope).toBe('workspace')
     expect(prompt?.content).toContain('来自工作区')
+  })
+
+  test('同名提示词去重：高优先级来源覆盖低优先级，且只保留一条', async () => {
+    const { mkdir, writeFile } = await import('node:fs/promises')
+    // 插件声明一个与内置同名的提示词
+    const builtinName = BUILTIN_PROMPTS[0]!.name
+    const pluginDir = join(workspace, '.ada', 'extensions', 'dup-pack', 'prompts')
+    await mkdir(pluginDir, { recursive: true })
+    await writeFile(
+      join(pluginDir, 'dup.md'),
+      `---\nname: "${builtinName}"\ndescription: "插件版本"\n---\n来自插件`,
+      'utf8'
+    )
+
+    const list = await manager.scanPrompts(workspace)
+    const sameName = list.filter((p) => p.name === builtinName)
+    // 去重后同名条目只剩一条，而不是菜单里冒出两条同名命令
+    expect(sameName.length).toBe(1)
+    // plugin 优先级高于 builtin，胜出的应是插件那份
+    expect(sameName[0]!.scope).toBe('plugin')
+    expect(sameName[0]!.content).toContain('来自插件')
+  })
+
+  test('去重只针对同名：不同名的提示词依旧各存一份', async () => {
+    const all = await manager.scanPrompts(workspace)
+    const names = all.map((p) => p.name.toLowerCase())
+    expect(new Set(names).size).toBe(names.length)
+  })
+
+  test('内置提示词与内置技能不得同名（防「某技能的命令版」死重复长回来）', () => {
+    const promptNames = new Set(BUILTIN_PROMPTS.map((p) => p.name.toLowerCase()))
+    const collisions = BUILTIN_SKILLS.map((s) => s.name.toLowerCase()).filter((n) => promptNames.has(n))
+    // 同名就是同一件事两份正文——prompts/builtins.ts 文件头注释已把它定为不许再加
+    expect(collisions).toEqual([])
   })
 })

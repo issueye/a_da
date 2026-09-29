@@ -38,6 +38,17 @@ interface SkillsState {
   enabledState: Record<string, boolean>
 }
 
+/**
+ * 同名技能被静默丢弃时留一条 warn。
+ *
+ * 去重规则本身是"先到先得"（工作区 > 全局 > 插件，这是有意的），但**静默**的代价是
+ * 排查时无从下手：插件作者以为自己的技能装上了，实际被一个更高优先级的同名技能顶掉，
+ * 没有任何提示。写一条 warn 把"谁被跳过"记下来，语义不变、可观测性补齐。
+ */
+function noteSkillDedup(name: string, source: string): void {
+  console.warn(`[SkillManager] 技能名「${name}」已被更高优先级的来源占用，来自 ${source} 的同名技能被跳过`)
+}
+
 export class SkillManager {
   private listeners = new Set<() => void>()
   private cache: Map<string, SkillSummary[]> = new Map()
@@ -217,7 +228,10 @@ export class SkillManager {
 
           // 作用域优先级去重：工作区 > 全局 > 插件
           const dedupeKey = name.toLowerCase()
-          if (seenNames.has(dedupeKey)) continue
+          if (seenNames.has(dedupeKey)) {
+            noteSkillDedup(name, root.scope)
+            continue
+          }
           seenNames.add(dedupeKey)
 
           const id = `${root.scope}:${name}`
@@ -252,7 +266,10 @@ export class SkillManager {
     // 5. 注入系统内置预设技能（若未被工作区或全局同名覆盖）
     for (const builtin of BUILTIN_SKILLS) {
       const dedupeKey = builtin.name.toLowerCase()
-      if (seenNames.has(dedupeKey)) continue
+      if (seenNames.has(dedupeKey)) {
+        noteSkillDedup(builtin.name, '内置技能')
+        continue
+      }
       seenNames.add(dedupeKey)
 
       const parsed = parseSkillMarkdown(builtin.content, `(builtin):${builtin.name}`)
@@ -279,7 +296,10 @@ export class SkillManager {
       const isPluginDisabled = pluginDisabled(pluginId)
       for (const s of bp.skills || []) {
         const dedupeKey = s.name.toLowerCase()
-        if (seenNames.has(dedupeKey)) continue
+        if (seenNames.has(dedupeKey)) {
+          noteSkillDedup(s.name, `内置插件 ${bp.id}`)
+          continue
+        }
         seenNames.add(dedupeKey)
 
         const parsed = parseSkillMarkdown(s.content, `(builtin):${bp.id}/${s.name}`)
@@ -319,7 +339,10 @@ export class SkillManager {
       const isPluginDisabled = pluginDisabled(pluginId)
       for (const skill of plugin.contributions.skills ?? []) {
         const dedupeKey = skill.name.toLowerCase()
-        if (seenNames.has(dedupeKey)) continue
+        if (seenNames.has(dedupeKey)) {
+          noteSkillDedup(skill.name, `插件 ${pluginId}`)
+          continue
+        }
         seenNames.add(dedupeKey)
 
         const parsed = parseSkillMarkdown(skill.content, `(plugin):${pluginId}/${skill.name}`)

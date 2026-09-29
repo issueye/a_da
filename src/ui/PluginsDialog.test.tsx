@@ -195,9 +195,9 @@ describeNative('plugins dialog', () => {
 
     expect(screen()).toContain('提示词管理')
     expect(screen()).toContain('中文专业编码规范')
-    expect(screen()).toContain('深度代码审查')
-    expect(screen()).toContain('单元测试生成器')
-    expect(screen()).toContain('Git 语义化提交助手')
+    // 三条内置提示词：编码规范（默认注入系统提示词）、架构设计（默认停用）、生成 AGENTS.md
+    expect(screen()).toContain('架构设计与重构指南')
+    expect(screen()).toContain('生成项目说明 (AGENTS.md)')
     expect(screen()).toContain('已启用')
     expect(screen()).toContain('内置预装')
 

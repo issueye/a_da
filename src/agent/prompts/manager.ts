@@ -334,7 +334,32 @@ export class PromptManager {
       }
     }
 
-    return results
+    // 同名去重：与技能表保持一致，并按 findPrompt 用的作用域优先级取舍
+    // （workspace > global > plugin > builtin）。此前提示词表**完全没有去重**，
+    // 于是第三方插件声明一个与内置同名的提示词时，斜杠菜单会同时列出两条同名命令
+    // （SlashCommandMenu 直接 map 全量结果），且没有任何诊断；展开虽能靠排序选中
+    // 高优先级那条，但菜单层已经重复，用户看到的是"同一件事两个入口"。
+    // 这里只记录、不拒绝：被覆盖的一方留一条 warn，静默覆盖是最难查的坑。
+    const scopePriority: Record<PromptScope, number> = { workspace: 0, global: 1, plugin: 2, builtin: 3 }
+    const byName = new Map<string, PromptItem>()
+    for (const item of results) {
+      const key = item.name.toLowerCase()
+      const existing = byName.get(key)
+      if (!existing) {
+        byName.set(key, item)
+        continue
+      }
+      const challengerWins = (scopePriority[item.scope] ?? 99) < (scopePriority[existing.scope] ?? 99)
+      const winner = challengerWins ? item : existing
+      const loser = challengerWins ? existing : item
+      console.warn(
+        `[PromptManager] 提示词名冲突：「${loser.name}」(${loser.scope}) 被「${winner.scope}」的同名条目覆盖`
+      )
+      byName.set(key, winner)
+    }
+
+    // 保留原有收集顺序，仅剔除被同名覆盖的那些条目
+    return results.filter((item) => byName.get(item.name.toLowerCase()) === item)
   }
 
   /**

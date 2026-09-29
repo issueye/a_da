@@ -1,6 +1,12 @@
 /**
  * 预装的优质内置提示词库
- * 提供专业编码规范、代码审查、单元测试生成与 Git 提交建议等开箱即用的模板。
+ *
+ * 这里只放**没有别处承担**的模板：三条各自对应一种入口（中文输出规范、架构设计前置、
+ * 生成 AGENTS.md）。原先还有"深度代码审查 / 单元测试生成器 / Git 语义化提交助手"三条，
+ * 内容与已默认启用的同名技能（`skills/builtins.ts` 的 code-review / unit-test /
+ * git-commit）逐条对应，只是换了个说法——同一件事两份正文迟早各自漂移，且这三条默认
+ * disabled、不进斜杠菜单，等于死重。已把其中独有的要求并进对应技能后删除，别再往这里
+ * 加"某个技能的命令版"：技能本身就能被 `/<技能名>` 触发。
  */
 
 import type { PromptItem } from './types'
@@ -21,66 +27,6 @@ export const BUILTIN_PROMPTS: PromptItem[] = [
     scope: 'builtin',
     enabled: true,
     isSystem: true,
-    updatedAt: 1720000000000,
-  },
-  {
-    id: 'builtin-code-review',
-    name: '深度代码审查',
-    description: '从正确性、性能瓶颈、安全性、边界隐患与架构可维护性多维度审查代码。',
-    content: `# 深度代码审查（Code Review）
-
-请对提供的代码或改动（Diff）进行全面而深入的代码审查，重点关注：
-1. **正确性与逻辑缺陷**：是否存在逻辑漏洞、并发死锁、竞态条件、内存泄露或资源未释放；
-2. **边界与异常处理**：输入参数校验、空指针/None 处理、溢出与极端边界测试覆盖；
-3. **性能与时间复杂度**：是否存在冗余循环、大对象频繁深拷贝或非必要的 I/O 阻塞；
-4. **可维护性与坏味道**：函数职责是否单一、命名是否表意清晰、有无多余的魔法数与重复代码；
-5. **改进建议与修复示范**：指出具体问题所在文件与行数，并给出优化的代码重构示例。`,
-    scope: 'builtin',
-    enabled: false,
-    isSystem: false,
-    updatedAt: 1720000000000,
-  },
-  {
-    id: 'builtin-unit-test-generator',
-    name: '单元测试生成器',
-    description: '为目标函数或模块生成高覆盖率的自动化测试套件（含正常、边界与异常分支）。',
-    content: `# 自动化单元测试生成器
-
-请为目标源码编写完善、独立且高覆盖率的单元测试用例：
-1. **测试框架对齐**：使用项目中现有的测试运行器与断言库；
-2. **测试场景分类**：
-   - **基础主路径**：验证常见入参下的预期输出；
-   - **边界极限值**：验证空集合、0、负数、极大字符串等边缘输入；
-   - **异常与错误分支**：验证抛出特定异常或返回特定错误状态；
-3. **独立性与幂等性**：测试用例之间无外部状态污染，妥善使用 Mock 与隔离环境；
-4. **命名清晰**：用中文清晰描述测试意图（如：测试入参为空时抛出非法参数异常）。`,
-    scope: 'builtin',
-    enabled: false,
-    isSystem: false,
-    updatedAt: 1720000000000,
-  },
-  {
-    id: 'builtin-conventional-commits',
-    name: 'Git 语义化提交助手',
-    description: '根据 git diff 自动提炼高质量的 Conventional Commits 语义化提交信息。',
-    content: `# Git 语义化提交助手（Conventional Commits）
-
-请分析本次代码变动（Git Diff），生成符合业界标准的提交日志信息：
-- 格式规范：
-  \`<type>(<scope>): <中文简短摘要>\`
-  
-  [可选的详细正文描述：阐明变更背景与改动动机]
-- 类型选项：
-  - feat: 新功能或特性
-  - fix: 缺陷修复
-  - refactor: 代码重构（不改变外部行为）
-  - perf: 性能提升
-  - test: 测试用例增加或调整
-  - chore: 构建脚本、辅助工具或依赖变更
-- 要求：摘要简短有力，用中文精确概括核心改动。`,
-    scope: 'builtin',
-    enabled: false,
-    isSystem: false,
     updatedAt: 1720000000000,
   },
   {
