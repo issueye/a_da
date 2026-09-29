@@ -67,6 +67,8 @@ export class ToolRegistry {
     'notify_parent',
     'Skill',
     'skill',
+    // 向用户提问只是挂起等待回答，不碰工作区或系统状态；plan 阶段正是最需要澄清的时候
+    'ask_user',
     // 查看后台任务只读状态与输出，不产生任何写副作用
     'check_task',
     // 符号索引只做内存扫描与查询

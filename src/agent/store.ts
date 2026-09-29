@@ -61,7 +61,7 @@ import { resolveSubagentTools, runSubagentGate, type SubagentGateOutcome } from 
 import { getLoadedPlugins } from './plugins/registry'
 import { applyCompactionVerdict } from './compact/verdict'
 import { applyAppearance, appearance, shortPath, type Appearance } from '../theme'
-import { computeThreadStats, type AgentMode, type DebugEntry, type Item, type Thread, type ThreadStats } from './types'
+import { computeThreadStats, type AgentMode, type AgentQuestion, type DebugEntry, type Item, type Thread, type ThreadStats } from './types'
 import {
   selectCompactSelection,
   executeCompaction,
@@ -292,6 +292,16 @@ export class AgentStore {
 
   private listeners = new Set<() => void>()
   private approvals = new Map<string, (approved: boolean) => void>()
+  /**
+   * 等用户回答的 `ask_user` 提问：工具调用 id → 收尾函数。
+   *
+   * 与 `approvals` 分开：审批问的是"要不要执行"，提问问的是"给个信息"，
+   * 两者的卡片与语义都不同，合在一张表里会让"谁在等什么"变成谜。
+   */
+  private pendingQuestions = new Map<
+    string,
+    (answer: { answeredBy: 'user' | 'aborted'; choice?: string; text?: string }) => void
+  >()
   /** 本轮每张工具卡片，按调用 id 找回去更新状态。 */
   private cards = new Map<string, ToolCard>()
   /** 每个会话独立的后续排队指令 */
@@ -1707,6 +1717,100 @@ export class AgentStore {
     if (!resolve) return
     this.approvals.delete(toolItemId)
     resolve(approved)
+  }
+
+  // ---------------------------------------------------------------- 智能体向用户提问
+
+  /**
+   * 智能体通过 `ask_user` 工具提问并**挂起等待**用户作答。
+   *
+   * 与审批闸门（`waitForUserApproval`）刻意分开两套等待：审批是"要不要执行这个
+   * 调用"，提问是"这个调用需要用户给个信息"。两者的卡片、语义、超时策略都不同，
+   * 混在一起会让"谁在等什么"变成谜。
+   *
+   * 几条刻意的规则：
+   * - **子智能体不能直接问用户**：并发派发时多个子智能体同时提问会让用户不知道
+   *   在回答谁，且它们本来就该经 `notify_parent` 把问题交给主智能体。这里如实拒绝，
+   *   并告诉它正确的做法。
+   * - **不设超时**：与审批一致，用户没答就是没答；会话中止（`signal`）会收尾，
+   *   不会留下悬挂的 promise。
+   * - 问题记在**工具卡片**的 `details.question` 上（不新增 Item 种类）：卡片本来
+   *   就属于这次调用，问题与答案都随它留在会话历史里。
+   */
+  async requestUserAnswer(options: {
+    callId: string
+    question: string
+    choices?: Array<{ id: string; label: string; description?: string }>
+    allowText?: boolean
+    signal?: AbortSignal
+  }): Promise<{ answeredBy: 'user' | 'aborted'; choice?: string; text?: string }> {
+    const card = this.cards.get(options.callId)
+    const thread = card?.threadId
+      ? this.threads.find((candidate) => candidate.id === card.threadId)
+      : undefined
+
+    // 两种情况分开报：合并成一句会让"没有卡片"（例如工具在非会话上下文里被调用）
+    // 被误读成"你是子智能体"，用户与模型都会照着一个错误的归因去改。
+    if (!thread) {
+      throw new Error(
+        '这次调用没有关联到会话，无法向用户提问。若你是子智能体，请改用 notify_parent ' +
+          '把问题与选项交给主智能体，由它来问。'
+      )
+    }
+    if (thread.isSubagent) {
+      throw new Error(
+        '子智能体不能直接向用户提问：并发派发时用户无法知道在回答哪一个。' +
+          '请改用 notify_parent 把问题与选项交给主智能体，由它来问。'
+      )
+    }
+
+    const record: AgentQuestion = {
+      question: options.question,
+      choices: options.choices,
+      allowText: options.allowText,
+      status: 'pending',
+      askedAt: Date.now(),
+    }
+    if (card) {
+      card.details = { ...card.details, question: record }
+      this.notify()
+    }
+
+    return new Promise((resolve) => {
+      const finish = (answer: { answeredBy: 'user' | 'aborted'; choice?: string; text?: string }) => {
+        this.pendingQuestions.delete(options.callId)
+        if (card) {
+          // 把终态写回卡片：界面据此从"等你回答"切到"已回答"。
+          // 卡片随后会被 finishToolCall 收尾，但 details 会留在会话历史里。
+          card.details = {
+            ...card.details,
+            question: { ...record, status: answer.answeredBy === 'user' ? 'answered' : 'aborted', answer },
+          }
+        }
+        this.notify()
+        resolve(answer)
+      }
+
+      this.pendingQuestions.set(options.callId, finish)
+      if (options.signal?.aborted) {
+        finish({ answeredBy: 'aborted' })
+      } else {
+        options.signal?.addEventListener('abort', () => finish({ answeredBy: 'aborted' }), { once: true })
+      }
+    })
+  }
+
+  /** 用户在界面上作答（点选项或填文本框）。没有待答的问题时静默忽略。 */
+  answerQuestion(callId: string, answer: { choice?: string; text?: string }): void {
+    const resolve = this.pendingQuestions.get(callId)
+    if (!resolve) return
+    this.pendingQuestions.delete(callId)
+    resolve({ answeredBy: 'user', ...answer })
+  }
+
+  /** 这次调用是否正等着用户回答（界面据此展示可交互的问题卡）。 */
+  isAwaitingAnswer(callId: string): boolean {
+    return this.pendingQuestions.has(callId)
   }
 
   // ---------------------------------------------------------------- 改动回滚

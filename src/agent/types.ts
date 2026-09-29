@@ -10,6 +10,24 @@ import type { AgentMessage } from './core/types'
 
 export type ToolStatus = 'awaiting' | 'running' | 'done' | 'error' | 'denied'
 
+/**
+ * 一次「智能体向用户提问」（`ask_user` 工具）的问题与答案。
+ *
+ * 它挂在**工具卡片的 `details.question`** 上，而不是新增一种 Item：问题本来就属于
+ * 那次调用，挂在卡片上让问题、答案与工具结果一起留在会话历史里，也不必改
+ * `Item` 联合与所有渲染分支。
+ */
+export interface AgentQuestion {
+  question: string
+  /** 可选的固定选项；给了就渲染成按钮 */
+  choices?: Array<{ id: string; label: string; description?: string }>
+  /** 是否允许自由输入。没给选项时强制为真（否则用户无从作答） */
+  allowText?: boolean
+  status: 'pending' | 'answered' | 'aborted'
+  askedAt: number
+  answer?: { answeredBy: 'user' | 'aborted'; choice?: string; text?: string }
+}
+
 export type Item =
   | { kind: 'user'; id: string; at: number; text: string; images?: string[]; queued?: boolean }
   | {
@@ -53,8 +71,7 @@ export type Item =
       /** 该检查点已被回滚 */
       reverted?: boolean
     }
-  | { kind: 'notice'; id: string; at: number; text: string; level: 'info' | 'error' }
-  | {
+  | { kind: 'notice'; id: string; at: number; text: string; level: 'info' | 'error' }  | {
       kind: 'compact'
       id: string
       at: number

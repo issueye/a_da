@@ -6,6 +6,7 @@
 
 import { createParser, type EventSourceMessage } from 'eventsource-parser'
 import type { ProviderConfig } from '../config'
+import { buildRequestHeaders } from './headers'
 import type { ModelChatOptions, StreamDelta, TokenUsage } from './types'
 
 export interface ChatCompletionContentPartText {
@@ -214,10 +215,7 @@ async function openStreamingResponse(
     try {
       const response = await fetch(url, {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${config.apiKey}`,
-        },
+        headers: buildRequestHeaders(config),
         body: JSON.stringify(body),
         signal: options.signal,
       })

@@ -12,6 +12,8 @@ import React, { useEffect, useState } from 'react'
 import {
   PROVIDER_PRESETS,
   envOverrides,
+  formatHeadersText,
+  parseHeadersText,
   readSavedConfig,
   configPath,
   type ProviderConfig,
@@ -461,6 +463,15 @@ export function SettingsDialog({ store }: { store: AgentStore }) {
                   mono
                   onChange={(next) => update({ apiKey: next })}
                   hint={`以明文保存到 ${configPath()}，只有你自己的账户能读。`}
+                />
+                <Field
+                  label="自定义请求头"
+                  testId="settings-headers"
+                  value={formatHeadersText(draft.headers)}
+                  placeholder="X-Api-Key: xxx; X-Org: team-a"
+                  mono
+                  onChange={(next) => update({ headers: parseHeadersText(next) })}
+                  hint="可选。多个头用分号隔开；同名会覆盖默认的 content-type / authorization（有些网关要求 Api-Key 而非 Bearer）。需要值时含分号就直接改 config.json——那里是对象。"
                 />
                 <Field
                   label="模型"

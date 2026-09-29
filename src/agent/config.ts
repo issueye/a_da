@@ -11,6 +11,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { getAppHome } from './home'
+import { buildRequestHeaders } from './ai/headers'
 import { APPEARANCES, type Appearance } from '../theme'
 
 export interface ProviderConfig {
@@ -21,6 +22,16 @@ export interface ProviderConfig {
   contextWindow?: number
   /** 是否支持多模态图片输入 */
   supportsImages?: boolean
+  /**
+   * 自定义请求头，追加到默认头（`content-type` / `authorization`）之上。
+   *
+   * 用途是那些需要额外头的网关与中转：`X-Api-Key`、组织标识、路由标签等。
+   * **同名（大小写不敏感）会覆盖默认头**，所以也能用它换掉默认的
+   * `authorization: Bearer …`（例如某些服务要求 `Api-Key xxx`）。
+   * 构造逻辑在 `ai/headers.ts`——真实对话与「测试连接」共用同一份，
+   * 否则会出现"测试能通、对话不通"这种极难查的分歧。
+   */
+  headers?: Record<string, string>
 }
 
 export interface LlmConfig extends ProviderConfig {
@@ -489,7 +500,48 @@ function fromEnv(): Partial<ProviderConfig> {
     model: env.A_DA_MODEL || env.OPENAI_MODEL || '',
     contextWindow: env.A_DA_CONTEXT_WINDOW ? parseInt(env.A_DA_CONTEXT_WINDOW, 10) : undefined,
     supportsImages: env.A_DA_SUPPORTS_IMAGES ? env.A_DA_SUPPORTS_IMAGES === '1' || env.A_DA_SUPPORTS_IMAGES === 'true' : undefined,
+    headers: parseHeadersText(env.A_DA_HEADERS),
   }
+}
+
+/**
+ * 解析「自定义请求头」文本。
+ *
+ * 接受两种分隔：`;` 与换行。UI 是单行输入框（只能打 `;`），而 `config.json`
+ * 与环境变量里可以一行一个——两种写法都提供，用户不必为了多个头去猜格式。
+ *
+ * 每项按**第一个**冒号切分，所以值里可以带冒号（`X-Url: https://…` 不会被切坏）。
+ * 分隔符本身不能出现在值里——这是单行文本格式的固有取舍，需要更复杂的值就写
+ * `config.json`（那是个真正的对象）。
+ */
+export function parseHeadersText(raw: unknown): Record<string, string> | undefined {
+  const text = typeof raw === 'string' ? raw : ''
+  const result: Record<string, string> = {}
+  for (const chunk of text.split(/[;\n\r]/)) {
+    const entry = chunk.trim()
+    if (!entry) continue
+    const at = entry.indexOf(':')
+    if (at <= 0) continue
+    const name = entry.slice(0, at).trim()
+    const value = entry.slice(at + 1).trim()
+    if (name && value) result[name] = value
+  }
+  // 没解析出任何一项时返回 undefined 而不是空对象：`envOverrides()` 用
+  // "值不是 undefined/空串"判断某个环境变量是否真在生效，空对象会让它误报。
+  return Object.keys(result).length > 0 ? result : undefined
+}
+
+/**
+ * 把自定义头渲染回单行文本（`Name: Value; Name2: Value2`）。
+ *
+ * 与 {@link parseHeadersText} 互为逆运算，供设置弹窗回填输入框。
+ */
+export function formatHeadersText(headers: Record<string, string> | undefined): string {
+  if (!headers) return ''
+  return Object.entries(headers)
+    .filter(([name, value]) => name.trim() && value.trim())
+    .map(([name, value]) => `${name.trim()}: ${value.trim()}`)
+    .join('; ')
 }
 
 /** True when the environment is shadowing the file, which the dialog has to say. */
@@ -512,7 +564,9 @@ export function envOverrides(): string[] {
                 : 'OPENAI_MODEL'
               : key === 'contextWindow'
                 ? 'A_DA_CONTEXT_WINDOW'
-                : 'A_DA_SUPPORTS_IMAGES',
+                : key === 'headers'
+                  ? 'A_DA_HEADERS'
+                  : 'A_DA_SUPPORTS_IMAGES',
       )
     }
   }
@@ -560,10 +614,7 @@ export async function testConnection(
   try {
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${config.apiKey}`,
-      },
+      headers: buildRequestHeaders(config),
       body: JSON.stringify({
         model: config.model,
         messages: [{ role: 'user', content: 'ping' }],

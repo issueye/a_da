@@ -165,6 +165,20 @@ describe('buildTranscriptBlocks 分块逻辑', () => {
   })
 })
 
+/**
+ * 订阅版 Transcript。
+ *
+ * Transcript 本身**不订阅** store——真实应用里由 AgentWindow（useAgentStore →
+ * store.subscribe）带着整棵树重渲染。直接渲染 `<Transcript/>` 的测试里没有那个
+ * 订阅者，store 变更（如 ask_user 发起提问）就不会触发重渲染，断言会失败在
+ * "内容没画出来"上，而那是测试缺了订阅、不是产品的问题。
+ */
+function TranscriptLive() {
+  const [, setTick] = React.useState(0)
+  React.useEffect(() => store.subscribe(() => setTick((tick) => tick + 1)), [])
+  return <Transcript store={store} />
+}
+
 describeNative('Transcript UI 过程收缩交互', () => {
   test('完成之后过程内容默认收缩，点击折叠条可展开与收起，报告始终平铺', async () => {
     const thread = store.active
@@ -188,7 +202,8 @@ describeNative('Transcript UI 过程收缩交互', () => {
     const { render, renderer } = createTestRoot({ width: 800, height: 600 })
     render(
       <div style={{ display: 'flex', flexDirection: 'column', position: 'relative', width: 800, height: 600 }}>
-        <Transcript store={store} />
+        {/* 这条用例后半段要在挂载后改 store（ask_user 发起提问），必须用订阅版 */}
+        <TranscriptLive />
       </div>,
     )
     const app = await connectTest(renderer)
@@ -241,6 +256,68 @@ describeNative('Transcript UI 过程收缩交互', () => {
 
     // 最终助理回复/报告依然平铺可见
     expect(screen()).toContain('测试全量通过，这是最终总结报告。')
+
+    // ── 问答卡（ask_user）：并入本用例而不另开窗口 ──
+    // GPU 测试渲染器每个 createTestRoot 都开一个真窗口（DirectX），
+    // 并发文件同时在跑时窗口数一多会耗尽渲染器内存（实测全量测试直接崩：
+    // "Failed to open test window / memory allocation failed"），
+    // 所以问答卡的断言放在这个已经活着的窗口里做。
+    const askCallId = 'call-ask-ui-1'
+    const askCard = {
+      kind: 'tool' as const,
+      id: 'tool-ask-ui-1',
+      at: 100,
+      callId: askCallId,
+      name: 'ask_user',
+      args: { question: '重构方式选哪种？' },
+      rawArgs: '',
+      status: 'running' as const,
+      threadId: thread.id,
+    }
+    thread.items = [
+      { kind: 'user', id: 'u-ask-1', at: 1, text: '帮我重构认证模块' },
+      askCard,
+    ]
+    // 摆出"工具正在执行、等用户作答"的现场：store 要能按调用 id 找到卡片
+    const internals = store as unknown as { cards: Map<string, typeof askCard> }
+    internals.cards.set(askCallId, askCard)
+
+    const pendingQuestion = store.requestUserAnswer({
+      callId: askCallId,
+      question: '重构方式选哪种？',
+      choices: [
+        { id: 'a', label: '先补测试再重构', description: '更稳，但多一轮' },
+        { id: 'b', label: '一次性重构' },
+      ],
+    })
+
+    // 待答状态必须**平铺可见**：它若藏在折叠的过程块里，用户就看不到该答什么，
+    // 而整轮正卡在那里等——那是最糟的一种"界面看起来正常"。
+    // 卡在等待时卡片状态是 running，过程块因此判定为"未完成"并默认展开。
+    await painted('等待你的回答')
+    await painted('重构方式选哪种？')
+    await painted('先补测试再重构')
+    await painted('一次性重构')
+
+    // 选项与自由输入并存：有选项时也允许补充说明
+    expect(await app.getByTestId('question-choice-a').count()).toBe(1)
+    expect(await app.getByTestId('question-input-call-ask-ui-1').count()).toBe(1)
+
+    // 点选项即作答：等待真的被解开，且答案原样传出
+    await app.getByTestId('question-choice-a').click()
+    const askAnswer = await pendingQuestion
+    expect(askAnswer.answeredBy).toBe('user')
+    expect(askAnswer.choice).toBe('a')
+
+    // 答完切到"已回答"并留下结果（历史里能看到当时答了什么）
+    await painted('已回答')
+    expect(screen()).toContain('先补测试再重构')
+
+    // 说明一处**已知未覆盖**：自由输入的「提交」按钮没有在此点击。
+    // 它需要同一窗口里再挂一张问题卡，而实测窗口加高（800×1200）后虚拟列表的
+    // 坐标映射不稳（按钮 bounds y≈1049、点击不生效）——那是渲染器的已知约束，
+    // 不是问答卡的问题。自由作答的语义由 store 层用例覆盖（ask-user.test.ts）。
+    internals.cards.delete(askCallId)
 
     await app.close()
   }, 30_000)

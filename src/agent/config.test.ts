@@ -15,6 +15,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  formatHeadersText,
+  parseHeadersText,
   readSavedAppearance,
   readSavedConfig,
   writeSavedAppearance,
@@ -98,5 +100,40 @@ describe('the config file', () => {
   test('a nonsense appearance value reads as "never chosen"', async () => {
     await writeFile(configFile, JSON.stringify({ appearance: 'chartreuse' }), 'utf8')
     expect(readSavedAppearance()).toBeNull()
+  })
+})
+
+describe('自定义请求头的文本解析（设置弹窗的输入格式）', () => {
+  test('分号分隔多个头，按第一个冒号切分（值里可以带冒号）', () => {
+    expect(parseHeadersText('X-A: 1; X-Url: https://api.example.com/v1')).toEqual({
+      'X-A': '1',
+      'X-Url': 'https://api.example.com/v1',
+    })
+  })
+
+  test('也接受换行分隔（config.json 与环境变量里可以一行一个）', () => {
+    expect(parseHeadersText('X-A: 1\nX-B: 2\r\nX-C: 3')).toEqual({ 'X-A': '1', 'X-B': '2', 'X-C': '3' })
+  })
+
+  test('没有冒号、空名字、空值的项被丢弃', () => {
+    expect(parseHeadersText('乱写的; X-A: 1; : 空名字; X-Empty:')).toEqual({ 'X-A': '1' })
+  })
+
+  test('解析不出任何一项时返回 undefined（空对象会让 envOverrides 误报）', () => {
+    expect(parseHeadersText('')).toBeUndefined()
+    expect(parseHeadersText('   ')).toBeUndefined()
+    expect(parseHeadersText('没有冒号')).toBeUndefined()
+    expect(parseHeadersText(undefined)).toBeUndefined()
+    expect(parseHeadersText(42)).toBeUndefined()
+  })
+
+  test('格式化与解析互为逆运算（弹窗回填依赖它）', () => {
+    const source = { 'X-A': '1', Authorization: 'Api-Key t' }
+    expect(parseHeadersText(formatHeadersText(source))).toEqual(source)
+  })
+
+  test('undefined / 空对象格式化成空串', () => {
+    expect(formatHeadersText(undefined)).toBe('')
+    expect(formatHeadersText({})).toBe('')
   })
 })
