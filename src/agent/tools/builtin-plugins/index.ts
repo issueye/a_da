@@ -10,6 +10,7 @@ import { batchOpsPlugin } from './batch-ops'
 import { decisionPlugin } from './decision'
 import { approvalGuardPlugin } from './approval-guard'
 import { askUserPlugin } from './ask-user'
+import { ponytailPlugin } from './ponytail'
 import type { PluginDescriptor } from './types'
 
 export * from './types'
@@ -21,6 +22,7 @@ export { batchOpsPlugin } from './batch-ops'
 export { decisionPlugin } from './decision'
 export { approvalGuardPlugin } from './approval-guard'
 export { askUserPlugin } from './ask-user'
+export { ponytailPlugin } from './ponytail'
 
 /** 系统预置的官方内置插件包清单 */
 export const BUILTIN_PLUGINS: PluginDescriptor[] = [
@@ -32,4 +34,5 @@ export const BUILTIN_PLUGINS: PluginDescriptor[] = [
   decisionPlugin,
   approvalGuardPlugin,
   askUserPlugin,
+  ponytailPlugin,
 ]

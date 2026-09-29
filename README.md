@@ -204,6 +204,10 @@ export default function (context) {
 （空格或逗号分隔的工具名）可以按轮次收窄工具表，并在下一轮用它自己的回执核对是否真的生效。
 留空表示不干预。
 
+**ponytail** 是单向点位 `beforeSystemPrompt` 的第一个消费者：把 `defaultMode` 设成
+lite / full / ultra 后，它每轮把**紧凑版**偷懒准则追加进系统提示词（追加永远生效，也不碰
+用户自己的规范文本），并在调试日志里写明"按哪个档位注入的"。默认档位是 `off`。
+
 审批与压缩这两个内部点位也开放给了插件：`beforeApproval` 可以放行（"白名单工具免问"）或拒绝
 工具调用（拒绝理由会回给模型，而不是变成"执行失败"），`beforeCompaction` 可以追加必须保留的消息、
 或整体替换压缩选择方案。两处的效力都刻意不对称：**`deny` 总是被采纳，`allow` 与"替换选择方案"
@@ -241,6 +245,7 @@ export default function (context) {
 - **test-runner** —— `run_test_focused`：剥离通过日志，只抓失败断言与堆栈
 - **batch-ops** —— `read_files` / `edit_files`：**一次调用覆盖多个文件**
 - **decision** —— `decide` / `design_decision` / `check_gate`：**类型化判断**（见下）
+- **ponytail** —— 六个技能 + 六条同名斜杠命令：最省且能用的解法纪律（见下）
 
 `batch-ops` 是专门治「步数」的：一次 `read_file` 只够读一个文件、一次 `edit_file` 只够改
 一处，于是「看 8 个文件再改 3 个」要来回 11 轮模型请求，每轮都要重发整个上下文。把它们压成
@@ -403,6 +408,31 @@ thread_id / workspace），并注入 `A_DA_HOOK_EVENT` / `A_DA_HOOK_TOOL` 环境
 同时芯片区会出现“停止”。模型配置开了 Vision 时，输入框支持图片附件：点 `+` 从
 文件选择器挑、把图片文件**拖进输入框**、或直接 **Ctrl+V 粘贴**剪贴板里的截图
 （纯文本粘贴不受影响；GPUX 没有剪贴板 API，粘贴走 PowerShell 读 Windows 剪贴板兜底）。
+
+### 偷懒工程学（ponytail）
+
+技能集移植自 [ponytail](https://github.com/DietrichGebert/ponytail)（MIT），按本仓库的插件
+契约改写成六个技能 + 六条同名斜杠命令。它**不提供任何工具**——和 `approval-guard` 一样是
+纯纪律插件，全部内容都是给模型看的判断准则：
+
+- `/ponytail [lite|full|ultra]` —— 进入偷懒模式，核心是一条阶梯：**这东西需要存在吗（YAGNI）
+  → 本仓库有没有现成的 → 标准库 → 平台原生能力 → 已装依赖 → 一行 → 只有到这一步才写"能用的
+  最少代码"**。档位只影响表达强度：lite 照做但点一句更省的做法，full 强制执行，ultra 先删后加
+  并同时质疑需求剩下的部分。
+- `/ponytail-review` —— 只看过度设计的评审，每条一行（`L42: yagni: 只有一个产品的工厂。内联掉。`），
+  收尾给 `net: -<N> lines possible.`；正确性、安全、性能明确不在射程内，另走常规评审。
+- `/ponytail-audit` —— 同一个视角扫全仓而不是一个 diff，按「能砍多少」排序。
+- `/ponytail-debt` —— 把散落的 `ponytail: <上限>, <升级触发条件>` 注释收成债务台账；
+  没写触发条件的标 `no-trigger`——真正会烂掉的就是那些。
+- `/ponytail-gain` / `/ponytail-help` —— 收益记分板（上游基准中位数，不换算成"本仓库省了多少"：
+  没写出来的那个版本从未存在，没有可减的基线）与速查卡。
+
+想让它**每轮自动生效**而不必每次口头激活，把插件的「默认档位」设成 lite / full / ultra
+（`config.json` 的 `pluginConfig.ponytail.defaultMode`，或环境变量
+`A_DA_PLUGIN_PONYTAIL_DEFAULT_MODE`，后者优先）。默认档位是 **off**：内置插件是预装给所有人的，
+默认值等于替所有人改系统提示词，所以刻意不默认开启。开启后注入的是**紧凑版**阶梯（完整规则
+仍按需用 `Skill` 工具加载），且目前**只作用于主会话循环**——`beforeSystemPrompt` 还没接到
+子智能体循环上，子智能体不会自动带上这条纪律。
 
 ## 运行
 

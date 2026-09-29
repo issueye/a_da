@@ -34,7 +34,7 @@ describe('系统官方内置辅助 Coding 插件系统', () => {
     await saveDisabledPlugins([])
   })
 
-  test('内置插件清单包含 4 大精选辅助插件且具备三位一体数据模型', () => {
+  test('内置插件清单齐全：带工具的那批是三位一体，纯纪律那批不提供工具', () => {
     expect(BUILTIN_PLUGINS.length).toBeGreaterThanOrEqual(4)
 
     const ids = BUILTIN_PLUGINS.map((p) => p.id)
@@ -44,14 +44,20 @@ describe('系统官方内置辅助 Coding 插件系统', () => {
     expect(ids).toContain('test-runner')
     expect(ids).toContain('batch-ops')
 
-    // 「三位一体」是**带工具**那类插件的要求。approval-guard 是纯策略插件
-    // （只订审批点位、不提供工具），刻意排除在外——否则这里会逼它造一个没有用途的
-    // 工具或提示词来满足断言，那是测试在指挥设计。
-    const strategyOnly = new Set(['approval-guard'])
+    // 「三位一体」是**带工具**那类插件的要求。纯策略（approval-guard）与纯纪律（ponytail）
+    // 刻意不提供工具，排除在外——否则这里会逼它们造一个没有用途的工具来满足断言，
+    // 那是测试在指挥设计。但「不提供工具」不等于「什么都不提供」：对它们断言"至少贡献了
+    // 钩子、技能或提示词之一"，免得一个空壳插件混进清单。
+    const toolLess = new Set(['approval-guard', 'ponytail'])
     for (const plugin of BUILTIN_PLUGINS) {
       expect(plugin.name).toBeDefined()
-      if (strategyOnly.has(plugin.id)) {
-        expect(plugin.hooks).toBeDefined()
+      if (toolLess.has(plugin.id)) {
+        expect(plugin.tools).toHaveLength(0)
+        const contributes =
+          Boolean(plugin.hooks) ||
+          (plugin.skills?.length ?? 0) > 0 ||
+          (plugin.prompts?.length ?? 0) > 0
+        expect({ id: plugin.id, contributes }).toEqual({ id: plugin.id, contributes: true })
         continue
       }
       expect(plugin.tools.length).toBeGreaterThan(0)
