@@ -673,6 +673,23 @@ export async function* runAgentLoop(
             terminate: false,
           })
 
+          // 插件钩子排在核心闸门**之前**：它说的是"这个调用根本不该发出去"，
+          // 应当先于"要不要问用户"（设计文档 §6.6.4）。两处都能 block，但语义不同——
+          // 插件是策略判断，核心闸门是用户审批。
+          if (hooks?.beforeToolCall) {
+            const pluginVerdict = await callHook('beforeToolCall', () =>
+              hooks.beforeToolCall!({
+                toolCall: call,
+                args: call.arguments,
+                assistantMessage,
+              })
+            )
+            if (pluginVerdict?.block) {
+              if (pluginVerdict.terminate) terminateBatch = true
+              return fail(pluginVerdict.reason || '被插件拦截。')
+            }
+          }
+
           // beforeToolCall 拦截前置校验（审批闸门挂在这里）
           if (options.beforeToolCall) {
             let before
@@ -776,6 +793,24 @@ export async function* runAgentLoop(
               }
             } catch {
               // 后置钩子异常不覆盖工具本身的结果
+            }
+          }
+
+          // 插件的事后钩子排在核心之后：核心的 afterToolCall 是 store 记账用的，
+          // 插件看到的是**已定稿**的结果。插件可覆盖输出，再交给事件与历史。
+          if (hooks?.afterToolCall) {
+            const pluginAfter = await callHook('afterToolCall', () =>
+              hooks.afterToolCall!({
+                toolCall: call,
+                assistantMessage,
+                result: { output: finalOutput, ok: !isError },
+                isError,
+              })
+            )
+            if (pluginAfter) {
+              if (pluginAfter.output !== undefined) finalOutput = pluginAfter.output
+              if (pluginAfter.isError !== undefined) isError = pluginAfter.isError
+              if (pluginAfter.terminate) terminateBatch = true
             }
           }
 

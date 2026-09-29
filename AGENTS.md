@@ -197,6 +197,37 @@ git-tools / code-outline / project-inspector / test-runner 四个官方插件也
 实测让标签栏那组五条用例集体翻红（`store.activeId` 停在别的会话上）。要在弹窗里加断言，
 就写进已有的那条用例里（见 `PluginsDialog.test.tsx` 的做法：`beforeAll` 准备数据、已有用例多切一次页）。
 
+### 14. 审批：策略归插件（`approval-guard`），执行归核心（`askUser`）
+
+改审批相关代码前先理解这条分工——它决定了什么能改、什么不能：
+
+- **能改的（策略）**：哪些工具免问、哪些命令要二次确认、拒绝时给模型什么理由。
+  这些都在内置插件 `tools/builtin-plugins/approval-guard.ts` 里，用户可在插件配置里改。
+- **不能改的（执行）**：弹卡片、卡片状态、等点击、中止/超时收尾、把理由写回历史。
+  这些在 `store.gate()` 与 `store.waitForUserApproval()`，**两者共用同一份等待实现**——
+  别为新场景复制一份，否则"中止算不算拒绝""卡片 id 用哪个"会在两边漂移。
+
+`ctx.askUser` 是插件**唯一**能发起询问的通道，且**只能转发真实点击**：核心没有、也不要加
+"直接批准"的接口。插件想放行只能返回 `{ decision: 'allow' }`（那受 readonly 档位约束、且会
+写日志）。`answeredBy` 必须如实区分 `'user'` 与 `'aborted'`——两者结果上都是拒绝，
+但事后审计要能分辨"用户说不"与"用户没答"。
+
+**点位顺序不能反**：`beforeToolCall`（插件：这个调用根本不该发出去）在
+`beforeApproval`（要不要问用户）**之前**。反过来会让用户被问一个注定被拦的调用。
+两者的 `deny` 都写成 `toolResult` 回给模型，**不要抛错**——抛错会被模型理解成
+"工具执行失败"从而反复重试，而不是"被策略拦下"。
+
+### 15. 陷阱：钩子"声明了却没人调用"是静默失效，只能靠副作用断言发现
+
+`beforeToolCall`/`afterToolCall` 曾在 `AgentHooks` 里存在、被 `hook-runtime` 完整合成
+（含超时、计时、折叠）、并被 `hook-runtime.test.ts` 直接测过——**但主循环从来没调它们**
+（只调 `options.*` 的 store 版本）。插件注册的这两个点位是死代码，没有报错、没有日志，
+单测全绿。
+
+教训：**测钩子时断言副作用，而不是断言钩子被调用**。`turn-hooks.test.ts` 里那条
+"被 block 时工具真的没执行"（用计数器 spy 工具）就是这个用途——它是唯一能暴露
+此类缺陷的写法。新增点位时照抄这个模式。
+
 ## 二、开发与验证
 ```bash
 bun install

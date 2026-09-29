@@ -503,6 +503,58 @@ M1 的 `scripts/extension-check.ts`：本计划声称加了"诊断无 error"断�
 
 ---
 
+#### 后补：工具调用点位接通 + 审批改造（2026-09-29）
+
+需求：① 把 `beforeToolCall`/`afterToolCall` 加进 `AgentHooks`；② 审批功能改用插件系统实现。
+
+**发现（① 的真实情况与需求描述不同）**：这两个点位**早就在 `AgentHooks` 里**
+（`core/events.ts:540-541`），`hook-runtime` 也早已完整合成（超时、计时、折叠、
+成对登记）。真正的问题是**主循环从来没调用过 `hooks.beforeToolCall`**——
+`agent-loop.ts` 只调 `options.beforeToolCall`（store 的审批闸门）。
+所以插件注册的这两个点位是**死代码**：声明了、合成了、被 `hook-runtime.test.ts`
+单独测过，就是没人调，且不报错。这不是"新增点位"，是"接通已声明的点位"。
+
+**① 的改动**：`agent-loop.ts` 接通 `hooks.beforeToolCall` / `hooks.afterToolCall`。
+顺序按"不该发生先于要不要问"——插件钩子排在 `options.beforeToolCall`（审批闸门）**之前**。
+补 7 条测试，其中关键的一条用 **spy 工具断言副作用为零**（"被 block 时工具真的没执行"）：
+只有副作用断言能暴露"声明了却没人调用"这类静默失效。
+
+**② 的形态**（按"策略归插件、执行归核心"）：
+
+| 归插件（策略） | 归核心（执行） |
+|---|---|
+| 哪些工具免问、哪些命令要二次确认、拒绝理由 | 弹卡片、等点击、中止/超时、写回历史 |
+
+理由：让插件自己实现等待，等于把"用户点了什么"的解释权交给第三方，且核心无从保证
+中止/超时不留悬挂 promise。
+
+**新增受控能力 `ctx.askUser`**（`core/events.ts` 的 `BeforeApprovalContext`）：
+- 由核心实现，与内核自己的审批闸门**共用同一个 `waitForUserApproval`**；
+- **只能转发真实点击**，核心不提供任何"直接批准"接口，插件无法伪造用户意图；
+- 未注入时字段缺席（子智能体循环），插件应返回 `undefined` 让核心照常问；
+- `answeredBy` 如实区分 `'user'` / `'aborted'`——结果上都是拒绝，但审计要能分辨。
+
+**新增内置插件 `approval-guard`**（纯策略，`tools: []`，只订 `beforeApproval`）：
+三层策略，先命中先返回——高危命令二次确认（**压过**免问白名单）> 只读档位硬约束 >
+免问白名单（**默认空**："默认自动批准"不是可接受的默认值）。
+自定义高危模式是**字面子串**匹配，不是通配/正则。
+
+**实施中发现的真实缺陷（端到端测试抓到）**：`gate()` 建卡片在插件判定**之后**，
+而 `askUser` 在判定**之中**被调用 —— 最初只建等待句柄不建卡片，于是界面上没有可点的
+东西，`askUser` **永久挂起**。修法：`waitForUserApproval` 没有卡片就现造一张（`awaiting`），
+`gate` 随后按 `call.id` 复用，不再造第二张。
+**这类缺陷单测两边都会通过**（单测 `askUser` 实现 ✓、单测插件策略 ✓），
+只有走真实 `gate` + 真实 `decide()` 的端到端用例能发现——所以 `askUser` 的用例是那样写的。
+
+**连带修正**：`builtin-plugins.test.ts` 与 `equivalence.test.ts` 曾断言"每个内置插件都必须
+有工具/技能/提示词"。纯策略插件不该为了满足断言去造没有用途的工具，故改为对它断言
+`hooks` 存在而 `tools` 为空。
+
+**门禁（实测）**：typecheck exit 0；`bun test src/agent` **507 pass / 0 fail**；
+全量 `bun test` **654 pass / 0 fail**。
+
+---
+
 ---
 
 ## 4. 逐里程碑的验收门（统一执行）

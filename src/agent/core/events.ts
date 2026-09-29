@@ -266,6 +266,50 @@ export interface BeforeApprovalContext extends AgentHookContextBase {
   approvalMode: 'ask' | 'readonly'
   /** 这个工具是否会产生写副作用（`isWriteTool` 的静态判定） */
   isWrite: boolean
+  /**
+   * 向用户提问并等他的回答——**受控能力，由核心实现**（设计文档 §6.6.4）。
+   *
+   * 为什么要给这个能力：审批策略本身就是"要不要问、问什么"的判断。插件要实现自定义
+   * 策略（白名单免问、危险命令二次确认…）就必须能发起询问。但**弹卡片、等点击、超时、
+   * 中止、写历史这些执行细节必须留在核心**——让插件自己实现等待，等于把"用户点了什么"
+   * 的解释权交给第三方，也无从保证中止与超时不会漏。
+   *
+   * 契约上的三条保证：
+   * - 插件拿到的是**用户的答案**，不是"插件希望用户答什么"；
+   * - 插件**无法伪造**回答：本方法只能转发真实点击，核心不提供任何"直接批准"的接口；
+   * - 用户取消/中止时返回 `approved: false`，与"明确拒绝"在结果上一致，
+   *   但 `answeredBy` 会区分（`'user'` / `'aborted'`）。
+   *
+   * 未注入时（例如子智能体循环、或没有可等待的用户界面）该字段缺席，
+   * 插件应当返回 `undefined` 让核心照常问，而不是自己猜一个答案。
+   */
+  askUser?: (request: AskUserRequest) => Promise<AskUserAnswer>
+}
+
+/** `askUser` 的提问内容。刻意只有这几个字段：插件能决定"问什么"，不能决定"怎么弹"。 */
+export interface AskUserRequest {
+  /** 要用户确认的工具调用（默认是当前这次；允许插件换成别的以支持批量确认） */
+  toolCall?: ToolCallBlock
+  /** 给用户看的理由（为什么这次要问） */
+  reason?: string
+  /**
+   * 可选的固定选项。不给则用默认的"批准 / 拒绝"。
+   *
+   * 注意：**不能用它实现"批准一次 / 永久批准"这类记忆**——那是插件自己的状态，
+   * 核心只负责把用户选中的项原样送回来。
+   */
+  options?: Array<{ id: string; label: string }>
+}
+
+export interface AskUserAnswer {
+  /** 用户是否批准。中止、超时、关掉弹窗都算 false */
+  approved: boolean
+  /** 用户选中的选项 id（传了 `options` 时） */
+  choice?: string
+  /** 用户填写的理由（界面支持时） */
+  reason?: string
+  /** 由核心填写：谁答的 */
+  answeredBy: 'user' | 'aborted'
 }
 
 export interface BeforeApprovalResult {

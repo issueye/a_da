@@ -8,6 +8,7 @@ import { projectInspectorPlugin } from './project-inspector'
 import { testRunnerPlugin } from './test-runner'
 import { batchOpsPlugin } from './batch-ops'
 import { decisionPlugin } from './decision'
+import { approvalGuardPlugin } from './approval-guard'
 import type { PluginDescriptor } from './types'
 
 export * from './types'
@@ -17,6 +18,7 @@ export { projectInspectorPlugin } from './project-inspector'
 export { testRunnerPlugin } from './test-runner'
 export { batchOpsPlugin } from './batch-ops'
 export { decisionPlugin } from './decision'
+export { approvalGuardPlugin } from './approval-guard'
 
 /** 系统预置的官方内置插件包清单 */
 export const BUILTIN_PLUGINS: PluginDescriptor[] = [
@@ -26,4 +28,5 @@ export const BUILTIN_PLUGINS: PluginDescriptor[] = [
   testRunnerPlugin,
   batchOpsPlugin,
   decisionPlugin,
+  approvalGuardPlugin,
 ]

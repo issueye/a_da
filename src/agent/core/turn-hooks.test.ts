@@ -397,3 +397,134 @@ describe('beforeLlmRequest / afterLlmResponse：真正改变发出去的内容',
     expect(seen[0]!.durationMs).toBeGreaterThan(0)
   })
 })
+
+describe('beforeToolCall / afterToolCall：插件能拦住与修正工具调用', () => {
+  test('插件返回 block 时工具**真的没执行**（不是只在事件上装作被拦）', async () => {
+    let executed = 0
+    const spyTool: AgentTool = {
+      name: 'read_file',
+      description: '读文件',
+      parameters: { type: 'object' },
+      async execute(): Promise<AgentToolResult> {
+        executed += 1
+        return { output: '文件内容', ok: true }
+      },
+    }
+
+    const { events, messages } = await run(
+      {
+        beforeToolCall: async () => ({ block: true, reason: '这个文件本轮不许读' }),
+      },
+      { tools: [spyTool] }
+    )
+
+    // 关键断言：副作用没有发生。这是"声明了却没人调用"那类缺陷唯一能暴露的地方
+    expect(executed).toBe(0)
+
+    // 不该出现"已开始执行"
+    expect(events.some((event) => event.type === 'tool_execution_start')).toBe(false)
+
+    // 拦截理由必须回给模型，且写成 toolResult（与核心闸门的 block 同形）——
+    // 不能抛错，否则模型会以为"工具执行失败"而不是"被策略拦下"，从而反复重试
+    const toolResult = messages.find((message) => message.role === 'toolResult') as
+      | { content: string; isError: boolean }
+      | undefined
+    expect(toolResult).toBeDefined()
+    expect(toolResult!.content).toContain('这个文件本轮不许读')
+    expect(toolResult!.isError).toBe(true)
+  })
+
+  test('插件放行（返回 undefined）时工具照常执行', async () => {
+    const { events } = await run({ beforeToolCall: async () => undefined })
+    expect(events.some((event) => event.type === 'tool_execution_start')).toBe(true)
+    expect(events.some((event) => event.type === 'tool_execution_end')).toBe(true)
+  })
+
+  test('插件钩子排在核心闸门之前：核心闸门能看到工具仍未执行', async () => {
+    const order: string[] = []
+    let coreSaw = ''
+
+    const config = {
+      model: 'test-model',
+      apiKey: 'test-key',
+      baseUrl: `http://127.0.0.1:${server.port}`,
+      source: 'test' as const,
+    }
+    requests = []
+    toolOnFirstTurn = true
+    const generator = runAgentLoop(
+      [{ role: 'user', content: '看看这个文件', timestamp: 1 }],
+      config,
+      {
+        tools: [readTool],
+        systemPrompt: '你是助手',
+        maxSteps: 5,
+        beforeToolCall: async () => {
+          order.push('core')
+          coreSaw = 'core-ran'
+          return undefined
+        },
+        hooks: {
+          beforeToolCall: async () => {
+            order.push('plugin')
+            return undefined
+          },
+        },
+        hookContext: { kind: 'main', threadId: 'thread-hooks' },
+      }
+    )
+    for (;;) {
+      const next = await generator.next()
+      if (next.done) break
+    }
+
+    expect(order).toEqual(['plugin', 'core'])
+    expect(coreSaw).toBe('core-ran')
+  })
+
+  test('afterToolCall 能改写工具输出，且改写结果进入历史', async () => {
+    const { messages } = await run({
+      afterToolCall: async () => ({ output: '【已被插件截断】' }),
+    })
+
+    const toolResult = messages.find((message) => message.role === 'toolResult') as
+      | { content: string }
+      | undefined
+    expect(toolResult).toBeDefined()
+    expect(toolResult!.content).toBe('【已被插件截断】')
+  })
+
+  test('afterToolCall 拿得到执行结果与是否出错', async () => {
+    const seen: { output: string; isError: boolean }[] = []
+    await run({
+      afterToolCall: async (ctx) => {
+        seen.push({ output: ctx.result.output, isError: ctx.isError })
+        return undefined
+      },
+    })
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]!.output).toBe('文件内容')
+    expect(seen[0]!.isError).toBe(false)
+  })
+
+  test('beforeToolCall 抛错时按"放行"处理，不打崩循环', async () => {
+    const { events } = await run({
+      beforeToolCall: async () => {
+        throw new Error('插件自己炸了')
+      },
+    })
+
+    // 抛错不该让工具被拒——插件是可选增强，不该变成隐式的"全部拦截"
+    expect(events.some((event) => event.type === 'tool_execution_start')).toBe(true)
+  })
+
+  test('未注册这两个点位时，事件序列与没有 hooks 时完全一致', async () => {
+    const withoutHooks = await run(undefined)
+    const withEmpty = await run({})
+
+    expect(withEmpty.events.map((event) => event.type)).toEqual(
+      withoutHooks.events.map((event) => event.type)
+    )
+  })
+})

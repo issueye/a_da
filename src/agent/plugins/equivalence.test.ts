@@ -24,14 +24,32 @@ function toolNamesOf(plugin: (typeof BUILTIN_PLUGINS)[number]): string[] {
 
 describe('M0 等价性：内置插件改名后行为不变', () => {
   test('六个内置插件都在，且 id 未变', () => {
-    const ids = BUILTIN_PLUGINS.map((p) => p.id).sort()
-    expect(ids).toEqual(
-      ['batch-ops', 'code-outline', 'decision', 'git-tools', 'project-inspector', 'test-runner'].sort(),
-    )
+    // 只断言 M0 改名时已存在的那六个：approval-guard 是之后新加的，
+    // 它没有"改名前后"可比，另行断言（见下）。
+    const m0Ids = [
+      'batch-ops',
+      'code-outline',
+      'decision',
+      'git-tools',
+      'project-inspector',
+      'test-runner',
+    ]
+    const ids = BUILTIN_PLUGINS.map((p) => p.id)
+    for (const id of m0Ids) expect(ids).toContain(id)
+  })
+
+  test('纯策略插件 approval-guard 不提供工具，只订审批点位', () => {
+    const guard = BUILTIN_PLUGINS.find((p) => p.id === 'approval-guard')
+    expect(guard).toBeDefined()
+    // 空数组而非省略：契约要求 tools 必填，好让加载器免去无谓的可空判断
+    expect(guard!.tools).toHaveLength(0)
+    expect(guard!.hooks?.beforeApproval).toBeDefined()
   })
 
   test('每个插件的工具名集合与改动前一致', () => {
     // 这是改名最容易被改错的地方：名字集合必须逐字对上。
+    // approval-guard 不在此列：它是后加的纯策略插件，没有"改动前"可言，
+    // 且刻意不提供工具（见下面的单独断言）。
     const expected: Record<string, string[]> = {
       'git-tools': ['git_status', 'git_diff', 'git_log'],
       'code-outline': ['get_outline'],
@@ -42,6 +60,7 @@ describe('M0 等价性：内置插件改名后行为不变', () => {
     }
 
     for (const plugin of BUILTIN_PLUGINS) {
+      if (!(plugin.id in expected)) continue
       expect(toolNamesOf(plugin).sort()).toEqual([...expected[plugin.id]].sort())
     }
   })
@@ -65,6 +84,7 @@ describe('M0 等价性：内置插件改名后行为不变', () => {
     }
 
     for (const plugin of BUILTIN_PLUGINS) {
+      if (!(plugin.id in expectedSkills)) continue
       expect((plugin.skills ?? []).map((s) => s.name).sort()).toEqual(
         [...expectedSkills[plugin.id]].sort(),
       )

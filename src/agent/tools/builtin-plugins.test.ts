@@ -44,8 +44,16 @@ describe('系统官方内置辅助 Coding 插件系统', () => {
     expect(ids).toContain('test-runner')
     expect(ids).toContain('batch-ops')
 
+    // 「三位一体」是**带工具**那类插件的要求。approval-guard 是纯策略插件
+    // （只订审批点位、不提供工具），刻意排除在外——否则这里会逼它造一个没有用途的
+    // 工具或提示词来满足断言，那是测试在指挥设计。
+    const strategyOnly = new Set(['approval-guard'])
     for (const plugin of BUILTIN_PLUGINS) {
       expect(plugin.name).toBeDefined()
+      if (strategyOnly.has(plugin.id)) {
+        expect(plugin.hooks).toBeDefined()
+        continue
+      }
       expect(plugin.tools.length).toBeGreaterThan(0)
       expect(plugin.skills?.length).toBeGreaterThan(0)
       expect(plugin.prompts?.length).toBeGreaterThan(0)

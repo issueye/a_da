@@ -25,7 +25,7 @@ import {
   type ProviderConfig,
 } from './config'
 import { runAgentLoop } from './core/agent-loop'
-import type { AgentHooks, BeforeCompactionResult, SubagentEndContext } from './core/events'
+import type { AgentHooks, BeforeApprovalContext, BeforeCompactionResult, SubagentEndContext } from './core/events'
 import { composePluginHooks } from './plugins/hook-runtime'
 import type {
   AgentMessage,
@@ -3915,6 +3915,28 @@ export class AgentStore {
     const approvalHooks = asksUser
       ? await this.composeHooks({ workspace: thread.workspace, kind: 'main', threadId: thread.id, mode: currentMode })
       : {}
+
+    /**
+     * 向用户提问并等他的回答——**受控能力，由核心实现**（设计文档 §6.6.4）。
+     *
+     * 插件只决定"问什么"，弹卡片、等点击、中止处理、写历史全在这里。
+     * 关键安全属性：本方法**只能转发真实点击**，没有任何"直接批准"的旁路——
+     * 插件想放行只能走 `decision: 'allow'`，那会写进调试日志且受审批档位约束。
+     *
+     * 不设超时：用户没答就是没答，中止由 signal 负责（与内核自身等审批一致）。
+     */
+    const askUser: BeforeApprovalContext['askUser'] = async (request) => {
+      const target = request.toolCall ?? call
+      const answer = await this.waitForUserApproval(thread, target, signal)
+      if (request.reason) {
+        this.trace(`[插件] ${call.name} 的审批提问：${request.reason}`)
+      }
+      // `choice` 只在插件给了 options 时才有意义；默认的是/否由 approved 表达
+      const wanted = answer.approved ? 'approve' : 'deny'
+      const choice = request.options?.find((option) => option.id === wanted)?.id
+      return { approved: answer.approved, choice, answeredBy: answer.answeredBy }
+    }
+
     let pluginApproval: { decision: 'allow' | 'deny'; reason?: string; pluginId?: string } | undefined
     if (asksUser && approvalHooks.beforeApproval) {
       const verdict = await approvalHooks.beforeApproval({
@@ -3925,6 +3947,7 @@ export class AgentStore {
         approvalMode: this.approval === 'readonly' ? 'readonly' : 'ask',
         isWrite: defaultToolRegistry.isWriteTool(call.name),
         trace: (message) => this.trace(message),
+        askUser,
       })
       if (verdict?.decision) {
         if (verdict.decision === 'allow' && this.approval === 'readonly') {
@@ -3943,7 +3966,10 @@ export class AgentStore {
       }
     }
 
-    const card: ToolCard = {
+    // 插件可能已经通过 askUser 造过卡片（它跑在这之前）：那说明用户已经被问过且答了，
+    // 复用同一张，不要再造第二张——否则界面上会出现两个同一次调用的卡片。
+    const existing = this.cards.get(call.id)
+    const card: ToolCard = existing ?? {
       kind: 'tool',
       id: nextId('item'),
       at: Date.now(),
@@ -3951,11 +3977,15 @@ export class AgentStore {
       name: call.name,
       args: call.arguments,
       rawArgs: call.rawArguments,
-      status: asksUser && !pluginApproval ? 'awaiting' : 'running',
+      status: 'running',
       threadId: thread.id,
     }
-    thread.items.push(card)
-    this.cards.set(call.id, card)
+    if (!existing) {
+      thread.items.push(card)
+      this.cards.set(call.id, card)
+    }
+    // 状态在插件判定之后才定稿：放行时卡片不该显示成"等你点"
+    card.status = asksUser && !pluginApproval ? 'awaiting' : 'running'
     this.notify()
 
     if (pluginApproval) {
@@ -4004,18 +4034,7 @@ export class AgentStore {
       return undefined
     }
 
-    const approved = await new Promise<boolean>((resolve) => {
-      const finish = (result: boolean) => {
-        this.approvals.delete(card.id)
-        resolve(result)
-      }
-      this.approvals.set(card.id, finish)
-      if (signal?.aborted) {
-        finish(false)
-      } else if (signal) {
-        signal.addEventListener('abort', () => finish(false), { once: true })
-      }
-    })
+    const { approved } = await this.waitForUserApproval(thread, call, signal)
     await this.runAfterApprovalHooks(approvalHooks, {
       thread,
       call,
@@ -4057,6 +4076,59 @@ export class AgentStore {
     if (!card || card.status === status) return
     card.status = status
     this.notify()
+  }
+
+  /**
+   * 等用户就一次工具调用给出"批准 / 拒绝"。
+   *
+   * 抽出来是因为有两条路径要等：内核自己的审批闸门（`gate`），以及插件通过
+   * `ctx.askUser` 发起的提问（设计文档 §6.6.4）。两处**必须共用同一份实现**——
+   * 否则"中止时算不算拒绝""卡片 id 用哪个"这类细节会在两边漂移，而这类漂移
+   * 表现为偶发的挂起或误判，极难查。
+   *
+   * **没有卡片就现造一张**，这是关键：插件的 `askUser` 跑在 `gate` 建卡片之前，
+   * 若什么都不做，用户界面里根本没有可点的东西，等待会永久挂起。造出来的卡片
+   * 由 `gate` 后续复用（它按 `call.id` 查 `this.cards`）。
+   *
+   * 停机语义：`signal` 中止时立即按"未批准"收尾，且**摘掉等待句柄**，
+   * 否则一个已经没人会点的卡片会永远占着 `approvals`。
+   */
+  private async waitForUserApproval(
+    thread: Thread,
+    call: ToolCallBlock,
+    signal?: AbortSignal
+  ): Promise<{ approved: boolean; answeredBy: 'user' | 'aborted' }> {
+    let card = this.cards.get(call.id)
+    if (!card) {
+      card = {
+        kind: 'tool',
+        id: nextId('item'),
+        at: Date.now(),
+        callId: call.id,
+        name: call.name,
+        args: call.arguments,
+        rawArgs: call.rawArguments,
+        status: 'awaiting',
+        threadId: thread.id,
+      }
+      thread.items.push(card)
+      this.cards.set(call.id, card)
+      this.notify()
+    }
+    const waiterId = card.id
+
+    return new Promise((resolve) => {
+      const finish = (approved: boolean, answeredBy: 'user' | 'aborted') => {
+        this.approvals.delete(waiterId)
+        resolve({ approved, answeredBy })
+      }
+      this.approvals.set(waiterId, (approved) => finish(approved, 'user'))
+      if (signal?.aborted) {
+        finish(false, 'aborted')
+      } else if (signal) {
+        signal.addEventListener('abort', () => finish(false, 'aborted'), { once: true })
+      }
+    })
   }
 
   /** 一次工具调用收尾：卡片落状态、结果进历史、流水记账。 */
