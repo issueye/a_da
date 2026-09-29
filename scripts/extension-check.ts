@@ -3,8 +3,9 @@
  *
  *   bun scripts/extension-check.ts
  *
- * 用的是仓库里那个 web_search 扩展（`.ada/extensions/web-search.ts`），因为它会真的
- * 发一次网络请求，最能说明问题。整条链路是：
+ * 需要工作区里有一个能联网的扩展。仓库自带的 `web-search` 扩展已删除（与用户全局
+ * `~/.a-da/extensions/web-search.ts` 重复），所以这里改从全局那份加载——用一个还在的
+ * 扩展就行，不必是它。整条链路是：
  *
  *   加载（jiti 跑 .ts）→ 注册进 ToolRegistry → 出现在发给模型的工具表里
  *   → 模型调用它 → 真的去搜 → 结果作为工具结果回给模型
