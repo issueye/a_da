@@ -524,9 +524,14 @@ export interface AfterTurnContext {
 }
 
 export interface AfterTurnResult {
-  /** 覆盖本轮 assistant 文本（谨慎：会改变用户看到的内容） */
-  replaceText?: string
-  /** 追加一条旁注消息给模型（下一轮生效），用于"你上一轮漏了 X" */
+  /**
+   * 追加一条旁注消息给模型（下一轮生效），用于"你上一轮漏了 X"。
+   *
+   * **实现已收窄**：本节初稿还列过一个 `replaceText`（覆盖本轮 assistant 文本），
+   * 实际未实现——本项目没有"改写已渲染回复"的交付通道，声明它只会变成静默失效。
+   * `allowTextRewrite` 开关实际管的是这条 `appendNote` 与 `AfterAgentEndResult.appendText`。
+   * 见 `docs/plugin-system-dev-plan.md` 的「M0-M3 独立复核记录」。
+   */
   appendNote?: string
   /** 请求结束整轮 */
   terminate?: boolean
@@ -588,8 +593,6 @@ export interface AfterAgentEndContext {
   kind: 'main' | 'subagent'
 }
 export interface AfterAgentEndResult {
-  /** 追加一条会话结束旁注（如"本次有 3 个工具调用被拒绝"） */
-  appendNote?: string
   /** 追加一段文本到本次会话的最终回复（受 `allowTextRewrite` 控制，默认开） */
   appendText?: string
 }
@@ -724,7 +727,7 @@ gate 检查插在 `enabled` 检查（`store.ts:1677-1679`）之后、**构建会
   "pluginCapabilities": {
     // 全局默认：以下全部开放（除最后一条强制项，它不可配置）
     "allowSystemPromptReplace": true,    // beforeAgentStart 可整体替换系统提示词
-    "allowTextRewrite": true,            // afterTurn.replaceText 可改写回答
+    "allowTextRewrite": true,            // afterTurn.appendNote / afterAgentEnd.appendText 生效
     "allowThreadDeleteBlock": true,      // beforeThreadDelete 可阻止删除
     "allowCompactionReplace": true,      // beforeCompaction 可替换选择策略
     "allowPlanModeHooks": true,          // 钩子在 plan 模式也生效
@@ -744,13 +747,21 @@ gate 检查插在 `enabled` 检查（`store.ts:1677-1679`）之后、**构建会
 |---|---|---|
 | `allowThirdPartyHooks` | **开** | 第三方只能 `registerTool`，回到现状 |
 | `allowSystemPromptReplace` | **开** | `beforeAgentStart` 只能 append |
-| `allowTextRewrite` | **开** | `afterTurn`/`afterAgentEnd` 只能 `appendNote` |
+| `allowTextRewrite` | **开** | `afterTurn.appendNote` / `afterAgentEnd.appendText` 被忽略 |
 | `allowThreadDeleteBlock` | **开** | 插件不能阻止删会话，只能归档 |
 | `allowCompactionReplace` | **开** | `beforeCompaction` 只能追加保留消息 |
 | `allowPlanModeHooks` | **开** | plan 模式下所有钩子不生效（回到现状） |
-| `allowBuiltinShadow` | **开** | 插件工具不能覆盖同名内置工具 |
+| `allowBuiltinShadow` | **开** | 插件工具不能覆盖同名内置工具 ⚠️ **尚未实现，见下** |
 | `hookTimeoutMs` | 500 | 超时后**放行并记 trace**（不 block——超时不该变成隐式拒绝） |
 | ~~工具集扩张~~ | — | **不可配置**，见 §6.4.3 |
+
+> **⚠ `allowBuiltinShadow` 是唯一未落地的开关（2026-09 复核发现）。**
+> 它声明了、有默认值、走三层配置解析、UI 甚至写明关掉后的效果，但**没有任何代码读它**：
+> 加载层始终让插件工具覆盖同名内置（`registry.ts:229-236`）。后果是用户关掉它
+> **什么都不会发生**，且界面说明与实际行为**相反**。
+> 按 §6.4 的开放原则，**应当实现**（而非删掉开关）——因为它正是"用户决定"原则的体现。
+> 未经实现前，请勿在任何文档中声称该开关生效。详见
+> `docs/plugin-system-dev-plan.md` 的「M0-M3 独立复核记录」。
 
 **每个开关都必须能被用户看到后果**：`PluginsDialog` 里每个插件卡显示它实际用到、
 以及被哪些开关限制的能力（§7.1）。关掉某能力时，用到它的插件必须显示"受限"状态与原因，
@@ -1272,7 +1283,7 @@ src/agent/subagents/access.test.ts
 - 每个 `pluginCapabilities` 开关**关掉后确实生效**，且开/关行为可区分
 - `allowThreadDeleteBlock: false` → 第三方 `block: true` 不阻止删除
 - `allowSystemPromptReplace: false` → 传 `systemPrompt` 被忽略，只生效 append
-- `allowTextRewrite: false` → `afterTurn.replaceText` / `appendText` 无效
+- `allowTextRewrite: false` → `afterTurn.appendNote` / `afterAgentEnd.appendText` 无效
 - `allowPlanModeHooks: false` → plan 模式下钩子不生效
 - `allowCompactionReplace: false` → 只能追加保留消息
 - **能力被开关限制时，插件与用户都能看到"受限"状态**（不允许静默失效）

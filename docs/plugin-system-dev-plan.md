@@ -2,7 +2,9 @@
 
 > 依据：`docs/plugin-system-design.md`（设计文档，1414 行）
 > 目标项目：a_da
-> 状态：**待评审 → 逐步实施**
+> 状态：**M0-M3 四个里程碑全部完成并已合并到 main**（完成记录见各里程碑小节）
+> 复核：**已做独立复核，发现两处文档与代码不符**——见 §3 末的「M0-M3 独立复核记录」。
+> 开工前请先读那一节，其中列了 5 项待办。
 > 基线：本文档撰写时已实测（见 §2），非 UI 测试全绿
 
 ---
@@ -369,7 +371,7 @@ M2 验收清单逐条）、`plugins/hook-runtime.test.ts`（19，开关/顺序/�
 | M3-1 | 插件卡状态徽标（待配置/版本不兼容/加载失败/工具名冲突）、逐条诊断（含可操作建议）、版本号、**贡献计数**（工具/技能/提示词各几个） |
 | M3-2 | 「能力开关」页：七个开关逐项列出并写清"关掉后会发生什么"、钩子超时可填（0 = 不限）、配置里取值不可用会点名；插件卡新增**受限原因**（关掉开关后用到它的插件说明哪一步会被忽略） |
 | M3-3 | 由 `configSchema` 生成配置表单（string/number/boolean/secret）；**secret 不回显**（只显示"已设置/未设置"，留空表示不改），写入 `~/.a-da/secrets/<pluginId>_<key>` |
-| M3-4 | 子智能体 `gate` + `beforeSubagentStart`/`afterSubagentEnd`；三条入口共用 `subagents/access.ts` 一份工具解析与门禁 |
+| M3-4 | 子智能体 `gate` + `beforeSubagentStart`/`afterSubagentEnd`；三条入口共用 `subagents/access.ts` 一份**工具解析**；**门禁只覆盖 start 与 runner 两条入口，`resumeSubagentThread` 未过门禁**（复核发现，见下） |
 | M3-5 | `beforeApproval`/`afterApproval`：允许即免弹卡、拒绝理由回给模型、`afterApproval` 拿到决策与耗时 |
 | M3-6 | `beforeCompaction`/`afterCompaction`：可追加必须保留的消息（永远生效）、可替换选择方案（受开关约束）；判定应用是 `compact/verdict.ts` 的纯函数 |
 | M3-7 | `Thread.pluginData`（随会话持久化、核心永不读取）+ `beforeThreadCreate`/`afterThreadCreate`、`beforeThreadDelete`/`afterThreadDelete`、`onThreadSwitch`（纯通知，刻意不成对） |
@@ -409,6 +411,95 @@ M2 验收清单逐条）、`plugins/hook-runtime.test.ts`（19，开关/顺序/�
   全局那份；界面上的"仅本项目"选择留给后续。
 - `PluginsDialog` 未显示插件用到的**钩子点位清单**（"这个插件会动手做哪些事"）。受限原因已经
   能说明"哪一步被忽略"，但"它注册了哪些点位"目前只有 `getLoadedPlugins()` 能查到。
+
+---
+
+#### M0-M3 独立复核记录（2026-09-29）
+
+**背景**：M1/M2/M3 的实现由另一次会话完成并直接推到 `main`。上表是作者自述，
+因此做了一次**独立复核**——逐项把文档声称的能力拉回代码里核对（读 `AgentHooks`、
+`config.ts`、`hook-runtime.ts`、`loader.ts`、`access.ts`、`store.ts`、`agent-loop.ts`
+与全部插件测试），而不是采信文档。
+
+**结论：绝大部分声称成立，两处不成立、一处需要更正。** 逐项证据见下。
+
+**门禁（本次实测，与上表的数字不同）**
+
+| 门 | 上表声称 | 本次实测 |
+|---|---|---|
+| `bun run typecheck` | exit 0 | exit 0 |
+| `bun test src/agent` | 458 pass | **480 pass / 0 fail** |
+| `bun test`（全量） | 617 pass | **627 pass / 0 fail** |
+
+数字差异不是错误：上表写在 M3 进行中，此后又落了测试（todo 点位、`registry.test.ts`、
+`version.test.ts` 等）。记在这里以免后来的读者以为对不上。
+
+**核实为真的部分**（挑最关键的）
+
+- **成对性真的落地了**：`src/agent/core/events.ts:535-605` 定义 **11 对** hook，加 4 个
+  刻意单侧的点位（`onThreadSwitch` / `beforeSystemPrompt` / `beforePersist` /
+  `afterCheckpoint`），并由 `HOOK_PAIRS` + `UNPAIRED_HOOKS` 两个常量在**接口层**保证
+  "不会漏配"（`hooks-pairing.test.ts:149-161` 断言两者并集覆盖每个键且无自配对）。
+  设计文档 §6.1 列的点位**一个不缺**，另外多了一对 `beforeTodoUpdate`/`afterTodoUpdate`。
+- **唯一强制项真的强制**：钩子返回值超集会被裁回子集，有两处独立实现
+  （`agent-loop.ts:261-276` 的 `narrowTools`、`subagents/access.ts:152-169` 的
+  `narrowGateTools`），且 `'casual'` 形式被运行时拒绝（`hook-runtime.ts:226-229`）。
+- **`afterTurn` 两个出口都发**：`:610`（纯文本轮）与 `:828`（带工具轮）——这正是设计
+  §6.2 点名的"最难发现"的缺陷，实现没有漏。
+- **`afterTurn` 耗时不计入 `llmDurationMs`/`toolsDurationMs`**：钩子在计时之后调用
+  （`:826` 记时 → `:828` 调钩子），符合设计 §11 风险 7 的意图。
+- **加载层齐全**：`pluginId` 溯源（`registry.ts:104-107`）、冲突检测与去重
+  （`:109-130`）、重载时退订监听器（`loader.ts:312,976`）、依赖拓扑（`:657`）、
+  `engines` 软失败（`:678`）、必填配置缺失 → `not-ready` 且不注册工具（`:763-785`）。
+- **子智能体收尾顺序正确**：`store.ts:1007-1037` 钩子 → `:1042` 移出运行集合 →
+  `:1046` 唤醒父会话，且钩子抛错被吞（`:1033-1036`），不会阻断唤醒——这是设计里
+  风险最高的一点，实现是对的。
+
+**核实为假的两处**（`AGENTS.md` 与 `unfinished-features.md` 应据此更正）
+
+1. **`allowBuiltinShadow` 是一个"幽灵开关"——声明了、有默认值、三处配置解析、UI 还
+   写明关掉后的效果，但没有任何代码读它。**
+   - 声明与默认值：`src/agent/config.ts:91,103,114`
+   - UI 描述：`src/agent/plugins/capabilities-view.ts:51-54`，明确承诺
+     「重名时保留内置工具，插件的同名工具不注册，并在插件卡上标为冲突」
+   - 实际：`grep -rn "allowBuiltinShadow" src/` 除声明处与那句 UI 文案外**无消费方**；
+     加载层始终让插件工具覆盖同名内置（`registry.ts:229-236` 无条件把插件工具并入）。
+   - 后果：用户关掉它**什么都不会发生**，而且界面上的说明与实际行为**相反**。
+     这是本次复核发现的**唯一用户可见的不实描述**，建议优先修（要么实现，要么把
+     开关和那句描述一起删掉——按设计 §6.4 的开放原则，实现是更一致的方向）。
+2. **"三条入口共用门禁"只对两条成立。** `resolveSubagentTools`（工具解析）确实三处共用
+   （`store.ts:2155`、`:2646`、`runner.ts:56`），但 `runSubagentGate`/`gateSubagent`
+   只在 `store.ts:2068`（start）与 `runner.ts:59` 被调用；**`resumeSubagentThread`
+   从不跑门禁**。因此恢复一条已存在的子智能体会话时 `beforeSubagentStart` 不触发。
+   - 需要更正的三处自述：`subagents/access.ts:9`（"三条入口都要走同一份实现"）、
+     本文件 M3-4 行的"三条入口共用…门禁"、以及 commit `383a996` 的信息。
+   - **需要拍板**：这是 bug 还是有意为之？从设计 §6.3 看，门禁的语义是"防止不该跑的子
+     智能体跑起来"；恢复续跑同样会产生新的一轮执行与开销，所以**按设计应当也过门禁**。
+     但 resume 时 `criteria` 的判定材料（原始 task）已被首轮消耗，需要先定判定输入。
+
+**需要更正的一处设计文档不一致**
+
+设计文档 §6.2/§6.4.2 仍列着 `afterTurn.replaceText` 与 `afterAgentEnd.appendNote`，
+而实现刻意不做（本项目没有"改写已渲染回复"的交付通道），`allowTextRewrite` 实际管的是
+`appendText`。本计划的 M3 记录已写明这是有意取舍，但**设计文档没有同步**——两份文档
+互相矛盾，代码跟的是本计划。已在设计文档 §6.2 加注指向此处。
+
+**未验证的一项**
+
+M1 的 `scripts/extension-check.ts`：本计划声称加了"诊断无 error"断言，但**从未真正跑过**
+（需要联网）。复核未能验证，列为待办。
+
+---
+
+#### 复核后的待办（按建议优先级）
+
+| # | 事项 | 性质 |
+|---|---|---|
+| 1 | **实现或移除 `allowBuiltinShadow`** —— 现状是 UI 承诺与行为相反 | 用户可见缺陷 |
+| 2 | **拍板 `resumeSubagentThread` 是否过门禁**，然后统一三处自述 | 设计缺口 |
+| 3 | 同步设计文档 §6.2（`replaceText`/`appendNote` 的实现取舍） | 文档一致性 |
+| 4 | 真正跑一次 `scripts/extension-check.ts` | 未验证 |
+| 5 | 更新两次门禁的实测数字（480 / 627） | 文档一致性 |
 
 ---
 
