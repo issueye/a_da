@@ -157,6 +157,9 @@ export function describeTool(name: string, args: Record<string, unknown>): strin
       const task = String(args.task ?? '').split('\n')[0]!.trim()
       return `${subagentId}: ${task}`
     }
+    case 'ask_user':
+      // 卡片头部的一行摘要：问题本身在问答卡里，这里只取开头
+      return String(args.question ?? '').replace(/\r?\n+/g, ' ').trim().slice(0, 60)
     case 'check_subagent': {
       return String(args.subagent_thread_id ?? args.subagent_id ?? '查询子智能体').replace(/\r?\n+/g, ' ').trim()
     }

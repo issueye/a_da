@@ -1813,6 +1813,35 @@ export class AgentStore {
     return this.pendingQuestions.has(callId)
   }
 
+  /**
+   * 当前会话里正挂着的提问（`ask_user`），按发起顺序返回。
+   *
+   * 界面用它在输入框上方浮动出问答卡——与审批不同，提问可能在**同一会话里
+   * 同时存在多个**（一次问全几件事），所以返回列表而不是单个。
+   *
+   * 判定的事实来源是 `pendingQuestions`（"工具真的还挂着"），而不是卡片的
+   * `status`：卡片状态要到工具收尾才改写，中间任何一次误标都会让界面上多出一个
+   * 点不动的问答卡——而它对应的等待其实早已结束。反过来，只有卡片能提供问题
+   * 文案，所以两者都要：句柄定"还在等"，卡片取"问的是什么"。
+   *
+   * 面板挂在输入框上、属于**当前**会话，因此按卡片上的 `threadId` 过滤：
+   * 并发会话各自的问题在各自标签页里等，不该窜到别人的输入框上方。
+   */
+  get pendingAnswerQuestions(): Array<{ callId: string; question: AgentQuestion }> {
+    if (this.pendingQuestions.size === 0) return []
+    const activeId = this.active.id
+    const pending: Array<{ callId: string; question: AgentQuestion }> = []
+    for (const callId of this.pendingQuestions.keys()) {
+      const card = this.cards.get(callId)
+      if (!card) continue
+      if (card.threadId && card.threadId !== activeId) continue
+      const question = (card.details as { question?: AgentQuestion } | undefined)?.question
+      if (!question || question.status !== 'pending') continue
+      pending.push({ callId, question })
+    }
+    return pending
+  }
+
   // ---------------------------------------------------------------- 改动回滚
 
   /** 会话里有多少个「仍有效」的文件改动（审阅入口的角标用）。 */

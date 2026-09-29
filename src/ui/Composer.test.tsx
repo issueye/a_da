@@ -667,6 +667,47 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     expect(await app.getByTestId('queued-messages-panel').count()).toBe(0)
     expect(store.queue.length).toBe(0)
 
+    // 4. 待答提问的浮动面板：与队列面板同一位置、同一套视觉
+    //    （这就是这次改动的目的——运行正卡着等的地方，不能随滚动丢失）
+    const askCallId = 'call-composer-ask-1'
+    const askCard = {
+      kind: 'tool' as const,
+      id: 'tool-composer-ask-1',
+      at: Date.now(),
+      callId: askCallId,
+      name: 'ask_user',
+      args: { question: '浮动面板能看见吗？' },
+      rawArgs: '',
+      status: 'running' as const,
+      threadId: store.active.id,
+    }
+    const internals = store as unknown as { cards: Map<string, typeof askCard> }
+    internals.cards.set(askCallId, askCard)
+    store.active.items.push(askCard)
+
+    const pendingAnswer = store.requestUserAnswer({
+      callId: askCallId,
+      question: '浮动面板能看见吗？',
+      choices: [{ id: 'yes', label: '能看见' }],
+    })
+    render(<Composer store={store} />)
+    renderer.flush?.()
+
+    // 无提问时不渲染，有提问时渲染出一条「待回答」与问题本身
+    expect(await app.getByTestId('pending-questions-panel').count()).toBe(1)
+    expect(renderer.getPaintedText().join(' ')).toContain('智能体提问')
+    expect(renderer.getPaintedText().join(' ')).toContain('1 个待回答')
+    expect(renderer.getPaintedText().join(' ')).toContain('浮动面板能看见吗？')
+
+    // 面板里作答即解开等待，且答完面板自动退场（卡片转由会话流当历史）
+    await app.getByTestId('question-choice-yes').click()
+    expect((await pendingAnswer).choice).toBe('yes')
+    render(<Composer store={store} />)
+    renderer.flush?.()
+    expect(await app.getByTestId('pending-questions-panel').count()).toBe(0)
+
+    internals.cards.delete(askCallId)
+
     await app.close()
   })
 

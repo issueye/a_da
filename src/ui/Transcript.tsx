@@ -11,8 +11,9 @@ import { useGpuix, type PublicInstance } from '@gpuix/react'
 import { describeTool } from '../agent/tools'
 import { patchStats } from '../agent/patch'
 import type { AgentStore } from '../agent/store'
-import type { AgentQuestion, Item, ToolStatus } from '../agent/types'
+import type { Item, ToolStatus } from '../agent/types'
 import { Icon } from './controls'
+import { QuestionCard, parseQuestion } from './QuestionCard'
 import type { IconName } from '../icons'
 import { C, docTheme, editorTheme, FONT_MONO, M } from '../theme'
 import { Welcome } from './Welcome'
@@ -34,6 +35,7 @@ const TOOL_LABEL: Record<string, string> = {
   todo: '任务规划',
   invoke_subagent: '委派子智能体',
   check_subagent: '查询子智能体',
+  ask_user: '向用户提问',
 }
 
 const TOOL_ICON: Record<string, IconName> = {
@@ -50,6 +52,7 @@ const TOOL_ICON: Record<string, IconName> = {
   todo: 'listTodo',
   invoke_subagent: 'bot',
   check_subagent: 'bot',
+  ask_user: 'sparkles',
 }
 
 /**
@@ -784,212 +787,10 @@ function TodoContent({ item }: { item: Extract<Item, { kind: 'tool' }> }) {
 }
 
 /**
- * 从工具卡片的 details 里取出问答记录（`ask_user`）。
- *
- * 收到的是工具返回的 `details.question`；字段形状由 `AgentQuestion` 约定。
- * 这里做一次形状校验而不是 `as` 断言：details 也来自历史数据与工具返回值，
- * 畸形数据不该让整张卡片渲染崩掉。
+ * 问答卡与问题解析在 `QuestionCard.tsx`（问答卡的另一个宿主是输入框上方的浮动
+ * 面板，两处共用同一份实现与同一个作答入口）。
  */
-function parseQuestion(item: Extract<Item, { kind: 'tool' }>): AgentQuestion | null {
-  const raw = (item.details as { question?: unknown } | undefined)?.question
-  if (!raw || typeof raw !== 'object') return null
-  const record = raw as Record<string, unknown>
-  if (typeof record.question !== 'string' || !record.question.trim()) return null
-  const status = record.status
-  if (status !== 'pending' && status !== 'answered' && status !== 'aborted') return null
-  return {
-    question: record.question,
-    choices: Array.isArray(record.choices)
-      ? (record.choices as AgentQuestion['choices'])
-      : undefined,
-    allowText: record.allowText !== false,
-    status,
-    askedAt: typeof record.askedAt === 'number' ? record.askedAt : item.at,
-    answer: record.answer as AgentQuestion['answer'],
-  }
-}
-
-/**
- * 问答卡：智能体向用户提问，用户在**这里**作答（不是输入框）。
- *
- * 刻意做成卡片内联交互而不是"把问题塞进输入框让用户打字"：
- * - 会话里同时可能有多个待答问题（多轮提问），内联才分得清在答哪个；
- * - 答案与那次调用绑定，历史里能看到"当时问了什么、答了什么"。
- */
-function QuestionContent({
-  item,
-  question,
-  store,
-}: {
-  item: Extract<Item, { kind: 'tool' }>
-  question: AgentQuestion
-  store: AgentStore
-}) {
-  const [text, setText] = useState('')
-  const pending = question.status === 'pending'
-  const choices = question.choices ?? []
-  const allowText = question.allowText !== false
-  // 有选项时也允许补充，但只有选项能单独提交；纯自由问答必须有内容
-  const canSubmitText = allowText && text.trim().length > 0
-
-  const answeredChoice = question.answer?.choice
-    ? choices.find((choice) => choice.id === question.answer?.choice)
-    : undefined
-
-  return (
-    <div
-      testId={`question-${item.callId}`}
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 8,
-        padding: 10,
-        margin: 8,
-        borderRadius: 8,
-        backgroundColor: pending ? C.accentSoft : C.raised,
-        borderWidth: 1,
-        borderColor: pending ? C.accent : C.cardBorder,
-      }}
-    >
-      <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-        <Icon name="sparkles" size={12} color={pending ? C.accent : C.faint} />
-        <text style={{ fontSize: 10.5, lineHeight: 14, color: pending ? C.accent : C.faint }}>
-          {pending ? '等待你的回答' : question.status === 'answered' ? '已回答' : '未回答'}
-        </text>
-      </div>
-
-      <text
-        style={{
-          fontSize: 12.5,
-          lineHeight: 18,
-          color: C.text,
-          whiteSpace: 'normal',
-        }}
-      >
-        {question.question}
-      </text>
-
-      {pending ? (
-        <>
-          {choices.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-              {choices.map((choice) => (
-                <div
-                  key={choice.id}
-                  testId={`question-choice-${choice.id}`}
-                  role="button"
-                  onClick={() => store.answerQuestion(item.callId, { choice: choice.id })}
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 2,
-                    paddingTop: 7,
-                    paddingBottom: 7,
-                    paddingLeft: 10,
-                    paddingRight: 10,
-                    borderRadius: 7,
-                    cursor: 'pointer',
-                    backgroundColor: C.raised,
-                    borderWidth: 1,
-                    borderColor: C.borderStrong,
-                    hover: { backgroundColor: C.chip },
-                  }}
-                >
-                  <text style={{ fontSize: 12, lineHeight: 16, color: C.text }}>{choice.label}</text>
-                  {choice.description ? (
-                    <text style={{ fontSize: 11, lineHeight: 15, color: C.faint }}>
-                      {choice.description}
-                    </text>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          ) : null}
-
-          {allowText ? (
-            <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <div
-                style={{
-                  display: 'flex',
-                  flexGrow: 1,
-                  minWidth: 0,
-                  alignItems: 'center',
-                  height: 30,
-                  paddingLeft: 8,
-                  paddingRight: 8,
-                  borderRadius: 7,
-                  backgroundColor: C.raised,
-                  borderWidth: 1,
-                  borderColor: C.borderStrong,
-                }}
-              >
-                <input
-                  testId={`question-input-${item.callId}`}
-                  value={text}
-                  placeholder={choices.length > 0 ? '或补充说明…' : '输入你的回答…'}
-                  theme={editorTheme()}
-                  style={{
-                    flexGrow: 1,
-                    minWidth: 0,
-                    fontSize: 12,
-                    color: C.text,
-                    backgroundColor: '#00000000',
-                    borderWidth: 0,
-                  }}
-                  onChange={(event) => setText(event.value ?? '')}
-                  onSubmit={() => {
-                    if (canSubmitText) store.answerQuestion(item.callId, { text: text.trim() })
-                  }}
-                />
-              </div>
-              <div
-                testId={`question-submit-${item.callId}`}
-                role="button"
-                aria-label="提交回答"
-                onClick={() => {
-                  if (canSubmitText) store.answerQuestion(item.callId, { text: text.trim() })
-                }}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  height: 30,
-                  paddingLeft: 12,
-                  paddingRight: 12,
-                  borderRadius: 7,
-                  cursor: 'pointer',
-                  backgroundColor: canSubmitText ? C.inverse : C.chip,
-                  hover: { opacity: 0.9 },
-                }}
-              >
-                <text
-                  style={{
-                    fontSize: 12,
-                    lineHeight: 16,
-                    color: canSubmitText ? C.onInverse : C.faint,
-                  }}
-                >
-                  提交
-                </text>
-              </div>
-            </div>
-          ) : null}
-        </>
-      ) : (
-        // 已作答/已中止：把结果留在卡片上，历史里能看到"当时答了什么"
-        <text style={{ fontSize: 12, lineHeight: 17, color: C.secondary, whiteSpace: 'normal' }}>
-          {question.status === 'aborted'
-            ? '运行已中止，未作答。'
-            : answeredChoice
-              ? `选择了「${answeredChoice.label}」${question.answer?.text ? `，并补充：${question.answer.text}` : ''}`
-              : question.answer?.text
-                ? `回答：${question.answer.text}`
-                : '已提交。'}
-        </text>
-      )}
-    </div>
-  )
-}
-
+export { parseQuestion }
 function SubagentContent({ item, store }: { item: Extract<Item, { kind: 'tool' }>; store: AgentStore }) {
   const subagentId = String(item.args?.subagent_id ?? 'subagent')
   const task = String(item.args?.task ?? '')
@@ -1276,10 +1077,12 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
         盒子只在真有大开内容时才渲染。收起时也渲染的话，一个带边框、里面什么都没有
         的容器会塌成一条 1px 的线——看起来就像每行都带下划线。
 
-        问答卡是例外：它必须**始终**渲染。待答的问题如果被折叠起来，用户就看不到
-        该回答什么，而运行正卡在那里等——那是最糟的一种"界面看起来正常"。
+        已完成/已中止的问答卡是例外：它必须**始终**渲染，作为"当时问了什么、答了什么"
+        的记录留在历史里。**待答**的那张不在这里出现——它浮动在输入框上方
+        （`Composer` 的 `PendingQuestionsFloatingPanel`），用户翻历史时也够得着；
+        两处都画会让同一张卡在同一屏出现两次。
       */}
-      {open || item.status === 'awaiting' || question ? (
+      {open || item.status === 'awaiting' || (question && question.status !== 'pending') ? (
         <div
           style={{
             display: 'flex',
@@ -1353,7 +1156,9 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
             </div>
           ) : null}
 
-          {question ? <QuestionContent item={item} question={question} store={store} /> : null}
+          {question && question.status !== 'pending' ? (
+            <QuestionCard callId={item.callId} question={question} store={store} />
+          ) : null}
 
           {open && isTodo ? <TodoContent item={item} /> : null}
           {open && isSubagent ? <SubagentContent item={item} store={store} /> : null}

@@ -5,6 +5,7 @@ import { connectTest } from '@gpuix/react/automation'
 import type { Item } from '../agent/types'
 import { store } from '../agent/store'
 import { buildTranscriptBlocks, Transcript } from './Transcript'
+import { Composer } from './Composer'
 
 const describeNative = hasNativeTestRenderer ? describe : describe.skip
 
@@ -204,6 +205,12 @@ describeNative('Transcript UI 过程收缩交互', () => {
       <div style={{ display: 'flex', flexDirection: 'column', position: 'relative', width: 800, height: 600 }}>
         {/* 这条用例后半段要在挂载后改 store（ask_user 发起提问），必须用订阅版 */}
         <TranscriptLive />
+        {/*
+          待答的问答卡不在会话流里，而是浮动在输入框上方——所以这里要把 Composer
+          一起挂上。只挂 Transcript 等于验的是"没有输入框的界面"，那本来就不该
+          出现浮动面板。
+        */}
+        <Composer store={store} />
       </div>,
     )
     const app = await connectTest(renderer)
@@ -291,16 +298,21 @@ describeNative('Transcript UI 过程收缩交互', () => {
       ],
     })
 
-    // 待答状态必须**平铺可见**：它若藏在折叠的过程块里，用户就看不到该答什么，
-    // 而整轮正卡在那里等——那是最糟的一种"界面看起来正常"。
-    // 卡在等待时卡片状态是 running，过程块因此判定为"未完成"并默认展开。
+    // 待答的问题**浮动在输入框上方**：整轮正卡在那里等，而会话流随时可能被
+    // 上翻一屏或由虚拟列表回收——那时屏幕上若没有一点"在等我"的痕迹，
+    // 应用看起来就是卡死了。所以断言的是浮动面板，不是会话流里的内联卡。
     await painted('等待你的回答')
     await painted('重构方式选哪种？')
     await painted('先补测试再重构')
     await painted('一次性重构')
+    expect(await app.getByTestId('pending-questions-panel').count()).toBe(1)
+    expect(await app.getByTestId('question-choice-a').count()).toBe(1)
+
+    // 紧接着的这条是这次改动的**核心断言**：同一张卡不能既在浮动面板里、
+    // 又在会话流里，否则用户会看到两个可点的「先补测试再重构」。
+    expect(screen().split('先补测试再重构').length - 1).toBe(1)
 
     // 选项与自由输入并存：有选项时也允许补充说明
-    expect(await app.getByTestId('question-choice-a').count()).toBe(1)
     expect(await app.getByTestId('question-input-call-ask-ui-1').count()).toBe(1)
 
     // 点选项即作答：等待真的被解开，且答案原样传出
@@ -309,8 +321,10 @@ describeNative('Transcript UI 过程收缩交互', () => {
     expect(askAnswer.answeredBy).toBe('user')
     expect(askAnswer.choice).toBe('a')
 
-    // 答完切到"已回答"并留下结果（历史里能看到当时答了什么）
+    // 作答之后交接：浮动面板退场，卡片回到会话流里当历史（"当时答了什么"）
+    await gone('等待你的回答')
     await painted('已回答')
+    expect(await app.getByTestId('pending-questions-panel').count()).toBe(0)
     expect(screen()).toContain('先补测试再重构')
 
     // 说明一处**已知未覆盖**：自由输入的「提交」按钮没有在此点击。
@@ -319,8 +333,73 @@ describeNative('Transcript UI 过程收缩交互', () => {
     // 不是问答卡的问题。自由作答的语义由 store 层用例覆盖（ask-user.test.ts）。
     internals.cards.delete(askCallId)
 
+    // ── 真实链路：模型发出 ask_user → gate 建卡 → 工具挂起等待 ──
+    // 上面那段是**手工摆状态**（直接给 cards 塞卡片、直接调 requestUserAnswer），
+    // 它只能证明"给定状态能画出来"。用户报的阻塞恰恰是"真实链路下什么都没出现"，
+    // 所以这里必须让 store 自己跑一遍：打桩模型端发出工具调用，走 send → gate →
+    // 工具 → 挂起，断言问题卡**自己**出现在界面上。
+    const realCall = { question: '真实链路：改哪个模块？', choices: [{ id: 'x', label: '只改 auth' }] }
+    const realArgs = JSON.stringify(realCall).slice(1, -1).replace(/"/g, '\\"')
+    let fetchCount = 0
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      fetchCount += 1
+      const chunks =
+        fetchCount === 1
+          ? `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_real_1","type":"function","function":{"name":"ask_user","arguments":"{\\"question\\":\\"真实链路：改哪个模块？\\",\\"choices\\":[{\\"id\\":\\"x\\",\\"label\\":\\"只改 auth\\"}]}"}}]},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]`
+          : 'data: {"choices":[{"delta":{"content":"好。"}}]}\n\ndata: [DONE]'
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(chunks))
+            controller.close()
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'text/event-stream' } }
+      )
+    }) as unknown as typeof fetch
+    expect(realArgs.length).toBeGreaterThan(0)
+
+    const savedEnv = {
+      key: process.env.A_DA_API_KEY,
+      url: process.env.A_DA_BASE_URL,
+      model: process.env.A_DA_MODEL,
+    }
+    process.env.A_DA_API_KEY = 'test-key'
+    process.env.A_DA_BASE_URL = 'http://localhost/v1'
+    process.env.A_DA_MODEL = 'test-model'
+    try {
+      await store.reloadPlugins()
+      thread.items = [{ kind: 'user', id: 'u-real-1', at: Date.now(), text: '帮我改认证模块' }]
+      store.send('帮我改认证模块')
+
+      // 关键断言：问题卡与选项必须自己出现在界面上（且是在输入框上方的浮动面板里）
+      await painted('真实链路：改哪个模块？', 20_000)
+      expect(await app.getByTestId('pending-questions-panel').count()).toBe(1)
+      expect(await app.getByTestId('question-choice-x').count()).toBe(1)
+
+      // 作答后这一轮要能收尾（不会永久挂起）
+      await app.getByTestId('question-choice-x').click()
+      const settled = Date.now()
+      while (store.isThreadRunning(thread.id) && Date.now() - settled < 20_000) {
+        await new Promise((r) => setTimeout(r, 50))
+      }
+      expect(store.isThreadRunning(thread.id)).toBe(false)
+    } finally {
+      store.stop(thread.id)
+      globalThis.fetch = originalFetch
+      for (const [k, v] of [
+        ['A_DA_API_KEY', savedEnv.key],
+        ['A_DA_BASE_URL', savedEnv.url],
+        ['A_DA_MODEL', savedEnv.model],
+      ] as const) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+
     await app.close()
-  }, 30_000)
+  }, 90_000)
 
   test('纯思考问答场景：思考收纳在执行过程块中，折叠条显示时长，点击展开查看详情', async () => {
     const thread = store.active

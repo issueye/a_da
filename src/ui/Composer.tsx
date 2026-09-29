@@ -23,6 +23,7 @@ import { computeThreadStats, type AgentMode, type Item, type Thread } from '../a
 import { computeContextBreakdown, type ContextUsageSummary } from '../agent/stats'
 import { ContextUsagePopover } from './ContextUsagePopover'
 import { SlashCommandMenu, type SlashCommandItem } from './SlashCommandMenu'
+import { QuestionCard } from './QuestionCard'
 import type { IconName } from '../icons'
 
 export const MODE_OPTIONS: { value: AgentMode; label: string; icon: IconName; desc: string }[] = [
@@ -560,6 +561,109 @@ function AppendMenu({ store, onPick }: { store: AgentStore; onPick: (value: stri
         </SelectContent>
       </div>
     </Select>
+  )
+}
+
+/**
+ * 待答提问浮动面板：附着在发送框上方，把 `ask_user` 的问题摆到用户眼前。
+ *
+ * 为什么需要它：提问卡原本内联在会话流里，而运行正卡在那里**等**——用户只要往上
+ * 翻一屏历史，或虚拟列表把那一轮回收掉，屏幕上就没有任何"在等我"的痕迹，
+ * 整个应用看起来像卡死了。审批闸门（`awaiting`）走的是同一个逻辑，队列消息则早就
+ * 用了浮动层；这里把提问也搬到同一处：**待答的东西不随滚动丢失。**
+ *
+ * 与排队面板刻意分开两个组件、但位置与视觉一致：两者的数据来源、交互与"留多久"
+ * 都不同（排队是用户的指令、可增删改；提问是模型的、用户只能答），混成一个面板
+ * 会让"这条为什么删不掉"变成谜。
+ *
+ * 作答之后卡片不在这里停留：`store.pendingAnswerQuestions` 只返回仍挂着的提问，
+ * 答完/中止后由会话流里的那张（`Transcript` 的 `QuestionCard`）接手当历史记录。
+ */
+export function PendingQuestionsFloatingPanel({ store }: { store: AgentStore }) {
+  const [, setTick] = useState(0)
+  useEffect(() => store.subscribe(() => setTick((t) => t + 1)), [store])
+
+  const pending = store.pendingAnswerQuestions
+  if (pending.length === 0) return null
+
+  return (
+    <div
+      testId="pending-questions-panel"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        width: '100%',
+        maxWidth: M.composerMax,
+        marginBottom: 8,
+        backgroundColor: C.raised,
+        borderWidth: 1,
+        borderColor: C.accent,
+        borderRadius: 12,
+        boxShadow: {
+          offsetX: 0,
+          offsetY: 4,
+          blurRadius: 16,
+          spreadRadius: 0,
+          color: 'rgba(0, 0, 0, 0.16)',
+        },
+        paddingTop: 8,
+        paddingBottom: 8,
+        paddingLeft: 10,
+        paddingRight: 10,
+        gap: 6,
+      }}
+      onClick={(e: any) => e?.stopPropagation?.()}
+    >
+      {/* 顶部标题栏 */}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          paddingLeft: 4,
+          paddingRight: 4,
+          paddingBottom: 6,
+          borderBottomWidth: 1,
+          borderColor: C.cardBorder,
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Icon name="sparkles" size={13} color={C.accent} />
+          <text style={{ fontSize: 12, fontWeight: 600, color: C.text }}>智能体提问</text>
+          <div
+            style={{
+              paddingLeft: 6,
+              paddingRight: 6,
+              height: 18,
+              borderRadius: 9,
+              backgroundColor: C.accentSoft,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <text style={{ fontSize: 10.5, fontWeight: 500, color: C.accent }}>
+              {`${pending.length} 个待回答`}
+            </text>
+          </div>
+          <text style={{ fontSize: 11, color: C.faint }}>
+            (整轮正等你作答，回答后继续)
+          </text>
+        </div>
+      </div>
+
+      {/* 问题列表：作答后由会话流接手，所以这里不画终态 */}
+      {pending.map((entry) => (
+        <QuestionCard
+          key={entry.callId}
+          callId={entry.callId}
+          question={entry.question}
+          store={store}
+          variant="floating"
+        />
+      ))}
+    </div>
   )
 }
 
@@ -1214,6 +1318,9 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
         userSelect: 'none',
       }}
     >
+      {/* 待答提问以浮动框附着在发送框上方：运行正卡在这里等，不能随滚动丢失 */}
+      <PendingQuestionsFloatingPanel store={store} />
+
       {/* 队列中的发送消息以浮动框附着在发送框上方 */}
       <QueuedMessagesFloatingPanel
         store={store}

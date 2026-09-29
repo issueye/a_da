@@ -175,7 +175,7 @@ export interface SubagentGateResult {
   allowed: boolean
   /**
    * 置信度（0-1）。**拿不到真实判断时必须是 `undefined`**，不许编一个看起来合理的数
-   * ——与决策插件的契约一致（AGENTS.md §9）。
+   * ——与决策插件的契约一致（docs/agent-conventions.md §9）。
    */
   confidence?: number
   /** 该置信度是否经过校准；本地自评是多次采样的投票占比，恒为 false */

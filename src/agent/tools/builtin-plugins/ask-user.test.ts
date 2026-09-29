@@ -245,6 +245,65 @@ describe('ask_user 工具：中止与拒绝', () => {
   })
 })
 
+describe('ask_user：待答提问的查询（浮动面板的数据来源）', () => {
+  test('提问挂起时出现在列表里，作答后立即消失', async () => {
+    const store = singleton
+    const { callId } = setupRunningCall(store)
+    const tool = createAskUserTool()
+    const pending = tool.execute(callId, { question: '先做哪个？', choices: [{ id: 'a', label: 'A' }] })
+
+    await waitForPending(store, callId)
+    const during = store.pendingAnswerQuestions
+    expect(during.map((entry) => entry.callId)).toContain(callId)
+    expect(during.find((entry) => entry.callId === callId)?.question.question).toBe('先做哪个？')
+
+    store.answerQuestion(callId, { choice: 'a' })
+    await pending
+    expect(store.pendingAnswerQuestions.map((entry) => entry.callId)).not.toContain(callId)
+  })
+
+  test('并发会话各自的提问互不串台（只返回当前会话的）', async () => {
+    const store = singleton
+    const first = setupRunningCall(store)
+    const second = setupRunningCall(store)
+    const tool = createAskUserTool()
+    const pendingFirst = tool.execute(first.callId, { question: '第一问？' })
+    const pendingSecond = tool.execute(second.callId, { question: '第二问？' })
+
+    await waitForPending(store, first.callId)
+    await waitForPending(store, second.callId)
+    // setupRunningCall 会把新会话选中，所以当前会话是第二个
+    const callIds = store.pendingAnswerQuestions.map((entry) => entry.callId)
+    expect(callIds).toContain(second.callId)
+    expect(callIds).not.toContain(first.callId)
+
+    // 切回第一个会话，它自己的提问就在列表里
+    store.selectThread(first.thread.id)
+    expect(store.pendingAnswerQuestions.map((entry) => entry.callId)).toEqual([first.callId])
+
+    store.answerQuestion(first.callId, { text: '答' })
+    store.answerQuestion(second.callId, { text: '答' })
+    await Promise.all([pendingFirst, pendingSecond])
+  })
+
+  test('卡片被收尾（工具结束）后列表里不会残留点不动的问答卡', async () => {
+    const store = singleton
+    const { callId } = setupRunningCall(store)
+    const tool = createAskUserTool()
+    const pending = tool.execute(callId, { question: '还算数吗？' })
+    await waitForPending(store, callId)
+    expect(store.pendingAnswerQuestions).toHaveLength(1)
+
+    // 模拟工具收尾：卡片被摘掉，但等待句柄还在（真实链路里 finishToolCall 之后
+    // 就是这一刻）。此时列表必须为空——否则界面上会留下一个点不动的问答卡。
+    internals(store).cards.delete(callId)
+    expect(store.pendingAnswerQuestions).toHaveLength(0)
+
+    store.answerQuestion(callId, { text: '收尾' })
+    await pending
+  })
+})
+
 describe('ask_user：与审批等待互不干扰', () => {
   test('作答不会误触发审批，且两套等待各自独立收尾', async () => {
     const store = singleton

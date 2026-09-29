@@ -123,7 +123,7 @@ export async function runSubagentGate(
     : undefined
 
   // "有没有真的判断"的判据是**拿不拿得出校准信息**：判定方只报 allowed 而不报
-  // confidence/calibrated，就等于没给依据（AGENTS.md §9 的诚实性契约）
+  // confidence/calibrated，就等于没给依据（docs/agent-conventions.md §9 的诚实性契约）
   const judged = verdict?.confidence !== undefined || verdict?.calibrated !== undefined
   const authorized = new Map(options.authorizedTools.map((tool) => [tool.name, tool]))
 

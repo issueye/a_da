@@ -750,7 +750,7 @@ describe('a_da 集成：注册表与子智能体可见性', () => {
   })
 
   test('三个决策工具都被认作只读（否则只读子智能体与 plan 模式拿不到）', () => {
-    // AGENTS.md 第 2 条：isWriteTool 失败安全，只读工具漏登记就会被 mode 过滤器剔除
+    // docs/agent-conventions.md §2：isWriteTool 失败安全，只读工具漏登记就会被 mode 过滤器剔除
     expect(defaultToolRegistry.isWriteTool('decide')).toBe(false)
     expect(defaultToolRegistry.isWriteTool('design_decision')).toBe(false)
     expect(defaultToolRegistry.isWriteTool('check_gate')).toBe(false)

@@ -28,7 +28,7 @@ export function createSubagentGateHook(): AgentHooks['beforeSubagentStart'] {
     const resolved = await resolveEngine(config, {})
     if (resolved.engine.id === 'heuristic') {
       // 没有可用引擎：**不给依据**，把失败方向交给核心的 failOpen 规则
-      // （不编造 confidence，也不假装判定成功——AGENTS.md §9）
+      // （不编造 confidence，也不假装判定成功——docs/agent-conventions.md §9）
       ctx.trace?.(
         `[决策插件] 子智能体「${ctx.profileName}」的门禁没有可用引擎（${resolved.note ?? '仅启发式'}），判定不可用`
       )
