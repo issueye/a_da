@@ -9,7 +9,7 @@
 
 import React, { useState } from 'react'
 import { Icon, IconButton } from './controls'
-import { C, editorTheme, M, shortPath } from '../theme'
+import { C, editorTheme, M } from '../theme'
 import type { AgentStore } from '../agent/store'
 import type { Thread } from '../agent/types'
 import { getSubagentColor } from '../agent/subagents/types'
@@ -559,7 +559,7 @@ function WorkspaceTreeNode({
       (!queryLower || t.title.toLowerCase().includes(queryLower)),
   )
 
-  const label = shortPath(workspacePath, 2)
+  const label = store.labelFor(workspacePath)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100%', flexShrink: 0 }}>
@@ -621,7 +621,11 @@ function WorkspaceTreeNode({
             cursor: 'pointer',
           }}
         >
-          <Icon name="folder" size={13} color={isCurrent ? C.link : C.secondary} />
+          <Icon
+            name={store.isPublic(workspacePath) ? 'sparkles' : 'folder'}
+            size={13}
+            color={isCurrent ? C.link : C.secondary}
+          />
           <text
             style={{
               fontSize: 12.5,
@@ -717,37 +721,39 @@ function WorkspaceTreeNode({
             <Icon name="folderOpen" size={11} color={C.faint} />
           </div>
 
-          {/* 移除工作区按钮 (垃圾桶) */}
-          <div
-            testId={`remove-project-${label}`}
-            role="button"
-            aria-label={`移除工作区 ${label}`}
-            onClick={() => {
-              store.showConfirm({
-                title: '移除工作区',
-                message: `确定要从列表中移除工作区「${label}」吗？工作区下的会话历史记录将被清除，但本地实际代码文件不会被删除。`,
-                confirmText: '确认移除',
-                onConfirm: () => {
-                  const err = store.removeProject(workspacePath)
-                  if (err) onNotice(err)
-                },
-              })
-            }}
-            style={{
-              display: 'flex',
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 18,
-              height: 18,
-              borderRadius: 4,
-              cursor: 'pointer',
-              opacity: hovered ? 1 : 0,
-              hover: { backgroundColor: C.chipHover },
-            }}
-          >
-            <Icon name="trash" size={11} color={C.faint} />
-          </div>
+          {/* 移除工作区按钮 (垃圾桶)：公共区由 a-da 提供，不给移除入口 */}
+          {store.isPublic(workspacePath) ? null : (
+            <div
+              testId={`remove-project-${label}`}
+              role="button"
+              aria-label={`移除工作区 ${label}`}
+              onClick={() => {
+                store.showConfirm({
+                  title: '移除工作区',
+                  message: `确定要从列表中移除工作区「${label}」吗？工作区下的会话历史记录将被清除，但本地实际代码文件不会被删除。`,
+                  confirmText: '确认移除',
+                  onConfirm: () => {
+                    const err = store.removeProject(workspacePath)
+                    if (err) onNotice(err)
+                  },
+                })
+              }}
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 18,
+                height: 18,
+                borderRadius: 4,
+                cursor: 'pointer',
+                opacity: hovered ? 1 : 0,
+                hover: { backgroundColor: C.chipHover },
+              }}
+            >
+              <Icon name="trash" size={11} color={C.faint} />
+            </div>
+          )}
         </div>
       </div>
 

@@ -1,26 +1,39 @@
 /**
  * 工作区快速选择器（用于居中新建对话界面输入框上方）
  *
- * 展示当前会话绑定的工作区，点击弹出下拉浮层，可切换至其它工作区或快捷添加新工作区。
+ * 展示当前会话绑定的工作区，点击弹出下拉浮层，可切换至其它工作区、打开 a-da 的
+ * 公共区，或快捷添加新工作区。
  */
 
 import React from 'react'
 import { Select, SelectTrigger, SelectContent, SelectItem, useGpuix } from '@gpuix/react'
 import { Icon, MenuSurface, menuItemStyle, MenuRow, menuLayer } from './controls'
 import type { AgentStore } from '../agent/store'
-import { C, shortPath } from '../theme'
+import { C } from '../theme'
+import { PUBLIC_WORKSPACE_LABEL } from '../agent/home'
 import { pickDirectory } from '../platform/dialog'
+
+/** 「公共区」在下拉里的哨兵值：它是 a-da 提供的工作区，不在 projects 里。 */
+const PUBLIC_OPTION = '__public_workspace__'
 
 export function WorkspaceSelector({ store }: { store: AgentStore }) {
   const { renderer } = useGpuix()
   const current = store.active.workspace
-  const label = shortPath(current, 2)
+  const label = store.labelFor(current)
+  // 公共区已作为专门的一项固定在顶部，就不再从 projects 里重复列一遍。
+  const otherProjects = store.projects.filter((p) => !store.isPublic(p))
   const items = [
-    ...store.projects.map((p) => ({ value: p, label: shortPath(p, 2) })),
+    { value: PUBLIC_OPTION, label: PUBLIC_WORKSPACE_LABEL },
+    ...otherProjects.map((p) => ({ value: p, label: store.labelFor(p) })),
     { value: '__add_new__', label: '+ 添加工作区...' },
   ]
 
   const handleChange = (selected: string) => {
+    if (selected === PUBLIC_OPTION) {
+      // 目录由 a-da 提供（不存在则建），当前会话直接绑过去。
+      void store.openPublicWorkspace(store.active.id)
+      return
+    }
     if (selected === '__add_new__') {
       void pickDirectory(current, renderer).then((result) => {
         if (result.status === 'picked') {
@@ -37,7 +50,11 @@ export function WorkspaceSelector({ store }: { store: AgentStore }) {
   }
 
   return (
-    <Select items={items} value={current} onValueChange={handleChange}>
+    <Select
+      items={items}
+      value={store.isPublic(current) ? PUBLIC_OPTION : current}
+      onValueChange={handleChange}
+    >
       <div style={{ position: 'relative', display: 'flex' }}>
         <SelectTrigger
           testId="workspace-selector-trigger"
@@ -76,15 +93,26 @@ export function WorkspaceSelector({ store }: { store: AgentStore }) {
           style={{ ...menuLayer(), minWidth: 260 }}
         >
           <MenuSurface maxHeight={280}>
-            {store.projects.map((p) => (
+            <SelectItem
+              testId="select-workspace-public"
+              value={PUBLIC_OPTION}
+              style={menuItemStyle}
+            >
+              <MenuRow
+                label={PUBLIC_WORKSPACE_LABEL}
+                description="a-da 自带的工作区，不绑定任何项目"
+                selected={store.isPublic(current)}
+              />
+            </SelectItem>
+            {otherProjects.map((p) => (
               <SelectItem
                 key={p}
-                testId={`select-workspace-${shortPath(p, 2)}`}
+                testId={`select-workspace-${store.labelFor(p)}`}
                 value={p}
                 style={menuItemStyle}
               >
                 <MenuRow
-                  label={shortPath(p, 2)}
+                  label={store.labelFor(p)}
                   description={p}
                   selected={p === current}
                 />

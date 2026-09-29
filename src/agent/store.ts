@@ -60,7 +60,8 @@ import {
 import { resolveSubagentTools, runSubagentGate, type SubagentGateOutcome } from './subagents/access'
 import { getLoadedPlugins } from './plugins/registry'
 import { applyCompactionVerdict } from './compact/verdict'
-import { applyAppearance, appearance, shortPath, type Appearance } from '../theme'
+import { applyAppearance, appearance, type Appearance } from '../theme'
+import { getPublicWorkspace, isPublicWorkspace, workspaceLabel } from './home'
 import { computeThreadStats, type AgentMode, type AgentQuestion, type DebugEntry, type Item, type Thread, type ThreadStats } from './types'
 import {
   selectCompactSelection,
@@ -196,6 +197,13 @@ export class AgentStore {
   effort: Effort = 'max'
   /** 协作模式：code (敏捷编码) | plan (规划设计) | create (元开发/智能体自我进化) */
   mode: AgentMode = 'code'
+  /**
+   * 公共区目录（a-da 自带的工作区），构造时定下来。
+   *
+   * 存在实例上而不是每次问 `getPublicWorkspace()`：后者读进程级 `A_DA_HOME`，
+   * 会让「同一个 store 在不同时刻对公共区的看法」不稳定。
+   */
+  publicWorkspace: string
   debugOpen = false
   settingsOpen = false
   pluginsOpen = false
@@ -362,7 +370,13 @@ export class AgentStore {
     }
   }
 
-  constructor(workspace: string = process.env.A_DA_WORKSPACE || process.cwd()) {
+  constructor(
+    workspace: string = process.env.A_DA_WORKSPACE || process.cwd(),
+    publicWorkspace: string = getPublicWorkspace(),
+  ) {
+    // 公共区路径**在构造时定下来**，之后只认这一份：`A_DA_HOME` 是进程级变量，
+    // 运行期反复读取既不必要，也会让并发跑在同一进程里的测试互相踩。
+    this.publicWorkspace = publicWorkspace
     defaultExtensionLoader.bindHost((msg) => this.trace(msg))
     // 上次的会话要先摆回来，再决定当前项目是哪一个：恢复完就直接显示，而不是
     // 先给一个空会话、等异步任务回来再换掉。
@@ -1452,7 +1466,7 @@ export class AgentStore {
     this.threads = [thread, ...this.threads]
     this.activeId = thread.id
     this.openTab(thread.id)
-    this.push({ kind: 'info', text: `新建会话 · ${workspace}` })
+    this.push({ kind: 'info', text: `新建会话 · ${this.labelFor(workspace)}` })
     void this.refresh()
     // 建会话的钩子异步落地：标题先显示默认值、随即可能被插件建议改掉，
     // pluginData 也是稍后写进会话与落盘文件。保持 newThread 同步是有意的——
@@ -1460,6 +1474,36 @@ export class AgentStore {
     void this.runThreadCreateHooks(thread)
     this.notify()
     return thread
+  }
+
+  /** 工作区展示名（公共区显示为「公共区」，其余是短路径）。 */
+  labelFor(workspace: string): string {
+    return workspaceLabel(workspace, this.publicWorkspace)
+  }
+
+  /** 这个路径是不是公共区。 */
+  isPublic(workspace: string): boolean {
+    return isPublicWorkspace(workspace, this.publicWorkspace)
+  }
+
+  /**
+   * 打开公共区：a-da 自带的工作区，首次使用会把目录建出来。
+   *
+   * 它和普通工作区走同一条路（同一份会话落盘、同一套工具沙箱），区别只在目录由
+   * a-da 提供。`threadId` 给了就把那个会话绑过去（居中新建界面上换工作区就是这种），
+   * 不给就新开一个会话——两者都对应「新建对话时选公共区」。
+   */
+  async openPublicWorkspace(threadId?: string): Promise<void> {
+    const target = this.publicWorkspace
+    try {
+      await mkdir(target, { recursive: true })
+    } catch (error) {
+      this.push({ kind: 'error', text: `无法创建公共区目录：${(error as Error).message}` })
+      this.notify()
+      return
+    }
+    if (threadId) this.setThreadWorkspace(threadId, target)
+    else this.newThread(target)
   }
 
   /** Open a project: its newest thread, or a fresh one the first time. */
@@ -1491,12 +1535,12 @@ export class AgentStore {
     )
     if (existing) {
       this.selectProject(existing)
-      this.push({ kind: 'info', text: `工作区已存在，已切换至「${shortPath(existing, 2)}」` })
+      this.push({ kind: 'info', text: `工作区已存在，已切换至「${this.labelFor(existing)}」` })
       return null
     }
 
     this.newThread(normalized)
-    this.push({ kind: 'info', text: `已添加并打开工作区「${shortPath(normalized, 2)}」` })
+    this.push({ kind: 'info', text: `已添加并打开工作区「${this.labelFor(normalized)}」` })
     return null
   }
 
@@ -1614,6 +1658,9 @@ export class AgentStore {
   removeProject(workspace: string): string | null {
     if (!this.projects.includes(workspace)) return null
 
+    // 公共区由 a-da 提供，不是一个可增删的项目：给界面兜底，别让调用方绕过 UI 把它删了。
+    if (isPublicWorkspace(workspace, this.publicWorkspace)) return '公共区由 a-da 提供，不能移除'
+
     const runningInWorkspace = this.threads.some(
       (candidate) => candidate.workspace === workspace && this.isThreadRunning(candidate.id),
     )
@@ -1647,7 +1694,7 @@ export class AgentStore {
     for (const t of doomed) {
       void defaultCheckpointManager.discard(t.id).catch(() => {})
     }
-    this.push({ kind: 'info', text: `已移除工作区「${shortPath(workspace, 2)}」` })
+    this.push({ kind: 'info', text: `已移除工作区「${this.labelFor(workspace)}」` })
     this.notify()
     return null
   }
