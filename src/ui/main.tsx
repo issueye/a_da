@@ -10,27 +10,13 @@
 // 彻底解决 Rust 原生层向 stderr 写日志因空句柄导致 panic (os error 6) 闪退的问题。
 import '../platform/init'
 
-import { appendFileSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
 import React from 'react'
 import { render } from '@gpuix/react'
 import { AgentWindow } from '../AgentWindow'
 import { agentClient } from './client'
-import { getAppHome } from '../agent/home'
+import { log } from './client/logging'
 import { activateAndShowWindow, isUserInitiatedExit } from '../platform/win32'
 import { handleGlobalShortcut } from './shortcuts'
-
-// 日志记录：输出到应用数据目录，方便无控制台模式下追踪问题
-const logDir = getAppHome()
-try {
-  mkdirSync(logDir, { recursive: true })
-} catch {}
-const logFile = join(logDir, 'app_debug.log')
-export function log(msg: string): void {
-  try {
-    appendFileSync(logFile, `[${new Date().toISOString()}] ${msg}\n`)
-  } catch {}
-}
 
 log(`=== a_da 启动 (pid=${process.pid}, platform=${process.platform}, cwd=${process.cwd()}) ===`)
 

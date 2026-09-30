@@ -240,14 +240,19 @@ export function ComposerTelemetryBar({
 }) {
   const [popoverOpen, setPopoverOpen] = useState(false)
   const thread = client.state.active
+  const currentMode = thread.mode ?? client.state.mode ?? 'code'
+  const workspace = thread.workspace || process.cwd()
+
+  // **hooks 必须在任何提前 return 之前**：这个组件在"空会话居中"时会 return null，
+  // 而 `usePromptChars` 内部有 useState/useEffect——放在 return 之后会变成
+  // "Rendered more hooks than during the previous render"（会话一有消息就炸）。
+  // 所以取值与 hook 都提到前面来，return null 只影响渲染、不影响 hook 顺序。
+  const promptChars = usePromptChars(client, thread, currentMode, workspace)
+
   // 空会话初始居中模式时不展示，进入会话或有消息时开始展示
   if (centered && thread.items.length === 0) {
     return null
   }
-
-  const currentMode = thread.mode ?? client.state.mode ?? 'code'
-  const workspace = thread.workspace || process.cwd()
-  const promptChars = usePromptChars(client, thread, currentMode, workspace)
 
   const telemetry = computeThreadTelemetry(
     thread,
