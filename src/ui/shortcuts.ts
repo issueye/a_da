@@ -9,7 +9,7 @@
  * 命令面板开着时只认 Ctrl+K 与 Escape。
  */
 
-import type { AgentStore } from '../agent/store'
+import type { AgentClient } from './client'
 
 export interface ShortcutEvent {
   key?: string
@@ -26,7 +26,7 @@ export interface ShortcutSpec {
   description?: string
   /** 判定：key 为小写后的 event.key；mods 为归一化的修饰键 */
   match: (key: string, mods: { shift: boolean; ctrl: boolean; alt: boolean; cmd: boolean }) => boolean
-  run: (store: AgentStore) => void
+  run: (client: AgentClient) => void
   /** 面板开着时是否仍然生效（默认 false） */
   activeWithPalette?: boolean
 }
@@ -43,7 +43,7 @@ export const GLOBAL_SHORTCUTS: ShortcutSpec[] = [
     label: '打开 / 关闭命令面板',
     description: '所有动作的快捷入口',
     match: (key) => key === 'k',
-    run: (store) => store.setPaletteOpen(!store.paletteOpen),
+    run: (client) => client.ui.setPaletteOpen(!client.state.paletteOpen),
     activeWithPalette: true,
   },
   {
@@ -51,9 +51,10 @@ export const GLOBAL_SHORTCUTS: ShortcutSpec[] = [
     keys: 'Ctrl+T',
     label: '新建对话',
     match: (key, mods) => key === 't' && !mods.shift,
-    run: (store) => {
-      const thread = store.newThread(store.project)
-      store.openTab(thread.id)
+    run: (client) => {
+      void client
+        .request('thread.create', { workspace: client.state.project })
+        .then(({ threadId }) => client.ui.openTab(threadId))
     },
   },
   {
@@ -61,28 +62,28 @@ export const GLOBAL_SHORTCUTS: ShortcutSpec[] = [
     keys: 'Ctrl+B',
     label: '显示 / 隐藏侧边栏',
     match: (key) => key === 'b',
-    run: (store) => store.toggleSidebar(),
+    run: (client) => client.ui.toggleSidebar(),
   },
   {
     id: 'toggle-debug',
     keys: 'Ctrl+D',
     label: '显示 / 隐藏调试日志',
     match: (key) => key === 'd',
-    run: (store) => store.toggleDebug(),
+    run: (client) => client.ui.toggleDebug(),
   },
   {
     id: 'settings',
     keys: 'Ctrl+,',
     label: '打开设置',
     match: (key) => key === ',',
-    run: (store) => store.setSettings(!store.settingsOpen),
+    run: (client) => client.ui.setSettings(!client.state.settingsOpen),
   },
   {
     id: 'plugins',
     keys: 'Ctrl+Shift+P',
     label: '打开插件管理',
     match: (key, mods) => key === 'p' && mods.shift,
-    run: (store) => store.setPlugins(!store.pluginsOpen),
+    run: (client) => client.ui.setPlugins(!client.state.pluginsOpen),
   },
   {
     id: 'changes',
@@ -90,23 +91,23 @@ export const GLOBAL_SHORTCUTS: ShortcutSpec[] = [
     label: '打开 / 关闭改动审阅',
     description: '查看本会话的文件改动并支持恢复原状',
     match: (key) => key === 'r',
-    run: (store) => store.setChangesOpen(!store.changesOpen),
+    run: (client) => client.ui.setChangesOpen(!client.state.changesOpen),
   },
   {
     id: 'close-tab',
     keys: 'Ctrl+W',
     label: '关闭当前标签',
     match: (key) => key === 'w',
-    run: (store) => store.closeTab(store.activeId),
+    run: (client) => client.ui.closeTab(client.state.activeId),
   },
   {
     id: 'escape',
     keys: 'Esc',
     label: '关闭浮层',
     match: (key) => key === 'escape',
-    run: (store) => {
-      if (store.paletteOpen) store.setPaletteOpen(false)
-      else if (store.changesOpen) store.setChangesOpen(false)
+    run: (client) => {
+      if (client.state.paletteOpen) client.ui.setPaletteOpen(false)
+      else if (client.state.changesOpen) client.ui.setChangesOpen(false)
     },
     activeWithPalette: true,
   },
@@ -116,7 +117,7 @@ export const GLOBAL_SHORTCUTS: ShortcutSpec[] = [
  * 窗口级 keyDown 的统一入口。返回是否消费了这个事件（消费了的可以阻止
  * 后续默认处理——GPUX 目前没有 preventDefault，这里只做语义上的标记）。
  */
-export function handleGlobalShortcut(event: ShortcutEvent, store: AgentStore): boolean {
+export function handleGlobalShortcut(event: ShortcutEvent, client: AgentClient): boolean {
   const key = String(event?.key ?? '').toLowerCase()
   if (!key || event?.isHeld) return false
   // 带输入的组合键（Ctrl+V 之类已在输入框处理的）不属于这里管；但窗口级的
@@ -124,11 +125,11 @@ export function handleGlobalShortcut(event: ShortcutEvent, store: AgentStore): b
   const mods = normMods(event)
   if (!mods.ctrl) return false
 
-  const paletteOpen = store.paletteOpen
+  const paletteOpen = client.state.paletteOpen
   for (const shortcut of GLOBAL_SHORTCUTS) {
     if (paletteOpen && !shortcut.activeWithPalette) continue
     if (shortcut.match(key, mods)) {
-      shortcut.run(store)
+      shortcut.run(client)
       return true
     }
   }

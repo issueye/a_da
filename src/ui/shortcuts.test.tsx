@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react'
 import { store } from '../agent/store'
 import { GLOBAL_SHORTCUTS, handleGlobalShortcut, type ShortcutEvent } from './shortcuts'
 import { CommandPalette } from './CommandPalette'
+import { agentClient } from './client'
 
 const describeNative = hasNativeTestRenderer ? describe : describe.skip
 
@@ -22,21 +23,21 @@ const key = (overrides: Partial<ShortcutEvent>): ShortcutEvent => ({
 describe('handleGlobalShortcut 分发', () => {
   test('Ctrl+K 开关命令面板', () => {
     store.setPaletteOpen(false)
-    handleGlobalShortcut(key({ key: 'k' }), store)
+    handleGlobalShortcut(key({ key: 'k' }), agentClient)
     expect(store.paletteOpen).toBe(true)
-    handleGlobalShortcut(key({ key: 'K' }), store)
+    handleGlobalShortcut(key({ key: 'K' }), agentClient)
     expect(store.paletteOpen).toBe(false)
   })
 
   test('Ctrl+B 切换侧边栏，Ctrl+D 切换调试', () => {
     const sidebarBefore = store.sidebarOpen
-    handleGlobalShortcut(key({ key: 'b' }), store)
+    handleGlobalShortcut(key({ key: 'b' }), agentClient)
     expect(store.sidebarOpen).toBe(!sidebarBefore)
-    handleGlobalShortcut(key({ key: 'b' }), store)
+    handleGlobalShortcut(key({ key: 'b' }), agentClient)
     expect(store.sidebarOpen).toBe(sidebarBefore)
 
     const debugBefore = store.debugOpen
-    handleGlobalShortcut(key({ key: 'd' }), store)
+    handleGlobalShortcut(key({ key: 'd' }), agentClient)
     expect(store.debugOpen).toBe(!debugBefore)
     store.toggleDebug()
   })
@@ -45,27 +46,27 @@ describe('handleGlobalShortcut 分发', () => {
     store.setPaletteOpen(true)
     // Ctrl+T 在面板打开时不该新建会话
     const threadsBefore = store.threads.length
-    handleGlobalShortcut(key({ key: 't' }), store)
+    handleGlobalShortcut(key({ key: 't' }), agentClient)
     expect(store.threads.length).toBe(threadsBefore)
 
-    handleGlobalShortcut(key({ key: 'Escape' }), store)
+    handleGlobalShortcut(key({ key: 'Escape' }), agentClient)
     expect(store.paletteOpen).toBe(false)
   })
 
   test('裸键与按住重复不触发', () => {
     const before = store.paletteOpen
-    expect(handleGlobalShortcut(key({ key: 'k', modifiers: { ctrl: false, shift: false, alt: false, cmd: false } }), store)).toBe(false)
+    expect(handleGlobalShortcut(key({ key: 'k', modifiers: { ctrl: false, shift: false, alt: false, cmd: false } }), agentClient)).toBe(false)
     expect(store.paletteOpen).toBe(before)
     // 按住不放的自动重复直接忽略（否则开关会疯狂抖动）
-    expect(handleGlobalShortcut(key({ key: 'k', isHeld: true }), store)).toBe(false)
+    expect(handleGlobalShortcut(key({ key: 'k', isHeld: true }), agentClient)).toBe(false)
     expect(store.paletteOpen).toBe(before)
   })
 
   test('Ctrl+R 开关改动审阅', () => {
     store.setChangesOpen(false)
-    handleGlobalShortcut(key({ key: 'r' }), store)
+    handleGlobalShortcut(key({ key: 'r' }), agentClient)
     expect(store.changesOpen).toBe(true)
-    handleGlobalShortcut(key({ key: 'r' }), store)
+    handleGlobalShortcut(key({ key: 'r' }), agentClient)
     expect(store.changesOpen).toBe(false)
   })
 
@@ -85,7 +86,7 @@ describeNative('CommandPalette 渲染与执行', () => {
       const [, setTick] = useState(0)
       useEffect(() => store.subscribe(() => setTick((t) => t + 1)), [])
       // 与 AgentWindow 一致：只在 paletteOpen 时挂载，回滚状态后才会真的消失
-      return store.paletteOpen ? <CommandPalette store={store} /> : <div />
+      return store.paletteOpen ? <CommandPalette client={agentClient} /> : <div />
     }
 
     store.setPaletteOpen(true)

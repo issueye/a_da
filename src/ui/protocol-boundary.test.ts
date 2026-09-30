@@ -24,13 +24,10 @@ const uiDir = join(root, 'src', 'ui')
 
 /** 待迁移清单（相对仓库根、正斜杠）。M0 结束前清空。 */
 const PENDING = [
-  'src/ui/CommandPalette.tsx',
   'src/ui/Composer.tsx',
   'src/ui/EmptyConversationView.tsx',
   'src/ui/PluginsDialog.tsx',
   'src/ui/SlashCommandMenu.tsx',
-  'src/ui/WorkspaceSelector.tsx',
-  'src/ui/shortcuts.ts',
 ]
 
 function listUiSources(dir: string, out: string[] = []): string[] {

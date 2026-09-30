@@ -8,6 +8,7 @@ import { createTestRoot, hasNativeTestRenderer } from '@gpuix/react/testing'
 import { AgentStore, store } from '../agent/store'
 import { publicWorkspaceOf } from '../agent/home'
 import { EmptyConversationView } from './EmptyConversationView'
+import { createInProcessClient } from './client'
 import { shortPath } from '../theme'
 
 const describeNative = hasNativeTestRenderer ? describe : describe.skip
@@ -35,7 +36,7 @@ describeNative('EmptyConversationView', () => {
     const label2 = shortPath(ws2, 2)
 
     const { render, renderer } = createTestRoot({ width: 1120, height: 760 })
-    render(<EmptyConversationView store={store} />)
+    render(<EmptyConversationView client={createInProcessClient(store)} store={store} />)
     const app = await connectTest(renderer)
 
     const screen = () => renderer.getPaintedText().join('\n')
@@ -66,7 +67,7 @@ describeNative('EmptyConversationView', () => {
     const localStore = new AgentStore(projectDir, publicPath)
 
     const { render, renderer } = createTestRoot({ width: 1120, height: 760 })
-    render(<EmptyConversationView store={localStore} />)
+    render(<EmptyConversationView client={createInProcessClient(localStore)} store={localStore} />)
     const app = await connectTest(renderer)
 
     try {

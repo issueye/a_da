@@ -74,7 +74,7 @@ export function AgentWindow() {
         <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, minWidth: 0 }}>
           <TabStrip client={client} />
           {isEmpty ? (
-            <EmptyConversationView store={agent} />
+            <EmptyConversationView client={client} store={agent} />
           ) : (
             <>
               <Transcript client={client} />
@@ -86,7 +86,7 @@ export function AgentWindow() {
       </div>
       {client.state.settingsOpen ? <SettingsDialog client={client} /> : null}
       {client.state.pluginsOpen ? <PluginsDialog store={agent} /> : null}
-      {client.state.paletteOpen ? <CommandPalette store={agent} /> : null}
+      {client.state.paletteOpen ? <CommandPalette client={client} /> : null}
       {client.state.confirmModal ? (
         <ConfirmDialog
           options={client.state.confirmModal}

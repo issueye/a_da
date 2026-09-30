@@ -8,7 +8,7 @@
  */
 
 import React, { useEffect, useState } from 'react'
-import type { AgentStore } from '../agent/store'
+import type { AgentClient } from './client'
 import { C, FONT_MONO } from '../theme'
 import { GLOBAL_SHORTCUTS } from './shortcuts'
 
@@ -21,14 +21,14 @@ export interface PaletteItem {
 }
 
 /** 面板条目：快捷键动作在前，协作模式切换在后。导出以便测试。 */
-export function buildPaletteItems(store: AgentStore): PaletteItem[] {
+export function buildPaletteItems(client: AgentClient): PaletteItem[] {
   const items: PaletteItem[] = GLOBAL_SHORTCUTS.filter((shortcut) => shortcut.id !== 'escape').map(
     (shortcut) => ({
       id: `shortcut-${shortcut.id}`,
       label: shortcut.label,
       hint: shortcut.keys,
       description: shortcut.description,
-      run: () => shortcut.run(store),
+      run: () => shortcut.run(client),
     })
   )
 
@@ -41,8 +41,8 @@ export function buildPaletteItems(store: AgentStore): PaletteItem[] {
   ).map((mode) => ({
     id: `mode-${mode.value}`,
     label: mode.label,
-    description: store.mode === mode.value ? `${mode.description}（当前）` : mode.description,
-    run: () => store.setMode(mode.value),
+    description: client.state.mode === mode.value ? `${mode.description}（当前）` : mode.description,
+    run: () => void client.request('thread.setMode', { mode: mode.value }),
   }))
 
   return [...items, ...modeItems]
@@ -56,10 +56,10 @@ function filterItems(items: PaletteItem[], query: string): PaletteItem[] {
   )
 }
 
-export function CommandPalette({ store }: { store: AgentStore }) {
+export function CommandPalette({ client }: { client: AgentClient }) {
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
-  const items = filterItems(buildPaletteItems(store), query)
+  const items = filterItems(buildPaletteItems(client), query)
   const safeActive = Math.min(active, Math.max(0, items.length - 1))
 
   useEffect(() => {
@@ -68,7 +68,7 @@ export function CommandPalette({ store }: { store: AgentStore }) {
 
   const runItem = (item: PaletteItem | undefined): void => {
     if (!item) return
-    store.setPaletteOpen(false)
+    client.ui.setPaletteOpen(false)
     item.run()
   }
 
@@ -127,7 +127,7 @@ export function CommandPalette({ store }: { store: AgentStore }) {
           onKeyDown={(event: any) => {
             const key = String(event?.key ?? '').toLowerCase()
             if (key === 'escape') {
-              store.setPaletteOpen(false)
+              client.ui.setPaletteOpen(false)
             } else if (key === 'arrowdown' || key === 'down' || (key === 'n' && event?.modifiers?.ctrl)) {
               setActive((idx) => Math.min(idx + 1, items.length - 1))
             } else if (key === 'arrowup' || key === 'up' || (key === 'p' && event?.modifiers?.ctrl)) {

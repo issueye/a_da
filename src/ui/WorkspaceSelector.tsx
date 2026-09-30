@@ -8,7 +8,7 @@
 import React from 'react'
 import { Select, SelectTrigger, SelectContent, SelectItem, useGpuix } from '@gpuix/react'
 import { Icon, MenuSurface, menuItemStyle, MenuRow, menuLayer } from './controls'
-import type { AgentStore } from '../agent/store'
+import type { AgentClient } from './client'
 import { C } from '../theme'
 import { PUBLIC_WORKSPACE_LABEL } from '../agent/home'
 import { pickDirectory } from '../platform/dialog'
@@ -16,43 +16,49 @@ import { pickDirectory } from '../platform/dialog'
 /** 「公共区」在下拉里的哨兵值：它是 a-da 提供的工作区，不在 projects 里。 */
 const PUBLIC_OPTION = '__public_workspace__'
 
-export function WorkspaceSelector({ store }: { store: AgentStore }) {
+export function WorkspaceSelector({ client }: { client: AgentClient }) {
   const { renderer } = useGpuix()
-  const current = store.active.workspace
-  const label = store.labelFor(current)
+  const current = client.state.active.workspace
+  const label = client.state.labelFor(current)
   // 公共区已作为专门的一项固定在顶部，就不再从 projects 里重复列一遍。
-  const otherProjects = store.projects.filter((p) => !store.isPublic(p))
+  const otherProjects = client.state.projects.filter((p) => !client.state.isPublic(p))
   const items = [
     { value: PUBLIC_OPTION, label: PUBLIC_WORKSPACE_LABEL },
-    ...otherProjects.map((p) => ({ value: p, label: store.labelFor(p) })),
+    ...otherProjects.map((p) => ({ value: p, label: client.state.labelFor(p) })),
     { value: '__add_new__', label: '+ 添加工作区...' },
   ]
 
   const handleChange = (selected: string) => {
     if (selected === PUBLIC_OPTION) {
       // 目录由 a-da 提供（不存在则建），当前会话直接绑过去。
-      void store.openPublicWorkspace(store.active.id)
+      void client.request('workspace.openPublic', { threadId: client.state.active.id })
       return
     }
     if (selected === '__add_new__') {
       void pickDirectory(current, renderer).then((result) => {
         if (result.status === 'picked') {
-          void store.addProject(result.path).then((err) => {
-            if (!err) {
-              store.setThreadWorkspace(store.active.id, result.path)
+          void client.request('workspace.add', { path: result.path }).then(({ error }) => {
+            if (!error) {
+              void client.request('thread.setWorkspace', {
+                threadId: client.state.active.id,
+                workspace: result.path,
+              })
             }
           })
         }
       })
       return
     }
-    store.setThreadWorkspace(store.active.id, selected)
+    void client.request('thread.setWorkspace', {
+      threadId: client.state.active.id,
+      workspace: selected,
+    })
   }
 
   return (
     <Select
       items={items}
-      value={store.isPublic(current) ? PUBLIC_OPTION : current}
+      value={client.state.isPublic(current) ? PUBLIC_OPTION : current}
       onValueChange={handleChange}
     >
       <div style={{ position: 'relative', display: 'flex' }}>
@@ -101,18 +107,18 @@ export function WorkspaceSelector({ store }: { store: AgentStore }) {
               <MenuRow
                 label={PUBLIC_WORKSPACE_LABEL}
                 description="a-da 自带的工作区，不绑定任何项目"
-                selected={store.isPublic(current)}
+                selected={client.state.isPublic(current)}
               />
             </SelectItem>
             {otherProjects.map((p) => (
               <SelectItem
                 key={p}
-                testId={`select-workspace-${store.labelFor(p)}`}
+                testId={`select-workspace-${client.state.labelFor(p)}`}
                 value={p}
                 style={menuItemStyle}
               >
                 <MenuRow
-                  label={store.labelFor(p)}
+                  label={client.state.labelFor(p)}
                   description={p}
                   selected={p === current}
                 />
