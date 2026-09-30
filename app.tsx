@@ -2,89 +2,41 @@
  * a_da — 具备原生 GPU 加速窗口的本地 AI 编程助手。
  *
  * 开发运行：`bun --hot app.tsx`
- * 二进制构建：`bun run build`
+ * 二进制构建：`bun run build`（产物仍是**一个** `dist/a-da.exe`）
+ *
+ * ## 这个文件是"单文件双角色"的分流点（协议 §1.8）
+ *
+ * | 启动方式 | 角色 |
+ * |---|---|
+ * | `a-da.exe`（无参数） | **UI**：起窗口 |
+ * | `a-da.exe --host --port 0 --token <t>` | **主机**：只跑 agent，不开窗口 |
+ *
+ * 两个分支都用**动态 import**，这是刻意的：主机角色绝不能顺带加载渲染层
+ * （`src/platform/init` 会初始化原生 addon，最坏情况是多出一个空窗口）。
+ * 静态 import 做不到这一点——ESM 的 import 会先于任何分支判断执行。
+ *
+ * `scripts/protocol-boundary.test.ts` 里有一条断言盯着这个形状别被改回去。
  */
 
-// 1. 最优先执行底层平台引导，确保 stdio 句柄安全指向虚拟设备，
-// 彻底解决 Rust 原生层向 stderr 写日志因空句柄导致 panic (os error 6) 闪退的问题。
-import './src/platform/init'
+const isHostRole = process.argv.includes('--host')
 
-import { appendFileSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
-import React from 'react'
-import { render } from '@gpuix/react'
-import { AgentWindow } from './src/AgentWindow'
-import { store } from './src/agent/store'
-import { agentClient } from './src/ui/client'
-import { getAppHome } from './src/agent/home'
-import { activateAndShowWindow, isUserInitiatedExit } from './src/platform/win32'
-import { handleGlobalShortcut } from './src/ui/shortcuts'
+/**
+ * 分流入口。
+ *
+ * 用 async 函数包一层而不是顶层 await：打包成独立二进制后，入口模块的模块形态越简单越好
+ * （顶层 await 要求这个文件是 ESM 模块，而它除此之外不需要任何 import/export）。
+ */
+async function main(): Promise<void> {
+  if (isHostRole) {
+    // 主机角色：不 import 任何 UI/渲染模块
+    const { hostEntry } = await import('./src/agent/host/main')
+    const { store } = await import('./src/agent/store')
+    await hostEntry(process.argv.slice(2), { store })
+    return
+  }
 
-// 日志记录：输出到应用数据目录，方便无控制台模式下追踪问题
-const logDir = getAppHome()
-try { mkdirSync(logDir, { recursive: true }) } catch {}
-const logFile = join(logDir, 'app_debug.log')
-function log(msg: string) {
-  try { appendFileSync(logFile, `[${new Date().toISOString()}] ${msg}\n`) } catch {}
+  // UI 角色：平台引导、窗口、界面都在这里面（顺序照旧）
+  await import('./src/ui/main')
 }
 
-log(`=== a_da 启动 (pid=${process.pid}, platform=${process.platform}, cwd=${process.cwd()}) ===`)
-
-// 进程退出防护：仅允许由用户显式点击关闭按钮触发的真实退出，
-// 拦截 GPUI 帧循环中偶发的误判 onTerminated 退出，保证窗口长效驻留。
-const origExit = process.exit.bind(process)
-process.exit = ((code?: number) => {
-  if (isUserInitiatedExit()) {
-    log(`[process.exit] 用户触发正常退出 (code=${code})`)
-    return origExit(code)
-  }
-  log(`[process.exit] 拦截意外退出调用 (code=${code})，保留应用运行:\n${new Error().stack}`)
-}) as any
-
-process.on('uncaughtException', (err) => {
-  log(`[uncaughtException] ${err?.stack || err}`)
-})
-process.on('unhandledRejection', (err: any) => {
-  log(`[unhandledRejection] ${err?.stack || err}`)
-})
-
-try {
-  log('开始调用 render() 挂载界面...')
-  render(<AgentWindow />, {
-    title: 'a_da',
-    width: 1370,
-    height: 950,
-    titlebarTransparent: true,
-    windowBackground: 'opaque',
-    trafficLightX: 16,
-    trafficLightY: 17,
-    focus: process.env.GPUIX_BACKGROUND !== '1',
-    // 窗口级键盘：全局快捷键（Ctrl+K 命令面板等）。聚焦元素没消费的组合键
-    // 会在冒泡相落到这里。
-    onKeyDown: (event: unknown) => {
-      handleGlobalShortcut(event as Parameters<typeof handleGlobalShortcut>[0], agentClient)
-    },
-  })
-  log('render() 初始化执行成功')
-
-  // 挂载完成后，采用多阶梯度激活策略穿透桌面层级，确保窗口即刻在用户屏幕前台弹出
-  const tryActivate = (attempt = 1) => {
-    try {
-      const ok = activateAndShowWindow()
-      log(`第 ${attempt} 次前台置顶激活: ${ok}`)
-      if (!ok && attempt < 5) {
-        setTimeout(() => tryActivate(attempt + 1), 200)
-      }
-    } catch (e: any) {
-      log(`第 ${attempt} 次前台置顶激活异常: ${e?.message || e}`)
-    }
-  }
-  setTimeout(() => tryActivate(1), 100)
-} catch (e: any) {
-  log(`render() 异常: ${e?.stack || e}`)
-}
-
-// 保持事件循环活跃：防止打包为独立二进制后 JS 主线程因无待办异步任务而过早退出
-setInterval(() => {
-  // 维持心跳
-}, 30_000)
+void main()

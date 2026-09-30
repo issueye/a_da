@@ -153,10 +153,5 @@ export function startHostServer(options: HostServerOptions): HostServer {
   }
 }
 
-/** 主机自举时写到 stdout 的那一行（UI 角色读它拿到真实端口，协议 §1.8）。 */
-export function readyLine(port: number): string {
-  return `A_DA_HOST_READY ${JSON.stringify({ port, protocolVersion: PROTOCOL_VERSION })}`
-}
-
 /** 未授权时用的错误码（导出给测试与 UI 角色读，免得两边各写一份）。 */
 export const UNAUTHORIZED_STATUS = AppErrorCode.Unauthorized
