@@ -174,13 +174,41 @@ export async function readPluginCapabilities(
   }
 }
 
-/** The file alone. The dialog edits this, and it may differ from what a turn uses. */
+/**
+ * 这些错误码在 Windows 上多半是**瞬时**的：文件正被杀软/索引器扫、或另一个进程刚
+ * 放开句柄。配置读写都值得退避重试几次再放弃。
+ */
+const TRANSIENT_FILE_ERRORS = new Set(['EPERM', 'EACCES', 'EBUSY'])
+
+function isTransient(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code
+  return typeof code === 'string' && TRANSIENT_FILE_ERRORS.has(code)
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * 读配置。**区分"文件不存在"与"这次读失败了"**。
+ *
+ * 以前一律 `catch → {}`：一次瞬时失败（EPERM/EBUSY）会被当成"没有配置"，
+ * 而紧接着的写又是整份覆盖——于是**一次读取抖动就能把用户的全部配置清掉**。
+ * 现在只对 ENOENT 视作"没有配置"，其余瞬时错误退避重试，仍失败就**照实抛**，
+ * 让调用方知道"这次没读到"，而不是拿到一个空对象去覆盖。
+ */
 export async function readSavedConfig(): Promise<SavedConfig> {
-  try {
-    const parsed = JSON.parse(await readFile(configPath(), 'utf8')) as SavedConfig
-    return parsed && typeof parsed === 'object' ? parsed : {}
-  } catch {
-    return {}
+  const path = configPath()
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const parsed = JSON.parse(await readFile(path, 'utf8')) as SavedConfig
+      return parsed && typeof parsed === 'object' ? parsed : {}
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') return {}
+      // JSON 坏了也当"没有配置"：那是文件内容的问题，重试没有意义
+      if (error instanceof SyntaxError) return {}
+      if (!isTransient(error) || attempt >= 4) throw error
+      await sleep(20 * attempt)
+    }
   }
 }
 
@@ -203,9 +231,11 @@ function mutateSavedConfig(mutate: (current: SavedConfig) => SavedConfig): Promi
     // Written to a sibling and renamed: a reader (or a crash) between the two
     // steps otherwise sees a truncated file, and `readSavedConfig` would report
     // that as "no config" and the next write would drop every key in it.
-    const temp = `${path}.${process.pid}.tmp`
-    await writeFile(temp, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
-    await rename(temp, path)
+    //
+    // tmp 名带上**序号**（不只是 pid）：pid 只区分进程，同名残留文件被 Windows 的
+    // 杀软/索引器占着时会一直撞 EPERM，而且那个名字会跟着这次启动用到底。
+    // 唯一名字 + 失败后清掉残骸，保证"一次写失败"不会毒化后面的每一次写。
+    await writeFileAtomically(path, `${JSON.stringify(next, null, 2)}\n`)
   }
   // A failed write must not wedge the queue for every later one.
   const queued = writeQueue.then(run, run)
@@ -214,6 +244,37 @@ function mutateSavedConfig(mutate: (current: SavedConfig) => SavedConfig): Promi
     () => undefined,
   )
   return queued
+}
+
+let atomicWriteCounter = 0
+
+/** 写临时文件 + 改名；瞬时错误退避重试，失败清掉残骸。 */
+async function writeFileAtomically(path: string, contents: string): Promise<void> {
+  const temp = `${path}.${process.pid}.${++atomicWriteCounter}.tmp`
+  try {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await writeFile(temp, contents, 'utf8')
+        break
+      } catch (error) {
+        if (!isTransient(error) || attempt >= 4) throw error
+        await sleep(20 * attempt)
+      }
+    }
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await rename(temp, path)
+        return
+      } catch (error) {
+        if (!isTransient(error) || attempt >= 4) throw error
+        await sleep(20 * attempt)
+      }
+    }
+  } catch (error) {
+    // 不留残骸：它会占着这个名字（也会让用户目录里多出看不懂的文件）
+    await rm(temp, { force: true }).catch(() => {})
+    throw error
+  }
 }
 
 /** Merge into the file so a hand-written key that the dialog does not edit survives. */

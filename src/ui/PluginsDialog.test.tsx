@@ -11,6 +11,7 @@ import { connectTest } from '@gpuix/react/automation'
 import { createTestRoot, hasNativeTestRenderer } from '@gpuix/react/testing'
 import { AgentWindow } from '../AgentWindow'
 import { store } from '../agent/store'
+import { agentClient } from './client'
 
 const describeNative = hasNativeTestRenderer ? describe : describe.skip
 
@@ -327,6 +328,79 @@ describeNative('plugins dialog', () => {
     await app.getByTestId('skill-delete-rust-linter').click()
     await app.getByTestId('skill-delete-rust-linter').click()
     await gone('rust-linter')
+
+    await app.getByTestId('plugins-close').click()
+    await app.close()
+  }, 30_000)
+
+  /**
+   * 动作失败必须**留在页面里**。
+   *
+   * GPUIX 在 `process.on('unhandledRejection')` 上把整个窗口换成红色错误页
+   * （"Uncaught runtime errors" + Reload）。插件启停是最常失败的动作之一
+   * （实测在用户环境里遇到过 `EPERM: … config.json.<pid>.tmp`——写配置文件失败），
+   * 如果没人接住，用户看到的不是"这条命令失败了"，而是整个应用变成错误页。
+   * 所以这里注入一次失败，断言它变成页面上的错误条，而不是抛出去。
+   */
+  test('动作失败时显示页面错误条，而不是把窗口交给错误页', async () => {
+    const { app, painted, screen, scrollIntoView, renderer } = await mount()
+    await app.getByTestId('open-plugins').click()
+    await painted('插件管理')
+    await app.getByTestId('plugins-nav-workspace').click()
+    await painted('needs-token.ts')
+
+    // 故障注入：只让 plugin.setEnabled 失败
+    const original = agentClient.request
+    ;(agentClient as unknown as { request: unknown }).request = async (
+      method: string,
+      params: unknown,
+    ) => {
+      if (method === 'plugin.setEnabled') {
+        throw new Error('EPERM: operation not permitted, open config.json.1.1.tmp')
+      }
+      return (original as (m: string, p: unknown) => Promise<unknown>).call(
+        agentClient,
+        method,
+        params,
+      )
+    }
+
+    try {
+      // 弹窗主体是滚动容器：按钮可能在可视区外，先滚进来再点（见 mount 里的说明）
+      const toggle = app.getByTestId('plugin-toggle-需要密钥的插件')
+      await scrollIntoView(toggle)
+      await toggle.click()
+
+      // 断言**错误条元素本身**（不要用 painted('失败')：会话里也有"失败"两个字，
+      // 那是工具卡的状态，会假阳性）
+      let bannerShown = false
+      for (let attempt = 0; attempt < 60; attempt++) {
+        renderer.flush?.()
+        if ((await app.getByTestId('plugins-action-error').count()) > 0) {
+          bannerShown = true
+          break
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      expect(
+        bannerShown,
+        `错误条没出现。store 日志尾部：\n${store.log.slice(-5).map((entry) => entry.text).join('\n')}`,
+      ).toBe(true)
+
+      const text = screen()
+      expect(text).toContain('切换插件失败')
+      expect(text).toContain('EPERM')
+      // 窗口还在：没有被 GPUIX 的错误页接管
+      expect(await app.getByTestId('plugins-modal').count()).toBe(1)
+      expect(await app.getByTestId('runtime-error-overlay').count()).toBe(0)
+    } finally {
+      ;(agentClient as unknown as { request: unknown }).request = original
+    }
+
+    // 错误条可以关掉
+    await app.getByTestId('plugins-action-error-dismiss').click()
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    expect(await app.getByTestId('plugins-action-error').count()).toBe(0)
 
     await app.getByTestId('plugins-close').click()
     await app.close()

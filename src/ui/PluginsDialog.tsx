@@ -135,6 +135,28 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
   const [secretSet, setSecretSet] = useState<Record<string, boolean>>({})
   const [configNotice, setConfigNotice] = useState<Record<string, string | null>>({})
 
+  /**
+   * 页面级错误条：动作失败时**在页面里说出来**。
+   *
+   * 为什么必须有：GPUIX 在 `process.on('unhandledRejection')` 上把整个窗口换成红色错误页
+   * （"Uncaught runtime errors" + Reload）。一次"停用插件失败"如果没人接住，用户看到的不是
+   * "这条命令失败了"，而是**整个应用变成错误页**——信息量与可恢复性都更差。
+   * 所以这一页的每个动作都走 {@link runAction}，失败落到这里（同时记一条 trace 备查）。
+   */
+  const [actionError, setActionError] = useState<string | null>(null)
+
+  /** 动作统一入口：失败在页面里说出来，**不往上抛**（抛出去就是整窗错误页）。 */
+  const runAction = async (label: string, action: () => Promise<void>): Promise<void> => {
+    try {
+      await action()
+      setActionError(null)
+    } catch (err) {
+      const message = `${label}失败：${(err as Error).message}`
+      setActionError(message)
+      trace(message)
+    }
+  }
+
   // 加载与刷新插件列表、提示词列表、子智能体与技能库
   //
   // M2：这一页原先要自己去摸四个管理器 + 配置文件（4 次扫描 + 逐插件读配置），
@@ -193,7 +215,7 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
   }, [client.state.project])
 
   /** 切换一个能力开关并落盘：关掉之后用到它的插件会显示"受限"。 */
-  const handleToggleCapability = async (key: keyof Omit<PluginCapabilities, 'hookTimeoutMs'>) => {
+  const handleToggleCapability = (key: keyof Omit<PluginCapabilities, 'hookTimeoutMs'>) => runAction('切换能力开关', async () => {
     const next = { ...capabilities, [key]: !capabilities[key] }
     setCapabilities(next)
     await client.request('plugin.capabilities.set', { patch: { [key]: next[key] } })
@@ -202,10 +224,10 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
         next[key] ? '' : '——用到它的插件会显示受限原因'
       }`,
     })
-  }
+  })
 
   /** 保存超时值：非法输入当场说明，不写进配置（写进去只会变成"设了没生效"）。 */
-  const handleSaveHookTimeout = async () => {
+  const handleSaveHookTimeout = () => runAction('保存钩子超时', async () => {
     const parsed = parseHookTimeout(hookTimeoutDraft)
     if (!parsed.ok) {
       setCapabilityNotice(parsed.reason)
@@ -215,10 +237,10 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
     setCapabilities((current) => ({ ...current, hookTimeoutMs: parsed.value }))
     await client.request('plugin.capabilities.set', { patch: { hookTimeoutMs: parsed.value } })
     trace( `[插件] 钩子超时已设为 ${parsed.value === 0 ? '不限' : `${parsed.value}ms`}`)
-  }
+  })
 
   /** 保存某个插件的配置项（非 secret 与 secret 分开写）。 */
-  const handleSavePluginConfig = async (item: PluginItem) => {
+  const handleSavePluginConfig = (item: PluginItem) => runAction('保存插件配置', async () => {
     const properties = item.plugin.contributions.configSchema?.properties
     if (!properties) return
     const draft = configDrafts[item.id] ?? {}
@@ -263,10 +285,10 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
     setConfigNotice((current) => ({ ...current, [item.id]: '已保存' }))
     trace( `[插件] 已保存「${item.name}」的配置`)
     await refreshList()
-  }
+  })
 
   // 切换子智能体启用状态
-  const handleToggleSubagent = async (item: SubagentProfile) => {
+  const handleToggleSubagent = (item: SubagentProfile) => runAction('切换子智能体', async () => {
     await client.request('subagentProfile.setEnabled', {
       id: item.id,
       enabled: !item.enabled,
@@ -274,10 +296,10 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
     })
     trace(`已${item.enabled ? '停用' : '启用'}子智能体：${item.name}`)
     await refreshList()
-  }
+  })
 
   // 删除自定义子智能体
-  const handleDeleteSubagent = async (item: SubagentProfile) => {
+  const handleDeleteSubagent = (item: SubagentProfile) => runAction('删除子智能体', async () => {
     if (armedDeleteSubagentId !== item.id) {
       setArmedDeleteSubagentId(item.id)
       return
@@ -293,7 +315,7 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
     }
     setArmedDeleteSubagentId(null)
     await refreshList()
-  }
+  })
 
   const toggleSubagentExpand = (id: string) => {
     setExpandedSubagentIds((prev) => ({
@@ -303,7 +325,7 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
   }
 
   // 切换插件启用状态
-  const handleToggle = async (item: PluginItem) => {
+  const handleToggle = (item: PluginItem) => runAction('切换插件', async () => {
     await client.request('plugin.setEnabled', {
       pluginId: item.id,
       enabled: !item.enabled,
@@ -311,10 +333,10 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
     })
     trace(`已${item.enabled ? '停用' : '启用'}插件：${item.fileName}`)
     await refreshList()
-  }
+  })
 
   // 删除插件
-  const handleDelete = async (item: PluginItem) => {
+  const handleDelete = (item: PluginItem) => runAction('删除插件', async () => {
     if (armedDeleteId !== item.id) {
       setArmedDeleteId(item.id)
       return
@@ -330,10 +352,10 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
     }
     setArmedDeleteId(null)
     await refreshList()
-  }
+  })
 
   // 提交新建插件
-  const handleCreate = async () => {
+  const handleCreate = () => runAction('新建插件', async () => {
     const name = newPluginName.trim()
     if (!name) return
     try {
@@ -351,10 +373,10 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
     } catch (err) {
       setCreateNotice(`创建失败：${(err as Error).message}`)
     }
-  }
+  })
 
   // 切换提示词启用状态
-  const handleTogglePrompt = async (item: PromptItem) => {
+  const handleTogglePrompt = (item: PromptItem) => runAction('切换提示词', async () => {
     await client.request('prompt.setEnabled', {
       id: item.id,
       enabled: !item.enabled,
@@ -362,7 +384,7 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
     })
     trace(`已${item.enabled ? '停用' : '启用'}提示词：${item.name}`)
     await refreshList()
-  }
+  })
 
   // 开启新建提示词表单
   const startCreatePrompt = () => {
@@ -398,7 +420,7 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
   }
 
   // 提交新建或保存编辑提示词
-  const handleSavePrompt = async () => {
+  const handleSavePrompt = () => runAction('保存提示词', async () => {
     const name = promptName.trim()
     const content = promptContent.trim()
     if (!name) {
@@ -442,10 +464,10 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
     } catch (err) {
       setPromptNotice(`保存失败：${(err as Error).message}`)
     }
-  }
+  })
 
   // 删除提示词
-  const handleDeletePrompt = async (item: PromptItem) => {
+  const handleDeletePrompt = (item: PromptItem) => runAction('删除提示词', async () => {
     if (armedDeletePromptId !== item.id) {
       setArmedDeletePromptId(item.id)
       return
@@ -460,7 +482,7 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
     }
     setArmedDeletePromptId(null)
     await refreshList()
-  }
+  })
 
   // 复制提示词内容
   const handleCopyPrompt = async (item: PromptItem) => {
@@ -567,6 +589,48 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
 
         {/* 标题栏与主体之间的分割线 */}
         <div style={{ height: 1, flexShrink: 0, backgroundColor: C.border }} />
+
+        {/* 动作失败时在这里说出来（而不是让未捕获的 rejection 把整窗换成错误页） */}
+        {actionError ? (
+          <div
+            testId="plugins-action-error"
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 8,
+              flexShrink: 0,
+              paddingTop: 7,
+              paddingBottom: 7,
+              paddingLeft: 16,
+              paddingRight: 16,
+              backgroundColor: C.raised,
+              borderBottomWidth: 1,
+              borderColor: C.borderStrong,
+            }}
+          >
+            <Icon name="alertTriangle" size={13} color={C.accent} />
+            <text style={{ fontSize: 11.5, color: C.text, flexGrow: 1 }}>{actionError}</text>
+            <div
+              testId="plugins-action-error-dismiss"
+              role="button"
+              aria-label="知道了"
+              onClick={() => setActionError(null)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                height: 20,
+                paddingLeft: 8,
+                paddingRight: 8,
+                borderRadius: 6,
+                cursor: 'pointer',
+                backgroundColor: C.chip,
+              }}
+            >
+              <text style={{ fontSize: 11, color: C.secondary }}>知道了</text>
+            </div>
+          </div>
+        ) : null}
 
         {/* 主体两栏布局 */}
         <div
