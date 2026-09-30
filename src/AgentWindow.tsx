@@ -72,23 +72,6 @@ export function AgentWindow({ client: injected }: { client?: AgentClient } = {})
       />
       {/* 与主机的连接断了就说出来（协议 §1.5）；进程内传输永远不会显示它 */}
       <ConnectionBanner client={client} />
-      {/* 文件/目录选择器是**窗口级**模态层（与确认框同一套做法）：
-          挂在下拉内部会在下拉关闭时被一起卸载 */}
-      {client.state.filePicker ? (
-        <FilePicker
-          client={client}
-          mode={client.state.filePicker.mode}
-          title={client.state.filePicker.title}
-          startPath={client.state.filePicker.startPath}
-          accept={client.state.filePicker.accept}
-          onPicked={(paths) => {
-            const request = client.state.filePicker
-            client.ui.closeFilePicker()
-            request?.onPicked(paths)
-          }}
-          onClose={() => client.ui.closeFilePicker()}
-        />
-      ) : null}
       <div style={{ display: 'flex', flexDirection: 'row', flexGrow: 1, minHeight: 0 }}>
         {client.state.sidebarOpen ? (
           <Sidebar
@@ -113,6 +96,24 @@ export function AgentWindow({ client: injected }: { client?: AgentClient } = {})
       {client.state.settingsOpen ? <SettingsDialog client={client} /> : null}
       {client.state.pluginsOpen ? <PluginsDialog client={client} /> : null}
       {client.state.paletteOpen ? <CommandPalette client={client} /> : null}
+      {/* 文件/目录选择器：**窗口级模态层**，必须画在内容之后——
+          放前面会被后面的 Composer 盖住（第一版就是这样，截图里文字穿模）。
+          同样别挂在下拉内部：`Select` 一关它会被一起卸载。 */}
+      {client.state.filePicker ? (
+        <FilePicker
+          client={client}
+          mode={client.state.filePicker.mode}
+          title={client.state.filePicker.title}
+          startPath={client.state.filePicker.startPath}
+          accept={client.state.filePicker.accept}
+          onPicked={(paths) => {
+            const request = client.state.filePicker
+            client.ui.closeFilePicker()
+            request?.onPicked(paths)
+          }}
+          onClose={() => client.ui.closeFilePicker()}
+        />
+      ) : null}
       {client.state.confirmModal ? (
         <ConfirmDialog
           options={client.state.confirmModal}

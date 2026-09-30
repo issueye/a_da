@@ -150,28 +150,45 @@ export function FilePicker({
   return (
     <div
       testId="file-picker"
+      onKeyDown={(event) => {
+        if (event.key === 'escape') onClose()
+      }}
       style={{
         position: 'absolute',
         top: 0,
         left: 0,
         right: 0,
         bottom: 0,
-        backgroundColor: 'rgba(0,0,0,0.45)',
         display: 'flex',
+        flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
+        backgroundColor: C.scrim,
+        // 与其它模态层一致：`auto` 而不是默认值，否则滚轮会滚到后面的会话上去
+        pointerEvents: 'auto',
       }}
     >
       <div
         style={{
-          width: 720,
-          height: 460,
           display: 'flex',
           flexDirection: 'column',
-          backgroundColor: C.canvas,
+          width: '70%',
+          maxWidth: '92%',
+          minWidth: 560,
+          height: '80%',
+          minHeight: 380,
+          backgroundColor: C.raised,
           borderWidth: 1,
           borderColor: C.borderStrong,
-          borderRadius: 10,
+          borderRadius: 12,
+          overflow: 'hidden',
+          boxShadow: {
+            offsetX: 0,
+            offsetY: 18,
+            blurRadius: 48,
+            spreadRadius: 0,
+            color: C.shadowStrong,
+          },
         }}
       >
         {/* 标题栏 */}
