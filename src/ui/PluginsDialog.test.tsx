@@ -167,7 +167,9 @@ describeNative('plugins dialog', () => {
     expect(screen()).toContain('已开启')
 
     await app.getByTestId('plugins-nav-builtins').click()
-    await painted('核心内置工具')
+    // 等**内容**而不是页签标题：`核心内置工具` 这个标签一直在，等它会与
+    // `plugin.builtinCatalog` 的异步加载赛跑（实测偶发失败过一次）
+    await painted('list_files')
     const text = screen()
 
     expect(text).toContain('核心内置工具（系统预装）')

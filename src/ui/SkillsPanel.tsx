@@ -38,6 +38,11 @@ export function SkillsPanel({
   const [newSkillScope, setNewSkillScope] = useState<'workspace' | 'global'>('workspace')
   const [newSkillBody, setNewSkillBody] = useState('')
   const [createNotice, setCreateNotice] = useState<string | null>(null)
+  /**
+   * 动作失败的页面级提示（与插件页同一个理由）：GPUIX 会把未捕获的 rejection
+   * 变成整窗"Uncaught runtime errors"错误页，所以失败要**就地**说出来。
+   */
+  const [actionError, setActionError] = useState<string | null>(null)
 
   // 过滤技能列表
   const filteredSkills = skills.filter((s) => {
@@ -57,13 +62,21 @@ export function SkillsPanel({
   // 切换启用/停用
   const handleToggle = async (skill: SkillSummary) => {
     const nextState = !skill.enabled
-    await client.request('skill.setEnabled', {
-      id: skill.id,
-      enabled: nextState,
-      workspace: workspaceRoot,
-    })
-    onTrace?.(`已${nextState ? '启用' : '停用'}技能：${skill.name}`)
-    await onRefresh()
+    try {
+      await client.request('skill.setEnabled', {
+        id: skill.id,
+        enabled: nextState,
+        workspace: workspaceRoot,
+      })
+      setActionError(null)
+      onTrace?.(`已${nextState ? '启用' : '停用'}技能：${skill.name}`)
+      await onRefresh()
+    } catch (err) {
+      // 不往上抛：抛出去会被 GPUIX 变成整窗错误页（见 actionError 的说明）
+      const message = `${nextState ? '启用' : '停用'}技能失败：${(err as Error).message}`
+      setActionError(message)
+      onTrace?.(message)
+    }
   }
 
   // 删除技能
@@ -126,6 +139,46 @@ export function SkillsPanel({
 
   return (
     <div testId="skills-panel" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* 动作失败就地显示（否则会被 GPUIX 变成整窗错误页） */}
+      {actionError ? (
+        <div
+          testId="skills-action-error"
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            paddingTop: 6,
+            paddingBottom: 6,
+            paddingLeft: 10,
+            paddingRight: 10,
+            backgroundColor: C.raised,
+            borderWidth: 1,
+            borderColor: C.borderStrong,
+            borderRadius: 7,
+          }}
+        >
+          <text style={{ fontSize: 11.5, color: C.text, flexGrow: 1 }}>{actionError}</text>
+          <div
+            testId="skills-action-error-dismiss"
+            role="button"
+            aria-label="知道了"
+            onClick={() => setActionError(null)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              height: 20,
+              paddingLeft: 8,
+              paddingRight: 8,
+              borderRadius: 6,
+              cursor: 'pointer',
+              backgroundColor: C.chip,
+            }}
+          >
+            <text style={{ fontSize: 11, color: C.secondary }}>知道了</text>
+          </div>
+        </div>
+      ) : null}
       {/* 顶部工具条：过滤器与新建按键 */}
       <div
         style={{
