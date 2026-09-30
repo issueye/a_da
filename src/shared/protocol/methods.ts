@@ -41,6 +41,34 @@ export interface ProtocolCommands {
   /** 要一份当前快照（连上、重连、以及客户端怀疑自己落后时都走它）。 */
   'session.snapshot': { params: Record<string, never>; result: ClientSnapshot }
 
+  // ── UI 外壳状态（协议 §3.12 一带）──
+  //
+  // 按协议 §9.1，这些字段（浮层开关、主题、草稿、标签）**属于客户端本地**；
+  // M1/M2 期间它们暂由主机镜像一份（那时它们就住在 store 里，见 `ClientSnapshot.ui` 的说明）。
+  // M3 起 UI 可能与主机分处两个进程，所以上报得走协议——**这些方法就是把镜像值写回去**，
+  // 等 C 组真正搬进 `src/ui/state/` 之后，它们会退化成 no-op 或直接删掉。
+  //
+  // 一律传**绝对值**而不是"切换"：多客户端下切换语义会互相抵消（各按自己以为的当前值翻）。
+  'ui.setShell': {
+    params: {
+      patch: {
+        debugOpen?: boolean
+        settingsOpen?: boolean
+        pluginsOpen?: boolean
+        changesOpen?: boolean
+        paletteOpen?: boolean
+        sidebarOpen?: boolean
+        searchOpen?: boolean
+        /** 'dark' | 'light'；主机做一次取值校验 */
+        appearance?: string
+        pendingDraft?: string | null
+      }
+    }
+    result: void
+  }
+  'ui.openTab': { params: { threadId: string }; result: void }
+  'ui.closeTab': { params: { threadId: string }; result: void }
+
   // ── 会话内容 ──
   'thread.create': { params: { workspace: string; mode?: AgentMode }; result: { threadId: string } }
   'thread.delete': { params: { threadId: string }; result: { message: string | null } }

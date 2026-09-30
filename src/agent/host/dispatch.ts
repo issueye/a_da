@@ -9,7 +9,7 @@
  */
 
 import type { AgentStore } from '../store'
-import { PROTOCOL_VERSION, appError, AppErrorCode, ProtocolError } from '../../shared/protocol'
+import { PROTOCOL_VERSION, RpcErrorCode, appError, AppErrorCode, ProtocolError } from '../../shared/protocol'
 import { readHostSnapshot } from './snapshot'
 import type {
   AgentMode,
@@ -78,6 +78,44 @@ export function createCommandDispatcher(
       }
       case 'session.snapshot':
         return readHostSnapshot(store)
+
+      // ── UI 外壳状态（M1/M2 期间由主机镜像；见协议方法表里的说明）──
+      case 'ui.setShell': {
+        const patch = (p.patch ?? {}) as Record<string, unknown>
+        if (patch.debugOpen !== undefined) store.setDebugOpen(patch.debugOpen as boolean)
+        if (patch.settingsOpen !== undefined) store.setSettings(patch.settingsOpen as boolean)
+        if (patch.pluginsOpen !== undefined) store.setPlugins(patch.pluginsOpen as boolean)
+        if (patch.changesOpen !== undefined) store.setChangesOpen(patch.changesOpen as boolean)
+        if (patch.paletteOpen !== undefined) store.setPaletteOpen(patch.paletteOpen as boolean)
+        if (patch.searchOpen !== undefined) store.setSearchOpen(patch.searchOpen as boolean)
+        if (patch.sidebarOpen !== undefined) {
+          if (patch.sidebarOpen !== store.sidebarOpen) store.toggleSidebar()
+        }
+        if (patch.appearance !== undefined) {
+          // 取值校验：线上来的是字符串，不合法就明说（不静默按默认值处理）
+          const next = patch.appearance
+          if (next !== 'dark' && next !== 'light') {
+            // 参数不合法是 JSON-RPC 标准码（-32602），不是应用级错误
+            throw new ProtocolError(
+              RpcErrorCode.InvalidParams,
+              `外观只认 dark / light，收到 ${String(next)}`,
+              { key: 'appearance', invalid: [String(next)] }
+            )
+          }
+          if (next !== store.appearance) store.setAppearance(next)
+        }
+        if (patch.pendingDraft !== undefined) {
+          if (patch.pendingDraft === null) store.clearPendingDraft()
+          else store.applyPromptToComposer(String(patch.pendingDraft))
+        }
+        return undefined
+      }
+      case 'ui.openTab':
+        store.openTab(p.threadId as string)
+        return undefined
+      case 'ui.closeTab':
+        store.closeTab(p.threadId as string)
+        return undefined
 
       // ── 会话内容 ──
       case 'thread.create': {

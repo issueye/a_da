@@ -983,9 +983,20 @@ export class AgentStore {
     this.setAppearance(this.appearance === 'dark' ? 'light' : 'dark')
   }
 
-  toggleDebug(): void {
-    this.debugOpen = !this.debugOpen
+  /**
+   * 直接设定（而不是切换）事件日志面板的开合。
+   *
+   * 为什么需要绝对设定：M3 起 UI 可能从**另一个进程**改这个状态，切换语义会与
+   * "客户端以为的当前值"打架（两个客户端同时切就是互相抵消）。切换只留给本机快捷键用。
+   */
+  setDebugOpen(open: boolean): void {
+    if (this.debugOpen === open) return
+    this.debugOpen = open
     this.notify()
+  }
+
+  toggleDebug(): void {
+    this.setDebugOpen(!this.debugOpen)
   }
 
   /** Append a line to the debug log from anywhere in the UI. */

@@ -52,19 +52,31 @@ export function createInProcessClient(
   /** 两种读法共用的取状态入口：M1 起默认返回复制视图的应用结果。 */
   const readState = (): ClientState => (viewStore ? viewStore.getState() : liveState)
 
+  /**
+   * 纯客户端动作。
+   *
+   * 这里**不直接改 store**：凡是会进快照的状态（外壳开关、主题、草稿、标签）都走命令，
+   * 与 WebSocket 客户端**走同一条路**——这样这些命令在进程内就被 UI 测试覆盖了，
+   * 而"M3 换传输"也不会碰到新的行为差异。真正纯客户端的只剩确认框（带回调，不可能上线）。
+   */
   const ui: UiActions = {
-    openTab: (threadId) => store.openTab(threadId),
-    closeTab: (threadId) => store.closeTab(threadId),
-    setChangesOpen: (open) => store.setChangesOpen(open),
-    setPaletteOpen: (open) => store.setPaletteOpen(open),
-    setPlugins: (open) => store.setPlugins(open),
-    setSettings: (open) => store.setSettings(open),
-    setSearchOpen: (open) => store.setSearchOpen(open),
-    toggleSidebar: () => store.toggleSidebar(),
-    toggleAppearance: () => store.toggleAppearance(),
-    toggleDebug: () => store.toggleDebug(),
-    applyPromptToComposer: (content) => store.applyPromptToComposer(content),
-    clearPendingDraft: () => store.clearPendingDraft(),
+    openTab: (threadId) => void dispatch('ui.openTab', { threadId }),
+    closeTab: (threadId) => void dispatch('ui.closeTab', { threadId }),
+    setChangesOpen: (open) => void dispatch('ui.setShell', { patch: { changesOpen: open } }),
+    setPaletteOpen: (open) => void dispatch('ui.setShell', { patch: { paletteOpen: open } }),
+    setPlugins: (open) => void dispatch('ui.setShell', { patch: { pluginsOpen: open } }),
+    setSettings: (open) => void dispatch('ui.setShell', { patch: { settingsOpen: open } }),
+    setSearchOpen: (open) => void dispatch('ui.setShell', { patch: { searchOpen: open } }),
+    toggleSidebar: () =>
+      void dispatch('ui.setShell', { patch: { sidebarOpen: !readState().sidebarOpen } }),
+    toggleAppearance: () =>
+      void dispatch('ui.setShell', {
+        patch: { appearance: readState().appearance === 'dark' ? 'light' : 'dark' },
+      }),
+    toggleDebug: () => void dispatch('ui.setShell', { patch: { debugOpen: !readState().debugOpen } }),
+    applyPromptToComposer: (content) =>
+      void dispatch('ui.setShell', { patch: { pendingDraft: content } }),
+    clearPendingDraft: () => void dispatch('ui.setShell', { patch: { pendingDraft: null } }),
     // 确认框是**客户端本地**状态：回调不可能上线，所以它不进主机快照（见 view-store 文件头）。
     showConfirm: (options) => {
       if (viewStore) viewStore.showConfirm(options)
