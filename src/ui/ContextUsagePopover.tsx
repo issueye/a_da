@@ -157,8 +157,10 @@ export function ContextUsagePopover({
           }}
         >
           <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+            {/* 图标用 SVG（仓库图标集），不用 emoji：彩色字形跟着主题变不了色 */}
+            <Icon name="zap" size={11} color="#10b981" />
             <text style={{ fontSize: 10.5, color: '#10b981', fontWeight: 500, whiteSpace: 'nowrap' }}>
-              ⚡ 缓存命中收益
+              缓存命中收益
             </text>
           </div>
           <text style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: '#10b981', whiteSpace: 'nowrap', flexShrink: 0 }}>

@@ -385,7 +385,9 @@ export function FilePicker({
                 onClick={() => void browse(root.path)}
                 style={{
                   display: 'flex',
+                  flexDirection: 'row',
                   alignItems: 'center',
+                  gap: 7,
                   height: 24,
                   paddingLeft: M.contentPadding,
                   paddingRight: 6,
@@ -394,13 +396,20 @@ export function FilePicker({
                   hover: { backgroundColor: C.chip },
                 }}
               >
+                {/* 图标一律用 SVG（仓库自带的图标集），不用 emoji：emoji 是彩色字体、
+                    跨平台字形不一致，也没法跟着主题变色 */}
+                <Icon
+                  name={root.kind === 'drive' ? 'hardDrive' : root.kind === 'home' ? 'home' : 'folder'}
+                  size={13}
+                  color={current === root.path ? C.link : C.tertiary}
+                />
                 <text
                   style={{
                     fontSize: 11.5,
                     color: current === root.path ? C.text : C.secondary,
                   }}
                 >
-                  {root.kind === 'drive' ? `💽 ${root.label}` : root.kind === 'home' ? `🏠 ${root.label}` : `📁 ${root.label}`}
+                  {root.label}
                 </text>
               </div>
             ))}
@@ -453,9 +462,17 @@ export function FilePicker({
                         hover: { backgroundColor: C.chip },
                       }}
                     >
-                      <text style={{ fontSize: 12 }}>
-                        {entry.kind === 'dir' ? '📁' : '📄'}
-                      </text>
+                      <Icon
+                        name={
+                          entry.kind === 'dir'
+                            ? 'folder'
+                            : accept?.test(entry.name)
+                              ? 'image'
+                              : 'file'
+                        }
+                        size={13}
+                        color={entry.kind === 'dir' ? C.secondary : C.tertiary}
+                      />
                       <text
                         style={{
                           fontSize: 11.5,
