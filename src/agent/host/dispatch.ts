@@ -11,6 +11,7 @@
 import type { AgentStore } from '../store'
 import { PROTOCOL_VERSION, RpcErrorCode, appError, AppErrorCode, ProtocolError } from '../../shared/protocol'
 import { readHostSnapshot } from './snapshot'
+import { listDirectory, listRoots, makeDirectory } from './fs-service'
 import type {
   AgentMode,
   ParamsOf,
@@ -118,6 +119,19 @@ export function createCommandDispatcher(
       case 'ui.closeTab':
         store.closeTab(p.threadId as string)
         return undefined
+
+      // ── 文件服务（协议 §3.14）：界面自己的选择器用它浏览主机文件系统 ──
+      //
+      // 额外根带上"当前工作区 + 已知项目"：用户最常回的就是这几个地方。
+      case 'fs.roots':
+        return listRoots([store.active.workspace, ...store.projects, store.project])
+      case 'fs.list':
+        return listDirectory(String(p.path), {
+          showHidden: p.showHidden === true,
+          limit: typeof p.limit === 'number' ? p.limit : undefined,
+        })
+      case 'fs.mkdir':
+        return makeDirectory(String(p.path))
 
       // ── 会话内容 ──
       case 'thread.create': {

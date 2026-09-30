@@ -16,6 +16,8 @@ import type {
   BuiltinToolInfo,
   ClientSnapshot,
   Effort,
+  FsListing,
+  FsRoot,
   PluginCapabilities,
   PluginDiagnostic,
   PluginItem,
@@ -81,6 +83,21 @@ export interface ProtocolCommands {
   }
   'ui.openTab': { params: { threadId: string }; result: void }
   'ui.closeTab': { params: { threadId: string }; result: void }
+
+  // ── 文件服务（协议 §3.14）──
+  //
+  // 界面要"选工作区目录 / 选附件 / 选图片"时用它，而不是开原生选择窗口：
+  // 原生窗口只有本机能用（Web 前端没有）、测试里必须打桩、界面也拿不到额外信息。
+  // **只回元数据，不回文件内容**；图片预览（dataUrl）等真需要时再按能力位加（协议 §12.3）。
+  /** 可跳转的根：驱动器 / 文件系统根、主目录、以及当前工作区。 */
+  'fs.roots': { params: Record<string, never>; result: FsRoot[] }
+  /** 列一个目录（目录在前、按名字排序；超出上限时**如实报告**截断）。 */
+  'fs.list': {
+    params: { path: string; showHidden?: boolean; limit?: number }
+    result: FsListing
+  }
+  /** 新建一层目录（父目录必须已存在；已存在则报错，不静默复用）。 */
+  'fs.mkdir': { params: { path: string }; result: { path: string } }
 
   // ── 会话内容 ──
   'thread.create': { params: { workspace: string; mode?: AgentMode }; result: { threadId: string } }

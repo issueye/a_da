@@ -307,3 +307,35 @@ export interface ResolvedPluginCapabilitiesDto {
   /** 按插件覆盖的那一层 */
   overrides: Record<string, Partial<PluginCapabilities>>
 }
+
+// ── 文件服务（协议 §3.14）：界面自己的选择器靠这几个形状浏览主机文件系统 ──
+
+/** 一个目录项（**只有元数据**，不含内容）。 */
+export interface FsEntry {
+  name: string
+  /** 绝对路径（已规范化） */
+  path: string
+  kind: 'dir' | 'file'
+  sizeBytes?: number
+  mtimeMs?: number
+}
+
+/** 一次列目录的结果。截断与隐藏都**如实报告**，界面必须说出来。 */
+export interface FsListing {
+  path: string
+  /** 上一级；到根时为 null */
+  parent: string | null
+  entries: FsEntry[]
+  truncated: boolean
+  /** 被截断掉多少条 */
+  omitted: number
+  /** 因"隐藏"被省掉多少条（仅当没要求显示隐藏项时统计） */
+  hiddenCount: number
+}
+
+/** 可跳转的根：驱动器 / 文件系统根、主目录、当前工作区。 */
+export interface FsRoot {
+  path: string
+  label: string
+  kind: 'drive' | 'home' | 'workspace'
+}
