@@ -204,6 +204,14 @@ git-tools / code-outline / project-inspector / test-runner 四个官方插件也
 实测让标签栏那组五条用例集体翻红（`store.activeId` 停在别的会话上）。要在弹窗里加断言，
 就写进已有的那条用例里（见 `PluginsDialog.test.tsx` 的做法：`beforeAll` 准备数据、已有用例多切一次页）。
 
+还有一条：**测试渲染器报的窗口尺寸是"真实窗口"，不是 `createTestRoot({ width, height })`
+传的那个尺寸**（实测 `renderer.getWindowSize()` 返回 1536×1061，而用例开的是 800×600）。
+所以组件里凡是读 `useWindowSize()` / `getWindowSize()` 算出来的尺寸（布局上限之类），
+断言期望值必须用**同一个信号**去算，别拿用例自己的宽高推——否则会得到"看起来测了、
+其实在验一个跟组件无关的数"。好消息是量出来的东西很准：`maxHeight` 生效、
+`overflowY: 'scroll'` 真的会创建滚动容器（判据是 `renderer.getScrollOffset(id)` 非 null；
+非滚动元素返回 null），所以"夹住高度 + 内部滚动"这类写法可以直接按像素断言。
+
 ### 14. 审批：策略归插件（`approval-guard`），执行归核心（`askUser`）
 
 改审批相关代码前先理解这条分工——它决定了什么能改、什么不能：
