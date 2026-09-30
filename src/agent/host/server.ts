@@ -54,11 +54,43 @@ function errorFrame(id: unknown, code: number, message: string, data?: unknown):
   return { jsonrpc: '2.0', id: id ?? null, error: { code, message, ...(data === undefined ? {} : { data }) } }
 }
 
+/** 从请求里取令牌：URL 查询（本机自举）或请求头（Bearer / x-a-da-token，手工调试与远端）。 */
+function presentedToken(request: Request, url: URL): string {
+  const query = url.searchParams.get('token')
+  if (query) return query
+  const explicit = request.headers.get('x-a-da-token')
+  if (explicit) return explicit
+  const authorization = request.headers.get('authorization') ?? ''
+  const match = /^Bearer\s+(.+)$/i.exec(authorization.trim())
+  return match ? match[1]!.trim() : ''
+}
+
 export function startHostServer(options: HostServerOptions): HostServer {
   const dispatch = createCommandDispatcher(options.store)
   const emitter = createHostEmitter(options.store, { coalesceMs: options.coalesceMs ?? 16 })
   const token = options.token
   const sockets = new Set<ServerWebSocket<unknown>>()
+  /** 已经握过手的连接（协议 §1.2：握手前只有 `session.initialize` 可用）。 */
+  const initialized = new Set<ServerWebSocket<unknown>>()
+
+  /** 只把帧里的 method 抠出来（握手门禁要在派发之前判断，不能先解析成命令）。 */
+  function parseMethod(raw: unknown): string | null {
+    try {
+      const frame = JSON.parse(String(raw)) as { method?: unknown }
+      return typeof frame.method === 'string' ? frame.method : null
+    } catch {
+      return null
+    }
+  }
+
+  /** 同上，抠 id（门禁拒绝时也要把 id 带回去，否则客户端等不到响应）。 */
+  function parseId(raw: unknown): unknown {
+    try {
+      return (JSON.parse(String(raw)) as { id?: unknown }).id
+    } catch {
+      return null
+    }
+  }
 
   /** 解析一帧请求并执行；通知类帧（没有 method 的响应帧）本里程碑还不存在，直接忽略。 */
   async function handleFrame(raw: string): Promise<unknown | null> {
@@ -100,8 +132,7 @@ export function startHostServer(options: HostServerOptions): HostServer {
     port: options.port ?? 0,
     fetch(request, srv) {
       const url = new URL(request.url)
-      const presented = url.searchParams.get('token') ?? request.headers.get('x-a-da-token') ?? ''
-      if (presented !== token) {
+      if (presentedToken(request, url) !== token) {
         return new Response('unauthorized', { status: 401 })
       }
       if (srv.upgrade(request)) return undefined
@@ -119,11 +150,32 @@ export function startHostServer(options: HostServerOptions): HostServer {
         socket.send(JSON.stringify({ jsonrpc: '2.0', method: seed.topic, params: seed }))
       },
       async message(socket, raw) {
+        // 握手前只接受 `session.initialize`（协议 §1.2）：其余命令回 -32001。
+        // 这条规矩的意义是"未握手的连接没有任何权限"，而不是"少一次校验"。
+        const frame = parseMethod(raw)
+        if (frame !== 'session.initialize' && !initialized.has(socket)) {
+          socket.send(
+            JSON.stringify(
+              errorFrame(parseId(raw), AppErrorCode.Unauthorized, '握手前只接受 session.initialize', {
+                what: frame ?? '(无法解析)',
+              })
+            )
+          )
+          return
+        }
+        if (frame === 'session.initialize') {
+          const reply = await handleFrame(String(raw))
+          // 只有握手成功（没有 error 字段）才把这条连接标记为已初始化
+          if (reply && typeof reply === 'object' && !('error' in reply)) initialized.add(socket)
+          if (reply !== null) socket.send(JSON.stringify(reply))
+          return
+        }
         const reply = await handleFrame(String(raw))
         if (reply !== null) socket.send(JSON.stringify(reply))
       },
       close(socket) {
         sockets.delete(socket)
+        initialized.delete(socket)
       },
     },
   })

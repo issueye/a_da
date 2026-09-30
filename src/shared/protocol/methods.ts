@@ -31,11 +31,24 @@ import type {
 export interface ProtocolCommands {
   // ── 会话（连接与快照，协议 §1.2/§1.3）──
   /**
-   * 握手。令牌同时走 URL（升级时校验一次）与这里——协议 §1.6 要求两道都要有：
+   * 握手（协议 §1.2）。
+   *
+   * 令牌同时走 URL（升级时校验一次）与这里——协议 §1.6 要求两道都要有：
    * 升级时拦住"没带令牌的连接"，握手时拦住"令牌在连接后被换掉"的情况。
+   *
+   * **实现状态（M3 落地时）**：只做了版本校验 + 会话身份。`client` / `capabilities`
+   * 接受但**未使用**——角色与能力协商（协议 §12.3 的 Web 降级）留给 M4。
+   * 也不要在界面上假装协商过：没实现就是没实现。
    */
-  'session.hello': {
-    params: { token: string; protocolVersion: string; clientName?: string }
+  'session.initialize': {
+    params: {
+      token: string
+      protocolVersion: string
+      /** 客户端自述（当前只用于日志/诊断，不参与决策） */
+      client?: { name?: string; version?: string; platform?: string; role?: string }
+      /** 客户端能力位（当前接受但未使用；M4 才据此决定降级与替身） */
+      capabilities?: Record<string, unknown>
+    }
     result: { sessionId: string; protocolVersion: string; host: { pid: number } }
   }
   /** 要一份当前快照（连上、重连、以及客户端怀疑自己落后时都走它）。 */

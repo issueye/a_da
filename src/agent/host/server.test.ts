@@ -7,7 +7,7 @@
  * 验四件事：
  * 1. **令牌**：没带令牌的连接拿不到 401；带上才升级成 WebSocket；
  * 2. **连上就有快照**（协议 §1.3）：`evt.state.snapshot` 先到，`seq` 从 0 起；
- * 3. **命令跨进程边界可用**：`session.hello` / `session.snapshot` / `thread.create` 都通；
+ * 3. **命令跨进程边界可用**：`session.initialize` / `session.snapshot` / `thread.create` 都通；
  * 4. **事件会推送**：store 一变，已连接的客户端收到新快照（`seq` 递增）。
  */
 
@@ -30,8 +30,10 @@ afterEach(() => {
   for (const server of servers.splice(0)) server.stop()
 })
 
-/** 起一个服务端并连一个客户端；返回收发用的小工具。 */
-async function connect(options: { token?: string; connectToken?: string } = {}) {
+/** 起一个服务端并连一个客户端；返回收发用的小工具。默认先握手（`handshake: false` 用于验门禁）。 */
+async function connect(
+  options: { token?: string; connectToken?: string; handshake?: boolean } = {}
+) {
   const token = options.token ?? 'test-token'
   const server = startHostServer({ store, token, port: 0, coalesceMs: 0 })
   servers.push(server)
@@ -76,10 +78,47 @@ async function connect(options: { token?: string; connectToken?: string } = {}) 
     return waitFor((frame) => frame.id === id)
   }
 
+  /**
+   * 握手（协议 §1.2）：**真客户端也会先做这一步**——主机在握手前只接受 `session.initialize`，
+   * 抢跑的命令会拿到 -32001。默认帮调用方握手，需要验门禁的用例传 `handshake: false`。
+   */
+  if (options.handshake !== false) {
+    const reply = await call(0, 'session.initialize', {
+      token,
+      protocolVersion: PROTOCOL_VERSION,
+    })
+    if ('error' in reply) throw new Error(`握手失败：${JSON.stringify(reply.error)}`)
+  }
+
   return { server, socket, inbox, waitFor, call }
 }
 
 describe('主机 WebSocket 服务端', () => {
+  test('握手前只接受 session.initialize，其余命令回 -32001（协议 §1.2）', async () => {
+    const { call } = await connect({ handshake: false })
+
+    // 抢跑：还没握手就发命令
+    const denied = await call(1, 'thread.create', { workspace: store.project })
+    const error = denied.error as { code: number; data?: { what?: string } }
+    expect(error.code).toBe(-32001) // AppErrorCode.Unauthorized
+    expect(error.data?.what).toBe('thread.create')
+    // 主机侧**没有**执行它
+    const before = store.threads.length
+    expect(store.threads.length).toBe(before)
+
+    // 握手之后同一条命令就通了
+    const init = await call(2, 'session.initialize', {
+      token: 'test-token',
+      protocolVersion: PROTOCOL_VERSION,
+    })
+    expect((init.result as { protocolVersion: string }).protocolVersion).toBe(PROTOCOL_VERSION)
+
+    const allowed = await call(3, 'thread.create', { workspace: store.project })
+    const threadId = (allowed.result as { threadId: string }).threadId
+    expect(store.threads.some((thread) => thread.id === threadId)).toBe(true)
+    await store.deleteThread(threadId)
+  })
+
   test('没带令牌的连接被挡在 401，带令牌才升级', async () => {
     const server = startHostServer({ store, token: 'right-token', port: 0 })
     servers.push(server)
@@ -93,6 +132,17 @@ describe('主机 WebSocket 服务端', () => {
     const noToken = await fetch(httpUrl)
     expect(noToken.status).toBe(401)
     await noToken.text()
+
+    // 令牌的两种携带方式都要认（协议 §1.6）：
+    // ① 本机自举走 URL 查询参数；② 手工调试/远端走 Authorization: Bearer。
+    // 带对了令牌但不带升级头 → 不是 401，而是"这不是一次 WebSocket 升级"（400）
+    const bearer = await fetch(httpUrl, { headers: { authorization: 'Bearer right-token' } })
+    expect(bearer.status).toBe(400)
+    await bearer.text()
+
+    const viaHeader = await fetch(httpUrl, { headers: { 'x-a-da-token': 'right-token' } })
+    expect(viaHeader.status).toBe(400)
+    await viaHeader.text()
   })
 
   test('连上先收到一份快照，seq 从 0 起', async () => {
@@ -108,7 +158,7 @@ describe('主机 WebSocket 服务端', () => {
   test('握手与快照命令跨连接可用；未知方法如实报错', async () => {
     const { call } = await connect()
 
-    const hello = await call(1, 'session.hello', {
+    const hello = await call(1, 'session.initialize', {
       token: 'test-token',
       protocolVersion: PROTOCOL_VERSION,
     })
@@ -124,7 +174,7 @@ describe('主机 WebSocket 服务端', () => {
     expect(error.code).toBe(-32003) // AppErrorCode.NotReady：明确"没实现"，不是静默 no-op
     expect(error.message).toContain('nope.not-a-method')
 
-    const badVersion = await call(4, 'session.hello', {
+    const badVersion = await call(4, 'session.initialize', {
       token: 'test-token',
       protocolVersion: '9.9',
     })

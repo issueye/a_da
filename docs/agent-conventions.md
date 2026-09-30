@@ -243,14 +243,69 @@ git-tools / code-outline / project-inspector / test-runner 四个官方插件也
 "被 block 时工具真的没执行"（用计数器 spy 工具）就是这个用途——它是唯一能暴露
 此类缺陷的写法。新增点位时照抄这个模式。
 
+### 16. 界面只认 `ui/client` 的四条通道；加协议方法要**同步三处**
+
+M0–M3 把界面与 agent 侧拆开了（真拆：打包形态是两个进程，见 `docs/ui-host-split-dev-plan.md`）。
+规矩只有一条，但它是硬的：**`src/ui/**`（非测试）不许 import agent 侧的实现**。
+
+四条通道（界面做什么都从这四个里选一个）：
+
+| 通道 | 用途 | 例子 |
+|---|---|---|
+| `client.state` | **读**（主机快照 + 客户端本地 + 本地推导） | `client.state.active.items`、`client.state.isThreadRunning(id)` |
+| `client.request(method, params)` | **协议命令**（要主机做事） | `thread.send`、`plugin.list`、`change.revertFile` |
+| `client.ui.*` | **纯客户端动作**（界面怎么看） | 确认框、标签开合 |
+| `client.subscribe(cb)` | 订阅状态变化（React 里用 tick 套路） | `AgentWindow` |
+
+守门在 `src/ui/protocol-boundary.test.ts`（4 条断言，读文件的那种测试）：
+① UI 不 import `agent/store`、不出现 `store.` 用法；② 待迁移清单不许腐烂；③ 协议层不 import 实现模块；
+④ UI 只允许 import agent 侧的**纯函数与纯常量**（按**符号**判，不按模块判——`agent/prompts` 这种
+模块同时导出管理器与纯函数，按模块放行等于把管理器也放进去）。
+
+**加一个协议方法要同步三处**（漏一处就是"文档有、界面调不到"或"界面调了、主机没实现"）：
+
+1. `src/shared/protocol/methods.ts` —— 方法名 + `params` + `result`（`ParamsOf`/`ResultOf` 由它推导，
+   类型会替你抓错）；
+2. `src/agent/host/dispatch.ts` —— 主机侧实现（**唯一**允许直接调 store 与管理器的地方）；
+3. 界面调用点 —— 走 `client.request`。
+
+新方法**必须**在 `docs/jsonrpc-protocol.md` 里有对应条目；实现期发现偏差就回写文档
+（协议 §2 的"实现状态"块就是这个用途，别让文档承诺 A、实现是 B）。
+
+还有两条拆分后新增的"会咬人"的点：
+
+- **hooks 必须排在提前 return 之前**：`ComposerTelemetryBar` 曾在"空会话居中 `return null`"之后
+  调用 `usePromptChars`，会话一有消息就触发 React 的 "Rendered more hooks than during the previous
+  render"。这个错误**不会让测试失败**，只会出现在测试输出的 React 报错里——看全量输出时要留意。
+- **进程本地状态别放错边**：`confirmModal` 带回调，永远只能留在客户端；快照里的字段必须是
+  可序列化的纯数据（`ClientSnapshot` 是唯一口径）。
+
+### 17. 打包后的 exe 收不到自动化通道——二进制检查要用应用日志当证据
+
+`src/platform/init.ts` 会把 `console.log` **劫持**到 `A_DA_HOME/app_debug.log`，只有在
+"检测到控制台窗口"时才同时写真实 stdout。而 `@gpuix/react/automation` 的 `launch()` 通道
+恰恰是走 `console.log('data: …')` 的——打包产物是 PE 子系统 2（**无控制台**），于是响应只进日志、
+到不了管道，`launch()` 会**一直等下去**（不是报错，是卡住）。
+
+所以：
+
+- **窗口级交互验证（点击/截图/查 testId）用开发态**（`bun app.tsx`，有控制台，自动化通）
+  或 `bun test` 里的真窗口用例；
+- **二进制验收（`scripts/binary-check.ts`）用应用自己的启动日志当证据**，并且
+  **每一步都有硬超时、失败必收尾、失败留日志尾部**——"卡住"是最难查的失败，不允许再发生。
+
+`bun scripts/binary-check.ts` 现在验两关：UI 角色（画出首帧 + 日志里确认走的是 `ws` 传输，
+即"自己 spawn 了自己当主机"）与主机角色（`--host` 报端口 + WebSocket 握手 + 快照）。
+
 ## 二、开发与验证
 ```bash
 bun install
 bun run link        # 把本地 ../gpuix 的包连进来，克隆后必做一次
 bun run dev         # 开发：保存即热重载
 bun run typecheck   # 门一
-bun test            # 门二
+bun test            # 门二；bun test src/agent 是真实回归线
 bun run build       # 产出单一可执行文件 dist/a-da.exe
+bun scripts/binary-check.ts   # 打包后验"单文件双角色"（需先 build）
 ```
 
 - **`typecheck` 与 `bun test` 是两个独立的门，两个都要过**，别只跑一个。

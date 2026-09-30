@@ -165,25 +165,29 @@ export function createWebSocketClient(options: WebSocketClientOptions): WebSocke
 
     ws.addEventListener('open', () => {
       setStatus('connected')
-      // 主动握手：声明协议版本（令牌也会再报一次，协议 §1.6）
-      void request('session.hello', {
+      // 先握手再干别的：主机在握手前只接受 `session.initialize`（协议 §1.2），
+      // 抢跑的命令会拿到 -32001 Unauthorized。令牌在这里再报一次（协议 §1.6）。
+      void request('session.initialize', {
         token: options.token,
         protocolVersion: PROTOCOL_VERSION,
-        clientName: options.clientName,
-      }).catch((err: Error) => {
-        console.error('[ws-client] 握手失败:', err.message)
+        client: options.clientName ? { name: options.clientName } : undefined,
       })
-      // 服务端在 open 时也会先推一份快照；如果那条丢了，这里兜一次
-      void request('session.snapshot', {}).then(
-        (snapshot) => {
-          // 只在还没收到任何快照时用它，避免把更新的一份盖回去
-          if (!latest) applySnapshot(snapshot as ClientSnapshot)
-          for (const waiter of readyWaiters.splice(0)) waiter()
-        },
-        () => {
-          /* 拿不到就等 push 的那份 */
-        }
-      )
+        .catch((err: Error) => {
+          console.error('[ws-client] 握手失败:', err.message)
+        })
+        .finally(() => {
+          // 服务端在 open 时也会先推一份快照；如果那条丢了，这里兜一次
+          void request('session.snapshot', {}).then(
+            (snapshot) => {
+              // 只在还没收到任何快照时用它，避免把更新的一份盖回去
+              if (!latest) applySnapshot(snapshot as ClientSnapshot)
+              for (const waiter of readyWaiters.splice(0)) waiter()
+            },
+            () => {
+              /* 拿不到就等 push 的那份 */
+            }
+          )
+        })
     })
 
     ws.addEventListener('message', (event) => handleFrame(String((event as MessageEvent).data)))

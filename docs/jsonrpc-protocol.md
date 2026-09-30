@@ -103,6 +103,19 @@
 - 版本不匹配：`-32000 ProtocolVersionMismatch`，`error.data.serverVersion` 给出服务端版本。
 - 握手前只接受 `session.initialize`；其余命令回 `-32001 Unauthorized`（或直接以关闭码 4401 断开）。
 
+> **实现状态（M3 落地时，2026-09-30）**——避免"文档承诺 A、实现是 B"：
+>
+> | 项 | 现状 |
+> |---|---|
+> | 方法名 | 实现就叫 `session.initialize`（原先草稿里叫过 `session.hello`，已统一到本表口径） |
+> | `protocolVersion` 校验 | ✅ 做了；不匹配回 `-32000`，`data.serverVersion` 带上主机版本 |
+> | 握手前只接受 initialize | ✅ 做了：主机按连接记状态，未握手的连接发别的命令回 `-32001`，`data.what` 说明是哪个命令 |
+> | `client`（name/version/platform/role） | ⚠️ **接受但未使用**（只用于诊断）。角色（只读客户端）留给 M4 |
+> | `capabilities` 协商 | ⚠️ **接受但未使用**：本机单客户端场景下"降级/找替身"还没有真实需求；M4 的 Web 前端才需要 |
+> | 返回里的 `server` / `capabilities` / `seq` | ⚠️ 未给。当前返回 `{ sessionId, protocolVersion, host: { pid } }`；`seq` 从**连上时推的那份快照**起算（见 §1.3） |
+>
+> 这一段是**如实标注**，不是待办清单：真做 `capabilities` 协商时，把上表对应行改成 ✅ 即可。
+
 ### 1.3 快照与序号（**重连正确性的地基**）
 
 - 所有 `evt.*` 通知都带 `seq`（**单调递增，服务端全局**）。
@@ -123,9 +136,17 @@
 
 - **缺口即重同步**：客户端发现 `evt.seq > lastSeq + 1` → 调 `session.resync { fromSeq }`；服务端能补发就补发，补不了回 `-32010 NeedResync`，客户端重新 `session.snapshot` 并**丢弃本地未确认 delta**。
 
+> **实现状态（M3）**：`session.snapshot` ✅ 可用（返回完整可渲染状态，**但没有 `seq` 字段**——
+> 当前 `seq` 只在 `evt.*` 上）；`session.resync` ⚠️ **未实现**，也**没有 `seq` 环形缓冲**。
+> 客户端现在的做法是"重连就无条件要一份快照"（够用且简单），缺口检测等 M4 多客户端再说。
+> 另外注意 `params.include` 这个"按需裁剪"字段也**未实现**：实现总是给完整快照。
+
 ### 1.4 保活
 
 - 客户端每 20s 发 `session.ping`（普通请求，30s 超时）；服务端 60s 无任何入站帧则关闭（4408）。
+
+> **实现状态（M3）**：`session.ping` **未实现**。当前靠 TCP/本机回环的天然可靠性 + 客户端
+> 断开即重连；本机场景没有"半开连接"的真实需求（这台机器上两端同生死）。远端（M4）才需要。
 
 ### 1.5 断线语义
 
@@ -140,6 +161,17 @@
 |---|---|
 | 本机 | 绑定 `127.0.0.1`；每次启动生成一次性令牌，通过 stdout/文件交给 UI；`Authorization: Bearer <token>` |
 | 远端 | `wss://` + 长期令牌或配对码；令牌只存主机侧 secrets |
+
+**令牌的携带方式**（实现支持三种，按用途选）：
+
+| 方式 | 用途 |
+|---|---|
+| URL 查询参数 `?token=…` | **本机自举**：UI 起子进程时最省事，且升级前就能校验（挡住"没带令牌的连接"） |
+| `Authorization: Bearer <token>` | 手工调试（curl / wscat）与将来的远端客户端；协议本来就这么写 |
+| `x-a-da-token: <token>` | 显式头，给不方便改 Authorization 的场景 |
+
+> **实现状态（M3）**：三种都支持，且**两道校验**——升级连接时一次、`session.initialize` 里再报一次
+> （协议 §1.2）。主机不落盘令牌；令牌由 UI 生成、经 argv 传给子进程。
 | 关闭码 | `4401` 认证失败 / `4403` 无权限 / `4408` 空闲超时 / `4409` 版本不符 |
 
 - **服务端是信任边界**：客户端来的路径一律按"工作区之外"处理，交由 `checkWorkspaceSandbox` 判定；
@@ -183,6 +215,15 @@ UI 进程（a-da.exe）
   就绪行只用于"发现端口 + 知道对方起来了"，**不承载任何协议消息**。
   如果就绪行在某些环境下不可靠（冷启动时序、安全软件拦管道），退路是**同一条 WS 协议**上的另一套就绪探测：
   UI 预选一个端口传给主机（`--port <n>`），然后**带退避重试连接**直到超时——仍然只有 WebSocket。
+  实际形状（实现口径）：
+
+  ```
+  A_DA_HOST_READY {"ready":true,"port":51234,"pid":9876,"protocolVersion":"1.0"}
+  ```
+
+  前缀 `A_DA_HOST_READY ` 是为了在混杂输出里也能可靠扫到这一行；UI 只认这一行里的 `port`
+  （`pid` 用于诊断与看门狗核对）。主机角色的完整命令行：
+  `a-da.exe --host --port 0 --token <t> [--parent-pid <UI pid>]`。
 - **令牌**：由 UI 生成、经命令行传给子进程、只在本机回环上用；主机不落盘。
 - **一 UI 一主机（本机默认）**：两个窗口 = 两次启动 = 两个独立主机，与今天"两次启动 = 两个独立 store"语义一致；
   "多个客户端共享一个主机"是**远端/显式共享**场景（§1.7），不是本机默认。
@@ -471,6 +512,21 @@ interface Progress { id: number|string; done?: number; total?: number; label?: s
 
 ## 4. 服务端 → 客户端：通知（`evt.*`，无 id，带 `seq`）
 
+> **实现状态（M1–M3）：只发一种粗粒度事件 `evt.state.snapshot`。**
+>
+> ```jsonc
+> { "jsonrpc": "2.0", "method": "evt.state.snapshot",
+>   "params": { "seq": 42, "topic": "evt.state.snapshot", "payload": { /* ClientSnapshot */ } } }
+> ```
+>
+> - 它带整份可渲染快照（会话/队列/日志/工作区/配置/待答提问 + UI 外壳镜像），`seq` 单调递增；
+>   连上时先推一份（`seq: 0`）。
+> - **下表 21 个细 topic 都还没实现**。这是计划 M1-4 的"先粗后细"：先把"主机产出 → 客户端应用"
+>   打通，再按**实测**把高频路径拆成增量。拆的触发条件是实测的带宽/延迟数字，不是"文档里写了"。
+> - 好处要说清楚：粗粒度下**不会漏事件**（每次通知都是一整份状态），所以"界面停在执行中"这类
+>   静默失效在当前形态下不存在；代价是流式期间每次都要序列化整份快照——本机回环上无所谓。
+> - 客户端的应用侧在 `src/ui/client/view-store.ts`；事件生产侧在 `src/agent/host/emitter.ts`。
+
 | method | params | 何时发 | 客户端动作 |
 |---|---|---|---|
 | `evt.thread.upserted` | `{thread: ThreadMeta\|Thread}` | 会话新建/重命名/工作区变更/子会话建立 | 侧栏与标签栏更新 |
@@ -511,6 +567,20 @@ interface Progress { id: number|string; done?: number; total?: number; label?: s
 > **不放 `req.confirm` / `req.ui.reveal` / `req.ui.copy`**：删除确认、在资源管理器中打开、复制到剪贴板
 > 都是**用户动作的本地结果**，主机没有理由发起（真要发起也行，但没必要入协议）。
 > `req.ui.notify` 保留，因为"任务完成弹通知"现在是主机侧在收尾时发起的（`store.drain` 里的完成通知）。
+
+> **实现状态（M1–M3）：三个 `req.*` 都还没接，而且当前设计不需要它们。**
+>
+> 审批与提问走的是**状态 + 命令**，不是反向请求：挂起时它作为条目/快照字段出现在
+> `ClientSnapshot` 里（`pendingQuestions`、卡片状态），客户端用 `approval.decide` /
+> `question.answer` 答复。主机侧的等待逻辑不变（`store.decide` / `store.answerQuestion` 唤醒）。
+>
+> 为什么这么做：本机是**一 UI 一主机**，没有"问哪个客户端"的问题；反向请求要额外处理
+> 超时、断线、多客户端抢答（`evt.approval.settled`）三件事，而这三件事只在多客户端下才有意义。
+> 另外这条路上**不会出现"卡片挂在界面上但主机早就不等了"**——挂起状态与快照同源。
+>
+> `req.*` 什么时候真的要接：M4 的远端/多客户端（那时才需要 `by: clientId`、抢答、超时策略）。
+> 收到 `req.*` 时客户端的行为已经定好了：回 `-32601 MethodNotFound`，**不假装处理**
+> （见 `src/ui/client/ws.ts`）。
 
 **审批回合示例**（一次工具调用被闸门拦下）：
 

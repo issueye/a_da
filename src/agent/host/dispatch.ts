@@ -64,7 +64,7 @@ export function createCommandDispatcher(
     const p = (params ?? {}) as Record<string, unknown>
     switch (method) {
       // ── 会话（连接与快照，协议 §1.2/§1.3）──
-      case 'session.hello': {
+      case 'session.initialize': {
         const requested = p.protocolVersion as string | undefined
         if (requested && requested !== PROTOCOL_VERSION) {
           throw appError(
@@ -73,7 +73,9 @@ export function createCommandDispatcher(
             { serverVersion: PROTOCOL_VERSION, minClient: requested }
           )
         }
-        // 令牌校验在传输层做（升级时一次、握手时一次，协议 §1.6）；这里只认会话身份
+        // 令牌校验在传输层做（升级时一次、握手时一次，协议 §1.6）；这里只认会话身份。
+        // `client` 与 `capabilities` 接受但未使用：能力协商是 M4（协议 §12.3）的事，
+        // 现在假装协商过只会让"降级到底有没有生效"变得不可查。
         return { sessionId, protocolVersion: PROTOCOL_VERSION, host: { pid: process.pid } }
       }
       case 'session.snapshot':

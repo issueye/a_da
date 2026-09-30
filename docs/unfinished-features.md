@@ -76,22 +76,25 @@
 
 ### 9. 子智能体的两条"续跑"入口绕过 profile 白名单与门禁　`待拍板`
 
-- **现状**：`store.steerSubagentThread` 对**已停止**的子智能体是"重新排队 + `drain`"
-  （`src/agent/store.ts`），不经过 `resumeSubagentThread`（那条已经在跑门禁）；
-  用户在**子智能体标签页里直接输入**则走 `store.send → drain → turn`，而 `turn` 用的是
-  **主会话工具表**（`getToolsForMode`）与 `kind: 'main'` 的插件钩子——也就是说这条路上
-  既不过门禁，也**不应用 profile 的白名单**（只读子智能体在这条路上能拿到写工具）。
-- **证据**：`turn()` 里没有 `thread.isSubagent` 分支；`kind: 'main'` 是写死的。
-  门禁接入点只有 `startSubagentThread`、`resumeSubagentThread`、`subagents/runner.ts`
-  三处（`docs/agent-conventions.md` 与 `subagents/access.ts` 已写明）。
-- **影响**：只读 / 白名单是子智能体的权限声明，走这两条路时会静默失效——属于"看起来
-  装上了、其实没生效"，且没有任何提示。
-- **最小实现路径**：让 `turn()` 认识 `thread.isSubagent`（用 `resolveSubagentTools` 取表、
-  `hookContext.kind = 'subagent'`），并给 `steerSubagentThread` 的续跑分支补门禁
-  （判定输入用 `resumeGateTask`）。**两件事要一起做**：只补门禁而工具表仍走主会话，
-  等于把"门禁过了"与"权限没生效"拼在一起，更难查。
+- **现状（行号已按当前代码核准）**：
+  - `store.turn()`（`src/agent/store.ts:3632`）里取的是**主会话工具表**
+    （`defaultToolRegistry.getToolsForMode(...)`，:3669），`kind: 'main'` 是写死的——**没有
+    `thread.isSubagent` 分支**；
+  - `store.steerSubagentThread` 对**已停止**的子智能体走"重新排队 + `drain`"（:2751–2769），
+    不过门禁；
+  - 用户在**子智能体标签页里直接输入**走 `store.send → drain → turn`，同一条路。
+- **已经修掉的那一半**：`resumeSubagentThread` 现在**先过门禁**再动手（:2806–2812，判定输入
+  `resumeGateTask`）。所以门禁接入点已有四处：`startSubagentThread`、`resumeSubagentThread`、
+  `subagents/runner.ts`，**但 `turn()` 本身仍然不认识子智能体身份**。
+- **影响**：只读 / 白名单是子智能体的权限声明，走这两条路时会静默失效——这条路上的子智能体
+  能拿到写工具，且没有任何提示。
+- **最小实现路径（两件事必须一起做）**：让 `turn()` 认识 `thread.isSubagent`
+  （用 `resolveSubagentTools` 取表、`hookContext.kind = 'subagent'`），并给
+  `steerSubagentThread` 的续跑分支补门禁（判定输入用 `resumeGateTask`）。
+  只补门禁而工具表仍走主会话，等于把"门禁过了"与"权限没生效"拼在一起，更难查。
 - **需要拍板**：子智能体标签页是否允许用户直接对话？若允许，它应当按子智能体身份运行
   （白名单 + 门禁）；若不允许，就该在 `send` 入口挡掉并引导用 `send_subagent_message`。
+  （本轮建议：**允许，但按子智能体身份跑**——禁掉输入是功能倒退，而按身份跑既保留功能又补上权限。）
 
 ---
 
@@ -123,11 +126,21 @@
 
 ## 四、工程与交付注意
 
-- **打包产物落后于源码**：`dist/a-da.exe` 的时间戳是 **09-28 01:02**，之后的全部提交
-  （插件系统 M0–M3、12 个提交）都不在里面。用 exe 验收前必须先 `bun run build`。
-- **分支未合**：全部工作在一个特性分支上，未合回 `main`。
+- **打包产物**：已随 M3 重建（`dist/a-da.exe` 与当前源码一致），并且
+  `bun scripts/binary-check.ts` 现在验两关——UI 角色画出首帧且日志确认走 `ws`（自 spawn 主机）、
+  主机角色 `--host` 报端口 + 握手 + 快照。**注意**：打包产物是 GUI 子系统（无控制台），
+  自动化通道到不了管道，所以二进制检查只能用应用自己的启动日志当证据（详见
+  `docs/agent-conventions.md` §17）。
+- **拆分后的两项已知缺口**（M3 完成记录里如实标了，不是漏做）：
+  1. **主机被杀时界面没有提示**：ws 客户端会退避重连、连上先要快照对齐，但"主机没了"
+     目前只进控制台/日志，用户看不到一句人话（协议 §1.5 要求可理解 + 可重连）；
+  2. **冷启动退化未测量**：打包形态多了"spawn 主机 + 握手 + 首帧快照"三步，只验过"能画出首帧"，
+     没有与 M0–M2 的进程内形态对比过数字。
+- **分支未合**：M0–M3 全部工作在一个特性分支 `feat/ui-host-split` 上（分阶段提交，可逐里程碑合并），
+  未合回 `main`。
 - **测试有偶发**：全量测试连跑 8 次出现过 1 次单条失败（每次失败的用例名不同），属既有的
   跨文件干扰类——`store` 是进程级单例、若干测试会临时改 `A_DA_HOME`，而 `bun` 把各测试文件
   放在同一进程里并发跑。不是新引入的，但新加会 mount 窗口或改环境变量的用例要格外小心
   （约束见 `AGENTS.md` §13 末尾）。
-- **与设计文档的刻意偏差**：三处，逐条写在 `AGENTS.md` §12 / §13，改之前先读。
+- **与设计文档的刻意偏差**：插件系统那三处见 `AGENTS.md` §12 / §13；拆分（M0–M3）期间的偏差
+  逐条写在 `docs/ui-host-split-dev-plan.md` 的里程碑完成记录里（**合并前先读那两处**）。

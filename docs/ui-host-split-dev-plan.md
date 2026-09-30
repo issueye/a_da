@@ -478,7 +478,7 @@ M3-4/M3-6 之后，**打包产物本身就是证据**：它自己 spawn 自己�
 | `src/agent/config.ts` | `config.*` / `plugin.capabilities.*` / `plugin.secret.*` | M2 |
 | `src/agent/{skills,prompts,subagents}` | 管理器方法 → `skill.*` / `prompt.*` / `subagentProfile.*` | M2 |
 | `src/agent/checkpoint/*` | → `change.*` | M2 |
-| `src/agent/tools/builtins/subagent.ts`、`builtin-plugins/ask-user.ts` | 反向抓 store 的 7 处改成"向已连接客户端发 `req.*`" | M1/M3 |
+| `src/agent/tools/builtins/subagent.ts`、`builtin-plugins/ask-user.ts` | 反向抓 store 的 7 处（`subagent.ts` 6 + `ask-user.ts` 1）**不需要改成 `req.*`**：它们运行在**主机进程**里，store 单例就在那儿。审批/提问改成了 **state-based**（挂起项进快照、客户端用命令答复），所以本机单客户端下反向请求是多余的。`req.*` 留给 M4 多客户端（那时才需要"问哪个客户端"、抢答与超时）。协议 §5 已如实标注"未接" | —（口径已订正） |
 | `scripts/binary-check.ts` | 加"自 spawn 主机 + initialize + 首帧"用例 | M3 |
 | `scripts/build.ts` | **不改**（仍然一个 `outfile`；两个角色在同一 bundle） | — |
 | `docs/jsonrpc-protocol.md` | 实现期发现的偏差回写 | 全程 |
