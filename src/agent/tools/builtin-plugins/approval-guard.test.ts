@@ -228,18 +228,73 @@ describe('审批策略：只读档位的硬约束', () => {
   })
 })
 
-describe('审批策略：配置容错', () => {
-  test('配置里给了非数组值时回落默认，而不是崩溃或全部免问', async () => {
-    await configure({ autoApprove: 'not-an-array', confirmCommands: 42 })
-    const hook = createApprovalGuardHook()!
-    // 回落默认 → 白名单为空 → 普通写工具照常问
-    expect(await hook(ctxOf({ toolName: 'write_file' }))).toBeUndefined()
-  })
-
-  test('配置里的空字符串与空白项被丢弃', async () => {
+describe('审批策略：配置形态与容错', () => {
+  test('数组形态（配置文件 / 测试直接写）照常可用', async () => {
     await configure({ autoApprove: ['  ', '', 'read_file'] })
     const hook = createApprovalGuardHook()!
     expect((await hook(ctxOf({ toolName: 'read_file' })))?.decision).toBe('allow')
+    expect(await hook(ctxOf({ toolName: 'write_file' }))).toBeUndefined()
+  })
+
+  // 界面上的配置表单对 `type: 'string'` 的字段存的就是字符串（插件配置表单不做解析）。
+  // 早先只认数组，于是"在插件卡里填了免问白名单"会被静默忽略、照旧每次都问——
+  // 只有按**真实写入路径**造的用例能发现它。
+  test('界面写入的逗号分隔字符串同样生效', async () => {
+    await configure({ autoApprove: 'read_file, git_status' })
+    const hook = createApprovalGuardHook()!
+
+    expect((await hook(ctxOf({ toolName: 'read_file' })))?.decision).toBe('allow')
+    expect((await hook(ctxOf({ toolName: 'git_status' })))?.decision).toBe('allow')
+    // 没列进去的照常问
+    expect(await hook(ctxOf({ toolName: 'write_file' }))).toBeUndefined()
+  })
+
+  test('高危模式用字符串配置也生效；中文逗号与换行都能分隔', async () => {
+    await configure({ confirmCommands: 'docker system prune，rm -rf\nformat' })
+    const hook = createApprovalGuardHook()!
+    const asked: string[] = []
+
+    const verdict = await hook(
+      ctxOf({
+        toolName: 'run_command',
+        command: 'docker system prune -a',
+        askUser: async (request) => {
+          asked.push(request.reason ?? '')
+          return { approved: false, answeredBy: 'user' }
+        },
+      })
+    )
+
+    expect(asked).toHaveLength(1)
+    expect(asked[0]).toContain('docker system prune')
+    expect(verdict?.decision).toBe('deny')
+  })
+
+  test('空字符串按"未配置"处理：不会把内置高危清单清空', async () => {
+    // 表单保存时未填的字段就是空串，不能因为用户没动它就把默认清单清掉
+    await configure({ autoApprove: '', confirmCommands: '' })
+    const hook = createApprovalGuardHook()!
+    const asked: string[] = []
+
+    const verdict = await hook(
+      ctxOf({
+        toolName: 'run_command',
+        command: 'rm -rf build',
+        askUser: async () => {
+          asked.push('asked')
+          return { approved: false, answeredBy: 'user' }
+        },
+      })
+    )
+
+    expect(asked).toHaveLength(1)
+    expect(verdict?.decision).toBe('deny')
+  })
+
+  test('类型压根不对（数字 / 对象）时回落默认，而不是崩溃或全部免问', async () => {
+    await configure({ autoApprove: 42, confirmCommands: { a: 1 } })
+    const hook = createApprovalGuardHook()!
+    // 回落默认 → 白名单为空 → 普通写工具照常问
     expect(await hook(ctxOf({ toolName: 'write_file' }))).toBeUndefined()
   })
 })

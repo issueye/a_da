@@ -13,13 +13,17 @@
  *
  * ## 三层策略（自上而下，先命中先返回）
  *
- * 1. **只读档位的硬约束**：`approvalMode === 'readonly'` 时写操作一律照常问用户。
+ * 1. **高危需二次确认**（`approvalGuard.confirmCommands`）：命令类工具命中危险模式时
+ *    用 `askUser` 发起一次带理由的询问——**即使用户开了自动批准**也要问。排在最前，
+ *    否则白名单会把最需要确认的调用一起放过。
+ * 2. **只读档位的硬约束**：`approvalMode === 'readonly'` 时写操作一律照常问用户。
  *    这里**不返回 allow**——核心也会忽略它，但插件不该发出一个注定被忽略的意图，
  *    那会让"为什么没生效"变成谜。
- * 2. **免问白名单**（`approvalGuard.autoApprove`）：按工具名放行。默认空，
+ * 3. **免问白名单**（`approvalGuard.autoApprove`）：按工具名放行。默认空，
  *    因为"默认自动批准"是不可接受的默认值。
- * 3. **高危需二次确认**（`approvalGuard.confirmCommands`）：命令类工具命中危险模式时
- *    用 `askUser` 发起一次带理由的询问——**即使用户开了自动批准**也要问。
+ *
+ * 两个列表都从 `readPluginConfig` 读：数组或**逗号分隔的字符串**都认（后者是配置表单
+ * 存进来的形态）。空串按未配置处理，沿用默认值。
  *
  * 用户明确关掉整个插件（插件管理里的启停）时，退回核心的默认行为。
  */
@@ -57,10 +61,26 @@ const DEFAULTS: ApprovalGuardConfig = {
   ],
 }
 
-/** 从 `readPluginConfig` 里取数组字段，非法值回落到默认。 */
+/**
+ * 从 `readPluginConfig` 里取列表字段；非法值回落默认。
+ *
+ * 两种形态都要认，因为**存进来的形态由写入方决定**：`config.json` / 测试里写的是数组，
+ * 而插件配置表单对 `type: 'string'` 的字段原样存字符串（用户填"逗号分隔"）。
+ * 早先只认数组，于是界面上配的免问白名单会被静默忽略、照旧每次都问——正是本项目
+ * 明确要避免的那类"看起来配上了、其实没生效"。
+ *
+ * 空字符串视为**未配置**（沿用默认）：表单保存时未填的字段就是空串，不能因为用户
+ * 没动它就把高危模式清单清空。
+ */
 function asStringArray(raw: unknown, fallback: string[]): string[] {
-  if (!Array.isArray(raw)) return fallback
-  return raw
+  const list = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string' && raw.trim() !== ''
+      ? // 中英文逗号与换行都当分隔符：用户手写配置时的习惯各不相同
+        raw.split(/[,，\n]/)
+      : null
+  if (!list) return fallback
+  return list
     .filter((item): item is string => typeof item === 'string')
     .map((item) => item.trim())
     .filter((item) => item.length > 0)
@@ -180,12 +200,14 @@ export const approvalGuardPlugin: PluginDescriptor = {
       autoApprove: {
         type: 'string',
         title: '免问白名单',
-        description: '逗号分隔的工具名，列在这里的工具不再询问用户。默认空。',
+        description:
+          '逗号分隔的工具名，列在这里的工具不再询问用户。默认空（"默认自动批准"不是可接受的默认值）。留空表示不改动。',
       },
       confirmCommands: {
         type: 'string',
         title: '高危命令模式',
-        description: '命令类工具的参数命中这些片段时，即使用户开了自动批准也要二次确认。',
+        description:
+          '逗号分隔的片段（字面子串匹配，不是通配/正则）。命令类工具的参数命中时，即使用户开了自动批准也要二次确认。留空表示沿用内置默认清单。',
       },
     },
   },
