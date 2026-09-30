@@ -1,8 +1,9 @@
 # a_da UI ↔ Agent 主机对接协议（JSON-RPC 2.0）
 
-> 状态：**草案 v0.1，待评审**（本文只定协议，不动代码）
+> 状态：**草案 v0.1，待评审**（本文只定协议，不动代码；§11 的"待拍板"已按建议定案）
 > 目标：把现在"进程内单例 `store`"换成"UI 进程 ↔ agent 主机进程"的 JSON-RPC 2.0 对接面，
 > **覆盖当前全部功能**，并为分阶段落地划清子集。
+> **交付形态不变**：这是内部拆分，编译产物仍然只有一个 `dist/a-da.exe`（§0.2 第 4 条、§1.8）。
 > 依据：实测当前实现——`src/agent/store.ts`（4065 行）、UI 对 store 的 **233 处引用 / 70 个不同成员**
 > （把 `*.test.tsx` 也算进来是 460 处 / 79 个）、UI 直接调用的 **17 个管理器函数**、
 > agent 侧反向抓 store 的 **7 处**。
@@ -20,11 +21,21 @@
 
 **这不是"把渲染搬到服务端"**：GPUix 是原生 GPU 渲染，跨进程传帧等于自建远程桌面。协议只承载**状态与命令**。
 
-### 0.2 三条不变量
+**本机默认形态**：两个角色在**同一个 exe** 里（无参数 = UI 自己 spawn 自己 `--host`），见 §1.8；
+"两个进程"是运行期事实，"两个二进制"不是交付事实。
+
+### 0.2 四条不变量
 
 1. **后端权威**：会话、消息、工具卡、运行状态、审批等待、文件改动，真值都在主机。客户端是**只读复制 + 命令发起方**。
 2. **客户端不得直接碰世界**：一切文件/配置/密钥/进程操作都走 RPC；客户端不做 `readFile`。
 3. **纯 UI 状态不进协议**（见 §9.3）：弹窗开合、草稿、滚动位置等都是客户端本地状态。
+4. **交付物仍然只有一个二进制**（硬约束，见 §1.8）：**这是内部拆分，不是交付形态的改变**。
+   `bun run build` 依旧只产出 `dist/a-da.exe` 一个文件——用户双击的、CI 校验的、要发出去的，
+   都是同一个 exe。不引入第二个可执行文件、不引入安装器、不要求用户配端口或启动第二个程序。
+
+> 第 4 条是**否决性约束**：任何让交付变复杂的方案（两个二进制的 zip、必须先跑 host 再开 UI、
+> 需要写配置文件告诉 UI 主机在哪）都不采纳。协议里一切"远端主机"的能力都是**同一套代码的额外用法**，
+> 不是默认路径。
 
 ### 0.3 JSON-RPC 2.0 用法约定
 
@@ -48,6 +59,7 @@
 - WebSocket，子协议 `ada.rpc.v1`；本机默认 `ws://127.0.0.1:<port>/rpc`，远端必须 `wss://`。
 - 客户端在 **URL query 或 `Sec-WebSocket-Protocol`** 里带令牌（见 §1.6）。
 - 单连接多路复用：所有命令、事件、反向请求共用一条连接；不按域开多连接。
+- **本机单文件模式**（默认路径，交付形态不变）见 §1.8：一个 exe 内部起两个角色，UI 自己 spawn 自己。
 
 ### 1.2 握手
 
@@ -125,6 +137,63 @@
   - `req.approval.decide` / `req.question.ask` 默认广播给所有客户端（`target: "all"`，卡片都亮）；
   - **先答者生效**，其余客户端收到 `evt.approval.settled` 并撤下卡片；重复应答回 `-32006 AlreadyAnswered`；
   - 需要"只在某个客户端问"时用 `target: { clientId }`（客户端 id 由 `session.initialize` 的 `client.id` 给定）。
+
+### 1.8 本机单文件模式：一个二进制，两个角色
+
+> 这一节落实 §0.2 的第 4 条。**它对用户完全透明**：双击的还是那个 exe，没有任何新东西要装、要配、要开。
+
+**同一个 exe 两个入口，靠 argv 分流**（`app.tsx` 现在不解析 argv，需要加这一段）：
+
+| 启动方式 | 角色 |
+|---|---|
+| `a-da.exe`（无参数，即今天的行为） | **UI**：起 GPUix 窗口，并按需 spawn 主机 |
+| `a-da.exe --host` | **主机**：只跑 agent（`store` 的后端那一半），不开窗口 |
+| `a-da.exe --host --stdio` | 主机 + stdio 传输（调试用；`@gpuix/react/automation` 的 `connectStdio` 已是同类先例） |
+
+**启动顺序（本机）**：
+
+```
+UI 进程（a-da.exe）
+  ├─ 生成一次性令牌 token（32 字节随机）
+  ├─ spawn(process.execPath, ['--host', '--port', '0', '--token', token])
+  │    └─ 主机绑 127.0.0.1 的随机空闲端口，stdout 回一行握手行：
+  │       {"ready":true,"port":51234,"pid":9876,"protocolVersion":"1.0"}
+  ├─ 读到 ready 行 → 连 ws://127.0.0.1:51234/rpc（Authorization: Bearer <token>）
+  └─ session.initialize → session.snapshot → 开始渲染
+```
+
+- **为什么本机也走 WS 而不是直接进程内调用**：协议只有一套，本机与远端走同一条码路——
+  少一套"只在远端才走"的分支，就是少一类只在远端复现的 bug。进程内调用仅保留给**开发与测试**（见下）。
+- **端口**：`--port 0` 让系统分配，避免固定端口冲突；stdout 的 ready 行是唯一的发现渠道，
+  **不写任何配置文件**（用户不需要知道端口）。
+- **令牌**：由 UI 生成、经命令行传给子进程、只在本机回环上用；主机不落盘。
+- **生命周期**：主机默认**随 UI 退出**——UI 退出前 kill 子进程，主机自己也监听"父进程消失 / stdin 关闭"
+  自杀，避免孤儿进程（Windows 上用 Job Object 兜底更稳）。`--detach` 留给"常驻主机 + 远端 UI"，
+  **不是默认路径**。
+- **开发与测试**：`bun run dev`（`bun --hot app.tsx`）与全部 UI 测试继续走 `InProcessTransport`，
+  **不 spawn**——真窗口的单窗口约束（`AGENTS.md` §13）与测试速度都不受影响。
+- **打包照旧**：`scripts/build.ts` 仍然只有一个 `outfile`（`dist/a-da.exe`）。因为**两个角色在同一个
+  bundle 里**（同一个 `app.tsx` 按 argv 分流），不需要第二个 entrypoint、第二个产物或额外资源文件。
+- **验收**：`scripts/binary-check.ts` 现在只验"启动并画出欢迎页"；阶段 F 起再加一条——
+  **同一个 exe 能 spawn 自己 `--host`、完成一次 `session.initialize` 并把首帧画出来**，
+  即"单文件 + 内部拆分"有可执行的证明。
+
+**落地时要先验的四件事**（都属于工程细节，不影响协议）：
+
+1. 编译后的 Bun 单文件 exe 用 `process.execPath` 再 spawn 自己、并正确收到 argv（Bun 编译产物应当支持；
+   仓库里 `scripts/launch-own.ts` 已有 spawn 子进程 + stdio 通道的先例，但那是 `bun app.tsx` 形态）。
+2. 随机端口的 ready 行在冷启动/杀毒软件拦截下的时序（给 `--host` 一个总超时 + 失败时回退到 `--stdio`）。
+3. UI 被强杀（任务管理器）时子进程不残留——父进程消失检测 + Job Object 双保险。
+4. **host 分支绝不能碰到渲染层**：`app.tsx` 现在顶部就 `import './src/platform/init'`、结尾 `render(...)`，
+   静态 import 会连 GPUix 原生 addon 一起加载。落地时改成**动态 import 分流**：
+
+   ```ts
+   if (process.argv.includes('--host')) await import('./src/agent/host/main')
+   else await import('./src/ui/main')       // 里面才 init 平台 + render
+   ```
+
+   否则 `--host` 进程会多一次原生初始化（最坏情况是多出一个空窗口），而"一个二进制两个角色"的
+   前提是**两个角色互不牵连**。
 
 ---
 
@@ -587,19 +656,29 @@ interface Progress { id: number|string; done?: number; total?: number; label?: s
 | **C** 真 WS（本机） | §1 全节 + §3.1/3.2/3.3 + §5 | 断线重连不丢状态；两个窗口同连互不干扰 |
 | **D** 文件类 RPC | §3.6–3.11 | `PluginsDialog`/`SettingsDialog`/`SkillsPanel`/`ChangesPanel` 的 agent 侧 import 清零 |
 | **E** 远端与多客户端 | §1.6/1.7、`req.*` 归属策略 | 远端 wss 可用；抢答/撤卡正确 |
-| **F** 打包 | `a-da --host` / `a-da --ui`（UI 可 spawn host） | 单文件 exe 双击仍能启动 |
+| **F** 单文件双角色 | §1.8：`app.tsx` 按 argv 动态分流（`--host` / UI）；UI 用 `process.execPath` spawn 自己、连回环 WS | `bun run build` **仍只产出 `dist/a-da.exe`**；双击仍能启动；`scripts/binary-check.ts` 新增"自 spawn 主机 + 完成一次 `session.initialize` + 画出首帧" |
+
+> **用户可见行为在 A→F 全程不变**：始终是"双击一个 exe、出一个窗口"。
+> 阶段 A/B 完全不引入网络（`InProcessTransport`）；阶段 C 起本机默认走 §1.8 的自 spawn，
+> 但那是实现细节——**交付物从第一步到最后一步都是同一个 `dist/a-da.exe`**。
 
 ---
 
-## 11. 待拍板
+## 11. 已定案（原"待拍板"，按建议定案）
 
-1. **`activeId`（当前会话）归谁？** 建议**归客户端**：焦点是 UI 概念。但这会牵动两处现有实现——
-   `store.project` 由 `active.workspace` 推导、`refresh()` 按 `this.project` 加载插件。
-   拆分后**插件加载必须按"有会话在跑的 workspace 集合"**而不是"当前焦点"，否则两个窗口切焦点会互相重载插件。
-   → 需要一次明确的设计确认（这是本协议里唯一会影响后端语义的决策）。
-2. **图片上传**：远端场景用 `dataUrl` 内联（简单，受 `maxFrameBytes` 限制）还是 `file.put` 分片（复杂，支持大图）？
-   建议先内联 + 上限 4MB，超限明确报 `-32008`。
-3. **`entries` 分页大小与是否缓存**：418 个文件现在一次给；远端建议 200/页 + 客户端 LRU。
-4. **调试日志保留**：主机环形 2000 条？持久化到文件供事后导出？
-5. **多客户端审批**：默认广播抢答（本文建议）还是"主客户端独占"？
-6. **`change.list/count` 由谁算**：主机 RPC（一致）还是客户端从 `items` 自算（省一次往返）？建议主机 RPC + 客户端自算作降级。
+| # | 事项 | 决定 | 理由与连带影响 |
+|---|---|---|---|
+| 1 | `activeId`（会话焦点）归谁 | **归客户端**；主机的插件加载改按 **workspace**，不再按"当前焦点" | 焦点是 UI 概念。现状 `store.project` 由 `active.workspace` 推导、`refresh()` 按它重载插件——不改的话两个窗口切焦点会互相重载插件。过渡期用 `ui.activeThread` 通知（§3.12），终态主机按"有会话可见/在跑"的 workspace 集合准备上下文 |
+| 2 | 图片传输 | **先内联 `dataUrl` + 单帧上限 4MB**，超限明确报 `-32008 TooLarge`；分片 `file.put` 不做 | 现在 `images` 是本地 tmp 路径、后端在请求时读盘，而 `imageToDataUrl`（`agent-loop.ts:41`）**已经放行 `data:` 前缀**——后端不用改。分片要写一套续传，收益不抵复杂度 |
+| 3 | `entries` 分页 | **200 条/页 + 客户端 LRU**；`session.snapshot` 只给 `{files, dirs}` | 现在是 418 个文件一次给；大仓库会变成兆级 JSON |
+| 4 | 调试日志保留 | 主机**内存环形 2000 条，不落盘**；导出由 UI 复制当前缓冲 | 落盘要处理轮转与隐私（日志里含路径与命令），收益低 |
+| 5 | 多客户端审批 | **默认广播抢答**（`target: 'all'`），先答者生效、其余收 `evt.approval.settled` 撤卡 | 与"用户决定"的取向一致；独占模式留给 `target: { clientId }` |
+| 6 | `change.list/count` 谁算 | **主机 RPC 为准**，客户端从 `items` 自算仅作离线降级 | 两边都算会漂移；但派生规则是纯函数（`patchStats`），兜底成本极低 |
+| 7 | **交付形态** | **仍然只交付一个二进制**：内部拆进程，交付物不变 | 见 §0.2 第 4 条（否决性约束）与 §1.8（`a-da.exe` 双角色、自 spawn、生命周期、打包照旧） |
+
+### 11.1 落地时要实测的四件事（不是待拍板，是待验证）
+
+1. 编译后的 exe 用 `process.execPath` 自 spawn 并正确收到 argv（Windows 上实测）。
+2. 随机端口 + ready 行的冷启动时序、杀毒软件拦截（失败回退 `--stdio`）。
+3. 强杀 UI 时子进程不残留（父进程消失检测，必要时 Job Object）。
+4. host 分支不初始化渲染层（`app.tsx` 顶部静态 `import` 要改成动态分流，见 §1.8）。
