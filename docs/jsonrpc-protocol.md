@@ -3,7 +3,9 @@
 > 状态：**草案 v0.1，待评审**（本文只定协议，不动代码；§11 的"待拍板"已按建议定案）
 > 目标：把现在"进程内单例 `store`"换成"UI 进程 ↔ agent 主机进程"的 JSON-RPC 2.0 对接面，
 > **覆盖当前全部功能**，并为分阶段落地划清子集。
+> **传输只有 WebSocket 一种**（§1.1，不设计 stdio/管道/长轮询的第二传输）；
 > **交付形态不变**：这是内部拆分，编译产物仍然只有一个 `dist/a-da.exe`（§0.2 第 4 条、§1.8）。
+> 演进去向：将来把 UI 换成 Web/H5 只是**多一个客户端**，协议与后端都不用改——留位置见 §12。
 > 依据：实测当前实现——`src/agent/store.ts`（4065 行）、UI 对 store 的 **233 处引用 / 70 个不同成员**
 > （把 `*.test.tsx` 也算进来是 460 处 / 79 个）、UI 直接调用的 **17 个管理器函数**、
 > agent 侧反向抓 store 的 **7 处**。
@@ -56,10 +58,14 @@
 
 ### 1.1 传输
 
-- WebSocket，子协议 `ada.rpc.v1`；本机默认 `ws://127.0.0.1:<port>/rpc`，远端必须 `wss://`。
+- **唯一的传输是 WebSocket**：子协议 `ada.rpc.v1`；本机默认 `ws://127.0.0.1:<port>/rpc`，远端必须 `wss://`。
+- **不设计第二种传输**：不做 stdio / 命名管道 / HTTP 长轮询的分支，也不为"多传输"做抽象层。
+  "就绪握手"（§1.8）是实现细节，**不是第二种传输**。
 - 客户端在 **URL query 或 `Sec-WebSocket-Protocol`** 里带令牌（见 §1.6）。
 - 单连接多路复用：所有命令、事件、反向请求共用一条连接；不按域开多连接。
 - **本机单文件模式**（默认路径，交付形态不变）见 §1.8：一个 exe 内部起两个角色，UI 自己 spawn 自己。
+- **测试替身**：单元/UI 测试用 `InProcessTransport` 直连同一份客户端接口——那是**测试替身，不是交付路径**，
+  不进业务分支、不参与打包（详见 §10 阶段 A 与 §1.8 的开发与测试条）。
 
 ### 1.2 握手
 
@@ -67,8 +73,15 @@
 // → 客户端
 { "jsonrpc": "2.0", "id": 1, "method": "session.initialize", "params": {
     "protocolVersion": "1.0",
-    "client": { "name": "a-da-ui", "version": "0.1.0", "platform": "win32" },
-    "capabilities": { "images": true, "streaming": true, "ui.notify": true }
+    "client": { "name": "a-da-ui", "version": "0.1.0", "platform": "win32", "role": "full" },
+    "capabilities": {
+      "streaming": true,
+      // 客户端**自己**能做什么：服务端据此决定"要不要降级/找替身"（§12.3）
+      "native.dialog": true, "native.notify": true, "native.reveal": true,
+      "native.windowControls": true, "clipboard.image": true,
+      // 原生端两种图片传输都支持；Web 端只会有 dataUrl
+      "imageTransport": ["path", "dataUrl"]
+    }
 } }
 
 // ← 服务端
@@ -78,6 +91,7 @@
     "capabilities": {
       "plugins": true, "skills": true, "prompts": true, "subagents": true,
       "changes": true, "debug": true, "background": true,
+      // 与客户端能力取**交集**：客户端没有的本机能力，服务端不会去调
       "imageTransport": ["path", "dataUrl"],
       "maxFrameBytes": 4194304
     },
@@ -148,7 +162,8 @@
 |---|---|
 | `a-da.exe`（无参数，即今天的行为） | **UI**：起 GPUix 窗口，并按需 spawn 主机 |
 | `a-da.exe --host` | **主机**：只跑 agent（`store` 的后端那一半），不开窗口 |
-| `a-da.exe --host --stdio` | 主机 + stdio 传输（调试用；`@gpuix/react/automation` 的 `connectStdio` 已是同类先例） |
+
+（**没有** `--stdio` 之类"用别的通道跑协议"的模式：协议传输只有 WebSocket，见 §1.1。）
 
 **启动顺序（本机）**：
 
@@ -156,17 +171,21 @@
 UI 进程（a-da.exe）
   ├─ 生成一次性令牌 token（32 字节随机）
   ├─ spawn(process.execPath, ['--host', '--port', '0', '--token', token])
-  │    └─ 主机绑 127.0.0.1 的随机空闲端口，stdout 回一行握手行：
+  │    └─ 主机绑 127.0.0.1 的随机空闲端口，stdout 回一行就绪行：
   │       {"ready":true,"port":51234,"pid":9876,"protocolVersion":"1.0"}
-  ├─ 读到 ready 行 → 连 ws://127.0.0.1:51234/rpc（Authorization: Bearer <token>）
+  ├─ 读到就绪行 → 连 ws://127.0.0.1:51234/rpc（Authorization: Bearer <token>）
   └─ session.initialize → session.snapshot → 开始渲染
 ```
 
 - **为什么本机也走 WS 而不是直接进程内调用**：协议只有一套，本机与远端走同一条码路——
   少一套"只在远端才走"的分支，就是少一类只在远端复现的 bug。进程内调用仅保留给**开发与测试**（见下）。
-- **端口**：`--port 0` 让系统分配，避免固定端口冲突；stdout 的 ready 行是唯一的发现渠道，
-  **不写任何配置文件**（用户不需要知道端口）。
+- **端口与就绪行是实现细节，不是第二种传输**：`--port 0` 让系统分配，避免固定端口冲突；
+  就绪行只用于"发现端口 + 知道对方起来了"，**不承载任何协议消息**。
+  如果就绪行在某些环境下不可靠（冷启动时序、安全软件拦管道），退路是**同一条 WS 协议**上的另一套就绪探测：
+  UI 预选一个端口传给主机（`--port <n>`），然后**带退避重试连接**直到超时——仍然只有 WebSocket。
 - **令牌**：由 UI 生成、经命令行传给子进程、只在本机回环上用；主机不落盘。
+- **一 UI 一主机（本机默认）**：两个窗口 = 两次启动 = 两个独立主机，与今天"两次启动 = 两个独立 store"语义一致；
+  "多个客户端共享一个主机"是**远端/显式共享**场景（§1.7），不是本机默认。
 - **生命周期**：主机默认**随 UI 退出**——UI 退出前 kill 子进程，主机自己也监听"父进程消失 / stdin 关闭"
   自杀，避免孤儿进程（Windows 上用 Job Object 兜底更稳）。`--detach` 留给"常驻主机 + 远端 UI"，
   **不是默认路径**。
@@ -182,7 +201,7 @@ UI 进程（a-da.exe）
 
 1. 编译后的 Bun 单文件 exe 用 `process.execPath` 再 spawn 自己、并正确收到 argv（Bun 编译产物应当支持；
    仓库里 `scripts/launch-own.ts` 已有 spawn 子进程 + stdio 通道的先例，但那是 `bun app.tsx` 形态）。
-2. 随机端口的 ready 行在冷启动/杀毒软件拦截下的时序（给 `--host` 一个总超时 + 失败时回退到 `--stdio`）。
+2. 随机端口 + 就绪行的冷启动时序，以及安全软件对管道的拦截（**退路是"预选端口 + 连接重试"，仍走 WS**）。
 3. UI 被强杀（任务管理器）时子进程不残留——父进程消失检测 + Job Object 双保险。
 4. **host 分支绝不能碰到渲染层**：`app.tsx` 现在顶部就 `import './src/platform/init'`、结尾 `render(...)`，
    静态 import 会连 GPUix 原生 addon 一起加载。落地时改成**动态 import 分流**：
@@ -486,6 +505,9 @@ interface Progress { id: number|string; done?: number; total?: number; label?: s
 | `req.question.ask` | `PendingQuestion & { timeoutMs? }` | `{choice?: string, text?: string}` \| `{aborted: true}` | 同上 |
 | `req.ui.notify` | `{level: 'info'\|'done'\|'error', title, body?, threadId?}` | `{shown: boolean}` | 10s（失败不影响任务） |
 
+> `req.ui.notify` 只表达"该提示用户了"，**怎么呈现由客户端按自己的能力决定**：原生窗口用系统通知，
+> Web 端用浏览器 Notification 或页面内提示（§12.2）。
+
 > **不放 `req.confirm` / `req.ui.reveal` / `req.ui.copy`**：删除确认、在资源管理器中打开、复制到剪贴板
 > 都是**用户动作的本地结果**，主机没有理由发起（真要发起也行，但没必要入协议）。
 > `req.ui.notify` 保留，因为"任务完成弹通知"现在是主机侧在收尾时发起的（`store.drain` 里的完成通知）。
@@ -643,7 +665,7 @@ interface Progress { id: number|string; done?: number; total?: number; label?: s
 | 工作区索引与文件数 | `workspace.*` + `evt.workspace.scanned` |
 | 图片附件 | `thread.send.images`（`path` 或 `dataUrl`） |
 | 后台命令（`run_background`/`check_task`/`kill_task`） | 工具，主机侧；界面只吃工具卡 |
-| 完成通知 | `evt.notify` → 客户端调系统通知 |
+| 完成通知 | `evt.notify` / `req.ui.notify` → 客户端按自己的能力呈现（系统通知或页面内提示，§12.2） |
 
 ---
 
@@ -679,6 +701,50 @@ interface Progress { id: number|string; done?: number; total?: number; label?: s
 ### 11.1 落地时要实测的四件事（不是待拍板，是待验证）
 
 1. 编译后的 exe 用 `process.execPath` 自 spawn 并正确收到 argv（Windows 上实测）。
-2. 随机端口 + ready 行的冷启动时序、杀毒软件拦截（失败回退 `--stdio`）。
+2. 随机端口 + 就绪行的冷启动时序、安全软件对管道的拦截（退路是"预选端口 + 连接重试"，**仍走 WS**）。
 3. 强杀 UI 时子进程不残留（父进程消失检测，必要时 Job Object）。
 4. host 分支不初始化渲染层（`app.tsx` 顶部静态 `import` 要改成动态分流，见 §1.8）。
+
+---
+
+## 12. 后续演进：Web / H5 前端（现在只留出位置，不定实现）
+
+> 这一节回答"以后想让 UI 跑在浏览器里怎么办"。**现在不做**，但协议从第一版就按"客户端不一定是原生窗口"来写，
+> 所以这一步将来是**加客户端**，不是改协议、更不是改后端。
+
+### 12.1 已经为它准备好的部分
+
+| 已经满足 | 为什么 |
+|---|---|
+| 传输是 WebSocket | 浏览器原生支持；远端用 `wss://`（§1.6 已要求） |
+| 消息是 JSON-RPC 2.0 | 浏览器里零依赖即可实现；没有二进制私有帧 |
+| 状态是"快照 + 增量" | 页面刷新/断线重连走同一套 `session.snapshot` + `seq`（§1.3） |
+| 协议里没有 GPUix/Windows 概念 | §0.1 已经把渲染、窗口、剪贴板、通知划给客户端；协议只谈状态与命令 |
+| 能力位协商 | `session.initialize` 的 `capabilities` 就是给"能力不同的客户端"用的（见下） |
+
+### 12.2 Web 客户端**做不到**的事，必须有替身（届时才补方法）
+
+| 今天靠原生能力 | Web 端的替身 | 影响 |
+|---|---|---|
+| 目录选择 `pickDirectory`（`platform/dialog`） | **服务端列目录**：新增 `workspace.browse {path}` + `workspace.add {path}` 的浏览器界面 | 现在 `workspace.add` 让用户给本机路径；浏览器里"本机"是浏览器那台机器，语义不同 → 需要服务端提供目录浏览 |
+| 打开资源管理器 `openInExplorer` | 降级为"复制路径"或不做 | 不在协议里（§9.3 已划为客户端本地），天然无影响 |
+| 系统通知 | 浏览器 Notification / 页面内提示 | `req.ui.notify` 已按能力位降级；客户端声明 `capabilities["native.notify"] = false` |
+| 窗口控制 / 标题栏 | 浏览器自带 | 不在协议里 |
+| 剪贴板图片 | 浏览器的粘贴事件 → 直接给 `dataUrl` | **正好**：§11 已定"图片走 `dataUrl`"，Web 端天然只有这条路 |
+| 本地路径语义（`images: ['C:\\...png']`） | 只允许 `dataUrl` | 同上；服务端按 `capabilities.imageTransport` 收窄（§1.2） |
+| 长任务完成时用户可能已关页面 | 服务端**不依赖客户端在线**（§1.5） | 已有设计 |
+
+### 12.3 届时需要新增/调整的协议面（**v0.2 再定，现在不实现**）
+
+1. **客户端能力位细化**：`capabilities` 里加 `native.dialog` / `native.notify` / `native.reveal` /
+   `native.windowControls` / `clipboard.image`，服务端据此决定是"让客户端自己弹"还是"降级/替身"。
+2. **服务端目录浏览**：`workspace.browse {path}`（返回目录项）——只在客户端声明"没有本机选择器"时被调用。
+3. **认证形态**：跨设备必然用长期令牌或配对码 + `wss://`；再补 `session.revoke`（撤销某个客户端/令牌）。
+4. **只读客户端**：H5 常被用于"看一眼进度"，需要 `client.role: 'readonly'`——服务端拒掉所有写命令
+   （`thread.send`、`change.revert*`、`plugin.*` 的写侧），只推事件。
+5. **心跳与休眠**：移动端浏览器会休眠，`session.resync` 的补发窗口要有上限（已有 `-32010 NeedResync` 兜底）。
+
+### 12.4 一条边界（免得将来跑偏）
+
+Web 化是**多一个客户端**，不是把渲染搬到服务端：服务端永远不输出像素、不持有 UI 状态。
+真要"服务端渲染"，那是另一个产品形态（远程桌面/流式画面），与本协议无关。
