@@ -10,8 +10,21 @@
  * `req.*` = 服务端→客户端请求。
  */
 
-import type { AgentMode, ApprovalMode, Effort } from './dto'
-import type { ProviderConfig } from './dto'
+import type {
+  AgentMode,
+  ApprovalMode,
+  BuiltinToolInfo,
+  Effort,
+  PluginCapabilities,
+  PluginDiagnostic,
+  PluginItem,
+  PromptItem,
+  ProviderConfig,
+  ProviderPreset,
+  ResolvedPluginCapabilitiesDto,
+  SkillSummary,
+  SubagentProfile,
+} from './dto'
 
 /** 命令（客户端 → 服务端，有响应）。M0 先覆盖 UI 实际用到的那些（协议 §9.1 的 A 组 + 焦点上报）。 */
 export interface ProtocolCommands {
@@ -77,6 +90,102 @@ export interface ProtocolCommands {
   // ── 调试 ──
   'debug.trace': { params: { text: string }; result: void }
   'debug.log.clear': { params: Record<string, never>; result: void }
+  /** 主机环境信息（管理页要展示"模板会建到哪"、配置文件在哪）。 */
+  'debug.hostInfo': {
+    params: Record<string, never>
+    result: { homeDir: string; extensionsDir: string; configPath: string }
+  }
+
+  // ── 统计（协议 §3.10）──
+  /**
+   * 当前工作区/模式下"系统提示词与工具表有多大"（字符数）。
+   *
+   * 存在的理由：会话还没跑过第一轮时，界面没有实测值（`Thread.lastSystemPromptChars` 是主机
+   * 组装提示词时记下的），而上下文明细想给出**预计**占用。M2 之前界面在**渲染路径里**同步
+   * 组装系统提示词来算这个数（等于在渲染里读磁盘）；现在改成向主机要一次。
+   */
+  'stats.promptChars': {
+    params: { workspace: string; mode: AgentMode }
+    result: { systemChars: number; toolSpecsChars: number }
+  }
+
+  // ── 插件管理（协议 §3.8；M2 收口：UI 不再直接摸加载器与配置文件）──
+  /**
+   * 插件管理页的**一次取全**：卡片、能力开关、每个插件的配置草稿、密钥是否已设置、诊断。
+   *
+   * 为什么合成一个方法而不是拆成五个：这一页打开时全都要，拆开就是五趟往返
+   * （进程内无所谓，WebSocket 上就是五次 RTT）。协议 §3.8 的细分方法留给后续按需用。
+   */
+  'plugin.list': {
+    params: { workspace: string }
+    result: {
+      plugins: PluginItem[]
+      capabilities: ResolvedPluginCapabilitiesDto
+      /** 每个插件的已存配置（非密钥） */
+      configs: Record<string, Record<string, unknown>>
+      /** 密钥是否已设置：键是 `${pluginId}:${key}`，**值只有布尔**——密钥永不回明文 */
+      secrets: Record<string, boolean>
+      diagnostics: PluginDiagnostic[]
+    }
+  }
+  'plugin.capabilities.set': { params: { patch: Partial<PluginCapabilities> }; result: void }
+  'plugin.config.set': { params: { pluginId: string; values: Record<string, unknown> }; result: void }
+  'plugin.secret.set': { params: { pluginId: string; key: string; value: string }; result: void }
+  'plugin.setEnabled': { params: { pluginId: string; enabled: boolean; workspace: string }; result: void }
+  'plugin.delete': { params: { filePath: string; workspace: string }; result: { ok: boolean } }
+  'plugin.createTemplate': {
+    params: { workspace: string; scope: 'workspace' | 'global'; name: string; code?: string }
+    result: { filePath: string }
+  }
+  'plugin.builtinCatalog': { params: Record<string, never>; result: BuiltinToolInfo[] }
+
+  // ── 技能 / 提示词 / 子智能体档案（协议 §3.9）──
+  'skill.list': { params: { workspace: string }; result: SkillSummary[] }
+  'skill.setEnabled': { params: { id: string; enabled: boolean; workspace?: string }; result: void }
+  'skill.create': {
+    params: { name: string; description: string; scope: 'workspace' | 'global'; workspace: string; body?: string }
+    result: { filePath: string }
+  }
+  'skill.delete': { params: { id: string; workspace: string }; result: { ok: boolean } }
+
+  'prompt.list': { params: { workspace: string }; result: PromptItem[] }
+  'prompt.setEnabled': { params: { id: string; enabled: boolean; workspace: string }; result: { ok: boolean } }
+  'prompt.create': {
+    params: {
+      workspace: string
+      /** 与主机侧 `CreatePromptOptions` 同形（契约层不 import 实现，所以在这里写开来） */
+      options: {
+        name: string
+        description?: string
+        argumentHint?: string
+        content: string
+        scope: 'workspace' | 'global'
+        isSystem?: boolean
+        enabled?: boolean
+      }
+    }
+    result: PromptItem
+  }
+  'prompt.update': { params: { item: PromptItem }; result: { ok: boolean } }
+  'prompt.delete': { params: { filePath: string }; result: { ok: boolean } }
+
+  'subagentProfile.list': { params: { workspace?: string }; result: SubagentProfile[] }
+  'subagentProfile.setEnabled': {
+    params: { id: string; enabled: boolean; workspace?: string }
+    result: void
+  }
+  'subagentProfile.delete': { params: { id: string; workspace?: string }; result: { ok: boolean } }
+
+  // ── 配置读取（协议 §3.7）──
+  /**
+   * 读已保存的供应商配置。
+   *
+   * **`apiKey` 只在这里回**：它是用户自己要在设置里编辑的供应商密钥，今天明文存在
+   * `config.json`；而**快照里的 `config` 恒不含 apiKey**（界面常态展示不需要它）。
+   * 插件密钥走的是另一套（`plugin.secret.*`，永不回明文）。
+   */
+  'config.get': { params: Record<string, never>; result: { saved: Partial<ProviderConfig>; path: string } }
+  'config.presets': { params: Record<string, never>; result: ProviderPreset[] }
 }
 
 /** 通知主题（服务端 → 客户端，无 id，带 `seq`）。M0 只登记名字，M1 才真正发。 */

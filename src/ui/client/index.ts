@@ -18,11 +18,22 @@ export type {
   AgentMode,
   AgentQuestion,
   ApprovalMode,
+  BuiltinToolInfo,
+  ClientSnapshot,
   DebugEntry,
   Effort,
   FileChange,
   Item,
+  PluginCapabilities,
+  PluginItem,
+  PluginToolInfo,
+  PromptItem,
+  ProviderConfig,
+  ProviderPreset,
   QueuedItem,
+  SkillSummary,
+  SnapshotEvent,
+  SubagentProfile,
   Thread,
   ThreadStats,
   WorkspaceInfo,
@@ -39,6 +50,11 @@ export const agentClient = createInProcessClient(store)
 
 /**
  * 界面要用、但形状仍属于实现侧的小常量表，在这里转发一次——
- * 这样组件不必（也不许）直接 import `agent/store`。
+ * 这样组件不必（也不许）直接 import `agent/store` 或 `agent/config`。
  */
 export { APPROVAL_OPTIONS, EFFORT_OPTIONS } from '../../agent/store'
+/**
+ * 能力开关的**默认值**：界面首帧占位用（那一帧还没有 `plugin.list` 的结果）。
+ * 真实值一律来自 `plugin.list` 返回的 `capabilities`——这里是只读镜像，不是第二份真相。
+ */
+export { DEFAULT_PLUGIN_CAPABILITIES } from '../../agent/config'

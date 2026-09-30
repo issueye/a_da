@@ -93,6 +93,8 @@ describeNative('settings', () => {
       const { app, screen } = await mount()
       await app.getByTestId('open-settings').click()
 
+      // M2：预设与配置路径来自主机（config.get / config.presets），先等它上屏
+      await app.getByTestId('settings-preset-deepseek').waitFor({ timeoutMs: 10_000 })
       await app.getByTestId('settings-preset-deepseek').click()
       await app.getByTestId('settings-api-key').fill('sk-test-123')
       await app.getByTestId('settings-context-window').fill('200000')

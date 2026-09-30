@@ -240,6 +240,9 @@ describeNative('plugins dialog', () => {
         // 提交创建
         await app.getByTestId('prompt-submit-btn').click()
         await gone('快速新建提示词模板 (.md)')
+        // 等刷新上屏：M2 起这一页一次取全（plugin.list + 提示词/子智能体/技能/目录），
+        // 表单消失时列表可能还在"刷新中…"，直接断言会变成时序敏感。
+        await painted('ui_review')
         expect(screen()).toContain('ui_review')
         expect(screen()).toContain('重点检查组件拆分与无障碍支持')
 

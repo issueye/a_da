@@ -58,29 +58,11 @@ export type SavedConfig = Partial<ProviderConfig> & {
 }
 
 /**
- * 插件能力开关（设计文档 §6.4.2）。
- *
- * **默认全部开放**，用户可以逐项关掉——核心不替用户做安全判断，但要让他看得见后果
- * （关掉后用到的插件显示"受限"状态，不允许静默失效）。
+ * `PluginCapabilities` 的形状已搬到契约层 `src/shared/protocol`（协议设计 §7.1）：
+ * 管理页要跨进程读它，形状属于契约；**默认值与三层解析逻辑留在这里**（那是主机行为）。
  */
-export interface PluginCapabilities {
-  /** `beforeAgentStart` 可整体替换系统提示词 */
-  allowSystemPromptReplace: boolean
-  /** `afterAgentEnd.appendText` 可追加文本到本次会话 */
-  allowTextRewrite: boolean
-  /** `beforeThreadDelete` 可阻止删除（钩子本身属 M3） */
-  allowThreadDeleteBlock: boolean
-  /** `beforeCompaction` 可替换选择策略（钩子本身属 M3） */
-  allowCompactionReplace: boolean
-  /** 钩子在 plan 模式也生效 */
-  allowPlanModeHooks: boolean
-  /** 第三方扩展可注册钩子 */
-  allowThirdPartyHooks: boolean
-  /** 插件工具可覆盖同名核心内置工具 */
-  allowBuiltinShadow: boolean
-  /** 单个钩子的超时毫秒数；0 = 不限。超时**放行并记 trace**，不变成隐式拒绝 */
-  hookTimeoutMs: number
-}
+import type { PluginCapabilities } from '../shared/protocol'
+export type { PluginCapabilities }
 
 export const DEFAULT_PLUGIN_CAPABILITIES: PluginCapabilities = {
   allowSystemPromptReplace: true,
@@ -139,6 +121,13 @@ export interface ResolvedPluginCapabilities {
   capabilities: PluginCapabilities
   /** 某个插件的有效值（再叠加 `pluginCapabilities.overrides[pluginId]`） */
   forPlugin: (pluginId: string) => PluginCapabilities
+  /**
+   * 按插件覆盖的那一层（原样交出，未与全局合并）。
+   *
+   * 界面要用它展示"这个插件的有效开关是怎么叠出来的"；M2 之前它只活在函数闭包里，
+   * 所以插件卡上的那份展示恒为空——现在如实交出来。
+   */
+  overrides: Record<string, Partial<PluginCapabilities>>
   /** 取值不合法、被忽略的键（调用方应当把它说出来，别静默） */
   invalid: string[]
 }
@@ -180,6 +169,7 @@ export async function readPluginCapabilities(
   return {
     capabilities,
     forPlugin: (pluginId: string) => ({ ...capabilities, ...(overrideMap[pluginId] ?? {}) }),
+    overrides: overrideMap,
     invalid,
   }
 }

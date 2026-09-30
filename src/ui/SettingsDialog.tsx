@@ -10,15 +10,11 @@
 
 import React, { useEffect, useState } from 'react'
 import {
-  PROVIDER_PRESETS,
   envOverrides,
   formatHeadersText,
   parseHeadersText,
-  readSavedConfig,
-  configPath,
-  type ProviderConfig,
 } from '../agent/config'
-import type { AgentClient } from './client'
+import type { AgentClient, ProviderConfig, ProviderPreset } from './client'
 import { C, editorTheme, FONT_MONO, M } from '../theme'
 import { Checkbox, Icon, IconButton } from './controls'
 import type { IconName } from '../icons'
@@ -188,21 +184,40 @@ export function SettingsDialog({ client }: { client: AgentClient }) {
   const [status, setStatus] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  /** 供应商预设与配置文件路径：都从主机取（M2 起界面不再自己读配置文件） */
+  const [presets, setPresets] = useState<ProviderPreset[]>([])
+  const [configFilePath, setConfigFilePath] = useState('')
   const overrides = envOverrides()
 
   // The file is the source of truth for this form; the environment may shadow it.
+  //
+  // M2：这一页原先直接读配置文件（`readSavedConfig` / `configPath`）并用模块常量
+  // `PROVIDER_PRESETS`——现在都从主机要（`config.get` / `config.presets`）。
   useEffect(() => {
     void (async () => {
-      const saved = await readSavedConfig()
+      const [{ saved, path }, presetList] = await Promise.all([
+        client.request('config.get', {}),
+        client.request('config.presets', {}),
+      ])
+      setPresets(presetList)
+      setConfigFilePath(path)
+
+      const fallback = presetList[0]
       const next: ProviderConfig = {
-        baseUrl: saved.baseUrl ?? PROVIDER_PRESETS[0]!.baseUrl,
+        baseUrl: saved.baseUrl ?? fallback?.baseUrl ?? '',
         apiKey: saved.apiKey ?? '',
-        model: saved.model ?? PROVIDER_PRESETS[0]!.model,
-        contextWindow: typeof saved.contextWindow === 'number' ? saved.contextWindow : (PROVIDER_PRESETS[0]!.contextWindow ?? 128000),
-        supportsImages: typeof saved.supportsImages === 'boolean' ? saved.supportsImages : (PROVIDER_PRESETS[0]!.supportsImages ?? false),
+        model: saved.model ?? fallback?.model ?? '',
+        contextWindow:
+          typeof saved.contextWindow === 'number'
+            ? saved.contextWindow
+            : fallback?.contextWindow ?? 128000,
+        supportsImages:
+          typeof saved.supportsImages === 'boolean'
+            ? saved.supportsImages
+            : fallback?.supportsImages ?? false,
       }
       setDraft(next)
-      const match = PROVIDER_PRESETS.find((item) => item.baseUrl && item.baseUrl === next.baseUrl)
+      const match = presetList.find((item) => item.baseUrl && item.baseUrl === next.baseUrl)
       setPreset(match?.id ?? 'custom')
     })()
   }, [])
@@ -211,7 +226,7 @@ export function SettingsDialog({ client }: { client: AgentClient }) {
 
   const choosePreset = (id: string) => {
     setPreset(id)
-    const found = PROVIDER_PRESETS.find((item) => item.id === id)
+    const found = presets.find((item) => item.id === id)
     if (found && found.id !== 'custom') {
       update({
         baseUrl: found.baseUrl,
@@ -406,7 +421,7 @@ export function SettingsDialog({ client }: { client: AgentClient }) {
                     供应商
                   </text>
                   <div style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                    {PROVIDER_PRESETS.map((item) => (
+                    {presets.map((item) => (
                       <div
                         key={item.id}
                         testId={`settings-preset-${item.id}`}
@@ -462,7 +477,7 @@ export function SettingsDialog({ client }: { client: AgentClient }) {
                   placeholder="sk-…"
                   mono
                   onChange={(next) => update({ apiKey: next })}
-                  hint={`以明文保存到 ${configPath()}，只有你自己的账户能读。`}
+                  hint={`以明文保存到 ${configFilePath}，只有你自己的账户能读。`}
                 />
                 <Field
                   label="自定义请求头"
@@ -556,7 +571,7 @@ export function SettingsDialog({ client }: { client: AgentClient }) {
                 <div style={{ height: 1, backgroundColor: C.border, marginTop: 4, marginBottom: 4 }} />
                 <InfoRow
                   label="配置文件"
-                  value={configPath()}
+                  value={configFilePath}
                 />
                 <InfoRow
                   label="工具"

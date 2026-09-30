@@ -620,20 +620,28 @@ interface Progress { id: number|string; done?: number; total?: number; label?: s
 
 ### 9.2 UI 直接调用的 17 个管理器函数 → 对应方法
 
-| 现状调用 | 协议方法 |
-|---|---|
-| `defaultExtensionLoader.scanPlugins/togglePlugin/deletePlugin/createPluginTemplate` | `plugin.list/setEnabled/delete/createTemplate` |
-| `defaultPromptManager.scanPrompts/togglePrompt/createPrompt/updatePrompt/deletePrompt` | `prompt.*` |
-| `defaultPromptManager.getCompositeSystemPromptSync`（**渲染期同步读盘**，`Composer.tsx:153/233`） | 删掉：用 `Thread.lastSystemPromptChars`（已存在），或 `ContextUsageSummary` 里 `source:'system_prompt'` 那条的 `chars` |
-| `defaultSkillManager.scanSkills/toggleSkill/createSkillTemplate/deleteSkill` | `skill.*` |
-| `defaultSubagentManager.getSubagents/toggleSubagent/deleteSubagent` | `subagentProfile.*` |
-| `readPluginCapabilities` / `savePluginCapabilities` | `plugin.capabilities.get/set` |
-| `readPluginSecret` / `savePluginSecret` | `plugin.secret.state` / `plugin.secret.set` |
-| `savePluginConfig` / `readPluginConfig` | `plugin.config.get/set` |
-| `readSavedConfig`（SettingsDialog:196） | `config.get` |
-| `BUILTIN_TOOLS_CATALOG`（PluginsDialog:12） | `plugin.builtinCatalog` |
-| `getAppHome` / `PUBLIC_WORKSPACE_LABEL`（展示用） | 快照里给 `homeDir` / `publicWorkspaceLabel`，或留客户端常量 |
-| `getModelContextWindow` / `computeContextBreakdown` / `patchStats` / `parseHookTimeout` / `CAPABILITY_SWITCHES` / `describePluginRestrictions` | **纯函数，留客户端**（输入来自快照/事件） |
+**M2 落地情况**（`✅` = 已按本表实现并接入 UI；`⚠` = 实现时改了形态，见行内说明）
+
+| 现状调用 | 协议方法 | M2 |
+|---|---|---|
+| `defaultExtensionLoader.scanPlugins/togglePlugin/deletePlugin/createPluginTemplate` | `plugin.list/setEnabled/delete/createTemplate` | ✅ |
+| `defaultPromptManager.scanPrompts/togglePrompt/createPrompt/updatePrompt/deletePrompt` | `prompt.*` | ✅ |
+| `defaultPromptManager.getCompositeSystemPromptSync`（**渲染期同步读盘**，`Composer.tsx:153/233`） | ~~删掉~~ → `stats.promptChars` 取**预计值**；实测值仍优先用 `Thread.lastSystemPromptChars` | ⚠ |
+| `defaultSkillManager.scanSkills/toggleSkill/createSkillTemplate/deleteSkill` | `skill.*` | ✅ |
+| `defaultSubagentManager.getSubagents/toggleSubagent/deleteSubagent` | `subagentProfile.*` | ✅ |
+| `readPluginCapabilities` / `savePluginCapabilities` | `plugin.capabilities.get/set` | ⚠ 读侧并入 `plugin.list`，写侧 `plugin.capabilities.set` |
+| `readPluginSecret` / `savePluginSecret` | `plugin.secret.state` / `plugin.secret.set` | ⚠ 读侧并入 `plugin.list`（只回布尔），写侧 `plugin.secret.set` |
+| `savePluginConfig` / `readPluginConfig` | `plugin.config.get/set` | ⚠ 读侧并入 `plugin.list`，写侧 `plugin.config.set` |
+| `readSavedConfig`（SettingsDialog:196） | `config.get` | ✅（返回 `{ saved, path }`；**`apiKey` 只在这里回**，快照的 `config` 恒不含它） |
+| `BUILTIN_TOOLS_CATALOG`（PluginsDialog:12） | `plugin.builtinCatalog` | ✅ |
+| `getAppHome` / `PUBLIC_WORKSPACE_LABEL`（展示用） | `debug.hostInfo`（`homeDir`/`extensionsDir`/`configPath`）；`PUBLIC_WORKSPACE_LABEL` 留客户端常量 | ✅ |
+| `getModelContextWindow` / `computeContextBreakdown` / `patchStats` / `parseHookTimeout` / `CAPABILITY_SWITCHES` / `describePluginRestrictions` / `describeTool` / `envOverrides` / `formatHeadersText` / `parseHeadersText` / `SUBAGENT_HEX_COLORS` / `getSubagentColor` | **纯函数与纯常量，留客户端**（输入来自快照/事件） | ✅ 已入守门白名单 |
+
+> **为什么 `plugin.*` 的读侧合成一个 `plugin.list`**：这一页打开时全都要——拆成五个方法就是五趟往返
+> （进程内无所谓，WebSocket 上是五次 RTT）。细分方法留到按需再补，届时端口不变。
+>
+> **守门测试按符号判而不是按模块判**：`agent/prompts` 这类模块同时导出管理器与纯函数，
+> 按模块放行等于把管理器也放进去（见 `src/ui/protocol-boundary.test.ts` 第 4 条断言）。
 
 ### 9.3 明确**不进协议**的清单（14 项）
 

@@ -36,6 +36,7 @@ afterEach(async () => {
 const capabilities: ResolvedPluginCapabilities = {
   capabilities: DEFAULT_PLUGIN_CAPABILITIES,
   forPlugin: () => DEFAULT_PLUGIN_CAPABILITIES,
+  overrides: {},
   invalid: [],
 }
 

@@ -22,7 +22,7 @@ import type { TokenUsage } from '../../agent/ai/types'
 import type { SubagentProfile, SubagentRunResult } from '../../agent/subagents/types'
 import type { SkillSummary } from '../../agent/skills/types'
 import type { PromptItem } from '../../agent/prompts/types'
-import type { LoadedPlugin, PluginDiagnostic } from '../../agent/plugins/types'
+import type { LoadedPlugin, PluginDiagnostic, PluginScope, PluginStatus } from '../../agent/plugins/types'
 import type { ContextUsageSummary } from '../../agent/stats/types'
 import type { AgentMessage } from '../../agent/core/types'
 
@@ -225,4 +225,85 @@ export interface SnapshotEvent {
   seq: number
   topic: 'evt.state.snapshot'
   payload: ClientSnapshot
+}
+
+// ── 插件 / 技能 / 提示词 / 子智能体档案：管理页的线上形状（协议 §3.8、§3.9） ──
+//
+// 这些形状原先寄生在实现模块里（`config.ts` 的 PluginCapabilities、`tools/loader.ts` 的
+// PluginItem、`tools/registry.ts` 的 BuiltinToolInfo）。管理页要跨进程拿到它们，所以归位到契约；
+// 实现侧改成从这里 import（依赖方向仍是「实现 → 契约」）。
+
+/** 插件能力开关（默认值与解析逻辑在主机侧 `config.ts`）。 */
+export interface PluginCapabilities {
+  /** `beforeAgentStart` 可整体替换系统提示词 */
+  allowSystemPromptReplace: boolean
+  /** `afterAgentEnd.appendText` 可追加文本到本次会话 */
+  allowTextRewrite: boolean
+  /** `beforeThreadDelete` 可阻止删除 */
+  allowThreadDeleteBlock: boolean
+  /** `beforeCompaction` 可替换选择策略 */
+  allowCompactionReplace: boolean
+  /** 钩子在 plan 模式也生效 */
+  allowPlanModeHooks: boolean
+  /** 第三方扩展可注册钩子 */
+  allowThirdPartyHooks: boolean
+  /** 插件工具可覆盖同名核心内置工具 */
+  allowBuiltinShadow: boolean
+  /** 单个钩子的超时毫秒数；0 = 不限。超时**放行并记 trace** */
+  hookTimeoutMs: number
+}
+
+/** 一个插件工具的展示信息（`PluginItem.tools` 的元素）。 */
+export interface PluginToolInfo {
+  name: string
+  description: string
+  parameters?: Record<string, unknown>
+  isWrite: boolean
+}
+
+/**
+ * 插件管理页的一行（`plugin.list` 的元素）。
+ *
+ * `plugin` 是权威来源，其余平铺字段由它派生（`skills`/`prompts` 例外：它们来自技能与提示词
+ * 管理器的扫描结果，是"归纳后的条目"，不是插件自己声明的原文）。
+ */
+export interface PluginItem {
+  plugin: LoadedPlugin
+  id: string
+  name: string
+  fileName: string
+  filePath: string
+  scope: PluginScope
+  enabled: boolean
+  status: PluginStatus
+  version?: string
+  diagnostics: PluginDiagnostic[]
+  tools: PluginToolInfo[]
+  /** 插件包内包含的技能列表 */
+  skills: SkillSummary[]
+  /** 插件包内包含的提示词列表 */
+  prompts: PromptItem[]
+  /** 是否为复合插件包目录（包含 skills/、prompts/ 或独立子目录） */
+  isPackage?: boolean
+  /** 加载失败原文与 error 级诊断的汇总 */
+  error?: string
+  sizeBytes: number
+  updatedAt: number
+}
+
+/** 核心内置工具的展示目录条目（`plugin.builtinCatalog` 的元素）。 */
+export interface BuiltinToolInfo {
+  name: string
+  label: string
+  description: string
+  isReadOnly: boolean
+}
+
+/** 解析后的能力开关（`plugin.list` 顺带返回，省一次往返）。 */
+export interface ResolvedPluginCapabilitiesDto {
+  capabilities: PluginCapabilities
+  /** 取值不合法、被忽略的键（界面要如实说出来） */
+  invalid: string[]
+  /** 按插件覆盖的那一层 */
+  overrides: Record<string, Partial<PluginCapabilities>>
 }

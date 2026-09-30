@@ -4,8 +4,7 @@
  */
 
 import React, { useEffect, useState } from 'react'
-import type { AgentClient } from './client'
-import { defaultPromptManager, type PromptItem } from '../agent/prompts'
+import type { AgentClient, PromptItem } from './client'
 import { C, FONT_MONO, M } from '../theme'
 import { Icon } from './controls'
 import type { IconName } from '../icons'
@@ -174,15 +173,17 @@ export function SlashCommandMenu({
 
   useEffect(() => {
     let unmounted = false
-    void defaultPromptManager.scanPrompts(client.state.active.workspace).then((list) => {
-      if (!unmounted) {
-        setPrompts(list.filter((p) => p.enabled && !p.isSystem))
-      }
-    })
+    void client
+      .request('prompt.list', { workspace: client.state.active.workspace })
+      .then((list) => {
+        if (!unmounted) {
+          setPrompts(list.filter((p) => p.enabled && !p.isSystem))
+        }
+      })
     return () => {
       unmounted = true
     }
-  }, [client.state.active.workspace])
+  }, [client, client.state.active.workspace])
 
   const systemCommands = getSystemCommands(client)
   const promptCommands = prompts.map(mapPromptToCommand)

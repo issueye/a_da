@@ -47,7 +47,7 @@ afterEach(async () => {
 
 const capabilities = (overrides: Partial<typeof DEFAULT_PLUGIN_CAPABILITIES> = {}): ResolvedPluginCapabilities => {
   const caps = { ...DEFAULT_PLUGIN_CAPABILITIES, ...overrides }
-  return { capabilities: caps, forPlugin: () => caps, invalid: [] }
+  return { capabilities: caps, forPlugin: () => caps, overrides: {}, invalid: [] }
 }
 
 function pluginWith(hooks: LoadedPlugin['contributions']['hooks']): LoadedPlugin {

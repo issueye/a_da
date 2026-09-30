@@ -35,6 +35,7 @@ function capabilities(
   return {
     capabilities: global,
     forPlugin: (pluginId) => ({ ...global, ...(perPlugin[pluginId] ?? {}) }),
+    overrides: perPlugin,
     invalid: [],
   }
 }

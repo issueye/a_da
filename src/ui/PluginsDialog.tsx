@@ -6,17 +6,17 @@
 import React, { useEffect, useState } from 'react'
 import type { AgentClient } from './client'
 import {
-  defaultExtensionLoader,
+  DEFAULT_PLUGIN_CAPABILITIES,
+  type BuiltinToolInfo,
+  type PluginCapabilities,
   type PluginItem,
-} from '../agent/tools/loader'
-import { BUILTIN_TOOLS_CATALOG } from '../agent/tools/registry'
-import { defaultPromptManager } from '../agent/prompts/manager'
-import type { PromptItem } from '../agent/prompts/types'
-import { defaultSubagentManager, type SubagentProfile, SUBAGENT_HEX_COLORS } from '../agent/subagents'
-import { defaultSkillManager, type SkillSummary } from '../agent/skills'
+  type PromptItem,
+  type SkillSummary,
+  type SubagentProfile,
+} from './client'
+import { SUBAGENT_HEX_COLORS } from '../agent/subagents'
 import { SkillsPanel } from './SkillsPanel'
 import { copyToClipboard } from '../platform/clipboard'
-import { getAppHome } from '../agent/home'
 import { C, docTheme, editorTheme, FONT_MONO, M } from '../theme'
 import { Icon, IconButton } from './controls'
 import type { PluginStatus } from '../agent/plugins/types'
@@ -25,16 +25,6 @@ import {
   describePluginRestrictions,
   parseHookTimeout,
 } from '../agent/plugins/capabilities-view'
-import {
-  readPluginCapabilities,
-  readPluginConfig,
-  readPluginSecret,
-  savePluginSecret,
-  savePluginCapabilities,
-  savePluginConfig,
-  DEFAULT_PLUGIN_CAPABILITIES,
-  type PluginCapabilities,
-} from '../agent/config'
 
 import type { IconName } from '../icons'
 import { join } from 'node:path'
@@ -129,6 +119,10 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
   // 技能库管理状态
   const [skills, setSkills] = useState<SkillSummary[]>([])
 
+  // 内置工具目录与主机环境（M2：都从主机取，界面不再 import 注册表与 home 模块）
+  const [builtinCatalog, setBuiltinCatalog] = useState<BuiltinToolInfo[]>([])
+  const [homeDir, setHomeDir] = useState('')
+
   // 能力开关状态（M3-2）：全局默认值 + 手输的超时
   const [capabilities, setCapabilities] = useState<PluginCapabilities>(DEFAULT_PLUGIN_CAPABILITIES)
   const [capabilityOverrides, setCapabilityOverrides] = useState<Record<string, Partial<PluginCapabilities>>>({})
@@ -142,38 +136,45 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
   const [configNotice, setConfigNotice] = useState<Record<string, string | null>>({})
 
   // 加载与刷新插件列表、提示词列表、子智能体与技能库
+  //
+  // M2：这一页原先要自己去摸四个管理器 + 配置文件（4 次扫描 + 逐插件读配置），
+  // 现在一次 `plugin.list` 全拿到——界面不再知道"插件是怎么被加载的"。
   const refreshList = async () => {
     setLoading(true)
     try {
-      const [pluginItems, promptItems, subagentItems, skillItems] = await Promise.all([
-        defaultExtensionLoader.scanPlugins(client.state.project),
-        defaultPromptManager.scanPrompts(client.state.project),
-        defaultSubagentManager.getSubagents(client.state.project),
-        defaultSkillManager.scanSkills(client.state.project),
+      const snapshot = await client.request('plugin.list', { workspace: client.state.project })
+      setPlugins(snapshot.plugins)
+      setCapabilities(snapshot.capabilities.capabilities)
+      setHookTimeoutDraft(String(snapshot.capabilities.capabilities.hookTimeoutMs))
+      setInvalidCapabilityKeys(snapshot.capabilities.invalid)
+      setCapabilityOverrides(snapshot.capabilities.overrides)
+
+      const [promptItems, subagentItems, skillItems, catalog, hostInfo] = await Promise.all([
+        client.request('prompt.list', { workspace: client.state.project }),
+        client.request('subagentProfile.list', { workspace: client.state.project }),
+        client.request('skill.list', { workspace: client.state.project }),
+        client.request('plugin.builtinCatalog', {}),
+        client.request('debug.hostInfo', {}),
       ])
-      setPlugins(pluginItems)
       setPrompts(promptItems)
       setSubagents(subagentItems)
       setSkills(skillItems)
-
-      const resolved = await readPluginCapabilities(client.state.project)
-      setCapabilities(resolved.capabilities)
-      setHookTimeoutDraft(String(resolved.capabilities.hookTimeoutMs))
-      setInvalidCapabilityKeys(resolved.invalid)
+      setBuiltinCatalog(catalog)
+      setHomeDir(hostInfo.homeDir)
 
       // 每个插件的配置草稿：文件里有值就用它，否则用 schema 里的默认值。
       // secret 类型**不回显**——只记"是否已设置"，避免密钥出现在界面上
       const drafts: Record<string, Record<string, string>> = {}
       const secrets: Record<string, boolean> = {}
-      for (const item of pluginItems) {
+      for (const item of snapshot.plugins) {
         const properties = item.plugin.contributions.configSchema?.properties
         if (!properties) continue
-        const stored = await readPluginConfig<Record<string, unknown>>(item.id)
+        const stored = snapshot.configs[item.id] ?? {}
         drafts[item.id] = {}
         for (const [key, property] of Object.entries(properties)) {
           if (property.type === 'secret') {
             drafts[item.id]![key] = ''
-            secrets[`${item.id}:${key}`] = readPluginSecret(item.id, key).length > 0
+            secrets[`${item.id}:${key}`] = snapshot.secrets[`${item.id}:${key}`] === true
             continue
           }
           const value = stored[key] ?? property.default
@@ -195,7 +196,7 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
   const handleToggleCapability = async (key: keyof Omit<PluginCapabilities, 'hookTimeoutMs'>) => {
     const next = { ...capabilities, [key]: !capabilities[key] }
     setCapabilities(next)
-    await savePluginCapabilities({ [key]: next[key] })
+    await client.request('plugin.capabilities.set', { patch: { [key]: next[key] } })
     void client.request('debug.trace', {
       text: `[插件] 能力开关 ${key} 已${next[key] ? '开启' : '关闭'}${
         next[key] ? '' : '——用到它的插件会显示受限原因'
@@ -212,7 +213,7 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
     }
     setCapabilityNotice(null)
     setCapabilities((current) => ({ ...current, hookTimeoutMs: parsed.value }))
-    await savePluginCapabilities({ hookTimeoutMs: parsed.value })
+    await client.request('plugin.capabilities.set', { patch: { hookTimeoutMs: parsed.value } })
     trace( `[插件] 钩子超时已设为 ${parsed.value === 0 ? '不限' : `${parsed.value}ms`}`)
   }
 
@@ -248,8 +249,10 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
       }
     }
 
-    await savePluginConfig(item.id, values)
-    for (const [key, value] of Object.entries(secrets)) await savePluginSecret(item.id, key, value)
+    await client.request('plugin.config.set', { pluginId: item.id, values })
+    for (const [key, value] of Object.entries(secrets)) {
+      await client.request('plugin.secret.set', { pluginId: item.id, key, value })
+    }
     if (Object.keys(secrets).length > 0) {
       setSecretSet((current) => {
         const next = { ...current }
@@ -264,8 +267,12 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
 
   // 切换子智能体启用状态
   const handleToggleSubagent = async (item: SubagentProfile) => {
-    await defaultSubagentManager.toggleSubagent(item.id, !item.enabled, client.state.project)
-    trace( `已${item.enabled ? '停用' : '启用'}子智能体：${item.name}`)
+    await client.request('subagentProfile.setEnabled', {
+      id: item.id,
+      enabled: !item.enabled,
+      workspace: client.state.project,
+    })
+    trace(`已${item.enabled ? '停用' : '启用'}子智能体：${item.name}`)
     await refreshList()
   }
 
@@ -275,11 +282,14 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
       setArmedDeleteSubagentId(item.id)
       return
     }
-    const success = await defaultSubagentManager.deleteSubagent(item.id, client.state.project)
+    const { ok: success } = await client.request('subagentProfile.delete', {
+      id: item.id,
+      workspace: client.state.project,
+    })
     if (success) {
-      trace( `已删除子智能体：${item.name}`)
+      trace(`已删除子智能体：${item.name}`)
     } else {
-      trace( `删除子智能体失败：${item.name}`)
+      trace(`删除子智能体失败：${item.name}`)
     }
     setArmedDeleteSubagentId(null)
     await refreshList()
@@ -294,8 +304,12 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
 
   // 切换插件启用状态
   const handleToggle = async (item: PluginItem) => {
-    await defaultExtensionLoader.togglePlugin(item.id, !item.enabled, client.state.project)
-    trace( `已${item.enabled ? '停用' : '启用'}插件：${item.fileName}`)
+    await client.request('plugin.setEnabled', {
+      pluginId: item.id,
+      enabled: !item.enabled,
+      workspace: client.state.project,
+    })
+    trace(`已${item.enabled ? '停用' : '启用'}插件：${item.fileName}`)
     await refreshList()
   }
 
@@ -305,11 +319,14 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
       setArmedDeleteId(item.id)
       return
     }
-    const success = await defaultExtensionLoader.deletePlugin(item.filePath, client.state.project)
+    const { ok: success } = await client.request('plugin.delete', {
+      filePath: item.filePath,
+      workspace: client.state.project,
+    })
     if (success) {
-      trace( `已删除插件文件：${item.fileName}`)
+      trace(`已删除插件文件：${item.fileName}`)
     } else {
-      trace( `删除插件文件失败：${item.fileName}`)
+      trace(`删除插件文件失败：${item.fileName}`)
     }
     setArmedDeleteId(null)
     await refreshList()
@@ -321,12 +338,12 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
     if (!name) return
     try {
       const targetScope = tab === 'global' ? 'global' : 'workspace'
-      const filePath = await defaultExtensionLoader.createPluginTemplate(
-        client.state.project,
-        targetScope,
-        name
-      )
-      trace( `已创建新插件模板：${filePath}`)
+      const { filePath } = await client.request('plugin.createTemplate', {
+        workspace: client.state.project,
+        scope: targetScope,
+        name,
+      })
+      trace(`已创建新插件模板：${filePath}`)
       setNewPluginName('')
       setCreating(false)
       setCreateNotice(null)
@@ -338,8 +355,12 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
 
   // 切换提示词启用状态
   const handleTogglePrompt = async (item: PromptItem) => {
-    await defaultPromptManager.togglePrompt(item.id, !item.enabled, client.state.project)
-    trace( `已${item.enabled ? '停用' : '启用'}提示词：${item.name}`)
+    await client.request('prompt.setEnabled', {
+      id: item.id,
+      enabled: !item.enabled,
+      workspace: client.state.project,
+    })
+    trace(`已${item.enabled ? '停用' : '启用'}提示词：${item.name}`)
     await refreshList()
   }
 
@@ -398,20 +419,23 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
           target.argumentHint = promptArgumentHint.trim() || undefined
           target.content = content
           target.isSystem = promptIsSystem
-          await defaultPromptManager.updatePrompt(target)
-          trace( `已更新提示词：${name}`)
+          await client.request('prompt.update', { item: target })
+          trace(`已更新提示词：${name}`)
         }
       } else {
-        await defaultPromptManager.createPrompt(client.state.project, {
-          name,
-          description: promptDesc.trim(),
-          argumentHint: promptArgumentHint.trim() || undefined,
-          content,
-          scope: promptScope,
-          isSystem: promptIsSystem,
-          enabled: true,
+        await client.request('prompt.create', {
+          workspace: client.state.project,
+          options: {
+            name,
+            description: promptDesc.trim(),
+            argumentHint: promptArgumentHint.trim() || undefined,
+            content,
+            scope: promptScope,
+            isSystem: promptIsSystem,
+            enabled: true,
+          },
         })
-        trace( `已创建新提示词：${name}`)
+        trace(`已创建新提示词：${name}`)
       }
       cancelPromptForm()
       await refreshList()
@@ -427,11 +451,11 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
       return
     }
     if (item.filePath) {
-      const success = await defaultPromptManager.deletePrompt(item.filePath)
+      const { ok: success } = await client.request('prompt.delete', { filePath: item.filePath })
       if (success) {
-        trace( `已删除提示词：${item.name}`)
+        trace(`已删除提示词：${item.name}`)
       } else {
-        trace( `删除提示词失败：${item.name}`)
+        trace(`删除提示词失败：${item.name}`)
       }
     }
     setArmedDeletePromptId(null)
@@ -470,7 +494,7 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
       ? '系统内置辅助 Coding 插件库（开箱即用，支持单独自由启用/停用）'
       : tab === 'workspace'
       ? join(client.state.project, '.ada', 'extensions')
-      : join(getAppHome(), 'extensions')
+      : join(homeDir, 'extensions')
 
   return (
     <div
@@ -585,7 +609,7 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
                   ? workspaceCount
                   : item.id === 'global'
                   ? globalCount
-                  : BUILTIN_TOOLS_CATALOG.length
+                  : builtinCatalog.length
               const isSelected = tab === item.id
               return (
                 <div
@@ -665,11 +689,12 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
           >
             {tab === 'skills' ? (
               <SkillsPanel
+                client={client}
                 skills={skills}
                 onRefresh={refreshList}
                 loading={loading}
                 workspaceRoot={client.state.project}
-                onTrace={(msg) => trace( msg)}
+                onTrace={(msg) => trace(msg)}
               />
             ) : tab === 'subagents' ? (
               <SubagentsPanel
@@ -1614,7 +1639,7 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
 
                 {/* 工具列表渲染 */}
                 {(() => {
-                  const filteredTools = BUILTIN_TOOLS_CATALOG.filter((bt) => {
+                  const filteredTools = builtinCatalog.filter((bt) => {
                     if (toolFilter === 'readonly') return bt.isReadOnly
                     if (toolFilter === 'write') return !bt.isReadOnly
                     return true

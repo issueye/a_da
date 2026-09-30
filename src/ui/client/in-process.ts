@@ -11,7 +11,34 @@
  */
 
 import type { AgentStore } from '../../agent/store'
+import type {
+  AgentMode,
+  PluginCapabilities,
+  PluginItem,
+  PromptItem,
+  ProviderConfig,
+  SkillSummary,
+  SubagentProfile,
+} from '../../shared/protocol'
 import { createHostEmitter } from '../../agent/host/emitter'
+import { defaultExtensionLoader } from '../../agent/tools/loader'
+import { BUILTIN_TOOLS_CATALOG, defaultToolRegistry } from '../../agent/tools/registry'
+import { getPluginDiagnostics } from '../../agent/plugins/registry'
+import { defaultSkillManager } from '../../agent/skills'
+import { defaultPromptManager } from '../../agent/prompts'
+import { defaultSubagentManager } from '../../agent/subagents'
+import {
+  PROVIDER_PRESETS,
+  configPath,
+  readPluginCapabilities,
+  readPluginConfig,
+  readPluginSecret,
+  readSavedConfig,
+  savePluginCapabilities,
+  savePluginConfig,
+  savePluginSecret,
+} from '../../agent/config'
+import { getAppHome } from '../../agent/home'
 import { AppErrorCode, ProtocolError } from '../../shared/protocol'
 import type { ParamsOf, ProtocolMethod, ResultOf } from '../../shared/protocol'
 import type { AgentClient, ClientState, UiActions } from './types'
@@ -214,6 +241,164 @@ export function createInProcessClient(
       case 'debug.log.clear':
         store.clearLog()
         return undefined
+      case 'debug.hostInfo':
+        // 主机环境：管理页要展示"模板会建到哪、配置文件在哪"
+        return {
+          homeDir: getAppHome(),
+          extensionsDir: `${getAppHome()}/extensions`,
+          configPath: configPath(),
+        }
+
+      // ── 统计 ──
+      case 'stats.promptChars':
+        return {
+          systemChars: defaultPromptManager.getCompositeSystemPromptSync(
+            p.workspace as string,
+            p.mode as AgentMode
+          ).length,
+          toolSpecsChars: JSON.stringify(
+            defaultToolRegistry.getToolsForMode(p.workspace as string, p.mode as AgentMode)
+          ).length,
+        }
+
+      // ── 插件管理（M2：UI 不再直接摸加载器与配置文件）──
+      case 'plugin.list': {
+        const workspace = p.workspace as string
+        const [plugins, resolved] = await Promise.all([
+          defaultExtensionLoader.scanPlugins(workspace),
+          readPluginCapabilities(workspace),
+        ])
+        // 每个插件的配置草稿与"密钥是否已设置"在这里一次备齐：界面打开这一页全都要
+        const configs: Record<string, Record<string, unknown>> = {}
+        const secrets: Record<string, boolean> = {}
+        for (const item of plugins) {
+          const properties = item.plugin.contributions.configSchema?.properties
+          if (!properties) continue
+          configs[item.id] = await readPluginConfig<Record<string, unknown>>(item.id)
+          for (const [key, property] of Object.entries(properties)) {
+            if (property.type !== 'secret') continue
+            // 只回布尔：密钥本身永远不出主机
+            secrets[`${item.id}:${key}`] = readPluginSecret(item.id, key).length > 0
+          }
+        }
+        return {
+          plugins,
+          capabilities: {
+            capabilities: resolved.capabilities,
+            invalid: resolved.invalid,
+            overrides: resolved.overrides,
+          },
+          configs,
+          secrets,
+          diagnostics: getPluginDiagnostics(workspace),
+        } satisfies ResultOf<'plugin.list'>
+      }
+      case 'plugin.capabilities.set':
+        await savePluginCapabilities(p.patch as Partial<PluginCapabilities>)
+        return undefined
+      case 'plugin.config.set':
+        await savePluginConfig(p.pluginId as string, p.values as Record<string, unknown>)
+        return undefined
+      case 'plugin.secret.set':
+        await savePluginSecret(p.pluginId as string, p.key as string, p.value as string)
+        return undefined
+      case 'plugin.setEnabled':
+        await defaultExtensionLoader.togglePlugin(
+          p.pluginId as string,
+          p.enabled as boolean,
+          p.workspace as string
+        )
+        return undefined
+      case 'plugin.delete':
+        return {
+          ok: await defaultExtensionLoader.deletePlugin(p.filePath as string, p.workspace as string),
+        }
+      case 'plugin.createTemplate':
+        return {
+          filePath: await defaultExtensionLoader.createPluginTemplate(
+            p.workspace as string,
+            p.scope as 'workspace' | 'global',
+            p.name as string,
+            p.code as string | undefined
+          ),
+        }
+      case 'plugin.builtinCatalog':
+        return BUILTIN_TOOLS_CATALOG
+
+      // ── 技能 / 提示词 / 子智能体档案（M2：UI 不再直接摸管理器）──
+      case 'skill.list':
+        return defaultSkillManager.scanSkills(p.workspace as string)
+      case 'skill.setEnabled':
+        await defaultSkillManager.toggleSkill(p.id as string, p.enabled as boolean)
+        return undefined
+      case 'skill.create':
+        return {
+          filePath: await defaultSkillManager.createSkillTemplate({
+            name: p.name as string,
+            description: p.description as string,
+            scope: p.scope as 'workspace' | 'global',
+            workspaceRoot: p.workspace as string,
+            body: p.body as string | undefined,
+          }),
+        }
+      case 'skill.delete':
+        await defaultSkillManager.deleteSkill(p.id as string, p.workspace as string)
+        return { ok: true }
+
+      case 'prompt.list':
+        return defaultPromptManager.scanPrompts(p.workspace as string)
+      case 'prompt.setEnabled':
+        return {
+          ok: await defaultPromptManager.togglePrompt(
+            p.id as string,
+            p.enabled as boolean,
+            p.workspace as string
+          ),
+        }
+      case 'prompt.create':
+        return await defaultPromptManager.createPrompt(
+          p.workspace as string,
+          p.options as ParamsOf<'prompt.create'>['options']
+        )
+      case 'prompt.update':
+        return { ok: await defaultPromptManager.updatePrompt(p.item as PromptItem) }
+      case 'prompt.delete':
+        return { ok: await defaultPromptManager.deletePrompt(p.filePath as string) }
+
+      case 'subagentProfile.list':
+        return defaultSubagentManager.getSubagents(p.workspace as string | undefined)
+      case 'subagentProfile.setEnabled':
+        await defaultSubagentManager.toggleSubagent(
+          p.id as string,
+          p.enabled as boolean,
+          p.workspace as string | undefined
+        )
+        return undefined
+      case 'subagentProfile.delete':
+        return {
+          ok: await defaultSubagentManager.deleteSubagent(
+            p.id as string,
+            p.workspace as string | undefined
+          ),
+        }
+
+      // ── 配置读取 ──
+      case 'config.get': {
+        const cfg = await readSavedConfig()
+        // 显式列出要交出去的字段：`SavedConfig` 还有一堆别的东西（外观、能力开关…），
+        // 不该顺手漏出去。
+        const saved: Partial<ProviderConfig> = {
+          baseUrl: cfg.baseUrl,
+          apiKey: cfg.apiKey,
+          model: cfg.model,
+          contextWindow: cfg.contextWindow,
+          supportsImages: cfg.supportsImages,
+          headers: cfg.headers,
+        }
+        return { saved, path: configPath() }
+      }
+      case 'config.presets':
+        return PROVIDER_PRESETS
 
       default:
         return notImplemented(method)

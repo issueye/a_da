@@ -28,8 +28,7 @@ export const MODE_OPTIONS: { value: AgentMode; label: string; icon: IconName; de
 ]
 
 import { getModelContextWindow } from '../agent/compact'
-import { defaultPromptManager, expandPromptTemplate } from '../agent/prompts'
-import { defaultToolRegistry } from '../agent/tools'
+import { expandPromptTemplate } from '../agent/prompts'
 export { getModelContextWindow }
 
 export interface ThreadTelemetry {
@@ -130,22 +129,12 @@ export function computeThreadTelemetry(
   const contextRatio =
     contextLimit > 0 ? Math.min(100, Math.round((currentContextTokens / contextLimit) * 100)) : 0
 
-  const currentMode = thread.mode ?? 'code'
-  const workspace = thread.workspace || process.cwd()
+  // M2-6：这里**不再**现场同步组装系统提示词/工具表来兜底——那等于在渲染路径里读磁盘。
+  // 只认主机报过的实测值（`lastToolSpecsChars`/`lastSystemPromptChars`），
+  // 还没有就是 0：会话没跑过第一轮，本来就没有可信数字；界面另有 `stats.promptChars` 去要预计值。
+  const effectiveToolSpecsChars = toolSpecsChars ?? thread.lastToolSpecsChars ?? 0
 
-  const effectiveToolSpecsChars =
-    toolSpecsChars !== undefined
-      ? toolSpecsChars
-      : thread.lastToolSpecsChars !== undefined
-        ? thread.lastToolSpecsChars
-        : JSON.stringify(defaultToolRegistry.getToolsForMode(workspace, currentMode)).length
-
-  const effectiveSystemPromptChars =
-    systemPromptChars !== undefined
-      ? systemPromptChars
-      : thread.lastSystemPromptChars !== undefined
-        ? thread.lastSystemPromptChars
-        : defaultPromptManager.getCompositeSystemPromptSync(workspace, currentMode).length
+  const effectiveSystemPromptChars = systemPromptChars ?? thread.lastSystemPromptChars ?? 0
 
   const contextSummary = computeContextBreakdown({
     items: thread.items,
@@ -204,6 +193,44 @@ function TelemetryDivider() {
   )
 }
 
+/**
+ * 提示词/工具表的字符数：优先用主机报过的实测值，还没有就向主机要一次**预计值**。
+ *
+ * M2-6 之前这里是同步组装系统提示词（渲染路径里读磁盘）。现在拆成两步：
+ * 实测值随会话流水记着（跑过一轮就有），预计值走 `stats.promptChars` 取一次。
+ * 只在"还没有实测值"时取——跑过之后就不再问了（省的一直问、也避免数字来回跳）。
+ */
+function usePromptChars(
+  client: AgentClient,
+  thread: Thread,
+  mode: AgentMode,
+  workspace: string
+): { systemChars?: number; toolSpecsChars?: number } {
+  const needsEstimate = thread.lastSystemPromptChars === undefined || thread.lastToolSpecsChars === undefined
+  const [estimate, setEstimate] = useState<{ systemChars: number; toolSpecsChars: number } | null>(null)
+
+  useEffect(() => {
+    if (!needsEstimate) return
+    let cancelled = false
+    void client
+      .request('stats.promptChars', { workspace, mode })
+      .then((value) => {
+        if (!cancelled) setEstimate(value)
+      })
+      .catch(() => {
+        // 问不到就保持"没有数字"：明细里显示 0，不编一个值出来
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [client, workspace, mode, needsEstimate])
+
+  return {
+    systemChars: thread.lastSystemPromptChars ?? estimate?.systemChars,
+    toolSpecsChars: thread.lastToolSpecsChars ?? estimate?.toolSpecsChars,
+  }
+}
+
 export function ComposerTelemetryBar({
   client,
   centered,
@@ -220,20 +247,15 @@ export function ComposerTelemetryBar({
 
   const currentMode = thread.mode ?? client.state.mode ?? 'code'
   const workspace = thread.workspace || process.cwd()
-  const toolSpecsChars =
-    thread.lastToolSpecsChars ??
-    JSON.stringify(defaultToolRegistry.getToolsForMode(workspace, currentMode)).length
-  const systemPromptChars =
-    thread.lastSystemPromptChars ??
-    defaultPromptManager.getCompositeSystemPromptSync(workspace, currentMode).length
+  const promptChars = usePromptChars(client, thread, currentMode, workspace)
 
   const telemetry = computeThreadTelemetry(
     thread,
     client.state.running,
     client.state.currentModel,
     client.state.contextWindow,
-    systemPromptChars,
-    toolSpecsChars,
+    promptChars.systemChars,
+    promptChars.toolSpecsChars,
   )
   const {
     turns,
@@ -1098,7 +1120,9 @@ export function Composer({ client, centered }: { client: AgentClient; centered?:
     const trimmed = target.trim()
     if (trimmed.startsWith('/')) {
       try {
-        const allPrompts = await defaultPromptManager.scanPrompts(client.state.active.workspace)
+        const allPrompts = await client.request('prompt.list', {
+          workspace: client.state.active.workspace,
+        })
         const priorityOrder: Record<string, number> = { workspace: 0, global: 1, plugin: 2, builtin: 3 }
         const sortedTemplates = allPrompts.slice().sort(
           (a, b) => (priorityOrder[a.scope] ?? 99) - (priorityOrder[b.scope] ?? 99)

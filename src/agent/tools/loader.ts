@@ -116,43 +116,12 @@ export interface ExtensionModule {
     | Array<AgentTool | PluginToolFactory>
 }
 
-export interface PluginToolInfo {
-  name: string
-  description: string
-  parameters?: Record<string, unknown>
-  isWrite: boolean
-}
-
 /**
- * 插件管理页用的展示形状：**加载契约（{@link LoadedPlugin}）的投影 + 展示用字段**。
- *
- * `plugin` 是权威来源，其余平铺字段由它派生（skill/prompt 那两项除外——它们来自
- * 技能与提示词管理器的扫描结果，是"归纳后的条目"，不是插件自己声明的原文）。
- * 平铺保留是为了不动现有界面与测试；M3 的插件卡增强可以直接改读 `plugin`。
+ * `PluginItem` / `PluginToolInfo` 的形状已搬到契约层 `src/shared/protocol`（协议设计 §7.1）：
+ * 插件管理页要跨进程拿到它。这里原样再导出，既有调用点不受影响。
  */
-export interface PluginItem {
-  plugin: LoadedPlugin
-  id: string
-  name: string
-  fileName: string
-  filePath: string
-  scope: PluginScope
-  enabled: boolean
-  status: PluginStatus
-  version?: string
-  diagnostics: PluginDiagnostic[]
-  tools: PluginToolInfo[]
-  /** 插件包内包含的技能列表（将 SKILL 归纳到插件系统中） */
-  skills: SkillSummary[]
-  /** 插件包内包含的提示词列表（将提示词归纳到插件系统中） */
-  prompts: PromptItem[]
-  /** 是否为复合插件包目录（包含 skills/、prompts/ 或独立子目录） */
-  isPackage?: boolean
-  /** 加载失败原文与 error 级诊断的汇总（插件管理页已有展示位，M3 再细分） */
-  error?: string
-  sizeBytes: number
-  updatedAt: number
-}
+import type { PluginItem, PluginToolInfo } from '../../shared/protocol'
+export type { PluginItem, PluginToolInfo }
 
 /** 加载一个插件时收集到的注册请求（工具、事件监听器与钩子）。 */
 interface RegistrationSink {

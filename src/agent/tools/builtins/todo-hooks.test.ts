@@ -24,7 +24,7 @@ import { createTodoTool, diffTodos, type TodoStep } from './todo'
 
 const capabilities = (): ResolvedPluginCapabilities => {
   const caps = { ...DEFAULT_PLUGIN_CAPABILITIES }
-  return { capabilities: caps, forPlugin: () => caps, invalid: [] }
+  return { capabilities: caps, forPlugin: () => caps, overrides: {}, invalid: [] }
 }
 
 function pluginWith(hooks: LoadedPlugin['contributions']['hooks']): LoadedPlugin {

@@ -292,12 +292,12 @@ export class ToolRegistry {
 
 export const defaultToolRegistry = new ToolRegistry()
 
-export interface BuiltinToolInfo {
-  name: string
-  label: string
-  description: string
-  isReadOnly: boolean
-}
+/**
+ * `BuiltinToolInfo` 的形状已搬到契约层 `src/shared/protocol`（协议设计 §7.1）：
+ * 插件管理页的「内置工具」页签要跨进程拿到它。这里原样再导出。
+ */
+import type { BuiltinToolInfo } from '../../shared/protocol'
+export type { BuiltinToolInfo }
 
 /**
  * 核心内置工具的展示目录（标签 + 说明 + 是否只读）。

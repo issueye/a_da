@@ -291,6 +291,29 @@ M1 结束时仍然进程内跑，但**横跨进程的那套数据流已经成型
 | M2-6 | 删掉渲染期同步读盘：`Composer.tsx:153/233` 的 `getCompositeSystemPromptSync` → 用 `Thread.lastSystemPromptChars` 或 `prompt.composite` | §9.2 | `Composer.tsx` | 1 处（但它在渲染路径上） |
 | M2-7 | 守门测试扩一条：17 个管理器函数在 `src/ui/**` 里出现 0 次 | — | `src/ui/protocol-boundary.test.ts` | — |
 
+#### M2 进度（分支 `feat/ui-host-split`）
+
+**已完成：M2-1 / M2-2 / M2-3 / M2-6 / M2-7**（M2-4、M2-5 见下）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| M2-1 插件 | ✅ | `plugin.list`（**一次取全**：卡片 + 能力开关 + 配置草稿 + 密钥是否已设置 + 诊断）、`capabilities.set`、`config.set`、`secret.set`、`setEnabled`、`delete`、`createTemplate`、`builtinCatalog`；`PluginsDialog` 的 11 个实现 import 清零 |
+| M2-2 配置 | ✅ | `config.get`（返回 `saved` + 配置文件路径）、`config.presets`；`SettingsDialog` 不再自己读配置文件 |
+| M2-3 技能/提示词/档案 | ✅ | `skill.list/setEnabled/create/delete`、`prompt.list/setEnabled/create/update/delete`、`subagentProfile.list/setEnabled/delete`；`SkillsPanel`、`PluginsDialog`、`Composer`、`SlashCommandMenu` 全部改走客户端 |
+| M2-6 渲染期同步读盘 | ✅ | `Composer` 不再在渲染里组装系统提示词/工具表（那是在渲染路径读磁盘）：优先用主机的实测值（`Thread.lastSystemPromptChars`/`lastToolSpecsChars`），没有就向 `stats.promptChars` 要一次**预计值**（新方法），仍拿不到就是 0——不编数字 |
+| M2-7 守门 | ✅ | 新增第 4 条断言，而且**按符号**而不是按模块判：`agent/prompts` 这类模块同时导出管理器与纯函数，按模块放行等于把管理器也放进去。发现并修掉了唯一漏网的一处（`Transcript` 的 `describeTool`，纯格式化，已入白名单） |
+| M2-4 改动审阅 | ◻ 待做 | `ChangesPanel`/`TitleBar` 的改动数据已在 M1 里改为**客户端本地推导**（`deriveThreadFileChanges`）；回滚类命令（`change.revertCard/revertFile/revertAll`）在 M0 已走 `client.request`。剩下的只是把 `change.list/count` 的**主机侧**形态补齐（当前不需要，因为推导已在本地）——是否要做取决于 M3 是否要把推导搬回主机 |
+| M2-5 工作区 | ◻ 部分 | `workspace.*` 命令在 M0 已走 `client.request`；`Sidebar`/`WorkspaceSelector` 读的都是 `client.state`。剩余：`PUBLIC_WORKSPACE_LABEL` 这类展示常量（已按纯常量入白名单） |
+
+**M2 的两处协议级偏差（都写进 `docs/jsonrpc-protocol.md` §9.2）**
+
+1. `plugin.list` **合成一个方法**：协议原文把插件页拆成 `capabilities.get` / `config.get` / `secret.state` 等，
+   但这一页打开时**全都要**——拆开就是五趟往返（进程内无所谓，WebSocket 上是五次 RTT）。
+   细分方法留给后续按需补。
+2. `stats.promptChars` 顶替"M2-6 直接删掉":计划原写"删掉，用 `Thread.lastSystemPromptChars`"，
+   实现时发现那会让**首轮之前**的上下文明细恒为 0（还没跑过就没有实测值）。
+   于是补了一个只读方法要预计值——比在渲染路径里读盘好，也比编一个数字诚实。
+
 **验收标准**
 
 - [ ] 三条门全过；4 个管理页（插件/设置/技能/改动）行为与今天等价（现有 UI 测试是回归线）

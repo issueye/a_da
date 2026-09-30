@@ -5,18 +5,20 @@
  */
 
 import React, { useState } from 'react'
-import { defaultSkillManager, type SkillSummary } from '../agent/skills'
+import type { AgentClient, SkillSummary } from './client'
 import { copyToClipboard } from '../platform/clipboard'
 import { C, FONT_MONO } from '../theme'
 import { Icon, IconButton } from './controls'
 
 export function SkillsPanel({
+  client,
   skills,
   onRefresh,
   loading,
   workspaceRoot,
   onTrace,
 }: {
+  client: AgentClient
   skills: SkillSummary[]
   onRefresh: () => Promise<void>
   loading?: boolean
@@ -55,7 +57,11 @@ export function SkillsPanel({
   // 切换启用/停用
   const handleToggle = async (skill: SkillSummary) => {
     const nextState = !skill.enabled
-    await defaultSkillManager.toggleSkill(skill.id, nextState)
+    await client.request('skill.setEnabled', {
+      id: skill.id,
+      enabled: nextState,
+      workspace: workspaceRoot,
+    })
     onTrace?.(`已${nextState ? '启用' : '停用'}技能：${skill.name}`)
     await onRefresh()
   }
@@ -67,7 +73,7 @@ export function SkillsPanel({
       return
     }
     try {
-      await defaultSkillManager.deleteSkill(skill.id, workspaceRoot)
+      await client.request('skill.delete', { id: skill.id, workspace: workspaceRoot ?? '' })
       onTrace?.(`已删除技能：${skill.name}`)
       setArmedDeleteId(null)
       await onRefresh()
@@ -99,11 +105,11 @@ export function SkillsPanel({
     }
 
     try {
-      const createdPath = await defaultSkillManager.createSkillTemplate({
+      const { filePath: createdPath } = await client.request('skill.create', {
         name,
         description: desc,
         scope: newSkillScope,
-        workspaceRoot,
+        workspace: workspaceRoot ?? '',
         body: newSkillBody.trim() || undefined,
       })
       onTrace?.(`已创建技能模板：${createdPath}`)
