@@ -26,7 +26,6 @@ const uiDir = join(root, 'src', 'ui')
 const PENDING = [
   'src/ui/Composer.tsx',
   'src/ui/EmptyConversationView.tsx',
-  'src/ui/PluginsDialog.tsx',
   'src/ui/SlashCommandMenu.tsx',
 ]
 

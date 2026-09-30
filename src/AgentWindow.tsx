@@ -85,7 +85,7 @@ export function AgentWindow() {
         {client.state.debugOpen ? <DebugPanel client={client} /> : null}
       </div>
       {client.state.settingsOpen ? <SettingsDialog client={client} /> : null}
-      {client.state.pluginsOpen ? <PluginsDialog store={agent} /> : null}
+      {client.state.pluginsOpen ? <PluginsDialog client={client} /> : null}
       {client.state.paletteOpen ? <CommandPalette client={client} /> : null}
       {client.state.confirmModal ? (
         <ConfirmDialog

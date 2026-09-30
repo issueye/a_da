@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useState } from 'react'
-import type { AgentStore } from '../agent/store'
+import type { AgentClient } from './client'
 import {
   defaultExtensionLoader,
   type PluginItem,
@@ -85,7 +85,12 @@ const TOOL_ICONS: Record<string, IconName> = {
   run_command: 'terminal',
 }
 
-export function PluginsDialog({ store }: { store: AgentStore }) {
+export function PluginsDialog({ client }: { client: AgentClient }) {
+  /**
+   * UI 侧动作留痕：走协议 `debug.trace`（M0 进程内直连主机的 trace，M3 起进主机日志）。
+   * 抽成一行是因为这里要写十几条，直接展开 `client.request(...)` 会把业务代码淹掉。
+   */
+  const trace = (text: string): void => void client.request('debug.trace', { text })
   const [tab, setTab] = useState<TabType>('workspace')
   const [plugins, setPlugins] = useState<PluginItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -141,17 +146,17 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
     setLoading(true)
     try {
       const [pluginItems, promptItems, subagentItems, skillItems] = await Promise.all([
-        defaultExtensionLoader.scanPlugins(store.project),
-        defaultPromptManager.scanPrompts(store.project),
-        defaultSubagentManager.getSubagents(store.project),
-        defaultSkillManager.scanSkills(store.project),
+        defaultExtensionLoader.scanPlugins(client.state.project),
+        defaultPromptManager.scanPrompts(client.state.project),
+        defaultSubagentManager.getSubagents(client.state.project),
+        defaultSkillManager.scanSkills(client.state.project),
       ])
       setPlugins(pluginItems)
       setPrompts(promptItems)
       setSubagents(subagentItems)
       setSkills(skillItems)
 
-      const resolved = await readPluginCapabilities(store.project)
+      const resolved = await readPluginCapabilities(client.state.project)
       setCapabilities(resolved.capabilities)
       setHookTimeoutDraft(String(resolved.capabilities.hookTimeoutMs))
       setInvalidCapabilityKeys(resolved.invalid)
@@ -184,18 +189,18 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
 
   useEffect(() => {
     void refreshList()
-  }, [store.project])
+  }, [client.state.project])
 
   /** 切换一个能力开关并落盘：关掉之后用到它的插件会显示"受限"。 */
   const handleToggleCapability = async (key: keyof Omit<PluginCapabilities, 'hookTimeoutMs'>) => {
     const next = { ...capabilities, [key]: !capabilities[key] }
     setCapabilities(next)
     await savePluginCapabilities({ [key]: next[key] })
-    store.trace(
-      `[插件] 能力开关 ${key} 已${next[key] ? '开启' : '关闭'}${
+    void client.request('debug.trace', {
+      text: `[插件] 能力开关 ${key} 已${next[key] ? '开启' : '关闭'}${
         next[key] ? '' : '——用到它的插件会显示受限原因'
-      }`
-    )
+      }`,
+    })
   }
 
   /** 保存超时值：非法输入当场说明，不写进配置（写进去只会变成"设了没生效"）。 */
@@ -208,7 +213,7 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
     setCapabilityNotice(null)
     setCapabilities((current) => ({ ...current, hookTimeoutMs: parsed.value }))
     await savePluginCapabilities({ hookTimeoutMs: parsed.value })
-    store.trace(`[插件] 钩子超时已设为 ${parsed.value === 0 ? '不限' : `${parsed.value}ms`}`)
+    trace( `[插件] 钩子超时已设为 ${parsed.value === 0 ? '不限' : `${parsed.value}ms`}`)
   }
 
   /** 保存某个插件的配置项（非 secret 与 secret 分开写）。 */
@@ -253,14 +258,14 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
       })
     }
     setConfigNotice((current) => ({ ...current, [item.id]: '已保存' }))
-    store.trace(`[插件] 已保存「${item.name}」的配置`)
+    trace( `[插件] 已保存「${item.name}」的配置`)
     await refreshList()
   }
 
   // 切换子智能体启用状态
   const handleToggleSubagent = async (item: SubagentProfile) => {
-    await defaultSubagentManager.toggleSubagent(item.id, !item.enabled, store.project)
-    store.trace(`已${item.enabled ? '停用' : '启用'}子智能体：${item.name}`)
+    await defaultSubagentManager.toggleSubagent(item.id, !item.enabled, client.state.project)
+    trace( `已${item.enabled ? '停用' : '启用'}子智能体：${item.name}`)
     await refreshList()
   }
 
@@ -270,11 +275,11 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
       setArmedDeleteSubagentId(item.id)
       return
     }
-    const success = await defaultSubagentManager.deleteSubagent(item.id, store.project)
+    const success = await defaultSubagentManager.deleteSubagent(item.id, client.state.project)
     if (success) {
-      store.trace(`已删除子智能体：${item.name}`)
+      trace( `已删除子智能体：${item.name}`)
     } else {
-      store.trace(`删除子智能体失败：${item.name}`)
+      trace( `删除子智能体失败：${item.name}`)
     }
     setArmedDeleteSubagentId(null)
     await refreshList()
@@ -289,8 +294,8 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
 
   // 切换插件启用状态
   const handleToggle = async (item: PluginItem) => {
-    await defaultExtensionLoader.togglePlugin(item.id, !item.enabled, store.project)
-    store.trace(`已${item.enabled ? '停用' : '启用'}插件：${item.fileName}`)
+    await defaultExtensionLoader.togglePlugin(item.id, !item.enabled, client.state.project)
+    trace( `已${item.enabled ? '停用' : '启用'}插件：${item.fileName}`)
     await refreshList()
   }
 
@@ -300,11 +305,11 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
       setArmedDeleteId(item.id)
       return
     }
-    const success = await defaultExtensionLoader.deletePlugin(item.filePath, store.project)
+    const success = await defaultExtensionLoader.deletePlugin(item.filePath, client.state.project)
     if (success) {
-      store.trace(`已删除插件文件：${item.fileName}`)
+      trace( `已删除插件文件：${item.fileName}`)
     } else {
-      store.trace(`删除插件文件失败：${item.fileName}`)
+      trace( `删除插件文件失败：${item.fileName}`)
     }
     setArmedDeleteId(null)
     await refreshList()
@@ -317,11 +322,11 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
     try {
       const targetScope = tab === 'global' ? 'global' : 'workspace'
       const filePath = await defaultExtensionLoader.createPluginTemplate(
-        store.project,
+        client.state.project,
         targetScope,
         name
       )
-      store.trace(`已创建新插件模板：${filePath}`)
+      trace( `已创建新插件模板：${filePath}`)
       setNewPluginName('')
       setCreating(false)
       setCreateNotice(null)
@@ -333,8 +338,8 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
 
   // 切换提示词启用状态
   const handleTogglePrompt = async (item: PromptItem) => {
-    await defaultPromptManager.togglePrompt(item.id, !item.enabled, store.project)
-    store.trace(`已${item.enabled ? '停用' : '启用'}提示词：${item.name}`)
+    await defaultPromptManager.togglePrompt(item.id, !item.enabled, client.state.project)
+    trace( `已${item.enabled ? '停用' : '启用'}提示词：${item.name}`)
     await refreshList()
   }
 
@@ -394,10 +399,10 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
           target.content = content
           target.isSystem = promptIsSystem
           await defaultPromptManager.updatePrompt(target)
-          store.trace(`已更新提示词：${name}`)
+          trace( `已更新提示词：${name}`)
         }
       } else {
-        await defaultPromptManager.createPrompt(store.project, {
+        await defaultPromptManager.createPrompt(client.state.project, {
           name,
           description: promptDesc.trim(),
           argumentHint: promptArgumentHint.trim() || undefined,
@@ -406,7 +411,7 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
           isSystem: promptIsSystem,
           enabled: true,
         })
-        store.trace(`已创建新提示词：${name}`)
+        trace( `已创建新提示词：${name}`)
       }
       cancelPromptForm()
       await refreshList()
@@ -424,9 +429,9 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
     if (item.filePath) {
       const success = await defaultPromptManager.deletePrompt(item.filePath)
       if (success) {
-        store.trace(`已删除提示词：${item.name}`)
+        trace( `已删除提示词：${item.name}`)
       } else {
-        store.trace(`删除提示词失败：${item.name}`)
+        trace( `删除提示词失败：${item.name}`)
       }
     }
     setArmedDeletePromptId(null)
@@ -464,7 +469,7 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
     tab === 'builtin-plugins'
       ? '系统内置辅助 Coding 插件库（开箱即用，支持单独自由启用/停用）'
       : tab === 'workspace'
-      ? join(store.project, '.ada', 'extensions')
+      ? join(client.state.project, '.ada', 'extensions')
       : join(getAppHome(), 'extensions')
 
   return (
@@ -532,7 +537,7 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
             icon="close"
             testId="plugins-close"
             label="关闭插件管理"
-            onClick={() => store.setPlugins(false)}
+            onClick={() => client.ui.setPlugins(false)}
           />
         </div>
 
@@ -663,8 +668,8 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                 skills={skills}
                 onRefresh={refreshList}
                 loading={loading}
-                workspaceRoot={store.project}
-                onTrace={(msg) => store.trace(msg)}
+                workspaceRoot={client.state.project}
+                onTrace={(msg) => trace( msg)}
               />
             ) : tab === 'subagents' ? (
               <SubagentsPanel
@@ -1242,7 +1247,7 @@ export function PluginsDialog({ store }: { store: AgentStore }) {
                               <div
                                 testId={`prompt-apply-${item.id}`}
                                 role="button"
-                                onClick={() => store.applyPromptToComposer(item.content)}
+                                onClick={() => client.ui.applyPromptToComposer(item.content)}
                                 style={{
                                   display: 'flex',
                                   flexDirection: 'row',
