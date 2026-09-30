@@ -360,6 +360,25 @@ M1 结束时仍然进程内跑，但**横跨进程的那套数据流已经成型
 
 **风险最高的一步**（进程生命周期），因此 M3 开工前先做 spike：协议 §1.8 的"落地前要实测的四件事"。
 
+#### M3 进度（分支 `feat/ui-host-split`）
+
+**已完成：M3-1 的派发表归位 + M3-2 的 WebSocket 服务端**（`--host` 角色、自 spawn、传输开关还没做）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| M3-1 派发表归位 | ✅ | 命令派发从 `ui/client/in-process.ts` 搬到 `src/agent/host/dispatch.ts`——**主机侧唯一允许直接调 store 与各管理器的地方**。进程内适配器与 WebSocket 服务端**共用同一份**：`in-process.ts` 从 431 行降到 ~130 行，只剩"传输 + 视图"。这是纯重构，搬迁前后两门数字一致（agent 574、UI 116） |
+| M3-2 WebSocket 服务端 | ✅ | `src/agent/host/server.ts`：只监听 `127.0.0.1`、端口 0 让 OS 选、令牌**两道**（升级时 + `session.hello`）、连上先推一份快照、store 一变就广播（复用 M1 的 emitter，合帧窗口 WebSocket 用 16ms）。`session.hello`/`session.snapshot` 两个方法已进协议表 |
+| M3-2 端到端证据 | ✅ | `src/agent/host/server.test.ts`（5 条）**真起服务端、真连 WebSocket**：401 挡无令牌连接、连上收快照且 `seq=0`、握手/快照/未知方法报错/协议版本不匹配、命令真的落到主机且**另一个客户端从事件里看到**、store 一变就广播且 `seq` 递增 |
+| M3-3 WebSocket 客户端 | ◻ 待做 | `src/ui/client/ws.ts`：同一个 `AgentClient` 接口后面的另一个实现（按 id 关联响应、把事件喂给 ViewStore、断开后重连要快照） |
+| M3-4 `--host` 角色与自 spawn | ◻ 待做 | `app.tsx` 按 argv 分派；UI 角色生成令牌 + `--port 0` 起主机；读 stdout 的 ready 行（`readyLine()` 已写好）；UI 退出时主机必须跟着退 |
+| M3-5 打包验收 | ◻ 待做 | `scripts/build.ts` 不变；`scripts/binary-check.ts` 加"自 spawn 主机 + 首帧"用例 |
+| M3-6 传输开关 | ◻ 待做 | `A_DA_TRANSPORT=inprocess\|ws`；默认 dev/测试走 inprocess、打包 exe 走 ws |
+| — 生命周期 spike | ◻ 待做 | 协议 §1.8 的"落地前要实测的四件事"（主机与 UI 的退出联动、端口与令牌传递、单文件双角色、EPERM/占用） |
+
+**这一步的形态变化值得记一笔**：M0–M2 里"主机"只是同进程里的一个对象；从服务端落地起，
+协议里那些"跨进程才看得出意义"的约束（令牌两道、快照 + `seq`、广播而不是各自去问）
+第一次有了真实载体——测试里两个客户端共享一个主机、且都从事件里看到同一次改动。
+
 ---
 
 ### M4 — 远端与多客户端（v2，可选，协议 §12 的前置）

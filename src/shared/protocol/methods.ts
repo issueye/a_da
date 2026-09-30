@@ -14,6 +14,7 @@ import type {
   AgentMode,
   ApprovalMode,
   BuiltinToolInfo,
+  ClientSnapshot,
   Effort,
   PluginCapabilities,
   PluginDiagnostic,
@@ -28,7 +29,19 @@ import type {
 
 /** 命令（客户端 → 服务端，有响应）。M0 先覆盖 UI 实际用到的那些（协议 §9.1 的 A 组 + 焦点上报）。 */
 export interface ProtocolCommands {
-  // ── 会话 ──
+  // ── 会话（连接与快照，协议 §1.2/§1.3）──
+  /**
+   * 握手。令牌同时走 URL（升级时校验一次）与这里——协议 §1.6 要求两道都要有：
+   * 升级时拦住"没带令牌的连接"，握手时拦住"令牌在连接后被换掉"的情况。
+   */
+  'session.hello': {
+    params: { token: string; protocolVersion: string; clientName?: string }
+    result: { sessionId: string; protocolVersion: string; host: { pid: number } }
+  }
+  /** 要一份当前快照（连上、重连、以及客户端怀疑自己落后时都走它）。 */
+  'session.snapshot': { params: Record<string, never>; result: ClientSnapshot }
+
+  // ── 会话内容 ──
   'thread.create': { params: { workspace: string; mode?: AgentMode }; result: { threadId: string } }
   'thread.delete': { params: { threadId: string }; result: { message: string | null } }
   'thread.send': { params: { threadId: string; text: string; images?: string[] }; result: void }
