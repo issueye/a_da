@@ -66,7 +66,11 @@ export { DEFAULT_PLUGIN_CAPABILITIES } from '../../agent/config'
  * - `inprocess`（默认）：进程内直连主机派发表。开发与测试走这条——不起进程、不起端口，
  *   真窗口的单窗口约束与测试速度都不受影响（协议 §1.8"开发与测试"）。
  * - `ws`：**自己 spawn 自己当主机**（同一个二进制带 `--host`），然后走 WebSocket。
- *   打包后的形态走这条：交付物仍是一个 exe，用户无感。
+ *   打包形态走这条：交付物仍是一个 exe，用户无感。
+ *
+ * **默认规则**：`A_DA_TRANSPORT` 显式指定优先；否则**独立可执行**（`bun build --compile`
+ * 的产物，用 `Bun.isStandaloneExecutable` 判）走 `ws`，其余（`bun run dev`、`bun test`）走
+ * `inprocess`。这正是协议 §1.8 说的"本机也走 WS，但开发与测试不 spawn"。
  *
  * 返回值里的 `info` 是给诊断与测试看的（走的哪条、端口与 pid 是多少）；
  * `shutdown` 必须在应用退出前调用——否则会留下主机进程（协议 §1.8 的生命周期约定）。
@@ -78,7 +82,10 @@ export async function resolveAgentClient(
   shutdown: () => void
   info: { transport: 'inprocess' | 'ws'; port?: number; pid?: number; url?: string }
 }> {
-  const transport = options.transport ?? (process.env.A_DA_TRANSPORT === 'ws' ? 'ws' : 'inprocess')
+  const explicit = process.env.A_DA_TRANSPORT
+  const fallback: 'inprocess' | 'ws' = Bun.isStandaloneExecutable ? 'ws' : 'inprocess'
+  const transport =
+    options.transport ?? (explicit === 'ws' || explicit === 'inprocess' ? explicit : fallback)
 
   if (transport === 'inprocess') {
     return { client: agentClient, shutdown: () => {}, info: { transport: 'inprocess' } }

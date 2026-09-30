@@ -99,7 +99,19 @@ async function checkUiRole(): Promise<void> {
     if (child.exitCode !== null) {
       throw new Error(`UI 角色画完首帧后退出（code=${child.exitCode}）\n${readLog().split('\n').slice(-8).join('\n')}`)
     }
-    console.log(`[binary-check] UI 角色 OK：${path.relative(root, binary)} 画出首帧且存活`)
+
+    // **拆分真的在跑**：打包形态必须自己起了主机并走 WebSocket（协议 §1.8）。
+    // 这一行是应用自己写的日志，比"看起来有窗口"更硬：它证明传输选择、自 spawn、
+    // 握手与首帧快照都真的发生过。
+    const logText = readLog()
+    const transportLine = logText.split('\n').find((line) => line.includes('传输：')) ?? '(日志里没有传输那一行)'
+    if (!transportLine.includes('传输：ws')) {
+      throw new Error(
+        `打包形态没有走 WebSocket 传输（期望日志里有「传输：ws（主机 pid=… 端口=…）」）。实际：${transportLine}\n` +
+          `--- app_debug.log 尾部 ---\n${logText.trim().split('\n').slice(-10).join('\n')}`
+      )
+    }
+    console.log(`[binary-check] UI 角色 OK：画出首帧、存活，且 ${transportLine.split('] ').pop()}`)
   } catch (err) {
     const tail = existsSync(logFile) ? readFileSync(logFile, 'utf8').trim().split('\n').slice(-10).join('\n') : '(没有日志)'
     throw new Error(`${(err as Error).message}\n--- app_debug.log 尾部 ---\n${tail}`)

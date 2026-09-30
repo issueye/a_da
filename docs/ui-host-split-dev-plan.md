@@ -369,15 +369,50 @@ M1 结束时仍然进程内跑，但**横跨进程的那套数据流已经成型
 | M3-1 派发表归位 | ✅ | 命令派发从 `ui/client/in-process.ts` 搬到 `src/agent/host/dispatch.ts`——**主机侧唯一允许直接调 store 与各管理器的地方**。进程内适配器与 WebSocket 服务端**共用同一份**：`in-process.ts` 从 431 行降到 ~130 行，只剩"传输 + 视图"。这是纯重构，搬迁前后两门数字一致（agent 574、UI 116） |
 | M3-2 WebSocket 服务端 | ✅ | `src/agent/host/server.ts`：只监听 `127.0.0.1`、端口 0 让 OS 选、令牌**两道**（升级时 + `session.hello`）、连上先推一份快照、store 一变就广播（复用 M1 的 emitter，合帧窗口 WebSocket 用 16ms）。`session.hello`/`session.snapshot` 两个方法已进协议表 |
 | M3-2 端到端证据 | ✅ | `src/agent/host/server.test.ts`（5 条）**真起服务端、真连 WebSocket**：401 挡无令牌连接、连上收快照且 `seq=0`、握手/快照/未知方法报错/协议版本不匹配、命令真的落到主机且**另一个客户端从事件里看到**、store 一变就广播且 `seq` 递增 |
-| M3-3 WebSocket 客户端 | ◻ 待做 | `src/ui/client/ws.ts`：同一个 `AgentClient` 接口后面的另一个实现（按 id 关联响应、把事件喂给 ViewStore、断开后重连要快照） |
-| M3-4 `--host` 角色与自 spawn | ◻ 待做 | `app.tsx` 按 argv 分派；UI 角色生成令牌 + `--port 0` 起主机；读 stdout 的 ready 行（`readyLine()` 已写好）；UI 退出时主机必须跟着退 |
-| M3-5 打包验收 | ◻ 待做 | `scripts/build.ts` 不变；`scripts/binary-check.ts` 加"自 spawn 主机 + 首帧"用例 |
-| M3-6 传输开关 | ◻ 待做 | `A_DA_TRANSPORT=inprocess\|ws`；默认 dev/测试走 inprocess、打包 exe 走 ws |
-| — 生命周期 spike | ◻ 待做 | 协议 §1.8 的"落地前要实测的四件事"（主机与 UI 的退出联动、端口与令牌传递、单文件双角色、EPERM/占用） |
+| M3-3 WebSocket 客户端 | ✅ | `src/ui/client/ws.ts`：同一个 `AgentClient` 接口后的另一实现——按 id 关联响应 + 超时如实失败、事件交给复制视图（**刻意不提供 `stalenessKeys`**，跨进程没有"偷看主机内存"这回事）、断开重连后先要快照对齐、UI 外壳动作按绝对值发。`src/ui/client/ws.test.ts`（5 条）真起主机真连：种子/命令/事件驱动/外壳动作/对齐与失败 |
+| M3-4 `--host` 角色与自 spawn | ✅ | `app.tsx` 变薄入口按 argv 分流（两个分支都**动态 import**，host 角色不碰渲染层；有结构守门钉住）；`src/agent/host/main.ts`（argv 解析、就绪行、父进程看门狗 + stdin 关闭 + 信号收尾）；`src/ui/client/host-bootstrap.ts`（spawn 自己、读就绪行、失败带 stderr 尾巴、stop 先礼后兵）。`main.test.ts`（8 条）+ `host-bootstrap.test.ts`（3 条**真子进程**：自举可用、stop 不残留、父进程消失时自杀） |
+| M3-5 打包验收 | ✅ | `scripts/binary-check.ts` 重写为两关，均**有界 + 必然收尾 + 失败留证据**。实测：`bun run build` 仍只产出 `dist/a-da.exe`；UI 角色画出首帧且存活，并且日志里明确写着 `传输：ws（主机 pid=… 端口=…）`——**打包形态真的在走"自 spawn 主机 + WebSocket"**；主机角色 `--host` 报端口、握手、给出快照。跑完 `Get-Process a-da` **无残留** |
+| M3-6 传输开关 | ✅ | `resolveAgentClient()`：`A_DA_TRANSPORT` 显式优先；否则 `Bun.isStandaloneExecutable` 为真走 `ws`、其余走 `inprocess`（协议 §1.8 的"本机也走 WS，开发与测试不 spawn"）。`AgentWindow` 收可选 `client`（测试/开发态一行不改），`src/ui/main.tsx` 先选传输再 render，退出路径三处 `once` 收掉主机 |
+| — 生命周期 spike | ✅ | 协议 §1.8"落地前要实测的四件事"逐条落地：① 编译产物用 `process.execPath` 再 spawn 自己**可行**（`--host` 起来并报端口）；② 随机端口 + 就绪行的时序**可行**（UI 读 stdout 拿到真实端口）；③ UI 被强杀时主机不残留（父进程看门狗，实测无孤儿）；④ host 分支不碰渲染层（动态 import + 结构守门） |
 
 **这一步的形态变化值得记一笔**：M0–M2 里"主机"只是同进程里的一个对象；从服务端落地起，
 协议里那些"跨进程才看得出意义"的约束（令牌两道、快照 + `seq`、广播而不是各自去问）
 第一次有了真实载体——测试里两个客户端共享一个主机、且都从事件里看到同一次改动。
+M3-4/M3-6 之后，**打包产物本身就是证据**：它自己 spawn 自己当主机、走 WebSocket 渲染首帧。
+
+**M3 期间实测到的三件事（都不是设计问题，是环境/接口的真面目）**
+
+1. **编译产物的自动化通道不通**：打包后是 PE 子系统 2（无控制台），而 `src/platform/init.ts`
+   会把 `console.log` 劫持到 `A_DA_HOME/app_debug.log`，只有"检测到控制台"时才同时写真实 stdout；
+   自动化通道恰是走 `console.log('data: …')` 的，所以响应到不了管道、`launch()` 会一直等
+   （**既有**行为，与拆分无关）。因此二进制检查改用**应用自己的启动日志**作为"画出首帧"的证据，
+   并且每一步都有硬超时、失败必收尾——"卡住"是最难查的失败，不能再让它发生。
+   窗口级交互验证留给开发态（`bun app.tsx`，有控制台）与 `bun test` 里的真窗口用例。
+2. **`Bun.main` 在 `bun test` 下是测试文件**，不是应用入口：最初"spawn 自己当主机"把测试文件
+   当入口跑了起来（报 `Cannot use afterEach() outside of the test runner`）。改成从文件位置推
+   `app.tsx`。
+3. **提前 return 之后的 hook**：M2-6 加的 `usePromptChars` 被放在"空会话居中 `return null`"之后，
+   会话一有消息就触发 React 的 "Rendered more hooks than during the previous render"。
+   由全量测试的 React 报错日志抓出并修正（hooks 一律排在提前 return 之前）。
+
+**这一步的形态变化值得记一笔**：M0–M2 里"主机"只是同进程里的一个对象；从服务端落地起，
+协议里那些"跨进程才看得出意义"的约束（令牌两道、快照 + `seq`、广播而不是各自去问）
+第一次有了真实载体——测试里两个客户端共享一个主机、且都从事件里看到同一次改动。
+
+#### ✅ M3 完成记录（2026-09-30，分支 `feat/ui-host-split`）
+
+**验收逐条对账**
+
+| 计划里的验收 | 结果 |
+|---|---|
+| `bun run build` 仍只产出 `dist/a-da.exe`；双击仍能出窗口 | ✅ 构建脚本一字未改；实测 `dist/a-da.exe`（106MB 单文件）无参数启动能画出首帧并存活 |
+| `scripts/binary-check.ts` 的新用例通过（证明"单文件 + 内部拆分"） | ✅ 两关都过：UI 角色日志里写着 `传输：ws（主机 pid=… 端口=…）`（即**自己 spawn 了自己当主机**并从 WebSocket 渲染），主机角色 `--host` 报端口 + 握手 + 快照 |
+| 杀掉 UI → 主机不残留 | ✅ 二进制检查跑完 `Get-Process a-da` 无残留；另有专项用例（父进程消失时主机自杀，真子进程） |
+| 杀掉主机 → UI 可理解并重连 | ⚠️ **部分**：ws 客户端有重连（退避重连 + 连上先要快照对齐），但"主机被杀后界面提示"这一层 UI 文案还没做——错误目前只进控制台/日志 |
+| 全部测试仍走 `inprocess`，测试速度与真窗口约束不变 | ✅ `Bun.isStandaloneExecutable` 在 `bun test` / `bun run dev` 下为假 → 走进程内；全量测试仍 761 条、53 秒 |
+| 冷启动到首帧没有明显退化 | ⚠️ **未测量**：打包形态多了一步"spawn 主机 + 握手 + 首帧快照"。二进制检查只报了"画出首帧"，没有和 M2 的基线数字对比（当时也没留基线） |
+
+**门禁（实测）**：`typecheck` exit 0；`bun test src/agent` **587 pass / 0 fail**；全量 **761 pass / 0 fail**。
 
 ---
 
