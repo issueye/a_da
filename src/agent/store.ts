@@ -1733,6 +1733,24 @@ export class AgentStore {
     const prompt = text.trim()
     if (!prompt && (!images || images.length === 0)) return
     const thread = this.active
+
+    // 子智能体会话**不接受直接输入**（拍板结论）：那条路既不过门禁、也拿不到 profile 白名单，
+    // 让用户以为"能跟子智能体直接说话"只会得到一次静默越权。挡在这里并指路，
+    // 而不是让 `send → drain → turn` 用主会话工具表把它跑掉。
+    // （`turn()` 里还有第二道，见那里的注释：命令通道也挡得住。）
+    if (thread.isSubagent) {
+      this.push({
+        kind: 'info',
+        text:
+          `「${thread.title}」是子智能体专属执行会话，不接受直接输入。` +
+          `请在主会话里让它用 send_subagent_message / resume_subagent 工具传达指令，` +
+          `或用子智能体卡片上的「恢复执行」。`,
+      })
+      this.trace(`[子智能体] 拒绝向子智能体会话直接发送输入（threadId=${thread.id}）`)
+      this.notify()
+      return
+    }
+
     if (thread.title === '新会话') {
       thread.title = titleFrom(prompt || '图片任务')
       void defaultSessionManager
@@ -2748,25 +2766,17 @@ export class AgentStore {
       }
     }
 
-    // 若子智能体已处于停止/完成状态：唤醒续跑
-    const userItem: Item = {
-      kind: 'user',
-      id: nextId('item'),
-      at: Date.now(),
-      text: steeringText,
-    }
-    thread.items.push(userItem)
-    const userMessage: AgentMessage = { role: 'user', content: steeringText, timestamp: Date.now() }
-    thread.messages.push(userMessage)
-    this.persist(thread.id, userMessage)
-
-    let threadQueue = this.queues.get(thread.id)
-    if (!threadQueue) {
-      threadQueue = []
-      this.queues.set(thread.id, threadQueue)
-    }
-    threadQueue.push({ thread, text: steeringText, item: userItem })
-    void this.drain(thread)
+    // 若子智能体已处于停止/完成状态：**走正式的恢复路径**（不是"塞进队列再 drain"）。
+    //
+    // 为什么要改：原先这里是 `queue.push + drain`，而 `drain → turn` 用的是主会话工具表与
+    // `kind: 'main'` 钩子——也就是说这条路上既不过门禁，也不应用 profile 白名单
+    // （只读子智能体在这条路上能拿到写工具，且没有任何提示）。
+    // 现在复用 `resumeSubagentThread`：它自带门禁（判定输入 `resumeGateTask`）、
+    // profile 解析、子智能体工具表与 `kind: 'subagent'` 钩子，并且会通知父会话。
+    await this.resumeSubagentThread({
+      subagentThreadId: thread.id,
+      instruction: options.message,
+    })
 
     return {
       status: 'resumed',
@@ -3630,6 +3640,26 @@ export class AgentStore {
    * 所以 thread.messages 永远是真正发出去过的那份。
    */
   private async turn(thread: Thread, prompt: string, images?: string[]): Promise<void> {
+    // 第二道防线（第一道在 `send`）：**子智能体会话绝不能在这里跑**。
+    //
+    // 为什么是"拒绝"而不是"改成按子智能体身份跑"：拍板结论是子智能体标签页不接受直接输入，
+    // 所以跑到这里就说明有人在往子智能体会话里塞消息（排队项、命令通道、或将来某条新路径）。
+    // 此时用主会话工具表继续跑，等于让只读/白名单子智能体拿到写工具——静默越权；
+    // 而"就地改造成子智能体身份"会把门禁、profile 解析、父会话唤醒这一整套在这里再实现一遍。
+    // 子智能体的执行路径只有两条（`startSubagentThread` / `resumeSubagentThread`），
+    // 它们都带着门禁与 profile；这里如实拒绝，并把该走的路指出来。
+    if (thread.isSubagent) {
+      this.push({
+        kind: 'info',
+        text:
+          `已阻止在子智能体会话「${thread.title}」上以主会话身份执行。` +
+          `子智能体的执行必须走 start_subagent / resume_subagent（带门禁与 profile 白名单）。`,
+      })
+      this.trace(`[子智能体] turn() 拒绝以主会话身份执行子智能体会话（threadId=${thread.id}）`)
+      this.notify()
+      return
+    }
+
     const config = await readLlmConfig()
     if (!config) {
       await this.offlineTurn(thread, prompt)

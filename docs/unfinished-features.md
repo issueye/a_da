@@ -74,27 +74,30 @@
 
 - **现状**：文案硬编码中文（部分中英混排）。`grep i18n|useTranslation` 零命中。
 
-### 9. 子智能体的两条"续跑"入口绕过 profile 白名单与门禁　`待拍板`
+### 9. 子智能体的两条"续跑"入口绕过 profile 白名单与门禁　`已定案并修复`
 
-- **现状（行号已按当前代码核准）**：
-  - `store.turn()`（`src/agent/store.ts:3632`）里取的是**主会话工具表**
-    （`defaultToolRegistry.getToolsForMode(...)`，:3669），`kind: 'main'` 是写死的——**没有
-    `thread.isSubagent` 分支**；
-  - `store.steerSubagentThread` 对**已停止**的子智能体走"重新排队 + `drain`"（:2751–2769），
-    不过门禁；
-  - 用户在**子智能体标签页里直接输入**走 `store.send → drain → turn`，同一条路。
-- **已经修掉的那一半**：`resumeSubagentThread` 现在**先过门禁**再动手（:2806–2812，判定输入
-  `resumeGateTask`）。所以门禁接入点已有四处：`startSubagentThread`、`resumeSubagentThread`、
-  `subagents/runner.ts`，**但 `turn()` 本身仍然不认识子智能体身份**。
-- **影响**：只读 / 白名单是子智能体的权限声明，走这两条路时会静默失效——这条路上的子智能体
-  能拿到写工具，且没有任何提示。
-- **最小实现路径（两件事必须一起做）**：让 `turn()` 认识 `thread.isSubagent`
-  （用 `resolveSubagentTools` 取表、`hookContext.kind = 'subagent'`），并给
-  `steerSubagentThread` 的续跑分支补门禁（判定输入用 `resumeGateTask`）。
-  只补门禁而工具表仍走主会话，等于把"门禁过了"与"权限没生效"拼在一起，更难查。
-- **需要拍板**：子智能体标签页是否允许用户直接对话？若允许，它应当按子智能体身份运行
-  （白名单 + 门禁）；若不允许，就该在 `send` 入口挡掉并引导用 `send_subagent_message`。
-  （本轮建议：**允许，但按子智能体身份跑**——禁掉输入是功能倒退，而按身份跑既保留功能又补上权限。）
+**拍板结论（2026-09-30）：子智能体标签页不接受直接输入。** 用户在子智能体标签页里打字会被挡掉，
+并提示改用 `send_subagent_message` / `resume_subagent`（主会话侧的工具）。
+
+**修法（三处，一起做才算闭环）**
+
+1. **`send` 挡掉**（`src/agent/store.ts`）：目标会话是子智能体时不再入队/入流，而是推一条
+   指路提示 + 记 trace 后返回。放在这里是因为它是**唯一的用户输入入口**，
+   协议命令 `thread.send` 也走它——所以命令通道同样挡得住。
+2. **`turn()` 兜底拒绝**：即使有人绕过 `send` 往子智能体会话塞了排队项，也不会以主会话身份执行。
+   为什么是"拒绝"而不是"就地改造成子智能体身份"：后一种要把门禁、profile 解析、父会话唤醒
+   在第三个地方再实现一遍；子智能体的执行路径只有 `startSubagentThread` / `resumeSubagentThread` 两条，
+   它们都带着门禁与 profile。拒绝时同样给出指路提示，不静默。
+3. **`steerSubagentThread` 的续跑分支改为委派 `resumeSubagentThread`**：不再自己
+   "重新排队 + drain"。这样它自带门禁（判定输入 `resumeGateTask`）、profile 白名单、
+   `kind: 'subagent'` 钩子，并且会通知父会话。
+
+**守门测试**：`src/agent/subagents/direct-input-guard.test.ts`（3 条）分别钉住上面三件事。
+门禁与 profile 白名单自身的覆盖在 `src/agent/subagents/gate-delegation.test.ts`。
+
+**原先的证据（留档）**：`turn()` 用的是主会话工具表（`getToolsForMode`）且 `kind: 'main'` 写死；
+`steerSubagentThread` 的停止分支走 `queue.push + drain`；门禁接入点曾只有
+`startSubagentThread` / `resumeSubagentThread` / `subagents/runner.ts` 三处。
 
 ---
 
