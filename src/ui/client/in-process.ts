@@ -48,7 +48,19 @@ export function createInProcessClient(
       )
     : null
 
-  const liveState: ClientState = store
+  /**
+   * 对照调试用（`A_DA_CLIENT_VIEW=live`）的活对象读法。
+   *
+   * 用 `Object.create` 而不是 `{...store}`：前者把 store 当**原型**，属性读仍然走它的 getter
+   * （展开会把 getter 当场求值并冻住，等于把活对象变成一次性快照）。此处只补一个进程内恒真的
+   * `connection`——界面会读它来决定"要不要显示断线提示"。
+   */
+  const liveState: ClientState = Object.create(store, {
+    connection: {
+      value: { status: 'connected', attempts: 0 },
+      enumerable: true,
+    },
+  }) as ClientState
   /** 两种读法共用的取状态入口：M1 起默认返回复制视图的应用结果。 */
   const readState = (): ClientState => (viewStore ? viewStore.getState() : liveState)
 

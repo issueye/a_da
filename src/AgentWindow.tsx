@@ -19,6 +19,7 @@ import { CommandPalette } from './ui/CommandPalette'
 import { Sidebar } from './ui/Sidebar'
 import { EmptyConversationView } from './ui/EmptyConversationView'
 import { TabStrip } from './ui/TabStrip'
+import { ConnectionBanner } from './ui/ConnectionBanner'
 import { TitleBar } from './ui/TitleBar'
 import { Transcript } from './ui/Transcript'
 import { C, FONT_SANS } from './theme'
@@ -68,6 +69,8 @@ export function AgentWindow({ client: injected }: { client?: AgentClient } = {})
         onSearch={() => client.ui.setSearchOpen(!client.state.searchOpen)}
         onDragNotice={(text) => void client.request('debug.trace', { text })}
       />
+      {/* 与主机的连接断了就说出来（协议 §1.5）；进程内传输永远不会显示它 */}
+      <ConnectionBanner client={client} />
       <div style={{ display: 'flex', flexDirection: 'row', flexGrow: 1, minHeight: 0 }}>
         {client.state.sidebarOpen ? (
           <Sidebar

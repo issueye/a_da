@@ -24,7 +24,7 @@
 
 import type { ClientSnapshot } from '../../shared/protocol'
 import { computeThreadStats } from '../../agent/types'
-import type { ClientState, ConfirmOptions } from './types'
+import type { ClientConnectionState, ClientState, ConfirmOptions } from './types'
 import {
   deriveIsPublic,
   deriveLabelFor,
@@ -60,6 +60,12 @@ export interface ViewStore {
   /** 客户端本地：弹确认框 / 关确认框（`confirmModal` 属客户端本地，见文件头）。 */
   showConfirm(options: ConfirmOptions): void
   closeConfirm(): void
+  /**
+   * 更新"与主机的连接状态"（传输层调；进程内不用调）。
+   *
+   * 它必须走这里而不是让组件各读各的：状态一变就要重渲染，而重渲染的触发点是本层的订阅。
+   */
+  setConnection(next: ClientConnectionState): void
   /** 已应用次数（每次重建 +1）；测试与诊断用。 */
   readonly publishes: number
 }
@@ -76,6 +82,9 @@ export function createViewStore(source: SnapshotSource, options: ViewStoreOption
   /** 客户端本地字段（不上快照：`confirmModal` 带回调）。 */
   let confirmModal: ConfirmOptions | null = null
 
+  /** 与主机的连接状态（本地字段；进程内恒为 connected，WebSocket 会改它）。 */
+  let connection: ClientConnectionState = { status: 'connected', attempts: 0 }
+
   let snapshot: ClientSnapshot | null = null
   let state: ClientState | null = null
   let keys: unknown[] = []
@@ -88,6 +97,9 @@ export function createViewStore(source: SnapshotSource, options: ViewStoreOption
     const running = new Set(next.runningThreadIds)
     const waiting = new Set(next.waitingThreadIds)
     return {
+      // ── 连接状态（客户端本地）──
+      connection,
+
       // ── 主机数据 ──
       threads: next.threads,
       active: activeThreadOf(next),
@@ -207,6 +219,11 @@ export function createViewStore(source: SnapshotSource, options: ViewStoreOption
     },
     closeConfirm() {
       confirmModal = null
+      if (state) state = compose(snapshot ?? source.snapshot())
+      for (const listener of [...listeners]) listener()
+    },
+    setConnection(next) {
+      connection = next
       if (state) state = compose(snapshot ?? source.snapshot())
       for (const listener of [...listeners]) listener()
     },

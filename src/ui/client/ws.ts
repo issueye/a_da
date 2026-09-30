@@ -78,6 +78,7 @@ export function createWebSocketClient(options: WebSocketClientOptions): WebSocke
   let socket: WebSocket | null = null
   let status: WebSocketClientStatus = 'connecting'
   let closedByUs = false
+  let reconnectAttempts = 0
   let nextId = 1
   const pending = new Map<
     number,
@@ -85,8 +86,14 @@ export function createWebSocketClient(options: WebSocketClientOptions): WebSocke
   >()
   const readyWaiters: Array<() => void> = []
 
-  function setStatus(next: WebSocketClientStatus): void {
+  function setStatus(next: WebSocketClientStatus, reason?: string): void {
     status = next
+    // 界面要从 client.state 读到它（协议 §1.5：断开必须"可理解 + 可重连"）
+    viewStore.setConnection({
+      status: next,
+      attempts: next === 'connected' ? 0 : reconnectAttempts,
+      ...(reason ? { reason } : {}),
+    })
     options.onStatus?.(next)
   }
 
@@ -162,7 +169,6 @@ export function createWebSocketClient(options: WebSocketClientOptions): WebSocke
     setStatus('connecting')
     const ws = new WebSocket(`${options.url}${options.url.includes('?') ? '&' : '?'}token=${encodeURIComponent(options.token)}`)
     socket = ws
-
     ws.addEventListener('open', () => {
       setStatus('connected')
       // 先握手再干别的：主机在握手前只接受 `session.initialize`（协议 §1.2），
@@ -192,14 +198,21 @@ export function createWebSocketClient(options: WebSocketClientOptions): WebSocke
 
     ws.addEventListener('message', (event) => handleFrame(String((event as MessageEvent).data)))
 
-    ws.addEventListener('close', () => {
+    ws.addEventListener('close', (event) => {
       socket = null
       failAllPending('与主机的连接已断开')
       if (closedByUs) {
-        setStatus('disconnected')
+        setStatus('disconnected', '客户端主动关闭')
         return
       }
-      setStatus('disconnected')
+      // 关闭原因要带给界面：不然用户只看到"断了"，不知道是不是主机被杀
+      const code = (event as CloseEvent).code
+      const reason = (event as CloseEvent).reason
+      reconnectAttempts += 1
+      setStatus(
+        'disconnected',
+        reason || (code ? `主机侧关闭（code=${code}）` : '与主机的连接已断开')
+      )
       if (reconnectDelayMs > 0) setTimeout(connect, reconnectDelayMs)
     })
 

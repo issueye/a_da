@@ -44,8 +44,25 @@ export interface ConfirmOptions {
   onConfirm: () => void
 }
 
+/**
+ * 与主机的连接状态（协议 §1.5 要求"可理解 + 可重连"）。
+ *
+ * 为什么放进 `ClientState`：这是界面**要渲染**的东西，而界面读状态只有 `client.state` 一条通道。
+ * 进程内传输永远是 `connected`；WebSocket 传输在断开/重连时改它。
+ */
+export interface ClientConnectionState {
+  status: 'connected' | 'connecting' | 'disconnected'
+  /** 已经尝试重连的次数（`connected` 时归零）。界面用它显示"第 N 次重连"。 */
+  attempts: number
+  /** 断开的原因（主机的关闭原因或传输错误），给界面显示一句人话。 */
+  reason?: string
+}
+
 /** UI 能读的全部状态。M0 = store 活对象；M1 = 复制视图快照。 */
 export interface ClientState {
+  /** 与主机的连接状态（进程内恒为 connected） */
+  readonly connection: ClientConnectionState
+
   // ── B 组：协议里的数据（快照 / 事件流提供） ──
   readonly threads: Thread[]
   readonly active: Thread
@@ -90,8 +107,7 @@ export interface ClientState {
 }
 
 /** 纯客户端动作：改的都是"界面怎么看"，与主机数据无关。 */
-export interface UiActions {
-  openTab(threadId: string): void
+export interface UiActions {  openTab(threadId: string): void
   closeTab(threadId: string): void
   setChangesOpen(open: boolean): void
   setPaletteOpen(open: boolean): void

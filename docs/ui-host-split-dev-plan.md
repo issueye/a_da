@@ -435,9 +435,9 @@ M3-4/M3-6 之后，**打包产物本身就是证据**：它自己 spawn 自己�
 | `bun run build` 仍只产出 `dist/a-da.exe`；双击仍能出窗口 | ✅ 构建脚本一字未改；实测 `dist/a-da.exe`（106MB 单文件）无参数启动能画出首帧并存活 |
 | `scripts/binary-check.ts` 的新用例通过（证明"单文件 + 内部拆分"） | ✅ 两关都过：UI 角色日志里写着 `传输：ws（主机 pid=… 端口=…）`（即**自己 spawn 了自己当主机**并从 WebSocket 渲染），主机角色 `--host` 报端口 + 握手 + 快照 |
 | 杀掉 UI → 主机不残留 | ✅ 二进制检查跑完 `Get-Process a-da` 无残留；另有专项用例（父进程消失时主机自杀，真子进程） |
-| 杀掉主机 → UI 可理解并重连 | ⚠️ **部分**：ws 客户端有重连（退避重连 + 连上先要快照对齐），但"主机被杀后界面提示"这一层 UI 文案还没做——错误目前只进控制台/日志 |
-| 全部测试仍走 `inprocess`，测试速度与真窗口约束不变 | ✅ `Bun.isStandaloneExecutable` 在 `bun test` / `bun run dev` 下为假 → 走进程内；全量测试仍 761 条、53 秒 |
-| 冷启动到首帧没有明显退化 | ⚠️ **未测量**：打包形态多了一步"spawn 主机 + 握手 + 首帧快照"。二进制检查只报了"画出首帧"，没有和 M2 的基线数字对比（当时也没留基线） |
+| 杀掉主机 → UI 可理解并重连 | ✅ **B1 已补**（2026-09-30）：连接状态进 `ClientState.connection`（`status`/`attempts`/`reason`），`AgentWindow` 顶部横幅说人话（"与主机的连接已断开 · 主机侧关闭（code=1001）；正在自动重连（第 3 次）"）；重连成功后横幅消失、次数归零。用例 `src/ui/client/connection.test.tsx`：真停主机 → `disconnected` + 原因 + 次数；主机回同一端口 → 恢复 `connected` 且快照重新对齐 |
+| 全部测试仍走 `inprocess`，测试速度与真窗口约束不变 | ✅ `Bun.isStandaloneExecutable` 在 `bun test` / `bun run dev` 下为假 → 走进程内；全量测试仍 765 条、55 秒 |
+| 冷启动到首帧没有明显退化 | ✅ **B2 已测**（2026-09-30，`bun scripts/startup-baseline.ts 3`）：dev inprocess 中位 **427ms**；**同一个 exe** 强制进程内 **427ms**（差异 0ms）；打包默认 ws **564ms**。→ **拆分代价 +137ms**（自 spawn 主机 + 握手 + 首帧快照），总冷启动 0.56s。三次样本很稳（ws: 561/564/567） |
 
 **门禁（实测）**：`typecheck` exit 0；`bun test src/agent` **587 pass / 0 fail**；全量 **761 pass / 0 fail**。
 
