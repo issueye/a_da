@@ -10,11 +10,12 @@ import {
   type SlashCommandItem,
 } from './SlashCommandMenu'
 import { store } from '../agent/store'
+import { agentClient } from './client'
 import type { PromptItem } from '../agent/prompts/types'
 
 describe('SlashCommandMenu 快捷指令面板逻辑测试', () => {
   test('getSystemCommands 提供完整的 7 大系统级控制指令', () => {
-    const commands = getSystemCommands(store)
+    const commands = getSystemCommands(agentClient)
     expect(commands.length).toBeGreaterThanOrEqual(7)
 
     const cmdNames = commands.map((c) => c.command)
@@ -119,7 +120,7 @@ describe('SlashCommandMenu 快捷指令面板逻辑测试', () => {
 
   test('SlashCommandMenu 渲染可滚动指令列表并具备 overflowY scroll 滚动容器', async () => {
     const { render, renderer } = createTestRoot({ width: 800, height: 500 })
-    render(<SlashCommandMenu store={store} onSelect={() => {}} onClose={() => {}} />)
+    render(<SlashCommandMenu client={agentClient} onSelect={() => {}} onClose={() => {}} />)
     const app = await connectTest(renderer)
 
     // 验证指令列表容器存在且正常渲染

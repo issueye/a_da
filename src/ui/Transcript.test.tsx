@@ -211,7 +211,7 @@ describeNative('Transcript UI 过程收缩交互', () => {
           一起挂上。只挂 Transcript 等于验的是"没有输入框的界面"，那本来就不该
           出现浮动面板。
         */}
-        <Composer store={store} />
+        <Composer client={agentClient} />
       </div>,
     )
     const app = await connectTest(renderer)

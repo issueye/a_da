@@ -4,6 +4,7 @@ import { createTestRoot, hasNativeTestRenderer } from '@gpuix/react/testing'
 import { connectTest } from '@gpuix/react/automation'
 import type { Item, Thread } from '../agent/types'
 import { store } from '../agent/store'
+import { agentClient } from './client'
 import {
   Composer,
   ComposerTelemetryBar,
@@ -307,7 +308,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     ]
 
     const { render, renderer } = createTestRoot({ width: 1000, height: 400 })
-    render(<Composer store={store} />)
+    render(<Composer client={agentClient} />)
     const app = await connectTest(renderer)
 
     const screenText = renderer.getPaintedText().join(' ')
@@ -365,7 +366,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     ]
 
     const { render, renderer } = createTestRoot({ width: 1000, height: 400 })
-    render(<Composer store={store} />)
+    render(<Composer client={agentClient} />)
     const app = await connectTest(renderer)
 
     const screenText = renderer.getPaintedText().join(' ')
@@ -403,7 +404,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     ]
 
     const { render, renderer } = createTestRoot({ width: 1000, height: 400 })
-    render(<Composer store={store} />)
+    render(<Composer client={agentClient} />)
     const app = await connectTest(renderer)
 
     // 上下文占比 85500 / 128000 = 67% (>= 60%)，触发快捷压缩按钮
@@ -418,7 +419,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     store.active.items = []
 
     const { render, renderer } = createTestRoot({ width: 1000, height: 400 })
-    render(<Composer store={store} centered={true} />)
+    render(<Composer client={agentClient} centered={true} />)
     const app = await connectTest(renderer)
 
     // 空会话居中时不展示
@@ -432,7 +433,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     store.entries = ['assets/logo.png', 'readme.md']
 
     const { render, renderer } = createTestRoot({ width: 1000, height: 400 })
-    render(<Composer store={store} />)
+    render(<Composer client={agentClient} />)
     const app = await connectTest(renderer)
 
     expect(await app.getByTestId('composer-attach-image').count()).toBe(1)
@@ -459,7 +460,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     ]
 
     const { render, renderer } = createTestRoot({ width: 1000, height: 500 })
-    render(<Composer store={store} />)
+    render(<Composer client={agentClient} />)
     const app = await connectTest(renderer)
 
     // 初始状态下 Popover 未展开
@@ -485,7 +486,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
   test('支持 code、plan、create 三大协作模式切换并联动 store 状态', async () => {
     store.setMode('code')
     const { render, renderer } = createTestRoot({ width: 1000, height: 500 })
-    render(<Composer store={store} />)
+    render(<Composer client={agentClient} />)
     const app = await connectTest(renderer)
 
     // 默认展示 Code 编码
@@ -493,14 +494,14 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
 
     // 切换至 Plan 规划模式
     store.setMode('plan')
-    render(<Composer store={store} />)
+    render(<Composer client={agentClient} />)
     renderer.flush?.()
     expect(renderer.getPaintedText().join(' ')).toContain('Plan 规划')
     expect(store.mode as string).toBe('plan')
 
     // 切换至 Create 创造模式
     store.setMode('create')
-    render(<Composer store={store} />)
+    render(<Composer client={agentClient} />)
     renderer.flush?.()
     expect(renderer.getPaintedText().join(' ')).toContain('Create 创造')
     expect(store.mode as string).toBe('create')
@@ -510,7 +511,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
 
   test('底部工具栏提供「指令」按钮，点击可唤起与收起快捷指令面板', async () => {
     const { render, renderer } = createTestRoot({ width: 1000, height: 600 })
-    render(<Composer store={store} />)
+    render(<Composer client={agentClient} />)
     const app = await connectTest(renderer)
 
     // 验证指令按钮存在
@@ -545,7 +546,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
 
   test('输入框输入中文顿号或斜杠自动展开快捷指令面板', async () => {
     const { render, renderer } = createTestRoot({ width: 1000, height: 600 })
-    render(<Composer store={store} />)
+    render(<Composer client={agentClient} />)
     const app = await connectTest(renderer)
 
     // 默认关闭
@@ -566,7 +567,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
 
   test('选择快捷指令后在输入框表现为可移除标签，点击可移除，发送时拼接参数', async () => {
     const { render, renderer } = createTestRoot({ width: 1000, height: 600 })
-    render(<Composer store={store} />)
+    render(<Composer client={agentClient} />)
     const app = await connectTest(renderer)
 
     // 打开快捷指令面板
@@ -626,7 +627,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
   test('QueuedMessagesFloatingPanel 浮动面板渲染及管理交互', async () => {
     // 1. 无排队消息时不渲染
     const { render, renderer } = createTestRoot({ width: 1000, height: 600 })
-    render(<Composer store={store} />)
+    render(<Composer client={agentClient} />)
     const app = await connectTest(renderer)
 
     expect(await app.getByTestId('queued-messages-panel').count()).toBe(0)
@@ -647,7 +648,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     ]
     store.queue = [...mockItems]
     store.active.items.push(mockItems[0]!.item, mockItems[1]!.item)
-    render(<Composer store={store} />)
+    render(<Composer client={agentClient} />)
     renderer.flush?.()
 
     // 验证浮动面板渲染
@@ -662,7 +663,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
 
     // 3. 点击「全部清空」
     await app.getByTestId('queue-clear-all').click()
-    render(<Composer store={store} />)
+    render(<Composer client={agentClient} />)
     renderer.flush?.()
     expect(await app.getByTestId('queued-messages-panel').count()).toBe(0)
     expect(store.queue.length).toBe(0)
@@ -690,7 +691,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
       question: '浮动面板能看见吗？',
       choices: [{ id: 'yes', label: '能看见' }],
     })
-    render(<Composer store={store} />)
+    render(<Composer client={agentClient} />)
     renderer.flush?.()
 
     // 无提问时不渲染，有提问时渲染出一条「待回答」与问题本身
@@ -702,7 +703,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     // 面板里作答即解开等待，且答完面板自动退场（卡片转由会话流当历史）
     await app.getByTestId('question-choice-yes').click()
     expect((await pendingAnswer).choice).toBe('yes')
-    render(<Composer store={store} />)
+    render(<Composer client={agentClient} />)
     renderer.flush?.()
     expect(await app.getByTestId('pending-questions-panel').count()).toBe(0)
 
@@ -727,7 +728,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
 
     render(
       <QueuedMessagesFloatingPanel
-        store={store}
+        client={agentClient}
         onEditItem={(text, imgs) => {
           editedText = text
           editedImgs = imgs

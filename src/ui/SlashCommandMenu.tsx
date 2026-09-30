@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useState } from 'react'
-import type { AgentStore } from '../agent/store'
+import type { AgentClient } from './client'
 import { defaultPromptManager, type PromptItem } from '../agent/prompts'
 import { C, FONT_MONO, M } from '../theme'
 import { Icon } from './controls'
@@ -24,7 +24,7 @@ export interface SlashCommandItem {
 }
 
 /** 获取所有系统内置动作指令 */
-export function getSystemCommands(store: AgentStore): SlashCommandItem[] {
+export function getSystemCommands(client: AgentClient): SlashCommandItem[] {
   return [
     {
       id: 'sys-clear',
@@ -35,7 +35,7 @@ export function getSystemCommands(store: AgentStore): SlashCommandItem[] {
       scopeLabel: '系统',
       icon: 'plus',
       action: () => {
-        store.newThread(store.active.workspace)
+        void client.request('thread.create', { workspace: client.state.active.workspace })
       },
     },
     {
@@ -47,7 +47,10 @@ export function getSystemCommands(store: AgentStore): SlashCommandItem[] {
       scopeLabel: '系统',
       icon: 'sparkles',
       action: () => {
-        void store.compactThread(store.active.id, { trigger: 'manual' })
+        void client.request('thread.compact', {
+          threadId: client.state.active.id,
+          trigger: 'manual',
+        })
       },
     },
     {
@@ -58,9 +61,7 @@ export function getSystemCommands(store: AgentStore): SlashCommandItem[] {
       category: 'system',
       scopeLabel: '系统',
       icon: 'code',
-      action: () => {
-        store.setMode('code')
-      },
+      action: () => void client.request('thread.setMode', { mode: 'code' }),
     },
     {
       id: 'sys-plan',
@@ -70,9 +71,7 @@ export function getSystemCommands(store: AgentStore): SlashCommandItem[] {
       category: 'system',
       scopeLabel: '系统',
       icon: 'compass',
-      action: () => {
-        store.setMode('plan')
-      },
+      action: () => void client.request('thread.setMode', { mode: 'plan' }),
     },
     {
       id: 'sys-create',
@@ -82,9 +81,7 @@ export function getSystemCommands(store: AgentStore): SlashCommandItem[] {
       category: 'system',
       scopeLabel: '系统',
       icon: 'sparkles',
-      action: () => {
-        store.setMode('create')
-      },
+      action: () => void client.request('thread.setMode', { mode: 'create' }),
     },
     {
       id: 'sys-settings',
@@ -94,9 +91,7 @@ export function getSystemCommands(store: AgentStore): SlashCommandItem[] {
       category: 'system',
       scopeLabel: '系统',
       icon: 'settings',
-      action: () => {
-        store.setSettings(true)
-      },
+      action: () => client.ui.setSettings(true),
     },
     {
       id: 'sys-plugins',
@@ -106,9 +101,7 @@ export function getSystemCommands(store: AgentStore): SlashCommandItem[] {
       category: 'system',
       scopeLabel: '系统',
       icon: 'plug',
-      action: () => {
-        store.setPlugins(true)
-      },
+      action: () => client.ui.setPlugins(true),
     },
   ]
 }
@@ -166,12 +159,12 @@ export function filterCommands(
 }
 
 export function SlashCommandMenu({
-  store,
+  client,
   filterQuery = '',
   onSelect,
   onClose,
 }: {
-  store: AgentStore
+  client: AgentClient
   filterQuery?: string
   onSelect: (command: SlashCommandItem, isActionExecuted?: boolean) => void
   onClose: () => void
@@ -181,7 +174,7 @@ export function SlashCommandMenu({
 
   useEffect(() => {
     let unmounted = false
-    void defaultPromptManager.scanPrompts(store.active.workspace).then((list) => {
+    void defaultPromptManager.scanPrompts(client.state.active.workspace).then((list) => {
       if (!unmounted) {
         setPrompts(list.filter((p) => p.enabled && !p.isSystem))
       }
@@ -189,9 +182,9 @@ export function SlashCommandMenu({
     return () => {
       unmounted = true
     }
-  }, [store.active.workspace])
+  }, [client.state.active.workspace])
 
-  const systemCommands = getSystemCommands(store)
+  const systemCommands = getSystemCommands(client)
   const promptCommands = prompts.map(mapPromptToCommand)
   const allCommands = [...systemCommands, ...promptCommands]
 

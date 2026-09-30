@@ -22,12 +22,12 @@ import { join, relative } from 'node:path'
 const root = join(import.meta.dir, '..', '..')
 const uiDir = join(root, 'src', 'ui')
 
-/** 待迁移清单（相对仓库根、正斜杠）。M0 结束前清空。 */
-const PENDING = [
-  'src/ui/Composer.tsx',
-  'src/ui/EmptyConversationView.tsx',
-  'src/ui/SlashCommandMenu.tsx',
-]
+/**
+ * 待迁移清单。**M0 已完成（2026-09-30）：这里必须是空的**——留空数组是有意的，
+ * 它同时是"UI 侧对 store 的依赖已清零"的验收标记；一旦有人新开一个直接 import
+ * agent/store 的组件，第一条断言立刻红。
+ */
+const PENDING: string[] = []
 
 function listUiSources(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {

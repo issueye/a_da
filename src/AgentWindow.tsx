@@ -1,20 +1,14 @@
 /**
  * The window: a title row, the sidebar, the conversation, and the task box.
  *
- * The store lives outside React because async turns keep writing to it while
+ * The state lives outside React because async turns keep writing to it while
  * the model streams, so this component only subscribes and re-renders.
  *
- * ## M0 迁移期的双重接线（临时）
- *
- * 拆分计划里 UI 最终只认 `client`（`ui/client`）。迁移是**父先子后**：一个组件要接收
- * `client`，它得先有 client 可传。所以这里在过渡期**同时**持有 `store`（给尚未迁移的子组件）
- * 与 `client`（给已迁移的）。每迁完一个子组件，就把对应那一行的 `store={agent}` 换成
- * `client={client}`；全部换完时 `store` 这条线从这里消失（`useAgentStore` 只留订阅）。
- * 守门测试盯着这条线：`src/ui/**` 一旦还有 `store.` 用法就在"待迁移清单"里，清单必须清空。
+ * **M0 已完成**：这里只认 `client`（`ui/client`），不再有 `store` 这条线——
+ * 全部子组件都通过同一个客户端接口读写。
  */
 
 import React, { useEffect, useState } from 'react'
-import { store, type AgentStore } from './agent/store'
 import { agentClient } from './ui/client'
 import { Composer } from './ui/Composer'
 import { DebugPanel } from './ui/DebugPanel'
@@ -29,15 +23,19 @@ import { TitleBar } from './ui/TitleBar'
 import { Transcript } from './ui/Transcript'
 import { C, FONT_SANS } from './theme'
 
-/** 订阅 store 的变化并重渲染（M0 起等价于「订阅客户端状态变化」，见 client.subscribe）。 */
-function useAgentStore(): AgentStore {
+/**
+ * 订阅客户端状态变化并重渲染。
+ *
+ * M0 时 `client.subscribe` 就是 store 的那次广播；M1 起它由事件流驱动，
+ * 这个组件的写法不用再改。
+ */
+function useAgentClient(): void {
   const [, setTick] = useState(0)
-  useEffect(() => store.subscribe(() => setTick((tick) => tick + 1)), [])
-  return store
+  useEffect(() => agentClient.subscribe(() => setTick((tick) => tick + 1)), [])
 }
 
 export function AgentWindow() {
-  const agent = useAgentStore()
+  useAgentClient()
   const client = agentClient
   const isEmpty = client.state.active.items.length === 0
 
@@ -74,11 +72,11 @@ export function AgentWindow() {
         <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, minWidth: 0 }}>
           <TabStrip client={client} />
           {isEmpty ? (
-            <EmptyConversationView client={client} store={agent} />
+            <EmptyConversationView client={client} />
           ) : (
             <>
               <Transcript client={client} />
-              <Composer store={agent} />
+              <Composer client={client} />
             </>
           )}
         </div>

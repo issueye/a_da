@@ -8,13 +8,8 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import { Select, SelectContent, SelectItem, SelectTrigger, useGpuix } from '@gpuix/react'
-import {
-  APPROVAL_OPTIONS,
-  EFFORT_OPTIONS,
-  type AgentStore,
-  type ApprovalMode,
-  type Effort,
-} from '../agent/store'
+import { APPROVAL_OPTIONS, EFFORT_OPTIONS, type ApprovalMode, type Effort } from './client'
+import type { AgentClient } from './client'
 import { ChipButton, ChipSelect, Icon, menuLayer, MenuRow, MenuSurface, menuItemStyle } from './controls'
 import { C, editorTheme, FONT_MONO, M } from '../theme'
 import { formatDuration, formatNumber, formatTokenShort } from './Transcript'
@@ -210,20 +205,20 @@ function TelemetryDivider() {
 }
 
 export function ComposerTelemetryBar({
-  store,
+  client,
   centered,
 }: {
-  store: AgentStore
+  client: AgentClient
   centered?: boolean
 }) {
   const [popoverOpen, setPopoverOpen] = useState(false)
-  const thread = store.active
+  const thread = client.state.active
   // 空会话初始居中模式时不展示，进入会话或有消息时开始展示
   if (centered && thread.items.length === 0) {
     return null
   }
 
-  const currentMode = thread.mode ?? store.mode ?? 'code'
+  const currentMode = thread.mode ?? client.state.mode ?? 'code'
   const workspace = thread.workspace || process.cwd()
   const toolSpecsChars =
     thread.lastToolSpecsChars ??
@@ -234,9 +229,9 @@ export function ComposerTelemetryBar({
 
   const telemetry = computeThreadTelemetry(
     thread,
-    store.running,
-    store.currentModel,
-    store.contextWindow,
+    client.state.running,
+    client.state.currentModel,
+    client.state.contextWindow,
     systemPromptChars,
     toolSpecsChars,
   )
@@ -468,7 +463,7 @@ export function ComposerTelemetryBar({
             role="button"
             aria-label="一键压缩上下文与生成会话摘要"
             onClick={() => {
-              void store.compactThread(thread.id, { trigger: 'manual' })
+              void client.request('thread.compact', { threadId: thread.id, trigger: 'manual' })
             }}
             style={{
               display: 'flex',
@@ -510,7 +505,9 @@ export function ComposerTelemetryBar({
         <ContextUsagePopover
           summary={telemetry.contextSummary}
           onClose={() => setPopoverOpen(false)}
-          onCompact={() => void store.compactThread(thread.id, { trigger: 'manual' })}
+          onCompact={() =>
+          void client.request('thread.compact', { threadId: thread.id, trigger: 'manual' })
+        }
         />
       ) : null}
     </div>
@@ -522,8 +519,8 @@ const DEBUG_OPTIONS = [
   { value: 'on', label: '显示事件日志' },
 ]
 
-function AppendMenu({ store, onPick }: { store: AgentStore; onPick: (value: string) => void }) {
-  const entries = store.entries
+function AppendMenu({ client, onPick }: { client: AgentClient; onPick: (value: string) => void }) {
+  const entries = client.state.entries
   return (
     <Select value="" onValueChange={onPick}>
       <div style={{ position: 'relative', display: 'flex' }}>
@@ -576,14 +573,14 @@ function AppendMenu({ store, onPick }: { store: AgentStore; onPick: (value: stri
  * 都不同（排队是用户的指令、可增删改；提问是模型的、用户只能答），混成一个面板
  * 会让"这条为什么删不掉"变成谜。
  *
- * 作答之后卡片不在这里停留：`store.pendingAnswerQuestions` 只返回仍挂着的提问，
+ * 作答之后卡片不在这里停留：`client.state.pendingAnswerQuestions` 只返回仍挂着的提问，
  * 答完/中止后由会话流里的那张（`Transcript` 的 `QuestionCard`）接手当历史记录。
  */
-export function PendingQuestionsFloatingPanel({ store }: { store: AgentStore }) {
+export function PendingQuestionsFloatingPanel({ client }: { client: AgentClient }) {
   const [, setTick] = useState(0)
-  useEffect(() => store.subscribe(() => setTick((t) => t + 1)), [store])
+  useEffect(() => client.subscribe(() => setTick((t) => t + 1)), [client])
 
-  const pending = store.pendingAnswerQuestions
+  const pending = client.state.pendingAnswerQuestions
   if (pending.length === 0) return null
 
   return (
@@ -659,7 +656,9 @@ export function PendingQuestionsFloatingPanel({ store }: { store: AgentStore }) 
           key={entry.callId}
           callId={entry.callId}
           question={entry.question}
-          onAnswer={(answer) => store.answerQuestion(entry.callId, answer)}
+          onAnswer={(answer) =>
+    void client.request('question.answer', { callId: entry.callId, ...answer })
+  }
           variant="floating"
         />
       ))}
@@ -672,17 +671,17 @@ export function PendingQuestionsFloatingPanel({ store }: { store: AgentStore }) 
  * 支持用户查看排队消息摘要、选择「立即发送」插队执行、取出到输入框编辑或移出队列。
  */
 export function QueuedMessagesFloatingPanel({
-  store,
+  client,
   onEditItem,
 }: {
-  store: AgentStore
+  client: AgentClient
   onEditItem?: (text: string, images?: string[]) => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
   const [, setTick] = useState(0)
-  useEffect(() => store.subscribe(() => setTick((t) => t + 1)), [store])
+  useEffect(() => client.subscribe(() => setTick((t) => t + 1)), [client])
 
-  const queue = store.queue
+  const queue = client.state.queue
   if (!queue || queue.length === 0) return null
 
   return (
@@ -759,7 +758,7 @@ export function QueuedMessagesFloatingPanel({
               testId="queue-clear-all"
               role="button"
               aria-label="清空全部排队消息"
-              onClick={() => store.clearQueue()}
+              onClick={() => void client.request('queue.clear', {})}
               style={{
                 display: 'flex',
                 flexDirection: 'row',
@@ -902,7 +901,7 @@ export function QueuedMessagesFloatingPanel({
                   testId={`queue-send-now-${idx}`}
                   role="button"
                   aria-label="立即发送该消息"
-                  onClick={() => store.sendQueuedImmediately(idx)}
+                  onClick={() => void client.request('queue.promote', { index: idx })}
                   style={{
                     display: 'flex',
                     flexDirection: 'row',
@@ -929,8 +928,8 @@ export function QueuedMessagesFloatingPanel({
                   testId={`queue-edit-${idx}`}
                   role="button"
                   aria-label="取出到输入框编辑"
-                  onClick={() => {
-                    const removed = store.removeQueuedItem(idx)
+                  onClick={async () => {
+                    const removed = await client.request('queue.remove', { index: idx })
                     if (removed && onEditItem) {
                       onEditItem(removed.text, removed.images)
                     }
@@ -953,7 +952,7 @@ export function QueuedMessagesFloatingPanel({
                   testId={`queue-delete-${idx}`}
                   role="button"
                   aria-label="移出队列"
-                  onClick={() => store.removeQueuedItem(idx)}
+                  onClick={() => void client.request('queue.remove', { index: idx })}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -991,10 +990,10 @@ export function pickImagePaths(paths: unknown): string[] {
   return picked
 }
 
-export function Composer({ store, centered }: { store: AgentStore; centered?: boolean }) {
+export function Composer({ client, centered }: { client: AgentClient; centered?: boolean }) {
   const { renderer } = useGpuix()
   const [, setTick] = useState(0)
-  useEffect(() => store.subscribe(() => setTick((t) => t + 1)), [store])
+  useEffect(() => client.subscribe(() => setTick((t) => t + 1)), [client])
   const [draft, setDraft] = useState('')
   const [images, setImages] = useState<string[]>([])
   const [focused, setFocused] = useState(false)
@@ -1029,7 +1028,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
   /** Ctrl+V 时兜底取剪贴板里的图片。纯文本粘贴由原生 textarea 自己处理，互不干扰。 */
   const pasteImageFromClipboard = async () => {
     if (pasteBusy.current) return
-    if (!store.supportsImages || store.active.isSubagent) return
+    if (!client.state.supportsImages || client.state.active.isSubagent) return
     if (process.platform !== 'win32') return
     pasteBusy.current = true
     try {
@@ -1046,7 +1045,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
 
   /** 拖放到输入框的文件里挑出图片附件；非图片忽略。 */
   const handleDroppedFiles = (event: any): void => {
-    if (!store.supportsImages || store.active.isSubagent) return
+    if (!client.state.supportsImages || client.state.active.isSubagent) return
     const paths: string[] = event?.paths ?? event?.detail?.paths ?? []
     const images = pickImagePaths(paths)
     if (images.length === 0) return
@@ -1060,28 +1059,28 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
   }
 
   // 当外部有注入待发送/草稿时（例如提示词一键应用），优先显示与消费
-  const currentDraft = draft || store.pendingDraft || ''
+  const currentDraft = draft || client.state.pendingDraft || ''
 
   useEffect(() => {
-    if (store.pendingDraft !== null) {
-      const text = store.pendingDraft
+    if (client.state.pendingDraft !== null) {
+      const text = client.state.pendingDraft
       setDraft(text)
       const timer = setTimeout(() => {
-        if (store.pendingDraft === text) {
-          store.clearPendingDraft()
+        if (client.state.pendingDraft === text) {
+          client.ui.clearPendingDraft()
         }
       }, 50)
       return () => clearTimeout(timer)
     }
-  }, [store.pendingDraft])
+  }, [client.state.pendingDraft])
 
-  const running = store.running
+  const running = client.state.running
   const ready = currentDraft.trim().length > 0 || images.length > 0 || selectedCommand !== null
-  const approval = APPROVAL_OPTIONS.find((option) => option.value === store.approval)!
-  const effort = EFFORT_OPTIONS.find((option) => option.value === store.effort)!
-  const modeOption = MODE_OPTIONS.find((m) => m.value === (store.mode ?? 'code')) ?? MODE_OPTIONS[0]!
-  const modelLabel = store.currentModel ? store.currentModel : '配置模型'
-  const imageEntries = store.entries.filter((f) => /\.(png|jpe?g|webp|gif|svg)$/i.test(f))
+  const approval = APPROVAL_OPTIONS.find((option) => option.value === client.state.approval)!
+  const effort = EFFORT_OPTIONS.find((option) => option.value === client.state.effort)!
+  const modeOption = MODE_OPTIONS.find((m) => m.value === (client.state.mode ?? 'code')) ?? MODE_OPTIONS[0]!
+  const modelLabel = client.state.currentModel ? client.state.currentModel : '配置模型'
+  const imageEntries = client.state.entries.filter((f) => /\.(png|jpe?g|webp|gif|svg)$/i.test(f))
 
   const send = async (text: string) => {
     setSlashMenuOpen(false)
@@ -1099,7 +1098,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
     const trimmed = target.trim()
     if (trimmed.startsWith('/')) {
       try {
-        const allPrompts = await defaultPromptManager.scanPrompts(store.active.workspace)
+        const allPrompts = await defaultPromptManager.scanPrompts(client.state.active.workspace)
         const priorityOrder: Record<string, number> = { workspace: 0, global: 1, plugin: 2, builtin: 3 }
         const sortedTemplates = allPrompts.slice().sort(
           (a, b) => (priorityOrder[a.scope] ?? 99) - (priorityOrder[b.scope] ?? 99)
@@ -1110,15 +1109,19 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
       }
     }
 
-    store.clearPendingDraft()
-    store.send(finalMessage, images.length > 0 ? images : undefined)
+    client.ui.clearPendingDraft()
+    void client.request('thread.send', {
+      threadId: client.state.active.id,
+      text: finalMessage,
+      images: images.length > 0 ? images : undefined,
+    })
     setDraft('')
     setImages([])
   }
 
   // 子智能体独立会话：保持窗口对话 UI 风格，但不允许手动输入
-  if (store.active.isSubagent) {
-    const isRunning = store.running
+  if (client.state.active.isSubagent) {
+    const isRunning = client.state.running
     return (
       <div
         style={{
@@ -1218,7 +1221,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
                 testId="stop-subagent"
                 role="button"
                 aria-label="停止子智能体"
-                onClick={() => store.stop()}
+                onClick={() => void client.request('thread.abort', { threadId: client.state.activeId })}
                 style={{
                   display: 'flex',
                   flexDirection: 'row',
@@ -1244,8 +1247,8 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
                 role="button"
                 aria-label="恢复子智能体"
                 onClick={() => {
-                  void store.resumeSubagentThread({
-                    subagentThreadId: store.active.id,
+                  void client.request('subagent.resume', {
+                    subagentThreadId: client.state.active.id,
                   })
                 }}
                 style={{
@@ -1269,14 +1272,16 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
               </div>
             )}
 
-            {store.active.parentId ? (
+            {client.state.active.parentId ? (
               <div
                 testId="return-parent-thread"
                 role="button"
                 aria-label="返回主会话"
                 onClick={() => {
-                  if (store.active.parentId) {
-                    store.selectThread(store.active.parentId)
+                  if (client.state.active.parentId) {
+                    void client.request('ui.activeThread', {
+                  threadId: client.state.active.parentId,
+                })
                   }
                 }}
                 style={{
@@ -1319,11 +1324,11 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
       }}
     >
       {/* 待答提问以浮动框附着在发送框上方：运行正卡在这里等，不能随滚动丢失 */}
-      <PendingQuestionsFloatingPanel store={store} />
+      <PendingQuestionsFloatingPanel client={client} />
 
       {/* 队列中的发送消息以浮动框附着在发送框上方 */}
       <QueuedMessagesFloatingPanel
-        store={store}
+        client={client}
         onEditItem={(text, imgs) => {
           setDraft(text)
           if (imgs && imgs.length > 0) {
@@ -1334,7 +1339,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
 
       {slashMenuOpen ? (
         <SlashCommandMenu
-          store={store}
+          client={client}
           filterQuery={slashFilter}
           onSelect={(cmd, isActionExecuted) => {
             setSlashMenuOpen(false)
@@ -1463,9 +1468,9 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
               ? selectedCommand.argumentHint
                 ? `输入参数 (${selectedCommand.argumentHint}) 或补充说明，回车直接发送`
                 : '输入补充说明或回车直接发送'
-              : store.mode === 'plan'
+              : client.state.mode === 'plan'
               ? '描述要 Agent 完成的任务 (Plan 规划模式)'
-              : store.mode === 'create'
+              : client.state.mode === 'create'
               ? '描述要 Agent 完成的任务 (Create 创造模式)'
               : centered
               ? '描述要 Agent 完成的任务 (Ask anything, @ to mention, / for actions)'
@@ -1505,7 +1510,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
           }}
           onFileDrop={handleDroppedFiles}
           onChange={(event) => {
-            if (store.pendingDraft !== null) store.clearPendingDraft()
+            if (client.state.pendingDraft !== null) client.ui.clearPendingDraft()
             let val = event.value ?? ''
             if (val.startsWith('、')) {
               val = '/' + val.slice(1)
@@ -1603,7 +1608,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
             testId="composer-model"
             role="button"
             aria-label={`模型：${modelLabel}，点击配置`}
-            onClick={() => store.setSettings(true)}
+            onClick={() => client.ui.setSettings(true)}
             style={{
               display: 'flex',
               flexDirection: 'row',
@@ -1620,12 +1625,12 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
               hover: { backgroundColor: C.chipHover },
             }}
           >
-            <Icon name="sparkles" size={12} color={store.currentModel ? C.link : C.tertiary} />
+            <Icon name="sparkles" size={12} color={client.state.currentModel ? C.link : C.tertiary} />
             <text
               style={{
                 fontSize: 11.5,
                 fontWeight: 500,
-                color: store.currentModel ? C.text : C.secondary,
+                color: client.state.currentModel ? C.text : C.secondary,
                 whiteSpace: 'nowrap',
                 textOverflow: 'ellipsis',
                 maxWidth: 130,
@@ -1672,8 +1677,8 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
             </text>
           </div>
 
-          <AppendMenu store={store} onPick={(value) => setDraft((text) => `${text}${value} `)} />
-          {store.supportsImages ? (
+          <AppendMenu client={client} onPick={(value) => setDraft((text) => `${text}${value} `)} />
+          {client.state.supportsImages ? (
             <Select
               value=""
               onValueChange={(val) => {
@@ -1737,8 +1742,8 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
 
           <ChipSelect
             testId="mode-select"
-            value={store.mode ?? 'code'}
-            onChange={(next) => store.setMode(next as AgentMode)}
+            value={client.state.mode ?? 'code'}
+            onChange={(next) => void client.request('thread.setMode', { mode: next as AgentMode })}
             items={MODE_OPTIONS}
             icon={modeOption.icon}
             label={modeOption.label}
@@ -1749,7 +1754,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
                 <MenuRow
                   label={m.label}
                   description={m.desc}
-                  selected={(store.mode ?? 'code') === m.value}
+                  selected={(client.state.mode ?? 'code') === m.value}
                 />
               </SelectItem>
             ))}
@@ -1757,8 +1762,8 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
 
           <ChipSelect
             testId="approval"
-            value={store.approval}
-            onChange={(next) => store.setApproval(next as ApprovalMode)}
+            value={client.state.approval}
+            onChange={(next) => void client.request('config.setApproval', { mode: next as ApprovalMode })}
             items={APPROVAL_OPTIONS}
             icon="shield"
             label={approval.label}
@@ -1768,29 +1773,29 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
               <MenuRow
                 label="自动批准"
                 description="读写文件和执行命令都不再询问"
-                selected={store.approval === 'auto'}
+                selected={client.state.approval === 'auto'}
               />
             </SelectItem>
             <SelectItem testId="approval-ask" value="ask" style={menuItemStyle}>
               <MenuRow
                 label="每次询问"
                 description="每次工具调用都等你确认"
-                selected={store.approval === 'ask'}
+                selected={client.state.approval === 'ask'}
               />
             </SelectItem>
             <SelectItem testId="approval-readonly" value="readonly" style={menuItemStyle}>
               <MenuRow
                 label="只读"
                 description="只允许读取，写入与命令需批准"
-                selected={store.approval === 'readonly'}
+                selected={client.state.approval === 'readonly'}
               />
             </SelectItem>
           </ChipSelect>
 
           <ChipSelect
             testId="effort"
-            value={store.effort}
-            onChange={(next) => store.setEffort(next as Effort)}
+            value={client.state.effort}
+            onChange={(next) => void client.request('config.setEffort', { effort: next as Effort })}
             items={EFFORT_OPTIONS}
             icon="brain"
             label={effort.label}
@@ -1801,7 +1806,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
                 <MenuRow
                   label={option.label}
                   description={option.value === 'max' ? '默认，最慢也最稳' : undefined}
-                  selected={store.effort === option.value}
+                  selected={client.state.effort === option.value}
                 />
               </SelectItem>
             ))}
@@ -1816,7 +1821,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
               testId="stop"
               role="button"
               aria-label="停止"
-              onClick={() => store.stop()}
+              onClick={() => void client.request('thread.abort', { threadId: client.state.activeId })}
               style={{
                 display: 'flex',
                 flexDirection: 'row',
@@ -1843,22 +1848,22 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
 
           <ChipSelect
             testId="debug"
-            value={store.debugOpen ? 'on' : 'off'}
+            value={client.state.debugOpen ? 'on' : 'off'}
             onChange={(next) => {
-              if ((next === 'on') !== store.debugOpen) store.toggleDebug()
+              if ((next === 'on') !== client.state.debugOpen) client.ui.toggleDebug()
             }}
             items={DEBUG_OPTIONS}
             icon="bug"
             label="调试"
           >
             <SelectItem testId="debug-off" value="off" style={menuItemStyle}>
-              <MenuRow label="关闭" description="隐藏右侧的事件日志" selected={!store.debugOpen} />
+              <MenuRow label="关闭" description="隐藏右侧的事件日志" selected={!client.state.debugOpen} />
             </SelectItem>
             <SelectItem testId="debug-on" value="on" style={menuItemStyle}>
               <MenuRow
                 label="显示事件日志"
                 description="模型请求、工具结果和错误"
-                selected={store.debugOpen}
+                selected={client.state.debugOpen}
               />
             </SelectItem>
           </ChipSelect>
@@ -1887,7 +1892,7 @@ export function Composer({ store, centered }: { store: AgentStore; centered?: bo
           </div>
         </div>
       </div>
-      <ComposerTelemetryBar store={store} centered={centered} />
+      <ComposerTelemetryBar client={client} centered={centered} />
     </div>
   )
 }

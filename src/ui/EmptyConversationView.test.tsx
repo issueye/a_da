@@ -36,7 +36,7 @@ describeNative('EmptyConversationView', () => {
     const label2 = shortPath(ws2, 2)
 
     const { render, renderer } = createTestRoot({ width: 1120, height: 760 })
-    render(<EmptyConversationView client={createInProcessClient(store)} store={store} />)
+    render(<EmptyConversationView client={createInProcessClient(store)} />)
     const app = await connectTest(renderer)
 
     const screen = () => renderer.getPaintedText().join('\n')
@@ -67,7 +67,7 @@ describeNative('EmptyConversationView', () => {
     const localStore = new AgentStore(projectDir, publicPath)
 
     const { render, renderer } = createTestRoot({ width: 1120, height: 760 })
-    render(<EmptyConversationView client={createInProcessClient(localStore)} store={localStore} />)
+    render(<EmptyConversationView client={createInProcessClient(localStore)} />)
     const app = await connectTest(renderer)
 
     try {

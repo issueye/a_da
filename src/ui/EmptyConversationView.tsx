@@ -5,23 +5,12 @@
  */
 
 import React from 'react'
-import type { AgentStore } from '../agent/store'
 import type { AgentClient } from './client'
 import { Composer } from './Composer'
 import { WorkspaceSelector } from './WorkspaceSelector'
 import { C, M } from '../theme'
 
-/**
- * M0 迁移期的**双重接线**（与 AgentWindow 同一套做法）：已迁完的子组件收 `client`，
- * 尚未迁的（`Composer`）暂收 `store`。`Composer` 迁完后这个 `store` prop 就删掉。
- */
-export function EmptyConversationView({
-  client,
-  store,
-}: {
-  client: AgentClient
-  store: AgentStore
-}) {
+export function EmptyConversationView({ client }: { client: AgentClient }) {
   return (
     <div
       testId="welcome"
@@ -63,7 +52,7 @@ export function EmptyConversationView({
         </div>
 
         {/* 居中的会话输入框 */}
-        <Composer store={store} centered />
+        <Composer client={client} centered />
       </div>
     </div>
   )

@@ -118,6 +118,37 @@ M3 有明确开关（`A_DA_TRANSPORT=inprocess|ws` 可强制；`bun run dev` 与
   - **收尾**：`AgentWindow` 去掉 `store` 这条线（`useAgentStore` 只留订阅，或改用 `client.subscribe`），
     守门测试的 `PENDING` 清空 → **M0 完成**。
 - **门禁（实测）**：`typecheck` exit 0；`bun test src/agent` **569 pass / 0 fail**；全量 **721 pass / 0 fail**（+3 = 守门测试）。
+
+#### ✅ M0 完成记录（2026-09-30，分支 `feat/ui-host-split`）
+
+**交付判据逐条核验**
+
+| 判据 | 结果 |
+|---|---|
+| 三条门全过 | `typecheck` exit 0；`bun test src/agent` **569 pass / 0 fail**；全量 **721 pass / 0 fail** |
+| `src/ui/**`（非测试）不 import `agent/store`、不出现 `store.` 用法 | ✅ 守门测试 `PENDING` **已清空**，三条断言全绿 |
+| `client.state` + `client.request` 覆盖协议 §9.1 的 A 组 29 个命令 | ✅ 逐条核对（`workspace.add`…`debug.trace`），见 `src/ui/client/in-process.ts` 的映射表 |
+| 4 个最重的文件全部迁移 | ✅ `Composer`(72)、`Sidebar`(40)、`PluginsDialog`(33)、`Transcript`(16) |
+| UI 测试断言零改动 | ✅ 只改挂载点（`store={store}` → `client={agentClient}`）；受影响用例全过 |
+
+**16 个文件全部迁完**（八笔提交）：`ConfirmDialog`、`DebugPanel`、`TabStrip`、`Transcript`、`ChangesPanel`、
+`TodoFloatingPanel`、`QuestionCard`、`Sidebar`、`SettingsDialog`、`shortcuts`、`CommandPalette`、
+`WorkspaceSelector`、`PluginsDialog`、`Composer`、`SlashCommandMenu`、`EmptyConversationView`；
+`AgentWindow` 收尾去掉 `store` 这条线（`useAgentClient` 只留订阅）。
+
+**M0 的产出**：契约层 `src/shared/protocol/`（协议类型 + 方法表 `ParamsOf`/`ResultOf` + 错误码）、
+客户端层 `src/ui/client/`（`ClientState`/`UiActions`/`AgentClient` 三通道 + 进程内映射表）、
+两条守门线（UI 不碰 `agent/store`；协议层不依赖实现模块）、以及把 `ApprovalMode`/`Effort`/`QueuedItem`/
+`ProviderConfig`/`ProviderPreset` 归位到契约层（依赖方向变成「实现 → 契约」）。
+
+**实施中发现的偏差（都已记录）**：
+1. `QuestionCard` 顺手去掉了 store 依赖（改 `onAnswer` 回调）——否则它被 Composer 与 Transcript 同时渲染，会卡住迁移顺序；
+2. 读写规则落成四类：`client.state`（读）/ `client.ui`（纯客户端动作）/ `client.request`（协议命令）/ `client.subscribe`（订阅）；
+3. 迁移的硬约束是**父先子后**，所以必须成组迁移；`EmptyConversationView` 期间用过临时双重接线，Composer 迁完后已删除。
+
+**下一里程碑**：M1（复制视图与事件流）。M1 的第一个设计决定已记在下面：
+**不再逐条改 88 处 `notify()`**——`store.subscribe` 本身就是唯一的广播出口，事件发射挂在它上面即可；
+那 88 处的价值从"逐个改造"变成"快照覆盖度清单"（哪些状态必须进快照）。
 ---
 
 ### M1 — 复制视图与事件流（行为等价）
