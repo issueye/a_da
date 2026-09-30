@@ -316,10 +316,37 @@ M1 结束时仍然进程内跑，但**横跨进程的那套数据流已经成型
 
 **验收标准**
 
-- [ ] 三条门全过；4 个管理页（插件/设置/技能/改动）行为与今天等价（现有 UI 测试是回归线）
-- [ ] `src/ui/**`（非测试）对 `../agent/**` 的 import **只剩 `types` 与纯函数**（协议 §9.2 最后一行的白名单）
-- [ ] `readPluginSecret`/`readSavedConfig` 这类**读密钥/配置**的调用在 UI 侧归零；密钥只回"是否已设置"
-- [ ] UI 侧不再有任何 `writeFileSync`/`scan*` 之类的文件系统动作（用守门测试断言 import 面）
+- [x] 三条门全过；4 个管理页（插件/设置/技能/改动）行为与今天等价（现有 UI 测试是回归线）
+- [x] `src/ui/**`（非测试）对 `../agent/**` 的 import **只剩 `types` 与纯函数**（协议 §9.2 最后一行的白名单）
+- [x] `readPluginSecret`/`readSavedConfig` 这类**读密钥/配置**的调用在 UI 侧归零；密钥只回"是否已设置"
+- [x] UI 侧不再有任何 `writeFileSync`/`scan*` 之类的文件系统动作（用守门测试断言 import 面）
+
+#### ✅ M2 完成记录（2026-09-30，分支 `feat/ui-host-split`）
+
+**实测复核**（而不是"看起来做了"）
+
+| 判据 | 复核方式与结果 |
+|---|---|
+| UI 不碰文件系统 | `src/ui`（非测试）grep `writeFileSync/readFileSync/readdirSync/mkdirSync/rmSync/unlinkSync` → **零命中** |
+| UI 只剩纯函数/纯常量 | grep 对 `agent/**` 的实现 import，7 处**全部**在白名单内：`expandPromptTemplate`、`SUBAGENT_HEX_COLORS`、`PluginStatus`(type)、`capabilities-view` 三个纯展示函数、`config` 的 `envOverrides/formatHeadersText/parseHeadersText`、`describeTool`、`PUBLIC_WORKSPACE_LABEL`；守门测试第 4 条断言同一件事 |
+| 密钥不回明文 | `plugin.list` 的 `secrets` 只有布尔；`readPluginSecret` 在 UI 侧零调用；`config.get` 是唯一回 `apiKey` 的地方（用户自己的供应商密钥，设置页要编辑），**快照的 `config` 恒不含 apiKey** |
+| 命令覆盖 | 协议 §9.1 的 A 组 29 个命令在 `agent/host/dispatch.ts` 逐条实现；M2 新增 plugin/skill/prompt/subagentProfile/config/stats/hostInfo 共 24 个方法 |
+
+**明确记为"不做/不必做"的两项（不是漏做）**
+
+1. **M2-4 改动审阅**：改动数据（按文件聚合、`reverted` 合并）已在 M1 改为**客户端本地推导**
+   （`src/ui/client/derive.ts` 的 `deriveThreadFileChanges`，与主机侧同一套规则且有测试），
+   回滚类命令在 M0 就走了 `client.request`。所以 `change.list/count` 的"主机侧形态"目前**不需要**；
+   等 M4 的真远端客户端出现（它读不到主机条目对象）再决定是否补。
+2. **M2-5 工作区剩余**：`workspace.*` 命令 M0 已通，`Sidebar`/`WorkspaceSelector` 读的都是
+   `client.state`；剩下的只有 `PUBLIC_WORKSPACE_LABEL` 这类展示常量，已按"纯常量"入白名单。
+
+**MVP 达成判据（Definition of Done）逐条**
+
+1. ✅ `src/ui/**` 只 import `shared/protocol` 类型、`ui/client` 实现、白名单纯函数；
+2. ✅ 协议 A 组 29 命令 + B 组 16 快照字段在 InProcess 下走通（且同一批命令在 ws 下也已实测可用）；
+3. ✅ 三条门全过（`typecheck` exit 0 / `src/agent` 587 / 全量 761），UI 测试断言未改口径；
+4. ✅ 结构上 `store.ts` 可以整体移到 `--host` 那一侧而 UI 不改——M3 已经这么做了（打包形态就是分开跑）。
 
 **MVP 达成判据（Definition of Done）**
 
