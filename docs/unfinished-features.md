@@ -74,6 +74,25 @@
 
 - **现状**：文案硬编码中文（部分中英混排）。`grep i18n|useTranslation` 零命中。
 
+### 9. 子智能体的两条"续跑"入口绕过 profile 白名单与门禁　`待拍板`
+
+- **现状**：`store.steerSubagentThread` 对**已停止**的子智能体是"重新排队 + `drain`"
+  （`src/agent/store.ts`），不经过 `resumeSubagentThread`（那条已经在跑门禁）；
+  用户在**子智能体标签页里直接输入**则走 `store.send → drain → turn`，而 `turn` 用的是
+  **主会话工具表**（`getToolsForMode`）与 `kind: 'main'` 的插件钩子——也就是说这条路上
+  既不过门禁，也**不应用 profile 的白名单**（只读子智能体在这条路上能拿到写工具）。
+- **证据**：`turn()` 里没有 `thread.isSubagent` 分支；`kind: 'main'` 是写死的。
+  门禁接入点只有 `startSubagentThread`、`resumeSubagentThread`、`subagents/runner.ts`
+  三处（`docs/agent-conventions.md` 与 `subagents/access.ts` 已写明）。
+- **影响**：只读 / 白名单是子智能体的权限声明，走这两条路时会静默失效——属于"看起来
+  装上了、其实没生效"，且没有任何提示。
+- **最小实现路径**：让 `turn()` 认识 `thread.isSubagent`（用 `resolveSubagentTools` 取表、
+  `hookContext.kind = 'subagent'`），并给 `steerSubagentThread` 的续跑分支补门禁
+  （判定输入用 `resumeGateTask`）。**两件事要一起做**：只补门禁而工具表仍走主会话，
+  等于把"门禁过了"与"权限没生效"拼在一起，更难查。
+- **需要拍板**：子智能体标签页是否允许用户直接对话？若允许，它应当按子智能体身份运行
+  （白名单 + 门禁）；若不允许，就该在 `send` 入口挡掉并引导用 `send_subagent_message`。
+
 ---
 
 ## 二、明确不做的（设计上划出去了，别当缺口）

@@ -699,6 +699,17 @@ gate 检查插在 `enabled` 检查（`store.ts:1677-1679`）之后、**构建会
 不通过就不创建 thread（省掉建消息、挂 tab、起循环的全部开销），
 并在 `afterSubagentEnd` 里如实报告 `allowed: false` + `gateReason`。
 
+**哪些入口要过门禁（2026-09-30 定案）**：凡是真的会**开跑**的入口都要过——
+`startSubagentThread`（委派任务本身作判定输入）、`resumeSubagentThread`
+（判定输入是「原始任务 + 本次恢复指示」，见 `store.resumeGateTask`：首轮已把原始 task
+消耗掉，只给一句"网络恢复了，继续"判定方无从判断）、以及 `subagents/runner.ts` 的同步
+兜底。恢复被拦下时**在写任何东西之前**抛出，会话原样不动、也不进运行集合。
+
+仍有两条"续跑"入口没过门禁（**已知缺口**，都是既有行为，改动会牵到 `turn()` 的工具表，
+需要单独拍板）：`steerSubagentThread` 对已停止子智能体的重新排队，以及用户在子智能体
+标签页里直接输入（后者连 profile 白名单都不生效）。明细见 `docs/unfinished-features.md`
+与 `docs/plugin-system-dev-plan.md` 的待办。
+
 ### 6.4 能力边界：默认开放，用户决定
 
 **本节的第一原则：点位开放给插件后，用什么、放开到什么程度，由用户决定，不由核心代拍。**
@@ -751,17 +762,24 @@ gate 检查插在 `enabled` 检查（`store.ts:1677-1679`）之后、**构建会
 | `allowThreadDeleteBlock` | **开** | 插件不能阻止删会话，只能归档 |
 | `allowCompactionReplace` | **开** | `beforeCompaction` 只能追加保留消息 |
 | `allowPlanModeHooks` | **开** | plan 模式下所有钩子不生效（回到现状） |
-| `allowBuiltinShadow` | **开** | 插件工具不能覆盖同名内置工具 ⚠️ **尚未实现，见下** |
+| `allowBuiltinShadow` | **开** | 插件工具不能覆盖同名内置工具：同名的那条**不注册**，保留内置工具，插件标为 `conflict` 并写明原因 |
 | `hookTimeoutMs` | 500 | 超时后**放行并记 trace**（不 block——超时不该变成隐式拒绝） |
 | ~~工具集扩张~~ | — | **不可配置**，见 §6.4.3 |
 
-> **⚠ `allowBuiltinShadow` 是唯一未落地的开关（2026-09 复核发现）。**
-> 它声明了、有默认值、走三层配置解析、UI 甚至写明关掉后的效果，但**没有任何代码读它**：
-> 加载层始终让插件工具覆盖同名内置（`registry.ts:229-236`）。后果是用户关掉它
-> **什么都不会发生**，且界面说明与实际行为**相反**。
-> 按 §6.4 的开放原则，**应当实现**（而非删掉开关）——因为它正是"用户决定"原则的体现。
-> 未经实现前，请勿在任何文档中声称该开关生效。详见
-> `docs/plugin-system-dev-plan.md` 的「M0-M3 独立复核记录」。
+> **✅ `allowBuiltinShadow` 已实现（2026-09-30 补）。**
+> 它曾在 2026-09 的独立复核里被记为"幽灵开关"：声明了、有默认值、走三层配置解析、
+> UI 甚至写明关掉后的效果，但没有任何代码读它。现状是判定落在
+> `tools/loader.ts` 的 `finalizePlugins`（加载与界面 `scanPlugins` **共用**这一步），
+> 结论写进 `LoadedPlugin.blockedTools`，注册层 `applyPlugins` 照着跳过注册。
+> 守门测试：`plugins/loader.test.ts` 的「能力开关：allowBuiltinShadow」两条
+> （开着＝覆盖 + 标冲突 + 失去只读身份；关掉＝不注册 + 保留内置 + 原因可见）。
+>
+> **配套修掉的分类缺陷**：`isWriteTool` 过去只看名字，于是插件借走 `read_file`
+> 这类只读内置名就"继承"了只读身份——plan 模式放行、readonly 审批档不问、只读子智能体
+> 也拿得到，而 §6.4.3 的全部论证都建立在"工具集是审批闸门的依据"之上。现在分类
+> **连来源一起看**（`tools/registry.ts`：非内置插件顶着只读名字注册的工具一律按写处理，
+> scope `builtin` 的官方只读工具不受影响）。守门测试：`tools/registry.test.ts` 的
+> 「写工具的判定要看来源」四条。
 
 **每个开关都必须能被用户看到后果**：`PluginsDialog` 里每个插件卡显示它实际用到、
 以及被哪些开关限制的能力（§7.1）。关掉某能力时，用到它的插件必须显示"受限"状态与原因，
@@ -772,8 +790,9 @@ gate 检查插在 `enabled` 检查（`store.ts:1677-1679`）之后、**构建会
 `beforeTurn.tools` / `beforeAgentStart.tools` / `SubagentGateResult.tools`
 **只能收窄，不能扩张**——这一条不可配置，理由必须说透：
 
-工具集是**审批闸门的依据**。`store.gate()`（`store.ts:3237`）按 `isWriteTool(name)` 决定
-要不要弹审批（`:3237-3239`），而 `isWriteTool` 是**静态名字白名单**（`registry.ts:166-168`）。
+工具集是**审批闸门的依据**。`store.gate()` 按 `isWriteTool(name)` 决定要不要弹审批，
+而 `isWriteTool` 是一份**静态只读名单**（`registry.ts` 的 `READ_ONLY`）——名字不在名单里
+就算写操作，非内置插件借走只读名字的也一律算写（见 §6.4.2 的补记）。
 插件若能凭返回值塞进一个新名字的工具，就等于：
 
 1. 绕过了审批（新名字可能不在白名单，或干脆是个从未注册的"幽灵工具"）；
@@ -1352,10 +1371,12 @@ src/agent/subagents/access.test.ts
 - 工具集未变的轮次复用同一 `toolSpecs` 引用
 - `terminate` → **跑完本轮后** break（不是当前批就断）
 
-**成对原则的机制性测试（新一组，防止"成对"名存实亡）**- `before*` 被短路（block/terminate）时，**`after*` 仍然执行**——保证清理逻辑不丢
+**成对原则的机制性测试（新一组，防止"成对"名存实亡）**
+- `before*` 被短路（block/terminate）时，**`after*` 仍然执行**——保证清理逻辑不丢
 - 每个 `before*` 都有对应的 `after*` 在契约里存在（**接口层断言**：
-  对 `AgentHooks` 的键做配对检查，漏配即测试失败）
-- `beforeAgentStart` **不能替换 `systemPrompt`**（传替换意图 → 只生效 append）
+  对 `AgentHooks` 的键做配对检查，漏配即测试失败；刻意单向的点位须登记进 `UNPAIRED_HOOKS`）
+- `beforeAgentStart` **可以替换 `systemPrompt`**（受 `allowSystemPromptReplace` 控制，
+  默认开）——注意这一条曾按早先的"核心代拍"版本反向写下，§6.4 已改为默认开放
 - `afterAgentEnd` / `afterSubagentEnd` 抛错**不阻断** `wakeParent`（防永久挂起）
 
 **第一优先新增点位（机制已在，只缺暴露）**
@@ -1363,15 +1384,17 @@ src/agent/subagents/access.test.ts
   且**拒绝理由回给模型**（不能变成"工具执行失败"）
 - 审批闸门：`afterApproval` 能拿到实际决策（批准/拒绝/超时）与耗时
 - 压缩：`beforeCompaction` 追加的保留消息**确实出现在压缩后的历史里**
-- 压缩：插件**不能替换** `CompactSelection`（只能追加）——传替换意图被忽略或拒绝
+- 压缩：插件**可以替换** `CompactSelection`（受 `allowCompactionReplace` 控制，默认开）；
+  关掉时只能追加保留消息——同上，这一条也按 §6.4 的开放原则改过
 - `afterCompaction` 能拿到压缩前后的消息数对比
 
 **会话生命周期（§6.7）**
 - `beforeThreadCreate` 的 `title` 建议被采纳；返回空标题被忽略（不产生无名会话）
 - `beforeThreadCreate` 的 `data` 落进 `Thread.pluginData[pluginId]`，且**随会话持久化**
 - `afterThreadCreate` 拿到的 `thread` 是已就绪状态（能读到 `id`/`workspace`）
-- `beforeThreadDelete` 第三方返回 `block: true` → **不阻止删除**（第三方无否决权）
-- `beforeThreadDelete` 内置插件返回 `block: true` → 阻止删除，且有可见理由
+- `beforeThreadDelete` 返回 `block: true` → 阻止删除，且有可见理由；**对所有插件一致**
+  （受 `allowThreadDeleteBlock` 控制，默认开。早先版本只给内置插件否决权，那是核心代拍，
+  已取消——见 §6.7.3）
 - `archiveBeforeDelete` 在删除**之前**执行；`archived` 如实反映成功与否
 - **归档失败不阻止删除**（用户明确要删，不能因插件归档失败而卡住）
 - 级联删除子会话时，每个子会话的 `beforeThreadDelete` 都被调用一次
@@ -1381,7 +1404,11 @@ src/agent/subagents/access.test.ts
 
 **能力边界（开放原则，必测）**
 - 每个 `pluginCapabilities` 开关**关掉后确实生效**，且开/关行为可区分
-- `allowThreadDeleteBlock: false` → 第三方 `block: true` 不阻止删除
+- `allowBuiltinShadow: false` → 占用了核心内置工具名字的插件工具**不注册**、内置工具保留、
+  插件状态标 `conflict` 且原因在插件卡上可见；开着时相反（覆盖 + 标冲突）
+- **`isWriteTool` 的判定要看来源**：非内置插件顶着只读名字注册的工具按写处理，
+  scope 为 `builtin` 的官方只读工具不受影响（`tools/registry.test.ts`）
+- `allowThreadDeleteBlock: false` → 插件 `block: true` 不阻止删除
 - `allowSystemPromptReplace: false` → 传 `systemPrompt` 被忽略，只生效 append
 - `allowTextRewrite: false` → `afterTurn.appendNote` / `afterAgentEnd.appendText` 无效
 - `allowPlanModeHooks: false` → plan 模式下钩子不生效

@@ -371,7 +371,7 @@ M2 验收清单逐条）、`plugins/hook-runtime.test.ts`（19，开关/顺序/�
 | M3-1 | 插件卡状态徽标（待配置/版本不兼容/加载失败/工具名冲突）、逐条诊断（含可操作建议）、版本号、**贡献计数**（工具/技能/提示词各几个） |
 | M3-2 | 「能力开关」页：七个开关逐项列出并写清"关掉后会发生什么"、钩子超时可填（0 = 不限）、配置里取值不可用会点名；插件卡新增**受限原因**（关掉开关后用到它的插件说明哪一步会被忽略） |
 | M3-3 | 由 `configSchema` 生成配置表单（string/number/boolean/secret）；**secret 不回显**（只显示"已设置/未设置"，留空表示不改），写入 `~/.a-da/secrets/<pluginId>_<key>` |
-| M3-4 | 子智能体 `gate` + `beforeSubagentStart`/`afterSubagentEnd`；三条入口共用 `subagents/access.ts` 一份**工具解析**；**门禁只覆盖 start 与 runner 两条入口，`resumeSubagentThread` 未过门禁**（复核发现，见下） |
+| M3-4 | 子智能体 `gate` + `beforeSubagentStart`/`afterSubagentEnd`；三条入口共用 `subagents/access.ts` 一份**工具解析**；门禁覆盖 start / resume / runner 三条**开跑**入口——曾经漏掉 `resumeSubagentThread`，已于 2026-09-30 补上（见文末「后补：resume 过门禁」） |
 | M3-5 | `beforeApproval`/`afterApproval`：允许即免弹卡、拒绝理由回给模型、`afterApproval` 拿到决策与耗时 |
 | M3-6 | `beforeCompaction`/`afterCompaction`：可追加必须保留的消息（永远生效）、可替换选择方案（受开关约束）；判定应用是 `compact/verdict.ts` 的纯函数 |
 | M3-7 | `Thread.pluginData`（随会话持久化、核心永不读取）+ `beforeThreadCreate`/`afterThreadCreate`、`beforeThreadDelete`/`afterThreadDelete`、`onThreadSwitch`（纯通知，刻意不成对） |
@@ -458,7 +458,7 @@ M2 验收清单逐条）、`plugins/hook-runtime.test.ts`（19，开关/顺序/�
 **核实为假的两处**（`AGENTS.md` 与 `unfinished-features.md` 应据此更正）
 
 1. **`allowBuiltinShadow` 是一个"幽灵开关"——声明了、有默认值、三处配置解析、UI 还
-   写明关掉后的效果，但没有任何代码读它。**
+   写明关掉后的效果，但没有任何代码读它。** ✅ **已修（见本文件末「后补：开关落地 + 分类修正」）**
    - 声明与默认值：`src/agent/config.ts:91,103,114`
    - UI 描述：`src/agent/plugins/capabilities-view.ts:51-54`，明确承诺
      「重名时保留内置工具，插件的同名工具不注册，并在插件卡上标为冲突」
@@ -471,11 +471,11 @@ M2 验收清单逐条）、`plugins/hook-runtime.test.ts`（19，开关/顺序/�
    （`store.ts:2155`、`:2646`、`runner.ts:56`），但 `runSubagentGate`/`gateSubagent`
    只在 `store.ts:2068`（start）与 `runner.ts:59` 被调用；**`resumeSubagentThread`
    从不跑门禁**。因此恢复一条已存在的子智能体会话时 `beforeSubagentStart` 不触发。
-   - 需要更正的三处自述：`subagents/access.ts:9`（"三条入口都要走同一份实现"）、
-     本文件 M3-4 行的"三条入口共用…门禁"、以及 commit `383a996` 的信息。
-   - **需要拍板**：这是 bug 还是有意为之？从设计 §6.3 看，门禁的语义是"防止不该跑的子
-     智能体跑起来"；恢复续跑同样会产生新的一轮执行与开销，所以**按设计应当也过门禁**。
-     但 resume 时 `criteria` 的判定材料（原始 task）已被首轮消耗，需要先定判定输入。
+   ✅ **已修（2026-09-30，见文末「后补：resume 过门禁」）**：`resume` 现在过门禁，
+   判定输入定为「原始任务 + 本次恢复指示」；`access.ts` 的自述已按现状改写。
+   - **同时发现了另外两条未过门禁的"续跑"入口**（`steerSubagentThread` 的重新排队，
+     与用户在子智能体标签页里直接输入），后者连 profile 白名单都不生效——见文末「新发现、
+     本次未修」，需要单独拍板。
 
 **需要更正的一处设计文档不一致**
 
@@ -493,13 +493,13 @@ M1 的 `scripts/extension-check.ts`：本计划声称加了"诊断无 error"断�
 
 #### 复核后的待办（按建议优先级）
 
-| # | 事项 | 性质 |
-|---|---|---|
-| 1 | **实现或移除 `allowBuiltinShadow`** —— 现状是 UI 承诺与行为相反 | 用户可见缺陷 |
-| 2 | **拍板 `resumeSubagentThread` 是否过门禁**，然后统一三处自述 | 设计缺口 |
-| 3 | 同步设计文档 §6.2（`replaceText`/`appendNote` 的实现取舍） | 文档一致性 |
-| 4 | 真正跑一次 `scripts/extension-check.ts` | 未验证 |
-| 5 | 更新两次门禁的实测数字（480 / 627） | 文档一致性 |
+| # | 事项 | 性质 | 状态 |
+|---|---|---|---|
+| 1 | **实现或移除 `allowBuiltinShadow`** —— 现状是 UI 承诺与行为相反 | 用户可见缺陷 | ✅ 已实现（下方「后补」） |
+| 2 | **`resumeSubagentThread` 过门禁**（原"待拍板"：判定输入已定为「原始任务 + 本次恢复指示」） | 设计缺口 | ✅ 已实现；**另发现两条续跑入口仍未过**（见下） |
+| 3 | 同步设计文档 §6.2（`replaceText`/`appendNote` 的实现取舍） | 文档一致性 | ✅ 已在设计文档 §6.2 加注 |
+| 4 | 真正跑一次 `scripts/extension-check.ts` | 未验证 | ⏳ |
+| 5 | 更新两次门禁的实测数字（480 / 627） | 文档一致性 | ⏳（插件系统相关实测见文末各节） |
 
 ---
 
@@ -552,6 +552,97 @@ M1 的 `scripts/extension-check.ts`：本计划声称加了"诊断无 error"断�
 
 **门禁（实测）**：typecheck exit 0；`bun test src/agent` **507 pass / 0 fail**；
 全量 `bun test` **654 pass / 0 fail**。
+
+---
+
+#### 后补：开关落地 + 分类修正 + 审批插件配置形态（2026-09-30）
+
+**背景**：一次面向"插件系统设计"的整体复核（读代码而非采信文档）发现三处**用户可见**的
+缺陷，本次一并修掉。前两处是同一个根因：**"开放"这条腿的判定链建立在一个可被借走的名字表上**。
+
+**① `allowBuiltinShadow` 落地（原"幽灵开关"）**
+
+- **判定位置**：`tools/loader.ts` 的 `finalizePlugins`。放这里而不是注册处，是因为
+  **界面走 `scanPlugins`，它只算状态、不注册**——结论必须在两处共享的这一步产生，
+  否则会出现"注册层挡下了、界面看不出"，正好是复核报告里说的静默失效。
+- **结论载体**：`LoadedPlugin.blockedTools`（新字段）。被挡下的工具仍留在
+  `contributions.tools` 里可见（不能凭空消失），同时状态标为 `conflict` 并写一条
+  warn 诊断说明"哪个工具、因为哪个开关"。注册层 `applyPlugins` 照着 `blockedTools` 跳过。
+- **守门测试**：`plugins/loader.test.ts` 的「能力开关：allowBuiltinShadow」两条——
+  开着＝覆盖 + 标冲突 + **失去只读身份**；关掉＝不注册 + 保留内置 + 原因可见 +
+  同插件的其它工具照常注册。
+
+**② `isWriteTool` 的分类改为"名字 + 来源"**
+
+- **缺陷**：`READ_ONLY` 是名字级名单，而插件可借走内置名字（①的默认行为）。一个叫
+  `read_file` 的插件工具因此继承只读身份：plan 模式放行（`store.ts` 的 mode 过滤）、
+  readonly 审批档不问（`store.gate`）、只读子智能体拿得到（`subagents/access.ts`）。
+  这恰好击穿了设计文档 §6.4.3 用来论证"工具集不可扩张"的那条理由——**工具集是审批闸门的依据**。
+- **修法**：`isWriteTool` 先查名单，再查**是谁注册的**——非内置插件（含来源缺失）顶着只读
+  名字注册的工具一律按写处理；scope 为 `builtin` 的官方只读工具（`git_status`/`get_outline` 等）
+  不受影响。取向与原有的一致：**失败安全**。
+- **守门测试**：`tools/registry.test.ts` 的「写工具的判定要看来源」四条。
+- **文档**：`docs/agent-conventions.md` §2 与 `AGENTS.md` §2 已同步（原文写的是
+  `!READ_ONLY.has(name)`，已不成立）。
+
+**③ `approval-guard` 的配置形态与界面写路径对齐**
+
+- **缺陷**：`configSchema` 声明 `type: 'string'`、描述写"逗号分隔"，而读取侧
+  `asStringArray` 只认数组、非数组回落默认；插件配置表单对字符串字段**原样写入**。
+  于是"在插件卡里填免问白名单"会被静默忽略、照旧每次都问。原测试全部直接写数组
+  （`configure({ autoApprove: ['read_file'] })`），所以单测全绿。
+- **修法**：`asStringArray` 同时接受数组与字符串（中英文逗号、换行都可作分隔）；
+  **空串按未配置处理**（表单保存时未填的字段就是空串，不能因此把内置高危清单清空）；
+  类型完全不对（数字/对象）时仍回落默认。
+- **守门测试**：`approval-guard.test.ts` 的「配置形态与容错」五条，其中关键的一条就按
+  **真实写入路径**（存字符串）来配置——这正是本项目总结过的"只有端到端写路径测试能发现"。
+
+**门禁（实测）**：`bun run typecheck` exit 0；`bun test src/agent` **568 pass / 0 fail**
+（改动前 559，新增 9 条）。
+
+---
+
+#### 后补：resume 过门禁 + 扩展重载真的重读文件（2026-09-30 第二批）
+
+**① `resumeSubagentThread` 补上门禁**（原复核待办 2 的"待拍板"部分）
+
+- **决策**：按设计文档 §6.3 的语义（"防止不该跑的子智能体跑起来"），恢复同样会产生
+  新的一轮执行与开销，所以**要过**。
+- **判定输入**：`store.resumeGateTask()` 给「原始任务 + 本次恢复指示」。首轮的委派任务
+  早已被消耗，而恢复指示通常只有一句"网络恢复了，继续"——只给后者，判定方无从判断。
+  原始任务取自会话里第一条 user 消息，截断到 4000 字。
+- **位置**：在**写任何东西之前**（比 `resume` 里原本的"追加恢复指示消息"更早）。被拦下时
+  会话原样不动：不多出消息、不进 `runningThreadIds`、不加新会话，调用方拿到的是那句错误
+  （`resume_subagent` 工具把它作为失败回给模型）。
+- **一致性**：门禁返回的 `tools` 也照 start 路径收窄、`gate` 结论同样透传给
+  `afterSubagentEnd`；两处 `finishSubagent`（离线兜底与 `finally`）都带上。
+- **守门测试**：`subagents/gate-delegation.test.ts` 的「门禁：恢复执行同样要过」——
+  断言拦下后**会话三个维度都没变**、判定输入里同时有原始任务与恢复指示。
+
+**② 扩展重载不再拿到旧代码**（实现 ① 的测试时当场发现）
+
+- **缺陷**：改写 `.ada/extensions/foo.ts` 后再 `autoLoadExtensions`（插件管理页的"刷新
+  插件列表"），跑的还是**旧版本**。原因是 jiti 按路径缓存模块；Bun 下 jiti 走 `tryNative`
+  路径（`require`），而它清缓存用的是传入的 specifier、与真实缓存键并不总是同一个字符串，
+  所以 `moduleCache: false` 在这个路径上并不够。**测试实测：同一文件改写后重载，模块没有
+  被重新求值。**
+- **修法**：入口模块改为 `importPluginModule()`——自己 `readFileSync` 源码再
+  `jitiInstance.evalModule(source, { filename })`。插件重载的语义就是"重新读一遍文件"，
+  把这件事握在自己手里，不再取决于第三方库的默认值。`moduleCache: false` 保留，管**嵌套
+  依赖**（插件自己 import 的 helper 改了也能生效）；转译结果仍走 fsCache（按内容失效）。
+- **守门测试**：上面那条测试里 `expect(__gate_module_evals).toBe(1)`——重载后模块求值
+  计数必须 +1（修之前是 0）。
+
+**新发现、本次未修**（两条"续跑"入口，`docs/agent-conventions.md` 与 `access.ts` 已写明）：
+
+1. `store.steerSubagentThread` 对**已停止**的子智能体是"重新排队 + `drain`"，
+   不经过 `resumeSubagentThread`，因此不过门禁；
+2. 用户在**子智能体标签页里直接输入**，走 `store.send → drain → turn`——不仅不过门禁，
+   `turn` 用的还是**主会话工具表**与 `kind: 'main'` 钩子，也就是这条路上 profile 的
+   白名单（含只读限制）完全不生效。两条要一起修，别只补门禁。
+
+**门禁（实测）**：`bun run typecheck` exit 0；`bun test src/agent` **569 pass / 0 fail**；
+全量 `bun test` 见提交时的记录。
 
 ---
 

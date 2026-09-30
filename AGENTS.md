@@ -41,7 +41,7 @@ bun run build       # 产出单文件 dist/a-da.exe（依赖同级 ../gpuix 已 
 | § | 一句话警告 |
 |---|---|
 | 1 | 子智能体 `allowedTools` 是写死白名单、与插件表**脱钩**：新工具不同步就白装 |
-| 2 | `isWriteTool` **失败安全**：只读工具漏进 `READ_ONLY` 就被当写工具，plan/只读子体拿不到 |
+| 2 | `isWriteTool` **失败安全**：只读工具漏进 `READ_ONLY` 就被当写工具，plan/只读子体拿不到；非内置插件借走只读内置名也一律算写 |
 | 3 | 子智能体只拿到 `profile.systemPrompt`，**没有** AGENTS.md 与主线程系统提示词 |
 | 4 | 新写工具须进 `CHECKPOINT_TOOLS` 与 `checkpointPathsOf`（批量要逐文件进快照） |
 | 5 | 工具结果的 `terminate: true` 结束的是**整轮**，不是"这批" |
