@@ -15,6 +15,7 @@ import React from 'react'
 import { render } from '@gpuix/react'
 import { AgentWindow } from './src/AgentWindow'
 import { store } from './src/agent/store'
+import { agentClient } from './src/ui/client'
 import { getAppHome } from './src/agent/home'
 import { activateAndShowWindow, isUserInitiatedExit } from './src/platform/win32'
 import { handleGlobalShortcut } from './src/ui/shortcuts'
@@ -61,7 +62,7 @@ try {
     // 窗口级键盘：全局快捷键（Ctrl+K 命令面板等）。聚焦元素没消费的组合键
     // 会在冒泡相落到这里。
     onKeyDown: (event: unknown) => {
-      handleGlobalShortcut(event as Parameters<typeof handleGlobalShortcut>[0], store)
+      handleGlobalShortcut(event as Parameters<typeof handleGlobalShortcut>[0], agentClient)
     },
   })
   log('render() 初始化执行成功')
