@@ -7,7 +7,7 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react'
-import { useGpuix, type PublicInstance } from '@gpuix/react'
+import { useGpuix, useWindowSize, type PublicInstance } from '@gpuix/react'
 import { describeTool } from '../agent/tools'
 import { patchStats } from '../agent/patch'
 import type { AgentStore } from '../agent/store'
@@ -2100,11 +2100,14 @@ function ProcessGroupCard({
   store,
   isOpen,
   onToggle,
+  maxBodyHeight,
 }: {
   block: ProcessBlock
   store: AgentStore
   isOpen: boolean
   onToggle: () => void
+  /** 展开体的高度上限：超过就自己内部滚动，好让折叠条始终留在屏幕内 */
+  maxBodyHeight: number
 }) {
   const tools = block.items.filter((it): it is Extract<Item, { kind: 'tool' }> => it.kind === 'tool')
   const thinkings = block.items.filter((it): it is Extract<Item, { kind: 'thinking' }> => it.kind === 'thinking')
@@ -2356,7 +2359,9 @@ function ProcessGroupCard({
         )}
       </div>
 
-      {/* 展开内容 */}
+      {/* 展开内容。高度封顶 + 内部滚动：一个展开的长过程不该把折叠条顶出视口——
+          "超过界面"从结构上就不发生，收起入口（折叠条 / 右下角胶囊）永远在屏幕内。
+          上限随窗口高度走（见 Transcript 里的算法），不是写死的像素。 */}
       {isOpen ? (
         <div
           testId={`process-body-${block.id}`}
@@ -2366,9 +2371,12 @@ function ProcessGroupCard({
             width: '100%',
             marginTop: 4,
             paddingLeft: 8,
+            paddingRight: 4,
             borderLeftWidth: 2,
             borderColor: C.borderStrong,
             gap: 3,
+            maxHeight: maxBodyHeight,
+            overflowY: 'scroll',
           }}
         >
           {block.items.map((item) => (
@@ -2401,6 +2409,20 @@ export function Transcript({ store }: { store: AgentStore }) {
   const listRef = useRef<PublicInstance>(null)
   const [atBottom, setAtBottom] = useState(true)
   const [tailKey, setTailKey] = useState(0)
+  const windowSize = useWindowSize()
+
+  /**
+   * 展开的执行过程体高度上限。
+   *
+   * 取窗口高度的一半（夹在 240–560 之间）：一块展开体不该吃掉整个会话区，上方还要看得见
+   * 用户消息、下方要留出结论的位置；上下限是给"特别小的窗口"和"4K 竖屏"兜底的。
+   * 用窗口高度而不是写死像素，是因为这里唯一拿得到的真实信号就是它——GPUIX 没有布局
+   * 测量回调，会话区自身的可见高度测不到。
+   */
+  const processBodyMaxHeight = Math.min(
+    560,
+    Math.max(240, Math.round((windowSize?.height ?? 900) * 0.5))
+  )
   // 记录已完成状态下，用户主动展开的块（未记录的默认收起）
   const [userExpandedCompletedBlocks, setUserExpandedCompletedBlocks] = useState<Record<string, boolean>>({})
   // 记录运行中状态下，用户主动折叠的块（未记录的默认展开）
@@ -2539,6 +2561,7 @@ export function Transcript({ store }: { store: AgentStore }) {
                       block={block}
                       store={store}
                       isOpen={isOpen}
+                      maxBodyHeight={processBodyMaxHeight}
                       onToggle={() => toggleBlock(block, isOpen)}
                     />
                   )}

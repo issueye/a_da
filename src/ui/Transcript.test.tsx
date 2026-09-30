@@ -416,6 +416,77 @@ describeNative('Transcript UI 过程收缩交互', () => {
     await app.close()
   }, 90_000)
 
+  test('长过程的展开体有高度上限：超过就内部滚动，折叠条不会被顶出视口', async () => {
+    const thread = store.active
+    const manyTools: Item[] = []
+    // 30 行 ≫ 上限（本机窗口 1061 → 上限 531；每行约 26px），确保真的撞到封顶
+    for (let i = 0; i < 30; i++) {
+      manyTools.push({
+        kind: 'tool',
+        id: `t-long-${i}`,
+        at: 100 + i,
+        callId: `c-long-${i}`,
+        name: 'read_file',
+        args: { path: `src/file-${i}.ts` },
+        rawArgs: '',
+        status: 'done',
+        output: `export const value${i} = ${i}`,
+      })
+    }
+    thread.items = [
+      { kind: 'user', id: 'u-long', at: 1, text: '把这些文件都读一遍' },
+      ...manyTools,
+      { kind: 'assistant', id: 'a-long', at: 999, text: '读完了，共 30 个文件。' },
+    ]
+
+    const { render, renderer } = createTestRoot({ width: 800, height: 600 })
+    render(
+      <div style={{ display: 'flex', flexDirection: 'column', position: 'relative', width: 800, height: 600 }}>
+        <Transcript store={store} />
+      </div>,
+    )
+    const app = await connectTest(renderer)
+    const screen = () => renderer.getPaintedText().join('\n')
+    const painted = async (needle: string, timeoutMs = 10_000): Promise<void> => {
+      const started = Date.now()
+      while (Date.now() - started < timeoutMs) {
+        if (screen().includes(needle)) return
+        renderer.flush?.()
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      throw new Error(`never painted ${needle}\n${screen()}`)
+    }
+
+    await painted('执行过程')
+
+    const blockId = buildTranscriptBlocks(thread.items, false).find((b) => b.kind === 'process')!.id
+    await app.getByTestId(`process-head-${blockId}`).click()
+    await painted('收起执行过程')
+
+    // 上限按**同一个信号**算：组件用 useWindowSize()（= renderer.getWindowSize()），
+    // 测试窗口尺寸与它无关（测试渲染器报的是真实窗口），所以这里不能用 600 去推。
+    const windowHeight = renderer.getWindowSize().height
+    const cap = Math.min(560, Math.max(240, Math.round(windowHeight * 0.5)))
+
+    const bodyNode = await app.getByTestId(`process-body-${blockId}`).element()
+    const body = await app.getByTestId(`process-body-${blockId}`).bounds()
+
+    // 高度被夹在上限附近（30 行自然高度 ≈ 870，没有封顶就会拿到那个数）
+    expect(body.height).toBeLessThanOrEqual(cap + 2)
+    expect(body.height).toBeGreaterThan(cap - 20)
+
+    // 而且它**真的是一个滚动容器**：非滚动元素这里返回 null（同一次探针里量过）
+    expect(renderer.getScrollOffset?.(bodyNode.id) ?? null).not.toBeNull()
+
+    // 封顶带来的可达性：整块（折叠条 + 展开体）不超过"上限 + 折叠条"，所以收起入口
+    // 最多在一屏之内——不会被一个几千像素的过程推到够不着的地方。注意**不能**断言折叠条
+    // 一定在视口里：列表贴底时它本来就可能被滚到上方，那正是右下角胶囊存在的理由。
+    const head = await app.getByTestId(`process-head-${blockId}`).bounds()
+    expect(head.height + body.height).toBeLessThanOrEqual(cap + 36)
+
+    await app.close()
+  }, 60_000)
+
   test('纯思考问答场景：思考收纳在执行过程块中，折叠条显示时长，点击展开查看详情', async () => {
     const thread = store.active
     thread.items = [
