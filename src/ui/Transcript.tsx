@@ -2101,6 +2101,8 @@ function ProcessGroupCard({
   isOpen,
   onToggle,
   maxBodyHeight,
+  showAll,
+  onToggleShowAll,
 }: {
   block: ProcessBlock
   store: AgentStore
@@ -2108,7 +2110,47 @@ function ProcessGroupCard({
   onToggle: () => void
   /** 展开体的高度上限：超过就自己内部滚动，好让折叠条始终留在屏幕内 */
   maxBodyHeight: number
+  /** 用户点了"显示全部"：这一块不再封顶 */
+  showAll: boolean
+  onToggleShowAll: () => void
 }) {
+  const { renderer } = useGpuix()
+  const bodyRef = useRef<PublicInstance>(null)
+  /**
+   * 展开体是不是**真的**被上限截住了。
+   *
+   * 为什么要量：GPUix 对普通 `overflow: scroll` 容器只挂一个 ScrollHandle（滚轮能滚），
+   * **不画持久滚动条**——光靠封顶会让内容"看不出来还有"。所以画完一帧后量一次高度，
+   * 贴着上限就认定被截住，并在块尾给一条**始终可见**的"显示全部"。
+   *
+   * 量不到就保持上一次结论（元素被虚拟列表回收、没画到，bounds 为 null）。300ms 的轮询
+   * 只在"有块展开"期间跑，且读数不变时不触发重渲染——流式增长与滚回视口都能跟上。
+   */
+  const [clipped, setClipped] = useState(false)
+  useEffect(() => {
+    if (!isOpen || showAll) {
+      setClipped(false)
+      return
+    }
+    let cancelled = false
+    const measure = () => {
+      if (cancelled) return
+      const node = bodyRef.current
+      const api = renderer as { getElementBounds?: (id: number) => { height: number } | null } | null
+      if (!node || typeof api?.getElementBounds !== 'function') return
+      const bounds = api.getElementBounds(node.id)
+      if (!bounds) return
+      setClipped(bounds.height >= maxBodyHeight - 1)
+    }
+    const first = setTimeout(measure, 0)
+    const interval = setInterval(measure, 300)
+    return () => {
+      cancelled = true
+      clearTimeout(first)
+      clearInterval(interval)
+    }
+  }, [isOpen, showAll, maxBodyHeight, renderer])
+
   const tools = block.items.filter((it): it is Extract<Item, { kind: 'tool' }> => it.kind === 'tool')
   const thinkings = block.items.filter((it): it is Extract<Item, { kind: 'thinking' }> => it.kind === 'thinking')
 
@@ -2364,6 +2406,7 @@ function ProcessGroupCard({
           上限随窗口高度走（见 Transcript 里的算法），不是写死的像素。 */}
       {isOpen ? (
         <div
+          ref={bodyRef}
           testId={`process-body-${block.id}`}
           style={{
             display: 'flex',
@@ -2375,8 +2418,8 @@ function ProcessGroupCard({
             borderLeftWidth: 2,
             borderColor: C.borderStrong,
             gap: 3,
-            maxHeight: maxBodyHeight,
-            overflowY: 'scroll',
+            // 封顶 + 内部滚动（滚轮可滚）。"显示全部"时放开——那是用户的明确选择
+            ...(showAll ? {} : { maxHeight: maxBodyHeight, overflowY: 'scroll' as const }),
           }}
         >
           {block.items.map((item) => (
@@ -2392,6 +2435,35 @@ function ProcessGroupCard({
               <ItemRow item={item} store={store} />
             </div>
           ))}
+        </div>
+      ) : null}
+
+      {/* 被上限截住时必须**看得出来**：GPUix 不给普通滚动容器画持久滚动条，所以块尾给一条
+          始终可见的入口。（量到没被截住就不渲染，短过程不会多一行。） */}
+      {isOpen && clipped && !showAll ? (
+        <div
+          testId={`process-more-${block.id}`}
+          role="button"
+          aria-label="显示全部步骤"
+          onClick={onToggleShowAll}
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 5,
+            height: 26,
+            marginTop: 3,
+            borderRadius: 6,
+            cursor: 'pointer',
+            backgroundColor: C.overlay,
+            hover: { backgroundColor: C.chip },
+          }}
+        >
+          <Icon name="chevronDown" size={11} color={C.tertiary} />
+          <text style={{ fontSize: 11, lineHeight: 15, color: C.tertiary }}>
+            {`还有内容被折叠（共 ${block.items.length} 步）· 显示全部`}
+          </text>
         </div>
       ) : null}
     </div>
@@ -2427,14 +2499,26 @@ export function Transcript({ store }: { store: AgentStore }) {
   const [userExpandedCompletedBlocks, setUserExpandedCompletedBlocks] = useState<Record<string, boolean>>({})
   // 记录运行中状态下，用户主动折叠的块（未记录的默认展开）
   const [userCollapsedRunningBlocks, setUserCollapsedRunningBlocks] = useState<Record<string, boolean>>({})
+  // 记录用户点了"显示全部"的块：这些块不再受高度上限约束（折叠后自动失效）
+  const [userShowAllBlocks, setUserShowAllBlocks] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     setAtBottom(true)
     setUserExpandedCompletedBlocks({})
     setUserCollapsedRunningBlocks({})
+    setUserShowAllBlocks({})
   }, [store.activeId])
 
   const toggleBlock = (block: ProcessBlock, currentOpen: boolean) => {
+    // 收起时把"显示全部"一并复位：它是一次阅读选择，不该跨收起/展开记住
+    if (currentOpen) {
+      setUserShowAllBlocks((prev) => {
+        if (!prev[block.id]) return prev
+        const next = { ...prev }
+        delete next[block.id]
+        return next
+      })
+    }
     if (block.isCompleted) {
       setUserExpandedCompletedBlocks((prev) => ({
         ...prev,
@@ -2446,6 +2530,10 @@ export function Transcript({ store }: { store: AgentStore }) {
         [block.id]: currentOpen,
       }))
     }
+  }
+
+  const toggleShowAll = (blockId: string) => {
+    setUserShowAllBlocks((prev) => ({ ...prev, [blockId]: !prev[blockId] }))
   }
 
   /**
@@ -2562,6 +2650,8 @@ export function Transcript({ store }: { store: AgentStore }) {
                       store={store}
                       isOpen={isOpen}
                       maxBodyHeight={processBodyMaxHeight}
+                      showAll={Boolean(userShowAllBlocks[block.id])}
+                      onToggleShowAll={() => toggleShowAll(block.id)}
                       onToggle={() => toggleBlock(block, isOpen)}
                     />
                   )}

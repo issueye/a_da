@@ -484,6 +484,33 @@ describeNative('Transcript UI 过程收缩交互', () => {
     const head = await app.getByTestId(`process-head-${blockId}`).bounds()
     expect(head.height + body.height).toBeLessThanOrEqual(cap + 36)
 
+    // 被截住必须**看得出来**：GPUix 不给普通滚动容器画持久滚动条，所以块尾要有一条
+    // "显示全部"。结论来自"画完一帧后量高度"，因此这里等它落下来。
+    const waitCount = async (testId: string, want: number, timeoutMs = 5000) => {
+      const started = Date.now()
+      while (Date.now() - started < timeoutMs) {
+        if ((await app.getByTestId(testId).count()) === want) return
+        renderer.flush?.()
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      throw new Error(`never reached count ${want} for ${testId}`)
+    }
+    const moreId = `process-more-${blockId}`
+    await waitCount(moreId, 1)
+
+    // 点"显示全部"→ 放开上限，内容按自然高度铺开，那条提示随之消失
+    await app.getByTestId(moreId).click()
+    let uncapped = 0
+    const startedAt = Date.now()
+    while (Date.now() - startedAt < 5000) {
+      uncapped = (await app.getByTestId(`process-body-${blockId}`).bounds()).height
+      if (uncapped > cap + 20) break
+      renderer.flush?.()
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    expect(uncapped).toBeGreaterThan(cap + 20)
+    await waitCount(moreId, 0)
+
     await app.close()
   }, 60_000)
 
