@@ -256,6 +256,21 @@ describeNative('Transcript UI 过程收缩交互', () => {
     expect(await app.getByTestId('thinking-head-th-done-1').count()).toBe(1)
     expect(await app.getByTestId('tool-head-tool-done-1').count()).toBe(1)
 
+    // 展开态下右下角有常驻的「收起执行过程」入口：长过程滚到中段也够得着，
+    // 不必再滚回顶部的折叠条（收起入口只在有展开块时出现）
+    await painted('收起执行过程')
+    expect(await app.getByTestId('collapse-process').count()).toBe(1)
+
+    // 点它直接收起：块收起来的同时这个入口自己也消失
+    await app.getByTestId('collapse-process').click()
+    await gone('收起执行过程')
+    expect(await app.getByTestId('collapse-process').count()).toBe(0)
+    expect(await app.getByTestId('process-body-process-th-done-1').count()).toBe(0)
+
+    // 重新展开，继续验折叠条自身的收起（两条路径都要能用）
+    await app.getByTestId('process-head-process-th-done-1').click()
+    await painted('收起')
+
     // 再次点击折叠条，收起过程卡片
     await app.getByTestId('process-head-process-th-done-1').click()
     await gone('收起')

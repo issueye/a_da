@@ -2426,6 +2426,38 @@ export function Transcript({ store }: { store: AgentStore }) {
     }
   }
 
+  /**
+   * 某个过程块当前是否展开。默认态：**运行中展开、已完成收起**，两张用户覆盖表
+   * 分别记录"主动展开已完成的"与"主动收起运行中的"。
+   */
+  const isProcessOpen = (block: TranscriptBlock): boolean =>
+    block.kind === 'process' &&
+    (block.isCompleted
+      ? Boolean(userExpandedCompletedBlocks[block.id])
+      : !userCollapsedRunningBlocks[block.id])
+
+  // 展开着的过程块：右下角据此给出"收起"入口。
+  //
+  // 为什么是"只要展开就给"而不是"超过一屏才给"：长过程展开后，折叠条会被顶出视口，
+  // 用户滚到中段就够不着它了——这才是要解决的问题。而"是否超过一屏"在本层**测不到**：
+  // GPUIX 没有布局/测量回调，虚拟列表也只报可见项下标（整块是**一个**列表项，项内部
+  // 头有没有被滚出视口无法从中推出）。与其用一个猜的像素阈值做门（那正是本项目反对的
+  // "看起来装上了、其实没生效"），不如让入口只在这段时间存在——没有展开的过程块时这个
+  // 胶囊根本不渲染。
+  const openProcessIds = blocks.filter(isProcessOpen).map((block) => block.id)
+
+  /** 收起所有展开的过程块（运行中的那类要显式写进"已收起"表）。 */
+  const collapseExpandedProcess = () => {
+    setUserExpandedCompletedBlocks({})
+    setUserCollapsedRunningBlocks((prev) => {
+      const next = { ...prev }
+      for (const block of blocks) {
+        if (block.kind === 'process' && !block.isCompleted) next[block.id] = true
+      }
+      return next
+    })
+  }
+
   const scrollToBottom = () => {
     if (blocks.length > 0) {
       if (listRef.current && renderer?.scrollToItem) {
@@ -2473,12 +2505,7 @@ export function Transcript({ store }: { store: AgentStore }) {
           {blocks.map((block) => {
             const paddingBottom =
               block.kind === 'user' ? 18 : block.kind === 'assistant' ? 18 : block.kind === 'thinking' ? 6 : 12
-            const isOpen =
-              block.kind === 'process'
-                ? block.isCompleted
-                  ? Boolean(userExpandedCompletedBlocks[block.id])
-                  : !userCollapsedRunningBlocks[block.id]
-                : false
+            const isOpen = isProcessOpen(block)
 
             return (
               <div
@@ -2528,44 +2555,98 @@ export function Transcript({ store }: { store: AgentStore }) {
       {/* 改动审阅面板：逐文件查看 diff、恢复原状（含一键全部恢复） */}
       {store.changesOpen ? <ChangesPanel store={store} /> : null}
 
-      {!atBottom && blocks.length > 0 ? (
+      {/*
+        右下角浮动操作区：两个入口共用一列，避免互相压住。
+        - 「收起执行过程」：展开的过程块（尤其长过程）随时可收，不必滚回折叠条；
+        - 「回到底部」：不在底部时回到最新消息。
+      */}
+      {openProcessIds.length > 0 || (!atBottom && blocks.length > 0) ? (
         <div
-          testId="scroll-to-bottom"
-          role="button"
-          aria-label="回到底部"
-          onClick={scrollToBottom}
           style={{
             position: 'absolute',
             bottom: 12,
             right: 28,
             display: 'flex',
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 5,
-            height: 28,
-            paddingLeft: 9,
-            paddingRight: 11,
-            borderRadius: 14,
-            cursor: 'pointer',
-            backgroundColor: C.raised,
-            borderWidth: 1,
-            borderColor: C.borderStrong,
-            boxShadow: {
-              offsetX: 0,
-              offsetY: 4,
-              blurRadius: 12,
-              spreadRadius: 0,
-              color: C.shadow,
-            },
-            hover: {
-              backgroundColor: C.chip,
-            },
+            flexDirection: 'column',
+            alignItems: 'flex-end',
+            gap: 8,
           }}
         >
-          <Icon name="arrowDown" size={12} color={C.secondary} />
-          <text style={{ fontSize: 11.5, lineHeight: 15, fontWeight: 500, color: C.secondary }}>
-            回到底部
-          </text>
+          {openProcessIds.length > 0 ? (
+            <div
+              testId="collapse-process"
+              role="button"
+              aria-label="收起执行过程"
+              onClick={collapseExpandedProcess}
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 5,
+                height: 28,
+                paddingLeft: 9,
+                paddingRight: 11,
+                borderRadius: 14,
+                cursor: 'pointer',
+                backgroundColor: C.raised,
+                borderWidth: 1,
+                borderColor: C.borderStrong,
+                boxShadow: {
+                  offsetX: 0,
+                  offsetY: 4,
+                  blurRadius: 12,
+                  spreadRadius: 0,
+                  color: C.shadow,
+                },
+                hover: {
+                  backgroundColor: C.chip,
+                },
+              }}
+            >
+              <Icon name="chevronUp" size={12} color={C.secondary} />
+              <text style={{ fontSize: 11.5, lineHeight: 15, fontWeight: 500, color: C.secondary }}>
+                {openProcessIds.length > 1 ? `收起执行过程 ×${openProcessIds.length}` : '收起执行过程'}
+              </text>
+            </div>
+          ) : null}
+
+          {!atBottom && blocks.length > 0 ? (
+            <div
+              testId="scroll-to-bottom"
+              role="button"
+              aria-label="回到底部"
+              onClick={scrollToBottom}
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 5,
+                height: 28,
+                paddingLeft: 9,
+                paddingRight: 11,
+                borderRadius: 14,
+                cursor: 'pointer',
+                backgroundColor: C.raised,
+                borderWidth: 1,
+                borderColor: C.borderStrong,
+                boxShadow: {
+                  offsetX: 0,
+                  offsetY: 4,
+                  blurRadius: 12,
+                  spreadRadius: 0,
+                  color: C.shadow,
+                },
+                hover: {
+                  backgroundColor: C.chip,
+                },
+              }}
+            >
+              <Icon name="arrowDown" size={12} color={C.secondary} />
+              <text style={{ fontSize: 11.5, lineHeight: 15, fontWeight: 500, color: C.secondary }}>
+                回到底部
+              </text>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>
