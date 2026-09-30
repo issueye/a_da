@@ -7,7 +7,7 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react'
-import { Select, SelectContent, SelectItem, SelectTrigger, useGpuix } from '@gpuix/react'
+import { Select, SelectContent, SelectItem, SelectTrigger } from '@gpuix/react'
 import { APPROVAL_OPTIONS, EFFORT_OPTIONS, type ApprovalMode, type Effort } from './client'
 import type { AgentClient } from './client'
 import { ChipButton, ChipSelect, Icon, menuLayer, MenuRow, MenuSurface, menuItemStyle } from './controls'
@@ -18,6 +18,8 @@ import { computeThreadStats, type AgentMode, type Item, type Thread } from '../a
 import { computeContextBreakdown, type ContextUsageSummary } from '../agent/stats'
 import { ContextUsagePopover } from './ContextUsagePopover'
 import { SlashCommandMenu, type SlashCommandItem } from './SlashCommandMenu'
+import { imagePickerRequest } from './picker-requests'
+import { FilePicker } from './FilePicker'
 import { QuestionCard } from './QuestionCard'
 import type { IconName } from '../icons'
 
@@ -1018,7 +1020,6 @@ export function pickImagePaths(paths: unknown): string[] {
 }
 
 export function Composer({ client, centered }: { client: AgentClient; centered?: boolean }) {
-  const { renderer } = useGpuix()
   const [, setTick] = useState(0)
   useEffect(() => client.subscribe(() => setTick((t) => t + 1)), [client])
   const [draft, setDraft] = useState('')
@@ -1028,25 +1029,16 @@ export function Composer({ client, centered }: { client: AgentClient; centered?:
   const [slashFilter, setSlashFilter] = useState('')
   const [selectedCommand, setSelectedCommand] = useState<SlashCommandItem | null>(null)
 
-  const pickImagesFromDisk = async () => {
-    try {
-      const paths = await (renderer as any)?.promptForPaths?.({
-        files: true,
-        multiple: true,
-        prompt: '选择图片',
-      })
-      if (paths && paths.length > 0) {
-        setImages((prev) => {
-          const next = [...prev]
-          for (const p of paths) {
-            if (!next.includes(p)) next.push(p)
-          }
-          return next
-        })
+  /** 把选中的路径并进附件（去重）。 */
+  const addImagePaths = (paths: readonly string[]) => {
+    if (paths.length === 0) return
+    setImages((prev) => {
+      const next = [...prev]
+      for (const p of paths) {
+        if (!next.includes(p)) next.push(p)
       }
-    } catch (err) {
-      console.error('Failed to prompt for paths:', err)
-    }
+      return next
+    })
   }
 
   // Ctrl+V 粘贴图片期间防重入：PowerShell 读剪贴板要几百毫秒
@@ -1712,7 +1704,8 @@ export function Composer({ client, centered }: { client: AgentClient; centered?:
               value=""
               onValueChange={(val) => {
                 if (val === '__pick_from_disk__') {
-                  void pickImagesFromDisk()
+                  // 应用内的选择器，由 AgentWindow 在窗口层渲染；请求构造见 picker-requests.ts
+                  client.ui.pickFiles(imagePickerRequest(client, IMAGE_EXTENSIONS, addImagePaths))
                   return
                 }
                 if (val && val !== '__none' && !images.includes(val)) {
@@ -1741,10 +1734,10 @@ export function Composer({ client, centered }: { client: AgentClient; centered?:
                 </SelectTrigger>
                 <SelectContent side="top" sideOffset={6} style={{ ...menuLayer(), minWidth: 260 }}>
                   <MenuSurface maxHeight={320}>
-                    <SelectItem value="__pick_from_disk__" style={menuItemStyle}>
+                    <SelectItem testId="composer-attach-from-disk" value="__pick_from_disk__" style={menuItemStyle}>
                       <MenuRow
-                        label="从本地选择图片..."
-                        description="打开系统文件选择器"
+                        label="从本机选择图片..."
+                        description="用应用内的文件选择器（走主机文件服务）"
                         selected={false}
                       />
                     </SelectItem>

@@ -24,7 +24,7 @@
 
 import type { ClientSnapshot } from '../../shared/protocol'
 import { computeThreadStats } from '../../agent/types'
-import type { ClientConnectionState, ClientState, ConfirmOptions } from './types'
+import type { ClientConnectionState, ClientState, ConfirmOptions, FilePickerRequest } from './types'
 import {
   deriveIsPublic,
   deriveLabelFor,
@@ -60,12 +60,11 @@ export interface ViewStore {
   /** 客户端本地：弹确认框 / 关确认框（`confirmModal` 属客户端本地，见文件头）。 */
   showConfirm(options: ConfirmOptions): void
   closeConfirm(): void
-  /**
-   * 更新"与主机的连接状态"（传输层调；进程内不用调）。
-   *
-   * 它必须走这里而不是让组件各读各的：状态一变就要重渲染，而重渲染的触发点是本层的订阅。
-   */
+  /** 更新"与主机的连接状态"（传输层调；进程内不用调）。 */
   setConnection(next: ClientConnectionState): void
+  /** 打开/关闭应用内的文件选择器（客户端本地）。 */
+  pickFiles(request: FilePickerRequest): void
+  closeFilePicker(): void
   /** 已应用次数（每次重建 +1）；测试与诊断用。 */
   readonly publishes: number
 }
@@ -85,6 +84,9 @@ export function createViewStore(source: SnapshotSource, options: ViewStoreOption
   /** 与主机的连接状态（本地字段；进程内恒为 connected，WebSocket 会改它）。 */
   let connection: ClientConnectionState = { status: 'connected', attempts: 0 }
 
+  /** 当前的文件选择请求（本地字段；窗口级模态层，与确认框同一套做法）。 */
+  let filePicker: FilePickerRequest | null = null
+
   let snapshot: ClientSnapshot | null = null
   let state: ClientState | null = null
   let keys: unknown[] = []
@@ -97,8 +99,9 @@ export function createViewStore(source: SnapshotSource, options: ViewStoreOption
     const running = new Set(next.runningThreadIds)
     const waiting = new Set(next.waitingThreadIds)
     return {
-      // ── 连接状态（客户端本地）──
+      // ── 连接状态与文件选择请求（客户端本地）──
       connection,
+      filePicker,
 
       // ── 主机数据 ──
       threads: next.threads,
@@ -224,6 +227,16 @@ export function createViewStore(source: SnapshotSource, options: ViewStoreOption
     },
     setConnection(next) {
       connection = next
+      if (state) state = compose(snapshot ?? source.snapshot())
+      for (const listener of [...listeners]) listener()
+    },
+    pickFiles(request) {
+      filePicker = request
+      if (state) state = compose(snapshot ?? source.snapshot())
+      for (const listener of [...listeners]) listener()
+    },
+    closeFilePicker() {
+      filePicker = null
       if (state) state = compose(snapshot ?? source.snapshot())
       for (const listener of [...listeners]) listener()
     },

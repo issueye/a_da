@@ -6,18 +6,17 @@
  */
 
 import React from 'react'
-import { Select, SelectTrigger, SelectContent, SelectItem, useGpuix } from '@gpuix/react'
+import { Select, SelectTrigger, SelectContent, SelectItem } from '@gpuix/react'
 import { Icon, MenuSurface, menuItemStyle, MenuRow, menuLayer } from './controls'
 import type { AgentClient } from './client'
 import { C } from '../theme'
 import { PUBLIC_WORKSPACE_LABEL } from '../agent/home'
-import { pickDirectory } from '../platform/dialog'
+import { directoryPickerRequest } from './picker-requests'
 
 /** 「公共区」在下拉里的哨兵值：它是 a-da 提供的工作区，不在 projects 里。 */
 const PUBLIC_OPTION = '__public_workspace__'
 
 export function WorkspaceSelector({ client }: { client: AgentClient }) {
-  const { renderer } = useGpuix()
   const current = client.state.active.workspace
   const label = client.state.labelFor(current)
   // 公共区已作为专门的一项固定在顶部，就不再从 projects 里重复列一遍。
@@ -35,18 +34,10 @@ export function WorkspaceSelector({ client }: { client: AgentClient }) {
       return
     }
     if (selected === '__add_new__') {
-      void pickDirectory(current, renderer).then((result) => {
-        if (result.status === 'picked') {
-          void client.request('workspace.add', { path: result.path }).then(({ error }) => {
-            if (!error) {
-              void client.request('thread.setWorkspace', {
-                threadId: client.state.active.id,
-                workspace: result.path,
-              })
-            }
-          })
-        }
-      })
+      // 用应用自己的选择器（走主机 fs.*），不再开原生目录弹窗：
+      // 原生弹窗只有本机能用、测试里必须打桩、Web 前端更没有这个 API（协议 §12）。
+      // 请求的构造与确认后的动作在 `picker-requests.ts`（那里能被确定性测试覆盖）。
+      client.ui.pickFiles(directoryPickerRequest(client, current))
       return
     }
     void client.request('thread.setWorkspace', {
@@ -139,7 +130,7 @@ export function WorkspaceSelector({ client }: { client: AgentClient }) {
             >
               <MenuRow
                 label="+ 添加工作区..."
-                description="选择本地文件夹并绑定"
+                description="浏览本机文件夹并绑定"
                 selected={false}
               />
             </SelectItem>

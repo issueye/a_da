@@ -20,6 +20,7 @@ import { Sidebar } from './ui/Sidebar'
 import { EmptyConversationView } from './ui/EmptyConversationView'
 import { TabStrip } from './ui/TabStrip'
 import { ConnectionBanner } from './ui/ConnectionBanner'
+import { FilePicker } from './ui/FilePicker'
 import { TitleBar } from './ui/TitleBar'
 import { Transcript } from './ui/Transcript'
 import { C, FONT_SANS } from './theme'
@@ -71,6 +72,23 @@ export function AgentWindow({ client: injected }: { client?: AgentClient } = {})
       />
       {/* 与主机的连接断了就说出来（协议 §1.5）；进程内传输永远不会显示它 */}
       <ConnectionBanner client={client} />
+      {/* 文件/目录选择器是**窗口级**模态层（与确认框同一套做法）：
+          挂在下拉内部会在下拉关闭时被一起卸载 */}
+      {client.state.filePicker ? (
+        <FilePicker
+          client={client}
+          mode={client.state.filePicker.mode}
+          title={client.state.filePicker.title}
+          startPath={client.state.filePicker.startPath}
+          accept={client.state.filePicker.accept}
+          onPicked={(paths) => {
+            const request = client.state.filePicker
+            client.ui.closeFilePicker()
+            request?.onPicked(paths)
+          }}
+          onClose={() => client.ui.closeFilePicker()}
+        />
+      ) : null}
       <div style={{ display: 'flex', flexDirection: 'row', flexGrow: 1, minHeight: 0 }}>
         {client.state.sidebarOpen ? (
           <Sidebar

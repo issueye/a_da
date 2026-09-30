@@ -98,6 +98,9 @@ export function createInProcessClient(
       if (viewStore) viewStore.closeConfirm()
       else store.closeConfirm()
     },
+    // 文件选择器同样是客户端本地状态（回调不可能上线），只是它会去问主机的 fs.*
+    pickFiles: (request) => viewStore?.pickFiles(request),
+    closeFilePicker: () => viewStore?.closeFilePicker(),
   }
 
   const dispatch = createCommandDispatcher(store)

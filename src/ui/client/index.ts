@@ -9,7 +9,14 @@ import { store } from '../../agent/store'
 import type { AgentClient } from './types'
 import { createInProcessClient } from './in-process'
 
-export type { AgentClient, ClientState, ConfirmOptions, UiActions } from './types'
+export type {
+  AgentClient,
+  ClientConnectionState,
+  ClientState,
+  ConfirmOptions,
+  FilePickerRequest,
+  UiActions,
+} from './types'
 /**
  * 协议类型对 UI 的再导出：组件需要 `Thread`/`Item`/`FileChange` 这类形状时从这里拿，
  * 不必（也不许）去 import `agent/**` 的实现模块。
@@ -24,6 +31,9 @@ export type {
   DebugEntry,
   Effort,
   FileChange,
+  FsEntry,
+  FsListing,
+  FsRoot,
   Item,
   PluginCapabilities,
   PluginItem,

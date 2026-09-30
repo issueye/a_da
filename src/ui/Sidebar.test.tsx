@@ -1,9 +1,9 @@
 /**
- * 侧边栏：会话的右键删除，以及「添加项目」开目录选择弹窗。
+ * 侧边栏：会话的删除、右键行为、子智能体会话的展示，以及工作区的移除。
  *
- * 真弹窗会把自动化卡住，所以目录选择器在这里被换成桩（`setDirectoryPicker`）；
- * 没有桩的时候也走不到开窗口那一步，因为 scripts/test-preload.ts 设了
- * `A_DA_NO_DIALOG=1`。
+ * 选目录不再走原生弹窗（已改成应用内的 `FilePicker`，数据来自主机 `fs.*`），
+ * 所以这里不再需要 `setDirectoryPicker` 那种桩；`scripts/test-preload.ts` 的
+ * `A_DA_NO_DIALOG=1` 仍然管着"在资源管理器里打开"这类真会开窗口的动作。
  */
 
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test'
@@ -19,7 +19,6 @@ import { getSessionsDir } from '../agent/session/manager'
 import { defaultSessionManager } from '../agent/session/manager'
 import { store } from '../agent/store'
 import { agentClient } from './client'
-import { setDirectoryPicker } from '../platform/dialog'
 import { setExplorerOpener } from '../platform/explorer'
 import { shortPath } from '../theme'
 
@@ -41,7 +40,6 @@ async function project(): Promise<string> {
 }
 
 afterAll(async () => {
-  setDirectoryPicker(null)
   setExplorerOpener(null)
   store.closeConfirm()
   for (const dir of dirs) await rm(dir, { recursive: true, force: true })

@@ -510,6 +510,36 @@ interface Progress { id: number|string; done?: number; total?: number; label?: s
 
 ---
 
+### 3.14 `fs.*`（**文件服务**：界面自己的选择器靠它浏览主机文件系统）
+
+> **为什么有这一节**：原来"选工作区目录 / 选图片附件"用的是**原生选择窗口**
+> （PowerShell 的 FolderBrowserDialog、GPUIX 的 `promptForPaths`）。那有三个问题：
+> 只有本机能用（Web/H5 前端没有这些 API，§12）、测试里必须打桩（于是这条路从没被真正跑过）、
+> 界面拿不到额外信息（最近目录、按类型过滤、有没有被截断）。改成服务之后，浏览归主机、界面只画。
+
+| method | params | result | 说明 |
+|---|---|---|---|
+| `fs.roots` | `{}` | `FsRoot[]` | 可跳转的根：**当前工作区与已知项目**（排最前）、主目录、驱动器 / 文件系统根 |
+| `fs.list` | `{ path, showHidden?, limit? }` | `FsListing` | 列一个目录：目录在前、各自按名字排序；`truncated`/`omitted`/`hiddenCount` **如实报告** |
+| `fs.mkdir` | `{ path }` | `{ path }` | 新建**一层**目录：父目录必须已存在；已存在就报错（不静默复用） |
+
+**边界（重要）**
+
+- **只回元数据，不回文件内容**：`FsEntry` 给 `name`/`kind`/`sizeBytes`/`mtimeMs`。图片预览
+  （`dataUrl`）是另一件事，等真需要时按 §12.3 的能力位加——不做"顺手把文件内容也发过去"。
+- **服务范围 = 跑主机的那个用户本来就能读的路径**。本机形态下这没问题（§1.6：只绑 `127.0.0.1`
+  + 一次性令牌）；**远端客户端要用它，必须先过能力协商**（§12.2/§12.3 的
+  `native.dialog` 位与角色）——这是留给 M4 的决策点，不是现在偷偷放开。
+- **不静默截断**：超过 `MAX_ENTRIES`（2000）时返回 `truncated: true` + `omitted`，
+  界面必须说出来（"还有 N 项没显示"）。
+- **错误如实**：路径不存在 → `-32002 NotFound` 且 `data.id` 就是那个路径；不是目录 →
+  `-32602 InvalidParams`；读不了 → `-32004 Denied`。单条读取失败只跳过该条，不让整次浏览失败。
+
+**客户端侧**：`src/ui/FilePicker.tsx` 是唯一的选择器界面（目录模式 / 文件模式），
+由 `AgentWindow` 在**窗口层**渲染一份（**不能挂在下拉内部**——下拉一关它会被一起卸载，
+这是实测踩到的）。请求通过客户端本地状态传递：`client.ui.pickFiles({ mode, ... })`。
+
+
 ## 4. 服务端 → 客户端：通知（`evt.*`，无 id，带 `seq`）
 
 > **实现状态（M1–M3）：只发一种粗粒度事件 `evt.state.snapshot`。**
@@ -804,7 +834,7 @@ interface Progress { id: number|string; done?: number; total?: number; label?: s
 
 | 今天靠原生能力 | Web 端的替身 | 影响 |
 |---|---|---|
-| 目录选择 `pickDirectory`（`platform/dialog`） | **服务端列目录**：新增 `workspace.browse {path}` + `workspace.add {path}` 的浏览器界面 | 现在 `workspace.add` 让用户给本机路径；浏览器里"本机"是浏览器那台机器，语义不同 → 需要服务端提供目录浏览 |
+| ~~目录选择 `pickDirectory`（`platform/dialog`）~~ | ✅ **已经做了**：`fs.roots` / `fs.list` / `fs.mkdir`（§3.14）+ 应用内的 `FilePicker`。原生目录弹窗已删除，本机与 Web 走同一套 | 这条已经从"替身"变成"主路径"：选择器不再依赖本机 API，测试里也能真跑（见 §3.14 的边界说明） |
 | 打开资源管理器 `openInExplorer` | 降级为"复制路径"或不做 | 不在协议里（§9.3 已划为客户端本地），天然无影响 |
 | 系统通知 | 浏览器 Notification / 页面内提示 | `req.ui.notify` 已按能力位降级；客户端声明 `capabilities["native.notify"] = false` |
 | 窗口控制 / 标题栏 | 浏览器自带 | 不在协议里 |
@@ -814,9 +844,12 @@ interface Progress { id: number|string; done?: number; total?: number; label?: s
 
 ### 12.3 届时需要新增/调整的协议面（**v0.2 再定，现在不实现**）
 
-1. **客户端能力位细化**：`capabilities` 里加 `native.dialog` / `native.notify` / `native.reveal` /
+1. **客户端能力位细化**：`capabilities` 里加 `native.notify` / `native.reveal` /
    `native.windowControls` / `clipboard.image`，服务端据此决定是"让客户端自己弹"还是"降级/替身"。
-2. **服务端目录浏览**：`workspace.browse {path}`（返回目录项）——只在客户端声明"没有本机选择器"时被调用。
+   （`native.dialog` 这一位**不再需要**：目录/文件选择已经统一走 `fs.*`，见 §3.14。）
+2. **`fs.*` 的远端策略**：本机形态下 `fs.*` 直接可用；跨设备时它等于"让远端客户端浏览主机文件系统"，
+   必须由 `client.role` / 能力位决定放不放（默认应拒绝），并考虑只暴露白名单根目录。
+   **这是 M4 的决策点**，现在只做本机（§3.14 的边界已写明）。
 3. **认证形态**：跨设备必然用长期令牌或配对码 + `wss://`；再补 `session.revoke`（撤销某个客户端/令牌）。
 4. **只读客户端**：H5 常被用于"看一眼进度"，需要 `client.role: 'readonly'`——服务端拒掉所有写命令
    （`thread.send`、`change.revert*`、`plugin.*` 的写侧），只推事件。

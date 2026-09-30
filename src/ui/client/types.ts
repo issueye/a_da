@@ -58,10 +58,29 @@ export interface ClientConnectionState {
   reason?: string
 }
 
+/**
+ * 文件选择请求（**纯客户端状态**：`onPicked` 是本地回调，不可能上协议）。
+ *
+ * 为什么放在客户端状态里而不是让调用方各自渲染：选择器是**窗口级**的模态层
+ * （和确认框同一个道理）——挂在下拉/弹层内部会在弹层关闭时被一起卸载。
+ * 调用方只需要 `client.ui.pickFiles({...})`，由 `AgentWindow` 统一渲染一份。
+ */
+export interface FilePickerRequest {
+  mode: 'directory' | 'files'
+  title?: string
+  startPath?: string
+  /** 只允许选这些文件（按文件名匹配）；`files` 模式生效 */
+  accept?: RegExp
+  onPicked: (paths: string[]) => void
+}
+
 /** UI 能读的全部状态。M0 = store 活对象；M1 = 复制视图快照。 */
 export interface ClientState {
   /** 与主机的连接状态（进程内恒为 connected） */
   readonly connection: ClientConnectionState
+
+  /** 当前要显示的文件选择器（null = 不显示） */
+  readonly filePicker: FilePickerRequest | null
 
   // ── B 组：协议里的数据（快照 / 事件流提供） ──
   readonly threads: Thread[]
@@ -121,6 +140,9 @@ export interface UiActions {  openTab(threadId: string): void
   clearPendingDraft(): void
   showConfirm(options: ConfirmOptions): void
   closeConfirm(): void
+  /** 打开应用内的文件/目录选择器（数据来自主机 `fs.*`），替代原生选择窗口 */
+  pickFiles(request: FilePickerRequest): void
+  closeFilePicker(): void
 }
 
 /** UI 依赖的唯一接口。 */

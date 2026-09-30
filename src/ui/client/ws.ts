@@ -269,6 +269,8 @@ export function createWebSocketClient(options: WebSocketClientOptions): WebSocke
       void request('ui.setShell', { patch: { pendingDraft: null } }).catch(reportUiFailure),
     showConfirm: (confirmOptions) => viewStore.showConfirm(confirmOptions),
     closeConfirm: () => viewStore.closeConfirm(),
+    pickFiles: (request) => viewStore.pickFiles(request),
+    closeFilePicker: () => viewStore.closeFilePicker(),
   }
 
   /** UI 外壳动作失败不弹窗（它只是"开关没生效"），但必须在控制台留痕，不静默吞掉。 */
