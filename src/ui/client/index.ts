@@ -6,6 +6,7 @@
  */
 
 import { store } from '../../agent/store'
+import type { AgentClient } from './types'
 import { createInProcessClient } from './in-process'
 
 export type { AgentClient, ClientState, ConfirmOptions, UiActions } from './types'
@@ -58,3 +59,62 @@ export { APPROVAL_OPTIONS, EFFORT_OPTIONS } from '../../agent/store'
  * 真实值一律来自 `plugin.list` 返回的 `capabilities`——这里是只读镜像，不是第二份真相。
  */
 export { DEFAULT_PLUGIN_CAPABILITIES } from '../../agent/config'
+
+/**
+ * 选传输并造出客户端（M3-6）。
+ *
+ * - `inprocess`（默认）：进程内直连主机派发表。开发与测试走这条——不起进程、不起端口，
+ *   真窗口的单窗口约束与测试速度都不受影响（协议 §1.8"开发与测试"）。
+ * - `ws`：**自己 spawn 自己当主机**（同一个二进制带 `--host`），然后走 WebSocket。
+ *   打包后的形态走这条：交付物仍是一个 exe，用户无感。
+ *
+ * 返回值里的 `info` 是给诊断与测试看的（走的哪条、端口与 pid 是多少）；
+ * `shutdown` 必须在应用退出前调用——否则会留下主机进程（协议 §1.8 的生命周期约定）。
+ */
+export async function resolveAgentClient(
+  options: { transport?: 'inprocess' | 'ws' } = {}
+): Promise<{
+  client: AgentClient
+  shutdown: () => void
+  info: { transport: 'inprocess' | 'ws'; port?: number; pid?: number; url?: string }
+}> {
+  const transport = options.transport ?? (process.env.A_DA_TRANSPORT === 'ws' ? 'ws' : 'inprocess')
+
+  if (transport === 'inprocess') {
+    return { client: agentClient, shutdown: () => {}, info: { transport: 'inprocess' } }
+  }
+
+  // 动态 import：进程内模式不该顺带把自举与 ws 客户端加载进来
+  const [{ spawnHostProcess }, { createWebSocketClient }] = await Promise.all([
+    import('./host-bootstrap'),
+    import('./ws'),
+  ])
+
+  const host = await spawnHostProcess()
+  const client = createWebSocketClient({ url: host.url, token: host.token })
+  try {
+    await client.ready()
+  } catch (err) {
+    // 连不上就把主机收掉再报错，别留一个孤儿进程
+    host.stop()
+    throw err
+  }
+
+  let stopped = false
+  const shutdown = (): void => {
+    if (stopped) return
+    stopped = true
+    client.close()
+    host.stop()
+  }
+  // 兜底：不管从哪条路径退出，都别留下主机
+  process.once('exit', shutdown)
+  process.once('SIGINT', shutdown)
+  process.once('SIGTERM', shutdown)
+
+  return {
+    client,
+    shutdown,
+    info: { transport: 'ws', port: host.port, pid: host.pid, url: host.url },
+  }
+}

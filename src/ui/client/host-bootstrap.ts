@@ -22,6 +22,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
+import { join } from 'node:path'
 import { hostEntryArgs, parseReadyLine } from '../../agent/host/main'
 
 export interface HostProcess {
@@ -43,8 +44,19 @@ export interface SpawnHostOptions {
   execPath?: string
   /** 打包形态（true）还是 `bun <入口脚本>` 形态（false）。默认按 execPath 名字猜。 */
   compiled?: boolean
-  /** 入口脚本路径（非打包形态必须给；默认取 `Bun.main`）。 */
+  /** 入口脚本路径（非打包形态必须给）。默认从本文件位置推出仓库根的 `app.tsx`。 */
   entryScript?: string
+}
+
+/**
+ * 应用入口（非打包形态要带上它）。
+ *
+ * **不能用 `Bun.main`**：`bun test` 下它是**测试文件**，于是"spawn 自己当主机"会把测试文件
+ * 当入口跑起来（实测就是这样炸的：`Cannot use afterEach() outside of the test runner`）。
+ * 从本文件位置推更稳：`src/ui/client/` 往上三层就是仓库根。
+ */
+function defaultEntryScript(): string {
+  return join(import.meta.dir, '..', '..', '..', 'app.tsx')
 }
 
 /** 本机回环的一次性令牌。 */
@@ -63,7 +75,7 @@ export async function spawnHostProcess(options: SpawnHostOptions = {}): Promise<
   const token = makeHostToken()
   const execPath = options.execPath ?? process.execPath
   const compiled = options.compiled ?? !/(^|[\\/])bun(\.exe)?$/i.test(execPath)
-  const entryScript = options.entryScript ?? (compiled ? undefined : (Bun.main as string | undefined))
+  const entryScript = options.entryScript ?? defaultEntryScript()
 
   const args = [
     ...(compiled ? [] : entryScript ? [entryScript] : []),

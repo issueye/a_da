@@ -13,7 +13,7 @@ import '../platform/init'
 import React from 'react'
 import { render } from '@gpuix/react'
 import { AgentWindow } from '../AgentWindow'
-import { agentClient } from './client'
+import { resolveAgentClient } from './client'
 import { log } from './client/logging'
 import { activateAndShowWindow, isUserInitiatedExit } from '../platform/win32'
 import { handleGlobalShortcut } from './shortcuts'
@@ -39,8 +39,18 @@ process.on('unhandledRejection', (err: unknown) => {
 })
 
 try {
+  // 选传输（M3-6）：开发/测试走进程内，打包形态走 WebSocket + 自 spawn 主机。
+  // 这一步必须在 render 之前完成——界面起来时客户端就得是可用的。
+  const { client, shutdown, info } = await resolveAgentClient()
+  log(
+    `传输：${info.transport}` +
+      (info.port ? `（主机 pid=${info.pid} 端口=${info.port}）` : '（进程内）')
+  )
+  // 主机随 UI 退出：正常退出路径（process.exit / 信号）都收掉它，避免孤儿进程
+  process.on('exit', shutdown)
+
   log('开始调用 render() 挂载界面...')
-  render(<AgentWindow />, {
+  render(<AgentWindow client={client} />, {
     title: 'a_da',
     width: 1370,
     height: 950,
@@ -52,7 +62,7 @@ try {
     // 窗口级键盘：全局快捷键（Ctrl+K 命令面板等）。聚焦元素没消费的组合键
     // 会在冒泡相落到这里。
     onKeyDown: (event: unknown) => {
-      handleGlobalShortcut(event as Parameters<typeof handleGlobalShortcut>[0], agentClient)
+      handleGlobalShortcut(event as Parameters<typeof handleGlobalShortcut>[0], client)
     },
   })
   log('render() 初始化执行成功')

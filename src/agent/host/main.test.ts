@@ -77,6 +77,7 @@ describe('入口分流（协议 §1.8 第 4 条）', () => {
     // 第一条 import 语句必须是它（注释里出现"import"这个词不算）
     const firstImportStatement = uiMain.match(/^\s*import\s[^\n]*/m)?.[0] ?? ''
     expect(firstImportStatement).toContain('platform/init')
-    expect(uiMain).toContain('render(<AgentWindow />')
+    // 界面确实被挂载（参数怎么写不管，M3-6 起会带上 client）
+    expect(uiMain).toContain('render(<AgentWindow')
   })
 })

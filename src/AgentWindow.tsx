@@ -9,7 +9,7 @@
  */
 
 import React, { useEffect, useState } from 'react'
-import { agentClient } from './ui/client'
+import { agentClient, type AgentClient } from './ui/client'
 import { Composer } from './ui/Composer'
 import { DebugPanel } from './ui/DebugPanel'
 import { PluginsDialog } from './ui/PluginsDialog'
@@ -29,14 +29,21 @@ import { C, FONT_SANS } from './theme'
  * M0 时 `client.subscribe` 就是 store 的那次广播；M1 起它由事件流驱动，
  * 这个组件的写法不用再改。
  */
-function useAgentClient(): void {
+function useAgentClient(client: AgentClient): void {
   const [, setTick] = useState(0)
-  useEffect(() => agentClient.subscribe(() => setTick((tick) => tick + 1)), [])
+  useEffect(() => client.subscribe(() => setTick((tick) => tick + 1)), [client])
 }
 
-export function AgentWindow() {
-  useAgentClient()
-  const client = agentClient
+/**
+ * 窗口根组件。
+ *
+ * `client` 可传可不传：**测试与开发态**默认用进程内单例（`bun test` 与 `bun run dev` 都是这条），
+ * **打包形态**由 `src/ui/main.tsx` 先 `resolveAgentClient()` 拿到 WebSocket 客户端再传进来
+ * （协议 §1.8：本机也走 WS，只是用户看不见）。
+ */
+export function AgentWindow({ client: injected }: { client?: AgentClient } = {}) {
+  const client = injected ?? agentClient
+  useAgentClient(client)
   const isEmpty = client.state.active.items.length === 0
 
   return (
