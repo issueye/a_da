@@ -162,4 +162,13 @@ export interface LoadedPlugin {
   declarative: boolean
   status: PluginStatus
   diagnostics: PluginDiagnostic[]
+  /**
+   * 因能力开关被**挡下、未注册**的工具名（目前只有一种来源：`allowBuiltinShadow`
+   * 关闭时，占用了核心内置工具名字的插件工具）。
+   *
+   * 它们仍然留在 {@link PluginContributions.tools} 里可见——界面要能告诉用户
+   * "你写的这个工具没生效、为什么"，而不是让它在列表里凭空消失。加载层据此跳过注册，
+   * 状态同时标为 `conflict`。为空/未出现表示没有被挡下的工具。
+   */
+  blockedTools?: string[]
 }

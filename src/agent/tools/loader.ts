@@ -13,6 +13,7 @@
 import { createJiti } from 'jiti'
 import {
   existsSync,
+  readFileSync,
   readdirSync,
   statSync,
   mkdirSync,
@@ -25,6 +26,7 @@ import { basename, join } from 'node:path'
 import type { AgentEvent, AgentTool } from '../core/types'
 import {
   createPluginDisabledResolver,
+  readPluginCapabilities,
   readPluginConfig,
   readPluginSecret,
   setPluginDisabled,
@@ -276,7 +278,12 @@ function orderByDependencies(candidates: PluginCandidate[]): {
 }
 
 export class ExtensionLoader {
-  private jitiInstance = createJiti(import.meta.url)
+  /**
+   * `moduleCache: false` 影响的是**插件自己 import 的其它文件**（嵌套依赖）：默认的按路径
+   * 缓存会让"改了 helper.ts 再刷新"看不到变化。入口模块不走这条缓存——它由
+   * {@link importPluginModule} 自己读源码 eval（那里解释了为什么不能依赖这个开关）。
+   */
+  private jitiInstance = createJiti(import.meta.url, { moduleCache: false })
   /**
    * 事件监听器**按插件分组**持有。
    *
@@ -285,6 +292,24 @@ export class ExtensionLoader {
    */
   private eventListeners = new Map<string, Set<(event: AgentEvent) => void>>()
   private traceHandler?: (msg: string) => void
+
+  /**
+   * 读入一个扩展模块。
+   *
+   * **自己读源码 + `evalModule`，刻意不经过 jiti 的模块缓存**（设计文档 §5.5 的重载语义）。
+   * 背景：jiti 默认按路径缓存模块，而 Bun 下 jiti 会走 `tryNative` 路径（`require`），
+   * 实测"改写 `.ada/extensions/foo.ts` → 刷新插件列表"拿到的仍是旧版本——重载看起来
+   * 成功了、跑的还是老代码。`moduleCache: false` 在该路径上不足以清掉 Bun 自己的缓存
+   * （它按 specifier 删 `require.cache`，与真实缓存键并不总是同一个字符串）。
+   *
+   * 插件重载的语义就是"重新读一遍文件"，所以这里把这件事握在自己手里：读到的源码当场
+   * eval，缓存是否命中不再取决于第三方库的默认值。转译结果仍走 jiti 的 `fsCache`
+   * （按源码内容失效），所以没有把编译成本变成每次全量。
+   */
+  private async importPluginModule(filePath: string): Promise<unknown> {
+    const source = readFileSync(filePath, 'utf8')
+    return await this.jitiInstance.evalModule(source, { filename: filePath, async: true })
+  }
 
   /**
    * 绑定宿主环境的打点与事件分发管道
@@ -583,7 +608,7 @@ export class ExtensionLoader {
       if (scriptToLoad) {
         const context = this.createContext(workspace, id, sink)
         try {
-          const mod = (await this.jitiInstance.import(scriptToLoad)) as ExtensionModule
+          const mod = (await this.importPluginModule(scriptToLoad)) as ExtensionModule
           const { descriptor, diagnostics, initError } = await this.parseExtensionModule(mod, context, id)
           candidate.diagnostics.push(...diagnostics)
           // 目录与文件名给出身份：描述符可以改名、改描述，但 **id 一律由加载器决定**
@@ -640,9 +665,14 @@ export class ExtensionLoader {
     candidates: PluginCandidate[],
     conflicts: ToolConflict[],
     cyclic: string[],
-    availableIds: Set<string>
+    availableIds: Set<string>,
+    workspace: string
   ): Promise<LoadedPlugin[]> {
     const loaded: LoadedPlugin[] = []
+    // 能力开关在这里读一次：`allowBuiltinShadow` 要参与状态判定（见下），而判定是
+    // 加载与界面**共用**的一步——只写在注册那里的话，界面（走 scanPlugins）看不出
+    // 工具被挡下了，正好违反"不允许静默失效"。
+    const capabilities = await readPluginCapabilities(workspace)
 
     for (const candidate of candidates) {
       const id = candidate.manifest.id
@@ -736,6 +766,24 @@ export class ExtensionLoader {
         }
       }
 
+      // 能力开关：`allowBuiltinShadow` 关闭时，插件工具不得占用核心内置工具的名字。
+      // 这不是"冲突提示"，而是**真的不注册**——所以结论要落在 LoadedPlugin 上，
+      // 让注册层（applyPlugins）与界面（scanPlugins）读同一份事实。
+      const blockedTools: string[] = []
+      if (!capabilities.forPlugin(id).allowBuiltinShadow) {
+        for (const tool of tools) {
+          if (!defaultToolRegistry.isBuiltinToolName(tool.name)) continue
+          blockedTools.push(tool.name)
+          diagnostics.push({
+            pluginId: id,
+            level: 'warn',
+            message: `工具「${tool.name}」与核心内置工具重名，而能力开关 allowBuiltinShadow 已关闭：未注册，保留内置工具`,
+            hint: '要让插件这份生效，请在设置里打开「可覆盖同名内置工具」；或者把工具改个名字',
+          })
+        }
+        if (blockedTools.length > 0 && status === 'ready') status = 'conflict'
+      }
+
       // broken / not-ready 的插件既不注册工具，也**不接管任何决策点**：一个缺配置的
       // 插件每轮都来干预工具表，比它干脆不出现更难查（诊断里已经说明原因）
       const usable = status !== 'broken' && status !== 'not-ready'
@@ -748,6 +796,7 @@ export class ExtensionLoader {
         declarative: candidate.declarative,
         status,
         diagnostics,
+        ...(blockedTools.length > 0 ? { blockedTools } : {}),
       })
     }
 
@@ -789,6 +838,7 @@ export class ExtensionLoader {
    *
    * `broken` 与 `not-ready` 的插件**不注册工具、不订阅监听器**：一个缺配置的插件
    * 把工具塞进工具表，模型会调到一半失败，比它干脆不出现更难查。
+   * `blockedTools` 里的工具同样跳过注册（原因与诊断已在 `finalizePlugins` 里写好）。
    */
   private applyPlugins(
     loaded: LoadedPlugin[],
@@ -802,11 +852,15 @@ export class ExtensionLoader {
       const id = plugin.manifest.id
       const candidate = byId.get(id)
       const usable = plugin.status !== 'broken' && plugin.status !== 'not-ready'
+      // 被能力开关挡下的工具（见 finalizePlugins）：结论已经在状态判定那一步算好，
+      // 这里只负责照着执行，不再重新判断一次。
+      const blocked = new Set(plugin.blockedTools ?? [])
 
       if (usable) {
         for (const entry of plugin.contributions.tools ?? []) {
           // 描述符里直接写工厂也要能用：`tools: [(workspace) => createTool(workspace)]`
           const tool = isFactory(entry) ? entry(workspace) : entry
+          if (blocked.has(tool.name)) continue
           defaultToolRegistry.register(tool, { pluginId: id, scope: plugin.manifest.scope })
           names.push(tool.name)
         }
@@ -847,7 +901,8 @@ export class ExtensionLoader {
       ordered,
       defaultToolRegistry.getConflicts(),
       cyclic,
-      availableIds
+      availableIds,
+      workspace
     )
     const names = this.applyPlugins(plugins, ordered, workspace)
     return { plugins, names }
@@ -896,7 +951,8 @@ export class ExtensionLoader {
       ordered,
       defaultToolRegistry.getConflicts(),
       cyclic,
-      availableIds
+      availableIds,
+      workspace
     )
     const loadedById = new Map(loaded.map((plugin) => [plugin.manifest.id, plugin]))
 

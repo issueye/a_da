@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentEvent } from '../core/types'
 import { getPluginDiagnostics } from './registry'
-import { savePluginConfig, setPluginDisabled } from '../config'
+import { savePluginCapabilities, savePluginConfig, setPluginDisabled } from '../config'
 import { ExtensionLoader } from '../tools/loader'
 import { defaultToolRegistry } from '../tools/registry'
 
@@ -352,5 +352,71 @@ describe('M1：冲突、监听器与工作区启停', () => {
     await setPluginDisabled('workspace:ws-toggle.ts', false, workspace)
     expect(await loader.autoLoadExtensions(workspace)).toContain('ws_toggle_tool')
     await rm(otherWorkspace, { recursive: true, force: true }).catch(() => {})
+  })
+})
+
+/**
+ * `allowBuiltinShadow` 曾经是个"幽灵开关"：声明了、有默认值、界面还写明关掉后的效果，
+ * 但没有任何代码读它，用户关掉什么都不会发生。这一组用例把两个方向都钉住——
+ * 默认开着时"覆盖 + 标冲突"，关掉时"不注册 + 保留内置 + 原因可见"。
+ *
+ * 同时钉住 `isWriteTool` 的来源判定：插件借走 `read_file` 这个名字时，它不能因此
+ * 获得只读身份（否则 plan 模式放行、readonly 审批不问）。
+ */
+describe('能力开关：allowBuiltinShadow', () => {
+  const shadowCode = `export default {
+  name: '借名插件',
+  tools: [${toolSnippet('read_file')}, ${toolSnippet('shadow_side_tool')}],
+}
+`
+
+  test('默认开着：插件工具覆盖同名内置工具，状态标为 conflict，并失去只读身份', async () => {
+    await writeExtension('shadow-on.ts', shadowCode)
+
+    const loader = new ExtensionLoader()
+    const loaded = await loader.autoLoadExtensions(workspace)
+
+    expect(loaded).toContain('read_file')
+    expect(defaultToolRegistry.getToolOrigin('read_file')?.pluginId).toBe('workspace:shadow-on.ts')
+    // 借走只读名字不再等于拿到只读身份
+    expect(defaultToolRegistry.isWriteTool('read_file')).toBe(true)
+
+    const item = (await loader.scanPlugins(workspace)).find(
+      (entry) => entry.id === 'workspace:shadow-on.ts'
+    )!
+    expect(item.status).toBe('conflict')
+    expect(item.plugin.blockedTools).toBeUndefined()
+  })
+
+  test('关掉后：同名工具不注册、内置工具保留，且原因在插件卡上可见', async () => {
+    await writeExtension('shadow-off.ts', shadowCode)
+    await savePluginCapabilities({ allowBuiltinShadow: false })
+
+    const loader = new ExtensionLoader()
+    const loaded = await loader.autoLoadExtensions(workspace)
+
+    expect(loaded).not.toContain('read_file')
+    // 同一个插件里没借名的工具照常注册：挡下的是那一个工具，不是整个插件
+    expect(loaded).toContain('shadow_side_tool')
+    expect(defaultToolRegistry.getToolOrigin('read_file')).toBeUndefined()
+
+    // 工具表里只有一份 read_file，而且是核心内置那份
+    const names = defaultToolRegistry.getToolsForWorkspace(workspace).map((tool) => tool.name)
+    expect(names.filter((name) => name === 'read_file')).toHaveLength(1)
+    // 内置工具的只读身份没被牵连
+    expect(defaultToolRegistry.isWriteTool('read_file')).toBe(false)
+
+    const item = (await loader.scanPlugins(workspace)).find(
+      (entry) => entry.id === 'workspace:shadow-off.ts'
+    )!
+    expect(item.status).toBe('conflict')
+    expect(item.plugin.blockedTools).toEqual(['read_file'])
+    expect(
+      item.diagnostics.some(
+        (diagnostic) => diagnostic.level === 'warn' && diagnostic.message.includes('allowBuiltinShadow')
+      )
+    ).toBe(true)
+    // 被挡下的工具仍在卡片上列着——不能凭空消失，否则用户查不出为什么没生效
+    expect(item.tools.map((tool) => tool.name)).toContain('read_file')
   })
 })

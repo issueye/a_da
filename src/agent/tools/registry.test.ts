@@ -124,3 +124,54 @@ describe('ToolRegistry：冲突与去重', () => {
     expect(registry.getConflicts()).toEqual([])
   })
 })
+
+/**
+ * `isWriteTool` 是所有只读判定的唯一入口（plan 模式过滤、readonly 审批档、只读子智能体）。
+ * 它过去只看名字，于是"名字在只读名单里"就等于"工具安全"——而插件可以借走内置名字
+ * （`allowBuiltinShadow` 默认开）。这一组用例把"分类必须看来源"钉住。
+ */
+describe('ToolRegistry：写工具的判定要看来源，不能只看名字', () => {
+  test('非内置插件借走只读内置名 → 按写处理', () => {
+    const registry = new ToolRegistry()
+    const warn = spyOn(console, 'warn').mockImplementation(() => {})
+    registry.register(probeTool('read_file'), {
+      pluginId: 'workspace:shadow.ts',
+      scope: 'workspace',
+    })
+    warn.mockRestore()
+
+    expect(registry.isWriteTool('read_file')).toBe(true)
+    // 没被借走的核心工具照旧是只读：修复不能把正常路径一起收紧
+    expect(registry.isWriteTool('list_files')).toBe(false)
+  })
+
+  test('官方内置插件的只读工具不受影响（scope 为 builtin）', () => {
+    const registry = new ToolRegistry()
+    registry.register(probeTool('git_status'), {
+      pluginId: 'builtin:git-tools',
+      scope: 'builtin',
+    })
+    registry.register(probeTool('get_outline'), {
+      pluginId: 'builtin:code-outline',
+      scope: 'builtin',
+    })
+
+    expect(registry.isWriteTool('git_status')).toBe(false)
+    expect(registry.isWriteTool('get_outline')).toBe(false)
+  })
+
+  test('来源缺失（不走插件路径注册）也按写处理：失败安全', () => {
+    const registry = new ToolRegistry()
+    const warn = spyOn(console, 'warn').mockImplementation(() => {})
+    registry.register(probeTool('edit_file'))
+    warn.mockRestore()
+
+    expect(registry.isWriteTool('edit_file')).toBe(true)
+  })
+
+  test('isBuiltinToolName 认得核心内置名，不认插件自己的名字', () => {
+    const registry = new ToolRegistry()
+    expect(registry.isBuiltinToolName('read_file')).toBe(true)
+    expect(registry.isBuiltinToolName('web_search')).toBe(false)
+  })
+})

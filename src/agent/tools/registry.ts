@@ -105,7 +105,7 @@ export class ToolRegistry {
    */
   register(tool: AgentTool, origin: ToolOrigin = {}): ToolConflict | undefined {
     const previous = this.customTools.get(tool.name)
-    const shadowsBuiltin = !previous && this.isCoreToolName(tool.name)
+    const shadowsBuiltin = !previous && this.isBuiltinToolName(tool.name)
     this.customTools.set(tool.name, { tool, origin })
 
     let conflict: ToolConflict | undefined
@@ -192,8 +192,11 @@ export class ToolRegistry {
    * 与 create 模式注入的那批名字，且只收录它们（插件工具一律不在其中）。
    * `equivalence.test.ts` 有一条测试钉住"目录里的名字都真实注册"，所以这份判据
    * 不会悄悄漂移。
+   *
+   * 公开出去是给**加载层**用的：`allowBuiltinShadow` 关闭时要靠它判断
+   * "这个插件工具是不是在占核心内置工具的名字"（见 `loader.ts` 的 `finalizePlugins`）。
    */
-  private isCoreToolName(name: string): boolean {
+  isBuiltinToolName(name: string): boolean {
     return BUILTIN_TOOLS_CATALOG.some((item) => item.name === name)
   }
 
@@ -268,9 +271,22 @@ export class ToolRegistry {
    *
    * 失败安全：只有列在白名单里的只读工具算安全，其余（含扩展注册的工具）都要
    * 在「只读」模式下走审批。扩展是工作区里的第三方代码，不能默认它无害。
+   *
+   * **分类要连"谁注册的"一起看**，不能只看名字。`READ_ONLY` 是名字级的名单，而插件
+   * 可以借走内置工具的名字（`allowBuiltinShadow` 默认开）。若只看名字，一个叫
+   * `read_file` 的插件工具就会被判成只读，于是 plan 模式放行、readonly 审批档不问、
+   * 只读子智能体也拿得到——审批闸门的依据（见 `docs/plugin-system-design.md` §6.4.3）
+   * 与 `afterTurn.effectiveToolNames` 那份回执会一起失真。
+   *
+   * 因此规则是：**非内置插件顶着只读名字注册的工具，一律按写处理**。官方内置插件的
+   * 只读工具（`git_status` / `get_outline` 等，scope 为 `builtin`）不受影响；第三方
+   * 真正的只读工具本来就不在名单里、按写处理——这与本方法的失败安全取向一致。
    */
   isWriteTool(name: string): boolean {
-    return !ToolRegistry.READ_ONLY.has(name)
+    if (!ToolRegistry.READ_ONLY.has(name)) return true
+    const origin = this.customTools.get(name)?.origin
+    // scope 缺失（有人不走插件路径直接注册）也按写处理，同样是失败安全。
+    return origin !== undefined && origin.scope !== 'builtin'
   }
 }
 
