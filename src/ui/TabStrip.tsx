@@ -206,7 +206,7 @@ export function TabStrip({ client }: { client: AgentClient }) {
             running={client.state.isThreadRunning(thread.id)}
             waiting={client.state.isThreadWaiting(thread.id)}
             closable={tabs.length > 1}
-            onSelect={() => void client.request('ui.activeThread', { threadId: thread.id })}
+            onSelect={() => client.ui.activateThread(thread.id)}
             onClose={() => client.ui.closeTab(thread.id)}
           />
         ))}

@@ -43,7 +43,7 @@ afterAll(async () => {
   if (tempWorkspace) await rm(tempWorkspace, { recursive: true, force: true })
 })
 
-describe('ExtensionLoader (jiti)', () => {
+describe('ExtensionLoader（插件加载）', () => {
   test('dynamically loads typescript tools from .ada/extensions', async () => {
     const loader = new ExtensionLoader()
     const loaded = await loader.autoLoadExtensions(tempWorkspace)

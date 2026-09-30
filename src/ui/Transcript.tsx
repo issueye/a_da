@@ -875,7 +875,7 @@ function SubagentContent({ item, client }: { item: Extract<Item, { kind: 'tool' 
               aria-label="打开子会话页签"
               onClick={() => {
                 client.ui.openTab(targetThread.id)
-                void client.request('ui.activeThread', { threadId: targetThread.id })
+                client.ui.activateThread(targetThread.id)
               }}
               style={{
                 display: 'flex',

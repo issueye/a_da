@@ -143,6 +143,16 @@ export interface UiActions {  openTab(threadId: string): void
   /** 打开应用内的文件/目录选择器（数据来自主机 `fs.*`），替代原生选择窗口 */
   pickFiles(request: FilePickerRequest): void
   closeFilePicker(): void
+  /**
+   * 切换焦点会话。
+   *
+   * **客户端即时生效 + 尽力通知主机**：协议 §11 定案把"焦点"划给客户端，所以点一下会话
+   * 不该等主机回话——尤其主机在跑长任务时，等它会变成"点了没反应，30 秒后弹一个超时"。
+   * 通知失败只记日志（主机那边的焦点只影响队列归属与插件按工作区加载，界面不受影响）。
+   */
+  activateThread(threadId: string): void
+  /** 切换当前项目（跟着切到该项目最新的会话）；同样即时生效、尽力通知 */
+  activateProject(workspace: string): void
 }
 
 /** UI 依赖的唯一接口。 */

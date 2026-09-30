@@ -2,7 +2,7 @@
  * 插件系统的契约（单一事实来源）
  *
  * 这里定义「插件是什么」——元信息、能贡献的能力、加载后的统一形状。
- * 两套加载路径（内置插件的声明数组、工作区的 jiti 扫描）都产出 {@link LoadedPlugin}，
+ * 两套加载路径（内置插件的声明数组、工作区/全局目录的文件扫描）都产出 {@link LoadedPlugin}，
  * 注册表 / 插件管理页 / 诊断 / 能力开关只认这一种形状，不再为来源分叉。
  *
  * 设计依据：docs/plugin-system-design.md §4.1、§4.3.2、§5.2
@@ -158,7 +158,7 @@ export type PluginStatus =
 export interface LoadedPlugin {
   manifest: PluginManifest
   contributions: PluginContributions
-  /** 声明式来源（内置）为 true；jiti 执行的工作区/全局扩展为 false */
+  /** 声明式来源（内置）为 true；从文件加载的工作区/全局扩展为 false */
   declarative: boolean
   status: PluginStatus
   diagnostics: PluginDiagnostic[]

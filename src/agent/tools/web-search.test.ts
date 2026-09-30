@@ -1,5 +1,5 @@
 /**
- * web_search 扩展这条链路：jiti 编译 → 注册进 ToolRegistry → `runTool` 执行。
+ * web_search 扩展这条链路：加载器编译 → 注册进 ToolRegistry → `runTool` 执行。
  *
  * 夹具是**测试自带的**，写在临时工作区的 `.ada/extensions/` 下，不依赖仓库里任何
  * 实际插件文件——早先这里指向仓库内的 `.ada/extensions/web-search.ts`，那个文件
@@ -41,7 +41,7 @@ const RESULTS_PAGE = `
  *
  * 用 `String.raw` 而不是普通模板字面量：夹具正文里的 `\s`、`\/`、`\n` 都是**要写进
  * 目标 .ts 源码**的字符，不能被当前这个字面量先吃掉（普通模板字面量里 `\s` 会变成 `s`、
- * `\/` 会变成 `/` —— 后者会把正则提前截断，生成一个语法错的插件，jiti 编译失败、
+ * `\/` 会变成 `/` —— 后者会把正则提前截断，生成一个语法错的插件，加载器编译失败、
  * 插件被静默跳过，症状是「夹具明明写了却加载不出来」）。
  */
 const FIXTURE = String.raw`

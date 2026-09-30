@@ -1300,9 +1300,7 @@ export function Composer({ client, centered }: { client: AgentClient; centered?:
                 aria-label="返回主会话"
                 onClick={() => {
                   if (client.state.active.parentId) {
-                    void client.request('ui.activeThread', {
-                      threadId: client.state.active.parentId,
-                    })
+                    client.ui.activateThread(client.state.active.parentId)
                   }
                 }}
                 style={{

@@ -292,6 +292,40 @@ M0–M3 把界面与 agent 侧拆开了（真拆：打包形态是两个进程�
    bun 把各测试文件放在同一进程里并发跑，按坐标派发的 click 落到了别人的窗口上。
    与其把测试改成"重试到偶然通过"，不如把接线抽成可确定性测试的东西。
 
+### 16.1 拆成两个进程之后，"环境副作用"必须留在界面进程里
+
+M3 之后打包形态是**两个进程**（UI + 自己 spawn 的 `--host`）。于是有一类 bug 的形状是固定的：
+**某个动作原先靠"同进程"顺带完成，拆开后它在主机进程里做完了，界面这边什么都没发生。**
+
+已经踩到并修掉的两个（都有回归测试盯着）：
+
+| 动作 | 症状 | 正确落点 |
+|---|---|---|
+| `applyAppearance`（换调色板） | "明暗主题切换无效"——主机换了它自己的调色板，界面 `C.*` 一直是旧的 | **客户端层**：`view-store.ts` 应用快照时就地 `applyAppearance`（`view-store.test.ts` 用公开的 `applyAppearance` 取期望值断言） |
+| 焦点切换（`ui.activeThread`） | 主机在跑长任务时"点了没反应，30 秒后弹一个超时" | **客户端层**：`client.ui.activateThread()` 本地即时生效（`focusThread` 覆盖），主机那边**尽力通知**、失败只记日志 |
+
+判据：这个动作改变的是**本机环境**（调色板、焦点、窗口、剪贴板、滚动），还是**主机数据**？
+前者一律留在界面进程，主机那份最多是"镜像/偏好"，界面不能等它确认。
+
+### 16.2 插件模块用 `require()` + 清 `require.cache` 加载，**不要用 jiti，也别用 `import()`**
+
+两条实测出来的坑，一条都不能踩：
+
+1. **jiti 在编译产物里必崩**：`bun build --compile` 的单文件里它会去
+   `require('../dist/babel.cjs')`——那是它自己的懒加载依赖，打进单文件后这个相对路径不存在，
+   于是**每个工作区插件都变成 `未生效（broken）：Cannot find module '../dist/babel.cjs'`**
+   （现象是"插件启停报错/不生效"，真正原因只在主机进程的 stderr 上）。
+2. **Bun 的 `import()` 缓存按解析后的路径**：`?v=` 查询串、`./` 与 `../` 的等价写法**都不认**
+   （实测），所以 `import()` 永远拿到第一次那份代码——"改写插件再刷新"会静默跑旧代码。
+   这条是既有测试 `gate-delegation.test.ts` 的 `__gate_module_evals` 断言抓出来的。
+
+所以 `importPluginModule` 走 `createRequire(import.meta.url)`：**清掉插件目录下的缓存条目**
+（入口 + 它 require 出来的相对依赖一起清）再 `require()`。Bun 的 `require` 认识 TS，也认识
+`export default`（返回带 `default` 的命名空间），缓存可删——这才是热重载该走的路。
+
+配套的一条：**主机的 stdout/stderr 会以 `[host] …` 写进应用日志**（`host-bootstrap.ts`）——
+打包形态没有控制台，日志是唯一能留下现场的地方；这条链路本身就是发现上面 babel 报错的途径。
+
 ### 17. 打包后的 exe 收不到自动化通道——二进制检查要用应用日志当证据
 
 `src/platform/init.ts` 会把 `console.log` **劫持**到 `A_DA_HOME/app_debug.log`，只有在

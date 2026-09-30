@@ -24,6 +24,7 @@
 
 import type { ClientSnapshot } from '../../shared/protocol'
 import { computeThreadStats } from '../../agent/types'
+import { applyAppearance } from '../../theme'
 import type { ClientConnectionState, ClientState, ConfirmOptions, FilePickerRequest } from './types'
 import {
   deriveIsPublic,
@@ -65,6 +66,8 @@ export interface ViewStore {
   /** 打开/关闭应用内的文件选择器（客户端本地）。 */
   pickFiles(request: FilePickerRequest): void
   closeFilePicker(): void
+  /** 本地焦点即时生效（不等主机回话）；主机的确认到达后覆盖会自行清掉。 */
+  focusThread(threadId: string): void
   /** 已应用次数（每次重建 +1）；测试与诊断用。 */
   readonly publishes: number
 }
@@ -87,6 +90,14 @@ export function createViewStore(source: SnapshotSource, options: ViewStoreOption
   /** 当前的文件选择请求（本地字段；窗口级模态层，与确认框同一套做法）。 */
   let filePicker: FilePickerRequest | null = null
 
+  /**
+   * 客户端本地的焦点覆盖（点了会话就立刻生效，不等主机回话）。
+   *
+   * 快照里那份 `ui.activeId` 是主机的镜像；主机在跑长任务时它要过一会儿才跟上。
+   * 规则很简单：**本地覆盖优先**，主机镜像与它一致后清掉覆盖（避免两处长期不一致）。
+   */
+  let focusOverride: string | null = null
+
   let snapshot: ClientSnapshot | null = null
   let state: ClientState | null = null
   let keys: unknown[] = []
@@ -98,6 +109,10 @@ export function createViewStore(source: SnapshotSource, options: ViewStoreOption
   function compose(next: ClientSnapshot): ClientState {
     const running = new Set(next.runningThreadIds)
     const waiting = new Set(next.waitingThreadIds)
+    // 本地焦点优先；主机镜像与它一致后就把覆盖清掉（见 focusOverride 的说明）
+    if (focusOverride && next.ui.activeId === focusOverride) focusOverride = null
+    const effectiveActiveId = focusOverride ?? next.ui.activeId
+    const focused = { ...next, ui: { ...next.ui, activeId: effectiveActiveId } }
     return {
       // ── 连接状态与文件选择请求（客户端本地）──
       connection,
@@ -105,7 +120,7 @@ export function createViewStore(source: SnapshotSource, options: ViewStoreOption
 
       // ── 主机数据 ──
       threads: next.threads,
-      active: activeThreadOf(next),
+      active: activeThreadOf(focused),
       queue: next.queue,
       log: next.log,
       workspaceInfo: {
@@ -119,17 +134,17 @@ export function createViewStore(source: SnapshotSource, options: ViewStoreOption
       supportsImages: next.config.supportsImages,
       approval: next.config.approval,
       effort: next.config.effort,
-      activeThreadStats: computeThreadStats(activeThreadOf(next)),
+      activeThreadStats: computeThreadStats(activeThreadOf(focused)),
       pendingAnswerQuestions: next.pendingQuestions,
 
       // ── 客户端本地镜像（M2 会从快照里搬走）──
-      activeId: next.ui.activeId,
+      activeId: effectiveActiveId,
       project: next.workspace.project,
       projects: projectsFrom(next),
       projectThreads: next.threads.filter((thread) => thread.workspace === next.workspace.project),
-      openTabs: openTabsFrom(next),
+      openTabs: openTabsFrom(focused),
       mode: next.config.mode,
-      running: running.has(next.ui.activeId),
+      running: running.has(effectiveActiveId),
       pendingDraft: next.ui.pendingDraft,
       // 线上是字符串，客户端做一次取值校验（不信任外部输入的形状）
       appearance: next.appearance === 'light' ? 'light' : 'dark',
@@ -163,6 +178,12 @@ export function createViewStore(source: SnapshotSource, options: ViewStoreOption
     state = compose(next)
     keys = source.stalenessKeys ? source.stalenessKeys() : []
     publishes += 1
+    // **主题必须在界面进程里应用**：`appearance` 是主机的偏好，但"换调色板"是渲染层的事。
+    // 拆分前 store 与界面同进程，`store.setAppearance` 顺手就换了；拆成两个进程后，
+    // 主机换的是**它自己**的调色板，界面的 C.* 一直是旧的——表现就是"明暗切换无效"。
+    // 放在这里（而不是某个组件里）是因为这是"复制到的状态落进本机环境"的一步，属于客户端层；
+    // 应用完随后的 notify 会让组件用新调色板重渲染。进程内模式下 store 也会应用一次，幂等。
+    applyAppearance(next.appearance === 'light' ? 'light' : 'dark')
   }
 
   function publish(next: ClientSnapshot): void {
@@ -237,6 +258,11 @@ export function createViewStore(source: SnapshotSource, options: ViewStoreOption
     },
     closeFilePicker() {
       filePicker = null
+      if (state) state = compose(snapshot ?? source.snapshot())
+      for (const listener of [...listeners]) listener()
+    },
+    focusThread(threadId) {
+      focusOverride = threadId
       if (state) state = compose(snapshot ?? source.snapshot())
       for (const listener of [...listeners]) listener()
     },

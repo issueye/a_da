@@ -228,7 +228,7 @@ function SessionRow({
       <div
         role="button"
         aria-label={thread.title}
-        onClick={() => void client.request('ui.activeThread', { threadId: thread.id })}
+        onClick={() => client.ui.activateThread(thread.id)}
         style={{
           display: 'flex',
           flexDirection: 'row',
@@ -415,7 +415,7 @@ function SubagentSessionRow({
         aria-label={`子智能体: ${thread.title}`}
         onClick={() => {
           client.ui.openTab(thread.id)
-          void client.request('ui.activeThread', { threadId: thread.id })
+          client.ui.activateThread(thread.id)
         }}
         style={{
           display: 'flex',
@@ -609,7 +609,7 @@ function WorkspaceTreeNode({
           role="button"
           aria-label={label}
           onClick={() => {
-            void client.request('ui.activeProject', { workspace: workspacePath })
+            client.ui.activateProject(workspacePath)
             if (!expanded) onToggleExpand()
           }}
           style={{
@@ -678,7 +678,7 @@ function WorkspaceTreeNode({
               role="button"
               aria-label={`在 ${label} 中新建会话`}
               onClick={() => {
-                void client.request('ui.activeProject', { workspace: workspacePath })
+                client.ui.activateProject(workspacePath)
                 void client.request('thread.create', { workspace: workspacePath })
               }}
               style={{

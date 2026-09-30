@@ -24,6 +24,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { hostEntryArgs, parseReadyLine } from '../../agent/host/main'
+import { log } from './logging'
 
 export interface HostProcess {
   pid: number
@@ -88,11 +89,24 @@ export async function spawnHostProcess(options: SpawnHostOptions = {}): Promise<
     env: { ...process.env, A_DA_TRANSPORT: 'inprocess' },
   })
 
+  /**
+   * 主机的输出一律落进应用日志。
+   *
+   * 为什么必须做：主机的 stdout/stderr 以前只用来读就绪行，**之后就丢掉了**——
+   * 于是"插件加载失败：Cannot find module '../dist/babel.cjs'"这类只在主机侧出现的错误，
+   * 用户在界面上什么都看不到，只能看到某个命令超时（现象与原因隔了一层）。
+   * 打包形态是 GUI 子系统、没有控制台，日志文件是唯一能留下现场的地方。
+   */
   const stderrTail: string[] = []
+  const logHostLine = (line: string): void => {
+    const text = line.trim()
+    if (text) log(`[host] ${text}`)
+  }
   child.stderr?.setEncoding('utf8')
   child.stderr?.on('data', (chunk: string) => {
     stderrTail.push(chunk)
     if (stderrTail.length > 20) stderrTail.shift()
+    for (const line of chunk.split('\n')) logHostLine(line)
   })
 
   const ready = await new Promise<{ port: number; pid: number }>((resolve, reject) => {
@@ -122,7 +136,9 @@ export async function spawnHostProcess(options: SpawnHostOptions = {}): Promise<
         const parsed = parseReadyLine(line)
         if (parsed) {
           finish(parsed)
-          return
+        } else {
+          // 就绪行之外的主机输出（含稳态后的 console 输出）全部留痕
+          logHostLine(line)
         }
         newline = buffer.indexOf('\n')
       }
@@ -130,6 +146,12 @@ export async function spawnHostProcess(options: SpawnHostOptions = {}): Promise<
 
     child.on('error', (err) => finish(err))
     child.on('exit', (code, signal) => {
+      // 就绪**之后**的退出不是"启动失败"，而是"主机没了"——照实记一笔，
+      // 界面那边有连接状态横幅，日志这边留现场（否则只能看到命令超时）。
+      if (settled) {
+        log(`[host] 主机退出（code=${String(code)}, signal=${String(signal)}）`)
+        return
+      }
       finish(
         new Error(
           `主机在就绪前退出（code=${String(code)}, signal=${String(signal)}）。stderr: ${stderrTail

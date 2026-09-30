@@ -15,6 +15,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { ClientSnapshot, Item } from '../../shared/protocol'
+import { C, applyAppearance } from '../../theme'
 import { createViewStore, type SnapshotSource } from './view-store'
 
 function makeThread(id: string, items: Item[] = []) {
@@ -153,6 +154,46 @@ describe('复制视图：应用主机快照', () => {
     view.closeConfirm()
     expect(view.getState().confirmModal).toBeNull()
     expect(notified).toBe(2)
+  })
+})
+
+describe('复制视图：两项"必须落在界面进程里"的本地动作', () => {
+  test('主题：应用快照时就把调色板换掉（拆分后主机换的是它自己那份）', () => {
+    // 拆分前 store 与界面同进程，`store.setAppearance` 顺手就换了调色板；
+    // 拆成两个进程后主机换的是**它自己**的，界面必须自己应用 —— 否则"明暗切换无效"。
+    // 期望值取自公开的 applyAppearance（不写死颜色，免得调色板一改测试就假红）。
+    applyAppearance('light')
+    const lightCanvas = C.canvas
+    applyAppearance('dark')
+    const darkCanvas = C.canvas
+    expect(lightCanvas).not.toBe(darkCanvas)
+
+    const light = createViewStore(makeSource(makeSnapshot({ appearance: 'light' })).source)
+    light.getState()
+    expect(C.canvas).toBe(lightCanvas)
+
+    const dark = createViewStore(makeSource(makeSnapshot({ appearance: 'dark' })).source)
+    dark.getState()
+    expect(C.canvas).toBe(darkCanvas)
+  })
+
+  test('焦点：点会话立刻生效（不等主机），主机确认到达后覆盖自行清掉', () => {
+    const fake = makeSource(makeSnapshot())
+    const view = createViewStore(fake.source)
+    expect(view.getState().activeId).toBe('t1')
+
+    // 本地即时生效：还没收到任何主机快照，就已经切过去了
+    view.focusThread('t2')
+    expect(view.getState().activeId).toBe('t2')
+
+    // 主机镜像与本地一致 → 清掉覆盖（此后完全听主机的）
+    fake.emit(makeSnapshot({ ui: { ...makeSnapshot().ui, activeId: 't2' } }))
+    expect(view.getState().activeId).toBe('t2')
+
+    // 主机还没跟上时，本地焦点不被旧快照拽回去
+    view.focusThread('t3')
+    fake.emit(makeSnapshot({ ui: { ...makeSnapshot().ui, activeId: 't2' } }))
+    expect(view.getState().activeId).toBe('t3')
   })
 })
 

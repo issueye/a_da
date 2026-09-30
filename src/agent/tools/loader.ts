@@ -1,5 +1,5 @@
 /**
- * 插件加载器：把「内置插件的声明数组」与「工作区/全局目录里的 jiti 扩展」两条路径
+ * 插件加载器：把「内置插件的声明数组」与「工作区/全局目录里的第三方扩展」两条路径
  * 统一成同一个产物 {@link LoadedPlugin}。
  *
  * 设计依据：docs/plugin-system-design.md §4.3.2（一种产物、两个加载器）、§5.1-§5.5。
@@ -10,7 +10,6 @@
  * 它的工具**——半个插件比没有插件更难查。
  */
 
-import { createJiti } from 'jiti'
 import {
   existsSync,
   readFileSync,
@@ -22,7 +21,8 @@ import {
   unlinkSync,
   type Dirent,
 } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, dirname, join, sep } from 'node:path'
+import { createRequire } from 'node:module'
 import type { AgentEvent, AgentTool } from '../core/types'
 import {
   createPluginDisabledResolver,
@@ -134,7 +134,7 @@ interface RegistrationSink {
 interface PluginCandidate {
   manifest: PluginManifest
   contributions: PluginContributions
-  /** 声明式来源（内置）为 true；jiti 执行出来的第三方为 false */
+  /** 声明式来源（内置）为 true；从文件加载进来的第三方为 false */
   declarative: boolean
   /** 解析阶段就发现的问题（工具形态不对、模块抛错等） */
   diagnostics: PluginDiagnostic[]
@@ -248,11 +248,13 @@ function orderByDependencies(candidates: PluginCandidate[]): {
 
 export class ExtensionLoader {
   /**
-   * `moduleCache: false` 影响的是**插件自己 import 的其它文件**（嵌套依赖）：默认的按路径
-   * 缓存会让"改了 helper.ts 再刷新"看不到变化。入口模块不走这条缓存——它由
-   * {@link importPluginModule} 自己读源码 eval（那里解释了为什么不能依赖这个开关）。
+   * 加载插件模块用的 require（**缓存可删**，见 {@link importPluginModule}）。
+   *
+   * 用 `createRequire` 而不是全局 `require`：本文件是 ESM，而 Bun 下全局 `require.cache`
+   * 是 `undefined`（实测），`createRequire()` 返回的那个 require 上 `.cache` 可用。
    */
-  private jitiInstance = createJiti(import.meta.url, { moduleCache: false })
+  private pluginRequire = createRequire(import.meta.url)
+
   /**
    * 事件监听器**按插件分组**持有。
    *
@@ -265,19 +267,29 @@ export class ExtensionLoader {
   /**
    * 读入一个扩展模块。
    *
-   * **自己读源码 + `evalModule`，刻意不经过 jiti 的模块缓存**（设计文档 §5.5 的重载语义）。
-   * 背景：jiti 默认按路径缓存模块，而 Bun 下 jiti 会走 `tryNative` 路径（`require`），
-   * 实测"改写 `.ada/extensions/foo.ts` → 刷新插件列表"拿到的仍是旧版本——重载看起来
-   * 成功了、跑的还是老代码。`moduleCache: false` 在该路径上不足以清掉 Bun 自己的缓存
-   * （它按 specifier 删 `require.cache`，与真实缓存键并不总是同一个字符串）。
+   * **用 `require()` + 清 `require.cache`，不用 jiti、也不用 `import()`。**
    *
-   * 插件重载的语义就是"重新读一遍文件"，所以这里把这件事握在自己手里：读到的源码当场
-   * eval，缓存是否命中不再取决于第三方库的默认值。转译结果仍走 jiti 的 `fsCache`
-   * （按源码内容失效），所以没有把编译成本变成每次全量。
+   * 为什么不用 jiti：`bun build --compile` 的单文件里，jiti 会去 `require('../dist/babel.cjs')`
+   * ——那是它自己的懒加载依赖，打进单文件后这个相对路径不存在，于是**每个工作区插件都变成
+   * `未生效（broken）：Cannot find module '../dist/babel.cjs'`**。实测方式：直接连
+   * `dist/a-da.exe --host` 发 `plugin.list`，主机 stderr 里就是这条（`tmp/host-probe.ts`）。
+   *
+   * 为什么不用 `import()`：Bun 的模块缓存**按解析后的路径**（实测：`?v=` 查询串、`./` 与 `../`
+   * 的等价写法都不认），所以 `import()` 拿到的一直是第一次那份代码——"改写插件再刷新"会静默
+   * 跑旧代码（`gate-delegation.test.ts` 的 `__gate_module_evals` 断言抓的就是这个）。
+   * `require()` 的缓存是**可删的**，这才是热重载该走的路；Bun 的 `require` 认识 TS，也认识
+   * `export default`（返回带 `default` 的命名空间，与 jiti 的返回值同形）。
+   *
+   * 清缓存清的是**整个插件目录**（而不只是入口文件）：插件 `import`/`require` 出来的相对依赖
+   * 也一并重新求值，否则"改了 helper.ts 再刷新"看不到变化。
    */
   private async importPluginModule(filePath: string): Promise<unknown> {
-    const source = readFileSync(filePath, 'utf8')
-    return await this.jitiInstance.evalModule(source, { filename: filePath, async: true })
+    const resolved = this.pluginRequire.resolve(filePath)
+    const prefix = `${dirname(resolved)}${sep}`
+    for (const key of Object.keys(this.pluginRequire.cache)) {
+      if (key.startsWith(prefix)) delete this.pluginRequire.cache[key]
+    }
+    return this.pluginRequire(resolved)
   }
 
   /**

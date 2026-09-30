@@ -129,7 +129,7 @@ describe('M1：两种导出形态产出等价的 LoadedPlugin', () => {
     expect(builtin.plugin.contributions.tools!.length).toBeGreaterThan(0)
     expect(third.plugin.contributions.tools!.length).toBe(1)
 
-    // 唯一的实质差别是"能否不执行代码就展示"（内置可，jiti 出来的不可）
+    // 唯一的实质差别是"能否不执行代码就展示"（内置可，从文件加载出来的不可）
     expect(builtin.plugin.declarative).toBe(true)
     expect(third.plugin.declarative).toBe(false)
     expect(builtin.plugin.status).toBe('ready')

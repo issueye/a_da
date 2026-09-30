@@ -271,6 +271,23 @@ export function createWebSocketClient(options: WebSocketClientOptions): WebSocke
     closeConfirm: () => viewStore.closeConfirm(),
     pickFiles: (request) => viewStore.pickFiles(request),
     closeFilePicker: () => viewStore.closeFilePicker(),
+    /**
+     * 切焦点：本地立刻生效（`focusThread`），主机那边尽力通知。
+     *
+     * 这是"点了没反应、30 秒后弹超时"那类问题的根治：焦点归客户端（协议 §11 定案 #1），
+     * 不该等主机回话；通知失败只记日志。
+     */
+    activateThread: (threadId) => {
+      viewStore.focusThread(threadId)
+      void request('ui.activeThread', { threadId }).catch((err: Error) =>
+        console.warn('[ws-client] 焦点通知主机失败:', err.message)
+      )
+    },
+    activateProject: (workspace) => {
+      void request('ui.activeProject', { workspace }).catch((err: Error) =>
+        console.warn('[ws-client] 切换项目通知主机失败:', err.message)
+      )
+    },
   }
 
   /** UI 外壳动作失败不弹窗（它只是"开关没生效"），但必须在控制台留痕，不静默吞掉。 */

@@ -101,6 +101,23 @@ export function createInProcessClient(
     // 文件选择器同样是客户端本地状态（回调不可能上线），只是它会去问主机的 fs.*
     pickFiles: (request) => viewStore?.pickFiles(request),
     closeFilePicker: () => viewStore?.closeFilePicker(),
+    /**
+     * 切焦点：本地立刻生效，主机那边尽力通知。
+     *
+     * 协议 §11 定案把焦点划给客户端，所以界面不该等主机回话——等它就会出现
+     * "点了没反应，30 秒后弹一个超时"（主机在跑长任务时必然会遇到）。
+     */
+    activateThread: (threadId) => {
+      viewStore?.focusThread(threadId)
+      void dispatch('ui.activeThread', { threadId }).catch((err: Error) => {
+        console.warn('[client] 焦点通知主机失败:', err.message)
+      })
+    },
+    activateProject: (workspace) => {
+      void dispatch('ui.activeProject', { workspace }).catch((err: Error) => {
+        console.warn('[client] 切换项目通知主机失败:', err.message)
+      })
+    },
   }
 
   const dispatch = createCommandDispatcher(store)
