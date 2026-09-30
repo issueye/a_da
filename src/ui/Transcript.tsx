@@ -10,7 +10,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useGpuix, useWindowSize, type PublicInstance } from '@gpuix/react'
 import { describeTool } from '../agent/tools'
 import { patchStats } from '../agent/patch'
-import type { AgentStore } from '../agent/store'
+import type { AgentClient } from './client'
 import type { Item, ToolStatus } from '../agent/types'
 import { Icon } from './controls'
 import { QuestionCard, parseQuestion } from './QuestionCard'
@@ -136,10 +136,10 @@ function MonoBlock({ text, tone }: { text: string; tone?: string }) {
 /** The user's own turn, right-aligned like a chat bubble, with copy and inline edit actions. */
 function UserRow({
   item,
-  store,
+  client,
 }: {
   item: Extract<Item, { kind: 'user' }>
-  store?: AgentStore
+  client?: AgentClient
 }) {
   const [editing, setEditing] = useState(false)
   const [editText, setEditText] = useState(item.text)
@@ -171,8 +171,13 @@ function UserRow({
     e?.stopPropagation?.()
     const trimmed = editText.trim()
     if (!trimmed && (!item.images || item.images.length === 0)) return
-    if (store) {
-      void store.editUserMessageAndResend(item.id, trimmed, item.images)
+    if (client) {
+      void client.request('thread.editAndResend', {
+        threadId: client.state.activeId,
+        itemId: item.id,
+        text: trimmed,
+        images: item.images,
+      })
     }
     setEditing(false)
   }
@@ -466,7 +471,7 @@ function UserRow({
           </text>
         </div>
 
-        {store ? (
+        {client ? (
           <div
             role="button"
             aria-label="编辑"
@@ -791,7 +796,7 @@ function TodoContent({ item }: { item: Extract<Item, { kind: 'tool' }> }) {
  * 面板，两处共用同一份实现与同一个作答入口）。
  */
 export { parseQuestion }
-function SubagentContent({ item, store }: { item: Extract<Item, { kind: 'tool' }>; store: AgentStore }) {
+function SubagentContent({ item, client }: { item: Extract<Item, { kind: 'tool' }>; client: AgentClient }) {
   const subagentId = String(item.args?.subagent_id ?? 'subagent')
   const task = String(item.args?.task ?? '')
   const context = item.args?.additional_context ? String(item.args.additional_context) : ''
@@ -806,13 +811,17 @@ function SubagentContent({ item, store }: { item: Extract<Item, { kind: 'tool' }
   const idMatch = output.match(/子会话 ID:\s*([a-zA-Z0-9_\-]+)/)
   const subagentThreadId = idFromDetails || idMatch?.[1] || idFromArgs
 
-  let targetThread = subagentThreadId ? store.threads.find((t) => t.id === subagentThreadId) : undefined
+  let targetThread = subagentThreadId
+    ? client.state.threads.find((t) => t.id === subagentThreadId)
+    : undefined
 
   // 4. 旧数据或未匹配到 ID 时的回退匹配：
   //    按父会话过滤并尝试根据委派任务标题精准识别，避免多子智能体同名歧义
   if (!targetThread) {
-    const parentId = item.threadId || store.activeId
-    const candidates = store.threads.filter((t) => t.parentId === parentId && t.subagentId === subagentId)
+    const parentId = item.threadId || client.state.activeId
+    const candidates = client.state.threads.filter(
+      (t) => t.parentId === parentId && t.subagentId === subagentId
+    )
     if (task.trim()) {
       const cleanTaskPrefix = task.replace(/[\r\n\t]+/g, ' ').trim().slice(0, 15)
       targetThread = candidates.find((t) => t.title.includes(cleanTaskPrefix))
@@ -823,7 +832,9 @@ function SubagentContent({ item, store }: { item: Extract<Item, { kind: 'tool' }
     if (!targetThread && task.trim()) {
       // 跨层级自愈查找：若因旧 bug 被挂到了其他父级，尝试全局按 title 匹配
       const cleanTaskPrefix = task.replace(/[\r\n\t]+/g, ' ').trim().slice(0, 15)
-      targetThread = store.threads.find((t) => t.isSubagent && t.subagentId === subagentId && t.title.includes(cleanTaskPrefix))
+      targetThread = client.state.threads.find(
+        (t) => t.isSubagent && t.subagentId === subagentId && t.title.includes(cleanTaskPrefix)
+      )
     }
   }
 
@@ -863,8 +874,8 @@ function SubagentContent({ item, store }: { item: Extract<Item, { kind: 'tool' }
               role="button"
               aria-label="打开子会话页签"
               onClick={() => {
-                store.openTab(targetThread.id)
-                store.selectThread(targetThread.id)
+                client.ui.openTab(targetThread.id)
+                void client.request('ui.activeThread', { threadId: targetThread.id })
               }}
               style={{
                 display: 'flex',
@@ -909,7 +920,7 @@ function SubagentContent({ item, store }: { item: Extract<Item, { kind: 'tool' }
   )
 }
 
-function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; store: AgentStore }) {
+function ToolCard({ item, client }: { item: Extract<Item, { kind: 'tool' }>; client: AgentClient }) {
   const status = statusOf(item.status)
   /** 折叠 / 展开。默认一律收起：跑完的、失败的、被拒的都只占一行。 */
   const [open, setOpen] = useState(false)
@@ -1117,7 +1128,9 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
                 testId="approve"
                 role="button"
                 aria-label="批准"
-                onClick={() => store.decide(item.id, true)}
+                onClick={() =>
+                  void client.request('approval.decide', { toolItemId: item.id, approved: true })
+                }
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -1136,7 +1149,9 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
                 testId="deny"
                 role="button"
                 aria-label="拒绝"
-                onClick={() => store.decide(item.id, false)}
+                onClick={() =>
+                  void client.request('approval.decide', { toolItemId: item.id, approved: false })
+                }
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -1157,11 +1172,17 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
           ) : null}
 
           {question && question.status !== 'pending' ? (
-            <QuestionCard callId={item.callId} question={question} store={store} />
+            <QuestionCard
+            callId={item.callId}
+            question={question}
+            onAnswer={(answer) =>
+              void client.request('question.answer', { callId: item.callId, ...answer })
+            }
+          />
           ) : null}
 
           {open && isTodo ? <TodoContent item={item} /> : null}
-          {open && isSubagent ? <SubagentContent item={item} store={store} /> : null}
+          {open && isSubagent ? <SubagentContent item={item} client={client} /> : null}
 
           {open && item.patch ? (
             <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -1218,7 +1239,12 @@ function ToolCard({ item, store }: { item: Extract<Item, { kind: 'tool' }>; stor
                   testId={`revert-card-${item.id}`}
                   role="button"
                   aria-label="撤销此次改动"
-                  onClick={() => void store.revertCard(item.threadId ?? store.activeId, item.id)}
+                  onClick={() =>
+                    void client.request('change.revertCard', {
+                      threadId: item.threadId ?? client.state.activeId,
+                      cardId: item.id,
+                    })
+                  }
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -1540,7 +1566,7 @@ const GAP_BELOW: Record<Item['kind'], number> = {
   compact: 14,
 }
 
-export function CompactCard({ item, store }: { item: Extract<Item, { kind: 'compact' }>; store: AgentStore }) {
+export function CompactCard({ item, client }: { item: Extract<Item, { kind: 'compact' }>; client: AgentClient }) {
   const [expanded, setExpanded] = useState(false)
   const [showOriginal, setShowOriginal] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -1874,7 +1900,7 @@ export function CompactCard({ item, store }: { item: Extract<Item, { kind: 'comp
                   }}
                 >
                   {item.prunedItems.map((p) => (
-                    <ItemRow key={p.id} item={p} store={store} />
+                    <ItemRow key={p.id} item={p} client={client} />
                   ))}
                 </div>
               ) : null}
@@ -1886,14 +1912,14 @@ export function CompactCard({ item, store }: { item: Extract<Item, { kind: 'comp
   )
 }
 
-function ItemRow({ item, store }: { item: Item; store: AgentStore }) {
-  if (item.kind === 'user') return <UserRow item={item} store={store} />
+function ItemRow({ item, client }: { item: Item; client: AgentClient }) {
+  if (item.kind === 'user') return <UserRow item={item} client={client} />
   if (item.kind === 'thinking') return <ThinkingRow item={item} />
   if (item.kind === 'assistant') return <AssistantRow item={item} turnDurationMs={item.turnDurationMs} />
-  if (item.kind === 'compact') return <CompactCard item={item} store={store} />
+  if (item.kind === 'compact') return <CompactCard item={item} client={client} />
   if (item.kind === 'tool') {
     // todo 卡只活在「压缩前的原始历史」重放里：主线流程由 TodoFloatingPanel 呈现
-    return <ToolCard item={item} store={store} />
+    return <ToolCard item={item} client={client} />
   }
   return <NoticeRow item={item} />
 }
@@ -2097,7 +2123,7 @@ export function buildTranscriptBlocks(items: Item[], isRunning: boolean): Transc
  */
 function ProcessGroupCard({
   block,
-  store,
+  client,
   isOpen,
   onToggle,
   maxBodyHeight,
@@ -2105,7 +2131,7 @@ function ProcessGroupCard({
   onToggleShowAll,
 }: {
   block: ProcessBlock
-  store: AgentStore
+  client: AgentClient
   isOpen: boolean
   onToggle: () => void
   /** 展开体的高度上限：超过就自己内部滚动，好让折叠条始终留在屏幕内 */
@@ -2432,7 +2458,7 @@ function ProcessGroupCard({
                 paddingBottom: item.kind === 'notice' ? 6 : 3,
               }}
             >
-              <ItemRow item={item} store={store} />
+              <ItemRow item={item} client={client} />
             </div>
           ))}
         </div>
@@ -2470,11 +2496,11 @@ function ProcessGroupCard({
   )
 }
 
-export function Transcript({ store }: { store: AgentStore }) {
-  const items = store.active.items
+export function Transcript({ client }: { client: AgentClient }) {
+  const items = client.state.active.items
   // 任务规划步骤不在会话区中展示，由独立的收缩悬浮框呈现
   const displayItems = items.filter((item) => !(item.kind === 'tool' && item.name === 'todo'))
-  const isThreadRunning = store.isThreadRunning(store.activeId)
+  const isThreadRunning = client.state.isThreadRunning(client.state.activeId)
   const blocks = buildTranscriptBlocks(displayItems, isThreadRunning)
 
   const { renderer } = useGpuix()
@@ -2507,7 +2533,7 @@ export function Transcript({ store }: { store: AgentStore }) {
     setUserExpandedCompletedBlocks({})
     setUserCollapsedRunningBlocks({})
     setUserShowAllBlocks({})
-  }, [store.activeId])
+  }, [client.state.activeId])
 
   const toggleBlock = (block: ProcessBlock, currentOpen: boolean) => {
     // 收起时把"显示全部"一并复位：它是一次阅读选择，不该跨收起/展开记住
@@ -2637,17 +2663,17 @@ export function Transcript({ store }: { store: AgentStore }) {
                   }}
                 >
                   {block.kind === 'user' ? (
-                    <UserRow item={block.item} store={store} />
+                    <UserRow item={block.item} client={client} />
                   ) : block.kind === 'assistant' ? (
                     <AssistantRow item={block.item} turnDurationMs={block.turnDurationMs} />
                   ) : block.kind === 'thinking' ? (
                     <ThinkingRow item={block.item} />
                   ) : block.kind === 'compact' ? (
-                    <CompactCard item={block.item} store={store} />
+                    <CompactCard item={block.item} client={client} />
                   ) : (
                     <ProcessGroupCard
                       block={block}
-                      store={store}
+                      client={client}
                       isOpen={isOpen}
                       maxBodyHeight={processBodyMaxHeight}
                       showAll={Boolean(userShowAllBlocks[block.id])}
@@ -2663,10 +2689,10 @@ export function Transcript({ store }: { store: AgentStore }) {
       )}
 
       {/* 任务规划步骤独立收缩悬浮框 */}
-      <TodoFloatingPanel store={store} />
+      <TodoFloatingPanel client={client} />
 
       {/* 改动审阅面板：逐文件查看 diff、恢复原状（含一键全部恢复） */}
-      {store.changesOpen ? <ChangesPanel store={store} /> : null}
+      {client.state.changesOpen ? <ChangesPanel client={client} /> : null}
 
       {/*
         右下角浮动操作区：两个入口共用一列，避免互相压住。

@@ -659,7 +659,7 @@ export function PendingQuestionsFloatingPanel({ store }: { store: AgentStore }) 
           key={entry.callId}
           callId={entry.callId}
           question={entry.question}
-          store={store}
+          onAnswer={(answer) => store.answerQuestion(entry.callId, answer)}
           variant="floating"
         />
       ))}

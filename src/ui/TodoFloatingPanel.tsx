@@ -8,7 +8,7 @@
  */
 
 import React, { useState } from 'react'
-import type { AgentStore } from '../agent/store'
+import type { AgentClient } from './client'
 import type { Item } from '../agent/types'
 import { copyToClipboard } from '../platform/clipboard'
 import { C, FONT_MONO } from '../theme'
@@ -68,11 +68,11 @@ export function getLatestTodoItem(items: Item[]): {
   return null
 }
 
-export function TodoFloatingPanel({ store }: { store: AgentStore }) {
+export function TodoFloatingPanel({ client }: { client: AgentClient }) {
   const [collapsed, setCollapsed] = useState(false)
   const [copied, setCopied] = useState(false)
 
-  const latest = getLatestTodoItem(store.active.items)
+  const latest = getLatestTodoItem(client.state.active.items)
   if (!latest) return null
 
   const { todos, notes } = latest

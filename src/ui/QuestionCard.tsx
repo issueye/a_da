@@ -15,7 +15,6 @@
  */
 
 import React, { useState } from 'react'
-import type { AgentStore } from '../agent/store'
 import type { AgentQuestion, Item } from '../agent/types'
 import { C, editorTheme } from '../theme'
 import { Icon } from './controls'
@@ -49,13 +48,20 @@ export function parseQuestion(item: Extract<Item, { kind: 'tool' }>): AgentQuest
 export function QuestionCard({
   callId,
   question,
-  store,
+  onAnswer,
   variant = 'inline',
 }: {
   /** 这次工具调用的 id：作答要按它回传给挂起中的工具。 */
   callId: string
   question: AgentQuestion
-  store: AgentStore
+  /**
+   * 把用户的作答交出去。
+   *
+   * 刻意**不收 store / client**：这张卡只需要"把答案送出去"这一件事，两个宿主
+   * （会话流与输入框上方的浮动面板）各自决定怎么送——收整份客户端接口会把
+   * 卡片和宿主绑在一起，也让测试不得不造一个 store。
+   */
+  onAnswer: (answer: { choice?: string; text?: string }) => void
   /**
    * `inline`＝会话流里的历史记录；`floating`＝输入框上方的浮动面板。
    *
@@ -119,7 +125,7 @@ export function QuestionCard({
                   key={choice.id}
                   testId={`question-choice-${choice.id}`}
                   role="button"
-                  onClick={() => store.answerQuestion(callId, { choice: choice.id })}
+                  onClick={() => onAnswer({ choice: choice.id })}
                   style={{
                     display: 'flex',
                     flexDirection: 'column',
@@ -179,7 +185,7 @@ export function QuestionCard({
                   }}
                   onChange={(event) => setText(event.value ?? '')}
                   onSubmit={() => {
-                    if (canSubmitText) store.answerQuestion(callId, { text: text.trim() })
+                    if (canSubmitText) onAnswer({ text: text.trim() })
                   }}
                 />
               </div>
@@ -188,7 +194,7 @@ export function QuestionCard({
                 role="button"
                 aria-label="提交回答"
                 onClick={() => {
-                  if (canSubmitText) store.answerQuestion(callId, { text: text.trim() })
+                  if (canSubmitText) onAnswer({ text: text.trim() })
                 }}
                 style={{
                   display: 'flex',

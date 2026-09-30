@@ -6,6 +6,7 @@ import type { Item } from '../agent/types'
 import { store } from '../agent/store'
 import { buildTranscriptBlocks, Transcript } from './Transcript'
 import { Composer } from './Composer'
+import { agentClient } from './client'
 
 const describeNative = hasNativeTestRenderer ? describe : describe.skip
 
@@ -177,7 +178,7 @@ describe('buildTranscriptBlocks 分块逻辑', () => {
 function TranscriptLive() {
   const [, setTick] = React.useState(0)
   React.useEffect(() => store.subscribe(() => setTick((tick) => tick + 1)), [])
-  return <Transcript store={store} />
+  return <Transcript client={agentClient} />
 }
 
 describeNative('Transcript UI 过程收缩交互', () => {
@@ -442,7 +443,7 @@ describeNative('Transcript UI 过程收缩交互', () => {
     const { render, renderer } = createTestRoot({ width: 800, height: 600 })
     render(
       <div style={{ display: 'flex', flexDirection: 'column', position: 'relative', width: 800, height: 600 }}>
-        <Transcript store={store} />
+        <Transcript client={agentClient} />
       </div>,
     )
     const app = await connectTest(renderer)
@@ -525,7 +526,7 @@ describeNative('Transcript UI 过程收缩交互', () => {
     const { render, renderer } = createTestRoot({ width: 800, height: 600 })
     render(
       <div style={{ display: 'flex', flexDirection: 'column', position: 'relative', width: 800, height: 600 }}>
-        <Transcript store={store} />
+        <Transcript client={agentClient} />
       </div>,
     )
     const app = await connectTest(renderer)
@@ -580,7 +581,7 @@ describeNative('Transcript UI 过程收缩交互', () => {
     const { render, renderer } = createTestRoot({ width: 800, height: 600 })
     render(
       <div style={{ display: 'flex', flexDirection: 'column', position: 'relative', width: 800, height: 600 }}>
-        <Transcript store={store} />
+        <Transcript client={agentClient} />
       </div>,
     )
     const app = await connectTest(renderer)
@@ -619,7 +620,7 @@ describeNative('Transcript UI 过程收缩交互', () => {
     const { render, renderer } = createTestRoot({ width: 800, height: 600 })
     render(
       <div style={{ display: 'flex', flexDirection: 'column', position: 'relative', width: 800, height: 600 }}>
-        <Transcript store={store} />
+        <Transcript client={agentClient} />
       </div>,
     )
     const app = await connectTest(renderer)
@@ -694,7 +695,7 @@ describeNative('Transcript UI 过程收缩交互', () => {
     const { render, renderer } = createTestRoot({ width: 800, height: 600 })
     render(
       <div style={{ display: 'flex', flexDirection: 'column', position: 'relative', width: 800, height: 600 }}>
-        <Transcript store={store} />
+        <Transcript client={agentClient} />
       </div>,
     )
     const app = await connectTest(renderer)
@@ -740,7 +741,7 @@ describeNative('Transcript UI 过程收缩交互', () => {
     const { render, renderer } = createTestRoot({ width: 800, height: 600 })
     render(
       <div style={{ display: 'flex', flexDirection: 'column', position: 'relative', width: 800, height: 600 }}>
-        <Transcript store={store} />
+        <Transcript client={agentClient} />
       </div>,
     )
     const app = await connectTest(renderer)
@@ -780,7 +781,7 @@ describeNative('Transcript UI 过程收缩交互', () => {
     const { render, renderer } = createTestRoot({ width: 800, height: 600 })
     render(
       <div style={{ display: 'flex', flexDirection: 'column', position: 'relative', width: 800, height: 600 }}>
-        <Transcript store={store} />
+        <Transcript client={agentClient} />
       </div>,
     )
     const app = await connectTest(renderer)

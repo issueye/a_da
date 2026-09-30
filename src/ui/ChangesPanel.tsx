@@ -3,25 +3,15 @@
  *
  * 悬浮在会话区右上角（任务规划面板下方），把本会话所有被跟踪的文件改动
  * （write_file / edit_file）按文件聚合：看 diff、逐文件「恢复原状」、或一键
- * 全部恢复。数据来自 store.getThreadFileChanges，回滚能力来自检查点模块
+ * 全部恢复。数据来自客户端（`change.list` 的派生），回滚能力来自检查点模块
  * （agent/checkpoint.ts）——批准即落盘，但随时有得退。
  */
 
 import React, { useState } from 'react'
-import type { AgentStore } from '../agent/store'
+import type { AgentClient, FileChange } from './client'
 import { C, FONT_MONO } from '../theme'
 import { docTheme } from '../theme'
 import { Icon } from './controls'
-
-interface FileChange {
-  path: string
-  latestPatch: string
-  additions: number
-  deletions: number
-  editsCount: number
-  reverted: boolean
-  cardIds: string[]
-}
 
 function baseName(path: string): string {
   const normalized = path.replace(/\\/g, '/')
@@ -29,20 +19,20 @@ function baseName(path: string): string {
   return idx >= 0 ? normalized.slice(idx + 1) : normalized
 }
 
-export function ChangesPanel({ store }: { store: AgentStore }) {
+export function ChangesPanel({ client }: { client: AgentClient }) {
   const [expandedPath, setExpandedPath] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const threadId = store.activeId
-  const changes: FileChange[] = store.getThreadFileChanges(threadId)
+  const threadId = client.state.activeId
+  const changes: FileChange[] = client.state.getThreadFileChanges(threadId)
   const activeCount = changes.filter((change) => !change.reverted).length
-  const running = store.isThreadRunning(threadId)
+  const running = client.state.isThreadRunning(threadId)
 
   const revertFile = async (path: string): Promise<void> => {
     if (busy) return
     setBusy(true)
     try {
-      await store.revertFile(threadId, path)
+      await client.request('change.revertFile', { threadId, path })
     } finally {
       setBusy(false)
     }
@@ -52,7 +42,7 @@ export function ChangesPanel({ store }: { store: AgentStore }) {
     if (busy) return
     setBusy(true)
     try {
-      await store.revertAllChanges(threadId)
+      await client.request('change.revertAll', { threadId })
     } finally {
       setBusy(false)
     }
@@ -112,7 +102,7 @@ export function ChangesPanel({ store }: { store: AgentStore }) {
           testId="close-changes-panel"
           role="button"
           aria-label="关闭改动审阅"
-          onClick={() => store.setChangesOpen(false)}
+          onClick={() => client.ui.setChangesOpen(false)}
           style={{
             display: 'flex',
             alignItems: 'center',

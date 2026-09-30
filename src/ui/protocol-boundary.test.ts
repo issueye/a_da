@@ -24,17 +24,13 @@ const uiDir = join(root, 'src', 'ui')
 
 /** 待迁移清单（相对仓库根、正斜杠）。M0 结束前清空。 */
 const PENDING = [
-  'src/ui/ChangesPanel.tsx',
   'src/ui/CommandPalette.tsx',
   'src/ui/Composer.tsx',
   'src/ui/EmptyConversationView.tsx',
   'src/ui/PluginsDialog.tsx',
-  'src/ui/QuestionCard.tsx',
   'src/ui/SettingsDialog.tsx',
   'src/ui/Sidebar.tsx',
   'src/ui/SlashCommandMenu.tsx',
-  'src/ui/TodoFloatingPanel.tsx',
-  'src/ui/Transcript.tsx',
   'src/ui/WorkspaceSelector.tsx',
   'src/ui/shortcuts.ts',
 ]

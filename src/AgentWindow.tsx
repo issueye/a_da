@@ -77,7 +77,7 @@ export function AgentWindow() {
             <EmptyConversationView store={agent} />
           ) : (
             <>
-              <Transcript store={agent} />
+              <Transcript client={client} />
               <Composer store={agent} />
             </>
           )}

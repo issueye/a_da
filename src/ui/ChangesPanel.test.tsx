@@ -17,6 +17,7 @@ import type { Item } from '../agent/types'
 import { store } from '../agent/store'
 import { defaultCheckpointManager } from '../agent/checkpoint'
 import { ChangesPanel } from './ChangesPanel'
+import { agentClient } from './client'
 
 const describeNative = hasNativeTestRenderer ? describe : describe.skip
 
@@ -155,7 +156,7 @@ describeNative('ChangesPanel 交互', () => {
     const { render, renderer } = createTestRoot({ width: 800, height: 600 })
     render(
       <div style={{ position: 'relative', width: 800, height: 600 }}>
-        <ChangesPanel store={store} />
+        <ChangesPanel client={agentClient} />
       </div>,
     )
     const app = await connectTest(renderer)
@@ -227,7 +228,7 @@ describeNative('ChangesPanel 交互', () => {
     const { render, renderer } = createTestRoot({ width: 800, height: 600 })
     render(
       <div style={{ position: 'relative', width: 800, height: 600 }}>
-        <ChangesPanel store={store} />
+        <ChangesPanel client={agentClient} />
       </div>,
     )
     const app = await connectTest(renderer)

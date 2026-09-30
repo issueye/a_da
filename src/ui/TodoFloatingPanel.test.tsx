@@ -10,6 +10,7 @@ import {
 } from './TodoFloatingPanel'
 import { Transcript } from './Transcript'
 import { store } from '../agent/store'
+import { agentClient } from './client'
 
 const describeNative = hasNativeTestRenderer ? describe : describe.skip
 
@@ -246,7 +247,7 @@ describeNative('TodoFloatingPanel UI', () => {
     const { render, renderer } = createTestRoot({ width: 800, height: 600 })
     render(
       <div style={{ position: 'relative', width: 800, height: 600 }}>
-        <TodoFloatingPanel store={store} />
+        <TodoFloatingPanel client={agentClient} />
       </div>,
     )
     const app = await connectTest(renderer)
@@ -312,7 +313,7 @@ describeNative('TodoFloatingPanel UI', () => {
     const { render, renderer } = createTestRoot({ width: 800, height: 600 })
     render(
       <div style={{ display: 'flex', flexDirection: 'column', position: 'relative', width: 800, height: 600 }}>
-        <Transcript store={store} />
+        <Transcript client={agentClient} />
       </div>,
     )
     const app = await connectTest(renderer)
