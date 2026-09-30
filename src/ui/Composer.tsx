@@ -1280,8 +1280,8 @@ export function Composer({ client, centered }: { client: AgentClient; centered?:
                 onClick={() => {
                   if (client.state.active.parentId) {
                     void client.request('ui.activeThread', {
-                  threadId: client.state.active.parentId,
-                })
+                      threadId: client.state.active.parentId,
+                    })
                   }
                 }}
                 style={{

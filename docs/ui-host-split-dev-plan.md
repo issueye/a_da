@@ -222,8 +222,55 @@ M1 结束时仍然进程内跑，但**横跨进程的那套数据流已经成型
 `getThreadFileChanges`…），需要改成**从复制数据本地推导**（快照里补 `runningThreadIds` /
 `waitingThreadIds` / `publicWorkspace`，`getThreadFileChanges` 的派生逻辑本来就在 UI 侧可算）。
 
-**门禁（实测）**：`typecheck` exit 0；`bun test src/agent` **569 pass / 0 fail**；
-全量 **725 pass / 0 fail**（+4 = 复制视图单测）。
+#### ✅ M1 完成记录（2026-09-30，分支 `feat/ui-host-split`）
+
+**M1-1…M1-8 逐条落地**
+
+| # | 任务 | 落点 |
+|---|---|---|
+| M1-1 | 复制视图 | `src/ui/client/view-store.ts`：应用主机快照，**不读主机内存** |
+| M1-2 | 事件发射 | `src/agent/host/emitter.ts`：挂点只有一处（`store.subscribe`），`seq` 单调 |
+| M1-3 | 快照组装 | `src/agent/host/snapshot.ts`：`readHostSnapshot` + `stalenessKeys` |
+| M1-4 | 先粗后细 | M1 只发 `evt.state.snapshot`（整份），高频增量留给 M3 |
+| M1-5 | 合帧 | 客户端与主机两侧都实现了窗口；**进程内默认 0（同步）**，理由见下 |
+| M1-6 | `client.state` 换成复制视图 | `in-process.ts` 用发射器喂 ViewStore；`A_DA_CLIENT_VIEW=live` 可退回对照 |
+| M1-7 | 测试提交通道 | `client.refreshState()`（"重新要一份快照并应用"） |
+| M1-8 | 粗粒度兜底 | 进程内替身提供 `stalenessKeys()`：**改了却不通知**也能被发现（WS 源不提供，那时靠 `seq`/重连） |
+
+**快照覆盖度清单**（那 88 处 `notify()` 的替代对账）：`ClientSnapshot` 覆盖了 `ClientState`
+的每个字段——要么直接给（`threads`/`queue`/`log`/`workspace`/`config`/`pendingQuestions`），
+要么给推导输入（`runningThreadIds`/`waitingThreadIds`/`publicWorkspace`），
+要么客户端本地（`confirmModal`）。`emitter.test.ts` 里有一条**覆盖度守门**测试钉住"字段带齐"。
+
+**实施中新增/修正的三件事**
+
+1. **`confirmModal` 归客户端本地**：它带着回调，永远不可能上线。副作用是 2 个用例要改为走
+   `client.ui.showConfirm` / `client.state.confirmModal`；另外 `Sidebar.test.tsx` 的 `beforeEach`
+   必须清**客户端那份**（只清主机那份会留下整窗覆盖的浮层，把后续用例的点击全吃掉——
+   这正是它当时红了 15 秒的原因）。
+2. **测试 fixture 的改动量比预估小得多**：计划按"50 处各加一行"估，实际只有 **2 处**需要动——
+   因为进程内替身提供了 `stalenessKeys()` 兜底（M1-8）。WS 源上线后这层兜底消失，
+   届时那 50 处仍要显式提交（这条留给 M3 的清单）。
+3. **合帧默认值**：机制两侧都实现了，但进程内默认 0（同步）——16ms 会让 29 个"点击后立即断言
+   绘制结果"的用例红；WS 传输（M3）用 16–33ms。
+
+**M1 的可验证性质**：`client.state` 不再是主机内存对象；UI 只认 `client.state` / `client.request` /
+`client.ui` / `client.subscribe` 四条通道；主机侧已有"快照 + 事件 + seq"这条链——
+**M3 要做的只剩把这条链换成 WebSocket**（协议 §1）。
+
+**M1 验收逐条对账**
+
+| 计划里的验收 | 结果 |
+|---|---|
+| 三条门全过 | ✅ `typecheck` exit 0；`bun test src/agent` **574 pass / 0 fail**；全量 **737 pass / 0 fail** |
+| 流式文本、工具卡、队列、审批卡与今天逐项等价 | ✅ 全量绿色（含 `Composer`/`Transcript`/`model` 那几组真窗口用例） |
+| 88 处 `notify()` 每条都有归属 | ✅ 改成**快照覆盖度清单**：`ClientSnapshot` 覆盖 `ClientState` 的每个字段；`emitter.test.ts` 有一条守门断言"字段带齐" |
+| 合帧生效：delta 条数 ≪ token 数 | ⚠️ **口径改了**：M1 是粗粒度（整份快照 / 通知），**没有 delta**，所以按"通知次数"验收：两侧合帧各一条用例（多次广播 → 一个事件）。delta 级别的验收属于 M3 的细粒度事件 |
+| 断开重连：两客户端恢复一致视图 | ✅ 进程内形态已验（`client.test.ts`）：新客户端立刻拿到当前快照（种子）、两个客户端各自独立应用同一份快照 |
+| 测试提交通道（M1-7） | ✅ `client.refreshState()`；并如实记录：进程内**嵌套对象是共享引用**（所以 50 处 fixture 实际只需改 2 处），M3 起变副本后那 50 处才需要显式提交 |
+
+**门禁（实测）**：`typecheck` exit 0；`bun test src/agent` **574 pass / 0 fail**；
+全量 **737 pass / 0 fail**（+12 = 复制视图 8 + 发射器 5 + 客户端端到端 3 − 旧 4）。
 
 ---
 

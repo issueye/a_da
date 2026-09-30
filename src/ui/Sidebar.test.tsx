@@ -18,6 +18,7 @@ import { AgentWindow } from '../AgentWindow'
 import { getSessionsDir } from '../agent/session/manager'
 import { defaultSessionManager } from '../agent/session/manager'
 import { store } from '../agent/store'
+import { agentClient } from './client'
 import { setDirectoryPicker } from '../platform/dialog'
 import { setExplorerOpener } from '../platform/explorer'
 import { shortPath } from '../theme'
@@ -27,6 +28,9 @@ const describeNative = hasNativeTestRenderer ? describe : describe.skip
 const dirs: string[] = []
 
 beforeEach(() => {
+  // 确认框从 M1 起归**客户端本地**（回调不可能上线），所以要清客户端那份；
+  // 只清主机那份是不够的——留下的浮层是整窗覆盖的，会把后续用例的点击全吃掉。
+  agentClient.ui.closeConfirm()
   store.closeConfirm()
 })
 

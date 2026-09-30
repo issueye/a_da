@@ -4,7 +4,7 @@ import { createTestRoot, hasNativeTestRenderer } from '@gpuix/react/testing'
 import { connectTest } from '@gpuix/react/automation'
 import { ConfirmDialog } from './ConfirmDialog'
 import { AgentWindow } from '../AgentWindow'
-import { store } from '../agent/store'
+import { agentClient } from './client'
 
 const describeNative = hasNativeTestRenderer ? describe : describe.skip
 
@@ -56,7 +56,9 @@ describeNative('ConfirmDialog', () => {
     expect(await app.getByTestId('confirm-dialog').count()).toBe(0)
 
     let executed = false
-    store.showConfirm({
+    // 确认框是**客户端本地**状态（回调不可能上线），所以走客户端的动作入口，
+    // 而不是直接改 store —— 后者在 M1 之后界面已经看不到了。
+    agentClient.ui.showConfirm({
       title: '删除会话',
       message: '确定要删除会话吗？',
       onConfirm: () => {
@@ -82,7 +84,7 @@ describeNative('ConfirmDialog', () => {
     }
 
     expect(await app.getByTestId('confirm-dialog').count()).toBe(0)
-    expect(store.confirmModal).toBeNull()
+    expect(agentClient.state.confirmModal).toBeNull()
 
     await app.close()
   })

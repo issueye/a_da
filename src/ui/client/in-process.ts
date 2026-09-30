@@ -11,6 +11,7 @@
  */
 
 import type { AgentStore } from '../../agent/store'
+import { createHostEmitter } from '../../agent/host/emitter'
 import { AppErrorCode, ProtocolError } from '../../shared/protocol'
 import type { ParamsOf, ProtocolMethod, ResultOf } from '../../shared/protocol'
 import type { AgentClient, ClientState, UiActions } from './types'
@@ -18,11 +19,11 @@ import { createViewStore } from './view-store'
 
 export interface InProcessClientOptions {
   /**
-   * 是否用**复制视图**（M1 起默认）；关掉就退回 M0 的"活对象"读法，便于对照调试。
-   * 环境变量 `A_DA_CLIENT_VIEW=live` 也能关（本机排查用）。
+   * 是否用**复制视图**（M1 起默认）。关掉退回 M0 的"活对象"读法，便于对照调试；
+   * 环境变量 `A_DA_CLIENT_VIEW=live` 也能关。
    */
   replicated?: boolean
-  /** 变更合帧窗口（ms）；0 = 同步通知。 */
+  /** 合帧窗口（ms）：0 = 同步（进程内默认）；WebSocket 传输用 16–33ms。 */
   coalesceMs?: number
 }
 
@@ -30,26 +31,27 @@ export function createInProcessClient(
   store: AgentStore,
   options: InProcessClientOptions = {}
 ): AgentClient {
-  const replicated =
-    options.replicated ?? process.env.A_DA_CLIENT_VIEW !== 'live'
+  const replicated = options.replicated ?? process.env.A_DA_CLIENT_VIEW !== 'live'
 
-  // 复制视图：读的是快照，快照由来源的广播驱动重建（M1-1/M1-4/M1-5/M1-6）。
-  // 只在复制模式下创建——live 模式不该白白挂一个订阅与定时器。
-  //
-  // **合帧窗口默认 0（同步通知）**：进程内没有带宽要省，而大量 UI 用例在"点一下"之后
-  // 立即断言绘制结果——把它们改成等一帧只会让测试变成时序敏感，收益为零。
-  // 合帧机制照常实现并被 `view-store.test.ts` 覆盖；**M3 的 WebSocket 传输把它设为
-  // 16–33ms**（那时它才是真的在省"每 token 一帧"）。这是对计划 M1-5 的刻意偏差，
-  // 理由是实测出来的：默认 16ms 时有 29 个 UI 用例因"通知晚了一帧"而红。
-  const viewStore = replicated
-    ? createViewStore(store, {
-        subscribeToSource: (listener) => store.subscribe(listener),
-        coalesceMs: options.coalesceMs ?? 0,
-      })
+  /**
+   * 主机侧替身：发射器（把 store 的广播变成事件）+ 快照组装都在 `agent/host` 里——
+   * 客户端只**应用**，不读主机内存（M1-3/M1-6）。
+   */
+  const emitter = replicated ? createHostEmitter(store, { coalesceMs: options.coalesceMs ?? 0 }) : null
+  const viewStore = emitter
+    ? createViewStore(
+        {
+          snapshot: () => emitter.snapshot(),
+          subscribe: (listener) => emitter.subscribe((event) => listener(event.payload)),
+          // 进程内替身的防漏安全网：改了状态却没通知时也能被发现（WS 源不提供）
+          stalenessKeys: () => emitter.stalenessKeys(),
+        },
+        { coalesceMs: options.coalesceMs ?? 0 }
+      )
     : null
 
   const liveState: ClientState = store
-  /** 两种读法共用的取状态入口：M1 起默认返回复制视图的快照。 */
+  /** 两种读法共用的取状态入口：M1 起默认返回复制视图的应用结果。 */
   const readState = (): ClientState => (viewStore ? viewStore.getState() : liveState)
 
   const ui: UiActions = {
@@ -65,8 +67,15 @@ export function createInProcessClient(
     toggleDebug: () => store.toggleDebug(),
     applyPromptToComposer: (content) => store.applyPromptToComposer(content),
     clearPendingDraft: () => store.clearPendingDraft(),
-    showConfirm: (options) => store.showConfirm(options),
-    closeConfirm: () => store.closeConfirm(),
+    // 确认框是**客户端本地**状态：回调不可能上线，所以它不进主机快照（见 view-store 文件头）。
+    showConfirm: (options) => {
+      if (viewStore) viewStore.showConfirm(options)
+      else store.showConfirm(options)
+    },
+    closeConfirm: () => {
+      if (viewStore) viewStore.closeConfirm()
+      else store.closeConfirm()
+    },
   }
 
   /** 未实现的协议方法：明确报错，而不是静默 no-op（"不允许静默失效"）。 */
@@ -220,8 +229,16 @@ export function createInProcessClient(
     // 订阅也走客户端层：复制视图模式下一并享受合帧（M3 换成 WebSocket 时这里是同一条缝）
     subscribe: (listener) =>
       viewStore ? viewStore.subscribe(listener) : store.subscribe(listener),
-    /** 立刻发布一次快照（绕过合帧窗口）。测试造完数据后显式提交时用。 */
-    refreshState: () => viewStore?.flush(),
+    /**
+     * 立刻应用一次主机快照（绕过合帧窗口）。
+     *
+     * 进程内它的含义是"重新向主机替身要一份快照并应用"；WS 实现里对应"要一次快照"。
+     * 测试造完数据后显式提交也用它。
+     */
+    refreshState: () => {
+      // live 模式（对照调试用）读的就是活对象，没有"应用快照"这回事，因此无事可做
+      viewStore?.flush()
+    },
     // 泛型签名与内部 `unknown` 派发之间的转换集中在这里，只此一处
     request: ((method: ProtocolMethod, params: unknown) =>
       dispatch(method, params)) as AgentClient['request'],

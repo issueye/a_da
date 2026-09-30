@@ -160,3 +160,69 @@ export interface ChangeSummary {
   count: number
   files: FileChange[]
 }
+
+/**
+ * 主机产出的**可渲染快照**（`session.snapshot` 的载荷；M1 里也是粗粒度事件的载荷）。
+ *
+ * M1 的定位（`docs/ui-host-split-dev-plan.md` M1-3/M1-4）：**先粗后细**——一次给整份快照，
+ * 客户端只"应用"，不读主机内存。等 M3 接了 WebSocket，再把高频路径拆成增量
+ * （`evt.message.delta` / `evt.card.updated`），其余仍走快照。
+ *
+ * **注意 `ui` 这一段**：这些字段（焦点、标签、草稿、浮层开关）按协议 §9.1 属于**客户端本地**，
+ * M1 只是**暂借**主机镜像一份（因为今天它们就住在 store 里）。M2 会把它们搬进
+ * `src/ui/state/`，届时 `ui` 整段从快照里消失。`confirmModal` **不在这里面**——它带着回调，
+ * 永远不可能上线，所以它从一开始就是客户端本地的。
+ */
+export interface ClientSnapshot {
+  /** 会话（含 items/messages：M1 整份给，M3 起分页/增量） */
+  threads: Thread[]
+  /** 当前焦点会话（M2 会变成客户端本地；主机只保证这里的 id 有效） */
+  activeThreadId: string
+  /** 正在跑的会话（`ClientState.isThreadRunning` 的推导输入） */
+  runningThreadIds: string[]
+  /** 正在等子智能体唤醒的会话（`isThreadWaiting` 的推导输入） */
+  waitingThreadIds: string[]
+  queue: QueuedItem[]
+  log: DebugEntry[]
+  workspace: {
+    project: string
+    files: number
+    dirs: number
+    scanning: boolean
+    entries: string[]
+  }
+  config: {
+    model: string
+    contextWindow: number
+    supportsImages: boolean
+    approval: ApprovalMode
+    effort: Effort
+    mode: AgentMode
+  }
+  /** 待回答的提问（`ask_user` 挂着没答的） */
+  pendingQuestions: Array<{ callId: string; question: AgentQuestion }>
+  /** 公共区路径：`labelFor` / `isPublic` 的推导输入 */
+  publicWorkspace: string
+  /** 主题（客户端偏好；M2 搬到客户端本地） */
+  appearance: string
+  /** 纯客户端状态的主机镜像（M2 搬走，见上方说明） */
+  ui: {
+    activeId: string
+    openTabIds: string[]
+    pendingDraft: string | null
+    debugOpen: boolean
+    settingsOpen: boolean
+    pluginsOpen: boolean
+    changesOpen: boolean
+    paletteOpen: boolean
+    sidebarOpen: boolean
+    searchOpen: boolean
+  }
+}
+
+/** 主机 → 客户端的粗粒度事件（M1 只有这一种；M3 起补齐协议 §4 的其余 topic）。 */
+export interface SnapshotEvent {
+  seq: number
+  topic: 'evt.state.snapshot'
+  payload: ClientSnapshot
+}
