@@ -66,7 +66,7 @@ export function AgentWindow() {
       <div style={{ display: 'flex', flexDirection: 'row', flexGrow: 1, minHeight: 0 }}>
         {client.state.sidebarOpen ? (
           <Sidebar
-            store={agent}
+            client={client}
             searchOpen={client.state.searchOpen}
             onCloseSearch={() => client.ui.setSearchOpen(false)}
           />

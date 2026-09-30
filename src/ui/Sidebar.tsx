@@ -2,7 +2,7 @@
  * 工作区与会话。
  *
  * One project row shows the workspace the agent is pinned to, and the session list
- * is the conversation history. Both are read from the store, which re-renders
+ * is the conversation history. Both are read from the client, which re-renders
  * this column whenever a turn changes something. 添加项目 opens the native
  * directory picker; a session is deleted from the trash icon at the end of its row.
  */
@@ -10,7 +10,7 @@
 import React, { useState } from 'react'
 import { Icon, IconButton } from './controls'
 import { C, editorTheme, M } from '../theme'
-import type { AgentStore } from '../agent/store'
+import type { AgentClient } from './client'
 import type { Thread } from '../agent/types'
 import { getSubagentColor } from '../agent/subagents/types'
 import { openInExplorer } from '../platform/explorer'
@@ -142,7 +142,7 @@ function Row({
  */
 function SessionRow({
   thread,
-  store,
+  client,
   selected,
   running,
   onNotice,
@@ -153,7 +153,7 @@ function SessionRow({
   hasRunningChildren,
 }: {
   thread: Thread
-  store: AgentStore
+  client: AgentClient
   selected: boolean
   running: boolean
   onNotice: (message: string | null) => void
@@ -165,17 +165,19 @@ function SessionRow({
 }) {
   const [hovered, setHovered] = useState(false)
   // 停在那儿等子智能体唤醒：仍在运行，但不在思考，徽章该和「运行中」区分开
-  const waiting = store.isThreadWaiting(thread.id)
+  const waiting = client.state.isThreadWaiting(thread.id)
 
   const remove = (e: any): void => {
     e?.stopPropagation?.()
-    store.showConfirm({
+    client.ui.showConfirm({
       title: '删除会话',
       message: `确定要删除会话「${thread.title}」吗？删除后会话记录将无法恢复。`,
       confirmText: '确认删除',
       onConfirm: () => {
         // 删除可能被插件拦下（beforeThreadDelete），所以要等结论再提示
-        void store.deleteThread(thread.id).then(onNotice)
+        void client
+          .request('thread.delete', { threadId: thread.id })
+          .then((result) => onNotice(result.message))
       },
     })
   }
@@ -226,7 +228,7 @@ function SessionRow({
       <div
         role="button"
         aria-label={thread.title}
-        onClick={() => store.selectThread(thread.id)}
+        onClick={() => void client.request('ui.activeThread', { threadId: thread.id })}
         style={{
           display: 'flex',
           flexDirection: 'row',
@@ -357,13 +359,13 @@ function SessionRow({
  */
 function SubagentSessionRow({
   thread,
-  store,
+  client,
   selected,
   running,
   onNotice,
 }: {
   thread: Thread
-  store: AgentStore
+  client: AgentClient
   selected: boolean
   running: boolean
   onNotice: (message: string | null) => void
@@ -371,17 +373,19 @@ function SubagentSessionRow({
   const [hovered, setHovered] = useState(false)
   const agentColor = getSubagentColor(thread.subagentId)
   // 子智能体自己也可能在等它的下级（正常不会，但状态标识保持一致更不容易误解）
-  const waiting = store.isThreadWaiting(thread.id)
+  const waiting = client.state.isThreadWaiting(thread.id)
 
   const remove = (e: any): void => {
     e?.stopPropagation?.()
-    store.showConfirm({
+    client.ui.showConfirm({
       title: '删除子会话',
       message: `确定要删除子会话「${thread.title}」吗？删除后该子智能体会话记录将无法恢复。`,
       confirmText: '确认删除',
       onConfirm: () => {
         // 删除可能被插件拦下（beforeThreadDelete），所以要等结论再提示
-        void store.deleteThread(thread.id).then(onNotice)
+        void client
+          .request('thread.delete', { threadId: thread.id })
+          .then((result) => onNotice(result.message))
       },
     })
   }
@@ -410,8 +414,8 @@ function SubagentSessionRow({
         role="button"
         aria-label={`子智能体: ${thread.title}`}
         onClick={() => {
-          store.openTab(thread.id)
-          store.selectThread(thread.id)
+          client.ui.openTab(thread.id)
+          void client.request('ui.activeThread', { threadId: thread.id })
         }}
         style={{
           display: 'flex',
@@ -498,14 +502,14 @@ function SubagentSessionRow({
 
 function WorkspaceTreeNode({
   workspacePath,
-  store,
+  client,
   query,
   expanded,
   onToggleExpand,
   onNotice,
 }: {
   workspacePath: string
-  store: AgentStore
+  client: AgentClient
   query: string
   expanded: boolean
   onToggleExpand: () => void
@@ -525,8 +529,8 @@ function WorkspaceTreeNode({
       return next
     })
   }
-  const isCurrent = workspacePath === store.project
-  const allWorkspaceThreads = store.threads.filter((t) => t.workspace === workspacePath)
+  const isCurrent = workspacePath === client.state.project
+  const allWorkspaceThreads = client.state.threads.filter((t) => t.workspace === workspacePath)
   const rootThreads = allWorkspaceThreads.filter((t) => !t.parentId)
   const queryLower = query.trim().toLowerCase()
 
@@ -559,7 +563,7 @@ function WorkspaceTreeNode({
       (!queryLower || t.title.toLowerCase().includes(queryLower)),
   )
 
-  const label = store.labelFor(workspacePath)
+  const label = client.state.labelFor(workspacePath)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100%', flexShrink: 0 }}>
@@ -605,7 +609,7 @@ function WorkspaceTreeNode({
           role="button"
           aria-label={label}
           onClick={() => {
-            store.selectProject(workspacePath)
+            void client.request('ui.activeProject', { workspace: workspacePath })
             if (!expanded) onToggleExpand()
           }}
           style={{
@@ -622,7 +626,7 @@ function WorkspaceTreeNode({
           }}
         >
           <Icon
-            name={store.isPublic(workspacePath) ? 'sparkles' : 'folder'}
+            name={client.state.isPublic(workspacePath) ? 'sparkles' : 'folder'}
             size={13}
             color={isCurrent ? C.link : C.secondary}
           />
@@ -674,8 +678,8 @@ function WorkspaceTreeNode({
               role="button"
               aria-label={`在 ${label} 中新建会话`}
               onClick={() => {
-                store.selectProject(workspacePath)
-                store.newThread(workspacePath)
+                void client.request('ui.activeProject', { workspace: workspacePath })
+                void client.request('thread.create', { workspace: workspacePath })
               }}
               style={{
                 display: 'flex',
@@ -722,19 +726,22 @@ function WorkspaceTreeNode({
           </div>
 
           {/* 移除工作区按钮 (垃圾桶)：公共区由 a-da 提供，不给移除入口 */}
-          {store.isPublic(workspacePath) ? null : (
+          {client.state.isPublic(workspacePath) ? null : (
             <div
               testId={`remove-project-${label}`}
               role="button"
               aria-label={`移除工作区 ${label}`}
               onClick={() => {
-                store.showConfirm({
+                client.ui.showConfirm({
                   title: '移除工作区',
                   message: `确定要从列表中移除工作区「${label}」吗？工作区下的会话历史记录将被清除，但本地实际代码文件不会被删除。`,
                   confirmText: '确认移除',
                   onConfirm: () => {
-                    const err = store.removeProject(workspacePath)
-                    if (err) onNotice(err)
+                    void client
+                      .request('workspace.remove', { workspace: workspacePath })
+                      .then((result) => {
+                        if (result.message) onNotice(result.message)
+                      })
                   },
                 })
               }}
@@ -801,9 +808,9 @@ function WorkspaceTreeNode({
                   thread.title.toLowerCase().includes(queryLower)),
             )
             const hasChildren = childSubagents.length > 0
-            const hasActiveChild = childSubagents.some((c) => c.id === store.activeId)
+            const hasActiveChild = childSubagents.some((c) => c.id === client.state.activeId)
             const isSubagentsExpanded = hasChildren && (!collapsedParentIds.has(thread.id) || hasActiveChild)
-            const hasRunningChildren = childSubagents.some((c) => store.isThreadRunning(c.id))
+            const hasRunningChildren = childSubagents.some((c) => client.state.isThreadRunning(c.id))
 
             return (
               <div
@@ -812,9 +819,9 @@ function WorkspaceTreeNode({
               >
                 <SessionRow
                   thread={thread}
-                  store={store}
-                  selected={thread.id === store.activeId}
-                  running={store.isThreadRunning(thread.id)}
+                  client={client}
+                  selected={thread.id === client.state.activeId}
+                  running={client.state.isThreadRunning(thread.id)}
                   onNotice={onNotice}
                   hasChildren={hasChildren}
                   childCount={childSubagents.length}
@@ -827,9 +834,9 @@ function WorkspaceTreeNode({
                       <SubagentSessionRow
                         key={child.id}
                         thread={child}
-                        store={store}
-                        selected={child.id === store.activeId}
-                        running={store.isThreadRunning(child.id)}
+                        client={client}
+                        selected={child.id === client.state.activeId}
+                        running={client.state.isThreadRunning(child.id)}
                         onNotice={onNotice}
                       />
                     ))
@@ -841,9 +848,9 @@ function WorkspaceTreeNode({
             <SubagentSessionRow
               key={child.id}
               thread={child}
-              store={store}
-              selected={child.id === store.activeId}
-              running={store.isThreadRunning(child.id)}
+              client={client}
+              selected={child.id === client.state.activeId}
+              running={client.state.isThreadRunning(child.id)}
               onNotice={onNotice}
             />
           ))}
@@ -854,11 +861,11 @@ function WorkspaceTreeNode({
 }
 
 export function Sidebar({
-  store,
+  client,
   searchOpen,
   onCloseSearch,
 }: {
-  store: AgentStore
+  client: AgentClient
   searchOpen: boolean
   onCloseSearch: () => void
 }) {
@@ -867,11 +874,11 @@ export function Sidebar({
   const [notice, setNotice] = useState<string | null>(null)
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<Record<string, boolean>>({})
 
-  const project = store.project
+  const project = client.state.project
 
   const isExpanded = (p: string) => {
     if (query.trim()) {
-      const hasMatch = store.threads.some(
+      const hasMatch = client.state.threads.some(
         (t) => t.workspace === p && t.title.toLowerCase().includes(query.trim().toLowerCase()),
       )
       if (hasMatch) return true
@@ -956,7 +963,7 @@ export function Sidebar({
           role="button"
           aria-label="新建对话"
           onClick={() => {
-            store.newThread()
+            void client.request('thread.create', { workspace: client.state.project })
           }}
           style={{
             display: 'flex',
@@ -984,15 +991,15 @@ export function Sidebar({
           label="工作区"
           open={projectsOpen}
           onToggle={() => setProjectsOpen((open) => !open)}
-          count={`${store.projects.length}`}
+          count={`${client.state.projects.length}`}
         />
         {projectsOpen ? (
           <>
-            {store.projects.map((p) => (
+            {client.state.projects.map((p) => (
               <WorkspaceTreeNode
                 key={p}
                 workspacePath={p}
-                store={store}
+                client={client}
                 query={query}
                 expanded={isExpanded(p)}
                 onToggleExpand={() => toggleExpand(p)}
@@ -1025,31 +1032,31 @@ export function Sidebar({
         }}
       >
         <text style={{ fontSize: 11, color: C.faint, flexGrow: 1 }}>
-          {store.workspaceInfo.scanning ? '索引中…' : `${store.workspaceInfo.files} 个文件`}
+          {client.state.workspaceInfo.scanning ? '索引中…' : `${client.state.workspaceInfo.files} 个文件`}
         </text>
         <IconButton
-          icon={store.appearance === 'dark' ? 'sun' : 'moon'}
+          icon={client.state.appearance === 'dark' ? 'sun' : 'moon'}
           testId="toggle-appearance"
-          label={store.appearance === 'dark' ? '切换到浅色模式' : '切换到深色模式'}
-          onClick={() => store.toggleAppearance()}
+          label={client.state.appearance === 'dark' ? '切换到浅色模式' : '切换到深色模式'}
+          onClick={() => client.ui.toggleAppearance()}
         />
         <IconButton
           icon="settings"
           testId="open-settings"
           label="设置"
-          onClick={() => store.setSettings(true)}
+          onClick={() => client.ui.setSettings(true)}
         />
         <IconButton
           icon="plug"
           testId="open-plugins"
           label="插件管理"
-          onClick={() => store.setPlugins(true)}
+          onClick={() => client.ui.setPlugins(true)}
         />
         <IconButton
           icon="refresh"
           testId="refresh-workspace"
           label="刷新工作区"
-          onClick={() => void store.refresh()}
+          onClick={() => void client.request('workspace.rescan', {})}
         />
       </div>
     </div>
