@@ -36,7 +36,10 @@ afterEach(async () => {
  *
  * `mode` 决定它怎么判：拒绝（不含校准信息）/ 拒绝（含校准）/ 通过 / 抛错。
  */
-async function writeGatePlugin(mode: 'deny' | 'deny-raw' | 'allow' | 'throw'): Promise<void> {
+async function writeGatePlugin(
+  mode: 'deny' | 'deny-raw' | 'allow' | 'throw',
+  fileName = 'gate-probe.ts'
+): Promise<void> {
   const body =
     mode === 'deny-raw'
       ? `return { allowed: true, reason: '我说通过' }`
@@ -47,12 +50,14 @@ async function writeGatePlugin(mode: 'deny' | 'deny-raw' | 'allow' | 'throw'): P
           : `throw new Error('判定服务不可达')`
 
   await writeFile(
-    join(workspace, '.ada', 'extensions', 'gate-probe.ts'),
-    `export default {
+    join(workspace, '.ada', 'extensions', fileName),
+    `globalThis.__gate_module_evals = (globalThis.__gate_module_evals ?? 0) + 1
+export default {
   name: '门禁探针',
   tools: [],
   hooks: {
     beforeSubagentStart: async (ctx) => {
+      globalThis.__gate_inputs = [...(globalThis.__gate_inputs ?? []), ctx.task]
       ctx.trace?.('[门禁探针] 收到判定请求：' + ctx.criteria)
       ${body}
     },
@@ -147,6 +152,82 @@ describe('门禁：拦下的委派不留下悬挂的父会话', () => {
       store.deleteThread(thread.id)
     } finally {
       managerModule.getById = restore
+    }
+  })
+})
+
+describe('门禁：恢复执行同样要过（不再只在启动时判）', () => {
+  test('resume 被拦下时抛出，且会话原样不动', async () => {
+    // 第一次放行，先把会话正常建出来并跑完
+    await writeGatePlugin('allow')
+    const store = new AgentStore(workspace)
+    const parent = store.newThread(workspace)
+    store.selectThread(parent.id)
+
+    const manager = await import('./manager')
+    const original = await manager.defaultSubagentManager.getById('researcher', workspace)
+    const managerModule = manager.defaultSubagentManager as unknown as {
+      getById: typeof manager.defaultSubagentManager.getById
+    }
+    const restore = managerModule.getById
+    managerModule.getById = async () => ({ ...original!, gate: { criteria: '任务描述里必须写明验收标准' } })
+
+    const globals = globalThis as Record<string, unknown>
+    globals.__gate_inputs = []
+
+    try {
+      const { thread, resultPromise } = await store.startSubagentThread({
+        parentThreadId: parent.id,
+        subagentId: 'researcher',
+        task: '把仓库扫一遍',
+        onStepUpdate: () => {},
+      })
+      await resultPromise
+      expect(store.isThreadRunning(thread.id)).toBe(false)
+      expect(thread.messages.length).toBeGreaterThan(0)
+
+      // 换成拒绝判定，再尝试恢复（重载必须真的重读文件，见 loader 的 importPluginModule）
+      globals.__gate_module_evals = 0
+      await writeGatePlugin('deny')
+      expect(globals.__gate_module_evals).toBe(1)
+
+      const messagesBefore = thread.messages.length
+      const itemsBefore = thread.items.length
+      const threadsBefore = store.threads.length
+
+      let error: unknown
+      try {
+        await store.resumeSubagentThread({
+          subagentThreadId: thread.id,
+          instruction: '接着上次的继续',
+        })
+      } catch (caught) {
+        error = caught
+      }
+
+      expect(String(error)).toMatch(/未通过启动门禁/)
+
+      // 关键：拦下发生在写任何东西之前——没有多出"恢复指示"消息、没进运行集合、没多出会话
+      expect(thread.messages.length).toBe(messagesBefore)
+      expect(thread.items.length).toBe(itemsBefore)
+      expect(store.threads.length).toBe(threadsBefore)
+      expect(store.isThreadRunning(thread.id)).toBe(false)
+
+      // 判定输入是「原始任务 + 本次恢复指示」：首轮已把 task 消耗掉，
+      // 只给"接着上次的继续"判定方无从判断。断言的是**插件真正收到的输入**（副作用），
+      // 而不是"钩子被调用过"——门禁链路上并没有 `ctx.trace`。
+      const inputs = globals.__gate_inputs as string[]
+      expect(inputs.length).toBeGreaterThanOrEqual(2)
+      const resumeInput = inputs[inputs.length - 1]!
+      expect(resumeInput).toContain('把仓库扫一遍')
+      expect(resumeInput).toContain('接着上次的继续')
+
+      store.deleteThread(parent.id)
+      store.deleteThread(thread.id)
+    } finally {
+      managerModule.getById = restore
+      delete globals.__gate_inputs
+      delete globals.__gate_module_evals
     }
   })
 })

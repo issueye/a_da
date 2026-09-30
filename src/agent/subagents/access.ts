@@ -6,8 +6,20 @@
  * 三处各写了一遍。三份实现意味着"只读模式漏了一个工具"这类问题会只在其中一条路径
  * 上出现——而这条路径可能是用户最不常走的那条，于是很久都不会被发现。
  *
- * 门禁（gate）也在这一层：它必须插在 **enabled 检查之后、建会话之前**，且三条入口
- * 都要走同一份实现。
+ * 门禁（gate）也在这一层：它必须插在 **enabled 检查之后、真正开跑之前**，判定输入
+ * 按各入口能拿到的材料给：
+ * - `store.startSubagentThread` —— 建会话之前，输入是委派任务本身；
+ * - `store.resumeSubagentThread` —— 恢复同样会产生新的一轮执行与开销，所以也要过；
+ *   输入是「原始任务 + 本次恢复指示」（`store.resumeGateTask`），因为首轮已经把原始
+ *   task 消耗掉，只给一句"网络恢复了，继续"判定方无从判断；
+ * - `subagents/runner.ts` —— 同步兜底路径，输入是它自己的 task。
+ *
+ * **仍未过门禁的两条"续跑"入口**（已知缺口，见 `docs/plugin-system-dev-plan.md` 的待办）：
+ * - `store.steerSubagentThread` 对**已停止**的子智能体是"重新排队 + `drain`"，
+ *   不经过 `resumeSubagentThread`；
+ * - 用户在子智能体标签页里直接输入，走的是 `store.send → drain → turn`。
+ * 后者还带一个更值得注意的既有问题：`turn` 用的是**主会话**工具表与 `kind: 'main'`
+ * 钩子，也就是这条路根本不应用 profile 的白名单。两条要一起想，别只补门禁。
  */
 
 import type { AgentTool } from '../core/types'

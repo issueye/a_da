@@ -1361,6 +1361,25 @@ export class AgentStore {
   }
 
   /**
+   * 恢复执行时给门禁的判定输入：**原始任务 + 本次恢复指示**（设计文档 §6.3）。
+   *
+   * 首轮的委派任务在 `startSubagentThread` 里就被消耗掉了，而恢复指示通常只有一句
+   * "网络恢复了，继续"——判定方光看它无从判断这件事该不该接着跑。所以要把会话里
+   * 第一条 user 消息（原始委派任务）翻出来一起给；原始任务可能很长（含参考上下文），
+   * 截断到判定方真正需要的量级。
+   */
+  private resumeGateTask(thread: Thread, instruction?: string): string {
+    const original = thread.messages.find((message) => message.role === 'user')?.content ?? ''
+    const resume = instruction?.trim()
+    return [
+      original ? `【原始任务】\n${original.slice(0, 4000)}` : '',
+      resume ? `【本次恢复指示】\n${resume}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n')
+  }
+
+  /**
    * 合成这一轮要用的插件钩子（设计文档 §6.4）。
    *
    * **每轮重新合成**：插件可能中途被启停、能力开关可能被改，这些都不该要求重启应用。
@@ -2774,6 +2793,25 @@ export class AgentStore {
       throw new Error(`未能识别子智能体角色配置 (${subagentThread.subagentId ?? '未知'})。`)
     }
 
+    // 启动门禁：与 startSubagentThread 走**同一份实现**（设计文档 §6.3）。恢复同样会
+    // 产生新的一轮执行与开销，所以按设计也要过门禁——判定输入见 resumeGateTask。
+    // 位置在**写任何东西之前**：被拦下时会话原样不动（不会多出一条"恢复指示"消息，
+    // 也不会进 runningThreadIds），调用方拿到的是那句错误（`resume_subagent` 会把它
+    // 作为工具失败回给模型）。
+    const gateOutcome = await this.gateSubagent(
+      profile,
+      this.resumeGateTask(subagentThread, options.instruction),
+      subagentThread.workspace
+    )
+    const gateVerdict: SubagentEndContext['gate'] = gateOutcome
+      ? {
+          allowed: gateOutcome.allowed,
+          judged: gateOutcome.judged,
+          reason: gateOutcome.reason,
+          calibrated: gateOutcome.calibrated,
+        }
+      : undefined
+
     const parentThread = subagentThread.parentId
       ? this.threads.find((t) => t.id === subagentThread.parentId)
       : undefined
@@ -2823,7 +2861,12 @@ export class AgentStore {
     this.notify()
 
     // 与 startSubagentThread 共用同一份解析（见 subagents/access.ts）
-    const subagentTools = resolveSubagentTools(profile, workspace)
+    let subagentTools = resolveSubagentTools(profile, workspace)
+    // 门禁给的 tools 已经按授权集合裁过（access.ts），这里直接用——与 start 路径一致
+    if (gateOutcome?.tools && gateOutcome.tools.length > 0) {
+      subagentTools = gateOutcome.tools
+      this.trace(`[子智能体门禁] 「${profile.name}」的工具表按门禁结论收窄为 ${subagentTools.length} 个`)
+    }
     // notify_parent 绕过 profile 白名单，理由见 startSubagentThread
     subagentTools.push(createNotifyParentTool(subagentThread.id))
 
@@ -2872,6 +2915,7 @@ export class AgentStore {
           wake: options.onStepUpdate ? { summary: fallbackText, status: 'done' } : undefined,
           stepsExecuted: 1,
           durationMs: Date.now() - startTime,
+          gate: gateVerdict,
         })
         return {
           ok: true,
@@ -3147,6 +3191,7 @@ export class AgentStore {
               : undefined,
           stepsExecuted,
           durationMs: Date.now() - startTime,
+          gate: gateVerdict,
         })
       }
     })()
