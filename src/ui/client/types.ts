@@ -115,6 +115,14 @@ export interface AgentClient {
   readonly ui: UiActions
   /** 协议命令（A 组）：异步、带类型 */
   request<M extends ProtocolMethod>(method: M, params: ParamsOf<M>): Promise<ResultOf<M>>
-  /** 订阅"状态变了"（M0 包装 store.subscribe；M1 起由事件流驱动） */
+  /** 订阅"状态变了"（M0 包装 store.subscribe；M1 起由复制视图驱动，M3 起由事件流驱动） */
   subscribe(listener: () => void): () => void
+  /**
+   * 立刻发布一次状态快照，绕过合帧窗口。
+   *
+   * 存在的理由有两个：**测试**里大量直接改状态造数据（不走命令、不通知），需要一次显式提交；
+   * **诊断**时可以手动催一次。它不是协议方法——M3 的 WebSocket 实现里它可以变成
+   * "向主机要一次快照"，也可以退化为 no-op。
+   */
+  refreshState(): void
 }

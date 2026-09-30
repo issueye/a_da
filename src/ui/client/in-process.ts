@@ -14,10 +14,43 @@ import type { AgentStore } from '../../agent/store'
 import { AppErrorCode, ProtocolError } from '../../shared/protocol'
 import type { ParamsOf, ProtocolMethod, ResultOf } from '../../shared/protocol'
 import type { AgentClient, ClientState, UiActions } from './types'
+import { createViewStore } from './view-store'
 
-export function createInProcessClient(store: AgentStore): AgentClient {
-  // M0：state 就是那个活对象（结构上满足 ClientState）。M1 起换成由事件驱动的复制视图。
-  const state: ClientState = store
+export interface InProcessClientOptions {
+  /**
+   * 是否用**复制视图**（M1 起默认）；关掉就退回 M0 的"活对象"读法，便于对照调试。
+   * 环境变量 `A_DA_CLIENT_VIEW=live` 也能关（本机排查用）。
+   */
+  replicated?: boolean
+  /** 变更合帧窗口（ms）；0 = 同步通知。 */
+  coalesceMs?: number
+}
+
+export function createInProcessClient(
+  store: AgentStore,
+  options: InProcessClientOptions = {}
+): AgentClient {
+  const replicated =
+    options.replicated ?? process.env.A_DA_CLIENT_VIEW !== 'live'
+
+  // 复制视图：读的是快照，快照由来源的广播驱动重建（M1-1/M1-4/M1-5/M1-6）。
+  // 只在复制模式下创建——live 模式不该白白挂一个订阅与定时器。
+  //
+  // **合帧窗口默认 0（同步通知）**：进程内没有带宽要省，而大量 UI 用例在"点一下"之后
+  // 立即断言绘制结果——把它们改成等一帧只会让测试变成时序敏感，收益为零。
+  // 合帧机制照常实现并被 `view-store.test.ts` 覆盖；**M3 的 WebSocket 传输把它设为
+  // 16–33ms**（那时它才是真的在省"每 token 一帧"）。这是对计划 M1-5 的刻意偏差，
+  // 理由是实测出来的：默认 16ms 时有 29 个 UI 用例因"通知晚了一帧"而红。
+  const viewStore = replicated
+    ? createViewStore(store, {
+        subscribeToSource: (listener) => store.subscribe(listener),
+        coalesceMs: options.coalesceMs ?? 0,
+      })
+    : null
+
+  const liveState: ClientState = store
+  /** 两种读法共用的取状态入口：M1 起默认返回复制视图的快照。 */
+  const readState = (): ClientState => (viewStore ? viewStore.getState() : liveState)
 
   const ui: UiActions = {
     openTab: (threadId) => store.openTab(threadId),
@@ -179,9 +212,16 @@ export function createInProcessClient(store: AgentStore): AgentClient {
   }
 
   return {
-    state,
+    // `state` 是 getter：复制视图模式下每次访问取当前快照（同一个变更周期内引用稳定）
+    get state() {
+      return readState()
+    },
     ui,
-    subscribe: (listener) => store.subscribe(listener),
+    // 订阅也走客户端层：复制视图模式下一并享受合帧（M3 换成 WebSocket 时这里是同一条缝）
+    subscribe: (listener) =>
+      viewStore ? viewStore.subscribe(listener) : store.subscribe(listener),
+    /** 立刻发布一次快照（绕过合帧窗口）。测试造完数据后显式提交时用。 */
+    refreshState: () => viewStore?.flush(),
     // 泛型签名与内部 `unknown` 派发之间的转换集中在这里，只此一处
     request: ((method: ProtocolMethod, params: unknown) =>
       dispatch(method, params)) as AgentClient['request'],
