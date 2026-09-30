@@ -28,7 +28,6 @@ const PENDING = [
   'src/ui/Composer.tsx',
   'src/ui/EmptyConversationView.tsx',
   'src/ui/PluginsDialog.tsx',
-  'src/ui/SettingsDialog.tsx',
   'src/ui/SlashCommandMenu.tsx',
   'src/ui/WorkspaceSelector.tsx',
   'src/ui/shortcuts.ts',

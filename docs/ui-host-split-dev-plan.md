@@ -104,16 +104,15 @@ M3 有明确开关（`A_DA_TRANSPORT=inprocess|ws` 可强制；`bun run dev` 与
 - ✅ **客户端层** `src/ui/client/`：`types.ts`（`ClientState`/`UiActions`/`AgentClient`）、`in-process.ts`（协议方法 → store 的映射表，逐条标了 M0 偏差）、`index.ts`（单例 + 转发 `APPROVAL_OPTIONS`/`EFFORT_OPTIONS`）
 - ✅ **类型归位**：`ApprovalMode`/`Effort`/`QueuedItem`（原 `store.ts`）与 `ProviderConfig`/`ProviderPreset`（原 `config.ts`）搬进契约层，实现侧改成反向 import + re-export——方向变成「实现 → 契约」
 - ✅ **守门测试** `src/ui/protocol-boundary.test.ts`（3 条）：清单外不许碰 store；清单不许腐烂（迁干净了必须删行）；**协议层不许依赖实现模块**
-- ✅ **已迁移 7 个**：`ConfirmDialog`、`DebugPanel`、`TabStrip`、`Transcript`、`ChangesPanel`、`TodoFloatingPanel`、`QuestionCard`
+- ✅ **已迁移 9 个**：`ConfirmDialog`、`DebugPanel`、`TabStrip`、`Transcript`、`ChangesPanel`、`TodoFloatingPanel`、`QuestionCard`、`Sidebar`、`SettingsDialog`
   —— 其中 `QuestionCard` 顺手**去掉了 store 依赖**（改成 `onAnswer` 回调 prop）：它只需要"把答案送出去"，
   两个宿主各自决定怎么送；否则它被 Composer 与 Transcript 同时渲染，会卡住迁移顺序。
-- ⏳ **待迁移 9 个**：`Composer`（72 处，最大）、`Sidebar`（40）、`PluginsDialog`（33）、`shortcuts.ts`（20）、
-  `WorkspaceSelector`（16）、`SlashCommandMenu`（11）、`SettingsDialog`（10）、`CommandPalette`（4）、
-  `EmptyConversationView`（0 处引用，只改 prop 类型）
-- **迁移顺序约束（实测）**：**父先子后**——组件要收 `client`，得先有 client 可传。所以必须成组迁移：
-  `Composer` → `SlashCommandMenu`/`ContextUsagePopover`；`Sidebar`/`EmptyConversationView` → `WorkspaceSelector`；
-  `PluginsDialog` → `SkillsPanel`；`CommandPalette` 依赖 `shortcuts.ts` 的 `run(store)` 签名，两者一起改。
-  （`ContextUsagePopover` 与 `SkillsPanel` 本身不碰 store，父组件改完即可。）
+- ⏳ **待迁移 7 个**：`Composer`（72 处，最大）、`PluginsDialog`（33）、`shortcuts.ts`（20）、
+  `WorkspaceSelector`（16）、`SlashCommandMenu`（11）、`CommandPalette`（4）、`EmptyConversationView`（0 处引用，只改 prop 类型）
+- **迁移顺序约束（实测）**：**父先子后**——组件要收 `client`，得先有 client 可传。剩下这几组必须成组迁移：
+  `Composer` → `SlashCommandMenu`/`ContextUsagePopover`（后者本身不碰 store）；`Sidebar`/`EmptyConversationView`
+  → `WorkspaceSelector`；`PluginsDialog` → `SkillsPanel`（后者不碰 store）；`CommandPalette` 与 `shortcuts.ts`
+  一起改（快捷键动作的 `run(store)` 签名要改成 `run(client)`）。最后 `AgentWindow` 收尾：去掉 `store` 这条线。
 - **门禁（实测）**：`typecheck` exit 0；`bun test src/agent` **569 pass / 0 fail**；全量 **721 pass / 0 fail**（+3 = 守门测试）。
 ---
 

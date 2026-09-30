@@ -18,7 +18,7 @@ import {
   configPath,
   type ProviderConfig,
 } from '../agent/config'
-import type { AgentStore } from '../agent/store'
+import type { AgentClient } from './client'
 import { C, editorTheme, FONT_MONO, M } from '../theme'
 import { Checkbox, Icon, IconButton } from './controls'
 import type { IconName } from '../icons'
@@ -181,7 +181,7 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   )
 }
 
-export function SettingsDialog({ store }: { store: AgentStore }) {
+export function SettingsDialog({ client }: { client: AgentClient }) {
   const [section, setSection] = useState<SectionId>('provider')
   const [draft, setDraft] = useState<ProviderConfig>({ baseUrl: '', apiKey: '', model: '' })
   const [preset, setPreset] = useState('openai')
@@ -224,16 +224,16 @@ export function SettingsDialog({ store }: { store: AgentStore }) {
 
   const save = async () => {
     setBusy(true)
-    const message = await store.saveProvider(draft)
+    const { error } = await client.request('config.setProvider', { config: draft })
     setBusy(false)
-    setError(message)
-    setStatus(message ? null : '已保存，下一轮对话生效')
+    setError(error)
+    setStatus(error ? null : '已保存，下一轮对话生效')
   }
 
   const test = async () => {
     setBusy(true)
     setStatus(null)
-    const detail = await store.checkProvider(draft)
+    const { message: detail } = await client.request('config.checkProvider', { config: draft })
     setBusy(false)
     setError(null)
     setStatus(detail)
@@ -242,7 +242,7 @@ export function SettingsDialog({ store }: { store: AgentStore }) {
   return (
     <div
       onKeyDown={(event) => {
-        if (event.key === 'escape') store.setSettings(false)
+        if (event.key === 'escape') client.ui.setSettings(false)
       }}
       style={{
         position: 'absolute',
@@ -311,7 +311,7 @@ export function SettingsDialog({ store }: { store: AgentStore }) {
             icon="close"
             testId="settings-close"
             label="关闭设置"
-            onClick={() => store.setSettings(false)}
+            onClick={() => client.ui.setSettings(false)}
           />
         </div>
 
@@ -536,18 +536,18 @@ export function SettingsDialog({ store }: { store: AgentStore }) {
               </>
             ) : (
               <>
-                <InfoRow label="当前项目" value={store.project} />
+                <InfoRow label="当前项目" value={client.state.project} />
                 <InfoRow
                   label="索引"
                   value={
-                    store.workspaceInfo.scanning
+                    client.state.workspaceInfo.scanning
                       ? '索引中…'
-                      : `${store.workspaceInfo.files} 个文件 · ${store.workspaceInfo.dirs} 个目录`
+                      : `${client.state.workspaceInfo.files} 个文件 · ${client.state.workspaceInfo.dirs} 个目录`
                   }
                 />
                 <InfoRow
                   label="项目数"
-                  value={`${store.projects.length} 个项目 · 当前项目 ${store.projectThreads.length} 个会话`}
+                  value={`${client.state.projects.length} 个项目 · 当前项目 ${client.state.projectThreads.length} 个会话`}
                 />
                 <InfoRow
                   label="文件访问"
