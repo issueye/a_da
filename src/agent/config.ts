@@ -14,38 +14,16 @@ import { getAppHome } from './home'
 import { buildRequestHeaders } from './ai/headers'
 import { APPEARANCES, type Appearance } from '../theme'
 
-export interface ProviderConfig {
-  baseUrl: string
-  apiKey: string
-  model: string
-  /** 模型最大上下文窗口（Token），用于遥测比率统计等 */
-  contextWindow?: number
-  /** 是否支持多模态图片输入 */
-  supportsImages?: boolean
-  /**
-   * 自定义请求头，追加到默认头（`content-type` / `authorization`）之上。
-   *
-   * 用途是那些需要额外头的网关与中转：`X-Api-Key`、组织标识、路由标签等。
-   * **同名（大小写不敏感）会覆盖默认头**，所以也能用它换掉默认的
-   * `authorization: Bearer …`（例如某些服务要求 `Api-Key xxx`）。
-   * 构造逻辑在 `ai/headers.ts`——真实对话与「测试连接」共用同一份，
-   * 否则会出现"测试能通、对话不通"这种极难查的分歧。
-   */
-  headers?: Record<string, string>
-}
+/**
+ * `ProviderConfig` / `ProviderPreset` 的形状已搬到契约层 `src/shared/protocol`（协议设计 §7.1）：
+ * 配置要跨进程交给 UI 与主机两边，形状属于契约。这里原样再导出，预设**数据表**留在本文件。
+ */
+import type { ProviderConfig, ProviderPreset } from '../shared/protocol'
+export type { ProviderConfig, ProviderPreset }
 
 export interface LlmConfig extends ProviderConfig {
   /** `env` or the config file path: which one the running turn will actually use. */
   source: string
-}
-
-export interface ProviderPreset {
-  id: string
-  label: string
-  baseUrl: string
-  model: string
-  contextWindow?: number
-  supportsImages?: boolean
 }
 
 /** Any OpenAI-compatible gateway works; these are the ones with a fixed URL. */

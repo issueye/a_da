@@ -2,8 +2,8 @@
  * 会话标签页。
  *
  * 一条横向的标签栏，摆在内容区顶上。**标签是视图，不是数据**：它记的是「现在
- * 开着哪几个会话」（`store.openTabs`），而会话本体在 `store.threads` 里、由
- * 侧边栏那份列表负责。所以：
+ * 开着哪几个会话」（`client.state.openTabs`），而会话本体在 `client.state.threads` 里、
+ * 由侧边栏那份列表负责。所以：
  *
  * - 关标签只是关掉视图，会话和盘上的流水都不动，从侧边栏再点一下就回来了；
  * - 关标签因此不需要二次确认（对比侧边栏的垃圾桶：那个是删数据，要点两下）。
@@ -14,7 +14,7 @@
 import React from 'react'
 import { Icon } from './controls'
 import { C, FONT_MONO, M } from '../theme'
-import type { AgentStore } from '../agent/store'
+import type { AgentClient } from './client'
 import type { Thread } from '../agent/types'
 import { getSubagentColor } from '../agent/subagents/types'
 
@@ -39,7 +39,7 @@ function Tab({
   running: boolean
   /** 正在等子智能体唤醒：仍在运行，但不在推进 */
   waiting: boolean
-  /** 关不掉的不显示 ×：只有当前项目最后一个标签会这样，见 store.closeTab。 */
+  /** 关不掉的不显示 ×：只有当前项目最后一个标签会这样，见 client.ui.closeTab。 */
   closable: boolean
   onSelect: () => void
   onClose: () => void
@@ -157,13 +157,13 @@ function Tab({
   )
 }
 
-export function TabStrip({ store }: { store: AgentStore }) {
-  const tabs = store.openTabs
+export function TabStrip({ client }: { client: AgentClient }) {
+  const tabs = client.state.openTabs
   // 本会话待保留的文件改动数。改动是「会话的」状态，所以入口放在会话标签栏，
   // 而不是输入框工具栏——后者是「这条指令怎么发」的地方，两者不该混在一排。
-  const changesCount = store.getThreadChangeCount(store.activeId)
+  const changesCount = client.state.getThreadChangeCount(client.state.activeId)
   // 全撤完后角标归零，但面板还开着：这时仍要留下入口，否则只能靠快捷键关。
-  const showChanges = changesCount > 0 || store.changesOpen
+  const showChanges = changesCount > 0 || client.state.changesOpen
 
   return (
     <div
@@ -202,12 +202,12 @@ export function TabStrip({ store }: { store: AgentStore }) {
           <Tab
             key={thread.id}
             thread={thread}
-            selected={thread.id === store.activeId}
-            running={store.isThreadRunning(thread.id)}
-            waiting={store.isThreadWaiting(thread.id)}
+            selected={thread.id === client.state.activeId}
+            running={client.state.isThreadRunning(thread.id)}
+            waiting={client.state.isThreadWaiting(thread.id)}
             closable={tabs.length > 1}
-            onSelect={() => store.selectThread(thread.id)}
-            onClose={() => store.closeTab(thread.id)}
+            onSelect={() => void client.request('ui.activeThread', { threadId: thread.id })}
+            onClose={() => client.ui.closeTab(thread.id)}
           />
         ))}
       </div>
@@ -218,7 +218,7 @@ export function TabStrip({ store }: { store: AgentStore }) {
           testId="changes-chip"
           role="button"
           aria-label={`改动审阅：${changesCount} 个文件待保留`}
-          onClick={() => store.setChangesOpen(!store.changesOpen)}
+          onClick={() => client.ui.setChangesOpen(!client.state.changesOpen)}
           style={{
             display: 'flex',
             flexDirection: 'row',
@@ -231,9 +231,9 @@ export function TabStrip({ store }: { store: AgentStore }) {
             borderRadius: 6,
             flexShrink: 0,
             cursor: 'pointer',
-            backgroundColor: store.changesOpen ? C.chipHover : C.chip,
+            backgroundColor: client.state.changesOpen ? C.chipHover : C.chip,
             borderWidth: 1,
-            borderColor: store.changesOpen ? C.borderStrong : C.chipBorder,
+            borderColor: client.state.changesOpen ? C.borderStrong : C.chipBorder,
             hover: { backgroundColor: C.chipHover },
           }}
         >
@@ -261,7 +261,9 @@ export function TabStrip({ store }: { store: AgentStore }) {
         testId="new-tab"
         role="button"
         aria-label="新建会话"
-        onClick={() => store.newThread()}
+        onClick={() =>
+          void client.request('thread.create', { workspace: client.state.project })
+        }
         style={{
           display: 'flex',
           flexDirection: 'row',

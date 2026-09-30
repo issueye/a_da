@@ -73,8 +73,13 @@ import {
 } from './compact'
 import { showCompletionNotification } from '../platform/notification'
 
-export type ApprovalMode = 'auto' | 'ask' | 'readonly'
-export type Effort = 'max' | 'high' | 'medium' | 'low'
+/**
+ * `ApprovalMode` / `Effort` / `QueuedItem` 已搬到契约层 `src/shared/protocol`（协议设计 §7.1）：
+ * 它们要跨进程交给 UI，不该寄生在实现模块里。这里原样再导出，既有调用点不受影响。
+ * 依赖方向是「实现 → 契约」，所以 `shared/protocol` **不会**反向 import 本文件。
+ */
+import type { ApprovalMode, Effort, QueuedItem } from '../shared/protocol'
+export type { ApprovalMode, Effort, QueuedItem }
 
 export interface ConfirmModalOptions {
   title: string
@@ -174,13 +179,6 @@ function makeThread(workspace: string): Thread {
 }
 
 type ToolCard = Extract<Item, { kind: 'tool' }>
-
-export interface QueuedItem {
-  thread: Thread
-  text: string
-  images?: string[]
-  item: Item
-}
 
 export class AgentStore {
   threads: Thread[] = []

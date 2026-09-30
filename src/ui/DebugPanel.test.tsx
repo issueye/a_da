@@ -4,6 +4,7 @@ import { createTestRoot, hasNativeTestRenderer } from '@gpuix/react/testing'
 import { connectTest } from '@gpuix/react/automation'
 import { DebugPanel } from './DebugPanel'
 import { store } from '../agent/store'
+import { agentClient } from './client'
 
 const describeNative = hasNativeTestRenderer ? describe : describe.skip
 
@@ -64,7 +65,7 @@ describeNative('DebugPanel', () => {
     ]
 
     const { render, renderer } = createTestRoot({ width: 600, height: 800 })
-    render(<DebugPanel store={store} />)
+    render(<DebugPanel client={agentClient} />)
     const app = await connectTest(renderer)
 
     // 验证日志条目数量

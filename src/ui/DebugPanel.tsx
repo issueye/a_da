@@ -6,7 +6,7 @@
  */
 
 import React, { useState } from 'react'
-import type { AgentStore } from '../agent/store'
+import type { AgentClient } from './client'
 import type { DebugEntry } from '../agent/types'
 import { Icon, IconButton } from './controls'
 import { C, FONT_MONO, M } from '../theme'
@@ -497,8 +497,8 @@ function DebugEntryItem({ entry }: { entry: DebugEntry }) {
   )
 }
 
-export function DebugPanel({ store }: { store: AgentStore }) {
-  const entries = [...store.log].reverse()
+export function DebugPanel({ client }: { client: AgentClient }) {
+  const entries = [...client.state.log].reverse()
 
   return (
     <div
@@ -543,7 +543,7 @@ export function DebugPanel({ store }: { store: AgentStore }) {
             icon="trash"
             testId="debug-clear"
             label="清空事件日志"
-            onClick={() => store.clearLog()}
+            onClick={() => void client.request('debug.log.clear', {})}
           />
         ) : null}
 
@@ -552,7 +552,7 @@ export function DebugPanel({ store }: { store: AgentStore }) {
           icon="close"
           testId="debug-close"
           label="关闭日志"
-          onClick={() => store.toggleDebug()}
+          onClick={() => client.ui.toggleDebug()}
         />
       </div>
 

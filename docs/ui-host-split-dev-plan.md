@@ -98,6 +98,20 @@ M3 有明确开关（`A_DA_TRANSPORT=inprocess|ws` 可强制；`bun run dev` 与
 
 **实测改动面**：233 处引用 + 17 个文件的 import；**风险最低**（漏改会被 typecheck 直接抓住）。
 
+#### M0 进度（分支 `feat/ui-host-split`）
+
+- ✅ **协议层** `src/shared/protocol/`：`dto.ts`（线上 DTO + 领域类型转发）、`methods.ts`（方法表 → `ParamsOf`/`ResultOf` 推导）、`errors.ts`（标准码 + 12 个应用级码）、`index.ts`
+- ✅ **客户端层** `src/ui/client/`：`types.ts`（`ClientState`/`UiActions`/`AgentClient`）、`in-process.ts`（协议方法 → store 的映射表，逐条标了 M0 偏差）、`index.ts`（单例 + 转发 `APPROVAL_OPTIONS`/`EFFORT_OPTIONS`）
+- ✅ **类型归位**：`ApprovalMode`/`Effort`/`QueuedItem`（原 `store.ts`）与 `ProviderConfig`/`ProviderPreset`（原 `config.ts`）搬进契约层，实现侧改成反向 import + re-export——方向变成「实现 → 契约」
+- ✅ **守门测试** `src/ui/protocol-boundary.test.ts`（3 条）：清单外不许碰 store；清单不许腐烂（迁干净了必须删行）；**协议层不许依赖实现模块**
+- ✅ **已迁移 3 个**：`ConfirmDialog`、`DebugPanel`、`TabStrip`；`AgentWindow` 双重接线（已迁的传 `client`，未迁的暂传 `store`）
+- ⏳ **待迁移 13 个**：`Composer`、`Sidebar`、`PluginsDialog`、`Transcript`、`SettingsDialog`、`EmptyConversationView`、`ChangesPanel`、`QuestionCard`、`SlashCommandMenu`、`TodoFloatingPanel`、`WorkspaceSelector`、`CommandPalette`、`shortcuts.ts`
+- **迁移顺序约束（实测）**：**父先子后**——组件要收 `client`，得先有 client 可传。所以必须成组迁移：
+  `Composer` → `SlashCommandMenu`/`QuestionCard`；`Transcript` → `ChangesPanel`/`TodoFloatingPanel`；
+  `Sidebar` → `WorkspaceSelector`；`PluginsDialog` → `SkillsPanel`；`CommandPalette` 依赖 `shortcuts.ts`
+  的 `run(store)` 签名，两者一起改。
+- **门禁（实测）**：`typecheck` exit 0；`bun test src/agent` **569 pass / 0 fail**；全量 **721 pass / 0 fail**（+3 = 守门测试）。
+
 ---
 
 ### M1 — 复制视图与事件流（行为等价）

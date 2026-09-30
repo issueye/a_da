@@ -1,13 +1,13 @@
 import React from 'react'
 import { Icon } from './controls'
 import { C } from '../theme'
-import type { ConfirmModalOptions } from '../agent/store'
+import type { ConfirmOptions } from './client'
 
 export function ConfirmDialog({
   options,
   onClose,
 }: {
-  options: ConfirmModalOptions
+  options: ConfirmOptions
   onClose: () => void
 }) {
   const { title, message, confirmText = '确认删除', cancelText = '取消', onConfirm } = options
