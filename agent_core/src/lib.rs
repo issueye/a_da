@@ -10,6 +10,8 @@ pub mod tools;
 pub mod compiler;
 pub mod kernel;
 pub mod hermes_host;
+pub mod subagents;
+pub mod approval;
 pub mod desktop_ui;
 pub mod native_ws;
 
@@ -88,7 +90,28 @@ mod tests {
         let store = Arc::new(RwLock::new(AgentStore::new("E:/test".to_string())));
         let session_mgr = Arc::new(SessionManager::new(Some(std::env::temp_dir().join("a_da_test_home"))));
         let checkpoint_mgr = Arc::new(CheckpointManager::new(Some(std::env::temp_dir().join("a_da_test_home"))));
-        let dispatcher = Dispatcher::new(store, session_mgr, checkpoint_mgr, None);
+        let subagent_mgr = Arc::new(subagents::SubagentManager::new());
+        let approval_mgr = Arc::new(approval::ApprovalManager::new());
+        let dispatcher = Dispatcher::new(store.clone(), session_mgr, checkpoint_mgr, subagent_mgr, approval_mgr, None);
+
+        // 验证 approval.decide
+        let decide_res = dispatcher.dispatch("approval.decide", serde_json::json!({
+            "toolItemId": "item_123",
+            "approved": true
+        }))
+        .await
+        .expect("approval.decide 分发失败");
+        assert_eq!(decide_res.get("toolItemId").and_then(|v| v.as_str()), Some("item_123"));
+        assert_eq!(decide_res.get("approved").and_then(|v| v.as_bool()), Some(true));
+
+        // 验证 subagentProfile.list
+        let subagents = dispatcher.dispatch("subagentProfile.list", serde_json::json!({ "workspace": "E:/test" }))
+            .await
+            .expect("subagentProfile.list 分发失败");
+        assert!(subagents.is_array());
+        let subagents_arr = subagents.as_array().unwrap();
+        assert!(subagents_arr.len() >= 4);
+        assert!(subagents_arr.iter().any(|s| s.get("id").and_then(|v| v.as_str()) == Some("researcher")));
 
         // 验证 prompt.list
         let prompts = dispatcher.dispatch("prompt.list", serde_json::json!({ "workspace": "E:/test" }))
@@ -121,5 +144,18 @@ mod tests {
             .await
             .expect("debug.trace 分发失败");
         assert_eq!(trace, serde_json::Value::Null);
+
+        // 验证 thread.compact
+        let active_id = store.read().await.active_id.clone();
+        let compact_res = dispatcher.dispatch("thread.compact", serde_json::json!({ "threadId": active_id }))
+            .await
+            .expect("thread.compact 分发失败");
+        assert!(compact_res.get("success").is_some());
+
+        // 验证 change.count
+        let change_cnt = dispatcher.dispatch("change.count", serde_json::json!({ "threadId": active_id }))
+            .await
+            .expect("change.count 分发失败");
+        assert!(change_cnt.get("count").is_some());
     }
 }

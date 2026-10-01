@@ -7,13 +7,17 @@ use crate::protocol::*;
 use crate::runner::{run_agent_loop, AgentLoopEvent};
 use crate::server::emitter::StateBroadcaster;
 use crate::server::fs_service;
+use crate::approval::ApprovalManager;
 use crate::session::SessionManager;
 use crate::state::{generate_snapshot, AgentStore};
+use crate::subagents::SubagentManager;
 
 pub struct Dispatcher {
     store: Arc<RwLock<AgentStore>>,
     session_mgr: Arc<SessionManager>,
     checkpoint_mgr: Arc<CheckpointManager>,
+    subagent_mgr: Arc<SubagentManager>,
+    approval_mgr: Arc<ApprovalManager>,
     broadcaster: Option<Arc<StateBroadcaster>>,
     host_pid: u32,
     session_id: String,
@@ -24,12 +28,16 @@ impl Dispatcher {
         store: Arc<RwLock<AgentStore>>,
         session_mgr: Arc<SessionManager>,
         checkpoint_mgr: Arc<CheckpointManager>,
+        subagent_mgr: Arc<SubagentManager>,
+        approval_mgr: Arc<ApprovalManager>,
         broadcaster: Option<Arc<StateBroadcaster>>,
     ) -> Self {
         Self {
             store,
             session_mgr,
             checkpoint_mgr,
+            subagent_mgr,
+            approval_mgr,
             broadcaster,
             host_pid: std::process::id(),
             session_id: uuid::Uuid::new_v4().to_string(),
@@ -344,6 +352,23 @@ impl Dispatcher {
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 checkpointId 或 cardId 参数"))?;
                 let _outcome = self.checkpoint_mgr.revert_checkpoint(thread_id, checkpoint_id)
                     .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
+
+                let mut store = self.store.write().await;
+                if let Some(thread) = store.threads.iter_mut().find(|t| t.id == thread_id) {
+                    for item in &mut thread.items {
+                        if let Item::Tool { checkpoint_id: Some(cid), reverted, .. } = item {
+                            if cid == checkpoint_id {
+                                *reverted = Some(true);
+                            }
+                        }
+                    }
+                }
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
                 Ok(serde_json::json!({ "ok": true }))
             }
 
@@ -356,6 +381,25 @@ impl Dispatcher {
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 path 参数"))?;
                 let _outcome = self.checkpoint_mgr.revert_file(thread_id, Path::new(file_path))
                     .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
+
+                let mut store = self.store.write().await;
+                if let Some(thread) = store.threads.iter_mut().find(|t| t.id == thread_id) {
+                    for item in &mut thread.items {
+                        if let Item::Tool { args, reverted, .. } = item {
+                            if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
+                                if p == file_path {
+                                    *reverted = Some(true);
+                                }
+                            }
+                        }
+                    }
+                }
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
                 Ok(serde_json::json!({ "ok": true }))
             }
 
@@ -365,6 +409,21 @@ impl Dispatcher {
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
                 let _outcome = self.checkpoint_mgr.revert_all(thread_id)
                     .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
+
+                let mut store = self.store.write().await;
+                if let Some(thread) = store.threads.iter_mut().find(|t| t.id == thread_id) {
+                    for item in &mut thread.items {
+                        if let Item::Tool { reverted, .. } = item {
+                            *reverted = Some(true);
+                        }
+                    }
+                }
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
                 Ok(serde_json::json!({ "ok": true }))
             }
 
@@ -584,9 +643,69 @@ impl Dispatcher {
             }
 
             THREAD_COMPACT => {
-                let _thread_id = params.get("threadId")
+                let thread_id = params
+                    .get("threadId")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
+
+                let mut store = self.store.write().await;
+                let thread_opt = store.threads.iter_mut().find(|t| t.id == thread_id);
+                if let Some(thread) = thread_opt {
+                    if thread.items.len() < 3 {
+                        return Ok(serde_json::json!({
+                            "success": false,
+                            "reason": "当前会话历史较短（少于 2 轮），暂无需压缩的历史消息。"
+                        }));
+                    }
+
+                    let total_items = thread.items.len();
+                    let preserve_count = total_items.saturating_sub(4).max(1);
+                    let to_summarize = total_items - preserve_count;
+
+                    let summary = format!("已对前序 {} 轮对话及工具操作进行了结构化上下文压缩与归纳。", to_summarize);
+                    let compact_id = crate::state::next_id("compact");
+                    let now = crate::state::now_millis();
+
+                    let compact_item = Item::Compact {
+                        id: compact_id.clone(),
+                        at: now,
+                        summary: summary.clone(),
+                        pre_tokens: (to_summarize * 450) as u64,
+                        post_tokens: 180,
+                        saved_tokens: ((to_summarize * 450).saturating_sub(180)) as u64,
+                        turns_summarized: to_summarize as u64,
+                    };
+
+                    let preserved_items = thread.items.split_off(to_summarize);
+                    thread.items = vec![compact_item];
+                    thread.items.extend(preserved_items);
+
+                    let ws = thread.workspace.clone();
+
+                    let compact_entry = crate::session::SessionCompactEntry {
+                        entry_type: "compact".to_string(),
+                        id: compact_id,
+                        timestamp: now as i64,
+                        summary,
+                        pre_tokens: (to_summarize * 450) as u64,
+                        post_tokens: 180,
+                        saved_tokens: ((to_summarize * 450).saturating_sub(180)) as u64,
+                        turns_summarized: to_summarize,
+                        custom_instructions: None,
+                    };
+
+                    let _ = self.session_mgr.append_compact_entry(
+                        thread_id,
+                        compact_entry,
+                        if ws.is_empty() { None } else { Some(&ws) },
+                    );
+                }
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
                 Ok(serde_json::json!({
                     "success": true,
                     "reason": "上下文压缩已完成"
@@ -683,7 +802,44 @@ impl Dispatcher {
             }
 
             APPROVAL_DECIDE => {
-                Ok(serde_json::Value::Null)
+                let tool_item_id = params
+                    .get("toolItemId")
+                    .or_else(|| params.get("itemId"))
+                    .or_else(|| params.get("callId"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let approved = params
+                    .get("approved")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                let resolved = self.approval_mgr.resolve_approval(tool_item_id, approved);
+
+                let mut store = self.store.write().await;
+                for thread in &mut store.threads {
+                    for item in &mut thread.items {
+                        if let Item::Tool { id, status, .. } = item {
+                            if id == tool_item_id {
+                                *status = if approved {
+                                    "running".to_string()
+                                } else {
+                                    "rejected".to_string()
+                                };
+                            }
+                        }
+                    }
+                }
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
+                Ok(serde_json::json!({
+                    "resolved": resolved,
+                    "toolItemId": tool_item_id,
+                    "approved": approved
+                }))
             }
 
             QUESTION_ANSWER => {
@@ -980,64 +1136,58 @@ impl Dispatcher {
             }
 
             SUBAGENT_PROFILE_LIST => {
-                let profiles = serde_json::json!([
-                    {
-                        "id": "general_purpose",
-                        "name": "全能执行专员",
-                        "description": "具备全量读写与终端命令执行权限，负责端到端完成复杂工程任务",
-                        "systemPrompt": "你是全能执行智能体，负责完整完成用户的软件开发任务。",
-                        "allowedTools": ["*"],
-                        "mode": "readwrite",
-                        "color": "blue",
-                        "background": false
-                    },
-                    {
-                        "id": "researcher",
-                        "name": "代码调研专员",
-                        "description": "只读探索工作区、分析依赖结构与函数调用链，梳理架构并输出总结",
-                        "systemPrompt": "你是专业调研智能体，仅使用只读工具，负责全面分析代码库结构。",
-                        "allowedTools": ["read_file", "fs.list"],
-                        "mode": "readonly",
-                        "color": "cyan",
-                        "background": false
-                    },
-                    {
-                        "id": "code_reviewer",
-                        "name": "代码评审专员",
-                        "description": "专注于代码审查、坏味道探测与安全性审查，提出规范化优化建议",
-                        "systemPrompt": "你是代码评审专家，审查代码逻辑并提出重构与安全优化意见。",
-                        "allowedTools": ["read_file"],
-                        "mode": "readonly",
-                        "color": "purple",
-                        "background": false
-                    },
-                    {
-                        "id": "tester",
-                        "name": "测试专员",
-                        "description": "专注于单元测试编写、运行与回归验证，确保代码高质量交付",
-                        "systemPrompt": "你是测试工程师，负责编写测试用例、运行测试并修复失败单测。",
-                        "allowedTools": ["run_command", "read_file", "write_to_file", "edit_file"],
-                        "mode": "readwrite",
-                        "color": "green",
-                        "background": false
-                    }
-                ]);
-                Ok(profiles)
+                let ws_opt = params
+                    .get("workspace")
+                    .and_then(|v| v.as_str())
+                    .map(PathBuf::from);
+                let profiles = self.subagent_mgr.list_profiles(ws_opt.as_deref());
+                let json_val = serde_json::to_value(profiles)
+                    .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
+                Ok(json_val)
             }
 
             SUBAGENT_PROFILE_SET_ENABLED => {
+                let id = params
+                    .get("profileId")
+                    .or_else(|| params.get("id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ProtocolError::invalid_params("缺少 profileId 参数"))?;
+                let enabled = params
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+
+                self.subagent_mgr
+                    .set_enabled(id, enabled)
+                    .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
                 Ok(serde_json::Value::Null)
             }
 
             SUBAGENT_PROFILE_DELETE => {
-                Ok(serde_json::json!({ "ok": true }))
+                let id = params
+                    .get("profileId")
+                    .or_else(|| params.get("id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ProtocolError::invalid_params("缺少 profileId 参数"))?;
+                let ws_opt = params
+                    .get("workspace")
+                    .and_then(|v| v.as_str())
+                    .map(PathBuf::from);
+
+                let ok = self
+                    .subagent_mgr
+                    .delete_profile(id, ws_opt.as_deref())
+                    .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
+                Ok(serde_json::json!({ "ok": ok }))
             }
 
             SUBAGENT_RESUME => {
-                let sub_tid = params.get("subagentThreadId")
+                let sub_tid = params
+                    .get("subagentThreadId")
+                    .or_else(|| params.get("threadId"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                Ok(serde_json::json!({ "threadId": sub_tid }))
+                Ok(serde_json::json!({ "threadId": sub_tid, "ok": true }))
             }
 
             _ => Err(ProtocolError::method_not_found(method)),

@@ -2,25 +2,41 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use futures_util::future::BoxFuture;
+use futures_util::FutureExt;
 use serde_json::Value;
 
-use crate::ai::ToolCallInfo;
+use crate::ai::{ProviderConfig, ToolCallInfo};
 use crate::checkpoint::CheckpointManager;
 use crate::session::AgentMessage;
+use crate::subagents::SubagentManager;
 use crate::tools::{
     check_workspace_sandbox, edit_file, list_files, read_file, run_command, search_files,
     write_file, EditPair, ToolResult,
 };
 
 /// 派发并执行单个工具调用
-pub async fn execute_tool_call(
-    workspace: &Path,
-    thread_id: &str,
-    call: &ToolCallInfo,
-    checkpoint_mgr: Option<&Arc<CheckpointManager>>,
-) -> AgentMessage {
-    let args: Value = serde_json::from_str(&call.args).unwrap_or_else(|_| serde_json::json!({}));
-    let mut checkpoint_id: Option<String> = None;
+pub fn execute_tool_call<'a>(
+    workspace: &'a Path,
+    thread_id: &'a str,
+    call: &'a ToolCallInfo,
+    checkpoint_mgr: Option<&'a Arc<CheckpointManager>>,
+) -> BoxFuture<'a, AgentMessage> {
+    execute_tool_call_extended(workspace, thread_id, call, checkpoint_mgr, None, None)
+}
+
+/// 派发并执行单个工具调用（扩展支持模型配置与子智能体管理）
+pub fn execute_tool_call_extended<'a>(
+    workspace: &'a Path,
+    thread_id: &'a str,
+    call: &'a ToolCallInfo,
+    checkpoint_mgr: Option<&'a Arc<CheckpointManager>>,
+    parent_config: Option<&'a ProviderConfig>,
+    subagent_mgr: Option<&'a Arc<SubagentManager>>,
+) -> BoxFuture<'a, AgentMessage> {
+    async move {
+        let args: Value = serde_json::from_str(&call.args).unwrap_or_else(|_| serde_json::json!({}));
+        let mut checkpoint_id: Option<String> = None;
 
     let result = match call.name.as_str() {
         "read_file" => {
@@ -93,19 +109,70 @@ pub async fn execute_tool_call(
             let timeout = args.get("timeout").and_then(|v| v.as_u64());
             run_command(workspace, command, cwd, timeout, None).await
         }
+        "invoke_subagent" => {
+            let subagent_id = args.get("subagent_id").and_then(|v| v.as_str()).unwrap_or("");
+            let task = args.get("task").and_then(|v| v.as_str()).unwrap_or("");
+            let additional_context = args
+                .get("additional_context")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            let default_mgr = SubagentManager::new();
+            let profile = if let Some(mgr) = subagent_mgr {
+                mgr.get_profile(subagent_id, Some(workspace))
+            } else {
+                default_mgr.get_profile(subagent_id, Some(workspace))
+            };
+
+            if let Some(profile) = profile {
+                if !profile.enabled {
+                    ToolResult::error(format!("子智能体 [{}] 已被禁用", profile.name))
+                } else {
+                    let config = parent_config.cloned().unwrap_or_else(|| ProviderConfig {
+                        id: "gemini".to_string(),
+                        name: "Gemini".to_string(),
+                        api_key: String::new(),
+                        base_url: String::new(),
+                        model: "gemini-2.5-flash".to_string(),
+                    });
+
+                    let res = crate::subagents::run_subagent(crate::subagents::RunSubagentOptions {
+                        profile,
+                        task: task.to_string(),
+                        additional_context,
+                        workspace: workspace.to_path_buf(),
+                        parent_config: config,
+                        checkpoint_mgr: checkpoint_mgr.map(|m| Arc::clone(m)),
+                        abort_rx: None,
+                        update_tx: None,
+                    })
+                    .await;
+
+                    if res.ok {
+                        ToolResult::success(res.summary)
+                    } else {
+                        ToolResult::error(res.error_message.unwrap_or(res.summary))
+                    }
+                }
+            } else {
+                ToolResult::error(format!("找不到指定的子智能体配置: {}", subagent_id))
+            }
+        }
         unknown => ToolResult::error(format!("未知工具: {}", unknown)),
     };
 
-    AgentMessage::ToolResult {
-        tool_call_id: call.id.clone(),
-        tool_name: call.name.clone(),
-        content: result.output,
-        is_error: if result.ok { None } else { Some(true) },
-        details: result.details,
-        patch: result.patch,
-        checkpoint_id,
-        timestamp: Some(now_ms()),
+        AgentMessage::ToolResult {
+            tool_call_id: call.id.clone(),
+            tool_name: call.name.clone(),
+            content: result.output,
+            is_error: if result.ok { None } else { Some(true) },
+            details: result.details,
+            patch: result.patch,
+            checkpoint_id,
+            timestamp: Some(now_ms()),
+        }
     }
+    .boxed()
 }
 
 fn now_ms() -> i64 {

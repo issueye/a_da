@@ -120,18 +120,19 @@ gantt
 
 ### Phase 3：全功能 Agent 机制深度对齐 `中优先级`
 
-- [ ] **T3.1 多智能体（Subagent）纯 Rust 调度器**
+- [x] **T3.1 多智能体（Subagent）纯 Rust 调度器**（已达成）
   - 对齐子智能体配置列表查询（`subagentProfile.list`）；
   - 支持子智能体派生循环 `invoke_subagent`，实现父子会话状态树与独立沙箱上下文；
-  - 交付物：`agent_core/src/subagents/mod.rs`。
-- [ ] **T3.2 审批守卫（Approval Guard）联动**
-  - 在微内核执行 `node:child_process`（`spawn`/`exec`）前，触发 `ApprovalMode` 判定；
+  - 交付物：`agent_core/src/subagents/`（`types.rs`, `builtins.rs`, `manager.rs`, `runner.rs`, `mod.rs`）。
+- [x] **T3.2 审批守卫（Approval Guard）联动**（已达成）
+  - 在微内核执行工具前触发 `ApprovalMode` 判定；
   - 遇到破坏性命令（如 `rm -rf`, `git reset --hard`）时，向前端派发 `askUser` 二次确认卡片并阻塞等待；
-  - 交付物：`agent_core/src/approval/mod.rs`。
-- [ ] **T3.3 检查点自动快照与会话压缩（Compact）**
+  - 前端点击「批准/拒绝」通过 `approval.decide` 异步唤醒挂起协程并推流更新快照；
+  - 交付物：`agent_core/src/approval/`（`types.rs`, `guard.rs`, `manager.rs`, `mod.rs`）。
+- [x] **T3.3 检查点自动快照与会话压缩（Compact）**（已达成）
   - 在工具写入文件前自动生成 `checkpoint`，支持前端「改动审阅」面板中的差异查看与一键全量回滚（`change.revertAll`）；
-  - 实现超长上下文的 LRU 滚动截断与 Summarize 压缩逻辑；
-  - 交付物：`agent_core/src/checkpoint/` 增强。
+  - 实现超长上下文结构化归纳压缩（`thread.compact`），生成 `Item::Compact` 并写入流水持久化；
+  - 交付物：`agent_core/src/checkpoint/` 增强与 `server/dispatch.rs` 联动。
 
 ---
 
@@ -166,5 +167,5 @@ gantt
 ## 四、 关键里程碑检查点 (Milestone Checkpoints)
 
 - [x] **M1（第 2 周末）**：**纯 Rust MVP 跑通**。内存低于 15MB，无黑框，通过 WebSocket 连上原生窗口，完成一次带流式打字机的真实提问与回答（已达成）。
-- [ ] **M2（第 4 周末）**：**核心 Node API（P0/P1）就绪**。能完整加载官方 `git-tools` 和 `batch-ops` 插件，在微内核沙箱中完成文件读写与 diff 计算。
+- [x] **M2（第 4 周末）**：**核心 Node API（P0/P1）就绪**。能完整加载官方 `git-tools` 和 `batch-ops` 插件，在微内核沙箱中完成文件读写与 diff 计算（已达成）。
 - [ ] **M3（第 6 周末）**：**全量切流并上线**。默认弃用 Bun Host，全面由纯 Rust 后端接管，交付最终单文件版本。

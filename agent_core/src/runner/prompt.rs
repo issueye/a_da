@@ -99,6 +99,31 @@ pub fn builtin_tools() -> Vec<ChatCompletionTool> {
                 }),
             },
         },
+        ChatCompletionTool {
+            tool_type: "function".to_string(),
+            function: ChatCompletionToolFunction {
+                name: "invoke_subagent".to_string(),
+                description: "委派专职子智能体（如 researcher 调研专员、code_reviewer 审查专员、tester 测试专员）在隔离上下文中执行定向任务。".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "subagent_id": {
+                            "type": "string",
+                            "description": "子智能体标识符，如 researcher, code_reviewer, tester, general_purpose。"
+                        },
+                        "task": {
+                            "type": "string",
+                            "description": "委派给子智能体的具体任务目标与要求。"
+                        },
+                        "additional_context": {
+                            "type": "string",
+                            "description": "补充的参考上下文信息（可选）。"
+                        }
+                    },
+                    "required": ["subagent_id", "task"]
+                }),
+            },
+        },
     ]
 }
 

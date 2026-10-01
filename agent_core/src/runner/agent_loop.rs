@@ -7,7 +7,7 @@ use tokio::sync::{mpsc, watch};
 use tracing::warn;
 
 
-use super::executor::execute_tool_call;
+use super::executor::execute_tool_call_extended;
 use super::prompt::{build_system_prompt, builtin_tools, format_messages_for_model};
 use crate::ai::{stream_model_chat, ModelChatOptions, ProviderConfig, StreamDelta};
 use crate::checkpoint::CheckpointManager;
@@ -177,11 +177,13 @@ pub async fn run_agent_loop(
                 })
                 .await;
 
-            let result_msg = execute_tool_call(
+            let result_msg = execute_tool_call_extended(
                 workspace,
                 thread_id,
                 call,
                 Some(&checkpoint_mgr),
+                Some(&provider_config),
+                None,
             )
             .await;
 
@@ -219,6 +221,7 @@ fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use crate::runner::executor::execute_tool_call;
     use super::*;
     use crate::ai::ToolCallInfo;
 
