@@ -19,8 +19,8 @@ const MAX_LOOP_STEPS: usize = 30;
 pub enum AgentLoopEvent {
     Thinking { text: String },
     TextDelta { text: String },
-    ToolCallStarted { name: String, id: String },
-    ToolCallFinished { name: String, id: String, ok: bool },
+    ToolCallStarted { name: String, id: String, args: String },
+    ToolCallFinished { name: String, id: String, ok: bool, output: Option<String> },
     TurnFinished { stop_reason: String },
     Error { message: String },
 }
@@ -173,6 +173,7 @@ pub async fn run_agent_loop(
                 .send(AgentLoopEvent::ToolCallStarted {
                     name: call.name.clone(),
                     id: call.id.clone(),
+                    args: call.args.clone(),
                 })
                 .await;
 
@@ -184,9 +185,12 @@ pub async fn run_agent_loop(
             )
             .await;
 
-            let is_ok = match &result_msg {
-                AgentMessage::ToolResult { is_error, .. } => is_error.is_none() || is_error == &Some(false),
-                _ => true,
+            let (is_ok, output_str) = match &result_msg {
+                AgentMessage::ToolResult { is_error, content, .. } => {
+                    let ok = is_error.is_none() || is_error == &Some(false);
+                    (ok, Some(content.clone()))
+                }
+                _ => (true, None),
             };
 
             let _ = event_tx
@@ -194,6 +198,7 @@ pub async fn run_agent_loop(
                     name: call.name.clone(),
                     id: call.id.clone(),
                     ok: is_ok,
+                    output: output_str,
                 })
                 .await;
 

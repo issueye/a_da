@@ -88,7 +88,7 @@ mod tests {
         let store = Arc::new(RwLock::new(AgentStore::new("E:/test".to_string())));
         let session_mgr = Arc::new(SessionManager::new(Some(std::env::temp_dir().join("a_da_test_home"))));
         let checkpoint_mgr = Arc::new(CheckpointManager::new(Some(std::env::temp_dir().join("a_da_test_home"))));
-        let dispatcher = Dispatcher::new(store, session_mgr, checkpoint_mgr);
+        let dispatcher = Dispatcher::new(store, session_mgr, checkpoint_mgr, None);
 
         // 验证 prompt.list
         let prompts = dispatcher.dispatch("prompt.list", serde_json::json!({ "workspace": "E:/test" }))

@@ -3,7 +3,7 @@ use crate::server::dispatch::Dispatcher;
 use crate::state::{generate_snapshot, AgentStore};
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, RwLock};
@@ -16,8 +16,7 @@ pub struct WsHostServer {
     pub token: String,
     store: Arc<RwLock<AgentStore>>,
     dispatcher: Arc<Dispatcher>,
-    seq: Arc<AtomicU64>,
-    broadcast_tx: mpsc::UnboundedSender<String>,
+    broadcaster: Arc<crate::server::emitter::StateBroadcaster>,
 }
 
 impl WsHostServer {
@@ -49,17 +48,25 @@ impl WsHostServer {
 
         let session_mgr = Arc::new(crate::session::SessionManager::new(None));
         let checkpoint_mgr = Arc::new(crate::checkpoint::CheckpointManager::new(None));
-        let dispatcher = Arc::new(Dispatcher::new(store.clone(), session_mgr, checkpoint_mgr));
         let seq = Arc::new(AtomicU64::new(0));
-
+        let broadcaster = crate::server::emitter::StateBroadcaster::new(
+            store.clone(),
+            seq.clone(),
+            broadcast_tx.clone(),
+        );
+        let dispatcher = Arc::new(Dispatcher::new(
+            store.clone(),
+            session_mgr,
+            checkpoint_mgr,
+            Some(broadcaster.clone()),
+        ));
 
         let server = Arc::new(Self {
             port: actual_port,
             token: token.clone(),
             store: store.clone(),
             dispatcher: dispatcher.clone(),
-            seq: seq.clone(),
-            broadcast_tx,
+            broadcaster,
         });
 
         // 接收外部连接后台协程
@@ -81,22 +88,7 @@ impl WsHostServer {
 
     /// 广播全量快照
     pub async fn broadcast_snapshot(&self) {
-        let current_seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
-        let store = self.store.read().await;
-        let snapshot = generate_snapshot(&store);
-        let event = SnapshotEvent {
-            seq: current_seq,
-            topic: EVT_STATE_SNAPSHOT.to_string(),
-            payload: snapshot,
-        };
-        let frame = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": EVT_STATE_SNAPSHOT,
-            "params": event
-        });
-        if let Ok(json_str) = serde_json::to_string(&frame) {
-            let _ = self.broadcast_tx.send(json_str);
-        }
+        self.broadcaster.broadcast_immediate().await;
     }
 
     async fn handle_connection(

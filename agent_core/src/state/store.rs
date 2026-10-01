@@ -214,4 +214,139 @@ impl AgentStore {
     pub fn clear_log(&mut self) {
         self.log.clear();
     }
+
+    /// 设置会话是否处于运行中
+    pub fn set_thread_running(&mut self, thread_id: &str, running: bool) {
+        if running {
+            if !self.running_thread_ids.iter().any(|id| id == thread_id) {
+                self.running_thread_ids.push(thread_id.to_string());
+            }
+        } else {
+            self.running_thread_ids.retain(|id| id != thread_id);
+        }
+    }
+
+    /// 查找指定会话的可变引用
+    pub fn get_thread_mut(&mut self, thread_id: &str) -> Option<&mut Thread> {
+        self.threads.iter_mut().find(|t| t.id == thread_id)
+    }
+
+    /// 追加用户提问 Item
+    pub fn add_user_message(&mut self, thread_id: &str, text: &str) {
+        if let Some(t) = self.get_thread_mut(thread_id) {
+            t.items.push(Item::User {
+                id: next_id("item_user"),
+                at: now_millis(),
+                text: text.to_string(),
+                images: None,
+                queued: None,
+            });
+        }
+    }
+
+    /// 标记结束未闭合的 Thinking Item
+    pub fn end_thinking(&mut self, thread_id: &str) {
+        if let Some(t) = self.get_thread_mut(thread_id) {
+            if let Some(Item::Thinking { ended_at, .. }) = t.items.last_mut() {
+                if ended_at.is_none() {
+                    *ended_at = Some(now_millis());
+                }
+            }
+        }
+    }
+
+    /// 追加 Thinking 思考增量
+    pub fn append_thinking_delta(&mut self, thread_id: &str, delta: &str) {
+        if let Some(t) = self.get_thread_mut(thread_id) {
+            if let Some(Item::Thinking { text, ended_at, .. }) = t.items.last_mut() {
+                if ended_at.is_none() {
+                    text.push_str(delta);
+                    return;
+                }
+            }
+            // 否则创建新的 Thinking 卡片
+            t.items.push(Item::Thinking {
+                id: next_id("item_think"),
+                at: now_millis(),
+                text: delta.to_string(),
+                ended_at: None,
+            });
+        }
+    }
+
+    /// 追加 Assistant 回复增量
+    pub fn append_assistant_delta(&mut self, thread_id: &str, delta: &str) {
+        // 先确保 Thinking 已结束
+        self.end_thinking(thread_id);
+
+        if let Some(t) = self.get_thread_mut(thread_id) {
+            if let Some(Item::Assistant { text, streaming, .. }) = t.items.last_mut() {
+                if *streaming == Some(true) {
+                    text.push_str(delta);
+                    return;
+                }
+            }
+            // 否则创建新的流式 Assistant 卡片
+            t.items.push(Item::Assistant {
+                id: next_id("item_asst"),
+                at: now_millis(),
+                text: delta.to_string(),
+                streaming: Some(true),
+                duration_ms: None,
+                turn_duration_ms: None,
+            });
+        }
+    }
+
+    /// 记录工具调用开始
+    pub fn start_tool_call(&mut self, thread_id: &str, call_id: &str, name: &str, raw_args: &str) {
+        if let Some(t) = self.get_thread_mut(thread_id) {
+            // 如果最后一个是流式 Assistant，停止其流式标记
+            if let Some(Item::Assistant { streaming, .. }) = t.items.last_mut() {
+                *streaming = None;
+            }
+
+            t.items.push(Item::Tool {
+                id: next_id("item_tool"),
+                at: now_millis(),
+                call_id: call_id.to_string(),
+                name: name.to_string(),
+                args: serde_json::from_str(raw_args).unwrap_or(serde_json::Value::Null),
+                raw_args: raw_args.to_string(),
+                status: "running".to_string(),
+                output: None,
+                patch: None,
+                details: None,
+                thread_id: Some(thread_id.to_string()),
+                checkpoint_id: None,
+                reverted: None,
+            });
+        }
+    }
+
+    /// 记录工具调用完成
+    pub fn finish_tool_call(&mut self, thread_id: &str, call_id: &str, ok: bool, output: Option<String>) {
+        if let Some(t) = self.get_thread_mut(thread_id) {
+            for item in t.items.iter_mut().rev() {
+                if let Item::Tool { call_id: cid, status, output: out, .. } = item {
+                    if cid == call_id {
+                        *status = if ok { "done".to_string() } else { "error".to_string() };
+                        *out = output;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// 完成当前轮次
+    pub fn finish_turn(&mut self, thread_id: &str) {
+        self.end_thinking(thread_id);
+        if let Some(t) = self.get_thread_mut(thread_id) {
+            if let Some(Item::Assistant { streaming, .. }) = t.items.last_mut() {
+                *streaming = None;
+            }
+        }
+        self.set_thread_running(thread_id, false);
+    }
 }

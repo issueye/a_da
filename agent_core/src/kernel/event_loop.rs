@@ -18,6 +18,8 @@ static NEXT_JOB_ID: AtomicU64 = AtomicU64::new(1);
 thread_local! {
     /// 仅限专有事件循环单线程内部持有的未决 Promise 解析器映射表（零跨线程移动，完美避开 !Send）
     static PENDING_PROMISES: RefCell<HashMap<u64, ResolvingFunctions>> = RefCell::new(HashMap::new());
+    /// 异步工具调用挂起的返回通道映射表
+    static PENDING_TOOL_CALLS: RefCell<HashMap<u64, oneshot::Sender<Result<String, String>>>> = RefCell::new(HashMap::new());
     /// 当前事件循环单线程持有的内部消息发送通道
     static WORKER_TX: RefCell<Option<Sender<EventLoopMsg>>> = RefCell::new(None);
     /// 当前事件循环持有的异步处理逻辑
@@ -45,6 +47,12 @@ pub enum EventLoopMsg {
     RegisterAsyncFn {
         name: &'static str,
         handler: AsyncHandler,
+    },
+    /// 调用全局异步 JavaScript/TypeScript 工具函数并等待异步完成
+    CallAsyncFunction {
+        fn_name: String,
+        args_json: String,
+        response_tx: oneshot::Sender<Result<String, String>>,
     },
     /// 终止专有事件循环
     Terminate,
@@ -88,6 +96,50 @@ impl PureTsRuntime {
                     console_obj,
                     boa_engine::property::Attribute::all(),
                 ).ok();
+
+                // 注入异步工具完成时的原生回调函数
+                let tool_return = NativeFunction::from_copy_closure(|_this, args, ctx| {
+                    let call_id = args.get(0).and_then(|v| v.to_u32(ctx).ok()).unwrap_or(0) as u64;
+                    let result_str = args.get(1).map(|v| v.to_string(ctx).unwrap_or_default().to_std_string_escaped()).unwrap_or_default();
+                    let is_error = args.get(2).map(|v| v.to_boolean()).unwrap_or(false);
+
+                    let maybe_sender = PENDING_TOOL_CALLS.with(|cell| cell.borrow_mut().remove(&call_id));
+                    if let Some(tx) = maybe_sender {
+                        let res = if is_error {
+                            Err(result_str)
+                        } else {
+                            Ok(result_str)
+                        };
+                        let _ = tx.send(res);
+                    }
+                    Ok(JsValue::undefined())
+                });
+                ctx.register_global_callable(boa_engine::js_string!("__native_tool_return"), 3, tool_return).ok();
+
+                // 注入异步工具调度与错误捕获桥接器
+                let bridge_bootstrap = r#"
+                    globalThis.__dispatch_tool_call = async function(callId, fnName, argsJson) {
+                        try {
+                            let args = null;
+                            try {
+                                args = JSON.parse(argsJson);
+                            } catch (_) {
+                                args = argsJson;
+                            }
+                            const targetFn = globalThis[fnName];
+                            if (typeof targetFn !== 'function') {
+                                __native_tool_return(callId, "函数 " + fnName + " 未在全局定义", true);
+                                return;
+                            }
+                            const res = await targetFn(args);
+                            const outStr = typeof res === 'string' ? res : JSON.stringify(res);
+                            __native_tool_return(callId, outStr, false);
+                        } catch (err) {
+                            __native_tool_return(callId, String(err), true);
+                        }
+                    };
+                "#;
+                let _ = ctx.eval(Source::from_bytes(bridge_bootstrap));
 
                 while let Ok(msg) = rx.recv() {
                     match msg {
@@ -175,6 +227,20 @@ impl PureTsRuntime {
 
                             ctx.register_global_callable(boa_engine::js_string!(name), 1, native).ok();
                         }
+                        EventLoopMsg::CallAsyncFunction { fn_name, args_json, response_tx } => {
+                            let call_id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
+                            PENDING_TOOL_CALLS.with(|cell| cell.borrow_mut().insert(call_id, response_tx));
+
+                            let js_invocation = format!(
+                                "globalThis.__dispatch_tool_call({}, {}, {});",
+                                call_id,
+                                serde_json::to_string(&fn_name).unwrap_or_else(|_| "\"\"".to_string()),
+                                serde_json::to_string(&args_json).unwrap_or_else(|_| "\"\"".to_string())
+                            );
+
+                            let _ = ctx.eval(Source::from_bytes(&js_invocation));
+                            let _ = ctx.run_jobs();
+                        }
                         EventLoopMsg::Terminate => break,
                     }
                 }
@@ -204,6 +270,18 @@ impl PureTsRuntime {
     {
         let handler: AsyncHandler = Arc::new(move |args| Box::pin(async_logic(args)));
         let _ = self.sender.send(EventLoopMsg::RegisterAsyncFn { name, handler });
+    }
+
+    /// 调用在微内核中注册的全局异步 TypeScript/JavaScript 工具函数
+    pub async fn call_async_fn(&self, fn_name: impl Into<String>, args_json: impl Into<String>) -> Result<String, String> {
+        let (tx, rx) = oneshot::channel();
+        self.sender.send(EventLoopMsg::CallAsyncFunction {
+            fn_name: fn_name.into(),
+            args_json: args_json.into(),
+            response_tx: tx,
+        }).map_err(|e| e.to_string())?;
+
+        rx.await.map_err(|e| format!("异步工具执行响应被中断: {e}"))?
     }
 }
 
@@ -283,5 +361,67 @@ mod tests {
 
         let check_res = runtime.eval_ts("globalThis.bridgeOutput;", None).await.expect("查询状态失败");
         assert_eq!(check_res, "Got: ECHO_Antigravity");
+    }
+
+    #[tokio::test]
+    async fn test_mvp_e2e_ts_tool_execution() {
+        let temp_dir = std::env::temp_dir().join(format!("a_da_mvp_e2e_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let target_file = temp_dir.join("hello.txt");
+        std::fs::write(&target_file, "Antigravity Pure Rust TS Runtime MVP!").unwrap();
+
+        let runtime = PureTsRuntime::new();
+
+        // 1. 注册沙箱底层异步读取文件的原生函数
+        let base_dir = temp_dir.clone();
+        runtime.register_async_fn("__native_read_file", move |args| {
+            let rel_path = args.get(0).cloned().unwrap_or_default();
+            let abs_path = base_dir.join(rel_path);
+            async move {
+                match tokio::fs::read_to_string(&abs_path).await {
+                    Ok(text) => Ok(text),
+                    Err(e) => Err(format!("读取文件失败: {e}")),
+                }
+            }
+        });
+
+        // 2. 注入使用真实 TypeScript 语法编写的插件工具代码
+        let ts_tool_code = r#"
+            interface ReadFileArgs {
+                path: string;
+            }
+
+            interface ReadFileResult {
+                file: string;
+                content: string;
+                bytes: number;
+            }
+
+            // @ts-ignore
+            globalThis.ts_read_file = async function(args: ReadFileArgs): Promise<string> {
+                // @ts-ignore
+                const raw: string = await __native_read_file(args.path);
+                const result: ReadFileResult = {
+                    file: args.path,
+                    content: raw,
+                    bytes: raw.length,
+                };
+                return JSON.stringify(result);
+            };
+        "#;
+
+        runtime.eval_ts(ts_tool_code, Some("read_file.ts")).await.expect("TS 工具加载失败");
+
+        // 3. 模拟 Agent 模型发出的 ToolCall 派发执行
+        let tool_args = serde_json::json!({ "path": "hello.txt" }).to_string();
+        let tool_result_str = runtime.call_async_fn("ts_read_file", tool_args).await.expect("TS 工具执行失败");
+
+        // 4. 验证执行结果
+        let parsed_result: serde_json::Value = serde_json::from_str(&tool_result_str).expect("工具输出必须为合法 JSON");
+        assert_eq!(parsed_result["file"], "hello.txt");
+        assert_eq!(parsed_result["content"], "Antigravity Pure Rust TS Runtime MVP!");
+        assert_eq!(parsed_result["bytes"], 37);
+
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 }

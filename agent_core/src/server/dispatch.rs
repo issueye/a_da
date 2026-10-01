@@ -5,6 +5,7 @@ use tokio::sync::{mpsc, RwLock};
 use crate::checkpoint::CheckpointManager;
 use crate::protocol::*;
 use crate::runner::{run_agent_loop, AgentLoopEvent};
+use crate::server::emitter::StateBroadcaster;
 use crate::server::fs_service;
 use crate::session::SessionManager;
 use crate::state::{generate_snapshot, AgentStore};
@@ -13,6 +14,7 @@ pub struct Dispatcher {
     store: Arc<RwLock<AgentStore>>,
     session_mgr: Arc<SessionManager>,
     checkpoint_mgr: Arc<CheckpointManager>,
+    broadcaster: Option<Arc<StateBroadcaster>>,
     host_pid: u32,
     session_id: String,
 }
@@ -22,11 +24,13 @@ impl Dispatcher {
         store: Arc<RwLock<AgentStore>>,
         session_mgr: Arc<SessionManager>,
         checkpoint_mgr: Arc<CheckpointManager>,
+        broadcaster: Option<Arc<StateBroadcaster>>,
     ) -> Self {
         Self {
             store,
             session_mgr,
             checkpoint_mgr,
+            broadcaster,
             host_pid: std::process::id(),
             session_id: uuid::Uuid::new_v4().to_string(),
         }
@@ -185,15 +189,20 @@ impl Dispatcher {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 text 参数"))?;
 
-                let store = self.store.read().await;
+                let mut store = self.store.write().await;
+                store.add_user_message(thread_id, text);
+                store.set_thread_running(thread_id, true);
                 let ws = PathBuf::from(&store.workspace.project);
                 let provider_config = store.provider.clone();
                 drop(store);
 
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
 
                 let session_mgr = Arc::clone(&self.session_mgr);
                 let checkpoint_mgr = Arc::clone(&self.checkpoint_mgr);
-                let (event_tx, mut event_rx) = mpsc::channel::<AgentLoopEvent>(64);
+                let (event_tx, mut event_rx) = mpsc::channel::<AgentLoopEvent>(128);
                 let tid = thread_id.to_string();
                 let prompt = text.to_string();
 
@@ -210,9 +219,62 @@ impl Dispatcher {
                     ).await;
                 });
 
-                // 后台接收 agent 事件（可在未来推送至 WebSocket 广播）
+                // 后台接收 Agent 事件，更新内存模型并通过 16ms 节流广播器推送到前端 UI
+                let store_clone = Arc::clone(&self.store);
+                let broadcaster_clone = self.broadcaster.clone();
+                let thread_id_clone = thread_id.to_string();
+
                 tokio::spawn(async move {
-                    while let Some(_event) = event_rx.recv().await {}
+                    while let Some(event) = event_rx.recv().await {
+                        let mut store = store_clone.write().await;
+                        match event {
+                            AgentLoopEvent::Thinking { text } => {
+                                store.append_thinking_delta(&thread_id_clone, &text);
+                                drop(store);
+                                if let Some(ref bc) = broadcaster_clone {
+                                    bc.mark_dirty();
+                                }
+                            }
+                            AgentLoopEvent::TextDelta { text } => {
+                                store.append_assistant_delta(&thread_id_clone, &text);
+                                drop(store);
+                                if let Some(ref bc) = broadcaster_clone {
+                                    bc.mark_dirty();
+                                }
+                            }
+                            AgentLoopEvent::ToolCallStarted { name, id, args } => {
+                                store.start_tool_call(&thread_id_clone, &id, &name, &args);
+                                drop(store);
+                                if let Some(ref bc) = broadcaster_clone {
+                                    bc.broadcast_immediate().await;
+                                }
+                            }
+                            AgentLoopEvent::ToolCallFinished { name: _, id, ok, output } => {
+                                store.finish_tool_call(&thread_id_clone, &id, ok, output);
+                                drop(store);
+                                if let Some(ref bc) = broadcaster_clone {
+                                    bc.broadcast_immediate().await;
+                                }
+                            }
+                            AgentLoopEvent::TurnFinished { .. } => {
+                                store.finish_turn(&thread_id_clone);
+                                drop(store);
+                                if let Some(ref bc) = broadcaster_clone {
+                                    bc.broadcast_immediate().await;
+                                }
+                                break;
+                            }
+                            AgentLoopEvent::Error { message } => {
+                                store.finish_turn(&thread_id_clone);
+                                store.push_log("error", format!("Agent 执行异常: {message}"), None);
+                                drop(store);
+                                if let Some(ref bc) = broadcaster_clone {
+                                    bc.broadcast_immediate().await;
+                                }
+                                break;
+                            }
+                        }
+                    }
                 });
 
                 Ok(serde_json::json!({ "accepted": true }))
