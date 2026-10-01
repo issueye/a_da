@@ -488,27 +488,32 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     await app.close()
   })
 
-  test('支持 code、plan、create 三大协作模式切换并联动 store 状态', async () => {
+  test('支持在加号综合菜单中展示与切换 code、plan、create 模式并联动 store 状态', async () => {
     store.setMode('code')
     const { render, renderer } = createTestRoot({ width: 1000, height: 500 })
     render(<Composer client={agentClient} />)
     const app = await connectTest(renderer)
 
-    // 默认展示 Code 编码
+    // 展开加号综合菜单
+    await app.getByTestId('composer-plus-menu').click()
+    renderer.flush?.()
+
+    // 验证菜单中展示三大模式选项
+    expect(await app.getByTestId('plus-mode-code').count()).toBe(1)
+    expect(await app.getByTestId('plus-mode-plan').count()).toBe(1)
+    expect(await app.getByTestId('plus-mode-create').count()).toBe(1)
     expect(renderer.getPaintedText().join(' ')).toContain('Code 编码')
 
     // 切换至 Plan 规划模式
     store.setMode('plan')
     render(<Composer client={agentClient} />)
     renderer.flush?.()
-    expect(renderer.getPaintedText().join(' ')).toContain('Plan 规划')
     expect(store.mode as string).toBe('plan')
 
     // 切换至 Create 创造模式
     store.setMode('create')
     render(<Composer client={agentClient} />)
     renderer.flush?.()
-    expect(renderer.getPaintedText().join(' ')).toContain('Create 创造')
     expect(store.mode as string).toBe('create')
 
     await app.close()

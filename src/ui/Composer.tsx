@@ -1941,25 +1941,6 @@ export function Composer({ client, centered }: { client: AgentClient; centered?:
           </div>
 
 
-          <ChipSelect
-            testId="mode-select"
-            value={client.state.mode ?? 'code'}
-            onChange={(next) => void client.request('thread.setMode', { mode: next as AgentMode })}
-            items={MODE_OPTIONS}
-            icon={modeOption.icon}
-            label={modeOption.label}
-            menuWidth={250}
-          >
-            {MODE_OPTIONS.map((m) => (
-              <SelectItem key={m.value} testId={`mode-option-${m.value}`} value={m.value} style={menuItemStyle}>
-                <MenuRow
-                  label={m.label}
-                  description={m.desc}
-                  selected={(client.state.mode ?? 'code') === m.value}
-                />
-              </SelectItem>
-            ))}
-          </ChipSelect>
 
           <ChipSelect
             testId="approval"
