@@ -11,15 +11,16 @@
 
 ## 一、产品功能缺口（按价值排序）
 
-### 1. `@` 提及：界面在承诺一个不存在的功能　`未排期`
+### 1. `@` 提及：聚合工作区文件、扩展技能与智能体补全　`已定案并完成`
 
-- **现状**：输入框占位文本写着 `描述要 Agent 完成的任务 (Ask anything, @ to mention, / for actions)`
-  （`src/ui/Composer.tsx:1364`）。`/` 动作是真实实现（`src/ui/SlashCommandMenu.tsx`），
-  `@` 没有：全仓没有 mention 解析或补全，`store.entries`（工作区文件清单）只被图片附件菜单用
-  （`src/ui/Composer.tsx:525`，`AppendMenu` 里的图片过滤）。
-- **影响**：用户照提示敲 `@` 什么都不会发生。这是全仓**唯一一处"界面在骗人"**。
-- **最小实现路径**：仿 `SlashCommandMenu` 做触发 + 补全（候选来自 `store.entries`、技能库、
-  子智能体列表），选中后插入引用并让模型看到；短期至少把占位文本里的 `@ to mention` 去掉。
+- **现状与闭环（2026-10-01 完成）**：
+  - 新增独立组件 [src/ui/MentionMenu.tsx](file:///E:/codes/rust_projects/a_da/src/ui/MentionMenu.tsx)，聚合工作区文件清单（`client.state.entries`）、扩展技能（`skill.list`）与特化子智能体（`subagentProfile.list`）。
+  - 输入框敲入 `@` 或在句中输入 `@query` 自动呼出补全浮层，支持分类过滤（全部/文件/技能/智能体）与模糊搜索。
+  - 选中条目后智能补全路径或命名空间标识（如 `@src/index.ts`、`@skill:review`、`@subagent:coder`）。
+  - 底部工具栏新增「`@ 提及`」快捷触发按钮，支持快捷唤起/收起与 Esc 键安全关闭。
+- **守门测试**：
+  - 纯函数与组件渲染测试：[src/ui/MentionMenu.test.tsx](file:///E:/codes/rust_projects/a_da/src/ui/MentionMenu.test.tsx)（图标推断、多分类过滤、条目渲染全覆盖）。
+  - 输入框集成测试：[src/ui/Composer.test.tsx](file:///E:/codes/rust_projects/a_da/src/ui/Composer.test.tsx)（工具栏提及按钮唤起与收起）。
 
 ### 2. MCP client　`待拍板`
 

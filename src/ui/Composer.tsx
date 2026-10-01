@@ -18,6 +18,7 @@ import { computeThreadStats, type AgentMode, type Item, type Thread } from '../a
 import { computeContextBreakdown, type ContextUsageSummary } from '../agent/stats'
 import { ContextUsagePopover } from './ContextUsagePopover'
 import { SlashCommandMenu, type SlashCommandItem } from './SlashCommandMenu'
+import { MentionMenu, type MentionItem } from './MentionMenu'
 import { imagePickerRequest } from './picker-requests'
 import { FilePicker } from './FilePicker'
 import { QuestionCard } from './QuestionCard'
@@ -1107,6 +1108,8 @@ export function Composer({ client, centered }: { client: AgentClient; centered?:
   const [focused, setFocused] = useState(false)
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [slashFilter, setSlashFilter] = useState('')
+  const [mentionMenuOpen, setMentionMenuOpen] = useState(false)
+  const [mentionFilter, setMentionFilter] = useState('')
   const [selectedCommand, setSelectedCommand] = useState<SlashCommandItem | null>(null)
 
   /** 把选中的路径并进附件（去重）。 */
@@ -1184,6 +1187,8 @@ export function Composer({ client, centered }: { client: AgentClient; centered?:
   const send = async (text: string) => {
     setSlashMenuOpen(false)
     setSlashFilter('')
+    setMentionMenuOpen(false)
+    setMentionFilter('')
 
     let target = text.trim() ? text : currentDraft
     if (selectedCommand) {
@@ -1436,6 +1441,26 @@ export function Composer({ client, centered }: { client: AgentClient; centered?:
         }}
       />
 
+      {mentionMenuOpen ? (
+        <MentionMenu
+          client={client}
+          filterQuery={mentionFilter}
+          onSelect={(item) => {
+            const nextDraft = currentDraft.replace(/(?:^|\s)@([^\s@]*)$/, (match) => {
+              const prefix = match.startsWith(' ') ? ' ' : ''
+              return `${prefix}@${item.insertText} `
+            })
+            setDraft(nextDraft)
+            setMentionMenuOpen(false)
+            setMentionFilter('')
+          }}
+          onClose={() => {
+            setMentionMenuOpen(false)
+            setMentionFilter('')
+          }}
+        />
+      ) : null}
+
       {slashMenuOpen ? (
         <SlashCommandMenu
           client={client}
@@ -1460,6 +1485,10 @@ export function Composer({ client, centered }: { client: AgentClient; centered?:
       <div
         onKeyDown={(event: any) => {
           if (event?.key === 'Escape' || event?.key === 'escape') {
+            if (mentionMenuOpen) {
+              setMentionMenuOpen(false)
+              setMentionFilter('')
+            }
             if (slashMenuOpen) {
               setSlashMenuOpen(false)
               setSlashFilter('')
@@ -1623,6 +1652,16 @@ export function Composer({ client, centered }: { client: AgentClient; centered?:
               setSlashMenuOpen(false)
               setSlashFilter('')
             }
+
+            // 检测 @ 提及触发
+            const mentionMatch = val.match(/(?:^|\s)@([^\s@]*)$/)
+            if (mentionMatch) {
+              setMentionMenuOpen(true)
+              setMentionFilter(mentionMatch[1] || '')
+            } else if (mentionMenuOpen) {
+              setMentionMenuOpen(false)
+              setMentionFilter('')
+            }
           }}
           onSubmit={(event) => void send(event.value?.trim() ? event.value : currentDraft)}
         />
@@ -1736,6 +1775,46 @@ export function Composer({ client, centered }: { client: AgentClient; centered?:
               }}
             >
               {modelLabel}
+            </text>
+          </div>
+
+          <div
+            testId="composer-mention-button"
+            role="button"
+            aria-label={mentionMenuOpen ? '关闭提及面板' : '提及文件、技能或智能体 (@)'}
+            onClick={() => {
+              setMentionMenuOpen((open) => !open)
+              setMentionFilter('')
+              if (slashMenuOpen) setSlashMenuOpen(false)
+            }}
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 3,
+              height: 22,
+              paddingLeft: 7,
+              paddingRight: 8,
+              borderRadius: 6,
+              cursor: 'pointer',
+              backgroundColor: mentionMenuOpen ? C.chipHover : C.chip,
+              borderWidth: 1,
+              borderColor: mentionMenuOpen ? C.link : C.chipBorder,
+              hover: { backgroundColor: C.chipHover },
+            }}
+          >
+            <text style={{ fontSize: 12, fontWeight: 700, color: mentionMenuOpen ? C.link : C.secondary }}>
+              @
+            </text>
+            <text
+              style={{
+                fontSize: 11.5,
+                fontWeight: 500,
+                color: mentionMenuOpen ? C.link : C.secondary,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              提及
             </text>
           </div>
 

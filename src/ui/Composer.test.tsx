@@ -545,6 +545,35 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     await app.close()
   })
 
+  test('底部工具栏提供「提及」按钮，点击可唤起与收起 @ 提及面板', async () => {
+    const { render, renderer } = createTestRoot({ width: 1000, height: 500 })
+    render(<Composer client={agentClient} />)
+    const app = await connectTest(renderer)
+
+    // 验证提及按钮存在
+    const mentionBtn = app.getByTestId('composer-mention-button')
+    expect(await mentionBtn.count()).toBe(1)
+    expect(renderer.getPaintedText().join(' ')).toContain('提及')
+
+    // 默认提及面板未打开
+    expect(await app.getByTestId('mention-menu').count()).toBe(0)
+
+    // 点击提及按钮打开面板
+    await mentionBtn.click()
+    renderer.flush?.()
+
+    // 验证面板出现并包含提及引用标题
+    expect(await app.getByTestId('mention-menu').count()).toBe(1)
+    expect(renderer.getPaintedText().join(' ')).toContain('提及引用')
+
+    // 再次点击提及按钮关闭面板
+    await mentionBtn.click()
+    renderer.flush?.()
+    expect(await app.getByTestId('mention-menu').count()).toBe(0)
+
+    await app.close()
+  })
+
   test('输入框输入中文顿号或斜杠自动展开快捷指令面板', async () => {
     const { render, renderer } = createTestRoot({ width: 1000, height: 600 })
     render(<Composer client={agentClient} />)
