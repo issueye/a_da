@@ -1056,7 +1056,24 @@ export function Sidebar({
           icon="refresh"
           testId="refresh-workspace"
           label="刷新工作区"
-          onClick={() => void client.request('workspace.rescan', {})}
+          onClick={() =>
+            void (async () => {
+              try {
+                await client.request('workspace.rescan', {})
+                // 结果从状态里读：`rescan` 只回 void，文件数是它跑完写进快照的
+                const { files, scanning } = client.state.workspaceInfo
+                client.ui.notify({
+                  message: scanning ? '正在重新索引工作区…' : `工作区已重新索引：${files} 个文件`,
+                  detail: scanning ? '索引完成后侧边栏会更新文件数' : undefined,
+                })
+              } catch (err) {
+                client.ui.notify({
+                  level: 'error',
+                  message: `重新索引失败：${(err as Error).message}`,
+                })
+              }
+            })()
+          }
         />
       </div>
     </div>

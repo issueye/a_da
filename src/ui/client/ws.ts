@@ -269,6 +269,9 @@ export function createWebSocketClient(options: WebSocketClientOptions): WebSocke
       void request('ui.setShell', { patch: { pendingDraft: null } }).catch(reportUiFailure),
     showConfirm: (confirmOptions) => viewStore.showConfirm(confirmOptions),
     closeConfirm: () => viewStore.closeConfirm(),
+    // 轻提示是客户端本地状态：不过协议（协议 §9.1 的 C 组），所以两端只是各自渲染
+    notify: (toast) => viewStore.notify(toast),
+    dismissToast: (id) => viewStore.dismissToast(id),
     pickFiles: (request) => viewStore.pickFiles(request),
     closeFilePicker: () => viewStore.closeFilePicker(),
     /**

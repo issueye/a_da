@@ -37,54 +37,67 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (err: unknown) => {
   log(`[unhandledRejection] ${(err as Error)?.stack || err}`)
 })
+process.on('beforeExit', (code) => {
+  log(`[beforeExit] 事件循环即将清空退出 code=${code}`)
+})
+process.on('exit', (code) => {
+  log(`[exit] 进程终止退出 code=${code}`)
+})
 
-try {
-  // 选传输（M3-6）：开发/测试走进程内，打包形态走 WebSocket + 自 spawn 主机。
-  // 这一步必须在 render 之前完成——界面起来时客户端就得是可用的。
-  const { client, shutdown, info } = await resolveAgentClient()
-  log(
-    `传输：${info.transport}` +
-      (info.port ? `（主机 pid=${info.pid} 端口=${info.port}）` : '（进程内）')
-  )
-  // 主机随 UI 退出：正常退出路径（process.exit / 信号）都收掉它，避免孤儿进程
-  process.on('exit', shutdown)
+async function startApp(): Promise<void> {
+  try {
+    // 选传输（M3-6）：开发/测试走进程内，打包形态走 WebSocket + 自 spawn 主机。
+    // 这一步必须在 render 之前完成——界面起来时客户端就得是可用的。
+    const { client, shutdown, info } = await resolveAgentClient()
+    log(
+      `传输：${info.transport}` +
+        (info.port ? `（主机 pid=${info.pid} 端口=${info.port}）` : '（进程内）')
+    )
+    // 主机随 UI 退出：正常退出路径（process.exit / 信号）都收掉它，避免孤儿进程
+    process.on('exit', shutdown)
 
-  log('开始调用 render() 挂载界面...')
-  render(<AgentWindow client={client} />, {
-    title: 'a_da',
-    width: 1370,
-    height: 950,
-    titlebarTransparent: true,
-    windowBackground: 'opaque',
-    trafficLightX: 16,
-    trafficLightY: 17,
-    focus: process.env.GPUIX_BACKGROUND !== '1',
-    // 窗口级键盘：全局快捷键（Ctrl+K 命令面板等）。聚焦元素没消费的组合键
-    // 会在冒泡相落到这里。
-    onKeyDown: (event: unknown) => {
-      handleGlobalShortcut(event as Parameters<typeof handleGlobalShortcut>[0], client)
-    },
-  })
-  log('render() 初始化执行成功')
+    log('开始调用 render() 挂载界面...')
+    render(<AgentWindow client={client} />, {
+      title: 'a_da',
+      width: 1370,
+      height: 950,
+      titlebarTransparent: true,
+      windowBackground: 'opaque',
+      trafficLightX: 16,
+      trafficLightY: 17,
+      focus: process.env.GPUIX_BACKGROUND !== '1',
+      // 窗口级键盘：全局快捷键（Ctrl+K 命令面板等）。聚焦元素没消费的组合键
+      // 会在冒泡相落到这里。
+      onKeyDown: (event: unknown) => {
+        handleGlobalShortcut(event as Parameters<typeof handleGlobalShortcut>[0], client)
+      },
+    })
+    log('render() 初始化执行成功')
 
-  // 挂载完成后，采用多阶梯度激活策略穿透桌面层级，确保窗口即刻在用户屏幕前台弹出
-  const tryActivate = (attempt = 1) => {
-    try {
-      const ok = activateAndShowWindow()
-      log(`第 ${attempt} 次前台置顶激活: ${ok}`)
-      if (!ok && attempt < 5) {
-        setTimeout(() => tryActivate(attempt + 1), 200)
+    // 挂载完成后，采用多阶梯度激活策略穿透桌面层级，确保窗口即刻在用户屏幕前台弹出
+    const tryActivate = (attempt = 1) => {
+      try {
+        const ok = activateAndShowWindow()
+        log(`第 ${attempt} 次前台置顶激活: ${ok}`)
+        if (!ok && attempt < 5) {
+          setTimeout(() => tryActivate(attempt + 1), 200)
+        }
+      } catch (e) {
+        log(`第 ${attempt} 次前台置顶激活异常: ${(e as Error)?.message || e}`)
       }
-    } catch (e) {
-      log(`第 ${attempt} 次前台置顶激活异常: ${(e as Error)?.message || e}`)
     }
+    setTimeout(() => tryActivate(1), 100)
+  } catch (e) {
+    log(`render() 异常: ${(e as Error)?.stack || e}`)
   }
-  setTimeout(() => tryActivate(1), 100)
-} catch (e) {
-  log(`render() 异常: ${(e as Error)?.stack || e}`)
 }
 
+void startApp()
+
 // 保持事件循环活跃：防止打包为独立二进制后 JS 主线程因无待办异步任务而过早退出
-setInterval(() => {
+const heartbeat = setInterval(() => {
   // 维持心跳
-}, 30_000)
+}, 5_000)
+if (typeof (heartbeat as unknown as { ref?: () => void })?.ref === 'function') {
+  ;(heartbeat as unknown as { ref: () => void }).ref()
+}

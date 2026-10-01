@@ -15,6 +15,8 @@ export type {
   ClientState,
   ConfirmOptions,
   FilePickerRequest,
+  ToastItem,
+  ToastLevel,
   UiActions,
 } from './types'
 /**
@@ -93,7 +95,8 @@ export async function resolveAgentClient(
   info: { transport: 'inprocess' | 'ws'; port?: number; pid?: number; url?: string }
 }> {
   const explicit = process.env.A_DA_TRANSPORT
-  const fallback: 'inprocess' | 'ws' = Bun.isStandaloneExecutable ? 'ws' : 'inprocess'
+  const isStandalone = typeof Bun !== 'undefined' ? Boolean(Bun.isStandaloneExecutable) : true
+  const fallback: 'inprocess' | 'ws' = isStandalone ? 'ws' : 'inprocess'
   const transport =
     options.transport ?? (explicit === 'ws' || explicit === 'inprocess' ? explicit : fallback)
 

@@ -9,6 +9,7 @@ import type { AgentClient, SkillSummary } from './client'
 import { copyToClipboard } from '../platform/clipboard'
 import { C, FONT_MONO } from '../theme'
 import { Icon, IconButton } from './controls'
+import { skillToggleNotice } from './action-notices'
 
 export function SkillsPanel({
   client,
@@ -70,12 +71,16 @@ export function SkillsPanel({
       })
       setActionError(null)
       onTrace?.(`已${nextState ? '启用' : '停用'}技能：${skill.name}`)
+      // 轻提示：失败走下面的错误条（那是"留在页面里"的失败），成功给一条会自动
+      // 消失的回执。以前这里成功是**完全静默**的，只有调试日志里有。
+      client.ui.notify(skillToggleNotice(skill.name, skill.disableModelInvocation, nextState))
       await onRefresh()
     } catch (err) {
       // 不往上抛：抛出去会被 GPUIX 变成整窗错误页（见 actionError 的说明）
       const message = `${nextState ? '启用' : '停用'}技能失败：${(err as Error).message}`
       setActionError(message)
       onTrace?.(message)
+      client.ui.notify({ level: 'error', message })
     }
   }
 

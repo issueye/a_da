@@ -25,7 +25,14 @@
 import type { ClientSnapshot } from '../../shared/protocol'
 import { computeThreadStats } from '../../agent/types'
 import { applyAppearance } from '../../theme'
-import type { ClientConnectionState, ClientState, ConfirmOptions, FilePickerRequest } from './types'
+import type {
+  ClientConnectionState,
+  ClientState,
+  ConfirmOptions,
+  FilePickerRequest,
+  ToastItem,
+  ToastLevel,
+} from './types'
 import {
   deriveIsPublic,
   deriveLabelFor,
@@ -61,6 +68,14 @@ export interface ViewStore {
   /** 客户端本地：弹确认框 / 关确认框（`confirmModal` 属客户端本地，见文件头）。 */
   showConfirm(options: ConfirmOptions): void
   closeConfirm(): void
+  /**
+   * 弹一条轻提示 / 关掉一条（客户端本地）。
+   *
+   * 自动消失的定时器**由 store 持有**而不是组件：组件可能在提示还挂着时被卸载
+   * （切标签、关模态），那样定时器要么泄漏、要么把已经卸载的组件叫醒。
+   */
+  notify(toast: { level?: ToastLevel; message: string; detail?: string; durationMs?: number }): void
+  dismissToast(id: string): void
   /** 更新"与主机的连接状态"（传输层调；进程内不用调）。 */
   setConnection(next: ClientConnectionState): void
   /** 打开/关闭应用内的文件选择器（客户端本地）。 */
@@ -91,6 +106,42 @@ export function createViewStore(source: SnapshotSource, options: ViewStoreOption
   let filePicker: FilePickerRequest | null = null
 
   /**
+   * 当前挂着的轻提示（本地字段；窗口级浮层，与确认框同一套做法）。
+   *
+   * 上限 3 条、超出丢最旧的：提示是"刚发生的事"，攒九条盖住半个窗口等于没有提示。
+   * 丢弃时**连着定时器一起清**，否则那个定时器到点会对一条已经不存在的 id 动手。
+   */
+  let toasts: ToastItem[] = []
+  const toastTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const MAX_TOASTS = 3
+  /** 自增 id：不用时间戳，同一毫秒内连弹两条会撞 id 并互相取消 */
+  let toastSeq = 0
+
+  function clearToastTimer(id: string): void {
+    const timer = toastTimers.get(id)
+    if (timer === undefined) return
+    clearTimeout(timer)
+    toastTimers.delete(id)
+  }
+
+  /** 一条提示默认活多久。错误不自动消失——它要求用户看一眼。 */
+  function defaultDuration(level: ToastLevel): number {
+    return level === 'error' ? 0 : 3200
+  }
+
+  /**
+   * 关掉一条提示。定义成局部函数而不是直接写在返回对象里：`notify` 的定时器回调
+   * 要调它，而定时器回调是在对象**建好之后**才触发的，写进对象里会绕一层。
+   */
+  function removeToast(id: string): void {
+    clearToastTimer(id)
+    const next = toasts.filter((toast) => toast.id !== id)
+    if (next.length === toasts.length) return
+    toasts = next
+    republishLocal()
+  }
+
+  /**
    * 客户端本地的焦点覆盖（点了会话就立刻生效，不等主机回话）。
    *
    * 快照里那份 `ui.activeId` 是主机的镜像；主机在跑长任务时它要过一会儿才跟上。
@@ -117,6 +168,7 @@ export function createViewStore(source: SnapshotSource, options: ViewStoreOption
       // ── 连接状态与文件选择请求（客户端本地）──
       connection,
       filePicker,
+      toasts,
 
       // ── 主机数据 ──
       threads: next.threads,
@@ -191,6 +243,15 @@ export function createViewStore(source: SnapshotSource, options: ViewStoreOption
     for (const listener of [...listeners]) listener()
   }
 
+  /**
+   * 只改了客户端本地字段（确认框、文件选择器、轻提示、焦点覆盖）时用这个：
+   * 拿最近一份快照重新合成一次再通知，不向来源再要快照。
+   */
+  function republishLocal(): void {
+    if (state) state = compose(snapshot ?? source.snapshot())
+    for (const listener of [...listeners]) listener()
+  }
+
   function schedulePublish(next: ClientSnapshot): void {
     if (coalesceMs <= 0) {
       publish(next)
@@ -238,33 +299,57 @@ export function createViewStore(source: SnapshotSource, options: ViewStoreOption
     },
     showConfirm(next) {
       confirmModal = next
-      if (state) state = compose(snapshot ?? source.snapshot())
-      for (const listener of [...listeners]) listener()
+      republishLocal()
     },
     closeConfirm() {
       confirmModal = null
-      if (state) state = compose(snapshot ?? source.snapshot())
-      for (const listener of [...listeners]) listener()
+      republishLocal()
+    },
+    notify(input) {
+      const level: ToastLevel = input.level ?? 'success'
+      const message = input.message.trim()
+      // 空提示是无意义的噪音：与其渲染一个空框，不如什么都不做
+      if (!message) return
+      const id = `toast_${++toastSeq}`
+      const item: ToastItem = {
+        id,
+        level,
+        message,
+        detail: input.detail?.trim() || undefined,
+        durationMs: input.durationMs ?? defaultDuration(level),
+      }
+      toasts = [...toasts, item]
+      while (toasts.length > MAX_TOASTS) {
+        const dropped = toasts[0]!
+        clearToastTimer(dropped.id)
+        toasts = toasts.slice(1)
+      }
+      if (item.durationMs > 0) {
+        toastTimers.set(
+          id,
+          setTimeout(() => removeToast(id), item.durationMs),
+        )
+      }
+      republishLocal()
+    },
+    dismissToast(id) {
+      removeToast(id)
     },
     setConnection(next) {
       connection = next
-      if (state) state = compose(snapshot ?? source.snapshot())
-      for (const listener of [...listeners]) listener()
+      republishLocal()
     },
     pickFiles(request) {
       filePicker = request
-      if (state) state = compose(snapshot ?? source.snapshot())
-      for (const listener of [...listeners]) listener()
+      republishLocal()
     },
     closeFilePicker() {
       filePicker = null
-      if (state) state = compose(snapshot ?? source.snapshot())
-      for (const listener of [...listeners]) listener()
+      republishLocal()
     },
     focusThread(threadId) {
       focusOverride = threadId
-      if (state) state = compose(snapshot ?? source.snapshot())
-      for (const listener of [...listeners]) listener()
+      republishLocal()
     },
     get publishes() {
       return publishes

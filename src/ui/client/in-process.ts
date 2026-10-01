@@ -98,6 +98,12 @@ export function createInProcessClient(
       if (viewStore) viewStore.closeConfirm()
       else store.closeConfirm()
     },
+    // 轻提示同样是客户端本地（和确认框一个理由：它是"这一刻给这个用户看的一句话"）
+    notify: (toast) => {
+      if (viewStore) viewStore.notify(toast)
+      else console.warn('[client] 轻提示在 live 模式下不可用（没有复制视图）：', toast.message)
+    },
+    dismissToast: (id) => viewStore?.dismissToast(id),
     // 文件选择器同样是客户端本地状态（回调不可能上线），只是它会去问主机的 fs.*
     pickFiles: (request) => viewStore?.pickFiles(request),
     closeFilePicker: () => viewStore?.closeFilePicker(),

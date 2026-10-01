@@ -14,8 +14,16 @@ import {
   type SkillSummary,
   type SubagentProfile,
 } from './client'
-import { SUBAGENT_HEX_COLORS } from '../agent/subagents'
+import { SUBAGENT_HEX_COLORS } from '../agent/subagents/types'
 import { SkillsPanel } from './SkillsPanel'
+import {
+  capabilityToggleNotice,
+  pluginToggleNotice,
+  promptToggleFailedNotice,
+  promptToggleNotice,
+  subagentToggleNotice,
+  type ActionNotice,
+} from './action-notices'
 import { copyToClipboard } from '../platform/clipboard'
 import { C, docTheme, editorTheme, FONT_MONO, M } from '../theme'
 import { Icon, IconButton } from './controls'
@@ -81,6 +89,16 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
    * 抽成一行是因为这里要写十几条，直接展开 `client.request(...)` 会把业务代码淹掉。
    */
   const trace = (text: string): void => void client.request('debug.trace', { text })
+
+  /**
+   * 动作完成后的**用户可见**回执。
+   *
+   * 与 {@link trace} 的分工要分清楚：`trace` 进的是调试日志（默认不在屏幕上，
+   * 要开调试面板才看得到），所以它**不能**当作"操作有反馈"——用户在插件页点一下
+   * 开关，看到的只有开关自己的颜色变了，没有一件事告诉他"这次点真的生效了"。
+   * 所有"点一下就该有回执"的动作走这里；trace 继续留着做排查用的留痕。
+   */
+  const notify = (notice: ActionNotice): void => client.ui.notify(notice)
   const [tab, setTab] = useState<TabType>('workspace')
   const [plugins, setPlugins] = useState<PluginItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -224,6 +242,11 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
         next[key] ? '' : '——用到它的插件会显示受限原因'
       }`,
     })
+    // 能力开关不是"这个插件"的开关：关掉之后**别的插件**会静默少做一步，所以关的时候
+    // 用 warn 并把影响说出来（effect 取 capabilities-view 里现成的那句，不手写第二份）
+    const described = CAPABILITY_SWITCHES.find((item) => item.key === key)
+    const label = described?.label ?? key
+    notify(capabilityToggleNotice(label, described?.effect, next[key]))
   })
 
   /** 保存超时值：非法输入当场说明，不写进配置（写进去只会变成"设了没生效"）。 */
@@ -236,7 +259,12 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
     setCapabilityNotice(null)
     setCapabilities((current) => ({ ...current, hookTimeoutMs: parsed.value }))
     await client.request('plugin.capabilities.set', { patch: { hookTimeoutMs: parsed.value } })
-    trace( `[插件] 钩子超时已设为 ${parsed.value === 0 ? '不限' : `${parsed.value}ms`}`)
+    const humanized = parsed.value === 0 ? '不限' : `${parsed.value}ms`
+    trace(`[插件] 钩子超时已设为 ${humanized}`)
+    notify({
+      message: `钩子超时已设为 ${humanized}`,
+      detail: parsed.value === 0 ? '插件钩子不再被超时打断' : '超时按"没有意见"放行，不会变成隐式拒绝',
+    })
   })
 
   /** 保存某个插件的配置项（非 secret 与 secret 分开写）。 */
@@ -289,12 +317,14 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
 
   // 切换子智能体启用状态
   const handleToggleSubagent = (item: SubagentProfile) => runAction('切换子智能体', async () => {
+    const next = !item.enabled
     await client.request('subagentProfile.setEnabled', {
       id: item.id,
-      enabled: !item.enabled,
+      enabled: next,
       workspace: client.state.project,
     })
     trace(`已${item.enabled ? '停用' : '启用'}子智能体：${item.name}`)
+    notify(subagentToggleNotice(item.name, next))
     await refreshList()
   })
 
@@ -326,12 +356,15 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
 
   // 切换插件启用状态
   const handleToggle = (item: PluginItem) => runAction('切换插件', async () => {
+    const next = !item.enabled
     await client.request('plugin.setEnabled', {
       pluginId: item.id,
-      enabled: !item.enabled,
+      enabled: next,
       workspace: client.state.project,
     })
     trace(`已${item.enabled ? '停用' : '启用'}插件：${item.fileName}`)
+    // 文案在 action-notices 里（纯函数，可就地断言），这里只负责喂数据
+    notify(pluginToggleNotice(item.name, item.tools.length, next))
     await refreshList()
   })
 
@@ -377,12 +410,20 @@ export function PluginsDialog({ client }: { client: AgentClient }) {
 
   // 切换提示词启用状态
   const handleTogglePrompt = (item: PromptItem) => runAction('切换提示词', async () => {
-    await client.request('prompt.setEnabled', {
+    const next = !item.enabled
+    const { ok } = await client.request('prompt.setEnabled', {
       id: item.id,
-      enabled: !item.enabled,
+      enabled: next,
       workspace: client.state.project,
     })
+    if (!ok) {
+      // 命令回了 ok:false（而不是抛错）时**也是失败**，不能报"已停用"
+      notify(promptToggleFailedNotice(item.name))
+      trace(`切换提示词失败：${item.name}`)
+      return
+    }
     trace(`已${item.enabled ? '停用' : '启用'}提示词：${item.name}`)
+    notify(promptToggleNotice(item.name, item.isSystem, next))
     await refreshList()
   })
 

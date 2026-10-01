@@ -46,10 +46,30 @@ export function getSystemCommands(client: AgentClient): SlashCommandItem[] {
       scopeLabel: '系统',
       icon: 'sparkles',
       action: () => {
-        void client.request('thread.compact', {
-          threadId: client.state.active.id,
-          trigger: 'manual',
-        })
+        // 与遥测条上的「压缩」按钮同一个理由：返回值里的 reason 就是"为什么没压"
+        // （多半是历史太短），丢掉它等于点了没反应
+        void (async () => {
+          try {
+            const { success, reason } = await client.request('thread.compact', {
+              threadId: client.state.active.id,
+              trigger: 'manual',
+            })
+            if (success) {
+              client.ui.notify({
+                message: '上下文压缩完成',
+                detail: '已生成会话摘要，历史消息被替换为摘要',
+              })
+            } else {
+              client.ui.notify({
+                level: 'warn',
+                message: '未执行压缩',
+                detail: reason ?? '主机没有给出原因',
+              })
+            }
+          } catch (err) {
+            client.ui.notify({ level: 'error', message: `压缩失败：${(err as Error).message}` })
+          }
+        })()
       },
     },
     {

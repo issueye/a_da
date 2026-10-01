@@ -29,8 +29,8 @@ export const MODE_OPTIONS: { value: AgentMode; label: string; icon: IconName; de
   { value: 'create', label: 'Create 创造', icon: 'sparkles', desc: '智能体自我进化与工具/技能 CRUD' },
 ]
 
-import { getModelContextWindow } from '../agent/compact'
-import { expandPromptTemplate } from '../agent/prompts'
+import { getModelContextWindow } from '../agent/compact/policy'
+import { expandPromptTemplate } from '../agent/prompts/template'
 export { getModelContextWindow }
 
 export interface ThreadTelemetry {
@@ -244,6 +244,34 @@ export function ComposerTelemetryBar({
   const thread = client.state.active
   const currentMode = thread.mode ?? client.state.mode ?? 'code'
   const workspace = thread.workspace || process.cwd()
+
+  /**
+   * 手动压缩上下文，**并把结论说出来**。
+   *
+   * 这个命令的返回值是 `{success, reason}`，其中 reason 承载的是"为什么没压"——
+   * 最常见的就是「历史太短，无需压缩」。以前两处入口都是 `void client.request(...)`
+   * 把整个返回值丢掉，于是点了"压缩"什么都不发生，用户根本分不清是压完了还是
+   * 压根没压。失败**不是异常**（命令正常返回），所以只能靠这个 reason。
+   */
+  const compact = async (): Promise<void> => {
+    try {
+      const { success, reason } = await client.request('thread.compact', {
+        threadId: thread.id,
+        trigger: 'manual',
+      })
+      if (success) {
+        client.ui.notify({
+          message: '上下文压缩完成',
+          detail: '已生成会话摘要，历史消息被替换为摘要',
+        })
+      } else {
+        // 走 warn 而不是 error：这是"没有可压的"，不是出错
+        client.ui.notify({ level: 'warn', message: '未执行压缩', detail: reason ?? '主机没有给出原因' })
+      }
+    } catch (err) {
+      client.ui.notify({ level: 'error', message: `压缩失败：${(err as Error).message}` })
+    }
+  }
 
   // **hooks 必须在任何提前 return 之前**：这个组件在"空会话居中"时会 return null，
   // 而 `usePromptChars` 内部有 useState/useEffect——放在 return 之后会变成
@@ -491,9 +519,7 @@ export function ComposerTelemetryBar({
             testId="telemetry-quick-compact-btn"
             role="button"
             aria-label="一键压缩上下文与生成会话摘要"
-            onClick={() => {
-              void client.request('thread.compact', { threadId: thread.id, trigger: 'manual' })
-            }}
+            onClick={() => void compact()}
             style={{
               display: 'flex',
               flexDirection: 'row',
@@ -534,9 +560,7 @@ export function ComposerTelemetryBar({
         <ContextUsagePopover
           summary={telemetry.contextSummary}
           onClose={() => setPopoverOpen(false)}
-          onCompact={() =>
-          void client.request('thread.compact', { threadId: thread.id, trigger: 'manual' })
-        }
+          onCompact={() => void compact()}
         />
       ) : null}
     </div>
@@ -787,7 +811,33 @@ export function QueuedMessagesFloatingPanel({
               testId="queue-clear-all"
               role="button"
               aria-label="清空全部排队消息"
-              onClick={() => void client.request('queue.clear', {})}
+              onClick={() => {
+                // 「全部清空」一次丢掉多条**用户自己写的**待发消息，且没有撤销。
+                // 其它销毁类动作（删会话、删插件/技能）都有二次确认，这里漏了，补上。
+                const count = queue.length
+                client.ui.showConfirm({
+                  title: '清空排队消息',
+                  message: `确定要清空队列里的 ${count} 条待发送消息吗？清空后内容不会保留。`,
+                  confirmText: '确认清空',
+                  onConfirm: () => {
+                    void (async () => {
+                      try {
+                        await client.request('queue.clear', {})
+                        client.ui.notify({
+                          level: 'warn',
+                          message: `已清空 ${count} 条排队消息`,
+                          detail: '这些内容没有保留副本',
+                        })
+                      } catch (err) {
+                        client.ui.notify({
+                          level: 'error',
+                          message: `清空队列失败：${(err as Error).message}`,
+                        })
+                      }
+                    })()
+                  },
+                })
+              }}
               style={{
                 display: 'flex',
                 flexDirection: 'row',
@@ -930,7 +980,19 @@ export function QueuedMessagesFloatingPanel({
                   testId={`queue-send-now-${idx}`}
                   role="button"
                   aria-label="立即发送该消息"
-                  onClick={() => void client.request('queue.promote', { index: idx })}
+                  onClick={() =>
+                    void (async () => {
+                      try {
+                        await client.request('queue.promote', { index: idx })
+                        client.ui.notify({ message: '已插队到最前，当前任务结束后立即发送' })
+                      } catch (err) {
+                        client.ui.notify({
+                          level: 'error',
+                          message: `插队失败：${(err as Error).message}`,
+                        })
+                      }
+                    })()
+                  }
                   style={{
                     display: 'flex',
                     flexDirection: 'row',
@@ -981,7 +1043,25 @@ export function QueuedMessagesFloatingPanel({
                   testId={`queue-delete-${idx}`}
                   role="button"
                   aria-label="移出队列"
-                  onClick={() => void client.request('queue.remove', { index: idx })}
+                  onClick={() =>
+                    void (async () => {
+                      try {
+                        const removed = await client.request('queue.remove', { index: idx })
+                        if (removed) {
+                          client.ui.notify({
+                            level: 'warn',
+                            message: '已移出队列',
+                            detail: removed.text ? removed.text.slice(0, 80) : '(图片指令)',
+                          })
+                        }
+                      } catch (err) {
+                        client.ui.notify({
+                          level: 'error',
+                          message: `移出队列失败：${(err as Error).message}`,
+                        })
+                      }
+                    })()
+                  }
                   style={{
                     display: 'flex',
                     alignItems: 'center',

@@ -8,7 +8,7 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import { useGpuix, useWindowSize, type PublicInstance } from '@gpuix/react'
-import { describeTool } from '../agent/tools'
+import { describeTool } from '../shared/describe-tool'
 import { patchStats } from '../agent/patch'
 import type { AgentClient } from './client'
 import type { Item, ToolStatus } from '../agent/types'

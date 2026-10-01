@@ -59,6 +59,33 @@ export interface ClientConnectionState {
 }
 
 /**
+ * 轻提示（toast）的语义级别。
+ *
+ * 三个级别对应三种**该怎么办**，不是三种颜色：`error` 要用户去看/重试，
+ * `warn` 是"做成了但有个副作用你得知道"（例如插件停用是**全局**的、关掉某个
+ * 能力开关会让别的插件受限），`success` 只是确认事情发生了。
+ */
+export type ToastLevel = 'success' | 'warn' | 'error'
+
+/**
+ * 一条轻提示。
+ *
+ * **纯客户端状态**：它是"界面怎么看"，不是主机数据（`evt.notify` 那条协议通道
+ * 至今是空的，见 `docs/jsonrpc-protocol.md`）。放客户端还有一个硬理由：主机在
+ * 跑长任务时提示要立刻可见，等一趟往返就成了"点了半天才弹出来"。
+ */
+export interface ToastItem {
+  id: string
+  level: ToastLevel
+  /** 一句话说清发生了什么，别写成错误码 */
+  message: string
+  /** 可选补充：为什么/下一步。多行会换行显示 */
+  detail?: string
+  /** 毫秒；0 = 不自动消失（错误默认不自动消失，见 `ToastHost`） */
+  durationMs: number
+}
+
+/**
  * 文件选择请求（**纯客户端状态**：`onPicked` 是本地回调，不可能上协议）。
  *
  * 为什么放在客户端状态里而不是让调用方各自渲染：选择器是**窗口级**的模态层
@@ -81,6 +108,16 @@ export interface ClientState {
 
   /** 当前要显示的文件选择器（null = 不显示） */
   readonly filePicker: FilePickerRequest | null
+
+  /**
+   * 当前挂着的轻提示（**客户端本地**，与确认框、文件选择器同一类）。
+   *
+   * 为什么不走快照：toast 是"这一刻给这个用户看的一句话"，多客户端下各自弹各自的
+   * 才是对的；而且主机在某客户端上弹提示这件事本来就没有语义。等真的要支持
+   * "主机推提示"（`evt.notify`）时，再加一条**入队**通道，而不是把它变成快照字段
+   * ——快照字段会被后到的快照整体覆盖，正在显示的提示会闪掉。
+   */
+  readonly toasts: ToastItem[]
 
   // ── B 组：协议里的数据（快照 / 事件流提供） ──
   readonly threads: Thread[]
@@ -140,6 +177,15 @@ export interface UiActions {  openTab(threadId: string): void
   clearPendingDraft(): void
   showConfirm(options: ConfirmOptions): void
   closeConfirm(): void
+  /**
+   * 弹一条轻提示。`level` 不给时按 `success`。
+   *
+   * **别用它报告失败后还能继续的事**：失败要么留在原地（页面里的错误条），要么
+   * 用 `error` 级别（默认不自动消失）。它也不该被用来问问题——那用 `showConfirm`。
+   */
+  notify(toast: { level?: ToastLevel; message: string; detail?: string; durationMs?: number }): void
+  /** 关掉一条（点 × 或自动消失都走它）。 */
+  dismissToast(id: string): void
   /** 打开应用内的文件/目录选择器（数据来自主机 `fs.*`），替代原生选择窗口 */
   pickFiles(request: FilePickerRequest): void
   closeFilePicker(): void

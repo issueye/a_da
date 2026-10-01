@@ -32,7 +32,19 @@ export function ChangesPanel({ client }: { client: AgentClient }) {
     if (busy) return
     setBusy(true)
     try {
-      await client.request('change.revertFile', { threadId, path })
+      const { ok } = await client.request('change.revertFile', { threadId, path })
+      if (ok) {
+        client.ui.notify({ message: `已恢复 ${baseName(path)}`, detail: path })
+      } else {
+        // 命令回了 ok:false（不是抛错）：一样是失败，不能静默
+        client.ui.notify({ level: 'error', message: `恢复 ${baseName(path)} 失败`, detail: path })
+      }
+    } catch (err) {
+      // 以前这里只有 finally 清 busy：**失败被整个吞掉**，用户以为恢复了
+      client.ui.notify({
+        level: 'error',
+        message: `恢复 ${baseName(path)} 失败：${(err as Error).message}`,
+      })
     } finally {
       setBusy(false)
     }
@@ -41,8 +53,16 @@ export function ChangesPanel({ client }: { client: AgentClient }) {
   const revertAll = async (): Promise<void> => {
     if (busy) return
     setBusy(true)
+    const count = activeCount
     try {
-      await client.request('change.revertAll', { threadId })
+      const { ok } = await client.request('change.revertAll', { threadId })
+      if (ok) {
+        client.ui.notify({ message: `已恢复全部 ${count} 个文件改动` })
+      } else {
+        client.ui.notify({ level: 'error', message: '全部恢复失败', detail: '主机没有完成回滚' })
+      }
+    } catch (err) {
+      client.ui.notify({ level: 'error', message: `全部恢复失败：${(err as Error).message}` })
     } finally {
       setBusy(false)
     }

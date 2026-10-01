@@ -13,6 +13,7 @@ import {
   QueuedMessagesFloatingPanel,
 } from './Composer'
 import { convertMessagesToLlm, imageToDataUrl } from '../agent/core/agent-loop'
+import { AgentWindow } from '../AgentWindow'
 
 const describeNative = hasNativeTestRenderer ? describe : describe.skip
 
@@ -627,7 +628,9 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
   test('QueuedMessagesFloatingPanel 浮动面板渲染及管理交互', async () => {
     // 1. 无排队消息时不渲染
     const { render, renderer } = createTestRoot({ width: 1000, height: 600 })
-    render(<Composer client={agentClient} />)
+    // 渲染整窗而不是只渲染 Composer：「全部清空」的二次确认由 AgentWindow 统一挂
+    // （确认框是窗口级模态层），只挂 Composer 的话 `confirm-dialog` 根本不存在
+    render(<AgentWindow client={agentClient} />)
     const app = await connectTest(renderer)
 
     expect(await app.getByTestId('queued-messages-panel').count()).toBe(0)
@@ -648,7 +651,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     ]
     store.queue = [...mockItems]
     store.active.items.push(mockItems[0]!.item, mockItems[1]!.item)
-    render(<Composer client={agentClient} />)
+    render(<AgentWindow client={agentClient} />)
     renderer.flush?.()
 
     // 验证浮动面板渲染
@@ -661,9 +664,19 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     expect(renderer.getPaintedText().join(' ')).toContain('第二条带图指令')
     expect(renderer.getPaintedText().join(' ')).toContain('1 图')
 
-    // 3. 点击「全部清空」
+    // 3. 点击「全部清空」→ 先出二次确认（一次丢掉用户自己写的多条待发消息，
+    //    且没有撤销，所以和其它销毁类动作一样要确认）
     await app.getByTestId('queue-clear-all').click()
-    render(<Composer client={agentClient} />)
+    render(<AgentWindow client={agentClient} />)
+    renderer.flush?.()
+    expect(await app.getByTestId('confirm-dialog').count()).toBe(1)
+    // **确认之前什么都没删**：这才是确认框的意义
+    expect(store.queue.length).toBe(2)
+    expect(await app.getByTestId('queued-messages-panel').count()).toBe(1)
+
+    // 点「确认清空」才真的清掉
+    await app.getByTestId('confirm-dialog-confirm').click()
+    render(<AgentWindow client={agentClient} />)
     renderer.flush?.()
     expect(await app.getByTestId('queued-messages-panel').count()).toBe(0)
     expect(store.queue.length).toBe(0)
@@ -691,7 +704,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
       question: '浮动面板能看见吗？',
       choices: [{ id: 'yes', label: '能看见' }],
     })
-    render(<Composer client={agentClient} />)
+    render(<AgentWindow client={agentClient} />)
     renderer.flush?.()
 
     // 无提问时不渲染，有提问时渲染出一条「待回答」与问题本身
@@ -703,7 +716,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     // 面板里作答即解开等待，且答完面板自动退场（卡片转由会话流当历史）
     await app.getByTestId('question-choice-yes').click()
     expect((await pendingAnswer).choice).toBe('yes')
-    render(<Composer client={agentClient} />)
+    render(<AgentWindow client={agentClient} />)
     renderer.flush?.()
     expect(await app.getByTestId('pending-questions-panel').count()).toBe(0)
 

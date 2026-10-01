@@ -15,6 +15,7 @@ import { DebugPanel } from './ui/DebugPanel'
 import { PluginsDialog } from './ui/PluginsDialog'
 import { SettingsDialog } from './ui/SettingsDialog'
 import { ConfirmDialog } from './ui/ConfirmDialog'
+import { ToastHost } from './ui/ToastHost'
 import { CommandPalette } from './ui/CommandPalette'
 import { Sidebar } from './ui/Sidebar'
 import { EmptyConversationView } from './ui/EmptyConversationView'
@@ -120,6 +121,9 @@ export function AgentWindow({ client: injected }: { client?: AgentClient } = {})
           onClose={() => client.ui.closeConfirm()}
         />
       ) : null}
+      {/* 轻提示：窗口级浮层，画在最后（连确认框之上）——它是"刚刚发生了什么"的
+          回执，被任何东西盖住都会让人以为操作没生效。容器是穿透的，不会挡住点击。 */}
+      <ToastHost client={client} />
     </div>
   )
 }
