@@ -22,9 +22,12 @@
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { join } from 'node:path'
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { hostEntryArgs, parseReadyLine } from '../../agent/host/main'
 import { log } from './logging'
+import embeddedCorePath from '../../../dist/agent_core.exe' with { type: 'file' }
 
 export interface HostProcess {
   pid: number
@@ -60,6 +63,92 @@ function defaultEntryScript(): string {
   return join(import.meta.dir, '..', '..', '..', 'app.tsx')
 }
 
+/**
+ * 解析默认的主机执行源。
+ *
+ * 优先顺序：
+ * 1. 环境变量 A_DA_CORE_PATH；
+ * 2. 编译好的原生 Rust 核心（优先 release，其次 debug）；
+ * 3. 兜底回退：当前运行时（Bun 或打包 exe）+ app.tsx。
+ */
+export function resolveDefaultHostRunner(): {
+  execPath: string
+  compiled: boolean
+  entryScript?: string
+} {
+  // 1. 环境变量显式指定优先
+  if (process.env.A_DA_CORE_PATH && existsSync(process.env.A_DA_CORE_PATH)) {
+    return { execPath: process.env.A_DA_CORE_PATH, compiled: true }
+  }
+
+  // 2. 检查应用所在目录、当前工作目录及工程工作区下编译好的原生 Rust 核心
+  const appDir = dirname(process.execPath)
+  const cwd = process.cwd()
+  const repoRoot = join(import.meta.dir, '..', '..', '..')
+  const ext = process.platform === 'win32' ? '.exe' : ''
+  const exeName = `agent_core${ext}`
+
+  const candidates = [
+    join(appDir, exeName),
+    join(cwd, 'dist', exeName),
+    join(cwd, exeName),
+    join(repoRoot, 'agent_core', 'target', 'release', exeName),
+    join(repoRoot, 'dist', exeName),
+    join(repoRoot, 'agent_core', 'target', 'debug', exeName),
+  ]
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return { execPath: candidate, compiled: true }
+    }
+  }
+
+  // 3. 从单一可执行文件内置的嵌入资产中解压/同步至用户缓存目录 (~/.a-da/bin/agent_core.exe)
+  try {
+    if (embeddedCorePath && existsSync(embeddedCorePath)) {
+      const userBinDir = join(homedir(), '.a-da', 'bin')
+      mkdirSync(userBinDir, { recursive: true })
+      const userCoreExe = join(userBinDir, exeName)
+
+      const embeddedBuf = readFileSync(embeddedCorePath)
+      let needWrite = true
+      if (existsSync(userCoreExe)) {
+        try {
+          const existingStat = statSync(userCoreExe)
+          if (existingStat.size === embeddedBuf.length) {
+            needWrite = false
+          }
+        } catch {
+          needWrite = true
+        }
+      }
+
+      if (needWrite) {
+        writeFileSync(userCoreExe, embeddedBuf)
+        try {
+          if (process.platform !== 'win32') {
+            chmodSync(userCoreExe, 0o755)
+          }
+        } catch {}
+      }
+
+      if (existsSync(userCoreExe)) {
+        return { execPath: userCoreExe, compiled: true }
+      }
+    }
+  } catch (err) {
+    log(`[bootstrap] 提取内置原生核心失败: ${String(err)}`)
+  }
+
+  // 4. 兜底回退：自身进程
+  const compiled = !/(^|[\\/])bun(\.exe)?$/i.test(process.execPath)
+  return {
+    execPath: process.execPath,
+    compiled,
+    entryScript: compiled ? undefined : defaultEntryScript(),
+  }
+}
+
 /** 本机回环的一次性令牌。 */
 export function makeHostToken(): string {
   return randomBytes(32).toString('hex')
@@ -74,9 +163,10 @@ export function makeHostToken(): string {
 export async function spawnHostProcess(options: SpawnHostOptions = {}): Promise<HostProcess> {
   const timeoutMs = options.timeoutMs ?? 10_000
   const token = makeHostToken()
-  const execPath = options.execPath ?? process.execPath
-  const compiled = options.compiled ?? !/(^|[\\/])bun(\.exe)?$/i.test(execPath)
-  const entryScript = options.entryScript ?? defaultEntryScript()
+  const defaultRunner = resolveDefaultHostRunner()
+  const execPath = options.execPath ?? defaultRunner.execPath
+  const compiled = options.compiled ?? (options.execPath ? !/(^|[\\/])bun(\.exe)?$/i.test(execPath) : defaultRunner.compiled)
+  const entryScript = options.entryScript ?? (compiled ? undefined : defaultRunner.entryScript)
 
   const args = [
     ...(compiled ? [] : entryScript ? [entryScript] : []),

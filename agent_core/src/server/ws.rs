@@ -1,0 +1,240 @@
+use crate::protocol::*;
+use crate::server::dispatch::Dispatcher;
+use crate::state::{generate_snapshot, AgentStore};
+use futures_util::{SinkExt, StreamExt};
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{mpsc, RwLock};
+use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+use tokio_tungstenite::tungstenite::Message;
+use tracing::{info, warn};
+
+pub struct WsHostServer {
+    pub port: u16,
+    pub token: String,
+    store: Arc<RwLock<AgentStore>>,
+    dispatcher: Arc<Dispatcher>,
+    seq: Arc<AtomicU64>,
+    broadcast_tx: mpsc::UnboundedSender<String>,
+}
+
+impl WsHostServer {
+    pub async fn bind(
+        bind_port: u16,
+        token: String,
+        store: Arc<RwLock<AgentStore>>,
+    ) -> Result<Arc<Self>, anyhow::Error> {
+        let addr = SocketAddr::from(([127, 0, 0, 1], bind_port));
+        let listener = TcpListener::bind(addr).await?;
+        let local_addr = listener.local_addr()?;
+        let actual_port = local_addr.port();
+
+        info!("WebSocket 服务端已在 127.0.0.1:{} 成功绑定", actual_port);
+
+        let (broadcast_tx, mut broadcast_rx) = mpsc::unbounded_channel::<String>();
+        let client_senders = Arc::new(RwLock::new(Vec::<mpsc::UnboundedSender<Message>>::new()));
+
+        // 广播转发后台协程
+        let senders_clone = client_senders.clone();
+        tokio::spawn(async move {
+            while let Some(msg_str) = broadcast_rx.recv().await {
+                let mut senders = senders_clone.write().await;
+                senders.retain(|tx| {
+                    tx.send(Message::Text(msg_str.clone().into())).is_ok()
+                });
+            }
+        });
+
+        let session_mgr = Arc::new(crate::session::SessionManager::new(None));
+        let checkpoint_mgr = Arc::new(crate::checkpoint::CheckpointManager::new(None));
+        let dispatcher = Arc::new(Dispatcher::new(store.clone(), session_mgr, checkpoint_mgr));
+        let seq = Arc::new(AtomicU64::new(0));
+
+
+        let server = Arc::new(Self {
+            port: actual_port,
+            token: token.clone(),
+            store: store.clone(),
+            dispatcher: dispatcher.clone(),
+            seq: seq.clone(),
+            broadcast_tx,
+        });
+
+        // 接收外部连接后台协程
+        let server_clone = server.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, peer_addr)) = listener.accept().await {
+                let srv = server_clone.clone();
+                let senders = client_senders.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = srv.handle_connection(stream, peer_addr, senders).await {
+                        warn!("客户端连接断开或异常 ({}): {}", peer_addr, e);
+                    }
+                });
+            }
+        });
+
+        Ok(server)
+    }
+
+    /// 广播全量快照
+    pub async fn broadcast_snapshot(&self) {
+        let current_seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let store = self.store.read().await;
+        let snapshot = generate_snapshot(&store);
+        let event = SnapshotEvent {
+            seq: current_seq,
+            topic: EVT_STATE_SNAPSHOT.to_string(),
+            payload: snapshot,
+        };
+        let frame = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": EVT_STATE_SNAPSHOT,
+            "params": event
+        });
+        if let Ok(json_str) = serde_json::to_string(&frame) {
+            let _ = self.broadcast_tx.send(json_str);
+        }
+    }
+
+    async fn handle_connection(
+        &self,
+        stream: TcpStream,
+        peer_addr: SocketAddr,
+        client_senders: Arc<RwLock<Vec<mpsc::UnboundedSender<Message>>>>,
+    ) -> Result<(), anyhow::Error> {
+        let expected_token = self.token.clone();
+        let mut token_valid = false;
+
+        // WebSocket 握手门禁校验
+        let callback = |req: &Request, resp: Response| {
+            let uri = req.uri();
+            let query = uri.query().unwrap_or("");
+            for pair in query.split('&') {
+                if let Some((k, v)) = pair.split_once('=') {
+                    if k == "token" && v == expected_token {
+                        token_valid = true;
+                        break;
+                    }
+                }
+            }
+            if !token_valid {
+                let status = tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED;
+                let unauth_resp = Response::builder()
+                    .status(status)
+                    .body(Some("Unauthorized".to_string()))
+                    .unwrap();
+                return Err(unauth_resp);
+            }
+            Ok(resp)
+        };
+
+        let ws_stream = tokio_tungstenite::accept_hdr_async(stream, callback).await?;
+        info!("客户端连接已通过令牌验证并建立 WebSocket 通道: {}", peer_addr);
+
+        let (mut ws_sink, mut ws_stream) = ws_stream.split();
+        let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
+
+        // 注册到全局广播列表
+        {
+            let mut senders = client_senders.write().await;
+            senders.push(tx.clone());
+        }
+
+        // 推送首帧种子快照 (seq = 0，对齐协议 §1.3)
+        {
+            let store = self.store.read().await;
+            let snapshot = generate_snapshot(&store);
+            let seed_event = SnapshotEvent {
+                seq: 0,
+                topic: EVT_STATE_SNAPSHOT.to_string(),
+                payload: snapshot,
+            };
+            let seed_frame = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": EVT_STATE_SNAPSHOT,
+                "params": seed_event
+            });
+            let _ = tx.send(Message::Text(serde_json::to_string(&seed_frame)?.into()));
+        }
+
+        // 出站写入协程
+        let write_task = tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                if ws_sink.send(msg).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let mut initialized = false;
+
+        // 入站帧处理循环
+        while let Some(msg_res) = ws_stream.next().await {
+            let msg = match msg_res {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!("读取帧错误: {}", e);
+                    break;
+                }
+            };
+
+            if msg.is_close() {
+                break;
+            }
+
+            if let Message::Text(text) = msg {
+                let req: JsonRpcRequest = match serde_json::from_str(&text) {
+                    Ok(r) => r,
+                    Err(_) => {
+                        let err_resp = JsonRpcResponse::<()>::error(
+                            None,
+                            ProtocolError::new(RpcErrorCode::ParseError.code(), "不是合法的 JSON", None),
+                        );
+                        let _ = tx.send(Message::Text(serde_json::to_string(&err_resp)?.into()));
+                        continue;
+                    }
+                };
+
+                // 握手前只接受 session.initialize（协议 §1.2）
+                if !initialized && req.method != SESSION_INITIALIZE {
+                    let err_resp = JsonRpcResponse::<()>::error(
+                        req.id,
+                        ProtocolError::new(
+                            AppErrorCode::Unauthorized.code(),
+                            "握手前只接受 session.initialize",
+                            Some(serde_json::json!({ "what": req.method })),
+                        ),
+                    );
+                    let _ = tx.send(Message::Text(serde_json::to_string(&err_resp)?.into()));
+                    continue;
+                }
+
+                let is_init_method = req.method == SESSION_INITIALIZE;
+                let params = req.params.unwrap_or(serde_json::Value::Null);
+                let dispatch_res = self.dispatcher.dispatch(&req.method, params).await;
+
+                match dispatch_res {
+                    Ok(result) => {
+                        if is_init_method {
+                            initialized = true;
+                        }
+                        let resp = JsonRpcResponse::success(req.id, result);
+                        let _ = tx.send(Message::Text(serde_json::to_string(&resp)?.into()));
+                        // 触发一次快照对齐
+                        self.broadcast_snapshot().await;
+                    }
+                    Err(err) => {
+                        let resp = JsonRpcResponse::<()>::error(req.id, err);
+                        let _ = tx.send(Message::Text(serde_json::to_string(&resp)?.into()));
+                    }
+                }
+            }
+        }
+
+        write_task.abort();
+        Ok(())
+    }
+}

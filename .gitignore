@@ -6,3 +6,8 @@ tmp
 
 # 子智能体的长报告自动落盘目录（store.ts 自动生成，属运行时产物，不入库）
 .ada/subagent-outputs/
+
+# Rust 编译产物
+target/
+agent_core/target/
+

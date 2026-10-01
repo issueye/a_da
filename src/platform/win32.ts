@@ -31,7 +31,17 @@
  * window buttons.
  */
 
-import { FFIType, JSCallback, dlopen } from 'bun:ffi'
+// 动态安全获取 bun:ffi，避免在 Hermes / Node 纯 JS 环境下报 require("bun:ffi") 错误
+function getBunFfi(): any {
+  try {
+    if (typeof Bun !== 'undefined') {
+      // @ts-ignore
+      const req = typeof require !== 'undefined' ? require : null
+      return req ? req('bun:ffi') : null
+    }
+  } catch {}
+  return null
+}
 
 const WM_CLOSE = 0x0010
 const SW_MAXIMIZE = 3
@@ -52,7 +62,10 @@ function load(): Lib | null {
   if (loaded) return lib
   loaded = true
   if (process.platform !== 'win32') return null
+  const ffi = getBunFfi()
+  if (!ffi) return null
   try {
+    const { FFIType, dlopen } = ffi
     lib = dlopen('user32.dll', {
       EnumWindows: { args: [FFIType.function, FFIType.i64], returns: FFIType.bool },
       GetWindowThreadProcessId: { args: [FFIType.i64, FFIType.ptr], returns: FFIType.u32 },
@@ -106,7 +119,10 @@ export function findAppWindow(pid: number = process.pid): number | null {
   const classBuf = new Uint16Array(64)
   let bestHwnd: number | null = null
 
-  const callback = new JSCallback(
+  const ffi = getBunFfi()
+  if (!ffi) return null
+
+  const callback = new ffi.JSCallback(
     (candidate: number) => {
       api.symbols.GetWindowThreadProcessId(candidate, owner)
       if (owner[0] === pid && api.symbols.IsWindowVisible(candidate)) {
@@ -131,7 +147,7 @@ export function findAppWindow(pid: number = process.pid): number | null {
       }
       return true
     },
-    { args: [FFIType.i64, FFIType.i64], returns: FFIType.bool },
+    { args: [ffi.FFIType.i64, ffi.FFIType.i64], returns: ffi.FFIType.bool },
   )
   try {
     api.symbols.EnumWindows(callback.ptr, 0)
@@ -452,7 +468,10 @@ let kernel32Loaded = false
 function getKernel32() {
   if (kernel32Loaded) return kernel32Lib
   kernel32Loaded = true
+  const ffi = getBunFfi()
+  if (!ffi) return null
   try {
+    const { dlopen, FFIType } = ffi
     kernel32Lib = dlopen('kernel32.dll', {
       FreeConsole: { args: [], returns: FFIType.bool },
       GetStdHandle: { args: [FFIType.i32], returns: FFIType.i64 },

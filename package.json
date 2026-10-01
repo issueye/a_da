@@ -12,7 +12,8 @@
     "build": "bun scripts/link.ts && bun scripts/build.ts",
     "typecheck": "tsc --noEmit",
     "screenshot": "bun screenshot.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "test:guarded": "bun scripts/test-run.ts"
   },
   "dependencies": {
     "eventsource-parser": "^4.1.0",
