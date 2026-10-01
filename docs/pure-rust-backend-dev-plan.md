@@ -98,22 +98,23 @@ gantt
 
 ---
 
-### Phase 2：Node API 核心子集与沙箱安全体系 `高优先级`
+### Phase 2：Node API 核心子集与沙箱安全体系 `已完成`
 
-- [ ] **T2.1 落地 P0 基础运行底座**
+- [x] **T2.1 落地 P0 基础运行底座**
   - 挂载全局 `process` 对象（`cwd()`, `env`, `platform`, `arch`, `argv`, `pid`, `exit()`）；
   - 挂载 `node:path` 虚拟模块（支持 `join`, `resolve`, `dirname`, `basename`, `extname`, `isAbsolute`, `relative`）；
   - 挂载全局 `Buffer`（支持 `Buffer.from`, `alloc`, `toString`）；
   - 挂载纯 JS 版精简 `node:events`（`EventEmitter`）；
-  - 交付物：`agent_core/src/kernel/api/p0/`。
-- [ ] **T2.2 落地 P1 文件系统与异步 Promises**
+  - 挂载 `globalThis.require` 虚拟模块调度器；
+  - 交付物：`agent_core/src/kernel/api/{process,path,buffer,events}.rs`（已合入）。
+- [x] **T2.2 落地 P1 文件系统与异步 Promises**
   - 挂载 `node:fs` 常用同步方法（`existsSync`, `readFileSync`, `writeFileSync`, `mkdirSync`, `readdirSync`, `statSync`, `rmSync`）；
   - 挂载 `node:fs/promises` 常用异步方法（`readFile`, `writeFile`, `mkdir`, `readdir`, `stat`, `rm`），通过 Tokio 异步多线程执行并回传 `JsPromise`；
   - 挂载 `node:os`（`homedir()`, `tmpdir()`, `platform()`, `arch()`）；
-  - 交付物：`agent_core/src/kernel/api/p1/`。
-- [ ] **T2.3 注入工作区沙箱安全屏障**
+  - 交付物：`agent_core/src/kernel/api/{fs,os}.rs`（已合入）。
+- [x] **T2.3 注入工作区沙箱安全屏障**
   - 在所有 `node:fs` 底层入口强制拦截：如果解析后的真实物理路径不在当前 `workspace.project` 目录内（且非全局允许的缓存目录），抛出沙箱越权异常；
-  - 交付物：`agent_core/src/tools/sandbox.rs` 深度集成。
+  - 交付物：`agent_core/src/kernel/api/fs.rs` 与 `agent_core/src/tools/sandbox.rs` 深度集成（已合入）。
 
 ---
 
