@@ -65,8 +65,13 @@ pub struct PureTsRuntime {
 }
 
 impl PureTsRuntime {
-    /// 初始化并启动专有事件循环 Actor
+    /// 初始化并启动专有事件循环 Actor（使用默认工作区）
     pub fn new() -> Self {
+        Self::with_workspace(None)
+    }
+
+    /// 初始化并指定工作区绝对路径
+    pub fn with_workspace(workspace: Option<std::path::PathBuf>) -> Self {
         let (tx, rx) = channel::<EventLoopMsg>();
         let worker_tx = tx.clone();
         let tokio_handle = tokio::runtime::Handle::try_current().ok();
@@ -77,6 +82,11 @@ impl PureTsRuntime {
                 let mut ctx = Context::default();
                 WORKER_TX.with(|cell| *cell.borrow_mut() = Some(worker_tx.clone()));
                 TOKIO_HANDLE.with(|cell| *cell.borrow_mut() = tokio_handle);
+
+                // 自动装配 P0 基础运行底座 (process, path, Buffer, EventEmitter, require)
+                if let Err(err) = crate::kernel::api::inject_p0_environment(&mut ctx, workspace.as_deref()) {
+                    tracing::error!("P0 基础运行底座注入失败: {err}");
+                }
 
                 // 注入基础全局能力，例如 console.log
                 let console_log = NativeFunction::from_copy_closure(|_this, args, ctx| {
@@ -423,5 +433,55 @@ mod tests {
         assert_eq!(parsed_result["bytes"], 37);
 
         let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_pure_ts_runtime_p0_apis() {
+        let ws = std::path::PathBuf::from("E:/codes/mock_project");
+        let runtime = PureTsRuntime::with_workspace(Some(ws));
+
+        let ts_code = r#"
+            // 验证 process 全局对象
+            const cwd = process.cwd();
+            const isWin = process.platform === "win32";
+
+            // 验证 path 模块
+            const fullPath = path.join(cwd, "src", "index.ts");
+            const ext = path.extname(fullPath);
+
+            // 验证 Buffer
+            const buf = Buffer.from("Antigravity Pure Rust", "utf-8");
+            const bufStr = buf.toString("utf-8");
+
+            // 验证 EventEmitter
+            const ee = new EventEmitter();
+            let triggered = false;
+            ee.on("event", (val: boolean) => {
+                triggered = val;
+            });
+            ee.emit("event", true);
+
+            // 验证 require 虚拟模块
+            const pathReq = require("node:path");
+            const sameExt = pathReq.extname("sample.tsx");
+
+            JSON.stringify({
+                cwd,
+                isWin,
+                ext,
+                bufStr,
+                triggered,
+                sameExt
+            });
+        "#;
+
+        let result = runtime.eval_ts(ts_code, Some("p0_test.ts")).await.expect("执行 P0 测试失败");
+        let parsed: serde_json::Value = serde_json::from_str(&result).expect("结果应为合法 JSON");
+
+        assert!(parsed["cwd"].as_str().unwrap().contains("mock_project"));
+        assert_eq!(parsed["ext"], ".ts");
+        assert_eq!(parsed["bufStr"], "Antigravity Pure Rust");
+        assert_eq!(parsed["triggered"], true);
+        assert_eq!(parsed["sameExt"], ".tsx");
     }
 }
