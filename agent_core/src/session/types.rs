@@ -14,11 +14,33 @@ pub struct ToolCallBlock {
     pub raw_arguments: String,
 }
 
+fn deserialize_string_or_blocks<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let val = serde_json::Value::deserialize(deserializer)?;
+    match val {
+        serde_json::Value::String(s) => Ok(s),
+        serde_json::Value::Array(arr) => {
+            let mut parts = Vec::new();
+            for item in arr {
+                if let Some(txt) = item.get("text").and_then(|t| t.as_str()) {
+                    parts.push(txt.to_string());
+                }
+            }
+            Ok(parts.join("\n"))
+        }
+        serde_json::Value::Null => Ok(String::new()),
+        other => Ok(other.to_string()),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "role", rename_all = "camelCase")]
 pub enum AgentMessage {
     #[serde(rename = "user")]
     User {
+        #[serde(deserialize_with = "deserialize_string_or_blocks")]
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         images: Option<Vec<String>>,
@@ -61,6 +83,8 @@ pub enum AgentMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         timestamp: Option<i64>,
     },
+    #[serde(other)]
+    Unknown,
 }
 
 fn default_session_type() -> String { "session".to_string() }
@@ -77,6 +101,7 @@ pub struct SessionHeader {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(default)]
     pub workspace: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -117,9 +142,13 @@ pub struct SessionCompactEntry {
     pub id: String,
     pub timestamp: i64,
     pub summary: String,
+    #[serde(default)]
     pub pre_tokens: u64,
+    #[serde(default)]
     pub post_tokens: u64,
+    #[serde(default)]
     pub saved_tokens: u64,
+    #[serde(default)]
     pub turns_summarized: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_instructions: Option<String>,

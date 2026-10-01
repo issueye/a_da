@@ -12,6 +12,7 @@ use super::types::{
     AgentMessage, CURRENT_SESSION_VERSION, SessionCompactEntry, SessionEntry, SessionHeader,
     SessionMessageEntry, SessionSummary,
 };
+use crate::protocol::{AgentMode, Item, Thread};
 
 /// 获取默认的 a-da 配置和数据主目录
 pub fn get_app_home() -> PathBuf {
@@ -480,6 +481,337 @@ impl SessionManager {
         Ok(summaries)
     }
 
+    /// 还原所有工作区的所有持久化会话（深度重建为 UI Item 卡片流与 Messages 上下文）
+    pub fn restore_all_threads(&self) -> Vec<Thread> {
+        let root = self.sessions_dir();
+        if !root.exists() {
+            return Vec::new();
+        }
+
+        let mut session_files: Vec<(PathBuf, Option<String>)> = Vec::new();
+
+        if let Ok(entries) = fs::read_dir(&root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+                    // 根目录下直接存在的 .jsonl 文件
+                    session_files.push((path, None));
+                } else if path.is_dir() {
+                    let ws = self.read_workspace_pointer(&path);
+                    if let Ok(sub_entries) = fs::read_dir(&path) {
+                        for sub_entry in sub_entries.flatten() {
+                            let sub_path = sub_entry.path();
+                            if sub_path.is_file() && sub_path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+                                session_files.push((sub_path, ws.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut threads_with_mtime: Vec<(Thread, i64)> = Vec::new();
+
+        for (file_path, pointer_ws) in session_files {
+            let file = match File::open(&file_path) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            let reader = BufReader::new(file);
+            let mut lines = reader.lines();
+
+            let first_line = match lines.next() {
+                Some(Ok(l)) if !l.trim().is_empty() => l,
+                _ => continue,
+            };
+            let header: SessionHeader = match serde_json::from_str::<SessionHeader>(first_line.trim()) {
+                Ok(h) if h.entry_type == "session" => h,
+                _ => continue,
+            };
+
+            let file_mtime = file_path.metadata().ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(header.updated_at);
+
+            let final_workspace = if !header.workspace.trim().is_empty() {
+                header.workspace.clone()
+            } else if let Some(ws) = &pointer_ws {
+                ws.clone()
+            } else {
+                std::env::current_dir().unwrap_or_default().to_string_lossy().to_string()
+            };
+
+            let mut raw_entries: Vec<SessionEntry> = Vec::new();
+            let mut tool_results: HashMap<String, AgentMessage> = HashMap::new();
+
+            for line_res in lines {
+                let line = match line_res {
+                    Ok(l) => l,
+                    Err(_) => continue,
+                };
+                let trimmed = line.trim();
+                if trimmed.is_empty() { continue; }
+
+                if let Ok(entry) = serde_json::from_str::<SessionEntry>(trimmed) {
+                    if let SessionEntry::Message(ref m) = entry {
+                        if let AgentMessage::ToolResult { ref tool_call_id, .. } = m.message {
+                            tool_results.insert(tool_call_id.clone(), m.message.clone());
+                        }
+                    }
+                    raw_entries.push(entry);
+                }
+            }
+
+            let mut items: Vec<Item> = Vec::new();
+            let mut messages: Vec<serde_json::Value> = Vec::new();
+            let mut rendered_tool_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+            for (index, entry) in raw_entries.into_iter().enumerate() {
+                match entry {
+                    SessionEntry::Header(_) => {}
+                    SessionEntry::Notice(_) => {}
+                    SessionEntry::Compact(c) => {
+                        let _pruned = std::mem::take(&mut items);
+                        items.push(Item::Compact {
+                            id: c.id.clone(),
+                            at: c.timestamp as u64,
+                            summary: c.summary.clone(),
+                            pre_tokens: c.pre_tokens,
+                            post_tokens: c.post_tokens,
+                            saved_tokens: c.saved_tokens,
+                            turns_summarized: c.turns_summarized as u64,
+                        });
+
+                        let continuation_msg = serde_json::json!({
+                            "role": "user",
+                            "content": format!("[系统自动压缩摘要]\n{}", c.summary),
+                            "timestamp": c.timestamp,
+                        });
+                        messages.clear();
+                        messages.push(continuation_msg);
+                    }
+                    SessionEntry::Message(m) => {
+                        let at = match &m.message {
+                            AgentMessage::User { timestamp, .. } => timestamp.unwrap_or(header.created_at) as u64,
+                            AgentMessage::Assistant { timestamp, .. } => timestamp.unwrap_or(header.created_at) as u64,
+                            AgentMessage::ToolResult { timestamp, .. } => timestamp.unwrap_or(header.created_at) as u64,
+                            _ => header.created_at as u64,
+                        };
+
+                        match m.message {
+                            AgentMessage::User { content, images, .. } => {
+                                if content.starts_with("This session is being continued from a previous conversation") {
+                                    continue;
+                                }
+                                messages.push(serde_json::json!({
+                                    "role": "user",
+                                    "content": &content,
+                                    "images": &images,
+                                    "timestamp": at,
+                                }));
+                                items.push(Item::User {
+                                    id: format!("{}_restored_user_{}", header.id, index),
+                                    at,
+                                    text: content,
+                                    images,
+                                    queued: None,
+                                });
+                            }
+                            AgentMessage::Assistant { content, thinking, tool_calls, usage, duration_ms, turn_duration_ms, stop_reason, error_message, .. } => {
+                                let mut asst_val = serde_json::json!({
+                                    "role": "assistant",
+                                    "content": &content,
+                                    "timestamp": at,
+                                });
+                                if let Some(th) = &thinking { asst_val["thinking"] = serde_json::json!(th); }
+                                if let Some(tc) = &tool_calls { asst_val["toolCalls"] = serde_json::to_value(tc).unwrap_or_default(); }
+                                if let Some(us) = &usage { asst_val["usage"] = us.clone(); }
+                                if let Some(d) = duration_ms { asst_val["durationMs"] = serde_json::json!(d); }
+                                if let Some(td) = turn_duration_ms { asst_val["turnDurationMs"] = serde_json::json!(td); }
+                                if let Some(sr) = &stop_reason { asst_val["stopReason"] = serde_json::json!(sr); }
+                                if let Some(em) = &error_message { asst_val["errorMessage"] = serde_json::json!(em); }
+                                messages.push(asst_val);
+
+                                if let Some(th) = thinking {
+                                    if !th.trim().is_empty() {
+                                        items.push(Item::Thinking {
+                                            id: format!("{}_restored_think_{}", header.id, index),
+                                            at,
+                                            text: th,
+                                            ended_at: Some(at),
+                                        });
+                                    }
+                                }
+
+                                if let Some(calls) = tool_calls {
+                                    for call in calls {
+                                        rendered_tool_call_ids.insert(call.id.clone());
+                                        let res = tool_results.get(&call.id);
+                                        let mut is_denied = false;
+                                        let mut is_error = false;
+                                        let mut output: Option<String> = None;
+                                        let mut patch: Option<String> = None;
+                                        let mut checkpoint_id: Option<String> = None;
+                                        let mut details: Option<serde_json::Value> = None;
+                                        let mut tool_at = at;
+
+                                        if let Some(AgentMessage::ToolResult { content: res_content, is_error: res_err, details: res_det, patch: res_patch, checkpoint_id: res_cp, timestamp: res_ts, .. }) = res {
+                                            if res_content == "用户拒绝了此工具调用" || res_content == "用户拒绝了这次调用。不要重试同样的调用，先说明原因或换一种做法。" {
+                                                is_denied = true;
+                                            }
+                                            is_error = res_err.unwrap_or(false);
+                                            output = Some(res_content.clone());
+                                            patch = res_patch.clone();
+                                            checkpoint_id = res_cp.clone();
+                                            details = res_det.clone();
+                                            if let Some(ts) = res_ts { tool_at = *ts as u64; }
+                                        }
+
+                                        let status = if is_denied {
+                                            "denied".to_string()
+                                        } else if is_error {
+                                            "error".to_string()
+                                        } else {
+                                            "done".to_string()
+                                        };
+
+                                        let raw_args = if call.raw_arguments.is_empty() {
+                                            serde_json::to_string(&call.arguments).unwrap_or_default()
+                                        } else {
+                                            call.raw_arguments
+                                        };
+
+                                        items.push(Item::Tool {
+                                            id: format!("{}_restored_tool_{}", header.id, call.id),
+                                            at: tool_at,
+                                            call_id: call.id,
+                                            name: call.name,
+                                            args: call.arguments,
+                                            raw_args,
+                                            status,
+                                            output,
+                                            patch,
+                                            details,
+                                            thread_id: Some(header.id.clone()),
+                                            checkpoint_id,
+                                            reverted: None,
+                                        });
+                                    }
+                                }
+
+                                if !content.trim().is_empty() {
+                                    items.push(Item::Assistant {
+                                        id: format!("{}_restored_asst_{}", header.id, index),
+                                        at,
+                                        text: content,
+                                        streaming: Some(false),
+                                        duration_ms,
+                                        turn_duration_ms,
+                                    });
+                                }
+                            }
+                            AgentMessage::ToolResult { tool_call_id, tool_name, content, is_error, details, patch, checkpoint_id, timestamp: _ } => {
+                                messages.push(serde_json::json!({
+                                    "role": "toolResult",
+                                    "toolCallId": &tool_call_id,
+                                    "toolName": &tool_name,
+                                    "content": &content,
+                                    "isError": is_error,
+                                    "details": &details,
+                                    "patch": &patch,
+                                    "checkpointId": &checkpoint_id,
+                                    "timestamp": at,
+                                }));
+
+                                if !rendered_tool_call_ids.contains(&tool_call_id) {
+                                    rendered_tool_call_ids.insert(tool_call_id.clone());
+                                    let is_denied = content == "用户拒绝了此工具调用" || content == "用户拒绝了这次调用。不要重试同样的调用，先说明原因或换一种做法。";
+                                    let status = if is_denied {
+                                        "denied".to_string()
+                                    } else if is_error.unwrap_or(false) {
+                                        "error".to_string()
+                                    } else {
+                                        "done".to_string()
+                                    };
+                                    items.push(Item::Tool {
+                                        id: format!("{}_restored_tool_{}", header.id, tool_call_id),
+                                        at,
+                                        call_id: tool_call_id,
+                                        name: tool_name,
+                                        args: serde_json::json!({}),
+                                        raw_args: String::new(),
+                                        status,
+                                        output: Some(content),
+                                        patch,
+                                        details,
+                                        thread_id: Some(header.id.clone()),
+                                        checkpoint_id,
+                                        reverted: None,
+                                    });
+                                }
+                            }
+                            AgentMessage::Unknown => {}
+                        }
+                    }
+                }
+            }
+
+            let is_sub = header.parent_id.is_some() || header.subagent_id.is_some();
+            let thread = Thread {
+                id: header.id,
+                title: header.title.unwrap_or_else(|| "新会话".to_string()),
+                created_at: header.created_at as u64,
+                workspace: final_workspace,
+                items,
+                messages,
+                mode: Some(AgentMode::Code),
+                parent_id: header.parent_id,
+                subagent_id: header.subagent_id,
+                is_subagent: Some(is_sub),
+                plugin_data: header.plugin_data,
+            };
+
+            threads_with_mtime.push((thread, file_mtime));
+        }
+
+        threads_with_mtime.sort_by(|a, b| b.1.cmp(&a.1));
+        let mut threads: Vec<Thread> = threads_with_mtime.into_iter().map(|(t, _)| t).collect();
+
+        // 纠偏与自愈：如果子会话缺少 parent_id，从主会话的 invoke_subagent 卡片中寻找
+        let mut sub_to_parent: HashMap<String, String> = HashMap::new();
+        for t in &threads {
+            if t.is_subagent != Some(true) {
+                for it in &t.items {
+                    if let Item::Tool { name, details, output, .. } = it {
+                        if name == "invoke_subagent" {
+                            if let Some(sub_id) = details.as_ref().and_then(|d| d.get("subagent_thread_id")).and_then(|v| v.as_str()) {
+                                sub_to_parent.insert(sub_id.to_string(), t.id.clone());
+                            } else if let Some(out) = output {
+                                for word in out.split_whitespace() {
+                                    if word.starts_with("subagent_") {
+                                        sub_to_parent.insert(word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_').to_string(), t.id.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for t in &mut threads {
+            if t.is_subagent == Some(true) && t.parent_id.is_none() {
+                if let Some(pid) = sub_to_parent.get(&t.id) {
+                    t.parent_id = Some(pid.clone());
+                }
+            }
+        }
+
+        threads
+    }
+
     /// 删除指定会话并级联删除名下的子会话
     pub fn delete_session(&self, session_id: &str, workspace: Option<&str>) -> Result<()> {
         let file_path = if let Some(ws) = workspace {
@@ -615,6 +947,103 @@ mod tests {
         assert!(manager.archive_session(sid, Some(ws))?);
 
         // 8. 清理临时目录
+        let _ = fs::remove_dir_all(temp_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_restore_all_threads_and_cards() -> Result<()> {
+        let temp_dir = std::env::temp_dir().join(format!("a_da_test_{}", uuid::Uuid::new_v4()));
+        let manager = SessionManager::new(Some(temp_dir.clone()));
+
+        let ws = "E:/code/test_ws";
+        let sid = "session_deep_restore";
+
+        manager.create_session(sid, ws, Some("会话卡片恢复测试"), None, None)?;
+
+        // 1. 用户消息
+        manager.append_message(
+            sid,
+            AgentMessage::User {
+                content: "请帮我运行 git status".to_string(),
+                images: None,
+                timestamp: Some(1000),
+            },
+            Some(ws),
+        )?;
+
+        // 2. 助手消息：思考链 + 工具调用
+        let call_id = "call_git_001";
+        manager.append_message(
+            sid,
+            AgentMessage::Assistant {
+                content: "我将检查当前 git 状态。".to_string(),
+                thinking: Some("用户需要了解 git 仓库分支与修改情况".to_string()),
+                tool_calls: Some(vec![crate::session::ToolCallBlock {
+                    id: call_id.to_string(),
+                    name: "run_command".to_string(),
+                    arguments: serde_json::json!({ "command": "git status" }),
+                    raw_arguments: "{\"command\":\"git status\"}".to_string(),
+                }]),
+                stop_reason: Some("tool_calls".to_string()),
+                error_message: None,
+                timestamp: Some(1002),
+                usage: None,
+                duration_ms: Some(150),
+                turn_duration_ms: Some(200),
+            },
+            Some(ws),
+        )?;
+
+        // 3. 工具结果返回
+        manager.append_message(
+            sid,
+            AgentMessage::ToolResult {
+                tool_call_id: call_id.to_string(),
+                tool_name: "run_command".to_string(),
+                content: "On branch main\nnothing to commit".to_string(),
+                is_error: Some(false),
+                details: None,
+                patch: None,
+                checkpoint_id: None,
+                timestamp: Some(1005),
+            },
+            Some(ws),
+        )?;
+
+        // 4. 执行 restore_all_threads
+        let threads = manager.restore_all_threads();
+        assert_eq!(threads.len(), 1, "应还原出一个会话");
+        let thread = &threads[0];
+        assert_eq!(thread.id, sid);
+        assert_eq!(thread.title, "会话卡片恢复测试");
+        assert_eq!(thread.workspace, ws);
+
+        // 验证 items 卡片流
+        assert_eq!(thread.items.len(), 4, "应生成 User, Thinking, Tool, Assistant 共 4 个卡片");
+        match &thread.items[0] {
+            Item::User { text, .. } => assert_eq!(text, "请帮我运行 git status"),
+            other => panic!("第一张卡片应为 User 卡片，实际为 {:?}", other),
+        }
+        match &thread.items[1] {
+            Item::Thinking { text, .. } => assert!(text.contains("用户需要了解")),
+            other => panic!("第二张卡片应为 Thinking 卡片，实际为 {:?}", other),
+        }
+        match &thread.items[2] {
+            Item::Tool { call_id: cid, name, status, output, .. } => {
+                assert_eq!(cid, call_id);
+                assert_eq!(name, "run_command");
+                assert_eq!(status, "done");
+                assert_eq!(output.as_deref(), Some("On branch main\nnothing to commit"));
+            }
+            other => panic!("第三张卡片应为 Tool 卡片，实际为 {:?}", other),
+        }
+        match &thread.items[3] {
+            Item::Assistant { text, .. } => assert_eq!(text, "我将检查当前 git 状态。"),
+            other => panic!("第四张卡片应为 Assistant 卡片，实际为 {:?}", other),
+        }
+
+        // 5. 清理
         let _ = fs::remove_dir_all(temp_dir);
         Ok(())
     }

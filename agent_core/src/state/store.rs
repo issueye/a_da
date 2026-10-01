@@ -42,79 +42,167 @@ impl Default for AgentStore {
 
 impl AgentStore {
     pub fn new(workspace_path: String) -> Self {
-        let initial_thread_id = next_id("thread");
-        let initial_thread = Thread {
-            id: initial_thread_id.clone(),
-            title: "新会话".to_string(),
-            created_at: now_millis(),
-            workspace: workspace_path.clone(),
-            items: Vec::new(),
-            messages: Vec::new(),
-            mode: Some(AgentMode::Code),
-            parent_id: None,
-            subagent_id: None,
-            is_subagent: Some(false),
-            plugin_data: None,
+        let explicit_workspace = workspace_path.trim().to_string();
+        let default_public_workspace = crate::session::get_app_home().join("workspace").to_string_lossy().to_string();
+
+        let mut prov = crate::ai::ProviderConfig {
+            id: "default".to_string(),
+            name: "默认大模型".to_string(),
+            base_url: std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
+            api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+            model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string()),
+        };
+        let mut config_snapshot = ConfigSnapshot {
+            model: prov.model.clone(),
+            context_window: 128_000,
+            supports_images: true,
+            approval: ApprovalMode::Auto,
+            effort: Effort::Max,
+            mode: AgentMode::Code,
+        };
+        let mut appearance_str = "dark".to_string();
+
+        let cfg_file = if let Ok(custom) = std::env::var("A_DA_CONFIG") {
+            std::path::PathBuf::from(custom)
+        } else {
+            crate::session::get_app_home().join("config.json")
         };
 
+        if cfg_file.exists() {
+            if let Ok(content) = std::fs::read_to_string(&cfg_file) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(bu) = val.get("baseUrl").and_then(|v| v.as_str()) {
+                        if !bu.is_empty() { prov.base_url = bu.to_string(); }
+                    }
+                    if let Some(ak) = val.get("apiKey").and_then(|v| v.as_str()) {
+                        if !ak.is_empty() { prov.api_key = ak.to_string(); }
+                    }
+                    if let Some(md) = val.get("model").and_then(|v| v.as_str()) {
+                        if !md.is_empty() {
+                            prov.model = md.to_string();
+                            config_snapshot.model = md.to_string();
+                        }
+                    }
+                    if let Some(nm) = val.get("name").and_then(|v| v.as_str()) {
+                        if !nm.is_empty() { prov.name = nm.to_string(); }
+                    }
+                    if let Some(cw) = val.get("contextWindow").and_then(|v| v.as_u64()) {
+                        config_snapshot.context_window = cw;
+                    }
+                    if let Some(si) = val.get("supportsImages").and_then(|v| v.as_bool()) {
+                        config_snapshot.supports_images = si;
+                    }
+                    if let Some(appr) = val.get("approval").and_then(|v| v.as_str()) {
+                        config_snapshot.approval = match appr.to_lowercase().as_str() {
+                            "ask" => ApprovalMode::Ask,
+                            "readonly" => ApprovalMode::Readonly,
+                            _ => ApprovalMode::Auto,
+                        };
+                    }
+                    if let Some(eff) = val.get("effort").and_then(|v| v.as_str()) {
+                        config_snapshot.effort = match eff.to_lowercase().as_str() {
+                            "high" => Effort::High,
+                            "medium" => Effort::Medium,
+                            "low" => Effort::Low,
+                            _ => Effort::Max,
+                        };
+                    }
+                    if let Some(md) = val.get("mode").and_then(|v| v.as_str()) {
+                        config_snapshot.mode = match md.to_lowercase().as_str() {
+                            "plan" => AgentMode::Plan,
+                            "create" => AgentMode::Create,
+                            _ => AgentMode::Code,
+                        };
+                    }
+                    if let Some(app) = val.get("appearance").and_then(|v| v.as_str()) {
+                        if !app.is_empty() { appearance_str = app.to_string(); }
+                    }
+                }
+            }
+        }
+
+        let session_mgr = crate::session::SessionManager::new(None);
+        let restored_threads = session_mgr.restore_all_threads();
+
+        let (threads, active_id, current_workspace) = if !restored_threads.is_empty() {
+            let target_ws = if !explicit_workspace.is_empty() {
+                explicit_workspace.clone()
+            } else if let Ok(env_ws) = std::env::var("A_DA_WORKSPACE") {
+                if !env_ws.trim().is_empty() { env_ws.trim().to_string() } else { String::new() }
+            } else {
+                String::new()
+            };
+
+            let chosen = if !target_ws.is_empty() {
+                restored_threads.iter().find(|t| t.workspace == target_ws && t.is_subagent != Some(true))
+                    .or_else(|| restored_threads.iter().find(|t| t.workspace == target_ws))
+                    .unwrap_or(&restored_threads[0])
+            } else {
+                restored_threads.iter().find(|t| t.is_subagent != Some(true))
+                    .unwrap_or(&restored_threads[0])
+            };
+
+            let act_id = chosen.id.clone();
+            let ws = if !target_ws.is_empty() {
+                target_ws
+            } else if !chosen.workspace.is_empty() {
+                chosen.workspace.clone()
+            } else {
+                default_public_workspace.clone()
+            };
+
+            (restored_threads, act_id, ws)
+        } else {
+            let ws = if !explicit_workspace.is_empty() {
+                explicit_workspace
+            } else if let Ok(env_ws) = std::env::var("A_DA_WORKSPACE") {
+                if !env_ws.trim().is_empty() { env_ws.trim().to_string() } else { default_public_workspace.clone() }
+            } else {
+                default_public_workspace.clone()
+            };
+
+            let initial_thread_id = next_id("thread");
+            let initial_thread = Thread {
+                id: initial_thread_id.clone(),
+                title: "新会话".to_string(),
+                created_at: now_millis(),
+                workspace: ws.clone(),
+                items: Vec::new(),
+                messages: Vec::new(),
+                mode: Some(config_snapshot.mode),
+                parent_id: None,
+                subagent_id: None,
+                is_subagent: Some(false),
+                plugin_data: None,
+            };
+
+            (vec![initial_thread], initial_thread_id, ws)
+        };
+
+        let open_tab_ids = vec![active_id.clone()];
+
         Self {
-            threads: vec![initial_thread],
-            active_id: initial_thread_id.clone(),
+            threads,
+            active_id: active_id.clone(),
             running_thread_ids: Vec::new(),
             waiting_thread_ids: Vec::new(),
             queue: Vec::new(),
             log: Vec::new(),
             workspace: WorkspaceSnapshot {
-                project: workspace_path.clone(),
+                project: current_workspace,
                 files: 0,
                 dirs: 0,
                 scanning: false,
                 entries: Vec::new(),
             },
-            config: ConfigSnapshot {
-                model: "".to_string(),
-                context_window: 128_000,
-                supports_images: true,
-                approval: ApprovalMode::Auto,
-                effort: Effort::Max,
-                mode: AgentMode::Code,
-            },
-            provider: {
-                let mut prov = crate::ai::ProviderConfig {
-                    id: "default".to_string(),
-                    name: "默认大模型".to_string(),
-                    base_url: std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
-                    api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
-                    model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string()),
-                };
-                let cfg_file = crate::session::get_app_home().join("config.json");
-                if cfg_file.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&cfg_file) {
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-                            if let Some(bu) = val.get("baseUrl").and_then(|v| v.as_str()) {
-                                if !bu.is_empty() { prov.base_url = bu.to_string(); }
-                            }
-                            if let Some(ak) = val.get("apiKey").and_then(|v| v.as_str()) {
-                                if !ak.is_empty() { prov.api_key = ak.to_string(); }
-                            }
-                            if let Some(md) = val.get("model").and_then(|v| v.as_str()) {
-                                if !md.is_empty() { prov.model = md.to_string(); }
-                            }
-                            if let Some(nm) = val.get("name").and_then(|v| v.as_str()) {
-                                if !nm.is_empty() { prov.name = nm.to_string(); }
-                            }
-                        }
-                    }
-                }
-                prov
-            },
+            config: config_snapshot,
+            provider: prov,
             pending_questions: Vec::new(),
-            public_workspace: workspace_path,
-
-            appearance: "dark".to_string(),
+            public_workspace: default_public_workspace,
+            appearance: appearance_str,
             ui: UiSnapshot {
-                active_id: initial_thread_id.clone(),
-                open_tab_ids: vec![initial_thread_id],
+                active_id,
+                open_tab_ids,
                 pending_draft: None,
                 debug_open: false,
                 settings_open: false,
@@ -350,3 +438,40 @@ impl AgentStore {
         self.set_thread_running(thread_id, false);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_store_config_and_session_restore() {
+        let temp_home = std::env::temp_dir().join(format!("a_da_store_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_home);
+        let cfg_path = temp_home.join("config.json");
+        std::fs::write(&cfg_path, serde_json::json!({
+            "model": "deepseek/deepseek-v4.1-flash",
+            "baseUrl": "http://ai.20301024.xyz:36302/v1",
+            "apiKey": "sk-test-key",
+            "contextWindow": 65536,
+            "appearance": "light"
+        }).to_string()).unwrap();
+
+        unsafe {
+            std::env::set_var("A_DA_HOME", &temp_home);
+            std::env::set_var("A_DA_CONFIG", &cfg_path);
+        }
+
+        let store = AgentStore::new("".to_string());
+        assert_eq!(store.config.model, "deepseek/deepseek-v4.1-flash");
+        assert_eq!(store.provider.base_url, "http://ai.20301024.xyz:36302/v1");
+        assert_eq!(store.provider.api_key, "sk-test-key");
+        assert_eq!(store.config.context_window, 65536);
+        assert_eq!(store.appearance, "light");
+
+        let _ = std::fs::remove_dir_all(temp_home);
+        unsafe {
+            std::env::remove_var("A_DA_CONFIG");
+        }
+    }
+}
+

@@ -215,6 +215,7 @@ pub fn format_messages_for_model(
                     tool_call_id: Some(tool_call_id.clone()),
                 });
             }
+            AgentMessage::Unknown => {}
         }
     }
 
