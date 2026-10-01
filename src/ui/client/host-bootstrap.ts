@@ -74,31 +74,40 @@ export function resolveDefaultHostRunner(): {
   compiled: boolean
   entryScript?: string
 } {
-  // 1. 显式指定原生 Rust 核心（环境变量 A_DA_CORE_PATH 或 A_DA_USE_RUST_CORE=1）
+  // 0. 应急逃生降级通道：显式设置 A_DA_FORCE_LEGACY_HOST=1 时强制回退到旧版 Bun 宿主
+  if (process.env.A_DA_FORCE_LEGACY_HOST === '1') {
+    const compiled = !/(^|[\\/])bun(\.exe)?$/i.test(process.execPath)
+    return {
+      execPath: process.execPath,
+      compiled,
+      entryScript: compiled ? undefined : defaultEntryScript(),
+    }
+  }
+
+  // 1. 显式指定原生 Rust 核心路径（环境变量 A_DA_CORE_PATH）
   if (process.env.A_DA_CORE_PATH && existsSync(process.env.A_DA_CORE_PATH)) {
     return { execPath: process.env.A_DA_CORE_PATH, compiled: true }
   }
 
-  if (process.env.A_DA_USE_RUST_CORE === '1') {
-    const appDir = dirname(process.execPath)
-    const cwd = process.cwd()
-    const repoRoot = join(import.meta.dir, '..', '..', '..')
-    const ext = process.platform === 'win32' ? '.exe' : ''
-    const exeName = `agent_core${ext}`
+  // 2. 默认首选：原生 Rust 核心（优先发布产物 dist/agent_core.exe 与 release 构建）
+  const appDir = dirname(process.execPath)
+  const cwd = process.cwd()
+  const repoRoot = join(import.meta.dir, '..', '..', '..')
+  const ext = process.platform === 'win32' ? '.exe' : ''
+  const exeName = `agent_core${ext}`
 
-    const candidates = [
-      join(appDir, exeName),
-      join(cwd, 'dist', exeName),
-      join(cwd, exeName),
-      join(repoRoot, 'agent_core', 'target', 'release', exeName),
-      join(repoRoot, 'dist', exeName),
-      join(repoRoot, 'agent_core', 'target', 'debug', exeName),
-    ]
+  const candidates = [
+    join(cwd, 'dist', exeName),
+    join(repoRoot, 'dist', exeName),
+    join(repoRoot, 'agent_core', 'target', 'release', exeName),
+    join(appDir, exeName),
+    join(cwd, exeName),
+    join(repoRoot, 'agent_core', 'target', 'debug', exeName),
+  ]
 
-    for (const candidate of candidates) {
-      if (existsSync(candidate)) {
-        return { execPath: candidate, compiled: true }
-      }
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return { execPath: candidate, compiled: true }
     }
   }
 

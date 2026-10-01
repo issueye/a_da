@@ -14,7 +14,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { spawnHostProcess, makeHostToken, type HostProcess } from './host-bootstrap'
+import { spawnHostProcess, makeHostToken, resolveDefaultHostRunner, type HostProcess } from './host-bootstrap'
 import { createWebSocketClient } from './ws'
 
 const hosts: HostProcess[] = []
@@ -129,5 +129,40 @@ describe('主机自举：真子进程', () => {
       extraChildren.splice(extraChildren.indexOf(child), 1)
     },
     40_000
+  )
+
+  test(
+    '默认自举优先切流到原生 Rust 核心 (agent_core.exe)',
+    async () => {
+      const runner = resolveDefaultHostRunner()
+      expect(runner.compiled).toBe(true)
+      expect(runner.execPath).toContain('agent_core')
+      expect(existsSync(runner.execPath)).toBe(true)
+
+      // 拉起该原生 Rust 进程并验证就绪握手与通信
+      const host = await spawnHostProcess({ timeoutMs: 15_000 })
+      hosts.push(host)
+
+      expect(host.port).toBeGreaterThan(0)
+      expect(host.pid).toBeGreaterThan(0)
+
+      const client = createWebSocketClient({
+        url: host.url,
+        token: host.token,
+        coalesceMs: 0,
+        reconnectDelayMs: 0,
+      })
+      await client.ready()
+      expect(client.state.threads.length).toBeGreaterThan(0)
+      expect(client.state.activeId.length).toBeGreaterThan(0)
+
+      // 验证 subagentProfile.list 通信
+      const subagents = await client.request('subagentProfile.list', {})
+      expect(Array.isArray(subagents)).toBe(true)
+      expect(subagents.length).toBeGreaterThanOrEqual(4)
+
+      client.close()
+    },
+    30_000
   )
 })
