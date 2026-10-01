@@ -22,12 +22,10 @@
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { hostEntryArgs, parseReadyLine } from '../../agent/host/main'
 import { log } from './logging'
-import embeddedCorePath from '../../../dist/agent_core.exe' with { type: 'file' }
 
 export interface HostProcess {
   pid: number
@@ -76,71 +74,35 @@ export function resolveDefaultHostRunner(): {
   compiled: boolean
   entryScript?: string
 } {
-  // 1. 环境变量显式指定优先
+  // 1. 显式指定原生 Rust 核心（环境变量 A_DA_CORE_PATH 或 A_DA_USE_RUST_CORE=1）
   if (process.env.A_DA_CORE_PATH && existsSync(process.env.A_DA_CORE_PATH)) {
     return { execPath: process.env.A_DA_CORE_PATH, compiled: true }
   }
 
-  // 2. 检查应用所在目录、当前工作目录及工程工作区下编译好的原生 Rust 核心
-  const appDir = dirname(process.execPath)
-  const cwd = process.cwd()
-  const repoRoot = join(import.meta.dir, '..', '..', '..')
-  const ext = process.platform === 'win32' ? '.exe' : ''
-  const exeName = `agent_core${ext}`
+  if (process.env.A_DA_USE_RUST_CORE === '1') {
+    const appDir = dirname(process.execPath)
+    const cwd = process.cwd()
+    const repoRoot = join(import.meta.dir, '..', '..', '..')
+    const ext = process.platform === 'win32' ? '.exe' : ''
+    const exeName = `agent_core${ext}`
 
-  const candidates = [
-    join(appDir, exeName),
-    join(cwd, 'dist', exeName),
-    join(cwd, exeName),
-    join(repoRoot, 'agent_core', 'target', 'release', exeName),
-    join(repoRoot, 'dist', exeName),
-    join(repoRoot, 'agent_core', 'target', 'debug', exeName),
-  ]
+    const candidates = [
+      join(appDir, exeName),
+      join(cwd, 'dist', exeName),
+      join(cwd, exeName),
+      join(repoRoot, 'agent_core', 'target', 'release', exeName),
+      join(repoRoot, 'dist', exeName),
+      join(repoRoot, 'agent_core', 'target', 'debug', exeName),
+    ]
 
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      return { execPath: candidate, compiled: true }
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) {
+        return { execPath: candidate, compiled: true }
+      }
     }
   }
 
-  // 3. 从单一可执行文件内置的嵌入资产中解压/同步至用户缓存目录 (~/.a-da/bin/agent_core.exe)
-  try {
-    if (embeddedCorePath && existsSync(embeddedCorePath)) {
-      const userBinDir = join(homedir(), '.a-da', 'bin')
-      mkdirSync(userBinDir, { recursive: true })
-      const userCoreExe = join(userBinDir, exeName)
-
-      const embeddedBuf = readFileSync(embeddedCorePath)
-      let needWrite = true
-      if (existsSync(userCoreExe)) {
-        try {
-          const existingStat = statSync(userCoreExe)
-          if (existingStat.size === embeddedBuf.length) {
-            needWrite = false
-          }
-        } catch {
-          needWrite = true
-        }
-      }
-
-      if (needWrite) {
-        writeFileSync(userCoreExe, embeddedBuf)
-        try {
-          if (process.platform !== 'win32') {
-            chmodSync(userCoreExe, 0o755)
-          }
-        } catch {}
-      }
-
-      if (existsSync(userCoreExe)) {
-        return { execPath: userCoreExe, compiled: true }
-      }
-    }
-  } catch (err) {
-    log(`[bootstrap] 提取内置原生核心失败: ${String(err)}`)
-  }
-
-  // 4. 兜底回退：自身进程
+  // 2. 默认：单文件双角色标准契约（协议 §1.8：UI 角色自举起自身带 --host，无缝继承全部配置与完整插件流式）
   const compiled = !/(^|[\\/])bun(\.exe)?$/i.test(process.execPath)
   return {
     execPath: process.execPath,
@@ -175,6 +137,7 @@ export async function spawnHostProcess(options: SpawnHostOptions = {}): Promise<
 
   const child = spawn(execPath, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
     // 主机不该继承 UI 的那套环境变量开关（例如 A_DA_TRANSPORT，避免它自己也去 spawn）
     env: { ...process.env, A_DA_TRANSPORT: 'inprocess' },
   })

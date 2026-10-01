@@ -115,6 +115,7 @@ function patchWindowsGuiSubsystem(targetPath: string): void {
 }
 
 patchWindowsGuiSubsystem(writtenPath)
+patchWindowsGuiSubsystem(targetCore)
 
 // 构建体积汇总
 const appSizeMb = (statSync(writtenPath).size / 1024 / 1024).toFixed(2)

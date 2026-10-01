@@ -79,12 +79,34 @@ impl AgentStore {
                 effort: Effort::Max,
                 mode: AgentMode::Code,
             },
-            provider: crate::ai::ProviderConfig {
-                id: "default".to_string(),
-                name: "默认大模型".to_string(),
-                base_url: std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
-                api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
-                model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string()),
+            provider: {
+                let mut prov = crate::ai::ProviderConfig {
+                    id: "default".to_string(),
+                    name: "默认大模型".to_string(),
+                    base_url: std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
+                    api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+                    model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string()),
+                };
+                let cfg_file = crate::session::get_app_home().join("config.json");
+                if cfg_file.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&cfg_file) {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Some(bu) = val.get("baseUrl").and_then(|v| v.as_str()) {
+                                if !bu.is_empty() { prov.base_url = bu.to_string(); }
+                            }
+                            if let Some(ak) = val.get("apiKey").and_then(|v| v.as_str()) {
+                                if !ak.is_empty() { prov.api_key = ak.to_string(); }
+                            }
+                            if let Some(md) = val.get("model").and_then(|v| v.as_str()) {
+                                if !md.is_empty() { prov.model = md.to_string(); }
+                            }
+                            if let Some(nm) = val.get("name").and_then(|v| v.as_str()) {
+                                if !nm.is_empty() { prov.name = nm.to_string(); }
+                            }
+                        }
+                    }
+                }
+                prov
             },
             pending_questions: Vec::new(),
             public_workspace: workspace_path,
