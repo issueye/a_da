@@ -96,9 +96,30 @@ async fn main() -> Result<(), anyhow::Error> {
 
     info!("a-da 原生核心就绪，PID: {}, 监听端口: {}", current_pid, server.port);
 
-    // 监听 Ctrl+C 或终止信号
-    tokio::signal::ctrl_c().await?;
-    info!("收到退出信号，a-da 原生核心安全关闭");
+    // 持续运行服务直到收到终止信号或父进程看门狗触发退出
+    #[cfg(target_os = "windows")]
+    {
+        match tokio::signal::windows::ctrl_c() {
+            Ok(mut sig) => {
+                tokio::select! {
+                    Some(_) = sig.recv() => {
+                        info!("收到 Ctrl+C 退出信号，a-da 原生核心安全关闭");
+                    }
+                    _ = std::future::pending::<()>() => {}
+                }
+            }
+            Err(e) => {
+                info!("当前环境未附加控制台，由看门狗看护退出: {}", e);
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        info!("收到退出信号，a-da 原生核心安全关闭");
+    }
 
     Ok(())
 }

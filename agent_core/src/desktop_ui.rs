@@ -88,20 +88,20 @@ pub fn run_desktop_mode(workspace: &str) -> Result<(), anyhow::Error> {
         .map_err(|e| anyhow::anyhow!(e))?;
 
     // 7. 执行内嵌的 React 19 UI Bundle
-    eprintln!(
+    info!(
         "正在通过 Hermes 虚拟机执行内嵌 React UI Bundle ({} 字节)...",
         EMBEDDED_UI_CJS.len()
     );
     match hermes.eval_to_string(EMBEDDED_UI_CJS) {
-        Ok(res) => eprintln!("React 19 UI Bundle 初始化完成: {}", res),
+        Ok(res) => info!("React 19 UI Bundle 初始化完成: {}", res),
         Err(e) => {
-            eprintln!("执行 UI 脚本失败: {}", e);
+            tracing::error!("执行 UI 脚本失败: {}", e);
             let _ = child.kill();
             return Err(anyhow::anyhow!("UI 脚本执行失败: {}", e));
         }
     }
 
-    eprintln!("UI 界面已挂载，进入宿主事件循环泵 (驱动 GPUI 帧循环)...");
+    info!("UI 界面已挂载，进入宿主事件循环泵 (驱动 GPUI 帧循环)...");
 
     // 8. 驱动事件循环（微任务、宏任务定时器、GPUI 帧循环）
     while let Ok(None) = child.try_wait() {
@@ -119,14 +119,14 @@ pub fn run_desktop_mode(workspace: &str) -> Result<(), anyhow::Error> {
                 }
             }
             Err(e) => {
-                eprintln!("[UI EventLoop 异常] {}", e);
+                tracing::error!("[UI EventLoop 异常] {}", e);
                 std::thread::sleep(std::time::Duration::from_millis(16));
             }
         }
     }
 
     let status = child.wait()?;
-    eprintln!("子进程已退出，状态码: {:?}", status.code());
+    info!("子进程已退出，状态码: {:?}", status.code());
 
     Ok(())
 }
