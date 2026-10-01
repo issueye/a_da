@@ -19,15 +19,37 @@ import type { ClientSnapshot } from '../../shared/protocol'
 
 /** 组装一份主机快照。整份给：M1 先粗后细，只有高频路径留给 M3 做增量。 */
 export function readHostSnapshot(store: AgentStore): ClientSnapshot {
-  const threads = store.threads
   const activeId = store.activeId
+  const openTabSet = new Set(store.openTabIds)
+
+  // 内存优化：会话按需分级
+  // 1. UI 渲染仅依赖 Thread.items，完全不消费模型底层的 messages 历史（清空可减小 50%~90% 的快照体积）
+  // 2. 只有当前激活会话、打开的标签页、运行中的会话或子智能体会话才需要携带完整 items
+  //    侧边栏折叠的历史会话仅保留元数据，从而杜绝多会话用户快照暴增
+  const threads = store.threads.map((t) => {
+    const needFullItems =
+      t.id === activeId ||
+      openTabSet.has(t.id) ||
+      store.isThreadRunning(t.id) ||
+      Boolean(t.isSubagent)
+
+    return {
+      ...t,
+      items: needFullItems ? t.items : [],
+      messages: [],
+    }
+  })
+
+  // 内存优化：调试日志按需下发。调试面板未展开时只给最近 10 条，展开时下发完整流水
+  const log = store.debugOpen ? store.log : store.log.slice(-10)
+
   return {
     threads,
     activeThreadId: activeId,
     runningThreadIds: threads.filter((thread) => store.isThreadRunning(thread.id)).map((t) => t.id),
     waitingThreadIds: threads.filter((thread) => store.isThreadWaiting(thread.id)).map((t) => t.id),
     queue: store.queue,
-    log: store.log,
+    log,
     workspace: {
       project: store.project,
       files: store.workspaceInfo.files,

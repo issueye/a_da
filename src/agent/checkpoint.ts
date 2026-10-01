@@ -75,6 +75,29 @@ const nextId = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${++cou
 
 export class CheckpointManager {
   private cache = new Map<string, Entry[] | null>()
+  /** 最多缓存 2 个会话的检查点，避免长运行或多会话将大文件 Base64 堆死在内存中 */
+  private static readonly MAX_CACHE_SIZE = 2
+
+  private setCache(threadId: string, entries: Entry[] | null): void {
+    if (this.cache.has(threadId)) {
+      this.cache.delete(threadId)
+    } else if (this.cache.size >= CheckpointManager.MAX_CACHE_SIZE) {
+      const oldestKey = this.cache.keys().next().value
+      if (oldestKey !== undefined) {
+        this.cache.delete(oldestKey)
+      }
+    }
+    this.cache.set(threadId, entries)
+  }
+
+  /** 仅清空内存缓存，保留磁盘上的持久化文件 */
+  clearMemoryCache(threadId?: string): void {
+    if (threadId) {
+      this.cache.delete(threadId)
+    } else {
+      this.cache.clear()
+    }
+  }
 
   private fileFor(threadId: string): string {
     return join(getAppHome(), 'checkpoints', `${threadId}.jsonl`)
@@ -82,10 +105,16 @@ export class CheckpointManager {
 
   /** 读取一个会话的全部检查点条目（损坏行跳过；null 表示文件不存在）。 */
   async load(threadId: string, force = false): Promise<Entry[] | null> {
-    if (!force && this.cache.has(threadId)) return this.cache.get(threadId)!
+    if (!force && this.cache.has(threadId)) {
+      const existing = this.cache.get(threadId)!
+      // 刷新 LRU 活跃度
+      this.cache.delete(threadId)
+      this.cache.set(threadId, existing)
+      return existing
+    }
     const file = this.fileFor(threadId)
     if (!existsSync(file)) {
-      this.cache.set(threadId, null)
+      this.setCache(threadId, null)
       return null
     }
     const text = await readFile(file, 'utf-8')
@@ -99,7 +128,7 @@ export class CheckpointManager {
         // 单行损坏不影响其余流水
       }
     }
-    this.cache.set(threadId, entries)
+    this.setCache(threadId, entries)
     return entries
   }
 

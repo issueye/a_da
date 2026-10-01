@@ -109,7 +109,7 @@ const EFFORT_VALUE: Record<Effort, string> = {
   low: 'low',
 }
 
-const MAX_LOG = 120
+const MAX_LOG = 60
 
 /** 拒绝后回给模型的说明：说清楚行为，而不是只报一个 no。 */
 const DENIED_REASON = '用户拒绝了这次调用。不要重试同样的调用，先说明原因或换一种做法。'
@@ -3453,9 +3453,8 @@ export class AgentStore {
     durationMs?: number
   }): void {
     this.logId += 1
-    const raw =
-      entry.raw ??
-      (entry.payload !== undefined ? JSON.stringify(entry.payload, null, 2) : undefined)
+    // 内存优化：不提前进行全量 JSON.stringify 字符串化，DebugPanel 会在用户展开时按需格式化
+    const raw = entry.raw
     this.log = [
       ...this.log.slice(-MAX_LOG),
       { id: this.logId, at: Date.now(), ...entry, raw },
@@ -3471,6 +3470,19 @@ export class AgentStore {
     const msgCount = event.messages?.length ?? 0
     const toolCount = event.tools?.length ?? 0
     const summary = `${event.model} @ ${event.baseUrl}（${msgCount} 条消息${toolCount > 0 ? ` · ${toolCount} 个工具` : ''}）`
+
+    // 内存优化：对长会话请求消息进行轻量化剪裁，防止超大文件/工具输出在日志中被永久硬引用
+    const slimMessages = Array.isArray(event.messages)
+      ? event.messages.map((m: any) => {
+          if (!m || typeof m !== 'object') return m
+          const copy = { ...m }
+          if (typeof copy.content === 'string' && copy.content.length > 1000) {
+            copy.content = `${copy.content.slice(0, 1000)}… [已截断，总计 ${copy.content.length} 字符]`
+          }
+          return copy
+        })
+      : event.messages
+
     this.push({
       kind: 'request',
       model: event.model,
@@ -3480,7 +3492,7 @@ export class AgentStore {
         baseUrl: event.baseUrl,
         messagesCount: msgCount,
         toolsCount: toolCount,
-        messages: event.messages,
+        messages: slimMessages,
         tools: event.tools,
       },
     })
@@ -3630,6 +3642,16 @@ export class AgentStore {
         this.queues.delete(thread.id)
       }
       this.notify()
+      // 内存优化：会话任务全数结束进入空闲时，触发一次完整垃圾回收以归还物理内存
+      if (this.runningThreadIds.size === 0) {
+        setTimeout(() => {
+          if (this.runningThreadIds.size === 0 && typeof Bun !== 'undefined' && typeof (Bun as any).gc === 'function') {
+            try {
+              ;(Bun as any).gc(true)
+            } catch {}
+          }
+        }, 500)
+      }
     }
   }
 

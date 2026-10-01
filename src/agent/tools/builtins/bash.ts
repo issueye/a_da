@@ -88,8 +88,19 @@ export function createBashTool(workspace: string): AgentTool<BashToolArgs> {
 
           signal?.addEventListener('abort', onAbort)
 
+          // 内存保护：单任务流式输出最大累积 1MB，防止子进程海量日志撑爆堆内存
+          const MAX_BUFFER_CHARS = 1024 * 1024
+
+          const appendWithLimit = (current: string, chunkStr: string): string => {
+            const next = current + chunkStr
+            if (next.length <= MAX_BUFFER_CHARS) return next
+            const head = next.slice(0, 64 * 1024)
+            const tail = next.slice(-(MAX_BUFFER_CHARS - 64 * 1024 - 100))
+            return `${head}\n...[输出过长，已截断中间日志]...\n${tail}`
+          }
+
           child.stdout?.on('data', (chunk: Buffer) => {
-            stdoutText += chunk.toString('utf-8')
+            stdoutText = appendWithLimit(stdoutText, chunk.toString('utf-8'))
             if (onUpdate) {
               const truncated = truncateTail(stdoutText, 300, 20 * 1024)
               onUpdate({ output: truncated.content, ok: true })
@@ -97,7 +108,7 @@ export function createBashTool(workspace: string): AgentTool<BashToolArgs> {
           })
 
           child.stderr?.on('data', (chunk: Buffer) => {
-            stderrText += chunk.toString('utf-8')
+            stderrText = appendWithLimit(stderrText, chunk.toString('utf-8'))
           })
 
           child.on('error', (err) => {
