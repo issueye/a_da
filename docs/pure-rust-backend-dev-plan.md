@@ -57,12 +57,12 @@ gantt
     title 纯 Rust 后端全量替代敏捷演进甘特图
     dateFormat  YYYY-MM-DD
     section Phase 1: MVP 核心攻坚 (闭环跑通)
-    T1.1 微内核基础架构引入 (OXC+Boa)      :active, t11, 2026-10-02, 3d
-    T1.2 Tokio 双向事件循环 Actor 管道     :t12, after t11, 3d
-    T1.3 Rust 大模型流式与 16ms 快照广播   :t13, after t12, 4d
-    T1.4 MVP 首个 TS 工具沙箱执行闭环      :t14, after t13, 3d
+    T1.1 微内核基础架构引入 (OXC+Boa)      :done, t11, 2026-10-02, 3d
+    T1.2 Tokio 双向事件循环 Actor 管道     :done, t12, after t11, 3d
+    T1.3 Rust 大模型流式与 16ms 快照广播   :done, t13, after t12, 4d
+    T1.4 MVP 首个 TS 工具沙箱执行闭环      :done, t14, after t13, 3d
     section Phase 2: Node API 基础集与沙箱化
-    T2.1 P0 基础运行底座 (process/path/Buffer):t21, 2026-10-15, 4d
+    T2.1 P0 基础运行底座 (process/path/Buffer):active, t21, 2026-10-15, 4d
     T2.2 P1 文件与环境 (node:fs 异步+同步) :t22, after t21, 5d
     T2.3 沙箱目录逃逸防御与权限检查        :t23, after t22, 3d
     section Phase 3: Agent 全功能对齐
@@ -77,24 +77,24 @@ gantt
 
 ---
 
-### Phase 1：MVP 核心攻坚（打通纯 Rust Agent 流式闭环）`高优先级`
+### Phase 1：MVP 核心攻坚（打通纯 Rust Agent 流式闭环）`已完成`
 
-- [ ] **T1.1 引入 OXC 与 Boa 纯 Rust 依赖**
-  - 在 `agent_core/Cargo.toml` 中增加 `boa_engine = "0.19"`、`oxc_allocator`、`oxc_parser`、`oxc_codegen`、`oxc_transformer`；
+- [x] **T1.1 引入 OXC 与 Boa 纯 Rust 依赖**
+  - 在 `agent_core/Cargo.toml` 中增加 `boa_engine = "0.22"`、`oxc_allocator`、`oxc_parser`、`oxc_codegen`、`oxc_transformer`；
   - 编写单元测试 `agent_core::compiler::oxc_strip_types`，验证包含泛型、接口的 TS 源码能在几十微秒内完成类型擦除并由 Boa 执行；
-  - 交付物：`agent_core/src/compiler/mod.rs`。
-- [ ] **T1.2 搭建 Tokio 专有事件循环 Actor**
+  - 交付物：`agent_core/src/compiler/mod.rs`（已合入）。
+- [x] **T1.2 搭建 Tokio 专有事件循环 Actor**
   - 解决 Boa `Context: !Send` 问题，建立后台单线程事件循环 `DedicatedWorkerThread`；
   - 实现双向通信管道：Tokio 异步任务完成后，通过 `mpsc` 发送微任务唤醒闭包，并在专有线程执行 `context.run_jobs()`；
-  - 交付物：`agent_core/src/kernel/event_loop.rs`。
-- [ ] **T1.3 实现 Rust 大模型流式调用与 16ms 快照广播**
+  - 交付物：`agent_core/src/kernel/event_loop.rs`（已合入）。
+- [x] **T1.3 实现 Rust 大模型流式调用与 16ms 快照广播**
   - 在 `agent_core` 中健全 `thread.send` 业务逻辑：收到用户文本后，立即追加至活跃会话；
   - 使用 `reqwest` 流式接收 SSE Token，经过 `ThinkTagFilter` 实时过滤，写入 `thread.items`；
   - 实现 16ms 窗口的合帧发布器，向已连接的 WebSocket 发射 `evt.state.snapshot`，让前端立刻恢复打字机动画；
-  - 交付物：`agent_core/src/server/emitter.rs` 与 `agent_core/src/runner/mod.rs`。
-- [ ] **T1.4 MVP 首个 TS 工具执行验证**
+  - 交付物：`agent_core/src/server/emitter.rs` 与 `agent_core/src/runner/mod.rs`（已合入）。
+- [x] **T1.4 MVP 首个 TS 工具执行验证**
   - 在微内核中注入 `read_file` 插件的 TS 源码，验证模型发出 ToolCall 时能准确派发到微内核中执行并将结果回填；
-  - 交付物：MVP 端到端自动化验收用例 `cargo test test_mvp_e2e`。
+  - 交付物：MVP 端到端自动化验收用例 `cargo test test_mvp_e2e_ts_tool_execution`（已合入）。
 
 ---
 
@@ -164,6 +164,6 @@ gantt
 
 ## 四、 关键里程碑检查点 (Milestone Checkpoints)
 
-- [ ] **M1（第 2 周末）**：**纯 Rust MVP 跑通**。内存低于 15MB，无黑框，通过 WebSocket 连上原生窗口，完成一次带流式打字机的真实提问与回答。
+- [x] **M1（第 2 周末）**：**纯 Rust MVP 跑通**。内存低于 15MB，无黑框，通过 WebSocket 连上原生窗口，完成一次带流式打字机的真实提问与回答（已达成）。
 - [ ] **M2（第 4 周末）**：**核心 Node API（P0/P1）就绪**。能完整加载官方 `git-tools` 和 `batch-ops` 插件，在微内核沙箱中完成文件读写与 diff 计算。
 - [ ] **M3（第 6 周末）**：**全量切流并上线**。默认弃用 Bun Host，全面由纯 Rust 后端接管，交付最终单文件版本。
