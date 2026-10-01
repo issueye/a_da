@@ -429,7 +429,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     await app.close()
   })
 
-  test('开启 supportsImages 时渲染图片附件按键', async () => {
+  test('开启 supportsImages 时在加号菜单中渲染图片附件选项', async () => {
     store.supportsImages = true
     store.entries = ['assets/logo.png', 'readme.md']
 
@@ -437,7 +437,11 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     render(<Composer client={agentClient} />)
     const app = await connectTest(renderer)
 
-    expect(await app.getByTestId('composer-attach-image').count()).toBe(1)
+    // 展开加号菜单验证包含图片选项
+    await app.getByTestId('composer-plus-menu').click()
+    renderer.flush?.()
+
+    expect(await app.getByTestId('plus-action-image').count()).toBe(1)
 
     await app.close()
   })
@@ -510,21 +514,21 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     await app.close()
   })
 
-  test('底部工具栏提供「指令」按钮，点击可唤起与收起快捷指令面板', async () => {
+  test('加号综合菜单提供「快捷指令」选项，点击可唤起快捷指令面板', async () => {
     const { render, renderer } = createTestRoot({ width: 1000, height: 600 })
     render(<Composer client={agentClient} />)
     const app = await connectTest(renderer)
 
-    // 验证指令按钮存在
-    const slashBtn = app.getByTestId('composer-slash-commands')
-    expect(await slashBtn.count()).toBe(1)
-    expect(renderer.getPaintedText().join(' ')).toContain('指令')
-
     // 默认快捷指令面板未打开
     expect(await app.getByTestId('slash-command-menu').count()).toBe(0)
 
-    // 点击指令按钮打开面板
-    await slashBtn.click()
+    // 展开加号菜单并点击快捷指令选项
+    await app.getByTestId('composer-plus-menu').click()
+    renderer.flush?.()
+
+    const slashItem = app.getByTestId('plus-action-slash')
+    expect(await slashItem.count()).toBe(1)
+    await slashItem.click()
     renderer.flush?.()
 
     // 验证面板出现并包含快捷指令与分类标题
@@ -537,39 +541,29 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     expect(menuText).toContain('/plan')
     expect(menuText).toContain('/create')
 
-    // 再次点击指令按钮关闭面板
-    await slashBtn.click()
-    renderer.flush?.()
-    expect(await app.getByTestId('slash-command-menu').count()).toBe(0)
-
     await app.close()
   })
 
-  test('底部工具栏提供「提及」按钮，点击可唤起与收起 @ 提及面板', async () => {
+  test('加号综合菜单提供「提及引用」选项，点击可唤起 @ 提及面板', async () => {
     const { render, renderer } = createTestRoot({ width: 1000, height: 500 })
     render(<Composer client={agentClient} />)
     const app = await connectTest(renderer)
 
-    // 验证提及按钮存在
-    const mentionBtn = app.getByTestId('composer-mention-button')
-    expect(await mentionBtn.count()).toBe(1)
-    expect(renderer.getPaintedText().join(' ')).toContain('提及')
-
     // 默认提及面板未打开
     expect(await app.getByTestId('mention-menu').count()).toBe(0)
 
-    // 点击提及按钮打开面板
-    await mentionBtn.click()
+    // 展开加号菜单并点击提及引用选项
+    await app.getByTestId('composer-plus-menu').click()
+    renderer.flush?.()
+
+    const mentionItem = app.getByTestId('plus-action-mention')
+    expect(await mentionItem.count()).toBe(1)
+    await mentionItem.click()
     renderer.flush?.()
 
     // 验证面板出现并包含提及引用标题
     expect(await app.getByTestId('mention-menu').count()).toBe(1)
     expect(renderer.getPaintedText().join(' ')).toContain('提及引用')
-
-    // 再次点击提及按钮关闭面板
-    await mentionBtn.click()
-    renderer.flush?.()
-    expect(await app.getByTestId('mention-menu').count()).toBe(0)
 
     await app.close()
   })
@@ -600,8 +594,8 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
     render(<Composer client={agentClient} />)
     const app = await connectTest(renderer)
 
-    // 打开快捷指令面板
-    await app.getByTestId('composer-slash-commands').click()
+    // 打开快捷指令面板（输入 / 自动呼出）
+    await app.getByTestId('composer').fill('/')
     renderer.flush?.()
 
     // 验证面板出现
@@ -624,7 +618,7 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
       expect(await app.getByTestId('composer-selected-command-pill').count()).toBe(0)
 
       // 重新打开并再次选择，测试输入参数与发送集成
-      await app.getByTestId('composer-slash-commands').click()
+      await app.getByTestId('composer').fill('/')
       renderer.flush?.()
       await app.getByTestId('slash-item-review-changes').click()
       renderer.flush?.()
