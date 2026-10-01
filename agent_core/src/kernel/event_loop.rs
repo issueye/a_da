@@ -75,6 +75,7 @@ impl PureTsRuntime {
         let (tx, rx) = channel::<EventLoopMsg>();
         let worker_tx = tx.clone();
         let tokio_handle = tokio::runtime::Handle::try_current().ok();
+        let ws_for_thread = workspace.clone();
 
         thread::Builder::new()
             .name("pure-ts-event-loop".into())
@@ -84,7 +85,7 @@ impl PureTsRuntime {
                 TOKIO_HANDLE.with(|cell| *cell.borrow_mut() = tokio_handle);
 
                 // 自动装配 P0 基础运行底座 (process, path, Buffer, EventEmitter, require)
-                if let Err(err) = crate::kernel::api::inject_p0_environment(&mut ctx, workspace.as_deref()) {
+                if let Err(err) = crate::kernel::api::inject_p0_environment(&mut ctx, ws_for_thread.as_deref()) {
                     tracing::error!("P0 基础运行底座注入失败: {err}");
                 }
 
@@ -257,7 +258,108 @@ impl PureTsRuntime {
             })
             .expect("创建纯 Rust TS 事件循环线程失败");
 
-        Self { sender: tx }
+        let runtime = Self { sender: tx };
+
+        // 自动注册 Tokio 异步 fs 原生能力并附加沙箱安全防御
+        let ws_r = workspace.clone();
+        runtime.register_async_fn("__native_fs_read_file_async", move |args| {
+            let rel = args.get(0).cloned().unwrap_or_default();
+            let base = ws_r.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+            async move {
+                let safe = crate::tools::sandbox::check_workspace_sandbox(&base, &rel)
+                    .map_err(|e| format!("沙箱拦截: {e}"))?;
+                tokio::fs::read_to_string(&safe).await.map_err(|e| format!("读取失败: {e}"))
+            }
+        });
+
+        let ws_w = workspace.clone();
+        runtime.register_async_fn("__native_fs_write_file_async", move |args| {
+            let rel = args.get(0).cloned().unwrap_or_default();
+            let content = args.get(1).cloned().unwrap_or_default();
+            let base = ws_w.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+            async move {
+                let safe = crate::tools::sandbox::check_workspace_sandbox(&base, &rel)
+                    .map_err(|e| format!("沙箱拦截: {e}"))?;
+                if let Some(parent) = safe.parent() {
+                    let _ = tokio::fs::create_dir_all(parent).await;
+                }
+                tokio::fs::write(&safe, content).await.map_err(|e| format!("写入失败: {e}"))?;
+                Ok("ok".to_string())
+            }
+        });
+
+        let ws_mkdir = workspace.clone();
+        runtime.register_async_fn("__native_fs_mkdir_async", move |args| {
+            let rel = args.get(0).cloned().unwrap_or_default();
+            let base = ws_mkdir.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+            async move {
+                let safe = crate::tools::sandbox::check_workspace_sandbox(&base, &rel)
+                    .map_err(|e| format!("沙箱拦截: {e}"))?;
+                tokio::fs::create_dir_all(&safe).await.map_err(|e| format!("创建目录失败: {e}"))?;
+                Ok("ok".to_string())
+            }
+        });
+
+        let ws_readdir = workspace.clone();
+        runtime.register_async_fn("__native_fs_readdir_async", move |args| {
+            let rel = args.get(0).cloned().unwrap_or_default();
+            let base = ws_readdir.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+            async move {
+                let safe = crate::tools::sandbox::check_workspace_sandbox(&base, &rel)
+                    .map_err(|e| format!("沙箱拦截: {e}"))?;
+                let mut entries = Vec::new();
+                let mut dir = tokio::fs::read_dir(&safe).await.map_err(|e| format!("读取目录失败: {e}"))?;
+                while let Ok(Some(entry)) = dir.next_entry().await {
+                    if let Ok(name) = entry.file_name().into_string() {
+                        entries.push(name);
+                    }
+                }
+                Ok(serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string()))
+            }
+        });
+
+        let ws_stat = workspace.clone();
+        runtime.register_async_fn("__native_fs_stat_async", move |args| {
+            let rel = args.get(0).cloned().unwrap_or_default();
+            let base = ws_stat.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+            async move {
+                let safe = crate::tools::sandbox::check_workspace_sandbox(&base, &rel)
+                    .map_err(|e| format!("沙箱拦截: {e}"))?;
+                let meta = tokio::fs::metadata(&safe).await.map_err(|e| format!("获取元数据失败: {e}"))?;
+                let size = meta.len();
+                let is_file = meta.is_file();
+                let is_dir = meta.is_dir();
+                let mtime_ms = meta.modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                Ok(serde_json::json!({
+                    "size": size,
+                    "isFile": is_file,
+                    "isDirectory": is_dir,
+                    "mtimeMs": mtime_ms
+                }).to_string())
+            }
+        });
+
+        let ws_rm = workspace.clone();
+        runtime.register_async_fn("__native_fs_rm_async", move |args| {
+            let rel = args.get(0).cloned().unwrap_or_default();
+            let base = ws_rm.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+            async move {
+                let safe = crate::tools::sandbox::check_workspace_sandbox(&base, &rel)
+                    .map_err(|e| format!("沙箱拦截: {e}"))?;
+                if safe.is_dir() {
+                    tokio::fs::remove_dir_all(&safe).await.map_err(|e| format!("删除目录失败: {e}"))?;
+                } else if safe.exists() {
+                    tokio::fs::remove_file(&safe).await.map_err(|e| format!("删除文件失败: {e}"))?;
+                }
+                Ok("ok".to_string())
+            }
+        });
+
+        runtime
     }
 
     /// 执行一段 TypeScript 代码并等待最终字符串返回
@@ -483,5 +585,49 @@ mod tests {
         assert_eq!(parsed["bufStr"], "Antigravity Pure Rust");
         assert_eq!(parsed["triggered"], true);
         assert_eq!(parsed["sameExt"], ".tsx");
+    }
+
+    #[tokio::test]
+    async fn test_pure_ts_runtime_async_fs_and_sandbox() {
+        let temp_dir = std::env::temp_dir().join(format!("a_da_async_fs_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let runtime = PureTsRuntime::with_workspace(Some(temp_dir.clone()));
+
+        let ts_code = r##"
+            // @ts-ignore
+            globalThis.asyncFsTest = async function(): Promise<string> {
+                const fsPromises = require("node:fs/promises");
+                
+                // 1. 异步写入文件
+                await fsPromises.writeFile("async_note.md", "Hello Tokio Async FS");
+
+                // 2. 异步读取文件
+                const readBack = await fsPromises.readFile("async_note.md", "utf-8");
+
+                // 3. 异步沙箱越界拦截验证
+                let sandboxBlocked = false;
+                try {
+                    await fsPromises.readFile("../../../../../etc_shadow.txt", "utf-8");
+                } catch (err) {
+                    sandboxBlocked = true;
+                }
+
+                return JSON.stringify({
+                    readBack,
+                    sandboxBlocked
+                });
+            };
+        "##;
+
+        runtime.eval_ts(ts_code, Some("async_fs.ts")).await.expect("加载 async fs 测试脚本失败");
+
+        let res_json_str = runtime.call_async_fn("asyncFsTest", "{}").await.expect("执行 asyncFsTest 失败");
+        let parsed: serde_json::Value = serde_json::from_str(&res_json_str).expect("返回值必须为合法 JSON");
+
+        assert_eq!(parsed["readBack"], "Hello Tokio Async FS");
+        assert_eq!(parsed["sandboxBlocked"], true);
+
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 }
