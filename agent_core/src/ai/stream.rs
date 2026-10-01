@@ -93,7 +93,7 @@ async fn run_stream(
     let mut active_tool_calls: HashMap<usize, ToolCallInfo> = HashMap::new();
     let mut final_stop_reason = "stop".to_string();
 
-    loop {
+    'stream_loop: loop {
         tokio::select! {
             chunk_opt = byte_stream.next() => {
                 match chunk_opt {
@@ -112,7 +112,7 @@ async fn run_stream(
                             if let Some(data_str) = line.strip_prefix("data:") {
                                 let trimmed_data = data_str.trim();
                                 if trimmed_data == "[DONE]" {
-                                    break;
+                                    break 'stream_loop;
                                 }
 
                                 if let Ok(val) = serde_json::from_str::<Value>(trimmed_data) {

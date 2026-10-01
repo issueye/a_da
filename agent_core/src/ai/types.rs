@@ -67,7 +67,6 @@ pub struct ChatCompletionTool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ChatCompletionMessage {
     pub role: String, // "system" | "user" | "assistant" | "tool"
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -85,4 +84,34 @@ pub struct ModelChatOptions {
     pub temperature: Option<f32>,
     pub effort: Option<String>,
     pub max_retries: Option<usize>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chat_completion_message_openai_compatibility() {
+        let tool_msg = ChatCompletionMessage {
+            role: "tool".to_string(),
+            content: Some("ok".to_string()),
+            tool_calls: None,
+            tool_call_id: Some("call_123".to_string()),
+        };
+        let json = serde_json::to_string(&tool_msg).unwrap();
+        // 关键断言：必须是 tool_call_id 而非 toolCallId
+        assert!(json.contains("\"tool_call_id\":\"call_123\""));
+        assert!(!json.contains("toolCallId"));
+
+        let asst_msg = ChatCompletionMessage {
+            role: "assistant".to_string(),
+            content: None,
+            tool_calls: Some(vec![serde_json::json!({ "id": "call_123" })]),
+            tool_call_id: None,
+        };
+        let json_asst = serde_json::to_string(&asst_msg).unwrap();
+        // 关键断言：必须是 tool_calls 而非 toolCalls
+        assert!(json_asst.contains("\"tool_calls\":["));
+        assert!(!json_asst.contains("toolCalls"));
+    }
 }

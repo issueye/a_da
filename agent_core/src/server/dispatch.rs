@@ -281,6 +281,7 @@ impl Dispatcher {
                                 break;
                             }
                             AgentLoopEvent::Error { message } => {
+                                store.append_assistant_delta(&thread_id_clone, &format!("\n\n⚠️ **请求异常**：{message}"));
                                 store.finish_turn(&thread_id_clone);
                                 store.push_log("error", format!("Agent 执行异常: {message}"), None);
                                 drop(store);
@@ -290,6 +291,14 @@ impl Dispatcher {
                                 break;
                             }
                         }
+                    }
+
+                    // 循环结束时安全兜底：确保 runningThreadIds 彻底清除
+                    let mut store = store_clone.write().await;
+                    store.finish_turn(&thread_id_clone);
+                    drop(store);
+                    if let Some(ref bc) = broadcaster_clone {
+                        bc.broadcast_immediate().await;
                     }
                 });
 
