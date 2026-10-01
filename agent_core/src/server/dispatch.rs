@@ -138,6 +138,12 @@ impl Dispatcher {
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
                 let mut store = self.store.write().await;
                 store.open_tab(thread_id.to_string());
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
                 Ok(serde_json::Value::Null)
             }
 
@@ -147,6 +153,12 @@ impl Dispatcher {
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
                 let mut store = self.store.write().await;
                 store.close_tab(thread_id);
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
                 Ok(serde_json::Value::Null)
             }
 
@@ -162,17 +174,40 @@ impl Dispatcher {
                         None,
                     ));
                 }
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
                 Ok(serde_json::Value::Null)
             }
 
             THREAD_CREATE => {
                 let title = params.get("title").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let mode_param = params.get("mode").and_then(|v| v.as_str());
                 let mut store = self.store.write().await;
                 let id = store.create_thread(title.clone());
+                if let Some(m) = mode_param {
+                    let parsed_mode = match m.to_lowercase().as_str() {
+                        "plan" => AgentMode::Plan,
+                        "create" => AgentMode::Create,
+                        _ => AgentMode::Code,
+                    };
+                    if let Some(t) = store.threads.iter_mut().find(|t| t.id == id) {
+                        t.mode = Some(parsed_mode);
+                    }
+                    store.config.mode = parsed_mode;
+                }
                 let ws = store.workspace.project.clone();
                 drop(store);
 
                 let _ = self.session_mgr.create_session(&id, &ws, title.as_deref(), None, None);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
                 Ok(serde_json::json!({
                     "id": id,
                     "threadId": id
@@ -190,6 +225,10 @@ impl Dispatcher {
 
                 let _ = self.session_mgr.delete_session(thread_id, Some(&ws));
                 let _ = self.checkpoint_mgr.discard(thread_id);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
 
                 Ok(serde_json::json!({
                     "ok": deleted,
@@ -573,6 +612,12 @@ impl Dispatcher {
                         _ => {}
                     }
                 }
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
                 Ok(serde_json::Value::Null)
             }
 
@@ -587,6 +632,12 @@ impl Dispatcher {
                         _ => {}
                     }
                 }
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
                 Ok(serde_json::Value::Null)
             }
 
@@ -649,8 +700,9 @@ impl Dispatcher {
                 let mode_str = params.get("mode")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 mode 参数"))?;
-                let mode = match mode_str {
+                let mode = match mode_str.to_lowercase().as_str() {
                     "plan" => AgentMode::Plan,
+                    "create" => AgentMode::Create,
                     _ => AgentMode::Code,
                 };
                 let mut store = self.store.write().await;
@@ -659,6 +711,12 @@ impl Dispatcher {
                 if let Some(t) = store.threads.iter_mut().find(|t| t.id == thread_id) {
                     t.mode = Some(mode);
                 }
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
                 Ok(serde_json::Value::Null)
             }
 
@@ -673,6 +731,12 @@ impl Dispatcher {
                 if let Some(t) = store.threads.iter_mut().find(|t| t.id == thread_id) {
                     t.workspace = ws.to_string();
                 }
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
                 Ok(serde_json::Value::Null)
             }
 

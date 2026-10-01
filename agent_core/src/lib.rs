@@ -186,6 +186,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_dispatcher_mode_switching() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let store = Arc::new(RwLock::new(AgentStore::new("E:/test".to_string())));
+        let test_dir = std::env::temp_dir().join(format!("a_da_test_{}", uuid::Uuid::new_v4()));
+        let session_mgr = Arc::new(SessionManager::new(Some(test_dir.clone())));
+        let checkpoint_mgr = Arc::new(CheckpointManager::new(Some(test_dir.clone())));
+        let subagent_mgr = Arc::new(subagents::SubagentManager::new());
+        let approval_mgr = Arc::new(approval::ApprovalManager::new());
+        let plugin_mgr = Arc::new(PluginManager::new());
+        let skill_mgr = Arc::new(SkillManager::new());
+        let dispatcher = Dispatcher::new(
+            store.clone(),
+            session_mgr,
+            checkpoint_mgr,
+            subagent_mgr,
+            approval_mgr,
+            plugin_mgr,
+            skill_mgr,
+            None,
+        );
+
+        // 初始状态默认为 Code 模式
+        assert_eq!(store.read().await.config.mode, AgentMode::Code);
+
+        // 1. 切换到 Create 创造模式
+        dispatcher
+            .dispatch("thread.setMode", serde_json::json!({ "mode": "create" }))
+            .await
+            .expect("切换到 create 模式失败");
+        assert_eq!(store.read().await.config.mode, AgentMode::Create);
+        let active_id = store.read().await.active_id.clone();
+        let current_thread = store.read().await.threads.iter().find(|t| t.id == active_id).cloned().unwrap();
+        assert_eq!(current_thread.mode, Some(AgentMode::Create));
+
+        // 2. 切换到 Plan 规划模式
+        dispatcher
+            .dispatch("thread.setMode", serde_json::json!({ "mode": "plan" }))
+            .await
+            .expect("切换到 plan 模式失败");
+        assert_eq!(store.read().await.config.mode, AgentMode::Plan);
+
+        // 3. 切换回 Code 编码模式
+        dispatcher
+            .dispatch("thread.setMode", serde_json::json!({ "mode": "code" }))
+            .await
+            .expect("切换到 code 模式失败");
+        assert_eq!(store.read().await.config.mode, AgentMode::Code);
+
+        // 4. 创建新会话并直接指定 create 模式
+        let create_res = dispatcher
+            .dispatch("thread.create", serde_json::json!({ "mode": "create", "title": "创造测试" }))
+            .await
+            .expect("带模式创建新会话失败");
+        let new_id = create_res.get("threadId").and_then(|v| v.as_str()).unwrap();
+        let new_thread = store.read().await.threads.iter().find(|t| t.id == new_id).cloned().unwrap();
+        assert_eq!(new_thread.mode, Some(AgentMode::Create));
+        assert_eq!(store.read().await.config.mode, AgentMode::Create);
+    }
+
+    #[tokio::test]
     async fn test_plugin_and_skill_lifecycle() {
         use std::sync::Arc;
         use tokio::sync::RwLock;
