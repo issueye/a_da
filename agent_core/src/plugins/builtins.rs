@@ -1,0 +1,160 @@
+use super::types::{
+    LoadedPlugin, LoadedPluginContributions, PluginItem, PluginManifest, PluginScope,
+    PluginToolDeclaration, PluginToolInfo,
+};
+
+pub struct BuiltinPluginDefinition {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub description: &'static str,
+    pub tools: &'static [(&'static str, &'static str, bool)], // (name, description, is_write)
+}
+
+pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
+    BuiltinPluginDefinition {
+        id: "git-tools",
+        name: "Git 变更与协作工具 (git-tools)",
+        description: "提供结构化 Git 状态、安全限长 Diff 提取与近期提交历史检索能力，辅助精准掌握版本改动。",
+        tools: &[
+            ("git_status", "获取当前 Git 工作区的状态信息，包含当前分支、暂存修改、未暂存修改与未跟踪文件。", false),
+            ("git_diff", "获取工作区或特定文件的 Git Diff 变更内容。", false),
+            ("git_log", "获取近期提交历史列表与简要描述。", false),
+        ],
+    },
+    BuiltinPluginDefinition {
+        id: "code-outline",
+        name: "代码大纲与结构提取 (code-outline)",
+        description: "提取类、接口、函数与结构体骨架签名，快速理解大型代码文件架构。",
+        tools: &[
+            ("code_outline", "提取代码文件中的关键类、函数、接口骨架签名及行号索引。", false),
+        ],
+    },
+    BuiltinPluginDefinition {
+        id: "project-inspector",
+        name: "项目侦测与依赖分析 (project-inspector)",
+        description: "自动探查项目技术栈、主入口、构建系统与环境依赖。",
+        tools: &[
+            ("project_inspect", "探测当前工作区的技术栈类型、构建工具与关键配置文件路径。", false),
+        ],
+    },
+    BuiltinPluginDefinition {
+        id: "test-runner",
+        name: "测试运行与结果归因 (test-runner)",
+        description: "自动化执行项目单测，解析输出并归因定位失败用例。",
+        tools: &[
+            ("run_tests", "自动化运行项目测试用例，解析测试通过率与失败错误栈。", true),
+        ],
+    },
+    BuiltinPluginDefinition {
+        id: "batch-ops",
+        name: "批量文件读写与精准替换 (batch-ops)",
+        description: "高效进行多文件同时写入与统一规则批量替换。",
+        tools: &[
+            ("batch_replace", "在多个指定文件中按统一规则执行模式搜索与文本批量替换。", true),
+            ("batch_write", "一次性原子写入或更新多个目标代码文件。", true),
+        ],
+    },
+    BuiltinPluginDefinition {
+        id: "decision",
+        name: "决策评估与准入门禁 (decision)",
+        description: "对代码变动进行量化准入评估与风险筛查。",
+        tools: &[
+            ("check_gate", "检查当前改动是否符合既定架构准入准则与质量门限要求。", false),
+            ("evaluate_diff", "分析评估当前变更对系统各模块产生的影响范围与风险等级。", false),
+        ],
+    },
+    BuiltinPluginDefinition {
+        id: "approval-guard",
+        name: "审批安全守卫 (approval-guard)",
+        description: "提供前置操作拦截、高危指令阻断与审批策略管控。",
+        tools: &[],
+    },
+    BuiltinPluginDefinition {
+        id: "ask-user",
+        name: "向用户提问 (ask-user)",
+        description: "向用户发起单选、多选按钮交互或自由文本输入提问。",
+        tools: &[
+            ("ask_user", "在交互界面向用户发起单选选择或补充说明提问并阻塞等待答复。", false),
+        ],
+    },
+    BuiltinPluginDefinition {
+        id: "ponytail",
+        name: "马尾调度管理器 (ponytail)",
+        description: "提示词、技能生命周期管理与上下文任务调度。",
+        tools: &[
+            ("manage_ponytail", "管理技能与提示词的快速检索、动态组合与优先级配置。", false),
+        ],
+    },
+];
+
+pub fn get_builtin_plugin_items(disabled_ids: &std::collections::HashSet<String>) -> Vec<PluginItem> {
+    BUILTIN_PLUGINS
+        .iter()
+        .map(|def| {
+            let full_id = format!("builtin:{}", def.id);
+            let enabled = !disabled_ids.contains(&full_id) && !disabled_ids.contains(def.id);
+
+            let tools_decl: Vec<PluginToolDeclaration> = def
+                .tools
+                .iter()
+                .map(|(name, desc, _)| PluginToolDeclaration {
+                    name: name.to_string(),
+                    label: Some(name.to_string()),
+                    description: desc.to_string(),
+                    parameters: serde_json::json!({ "type": "object", "properties": {} }),
+                })
+                .collect();
+
+            let tools_info: Vec<PluginToolInfo> = def
+                .tools
+                .iter()
+                .map(|(name, desc, is_w)| PluginToolInfo {
+                    name: name.to_string(),
+                    description: desc.to_string(),
+                    parameters: Some(serde_json::json!({ "type": "object", "properties": {} })),
+                    is_write: *is_w,
+                })
+                .collect();
+
+            let manifest = PluginManifest {
+                id: full_id.clone(),
+                name: def.name.to_string(),
+                description: def.description.to_string(),
+                version: Some("1.0.0".to_string()),
+                author: Some("a-da 官方团队".to_string()),
+                scope: Some(PluginScope::Builtin),
+            };
+
+            let loaded_plugin = LoadedPlugin {
+                manifest: manifest.clone(),
+                contributions: LoadedPluginContributions {
+                    tools: tools_decl,
+                    config_schema: None,
+                },
+                declarative: true,
+                status: "ready".to_string(),
+                diagnostics: Vec::new(),
+            };
+
+            PluginItem {
+                plugin: loaded_plugin,
+                id: full_id.clone(),
+                name: def.name.to_string(),
+                file_name: format!("{}.ts", def.id),
+                file_path: format!("(builtin):{}", def.id),
+                scope: "builtin".to_string(),
+                enabled,
+                status: "ready".to_string(),
+                version: Some("1.0.0".to_string()),
+                diagnostics: Vec::new(),
+                tools: tools_info,
+                skills: Vec::new(),
+                prompts: Vec::new(),
+                is_package: Some(false),
+                error: None,
+                size_bytes: 0,
+                updated_at: 1727740800000,
+            }
+        })
+        .collect()
+}

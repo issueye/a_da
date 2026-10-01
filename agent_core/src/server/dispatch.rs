@@ -2,13 +2,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
+use crate::approval::ApprovalManager;
 use crate::checkpoint::CheckpointManager;
+use crate::plugins::PluginManager;
 use crate::protocol::*;
 use crate::runner::{run_agent_loop, AgentLoopEvent};
 use crate::server::emitter::StateBroadcaster;
 use crate::server::fs_service;
-use crate::approval::ApprovalManager;
 use crate::session::SessionManager;
+use crate::skills::SkillManager;
 use crate::state::{generate_snapshot, AgentStore};
 use crate::subagents::SubagentManager;
 
@@ -18,6 +20,8 @@ pub struct Dispatcher {
     checkpoint_mgr: Arc<CheckpointManager>,
     subagent_mgr: Arc<SubagentManager>,
     approval_mgr: Arc<ApprovalManager>,
+    plugin_mgr: Arc<PluginManager>,
+    skill_mgr: Arc<SkillManager>,
     broadcaster: Option<Arc<StateBroadcaster>>,
     host_pid: u32,
     session_id: String,
@@ -30,6 +34,8 @@ impl Dispatcher {
         checkpoint_mgr: Arc<CheckpointManager>,
         subagent_mgr: Arc<SubagentManager>,
         approval_mgr: Arc<ApprovalManager>,
+        plugin_mgr: Arc<PluginManager>,
+        skill_mgr: Arc<SkillManager>,
         broadcaster: Option<Arc<StateBroadcaster>>,
     ) -> Self {
         Self {
@@ -38,6 +44,8 @@ impl Dispatcher {
             checkpoint_mgr,
             subagent_mgr,
             approval_mgr,
+            plugin_mgr,
+            skill_mgr,
             broadcaster,
             host_pid: std::process::id(),
             session_id: uuid::Uuid::new_v4().to_string(),
@@ -445,10 +453,27 @@ impl Dispatcher {
 
             PLUGIN_BUILTIN_CATALOG => {
                 Ok(serde_json::json!([
-                    { "name": "read_file", "category": "fs", "description": "读取文件内容" },
-                    { "name": "write_to_file", "category": "fs", "description": "创建或覆盖文件" },
-                    { "name": "edit_file", "category": "fs", "description": "精准补丁编辑文件" },
-                    { "name": "run_command", "category": "command", "description": "执行终端命令" }
+                    { "name": "list_files", "label": "列出文件", "description": "遍历并列出指定目录下的文件与子目录结构", "isReadOnly": true },
+                    { "name": "read_file", "label": "读取文件", "description": "安全读取工作区内的代码或文本文件内容", "isReadOnly": true },
+                    { "name": "search_files", "label": "搜索文件", "description": "在工作区文件中快速全局搜索指定文本或模式", "isReadOnly": true },
+                    { "name": "find_symbol", "label": "查找符号", "description": "按名字查找函数/类/结构体等定义的位置与签名", "isReadOnly": true },
+                    { "name": "read_url_content", "label": "读取网页", "description": "抓取技术文档与开源库链接内容并提取为 Markdown", "isReadOnly": true },
+                    { "name": "todo", "label": "任务清单", "description": "管理多步骤编码任务的进度与状态", "isReadOnly": true },
+                    { "name": "Skill", "label": "加载技能", "description": "按需加载专业技能规范与操作流程指南（SKILL.md）", "isReadOnly": true },
+                    { "name": "invoke_subagent", "label": "委派子智能体", "description": "委派专项任务给隔离运行的专用子智能体", "isReadOnly": true },
+                    { "name": "check_subagent", "label": "查询子智能体", "description": "查询异步子智能体的运行状态与总结报告", "isReadOnly": true },
+                    { "name": "send_subagent_message", "label": "智能体通讯", "description": "向子智能体发送消息以动态纠偏或唤醒续跑", "isReadOnly": true },
+                    { "name": "resume_subagent", "label": "恢复子智能体工作", "description": "恢复被中断的子智能体，让它从上次的状态与上下文继续推进", "isReadOnly": true },
+                    { "name": "await_subagents", "label": "等待子智能体", "description": "挂起等待子智能体送回结论，替代反复轮询查询", "isReadOnly": true },
+                    { "name": "notify_parent", "label": "唤醒上级智能体", "description": "子智能体把结论或待决策问题送回主智能体（仅子智能体可用）", "isReadOnly": true },
+                    { "name": "write_file", "label": "写入文件", "description": "在工作区创建新文件或覆盖已有文件", "isReadOnly": false },
+                    { "name": "edit_file", "label": "编辑文件", "description": "通过精准替换文本修改已有代码文件", "isReadOnly": false },
+                    { "name": "run_command", "label": "执行命令", "description": "在项目工作区根目录下执行终端命令", "isReadOnly": false },
+                    { "name": "run_background", "label": "后台命令", "description": "后台启动长运行命令（dev server 等），立即返回任务 id", "isReadOnly": false },
+                    { "name": "check_task", "label": "查看后台任务", "description": "查询后台任务的状态与输出", "isReadOnly": true },
+                    { "name": "kill_task", "label": "停止后台任务", "description": "终止后台任务及其子进程", "isReadOnly": false },
+                    { "name": "manage_tool", "label": "工具管理", "description": "在 Create 模式下自发编写、更新与管理工具扩展插件", "isReadOnly": false },
+                    { "name": "manage_skill", "label": "技能管理", "description": "在 Create 模式下自发创建、更新与管理技能规范 (SKILL.md)", "isReadOnly": false }
                 ]))
             }
 
@@ -1023,116 +1048,121 @@ impl Dispatcher {
             }
 
             PLUGIN_LIST => {
+                let ws = params.get("workspace").and_then(|v| v.as_str());
+                let plugins = self.plugin_mgr.scan_plugins(ws);
+                let resolved_caps = self.plugin_mgr.get_capabilities(ws);
+                let configs = self.plugin_mgr.read_configs();
+
+                let mut secrets = serde_json::Map::new();
+                for item in &plugins {
+                    if let Some(ref schema) = item.plugin.contributions.config_schema {
+                        if let Some(props) = schema.get("properties").and_then(|p| p.as_object()) {
+                            for (k, prop) in props {
+                                if prop.get("type").and_then(|t| t.as_str()) == Some("secret") {
+                                    let has_secret = self.plugin_mgr.check_secret(&item.id, k);
+                                    secrets.insert(format!("{}:{}", item.id, k), serde_json::Value::Bool(has_secret));
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Ok(serde_json::json!({
-                    "plugins": [],
+                    "plugins": plugins,
                     "capabilities": {
-                        "capabilities": {
-                            "allowSystemPromptReplace": false,
-                            "allowTextRewrite": false,
-                            "allowThreadDeleteBlock": false,
-                            "allowCompactionReplace": false,
-                            "allowPlanModeHooks": false,
-                            "allowThirdPartyHooks": false,
-                            "allowBuiltinShadow": false,
-                            "hookTimeoutMs": 5000
-                        },
-                        "invalid": [],
-                        "overrides": {}
+                        "capabilities": resolved_caps.capabilities,
+                        "invalid": resolved_caps.invalid,
+                        "overrides": resolved_caps.overrides
                     },
-                    "configs": {},
-                    "secrets": {},
+                    "configs": configs,
+                    "secrets": secrets,
                     "diagnostics": []
                 }))
             }
 
             PLUGIN_CAPABILITIES_SET => {
+                if let Some(patch) = params.get("patch") {
+                    self.plugin_mgr.save_capabilities(patch)
+                        .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
+                }
                 Ok(serde_json::Value::Null)
             }
 
             PLUGIN_CONFIG_SET => {
+                let plugin_id = params.get("pluginId").and_then(|v| v.as_str()).unwrap_or("");
+                if let Some(values) = params.get("values") {
+                    self.plugin_mgr.save_config(plugin_id, values)
+                        .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
+                }
                 Ok(serde_json::Value::Null)
             }
 
             PLUGIN_SECRET_SET => {
+                let plugin_id = params.get("pluginId").and_then(|v| v.as_str()).unwrap_or("");
+                let key = params.get("key").and_then(|v| v.as_str()).unwrap_or("");
+                let value = params.get("value").and_then(|v| v.as_str()).unwrap_or("");
+                self.plugin_mgr.save_secret(plugin_id, key, value)
+                    .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
                 Ok(serde_json::Value::Null)
             }
 
             PLUGIN_SET_ENABLED => {
+                let plugin_id = params.get("pluginId").and_then(|v| v.as_str()).unwrap_or("");
+                let enabled = params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                self.plugin_mgr.toggle_plugin(plugin_id, enabled)
+                    .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
                 Ok(serde_json::Value::Null)
             }
 
             PLUGIN_DELETE => {
-                if let Some(fp) = params.get("filePath").and_then(|v| v.as_str()) {
-                    let _ = std::fs::remove_file(fp);
-                }
-                Ok(serde_json::json!({ "ok": true }))
+                let ws = params.get("workspace").and_then(|v| v.as_str());
+                let fp = params.get("filePath").and_then(|v| v.as_str()).unwrap_or("");
+                let ok = self.plugin_mgr.delete_plugin(fp, ws)
+                    .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
+                Ok(serde_json::json!({ "ok": ok }))
             }
 
             PLUGIN_CREATE_TEMPLATE => {
-                let ws = params.get("workspace").and_then(|v| v.as_str()).unwrap_or("");
-                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("custom_plugin");
+                let ws = params.get("workspace").and_then(|v| v.as_str());
                 let scope = params.get("scope").and_then(|v| v.as_str()).unwrap_or("global");
-                let code = params.get("code").and_then(|v| v.as_str()).unwrap_or("// plugin template\n");
-
-                let dir = if scope == "workspace" && !ws.is_empty() {
-                    PathBuf::from(ws).join(".a-da").join("plugins")
-                } else {
-                    crate::session::get_app_home().join("plugins")
-                };
-                let _ = std::fs::create_dir_all(&dir);
-                let target = dir.join(format!("{}.ts", name));
-                let _ = std::fs::write(&target, code);
-                Ok(serde_json::json!({ "filePath": target.to_string_lossy() }))
+                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("custom_plugin");
+                let code = params.get("code").and_then(|v| v.as_str());
+                let fp = self.plugin_mgr.create_plugin_template(ws, scope, name, code)
+                    .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
+                Ok(serde_json::json!({ "filePath": fp }))
             }
 
             SKILL_LIST => {
-                let skills = serde_json::json!([
-                    {
-                        "id": "builtin:git_commit",
-                        "name": "git_commit",
-                        "description": "规范化分析代码差异并生成高质量 Conventional Commits 提交消息",
-                        "body": "分析当前暂存区或者改动差异，按规范输出 commit 信息",
-                        "path": "",
-                        "baseDirectory": "",
-                        "scope": "builtin",
-                        "enabled": true
-                    },
-                    {
-                        "id": "builtin:code_review",
-                        "name": "code_review",
-                        "description": "全量审查代码设计模式、鲁棒性与边界条件，并提出针对性重构建议",
-                        "body": "对代码进行静态审查与质量分析",
-                        "path": "",
-                        "baseDirectory": "",
-                        "scope": "builtin",
-                        "enabled": true
-                    }
-                ]);
-                Ok(skills)
+                let ws = params.get("workspace").and_then(|v| v.as_str());
+                let skills = self.skill_mgr.scan_skills(ws);
+                Ok(serde_json::to_value(skills).map_err(|e| ProtocolError::internal_error(e.to_string()))?)
             }
 
             SKILL_SET_ENABLED => {
+                let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let enabled = params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                self.skill_mgr.toggle_skill(id, enabled)
+                    .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
                 Ok(serde_json::Value::Null)
             }
 
             SKILL_CREATE => {
-                let ws = params.get("workspace").and_then(|v| v.as_str()).unwrap_or("");
-                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("custom_skill");
+                let ws = params.get("workspace").and_then(|v| v.as_str());
                 let scope = params.get("scope").and_then(|v| v.as_str()).unwrap_or("global");
-                let body = params.get("body").and_then(|v| v.as_str()).unwrap_or("");
-                let dir = if scope == "workspace" && !ws.is_empty() {
-                    PathBuf::from(ws).join(".a-da").join("skills").join(name)
-                } else {
-                    crate::session::get_app_home().join("skills").join(name)
-                };
-                let _ = std::fs::create_dir_all(&dir);
-                let skill_file = dir.join("SKILL.md");
-                let _ = std::fs::write(&skill_file, body);
-                Ok(serde_json::json!({ "filePath": skill_file.to_string_lossy() }))
+                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("custom_skill");
+                let desc = params.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                let body = params.get("body").and_then(|v| v.as_str());
+                let fp = self.skill_mgr.create_skill_template(ws, scope, name, desc, body)
+                    .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
+                Ok(serde_json::json!({ "filePath": fp }))
             }
 
             SKILL_DELETE => {
-                Ok(serde_json::json!({ "ok": true }))
+                let ws = params.get("workspace").and_then(|v| v.as_str());
+                let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let ok = self.skill_mgr.delete_skill(id, ws)
+                    .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
+                Ok(serde_json::json!({ "ok": ok }))
             }
 
             SUBAGENT_PROFILE_LIST => {

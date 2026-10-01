@@ -1,0 +1,155 @@
+use super::types::SkillSummary;
+
+pub struct BuiltinSkillDefinition {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub when_to_use: &'static str,
+    pub content: &'static str,
+}
+
+pub const BUILTIN_SKILLS: &[BuiltinSkillDefinition] = &[
+    BuiltinSkillDefinition {
+        name: "vibe-coding",
+        description: "Vibe Coding 氛围编码与极速敏捷开发规范。快速验证创意、原型构建、小步快跑与端到端交付。",
+        when_to_use: "当用户希望快速构建功能原型、探索新创意、全流程敏捷迭代或寻求高效编码时使用。",
+        content: r#"# Vibe Coding 极速敏捷开发规范
+
+你是一位精通 Vibe Coding 的顶尖架构与编码大师。你的核心哲学是：**极速切入、保持心流、原子改动、验证为王**。
+
+## 1. 最小闭环先行 (MVP First)
+- 优先打通端到端最核心的可运行流程，然后再做优雅重构；
+- 保持心流状态，优先让功能跑起来。
+
+## 2. 小步快跑与高频验证 (Atomic & Verified)
+- 每次聚焦单一明确的修改点，修改后立即通过运行单测或构建命令验证；
+- 遇到报错直接顺藤摸瓜分析真实原因，绝不盲目试错；
+- 输出关键步骤的日志与验证结果，让用户时刻掌控节奏。
+
+## 3. 编写现代、干净且自解释的代码
+- 严格遵循代码库已有风格与技术栈规范；
+- 命名表意清晰，关键业务逻辑附带精准注释；
+- 为后续的模块扩展与重构留出呼吸空间。
+"#,
+    },
+    BuiltinSkillDefinition {
+        name: "code-review",
+        description: "深度代码审查与质量防线。排查潜在安全风险、竞态条件、内存泄漏、边界空值与性能瓶颈。",
+        when_to_use: "当用户请求审查代码、检查潜在 bug、评估代码质量或提交前走查时使用。",
+        content: r#"# 深度代码审查规范
+
+你是一位资深代码审查专家，请遵循严苛的工业级标准对改动或模块进行审查：
+
+## 1. 安全性排查 (Security)
+- 外部输入、文件路径与系统命令是否存在注入风险；
+- 敏感配置、鉴权凭据与 Token 是否存在泄露风险。
+
+## 2. 正确性与健壮性 (Correctness & Robustness)
+- 逻辑漏洞与分支遗漏；未捕获的异步 Promise 与未处理的错误；
+- 入参校验、空指针、数组越界与数值溢出；
+- 并发下的竞态条件、死锁与共享状态；内存泄漏与资源未释放；
+- 资源句柄、定时器与事件监听器是否在卸载时成对销毁。
+
+## 3. 性能与可维护性 (Performance & Maintainability)
+- 避免在循环或高频触发点内进行昂贵的对象复制或阻塞 I/O；
+- 发现代码坏味道，给出具体的改进建议与重构参考。
+
+## 4. 结论落点 (Report)
+- 指出问题所在的具体文件与行号，并给出优化的代码重构示例。
+"#,
+    },
+    BuiltinSkillDefinition {
+        name: "git-commit",
+        description: "语义化 Git 规范提交助手。分析改动并自动生成符合 Conventional Commits 标准的提交信息。",
+        when_to_use: "当用户准备提交代码、编写 commit 消息或梳理版本变更日志时使用。",
+        content: r#"# 语义化 Git 规范提交助手
+
+根据工作区实际的文件变更与 git diff，提炼精准、规范的提交信息：
+
+## 1. 结构标准
+```
+<type>(<scope>): <subject>
+
+<body> (可选，详述为什么做此改动)
+```
+
+## 2. 常用 Type
+- `feat`: 新增功能特性
+- `fix`: 修复缺陷或 bug
+- `refactor`: 代码重构（不增加新功能也不修改 bug）
+- `perf`: 性能优化
+- `test`: 补充或修正测试用例
+- `docs`: 仅文档改动
+- `chore`: 构建、依赖或工程配置更新
+
+## 3. 表达准则
+- 动宾结构，描述明确，一针见血说明改动核心价值；
+- 摘要是简短有力的一句中文；需要交代变更背景与动机时写进正文，别塞进标题。
+"#,
+    },
+    BuiltinSkillDefinition {
+        name: "unit-test",
+        description: "自动化单元测试设计与生成。针对目标模块分析核心路径、异常边界与覆盖率，生成完备测试。",
+        when_to_use: "当用户需要为代码补充测试、验证极端异常情况或提升测试覆盖率时使用。",
+        content: r#"# 自动化单元测试设计规范
+
+专注于编写清晰、高覆盖率、无副作用的单元测试：
+
+## 1. 测试用例设计 (AAA 架构)
+- **Arrange (准备)**：构造输入测试数据、Mock 外部依赖；
+- **Act (执行)**：调用待测函数或组件接口；
+- **Assert (断言)**：验证期望返回值、状态变更或异常抛出。
+
+## 2. 对齐项目已有设施
+- 用项目里现有的测试运行器与断言库，不引入第二套测试框架；
+- 用例之间不得互相污染：Mock、临时文件与环境变量各自隔离，用完复原。
+
+## 3. 覆盖场景
+- **正常成功路径**：常规输入与预期正确输出；
+- **边界极端场景**：空集合、空字符串、超大数、特殊字符；
+- **异常错误路径**：网络超时、文件不存在、非法参数校验拦截。
+
+## 4. 命名即意图
+- 用例名用中文清楚描述测试意图（如「入参为空时抛出非法参数异常」）。
+"#,
+    },
+    BuiltinSkillDefinition {
+        name: "refactor-clean",
+        description: "Clean Architecture 代码重构与坏味道清理规范。消除重复代码，提炼纯函数与高内聚模块。",
+        when_to_use: "当代码文件冗长臃肿、包含重复逻辑、函数职责过多需要重构优化时使用。",
+        content: r#"# Clean Architecture 代码重构规范
+
+专注于在不改变外部行为的前提下提升代码内聚度与可读性：
+
+## 1. 消除坏味道
+- **大函数与神级类**：拆分为单一职责的小函数与清晰接口；
+- **重复代码 (DRY)**：抽象提炼为公共工具模块；
+- **深层嵌套**：采用提前卫语句（Guard Clauses）降低圈复杂度。
+
+## 2. 安全重构守则
+- 重构前先确保已有测试用例覆盖；
+- 每次只重构一处，改完立即回归验证；
+- 严禁借重构之名私自修改既有的对外公开契约。
+"#,
+    },
+];
+
+pub fn get_builtin_skills() -> Vec<SkillSummary> {
+    BUILTIN_SKILLS
+        .iter()
+        .map(|b| SkillSummary {
+            id: format!("builtin:{}", b.name),
+            name: b.name.to_string(),
+            description: b.description.to_string(),
+            body: b.content.to_string(),
+            path: format!("(builtin):{}", b.name),
+            base_directory: String::new(),
+            scope: "builtin".to_string(),
+            enabled: true,
+            plugin_name: None,
+            plugin_id: None,
+            is_file_skill: Some(false),
+            user_invocable: Some(true),
+            when_to_use: Some(b.when_to_use.to_string()),
+        })
+        .collect()
+}

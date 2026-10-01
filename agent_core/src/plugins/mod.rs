@@ -1,3 +1,4 @@
+pub mod builtins;
 pub mod manager;
 pub mod sandbox;
 pub mod types;

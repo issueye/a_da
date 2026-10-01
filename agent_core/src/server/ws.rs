@@ -50,6 +50,8 @@ impl WsHostServer {
         let checkpoint_mgr = Arc::new(crate::checkpoint::CheckpointManager::new(None));
         let subagent_mgr = Arc::new(crate::subagents::SubagentManager::new());
         let approval_mgr = Arc::new(crate::approval::ApprovalManager::new());
+        let plugin_mgr = Arc::new(crate::plugins::PluginManager::new());
+        let skill_mgr = Arc::new(crate::skills::SkillManager::new());
         let seq = Arc::new(AtomicU64::new(0));
         let broadcaster = crate::server::emitter::StateBroadcaster::new(
             store.clone(),
@@ -62,6 +64,8 @@ impl WsHostServer {
             checkpoint_mgr,
             subagent_mgr,
             approval_mgr,
+            plugin_mgr,
+            skill_mgr,
             Some(broadcaster.clone()),
         ));
 
