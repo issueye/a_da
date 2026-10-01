@@ -47,7 +47,16 @@ if (!existsSync(compiledCore)) {
 }
 copyFileSync(compiledCore, targetCore)
 const coreSizeMb = (statSync(targetCore).size / 1024 / 1024).toFixed(2)
-console.log(`  ✔ 原生 Rust 核心就绪: ${path.relative(root, targetCore)} (${coreSizeMb} MB)\n`)
+console.log(`  ✔ 原生 Rust 核心就绪: ${path.relative(root, targetCore)} (${coreSizeMb} MB)`)
+
+if (process.platform === 'win32') {
+  const hermesDll = path.join(root, 'agent_core', 'vendor', 'hermes', 'bin', 'x64', 'hermes.dll')
+  if (existsSync(hermesDll)) {
+    copyFileSync(hermesDll, path.join(distDir, 'hermes.dll'))
+    console.log(`  ✔ Hermes 动态库就绪: dist/hermes.dll`)
+  }
+}
+console.log('')
 
 // 步骤 2：打包单文件独立可执行桌面应用 (内嵌原生核心与 GPUIX 渲染驱动)
 console.log('\x1b[33m[步骤 2/3]\x1b[0m 正在打包单一独立可执行应用 (dist/a-da.exe)...')
