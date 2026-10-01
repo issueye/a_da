@@ -1741,6 +1741,168 @@ export function Composer({ client, centered }: { client: AgentClient; centered?:
             paddingRight: 8,
           }}
         >
+          {/* 加号功能选择菜单：在模型选择左侧，集成模式切换、提及、指令、文件、图等 */}
+          <Select
+            value=""
+            onValueChange={(val) => {
+              if (!val) return
+              if (val.startsWith('mode:')) {
+                const nextMode = val.slice(5) as AgentMode
+                void client.request('thread.setMode', { mode: nextMode })
+              } else if (val === 'action:mention') {
+                setMentionMenuOpen(true)
+                setMentionFilter('')
+                setSlashMenuOpen(false)
+                setDraft((text) => `${text.trimEnd()} @`)
+              } else if (val === 'action:slash') {
+                setSlashMenuOpen(true)
+                setSlashFilter('')
+                setMentionMenuOpen(false)
+                setDraft((text) => `${text.trimEnd()} /`)
+              } else if (val === 'action:file') {
+                client.ui.pickFiles({
+                  mode: 'files',
+                  title: '选择文件作为附件',
+                  startPath: client.state.active.workspace,
+                  onPicked: (paths) => {
+                    if (paths.length > 0) {
+                      setDraft((text) => `${text.trimEnd()} ${paths.map((p) => `@${p}`).join(' ')} `)
+                    }
+                  },
+                })
+              } else if (val === 'action:image') {
+                client.ui.pickFiles(imagePickerRequest(client, IMAGE_EXTENSIONS, addImagePaths))
+              }
+            }}
+          >
+            <div style={{ position: 'relative', display: 'flex' }}>
+              <SelectTrigger
+                testId="composer-plus-menu"
+                aria-label="功能与附件菜单 (+)"
+                style={(state) => ({
+                  display: 'flex',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: 24,
+                  height: 22,
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                  backgroundColor: state.open ? C.chipHover : C.chip,
+                  borderWidth: 1,
+                  borderColor: state.open ? C.link : C.chipBorder,
+                  hover: { backgroundColor: C.chipHover },
+                })}
+              >
+                <Icon name="plus" size={13} color={C.secondary} />
+              </SelectTrigger>
+              <SelectContent side="top" sideOffset={6} style={{ ...menuLayer(), minWidth: 280 }}>
+                <MenuSurface maxHeight={380}>
+                  {/* 分组 1：协作模式切换 */}
+                  <div
+                    style={{
+                      paddingTop: 6,
+                      paddingBottom: 4,
+                      paddingLeft: 10,
+                      paddingRight: 10,
+                      display: 'flex',
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    <Icon name="compass" size={11} color={C.tertiary} />
+                    <text style={{ fontSize: 10.5, fontWeight: 600, color: C.tertiary }}>
+                      协作模式切换
+                    </text>
+                  </div>
+                  {MODE_OPTIONS.map((m) => {
+                    const isSelected = (client.state.mode ?? 'code') === m.value
+                    return (
+                      <SelectItem key={`mode:${m.value}`} testId={`plus-mode-${m.value}`} value={`mode:${m.value}`} style={menuItemStyle}>
+                        <MenuRow
+                          label={m.label}
+                          description={m.desc}
+                          selected={isSelected}
+                        />
+                      </SelectItem>
+                    )
+                  })}
+
+                  <div style={{ height: 1, backgroundColor: C.chipBorder, marginTop: 4, marginBottom: 4 }} />
+
+                  {/* 分组 2：快捷输入与指令 */}
+                  <div
+                    style={{
+                      paddingTop: 4,
+                      paddingBottom: 4,
+                      paddingLeft: 10,
+                      paddingRight: 10,
+                      display: 'flex',
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    <Icon name="terminal" size={11} color={C.tertiary} />
+                    <text style={{ fontSize: 10.5, fontWeight: 600, color: C.tertiary }}>
+                      快捷输入与指令
+                    </text>
+                  </div>
+                  <SelectItem testId="plus-action-mention" value="action:mention" style={menuItemStyle}>
+                    <MenuRow
+                      label="@ 提及引用"
+                      description="引用工作区文件、扩展技能或专项智能体"
+                      selected={mentionMenuOpen}
+                    />
+                  </SelectItem>
+                  <SelectItem testId="plus-action-slash" value="action:slash" style={menuItemStyle}>
+                    <MenuRow
+                      label="/ 快捷指令"
+                      description="唤起快速执行指令与工作流动作"
+                      selected={slashMenuOpen}
+                    />
+                  </SelectItem>
+
+                  <div style={{ height: 1, backgroundColor: C.chipBorder, marginTop: 4, marginBottom: 4 }} />
+
+                  {/* 分组 3：资源附件 */}
+                  <div
+                    style={{
+                      paddingTop: 4,
+                      paddingBottom: 4,
+                      paddingLeft: 10,
+                      paddingRight: 10,
+                      display: 'flex',
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    <Icon name="folder" size={11} color={C.tertiary} />
+                    <text style={{ fontSize: 10.5, fontWeight: 600, color: C.tertiary }}>
+                      文件与图片
+                    </text>
+                  </div>
+                  <SelectItem testId="plus-action-file" value="action:file" style={menuItemStyle}>
+                    <MenuRow
+                      label="添加本地文件..."
+                      description="从本机浏览文件并插入到输入框"
+                      selected={false}
+                    />
+                  </SelectItem>
+                  <SelectItem testId="plus-action-image" value="action:image" style={menuItemStyle}>
+                    <MenuRow
+                      label="添加图片附件..."
+                      description="支持多模态识图与视觉编程分析"
+                      selected={images.length > 0}
+                    />
+                  </SelectItem>
+                </MenuSurface>
+              </SelectContent>
+            </div>
+          </Select>
+
           {/* 左侧控制区：模型标识、文件引入、权限模式、思考深度 */}
           <div
             testId="composer-model"

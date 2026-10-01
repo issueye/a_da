@@ -792,6 +792,31 @@ describeNative('ComposerTelemetryBar UI 渲染', () => {
 
     await app.close()
   })
+
+  test('模型选择左侧提供加号综合菜单按键，可唤起包含模式、提及、指令、文件与图片的选择菜单', async () => {
+    const { render, renderer } = createTestRoot({ width: 1000, height: 600 })
+    render(<Composer client={agentClient} />)
+    const app = await connectTest(renderer)
+
+    // 验证模型选择左侧的加号按钮存在
+    const plusBtn = app.getByTestId('composer-plus-menu')
+    expect(await plusBtn.count()).toBe(1)
+
+    // 点击加号展开菜单
+    await plusBtn.click()
+    renderer.flush?.()
+
+    // 验证菜单中的关键分组项
+    expect(await app.getByTestId('plus-action-mention').count()).toBe(1)
+    expect(await app.getByTestId('plus-action-slash').count()).toBe(1)
+    expect(await app.getByTestId('plus-action-file').count()).toBe(1)
+    expect(await app.getByTestId('plus-action-image').count()).toBe(1)
+    expect(await app.getByTestId('plus-mode-code').count()).toBe(1)
+    expect(await app.getByTestId('plus-mode-plan').count()).toBe(1)
+    expect(await app.getByTestId('plus-mode-create').count()).toBe(1)
+
+    await app.close()
+  })
 })
 
 describe('pickImagePaths 拖放与附件过滤', () => {
