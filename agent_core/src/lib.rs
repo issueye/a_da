@@ -7,6 +7,8 @@ pub mod server;
 pub mod session;
 pub mod state;
 pub mod tools;
+pub mod compiler;
+pub mod kernel;
 pub mod hermes_host;
 pub mod desktop_ui;
 pub mod native_ws;

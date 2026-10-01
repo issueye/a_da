@@ -21,6 +21,13 @@ sha2 = "0.10"
 base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 tokio-stream = "0.1"
+boa_engine = "0.22.0"
+oxc_allocator = "0.146.0"
+oxc_parser = "0.146.0"
+oxc_codegen = "0.146.0"
+oxc_span = "0.146.0"
+oxc_transformer = "0.146.0"
+oxc_semantic = "0.146.0"
 
 
 
