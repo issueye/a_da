@@ -65,6 +65,18 @@ pub async fn run_agent_loop(
 
     // 3. 多轮驱动
     for _step in 0..MAX_LOOP_STEPS {
+        // 如果已接收到取消信号，直接终止多轮循环
+        if let Some(ref rx) = abort_rx {
+            if *rx.borrow() {
+                let _ = event_tx
+                    .send(AgentLoopEvent::TurnFinished {
+                        stop_reason: "aborted".to_string(),
+                    })
+                    .await;
+                break;
+            }
+        }
+
         let step_start = now_ms();
         let mut step_usage: Option<TokenUsage> = None;
         let mut accumulated_usage = TokenUsage::default();
@@ -205,7 +217,20 @@ pub async fn run_agent_loop(
         }
 
         // 执行工具调用
+        let mut loop_aborted = false;
         for call in &tool_calls {
+            if let Some(ref rx) = abort_rx {
+                if *rx.borrow() {
+                    let _ = event_tx
+                        .send(AgentLoopEvent::TurnFinished {
+                            stop_reason: "aborted".to_string(),
+                        })
+                        .await;
+                    loop_aborted = true;
+                    break;
+                }
+            }
+
             let _ = event_tx
                 .send(AgentLoopEvent::ToolCallStarted {
                     name: call.name.clone(),
@@ -243,6 +268,10 @@ pub async fn run_agent_loop(
 
             session_mgr.append_message(thread_id, result_msg.clone(), Some(&ws_str))?;
             history_messages.push(result_msg);
+        }
+
+        if loop_aborted {
+            break;
         }
     }
 

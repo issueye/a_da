@@ -156,6 +156,7 @@ export interface ClientSnapshot {
   approvalMode: ApprovalMode
   effort: Effort
   running: boolean
+  runningThreadIds: string[]
   queue: QueuedItem[]
   providers?: ProviderEntry[]
   activeProviderId?: string

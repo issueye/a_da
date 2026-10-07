@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, watch, Mutex, RwLock};
 
 use crate::approval::ApprovalManager;
 use crate::checkpoint::CheckpointManager;
@@ -211,6 +212,7 @@ pub struct Dispatcher {
     broadcaster: Option<Arc<StateBroadcaster>>,
     host_pid: u32,
     session_id: String,
+    abort_senders: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
 }
 
 impl Dispatcher {
@@ -235,6 +237,7 @@ impl Dispatcher {
             broadcaster,
             host_pid: std::process::id(),
             session_id: uuid::Uuid::new_v4().to_string(),
+            abort_senders: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -461,6 +464,9 @@ impl Dispatcher {
                     bc.broadcast_immediate().await;
                 }
 
+                let (abort_tx, abort_rx) = watch::channel(false);
+                self.abort_senders.lock().await.insert(target_tid.clone(), abort_tx);
+
                 let session_mgr = Arc::clone(&self.session_mgr);
                 let checkpoint_mgr = Arc::clone(&self.checkpoint_mgr);
                 let (event_tx, mut event_rx) = mpsc::channel::<AgentLoopEvent>(128);
@@ -476,13 +482,14 @@ impl Dispatcher {
                         session_mgr,
                         checkpoint_mgr,
                         event_tx,
-                        None,
+                        Some(abort_rx),
                     ).await;
                 });
 
                 // 后台接收 Agent 事件，更新内存模型并通过 16ms 节流广播器推送到前端 UI
                 let store_clone = Arc::clone(&self.store);
                 let broadcaster_clone = self.broadcaster.clone();
+                let abort_senders_clone = Arc::clone(&self.abort_senders);
                 let thread_id_clone = target_tid.clone();
 
                 tokio::spawn(async move {
@@ -550,7 +557,8 @@ impl Dispatcher {
                         }
                     }
 
-                    // 循环结束时安全兜底：确保 runningThreadIds 彻底清除
+                    // 循环结束时安全兜底：确保 abort_senders 与 runningThreadIds 彻底清除
+                    abort_senders_clone.lock().await.remove(&thread_id_clone);
                     let mut store = store_clone.write().await;
                     store.finish_turn(&thread_id_clone);
                     drop(store);
@@ -1299,10 +1307,26 @@ impl Dispatcher {
             }
 
             THREAD_ABORT => {
-                let _thread_id = params.get("threadId")
+                let thread_id = params.get("threadId")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
-                Ok(serde_json::Value::Null)
+
+                // 1. 发送中止信号给正在执行的 agent_loop 及底层流式网络任务
+                if let Some(tx) = self.abort_senders.lock().await.remove(thread_id) {
+                    let _ = tx.send(true);
+                }
+
+                // 2. 立即在 store 中闭合该会话的流式状态并从 runningThreadIds 移除
+                let mut store = self.store.write().await;
+                store.finish_turn(thread_id);
+                drop(store);
+
+                // 3. 立即广播最新状态到客户端
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
+                Ok(serde_json::json!({ "aborted": true }))
             }
 
             THREAD_UPDATE => {

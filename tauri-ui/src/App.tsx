@@ -110,8 +110,8 @@ export function App() {
     agentClient.sendPrompt(text, images)
   }
 
-  const handleAbort = () => {
-    agentClient.abortCurrent()
+  const handleAbort = (targetThreadId?: string) => {
+    agentClient.abortCurrent(targetThreadId || activeThread?.id)
   }
 
   const handleSetMode = (mode: AgentMode) => {
@@ -280,6 +280,7 @@ export function App() {
           threads={snapshot.threads}
           activeThreadId={activeThread?.id || ''}
           activeWorkspace={activeThread?.workspace || snapshot.activeWorkspace}
+          runningThreadIds={snapshot.runningThreadIds || []}
           onSelectThread={handleSelectThread}
           onCreateThread={handleCreateThread}
           onDeleteThread={handleDeleteThread}
@@ -296,7 +297,8 @@ export function App() {
             threads={snapshot.threads}
             openTabIds={openTabIds}
             activeThreadId={activeThread?.id || ''}
-            isRunning={snapshot.running}
+            runningThreadIds={snapshot.runningThreadIds || []}
+            isRunning={Boolean(activeThread?.id && (snapshot.runningThreadIds || []).includes(activeThread.id))}
             onSelectTab={handleSelectThread}
             onCloseTab={handleCloseTab}
             onNewTab={() => handleCreateThread(activeThread?.workspace || snapshot.activeWorkspace)}
@@ -307,7 +309,7 @@ export function App() {
             <EmptyConversationView
               thread={activeThread}
               mode={snapshot.currentMode}
-              running={snapshot.running}
+              running={Boolean(activeThread?.id && (snapshot.runningThreadIds || []).includes(activeThread.id))}
               providerConfig={snapshot.providerConfig}
               approvalMode={snapshot.approvalMode}
               effort={snapshot.effort}
@@ -335,7 +337,7 @@ export function App() {
               {/* 对话消息流（含深度思考折叠、Markdown、工具卡片等） */}
               <Transcript
                 items={activeThread.items}
-                running={snapshot.running}
+                running={Boolean(activeThread?.id && (snapshot.runningThreadIds || []).includes(activeThread.id))}
                 activeWorkspace={activeThread.workspace || snapshot.activeWorkspace}
                 currentMode={snapshot.currentMode}
                 onAnswerQuestion={handleAnswerQuestion}
@@ -346,7 +348,7 @@ export function App() {
               <Composer
                 thread={activeThread}
                 mode={snapshot.currentMode}
-                running={snapshot.running}
+                running={Boolean(activeThread?.id && (snapshot.runningThreadIds || []).includes(activeThread.id))}
                 providerConfig={snapshot.providerConfig}
                 approvalMode={snapshot.approvalMode}
                 effort={snapshot.effort}

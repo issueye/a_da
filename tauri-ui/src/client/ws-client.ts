@@ -122,6 +122,7 @@ export class AgentWebSocketClient {
     approvalMode: 'auto',
     effort: 'medium',
     running: false,
+    runningThreadIds: [],
     queue: [],
     providers: [],
     activeProviderId: '',
@@ -332,9 +333,11 @@ export class AgentWebSocketClient {
     }
 
     if (Array.isArray(payload.runningThreadIds)) {
-      this.snapshot.running =
-        payload.runningThreadIds.includes(this.snapshot.activeThreadId) ||
-        payload.runningThreadIds.length > 0
+      this.snapshot.runningThreadIds = payload.runningThreadIds
+      this.snapshot.running = payload.runningThreadIds.includes(this.snapshot.activeThreadId)
+    } else {
+      this.snapshot.runningThreadIds = []
+      this.snapshot.running = false
     }
 
     if (payload.workspace?.project) {
@@ -444,7 +447,11 @@ export class AgentWebSocketClient {
       activeThread.items.push(optimisticUserItem)
     }
 
-    this.snapshot.running = true
+    const currentRunning = this.snapshot.runningThreadIds || []
+    if (!currentRunning.includes(targetThreadId)) {
+      this.snapshot.runningThreadIds = [...currentRunning, targetThreadId]
+    }
+    this.snapshot.running = this.snapshot.runningThreadIds.includes(this.snapshot.activeThreadId)
     this.notify()
 
     try {
@@ -454,17 +461,20 @@ export class AgentWebSocketClient {
         images,
       })
     } catch (err) {
-      this.snapshot.running = false
+      this.snapshot.runningThreadIds = (this.snapshot.runningThreadIds || []).filter((id) => id !== targetThreadId)
+      this.snapshot.running = this.snapshot.runningThreadIds.includes(this.snapshot.activeThreadId)
       this.notify()
       throw err
     }
   }
 
-  public abortCurrent() {
-    if (!this.snapshot.activeThreadId) return
-    this.snapshot.running = false
+  public abortCurrent(targetThreadId?: string) {
+    const tid = targetThreadId || this.snapshot.activeThreadId
+    if (!tid) return
+    this.snapshot.runningThreadIds = (this.snapshot.runningThreadIds || []).filter((id) => id !== tid)
+    this.snapshot.running = this.snapshot.runningThreadIds.includes(this.snapshot.activeThreadId)
     this.notify()
-    return this.request('thread.abort', { threadId: this.snapshot.activeThreadId })
+    return this.request('thread.abort', { threadId: tid })
   }
 
   public async createThread(workspace?: string, mode?: AgentMode) {
@@ -476,6 +486,7 @@ export class AgentWebSocketClient {
     if (res?.threadId) {
       this.snapshot.activeThreadId = res.threadId
       this.snapshot.activeWorkspace = ws
+      this.snapshot.running = (this.snapshot.runningThreadIds || []).includes(res.threadId)
       // 服务端的即时快照可能先于本次响应抵达（id 已在列表中）。
       // 此时以服务端数据为准，避免同一个会话在本地出现两份、被分到两个工作区组里
       if (!this.snapshot.threads.some((t) => t.id === res.threadId)) {
@@ -497,6 +508,7 @@ export class AgentWebSocketClient {
 
   public deleteThread(threadId: string) {
     this.snapshot.threads = this.snapshot.threads.filter((t) => t.id !== threadId)
+    this.snapshot.runningThreadIds = (this.snapshot.runningThreadIds || []).filter((id) => id !== threadId)
     if (this.snapshot.activeThreadId === threadId) {
       const nextThread = this.snapshot.threads[0]
       this.snapshot.activeThreadId = nextThread?.id || ''
@@ -504,12 +516,14 @@ export class AgentWebSocketClient {
         this.snapshot.activeWorkspace = nextThread.workspace
       }
     }
+    this.snapshot.running = (this.snapshot.runningThreadIds || []).includes(this.snapshot.activeThreadId)
     this.notify()
     return this.request('thread.delete', { threadId })
   }
 
   public setActiveThread(threadId: string) {
     this.snapshot.activeThreadId = threadId
+    this.snapshot.running = (this.snapshot.runningThreadIds || []).includes(threadId)
     const t = this.snapshot.threads.find((th) => th.id === threadId)
     if (t?.workspace) {
       this.snapshot.activeWorkspace = t.workspace

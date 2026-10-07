@@ -18,6 +18,7 @@ interface SidebarProps {
   threads: Thread[]
   activeThreadId: string
   activeWorkspace: string
+  runningThreadIds?: string[]
   onSelectThread: (threadId: string) => void
   onCreateThread: (workspace?: string) => void
   onDeleteThread: (threadId: string) => void
@@ -34,6 +35,7 @@ const SidebarComponent: React.FC<SidebarProps> = ({
   threads,
   activeThreadId,
   activeWorkspace,
+  runningThreadIds = [],
   onSelectThread,
   onCreateThread,
   onDeleteThread,
@@ -348,7 +350,12 @@ const SidebarComponent: React.FC<SidebarProps> = ({
                                   </button>
                                 )}
 
-                                {isSubagent ? (
+                                {runningThreadIds.includes(thread.id) ? (
+                                  <span className="relative flex h-2 w-2 flex-shrink-0 mr-0.5">
+                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+                                  </span>
+                                ) : isSubagent ? (
                                   <Bot
                                     size={12}
                                     className={isActive ? 'text-purple-500 flex-shrink-0' : 'text-purple-400 dark:text-purple-400/80 flex-shrink-0'}
