@@ -21,6 +21,7 @@ pub enum AgentLoopEvent {
     TextDelta { text: String },
     ToolCallStarted { name: String, id: String, args: String },
     ToolCallFinished { name: String, id: String, ok: bool, output: Option<String> },
+    ToolAwaitingQuestion { id: String, question: serde_json::Value },
     /// 一次大模型调用结束后的真实用量与耗时（界面遥测条与单条回复徽章的数据源）
     AssistantStats { usage: Option<TokenUsage>, duration_ms: u64, turn_duration_ms: u64 },
     TurnFinished { stop_reason: String },
@@ -246,6 +247,8 @@ pub async fn run_agent_loop(
                 Some(&checkpoint_mgr),
                 Some(&provider_config),
                 None,
+                Some(&event_tx),
+                abort_rx.as_ref(),
             )
             .await;
 

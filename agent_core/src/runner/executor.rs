@@ -6,8 +6,12 @@ use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 use serde_json::Value;
 
+use tokio::sync::{mpsc, watch};
+
 use crate::ai::{ProviderConfig, ToolCallInfo};
 use crate::checkpoint::CheckpointManager;
+use crate::runner::builtin_tools::{execute_ask_user, execute_builtin_plugin_tool};
+use crate::runner::AgentLoopEvent;
 use crate::session::AgentMessage;
 use crate::subagents::SubagentManager;
 use crate::tools::{
@@ -22,10 +26,10 @@ pub fn execute_tool_call<'a>(
     call: &'a ToolCallInfo,
     checkpoint_mgr: Option<&'a Arc<CheckpointManager>>,
 ) -> BoxFuture<'a, AgentMessage> {
-    execute_tool_call_extended(workspace, thread_id, call, checkpoint_mgr, None, None)
+    execute_tool_call_extended(workspace, thread_id, call, checkpoint_mgr, None, None, None, None)
 }
 
-/// 派发并执行单个工具调用（扩展支持模型配置与子智能体管理）
+/// 派发并执行单个工具调用（扩展支持模型配置与子智能体管理、提问事件与中止信号）
 pub fn execute_tool_call_extended<'a>(
     workspace: &'a Path,
     thread_id: &'a str,
@@ -33,6 +37,8 @@ pub fn execute_tool_call_extended<'a>(
     checkpoint_mgr: Option<&'a Arc<CheckpointManager>>,
     parent_config: Option<&'a ProviderConfig>,
     subagent_mgr: Option<&'a Arc<SubagentManager>>,
+    event_tx: Option<&'a mpsc::Sender<AgentLoopEvent>>,
+    abort_rx: Option<&'a watch::Receiver<bool>>,
 ) -> BoxFuture<'a, AgentMessage> {
     async move {
         let args: Value = serde_json::from_str(&call.args).unwrap_or_else(|_| serde_json::json!({}));
@@ -161,28 +167,40 @@ pub fn execute_tool_call_extended<'a>(
                 ToolResult::error(format!("找不到指定的子智能体配置: {}", subagent_id))
             }
         }
+        "ask_user" => {
+            execute_ask_user(&call.id, &args, event_tx, abort_rx).await
+        }
         unknown => {
-            let plugin_mgr = crate::plugins::PluginManager::new();
-            let plugins = plugin_mgr.scan_plugins(Some(workspace.to_str().unwrap_or("")));
-            let mut target_plugin_path = None;
-
-            for item in plugins {
-                if !item.enabled {
-                    continue;
-                }
-                if item.tools.iter().any(|t| t.name == unknown) {
-                    target_plugin_path = Some(std::path::PathBuf::from(item.file_path));
-                    break;
-                }
-            }
-
-            if let Some(p_path) = target_plugin_path {
-                match crate::plugins::PluginSandbox::call_tool(&p_path, unknown, args, workspace, 30).await {
-                    Ok(res) => res,
-                    Err(e) => ToolResult::error(format!("插件工具 [{}] 执行失败: {}", unknown, e)),
-                }
+            // 优先检查内置插件原生工具（彻底杜绝将 (builtin):xxx 虚拟路径传给沙箱造成读盘失败）
+            if let Some(res) = execute_builtin_plugin_tool(workspace, thread_id, unknown, &args, checkpoint_mgr).await {
+                res
             } else {
-                ToolResult::error(format!("未知工具: {}", unknown))
+                let plugin_mgr = crate::plugins::PluginManager::new();
+                let plugins = plugin_mgr.scan_plugins(Some(workspace.to_str().unwrap_or("")));
+                let mut target_plugin_path = None;
+
+                for item in plugins {
+                    if !item.enabled {
+                        continue;
+                    }
+                    if item.tools.iter().any(|t| t.name == unknown) {
+                        // 过滤虚拟内置路径，避免沙箱在 Windows 读取 "(builtin):xxx" 产生 os error 123
+                        if item.file_path.starts_with("(builtin):") {
+                            continue;
+                        }
+                        target_plugin_path = Some(std::path::PathBuf::from(item.file_path));
+                        break;
+                    }
+                }
+
+                if let Some(p_path) = target_plugin_path {
+                    match crate::plugins::PluginSandbox::call_tool(&p_path, unknown, args, workspace, 30).await {
+                        Ok(res) => res,
+                        Err(e) => ToolResult::error(format!("插件工具 [{}] 执行失败: {}", unknown, e)),
+                    }
+                } else {
+                    ToolResult::error(format!("未知工具: {}", unknown))
+                }
             }
         }
     };

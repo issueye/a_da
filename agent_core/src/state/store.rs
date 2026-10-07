@@ -568,6 +568,35 @@ impl AgentStore {
                 }
             }
         }
+        self.pending_questions.retain(|item| item.call_id != call_id);
+    }
+
+    /// 标记工具调用正在等待用户提问答复
+    pub fn set_tool_awaiting_question(&mut self, thread_id: &str, call_id: &str, question_val: serde_json::Value) {
+        if let Some(t) = self.get_thread_mut(thread_id) {
+            for item in t.items.iter_mut().rev() {
+                if let Item::Tool { call_id: cid, status, details, .. } = item {
+                    if cid == call_id {
+                        *status = "awaiting".to_string();
+                        let mut det = details.take().unwrap_or_else(|| serde_json::json!({}));
+                        if let Some(obj) = det.as_object_mut() {
+                            obj.insert("question".to_string(), question_val.clone());
+                        }
+                        *details = Some(det);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 同步到 pending_questions 列表中
+        if let Ok(q) = serde_json::from_value::<crate::protocol::AgentQuestion>(question_val) {
+            self.pending_questions.retain(|item| item.call_id != call_id);
+            self.pending_questions.push(crate::protocol::PendingQuestionEntry {
+                call_id: call_id.to_string(),
+                question: q,
+            });
+        }
     }
 
     /// 完成当前轮次

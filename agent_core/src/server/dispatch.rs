@@ -524,6 +524,13 @@ impl Dispatcher {
                                     bc.broadcast_immediate().await;
                                 }
                             }
+                            AgentLoopEvent::ToolAwaitingQuestion { id, question } => {
+                                store.set_tool_awaiting_question(&thread_id_clone, &id, question);
+                                drop(store);
+                                if let Some(ref bc) = broadcaster_clone {
+                                    bc.broadcast_immediate().await;
+                                }
+                            }
                             AgentLoopEvent::AssistantStats { usage, duration_ms, turn_duration_ms } => {
                                 store.set_assistant_stats(
                                     &thread_id_clone,
@@ -1311,10 +1318,11 @@ impl Dispatcher {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
 
-                // 1. 发送中止信号给正在执行的 agent_loop 及底层流式网络任务
+                // 1. 发送中止信号给正在执行的 agent_loop 及底层流式网络任务并唤醒任何挂起的提问
                 if let Some(tx) = self.abort_senders.lock().await.remove(thread_id) {
                     let _ = tx.send(true);
                 }
+                crate::approval::global_question_manager().cancel_all();
 
                 // 2. 立即在 store 中闭合该会话的流式状态并从 runningThreadIds 移除
                 let mut store = self.store.write().await;
@@ -1417,9 +1425,27 @@ impl Dispatcher {
                 let call_id = params.get("callId")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+                let choice = params.get("choice").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let text = params.get("text").and_then(|v| v.as_str()).map(|s| s.to_string());
+
                 let mut store = self.store.write().await;
                 store.pending_questions.retain(|q| q.call_id != call_id);
-                Ok(serde_json::Value::Null)
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
+                let resolved = crate::approval::global_question_manager().resolve_answer(
+                    call_id,
+                    crate::approval::QuestionAnswer {
+                        choice,
+                        text,
+                        answered_by: "user".to_string(),
+                    },
+                );
+
+                Ok(serde_json::json!({ "resolved": resolved }))
             }
 
             WORKSPACE_OPEN_PUBLIC => {

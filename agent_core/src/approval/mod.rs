@@ -1,9 +1,11 @@
 pub mod guard;
 pub mod manager;
+pub mod question_manager;
 pub mod types;
 
 pub use guard::{extract_command, is_destructive_command, should_ask_approval};
 pub use manager::ApprovalManager;
+pub use question_manager::{global_question_manager, QuestionAnswer, QuestionManager};
 pub use types::ApprovalGuardConfig;
 
 #[cfg(test)]
