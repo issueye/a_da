@@ -1392,13 +1392,32 @@ impl Dispatcher {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                let resolved = self.approval_mgr.resolve_approval(tool_item_id, approved);
+                let mut resolved = self.approval_mgr.resolve_approval(tool_item_id, approved);
+
+                // 容错兜底：若该工具调用为等待用户作答的提问（如 ask_user），联动唤醒提问协调器
+                if !resolved && crate::approval::global_question_manager().has_pending(tool_item_id) {
+                    if approved {
+                        resolved = crate::approval::global_question_manager().resolve_answer(
+                            tool_item_id,
+                            crate::approval::QuestionAnswer {
+                                choice: None,
+                                text: None,
+                                answered_by: "user".to_string(),
+                            },
+                        );
+                    } else {
+                        crate::approval::global_question_manager().cancel(tool_item_id);
+                        resolved = true;
+                    }
+                }
 
                 let mut store = self.store.write().await;
+                store.pending_questions.retain(|q| q.call_id != tool_item_id);
+
                 for thread in &mut store.threads {
                     for item in &mut thread.items {
-                        if let Item::Tool { id, status, .. } = item {
-                            if id == tool_item_id {
+                        if let Item::Tool { id, call_id: cid, status, .. } = item {
+                            if id == tool_item_id || cid == tool_item_id {
                                 *status = if approved {
                                     "running".to_string()
                                 } else {
@@ -1875,4 +1894,44 @@ mod tests {
             other => panic!("应为承载用量的助手卡片，实际: {other:?}"),
         }
     }
+
+    #[tokio::test]
+    async fn test_approval_decide_resolves_pending_question() {
+        let store = Arc::new(tokio::sync::RwLock::new(AgentStore::new("E:/codes/default_ws".to_string())));
+        let session_mgr = Arc::new(crate::session::SessionManager::new(Some(std::path::PathBuf::from("E:/codes/default_ws"))));
+        let checkpoint_mgr = Arc::new(crate::checkpoint::CheckpointManager::new(None));
+        let subagent_mgr = Arc::new(crate::subagents::SubagentManager::new());
+        let approval_mgr = Arc::new(crate::approval::ApprovalManager::new());
+        let plugin_mgr = Arc::new(crate::plugins::PluginManager::new());
+        let skill_mgr = Arc::new(crate::skills::SkillManager::new());
+
+        let dispatcher = Dispatcher::new(
+            store.clone(),
+            session_mgr,
+            checkpoint_mgr,
+            subagent_mgr,
+            approval_mgr,
+            plugin_mgr,
+            skill_mgr,
+            None,
+        );
+
+        let call_id = "test_ask_approval_fallback";
+        let rx = crate::approval::global_question_manager().register_waiter(call_id);
+        assert!(crate::approval::global_question_manager().has_pending(call_id));
+
+        // 模拟前端调用 approval.decide
+        let req = serde_json::json!({
+            "toolItemId": call_id,
+            "approved": true
+        });
+
+        let res = dispatcher.dispatch(crate::protocol::methods::APPROVAL_DECIDE, req).await.expect("调用应该成功");
+        assert_eq!(res.get("resolved").and_then(|v| v.as_bool()), Some(true));
+
+        let ans = rx.await.expect("应该唤醒等待者");
+        assert_eq!(ans.answered_by, "user");
+        assert!(!crate::approval::global_question_manager().has_pending(call_id));
+    }
 }
+

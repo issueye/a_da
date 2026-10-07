@@ -373,6 +373,41 @@ export class AgentWebSocketClient {
     const kind = it.kind || (it.role === 'user' ? 'user' : 'assistant')
     const role = it.role || (kind === 'user' ? 'user' : 'assistant')
 
+    let question = it.question || it.details?.question
+    if (question && typeof question === 'object') {
+      const qCallId = question.callId || it.callId || it.id
+      let options = Array.isArray(question.options) ? question.options : []
+      if (options.length === 0 && Array.isArray(question.choices)) {
+        options = question.choices.map((c: any) => ({
+          value: c.id || c.value,
+          label: c.label || c.title || String(c),
+        }))
+      }
+      question = {
+        ...question,
+        callId: qCallId,
+        options,
+      }
+    } else if (it.tool === 'ask_user' || it.name === 'ask_user') {
+      const parsedArgs = typeof it.args === 'string'
+        ? (() => { try { return JSON.parse(it.args) } catch { return {} } })()
+        : (it.args || {})
+      if (parsedArgs.question) {
+        let options = Array.isArray(parsedArgs.options) ? parsedArgs.options : []
+        if (options.length === 0 && Array.isArray(parsedArgs.choices)) {
+          options = parsedArgs.choices.map((c: any) => ({
+            value: c.id || c.value,
+            label: c.label || c.title || String(c),
+          }))
+        }
+        question = {
+          callId: it.callId || it.id,
+          question: parsedArgs.question,
+          options,
+        }
+      }
+    }
+
     return {
       ...it,
       id: it.id || `item_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -382,6 +417,7 @@ export class AgentWebSocketClient {
       createdAt: it.at || it.createdAt || Date.now(),
       text: it.text || (kind === 'thinking' ? it.text : ''),
       thinking: it.thinking || (kind === 'thinking' ? it.text : undefined),
+      question,
     }
   }
 

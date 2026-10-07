@@ -517,11 +517,33 @@ const ToolCard: React.FC<{
   onAnswerQuestion: (callId: string, choice?: string, text?: string) => void
 }> = ({ item, onDecideApproval, onAnswerQuestion }) => {
   const [open, setOpen] = useState(false)
+  const [replyText, setReplyText] = useState('')
   const toolName = item.tool || item.name || 'tool'
   const toolStatus = item.state || item.status || 'done'
   const isAwaiting = toolStatus === 'waiting_approval' || toolStatus === 'awaiting'
   const isRunning = toolStatus === 'running'
   const isError = toolStatus === 'failed' || toolStatus === 'error'
+
+  const rawQuestion = item.question || (item.details as any)?.question
+  const isQuestionTool = toolName === 'ask_user' || Boolean(rawQuestion)
+
+  // 提取归一化问题对象
+  const questionData = (() => {
+    if (!isQuestionTool) return null
+    const qText = rawQuestion?.question || (typeof item.args === 'object' ? item.args?.question : '') || '请回复智能体的提问'
+    let options = Array.isArray(rawQuestion?.options) ? rawQuestion.options : []
+    if (options.length === 0 && Array.isArray(rawQuestion?.choices)) {
+      options = rawQuestion.choices.map((c: any) => ({
+        value: c.id || c.value,
+        label: c.label || c.title || String(c),
+      }))
+    }
+    return {
+      callId: rawQuestion?.callId || item.callId || item.id,
+      question: qText,
+      options,
+    }
+  })()
 
   const parsedTarget = toolTarget(toolName, item.args)
   const target = parsedTarget.target
@@ -529,13 +551,18 @@ const ToolCard: React.FC<{
 
   // 状态与色彩映射：采用更加轻淡柔和的微色调
   const statusBadge = (() => {
-    if (isAwaiting) return { label: '等待批准', color: 'text-amber-500/90 bg-amber-500/10 border-amber-500/20' }
+    if (isAwaiting) {
+      if (isQuestionTool) {
+        return { label: '待答复', color: 'text-blue-500/90 bg-blue-500/10 border-blue-500/20' }
+      }
+      return { label: '等待批准', color: 'text-amber-500/90 bg-amber-500/10 border-amber-500/20' }
+    }
     if (isRunning) return { label: '执行中', color: 'text-blue-500/90 bg-blue-500/10 border-blue-500/20' }
     if (isError) return { label: '失败', color: 'text-rose-500/90 bg-rose-500/10 border-rose-500/20' }
     return null
   })()
 
-  const hasDetail = Boolean(item.result || item.output || item.error || item.patch || item.args)
+  const hasDetail = Boolean(item.result || item.output || item.error || item.patch || item.args || (isQuestionTool && isAwaiting))
 
   return (
     <div className="flex flex-col w-full my-0.5">
@@ -603,8 +630,74 @@ const ToolCard: React.FC<{
       {(open || isAwaiting) && (
         <div className="ml-2 pl-2.5 border-l border-zinc-200/80 dark:border-zinc-800/80 my-0.5">
           <div className="bg-zinc-50/60 dark:bg-[#18191c]/60 border border-zinc-200/50 dark:border-zinc-800/40 rounded-lg overflow-hidden shadow-none text-xs">
-            {/* 1. 审批授权操作条 */}
-            {isAwaiting && (
+            {/* 1. 提问作答交互条（ask_user 处于 awaiting 时展示） */}
+            {isAwaiting && isQuestionTool && questionData && (
+              <div className="p-3 bg-blue-50/70 dark:bg-blue-950/25 border-b border-blue-200/60 dark:border-blue-900/40 space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-1.5 font-medium text-blue-900 dark:text-blue-200">
+                    <Sparkles size={13} className="text-blue-600 dark:text-blue-400" />
+                    <span>智能体向你提问</span>
+                  </div>
+                  <span className="text-[10px] text-blue-600/80 dark:text-blue-400/80 bg-blue-100/70 dark:bg-blue-900/40 px-1.5 py-0.2 rounded">
+                    等待答复后继续
+                  </span>
+                </div>
+
+                <div className="text-xs text-zinc-800 dark:text-zinc-200 font-medium leading-relaxed">
+                  {questionData.question}
+                </div>
+
+                {questionData.options && questionData.options.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 pt-0.5">
+                    {questionData.options.map((opt: any) => (
+                      <button
+                        key={opt.value}
+                        onClick={() => onAnswerQuestion(questionData.callId, opt.value)}
+                        className="px-2.5 py-1 rounded-lg bg-white dark:bg-blue-900/40 hover:bg-blue-50 dark:hover:bg-blue-800/50 border border-blue-200 dark:border-blue-700/50 text-blue-700 dark:text-blue-200 text-xs font-medium transition-colors shadow-xs"
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex items-center space-x-1.5 pt-1">
+                  <input
+                    type="text"
+                    value={replyText}
+                    onChange={(e) => setReplyText(e.target.value)}
+                    placeholder="输入自定义答复或说明..."
+                    className="flex-1 bg-white dark:bg-black/30 border border-blue-200 dark:border-blue-900/50 rounded-lg px-2.5 py-1 text-zinc-900 dark:text-zinc-100 text-xs outline-none focus:border-blue-500 shadow-xs"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && replyText.trim()) {
+                        onAnswerQuestion(questionData.callId, undefined, replyText.trim())
+                        setReplyText('')
+                      }
+                    }}
+                  />
+                  <button
+                    onClick={() => {
+                      if (replyText.trim()) {
+                        onAnswerQuestion(questionData.callId, undefined, replyText.trim())
+                        setReplyText('')
+                      }
+                    }}
+                    className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-medium transition-colors shadow-xs"
+                  >
+                    提交
+                  </button>
+                  <button
+                    onClick={() => onAnswerQuestion(questionData.callId, undefined, '用户确认继续')}
+                    className="px-2.5 py-1 rounded-lg bg-zinc-200/70 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-xs transition-colors"
+                  >
+                    跳过
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 2. 真正的写工作区审批授权操作条（非提问工具且处于 awaiting 时展示） */}
+            {isAwaiting && !isQuestionTool && (
               <div className="flex items-center justify-between p-2.5 bg-amber-500/10 border-b border-amber-500/20 text-xs">
                 <div className="flex items-center space-x-2 text-amber-700 dark:text-amber-300 font-medium">
                   <ShieldAlert size={13} />
@@ -654,14 +747,16 @@ const ToolCard: React.FC<{
               {(item.result || item.output) && (
                 <div>
                   <div className="flex items-center justify-between">
-                    <span className="text-zinc-400 dark:text-zinc-500 font-sans text-[10px]">执行输出：</span>
+                    <span className="text-zinc-400 dark:text-zinc-500 font-sans text-[10px]">
+                      {isQuestionTool ? '用户答复：' : '执行输出：'}
+                    </span>
                     <CopyButton
                       text={
                         typeof (item.result || item.output) === 'string'
                           ? String(item.result || item.output)
                           : JSON.stringify(item.result || item.output, null, 2)
                       }
-                      label="复制输出"
+                      label={isQuestionTool ? '复制答复' : '复制输出'}
                     />
                   </div>
                   <pre className="text-zinc-600 dark:text-zinc-300 whitespace-pre-wrap mt-0.5 max-h-56 overflow-y-auto leading-normal bg-zinc-100/50 dark:bg-black/20 p-2 rounded border border-zinc-200/40 dark:border-zinc-800/40">

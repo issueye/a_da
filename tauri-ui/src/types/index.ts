@@ -88,6 +88,7 @@ export interface Item {
   name?: string
   title?: string
   args?: any
+  details?: any
   state?: 'running' | 'done' | 'failed' | 'waiting_approval' | 'awaiting'
   status?: 'running' | 'done' | 'failed' | 'waiting_approval' | 'awaiting' | 'error' | 'denied'
   result?: unknown

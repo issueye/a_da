@@ -331,8 +331,21 @@ export const Composer: React.FC<ComposerProps> = ({
     if (!thread || !thread.items || thread.items.length === 0) return null
     for (let i = thread.items.length - 1; i >= 0; i--) {
       const it = thread.items[i]
-      if (it.question && it.status === 'awaiting') {
-        return it.question
+      const isAwaiting = it.status === 'awaiting' || it.state === 'awaiting' || it.tool === 'ask_user'
+      const q = it.question || (it.details as any)?.question
+      if (q && isAwaiting && it.status !== 'done' && it.status !== 'error') {
+        let options = Array.isArray(q.options) ? q.options : []
+        if (options.length === 0 && Array.isArray((q as any).choices)) {
+          options = (q as any).choices.map((c: any) => ({
+            value: c.id || c.value,
+            label: c.label || c.title || String(c),
+          }))
+        }
+        return {
+          ...q,
+          callId: q.callId || it.callId || it.id,
+          options,
+        }
       }
       // 如果遇到最新的用户消息则说明提问已翻篇
       if (it.kind === 'user') break
