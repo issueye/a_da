@@ -51,7 +51,7 @@ async function startApp(): Promise<void> {
     const { client, shutdown, info } = await resolveAgentClient()
     log(
       `传输：${info.transport}` +
-        (info.port ? `（主机 pid=${info.pid} 端口=${info.port}）` : '（进程内）')
+        (info.port ? `（主机 pid=${info.pid} 端口=${info.port} 核心=${info.execPath ?? '未知'}）` : '（进程内）')
     )
     // 主机随 UI 退出：正常退出路径（process.exit / 信号）都收掉它，避免孤儿进程
     process.on('exit', shutdown)

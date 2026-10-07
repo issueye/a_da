@@ -42,6 +42,13 @@ pub const CONFIG_CHECK_PROVIDER: &str = "config.checkProvider";
 pub const CONFIG_SET_APPROVAL: &str = "config.setApproval";
 pub const CONFIG_SET_EFFORT: &str = "config.setEffort";
 
+// 供应商与多协议模型管理
+pub const PROVIDER_LIST: &str = "provider.list";
+pub const PROVIDER_SAVE: &str = "provider.save";
+pub const PROVIDER_DELETE: &str = "provider.delete";
+pub const PROVIDER_SET_ACTIVE: &str = "provider.setActive";
+pub const PROVIDER_FETCH_MODELS: &str = "provider.fetchModels";
+
 // 调试与检查点
 pub const DEBUG_TRACE: &str = "debug.trace";
 pub const DEBUG_LOG_CLEAR: &str = "debug.log.clear";

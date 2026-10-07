@@ -62,5 +62,7 @@ pub fn generate_snapshot(store: &AgentStore) -> ClientSnapshot {
         public_workspace: store.public_workspace.clone(),
         appearance: store.appearance.clone(),
         ui: store.ui.clone(),
+        providers: store.providers.clone(),
+        active_provider_id: store.active_provider_id.clone(),
     }
 }

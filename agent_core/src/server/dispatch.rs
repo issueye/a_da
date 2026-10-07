@@ -14,6 +14,192 @@ use crate::skills::SkillManager;
 use crate::state::{generate_snapshot, AgentStore};
 use crate::subagents::SubagentManager;
 
+/// 解析某个会话的执行工作区。
+///
+/// 会话与工作区严格绑定：Agent 沙箱、会话落盘目录、插件/技能解析都必须用会话自己的
+/// 工作区，不能让它们跟着"全局当前工作区"漂移（否则在 A 工作区建的会话会跑在 B 里）。
+/// 仅在会话工作区为空（历史遗留数据）时，才退回当前工作区，再退回公共区。
+fn thread_workspace(store: &AgentStore, thread_id: &str) -> String {
+    let from_thread = store
+        .threads
+        .iter()
+        .find(|t| t.id == thread_id)
+        .map(|t| t.workspace.trim().to_string())
+        .filter(|ws| !ws.is_empty());
+
+    from_thread
+        .or_else(|| {
+            let project = store.workspace.project.trim();
+            (!project.is_empty()).then(|| project.to_string())
+        })
+        .unwrap_or_else(|| store.public_workspace.clone())
+}
+
+/// 持久化落盘应用全局配置（包含多供应商列表与激活供应商）
+fn save_app_config(store: &AgentStore) -> Result<(), String> {
+    let cfg_file = crate::session::get_config_path();
+    if let Some(parent) = cfg_file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut existing: serde_json::Value = if cfg_file.exists() {
+        std::fs::read_to_string(&cfg_file)
+            .ok()
+            .and_then(|c| serde_json::from_str(&c).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    if !existing.is_object() {
+        existing = serde_json::json!({});
+    }
+    if let Some(obj) = existing.as_object_mut() {
+        obj.insert("baseUrl".to_string(), serde_json::json!(store.provider.base_url));
+        obj.insert("apiKey".to_string(), serde_json::json!(store.provider.api_key));
+        obj.insert("model".to_string(), serde_json::json!(store.provider.model));
+        obj.insert(
+            "protocol".to_string(),
+            serde_json::to_value(&store.provider.protocol).unwrap_or(serde_json::json!("openai_chat")),
+        );
+        obj.insert("contextWindow".to_string(), serde_json::json!(store.config.context_window));
+        if let Some(mot) = store.config.max_output_tokens {
+            obj.insert("maxOutputTokens".to_string(), serde_json::json!(mot));
+        } else {
+            obj.remove("maxOutputTokens");
+        }
+        obj.insert("supportsImages".to_string(), serde_json::json!(store.config.supports_images));
+        if let Some(ref ch) = store.provider.custom_headers {
+            obj.insert("customHeaders".to_string(), serde_json::json!(ch));
+        } else {
+            obj.remove("customHeaders");
+        }
+        obj.insert(
+            "providers".to_string(),
+            serde_json::to_value(&store.providers).unwrap_or(serde_json::json!([])),
+        );
+        obj.insert("activeProviderId".to_string(), serde_json::json!(store.active_provider_id));
+    }
+    let tmp_file = format!("{}.{}.tmp", cfg_file.to_string_lossy(), std::process::id());
+    if let Ok(content) = serde_json::to_string_pretty(&existing) {
+        if std::fs::write(&tmp_file, content).is_ok() {
+            let _ = std::fs::rename(&tmp_file, &cfg_file);
+        }
+    }
+    Ok(())
+}
+
+/// 远程探测通用 /models 接口以获取可用模型列表
+async fn fetch_remote_models(
+    protocol: crate::ai::ModelProtocol,
+    base_url: &str,
+    api_key: &str,
+    custom_headers: Option<&std::collections::HashMap<String, String>>,
+) -> Result<Vec<crate::ai::ModelEntry>, String> {
+    let clean_base = base_url.trim_end_matches('/');
+    if clean_base.is_empty() {
+        return Err("供应商 Base URL 不能为空".to_string());
+    }
+
+    let url = match protocol {
+        crate::ai::ModelProtocol::Anthropic => {
+            if clean_base.ends_with("/v1") {
+                format!("{}/models", clean_base)
+            } else {
+                format!("{}/v1/models", clean_base)
+            }
+        }
+        crate::ai::ModelProtocol::OpenAiChat | crate::ai::ModelProtocol::OpenAiResponses => {
+            if clean_base.ends_with("/v1") {
+                format!("{}/models", clean_base)
+            } else {
+                format!("{}/v1/models", clean_base)
+            }
+        }
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+
+    let mut req = client.get(&url);
+
+    match protocol {
+        crate::ai::ModelProtocol::Anthropic => {
+            if !api_key.trim().is_empty() {
+                req = req.header("x-api-key", api_key.trim());
+            }
+            req = req.header("anthropic-version", "2023-06-01");
+        }
+        crate::ai::ModelProtocol::OpenAiChat | crate::ai::ModelProtocol::OpenAiResponses => {
+            if !api_key.trim().is_empty() {
+                req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
+            }
+        }
+    }
+
+    if let Some(headers) = custom_headers {
+        for (k, v) in headers {
+            req = req.header(k, v);
+        }
+    }
+
+    let resp = req.send().await.map_err(|e| format!("请求模型列表失败 ({}): {}", url, e))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let err_body = resp.text().await.unwrap_or_default();
+        return Err(format!("接口返回错误码 {}: {}", status, err_body));
+    }
+
+    let val: serde_json::Value = resp.json().await.map_err(|e| format!("解析模型列表 JSON 失败: {}", e))?;
+
+    let mut raw_items = Vec::new();
+    if let Some(arr) = val.get("data").and_then(|v| v.as_array()) {
+        raw_items.extend(arr.iter());
+    } else if let Some(arr) = val.get("models").and_then(|v| v.as_array()) {
+        raw_items.extend(arr.iter());
+    } else if let Some(arr) = val.as_array() {
+        raw_items.extend(arr.iter());
+    }
+
+    let mut models = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for item in raw_items {
+        let (id, name) = if let Some(s) = item.as_str() {
+            (s.to_string(), s.to_string())
+        } else if let Some(obj) = item.as_object() {
+            let id = obj.get("id")
+                .or_else(|| obj.get("name"))
+                .or_else(|| obj.get("model"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let name = obj.get("display_name")
+                .or_else(|| obj.get("name"))
+                .or_else(|| obj.get("id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(&id)
+                .to_string();
+            (id, name)
+        } else {
+            continue;
+        };
+
+        if !id.is_empty() && seen.insert(id.clone()) {
+            models.push(crate::ai::ModelEntry {
+                id,
+                name: Some(name),
+                context_window: None,
+                max_output_tokens: None,
+                supports_images: None,
+            });
+        }
+    }
+
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(models)
+}
+
 pub struct Dispatcher {
     store: Arc<RwLock<AgentStore>>,
     session_mgr: Arc<SessionManager>,
@@ -186,8 +372,12 @@ impl Dispatcher {
             THREAD_CREATE => {
                 let title = params.get("title").and_then(|v| v.as_str()).map(|s| s.to_string());
                 let mode_param = params.get("mode").and_then(|v| v.as_str());
+                let ws_param = params.get("workspace")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
                 let mut store = self.store.write().await;
-                let id = store.create_thread(title.clone());
+                let id = store.create_thread(title.clone(), ws_param.clone());
                 if let Some(m) = mode_param {
                     let parsed_mode = match m.to_lowercase().as_str() {
                         "plan" => AgentMode::Plan,
@@ -199,7 +389,11 @@ impl Dispatcher {
                     }
                     store.config.mode = parsed_mode;
                 }
-                let ws = store.workspace.project.clone();
+                // 会话落在调用方指定的工作区；未指定则沿用当前工作区（历史行为）
+                let ws = thread_workspace(&store, &id);
+                if !ws.is_empty() {
+                    store.workspace.project = ws.clone();
+                }
                 drop(store);
 
                 let _ = self.session_mgr.create_session(&id, &ws, title.as_deref(), None, None);
@@ -219,7 +413,8 @@ impl Dispatcher {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
                 let mut store = self.store.write().await;
-                let ws = store.workspace.project.clone();
+                // 会话文件躺在它自己的工作区目录下，删除前先取出来
+                let ws = thread_workspace(&store, thread_id);
                 let deleted = store.delete_thread(thread_id);
                 drop(store);
 
@@ -245,9 +440,20 @@ impl Dispatcher {
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 text 参数"))?;
 
                 let mut store = self.store.write().await;
-                store.add_user_message(thread_id, text);
-                store.set_thread_running(thread_id, true);
-                let ws = PathBuf::from(&store.workspace.project);
+                let target_tid = if store.threads.iter().any(|t| t.id == thread_id) {
+                    thread_id.to_string()
+                } else if !store.active_id.is_empty() && store.threads.iter().any(|t| t.id == store.active_id) {
+                    store.active_id.clone()
+                } else if let Some(first) = store.threads.first() {
+                    first.id.clone()
+                } else {
+                    store.create_thread(None, None)
+                };
+
+                store.active_id = target_tid.clone();
+                store.add_user_message(&target_tid, text);
+                store.set_thread_running(&target_tid, true);
+                let ws = PathBuf::from(thread_workspace(&store, &target_tid));
                 let provider_config = store.provider.clone();
                 drop(store);
 
@@ -258,7 +464,7 @@ impl Dispatcher {
                 let session_mgr = Arc::clone(&self.session_mgr);
                 let checkpoint_mgr = Arc::clone(&self.checkpoint_mgr);
                 let (event_tx, mut event_rx) = mpsc::channel::<AgentLoopEvent>(128);
-                let tid = thread_id.to_string();
+                let tid = target_tid.clone();
                 let prompt = text.to_string();
 
                 tokio::spawn(async move {
@@ -277,7 +483,7 @@ impl Dispatcher {
                 // 后台接收 Agent 事件，更新内存模型并通过 16ms 节流广播器推送到前端 UI
                 let store_clone = Arc::clone(&self.store);
                 let broadcaster_clone = self.broadcaster.clone();
-                let thread_id_clone = thread_id.to_string();
+                let thread_id_clone = target_tid.clone();
 
                 tokio::spawn(async move {
                     while let Some(event) = event_rx.recv().await {
@@ -311,6 +517,18 @@ impl Dispatcher {
                                     bc.broadcast_immediate().await;
                                 }
                             }
+                            AgentLoopEvent::AssistantStats { usage, duration_ms, turn_duration_ms } => {
+                                store.set_assistant_stats(
+                                    &thread_id_clone,
+                                    usage,
+                                    duration_ms,
+                                    turn_duration_ms,
+                                );
+                                drop(store);
+                                if let Some(ref bc) = broadcaster_clone {
+                                    bc.mark_dirty();
+                                }
+                            }
                             AgentLoopEvent::TurnFinished { .. } => {
                                 store.finish_turn(&thread_id_clone);
                                 drop(store);
@@ -320,7 +538,7 @@ impl Dispatcher {
                                 break;
                             }
                             AgentLoopEvent::Error { message } => {
-                                store.append_assistant_delta(&thread_id_clone, &format!("\n\n⚠️ **请求异常**：{message}"));
+                                store.append_assistant_delta(&thread_id_clone, &format!("\n\n**请求异常**：{message}"));
                                 store.finish_turn(&thread_id_clone);
                                 store.push_log("error", format!("Agent 执行异常: {message}"), None);
                                 drop(store);
@@ -485,10 +703,11 @@ impl Dispatcher {
 
             DEBUG_HOST_INFO => {
                 let home = crate::session::get_app_home();
+                let cfg_file = crate::session::get_config_path();
                 Ok(serde_json::json!({
                     "homeDir": home.to_string_lossy(),
                     "extensionsDir": home.join("extensions").to_string_lossy(),
-                    "configPath": home.join("config.json").to_string_lossy()
+                    "configPath": cfg_file.to_string_lossy()
                 }))
             }
 
@@ -526,16 +745,16 @@ impl Dispatcher {
             }
 
             CONFIG_GET => {
-                let home = crate::session::get_app_home();
-                let cfg_file = home.join("config.json");
+                let cfg_file = crate::session::get_config_path();
                 let store = self.store.read().await;
 
                 let mut saved = serde_json::json!({
                     "baseUrl": store.provider.base_url,
                     "apiKey": store.provider.api_key,
                     "model": store.provider.model,
-                    "contextWindow": 128000,
-                    "supportsImages": true
+                    "contextWindow": store.config.context_window,
+                    "supportsImages": store.config.supports_images,
+                    "customHeaders": store.provider.custom_headers
                 });
 
                 if cfg_file.exists() {
@@ -585,21 +804,251 @@ impl Dispatcher {
                     if let Some(cw) = cfg.get("contextWindow").and_then(|v| v.as_u64()) {
                         store.config.context_window = cw;
                     }
+                    if let Some(mot) = cfg.get("maxOutputTokens").and_then(|v| v.as_u64()) {
+                        store.config.max_output_tokens = Some(mot);
+                        store.provider.max_output_tokens = Some(mot);
+                    }
                     if let Some(si) = cfg.get("supportsImages").and_then(|v| v.as_bool()) {
                         store.config.supports_images = si;
                     }
+                    if let Some(ch) = cfg.get("customHeaders").and_then(|v| v.as_object()) {
+                        let mut map = std::collections::HashMap::new();
+                        for (k, v) in ch {
+                            if let Some(s) = v.as_str() {
+                                map.insert(k.clone(), s.to_string());
+                            }
+                        }
+                        store.provider.custom_headers = Some(map);
+                    }
+                    if let Some(proto) = cfg.get("protocol").and_then(|v| v.as_str()) {
+                        if let Ok(p) = serde_json::from_value::<crate::ai::ModelProtocol>(serde_json::Value::String(proto.to_string())) {
+                            store.provider.protocol = p;
+                        }
+                    }
 
-                    // 落盘 ~/.a-da/config.json
-                    let home = crate::session::get_app_home();
-                    let _ = std::fs::create_dir_all(&home);
-                    let cfg_file = home.join("config.json");
-                    let _ = std::fs::write(&cfg_file, serde_json::to_string_pretty(&store.provider).unwrap_or_default());
+                    // 同步回写当前激活的 provider entry
+                    let active_id = store.active_provider_id.clone();
+                    let base_url = store.provider.base_url.clone();
+                    let api_key = store.provider.api_key.clone();
+                    let protocol = store.provider.protocol;
+                    let custom_headers = store.provider.custom_headers.clone();
+                    let model = store.provider.model.clone();
+                    let context_window = store.config.context_window;
+                    let max_output_tokens = store.config.max_output_tokens;
+                    let supports_images = store.config.supports_images;
+
+                    if let Some(entry) = store.providers.iter_mut().find(|p| p.id == active_id) {
+                        entry.base_url = base_url;
+                        entry.api_key = api_key;
+                        entry.protocol = protocol;
+                        entry.custom_headers = custom_headers;
+                        if !entry.models.iter().any(|m| m.id == model) {
+                            entry.models.push(crate::ai::ModelEntry {
+                                id: model.clone(),
+                                name: Some(model),
+                                context_window: Some(context_window),
+                                max_output_tokens,
+                                supports_images: Some(supports_images),
+                            });
+                        }
+                    }
+
+                    let _ = save_app_config(&store);
                 }
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
                 Ok(serde_json::json!({ "error": null }))
             }
 
             CONFIG_CHECK_PROVIDER => {
                 Ok(serde_json::json!({ "message": "模型连接配置校验通过" }))
+            }
+
+            PROVIDER_LIST => {
+                let store = self.store.read().await;
+                Ok(serde_json::json!({
+                    "providers": store.providers,
+                    "activeProviderId": store.active_provider_id
+                }))
+            }
+
+            PROVIDER_SAVE => {
+                let provider_val = params.get("provider").cloned()
+                    .or_else(|| Some(params.clone()))
+                    .ok_or_else(|| ProtocolError::invalid_params("缺少 provider 参数"))?;
+
+                let entry: crate::ai::ProviderEntry = serde_json::from_value(provider_val)
+                    .map_err(|e| ProtocolError::invalid_params(format!("解析 provider 数据失败: {}", e)))?;
+
+                let mut store = self.store.write().await;
+                if let Some(existing) = store.providers.iter_mut().find(|p| p.id == entry.id) {
+                    *existing = entry.clone();
+                } else {
+                    store.providers.push(entry.clone());
+                }
+
+                if store.active_provider_id.is_empty() || store.active_provider_id == entry.id {
+                    store.active_provider_id = entry.id.clone();
+                    store.provider.base_url = entry.base_url.clone();
+                    store.provider.api_key = entry.api_key.clone();
+                    store.provider.protocol = entry.protocol;
+                    store.provider.custom_headers = entry.custom_headers.clone();
+                    if let Some(first_model) = entry.models.first() {
+                        store.provider.model = first_model.id.clone();
+                        store.config.model = first_model.id.clone();
+                        if let Some(cw) = first_model.context_window {
+                            store.config.context_window = cw;
+                        }
+                        if let Some(mot) = first_model.max_output_tokens {
+                            store.config.max_output_tokens = Some(mot);
+                            store.provider.max_output_tokens = Some(mot);
+                        }
+                        if let Some(si) = first_model.supports_images {
+                            store.config.supports_images = si;
+                        }
+                    }
+                }
+
+                let _ = save_app_config(&store);
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
+                Ok(serde_json::json!({ "ok": true, "provider": entry }))
+            }
+
+            PROVIDER_DELETE => {
+                let id = params.get("id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ProtocolError::invalid_params("缺少 id 参数"))?;
+
+                let mut store = self.store.write().await;
+                if store.providers.len() <= 1 {
+                    return Err(ProtocolError::invalid_params("至少保留一个供应商，无法删除最后一个供应商"));
+                }
+
+                store.providers.retain(|p| p.id != id);
+
+                if store.active_provider_id == id {
+                    if let Some(first) = store.providers.first().cloned() {
+                        store.active_provider_id = first.id.clone();
+                        store.provider.base_url = first.base_url.clone();
+                        store.provider.api_key = first.api_key.clone();
+                        store.provider.protocol = first.protocol;
+                        store.provider.custom_headers = first.custom_headers.clone();
+                        if let Some(first_model) = first.models.first() {
+                            store.provider.model = first_model.id.clone();
+                            store.config.model = first_model.id.clone();
+                            if let Some(cw) = first_model.context_window {
+                                store.config.context_window = cw;
+                            }
+                            if let Some(mot) = first_model.max_output_tokens {
+                                store.config.max_output_tokens = Some(mot);
+                                store.provider.max_output_tokens = Some(mot);
+                            }
+                            if let Some(si) = first_model.supports_images {
+                                store.config.supports_images = si;
+                            }
+                        }
+                    }
+                }
+
+                let _ = save_app_config(&store);
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
+                Ok(serde_json::json!({ "ok": true }))
+            }
+
+            PROVIDER_SET_ACTIVE => {
+                let id = params.get("id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ProtocolError::invalid_params("缺少 id 参数"))?;
+                let selected_model = params.get("model").and_then(|v| v.as_str());
+
+                let mut store = self.store.write().await;
+                let found = store.providers.iter().find(|p| p.id == id).cloned();
+                match found {
+                    Some(provider) => {
+                        store.active_provider_id = provider.id.clone();
+                        store.provider.base_url = provider.base_url.clone();
+                        store.provider.api_key = provider.api_key.clone();
+                        store.provider.protocol = provider.protocol;
+                        store.provider.custom_headers = provider.custom_headers.clone();
+
+                        let target_model = selected_model
+                            .and_then(|m| provider.models.iter().find(|item| item.id == m))
+                            .or_else(|| provider.models.first());
+
+                        if let Some(m) = target_model {
+                            store.provider.model = m.id.clone();
+                            store.config.model = m.id.clone();
+                            if let Some(cw) = m.context_window {
+                                store.config.context_window = cw;
+                            }
+                            if let Some(mot) = m.max_output_tokens {
+                                store.config.max_output_tokens = Some(mot);
+                                store.provider.max_output_tokens = Some(mot);
+                            }
+                            if let Some(si) = m.supports_images {
+                                store.config.supports_images = si;
+                            }
+                        } else if let Some(sm) = selected_model {
+                            store.provider.model = sm.to_string();
+                            store.config.model = sm.to_string();
+                        }
+
+                        let _ = save_app_config(&store);
+                        drop(store);
+
+                        if let Some(ref bc) = self.broadcaster {
+                            bc.broadcast_immediate().await;
+                        }
+
+                        Ok(serde_json::json!({ "ok": true }))
+                    }
+                    None => Err(ProtocolError::invalid_params(format!("未找到指定的供应商: {}", id))),
+                }
+            }
+
+            PROVIDER_FETCH_MODELS => {
+                let (protocol, base_url, api_key, custom_headers) = if let Some(id) = params.get("providerId").and_then(|v| v.as_str()) {
+                    let store = self.store.read().await;
+                    let found = store.providers.iter().find(|p| p.id == id).cloned();
+                    drop(store);
+                    if let Some(p) = found {
+                        (p.protocol, p.base_url, p.api_key, p.custom_headers)
+                    } else {
+                        return Err(ProtocolError::invalid_params(format!("未找到供应商: {}", id)));
+                    }
+                } else {
+                    let proto_str = params.get("protocol").and_then(|v| v.as_str()).unwrap_or("openai_chat");
+                    let protocol: crate::ai::ModelProtocol = serde_json::from_value(serde_json::Value::String(proto_str.to_string()))
+                        .map_err(|e| ProtocolError::invalid_params(format!("无效的协议类型: {}", e)))?;
+                    let base_url = params.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let api_key = params.get("apiKey").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let custom_headers = params.get("customHeaders").and_then(|v| {
+                        serde_json::from_value::<std::collections::HashMap<String, String>>(v.clone()).ok()
+                    });
+                    (protocol, base_url, api_key, custom_headers)
+                };
+
+                let models = fetch_remote_models(protocol, &base_url, &api_key, custom_headers.as_ref())
+                    .await
+                    .map_err(|e| ProtocolError::internal_error(e))?;
+
+                Ok(serde_json::json!({
+                    "models": models
+                }))
             }
 
             CONFIG_SET_APPROVAL => {
@@ -819,7 +1268,7 @@ impl Dispatcher {
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 text 参数"))?;
 
                 let store = self.store.read().await;
-                let ws = PathBuf::from(&store.workspace.project);
+                let ws = PathBuf::from(thread_workspace(&store, thread_id));
                 let provider_config = store.provider.clone();
                 drop(store);
 
@@ -1294,6 +1743,86 @@ impl Dispatcher {
             }
 
             _ => Err(ProtocolError::method_not_found(method)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_thread_workspace_follows_thread_binding() {
+        let mut store = AgentStore::new("E:/codes/default_ws".to_string());
+
+        // 会话自带工作区时，全局当前工作区再怎么变都不影响它
+        let bound = store.create_thread(
+            Some("绑定会话".to_string()),
+            Some("E:/codes/fpc_projects".to_string()),
+        );
+        store.workspace.project = "E:/codes/rust_projects/a_da/target/release".to_string();
+        assert_eq!(thread_workspace(&store, &bound), "E:/codes/fpc_projects");
+
+        // 只有历史遗留的空工作区会话，才退回当前工作区
+        let legacy = store.create_thread(Some("遗留会话".to_string()), None);
+        if let Some(t) = store.threads.iter_mut().find(|t| t.id == legacy) {
+            t.workspace.clear();
+        }
+        assert_eq!(
+            thread_workspace(&store, &legacy),
+            "E:/codes/rust_projects/a_da/target/release"
+        );
+
+        // 会话不存在时退回当前工作区，当前工作区也空则退回公共区
+        assert_eq!(
+            thread_workspace(&store, "thread_不存在"),
+            "E:/codes/rust_projects/a_da/target/release"
+        );
+        store.workspace.project.clear();
+        let public = store.public_workspace.clone();
+        assert_eq!(thread_workspace(&store, "thread_不存在"), public);
+    }
+
+    #[test]
+    fn test_assistant_stats_lands_on_current_card() {
+        use crate::ai::TokenUsage;
+
+        let mut store = AgentStore::new("E:/codes/default_ws".to_string());
+        let tid = store.create_thread(Some("遥测".to_string()), None);
+
+        let usage = TokenUsage {
+            prompt_tokens: 1234,
+            completion_tokens: 56,
+            total_tokens: 1290,
+            thinking_tokens: None,
+            cached_tokens: Some(1000),
+        };
+
+        // 1. 本步产出了文本：用量与耗时挂在当前流式卡片上
+        store.append_assistant_delta(&tid, "答案");
+        store.set_assistant_stats(&tid, Some(usage.clone()), 2500, 4100);
+        match store.threads.iter().find(|t| t.id == tid).unwrap().items.last().unwrap() {
+            Item::Assistant { text, usage: u, duration_ms, turn_duration_ms, .. } => {
+                assert_eq!(text, "答案");
+                assert_eq!(u.as_ref().map(|u| u.prompt_tokens), Some(1234));
+                assert_eq!(u.as_ref().and_then(|u| u.cached_tokens), Some(1000));
+                assert_eq!(*duration_ms, Some(2500));
+                assert_eq!(*turn_duration_ms, Some(4100));
+            }
+            other => panic!("应为助手卡片，实际: {other:?}"),
+        }
+
+        // 2. 本步只调了工具（没有文本卡片）：补一张隐藏卡片承载用量，
+        //    否则遥测条会停在上一轮的旧数字上
+        store.start_tool_call(&tid, "call_1", "read_file", "{}");
+        store.set_assistant_stats(&tid, Some(usage), 900, 5000);
+        match store.threads.iter().find(|t| t.id == tid).unwrap().items.last().unwrap() {
+            Item::Assistant { text, usage: u, duration_ms, .. } => {
+                assert!(text.is_empty(), "承载用量的补位卡片不带正文");
+                assert_eq!(u.as_ref().map(|u| u.completion_tokens), Some(56));
+                assert_eq!(*duration_ms, Some(900));
+            }
+            other => panic!("应为承载用量的助手卡片，实际: {other:?}"),
         }
     }
 }

@@ -75,7 +75,7 @@ mod tests {
     #[test]
     fn test_thread_lifecycle() {
         let mut store = AgentStore::new("E:/test".to_string());
-        let t1 = store.create_thread(Some("我的测试会话".to_string()));
+        let t1 = store.create_thread(Some("我的测试会话".to_string()), None);
         assert_eq!(store.active_id, t1);
         assert!(store.threads.iter().any(|t| t.id == t1));
 
@@ -326,6 +326,176 @@ mod tests {
         assert_eq!(caps.capabilities.hook_timeout_ms, 8888);
 
         // 清理测试目录
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    /// 会话与工作区严格绑定：指定工作区建会话 → 绑定它、落盘进它；
+    /// 切换聚焦 → 全局当前工作区跟着会话走
+    #[tokio::test]
+    async fn test_thread_create_binds_requested_workspace() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let store = Arc::new(RwLock::new(AgentStore::new("E:/codes/default_ws".to_string())));
+        let test_dir = std::env::temp_dir().join(format!("a_da_ws_bind_{}", uuid::Uuid::new_v4()));
+        let session_mgr = Arc::new(SessionManager::new(Some(test_dir.clone())));
+        let checkpoint_mgr = Arc::new(CheckpointManager::new(Some(test_dir.clone())));
+        let dispatcher = Dispatcher::new(
+            store.clone(),
+            session_mgr.clone(),
+            checkpoint_mgr,
+            Arc::new(subagents::SubagentManager::new()),
+            Arc::new(approval::ApprovalManager::new()),
+            Arc::new(PluginManager::new()),
+            Arc::new(SkillManager::new()),
+            None,
+        );
+
+        let ws_a = "E:/codes/fpc_projects";
+        let ws_b = "E:/codes/rust_projects/a_da/target/release";
+
+        // 1. 指定工作区新建会话
+        let created = dispatcher
+            .dispatch("thread.create", serde_json::json!({ "workspace": ws_a, "title": "工作区绑定校验" }))
+            .await
+            .expect("thread.create 分发失败");
+        let tid_a = created.get("threadId").and_then(|v| v.as_str()).unwrap().to_string();
+
+        {
+            let s = store.read().await;
+            let t = s.threads.iter().find(|t| t.id == tid_a).expect("会话未创建");
+            assert_eq!(t.workspace, ws_a, "会话必须绑定到调用方指定的工作区，而不是全局当前工作区");
+            assert_eq!(s.workspace.project, ws_a, "新建会话后当前工作区应随之切换");
+        }
+        assert!(
+            session_mgr.get_session_path(ws_a, &tid_a).exists(),
+            "会话文件应落在指定工作区的目录下"
+        );
+
+        // 2. 换一个工作区再建一个会话，此时全局当前工作区已变成 ws_b
+        let created_b = dispatcher
+            .dispatch("thread.create", serde_json::json!({ "workspace": ws_b }))
+            .await
+            .expect("thread.create 分发失败");
+        let tid_b = created_b.get("threadId").and_then(|v| v.as_str()).unwrap().to_string();
+        assert_eq!(store.read().await.workspace.project, ws_b);
+
+        // 3. 聚焦回第一个会话：全局当前工作区跟着它回到 ws_a
+        dispatcher
+            .dispatch("thread.focus", serde_json::json!({ "threadId": tid_a }))
+            .await
+            .expect("thread.focus 分发失败");
+        assert_eq!(store.read().await.workspace.project, ws_a);
+
+        // 4. 删除 ws_b 的会话：会话文件按会话自己的工作区定位，能被真正删掉
+        dispatcher
+            .dispatch("thread.delete", serde_json::json!({ "threadId": tid_b }))
+            .await
+            .expect("thread.delete 分发失败");
+        assert!(
+            !session_mgr.get_session_path(ws_b, &tid_b).exists(),
+            "删除会话必须落在会话自己的工作区目录，而不是当前工作区"
+        );
+
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_provider_management() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let test_dir = std::env::temp_dir().join(format!("a_da_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&test_dir);
+        unsafe {
+            std::env::set_var("A_DA_HOME", &test_dir);
+        }
+
+        let store = Arc::new(RwLock::new(AgentStore::new("E:/test".to_string())));
+        let session_mgr = Arc::new(SessionManager::new(Some(test_dir.clone())));
+        let checkpoint_mgr = Arc::new(CheckpointManager::new(Some(test_dir.clone())));
+        let subagent_mgr = Arc::new(subagents::SubagentManager::new());
+        let approval_mgr = Arc::new(approval::ApprovalManager::new());
+        let plugin_mgr = Arc::new(PluginManager::new());
+        let skill_mgr = Arc::new(SkillManager::new());
+        let dispatcher = Dispatcher::new(
+            store.clone(),
+            session_mgr,
+            checkpoint_mgr,
+            subagent_mgr,
+            approval_mgr,
+            plugin_mgr,
+            skill_mgr,
+            None,
+        );
+
+        // 1. 获取列表
+        let list_res = dispatcher
+            .dispatch("provider.list", serde_json::json!({}))
+            .await
+            .expect("provider.list 失败");
+        let providers = list_res.get("providers").and_then(|v| v.as_array()).unwrap();
+        assert!(!providers.is_empty(), "默认应有至少一个初始 provider");
+
+        // 2. 添加 Anthropic 供应商
+        let anthropic_provider = serde_json::json!({
+            "id": "anthropic-claude",
+            "name": "Anthropic Official",
+            "protocol": "anthropic",
+            "baseUrl": "https://api.anthropic.com",
+            "apiKey": "sk-ant-test",
+            "models": [
+                {
+                    "id": "claude-3-5-sonnet-20241022",
+                    "name": "Claude 3.5 Sonnet",
+                    "contextWindow": 200000,
+                    "maxOutputTokens": 8192,
+                    "supportsImages": true
+                }
+            ]
+        });
+
+        dispatcher
+            .dispatch("provider.save", serde_json::json!({ "provider": anthropic_provider }))
+            .await
+            .expect("provider.save 失败");
+
+        // 3. 激活新供应商
+        dispatcher
+            .dispatch("provider.setActive", serde_json::json!({ "id": "anthropic-claude", "model": "claude-3-5-sonnet-20241022" }))
+            .await
+            .expect("provider.setActive 失败");
+
+        {
+            let s = store.read().await;
+            assert_eq!(s.active_provider_id, "anthropic-claude");
+            assert_eq!(s.provider.protocol, crate::ai::ModelProtocol::Anthropic);
+            assert_eq!(s.provider.model, "claude-3-5-sonnet-20241022");
+            assert_eq!(s.config.context_window, 200000);
+            assert_eq!(s.config.max_output_tokens, Some(8192));
+            assert_eq!(s.config.supports_images, true);
+        }
+
+        // 4. 快照广播包含供应商数据
+        {
+            let s = store.read().await;
+            let snap = generate_snapshot(&s);
+            assert_eq!(snap.active_provider_id, "anthropic-claude");
+            assert!(snap.providers.iter().any(|p| p.id == "anthropic-claude"));
+        }
+
+        // 5. 删除非激活供应商
+        let old_id = providers[0].get("id").and_then(|v| v.as_str()).unwrap().to_string();
+        dispatcher
+            .dispatch("provider.delete", serde_json::json!({ "id": old_id }))
+            .await
+            .expect("provider.delete 失败");
+
+        {
+            let s = store.read().await;
+            assert!(!s.providers.iter().any(|p| p.id == old_id));
+        }
+
         let _ = std::fs::remove_dir_all(&test_dir);
     }
 }

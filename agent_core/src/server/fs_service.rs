@@ -55,7 +55,21 @@ pub fn list_roots(extra_roots: &[String]) -> Vec<FsRoot> {
 }
 
 pub fn list_directory(raw_path: &str, show_hidden: bool, limit: Option<usize>) -> Result<FsListing, ProtocolError> {
-    let target = PathBuf::from(raw_path);
+    #[cfg(windows)]
+    let normalized = {
+        let trimmed = raw_path.trim().replace('/', "\\");
+        if trimmed.len() == 2 && trimmed.ends_with(':') {
+            format!("{}\\", trimmed)
+        } else if trimmed.len() == 3 && trimmed.ends_with('\\') && trimmed.chars().nth(1) == Some(':') {
+            trimmed
+        } else {
+            trimmed
+        }
+    };
+    #[cfg(not(windows))]
+    let normalized = raw_path.trim().to_string();
+
+    let target = PathBuf::from(&normalized);
     if !target.exists() {
         return Err(ProtocolError::new(
             AppErrorCode::NotFound.code(),
@@ -128,7 +142,9 @@ pub fn list_directory(raw_path: &str, show_hidden: bool, limit: Option<usize>) -
     dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
-    let _total = dirs.len() + files.len();
+    let dirs_clone = dirs.clone();
+    let files_clone = files.clone();
+
     let max_limit = limit.unwrap_or(MAX_ENTRIES).min(MAX_ENTRIES);
 
     let mut entries = Vec::with_capacity(max_limit);
@@ -149,6 +165,8 @@ pub fn list_directory(raw_path: &str, show_hidden: bool, limit: Option<usize>) -
         path: target.to_string_lossy().replace('\\', "/"),
         parent,
         entries,
+        dirs: dirs_clone,
+        files: files_clone,
         truncated,
         omitted,
     })
@@ -181,4 +199,26 @@ pub fn make_directory(raw_path: &str) -> Result<String, ProtocolError> {
     })?;
 
     Ok(target.to_string_lossy().replace('\\', "/"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_list_directory_returns_dirs_and_files() {
+        let current_dir = std::env::current_dir().unwrap();
+        let listing = list_directory(&current_dir.to_string_lossy(), false, None).unwrap();
+        assert!(!listing.entries.is_empty(), "entries 不应为空");
+        assert_eq!(listing.entries.len(), listing.dirs.len() + listing.files.len());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_list_directory_windows_root() {
+        if Path::new("E:\\").exists() {
+            let listing = list_directory("E:/", false, None).unwrap();
+            assert!(!listing.dirs.is_empty() || !listing.files.is_empty(), "E:/ 应当能列出内容");
+        }
+    }
 }

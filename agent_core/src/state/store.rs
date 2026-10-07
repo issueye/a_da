@@ -27,6 +27,8 @@ pub struct AgentStore {
     pub workspace: WorkspaceSnapshot,
     pub config: ConfigSnapshot,
     pub provider: crate::ai::ProviderConfig,
+    pub providers: Vec<crate::ai::ProviderEntry>,
+    pub active_provider_id: String,
     pub pending_questions: Vec<PendingQuestionEntry>,
     pub public_workspace: String,
     pub appearance: String,
@@ -48,13 +50,19 @@ impl AgentStore {
         let mut prov = crate::ai::ProviderConfig {
             id: "default".to_string(),
             name: "默认大模型".to_string(),
+            protocol: crate::ai::ModelProtocol::OpenAiChat,
             base_url: std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
             api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
             model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string()),
+            max_output_tokens: Some(8192),
+            custom_headers: None,
         };
+        let mut providers_list: Vec<crate::ai::ProviderEntry> = Vec::new();
+        let mut active_pid = "default".to_string();
         let mut config_snapshot = ConfigSnapshot {
             model: prov.model.clone(),
             context_window: 128_000,
+            max_output_tokens: Some(8192),
             supports_images: true,
             approval: ApprovalMode::Auto,
             effort: Effort::Max,
@@ -62,11 +70,7 @@ impl AgentStore {
         };
         let mut appearance_str = "dark".to_string();
 
-        let cfg_file = if let Ok(custom) = std::env::var("A_DA_CONFIG") {
-            std::path::PathBuf::from(custom)
-        } else {
-            crate::session::get_app_home().join("config.json")
-        };
+        let cfg_file = crate::session::get_config_path();
 
         if cfg_file.exists() {
             if let Ok(content) = std::fs::read_to_string(&cfg_file) {
@@ -89,8 +93,21 @@ impl AgentStore {
                     if let Some(cw) = val.get("contextWindow").and_then(|v| v.as_u64()) {
                         config_snapshot.context_window = cw;
                     }
+                    if let Some(mot) = val.get("maxOutputTokens").and_then(|v| v.as_u64()) {
+                        config_snapshot.max_output_tokens = Some(mot);
+                        prov.max_output_tokens = Some(mot);
+                    }
                     if let Some(si) = val.get("supportsImages").and_then(|v| v.as_bool()) {
                         config_snapshot.supports_images = si;
+                    }
+                    if let Some(ch) = val.get("customHeaders").and_then(|v| v.as_object()) {
+                        let mut map = std::collections::HashMap::new();
+                        for (k, v) in ch {
+                            if let Some(s) = v.as_str() {
+                                map.insert(k.clone(), s.to_string());
+                            }
+                        }
+                        prov.custom_headers = Some(map);
                     }
                     if let Some(appr) = val.get("approval").and_then(|v| v.as_str()) {
                         config_snapshot.approval = match appr.to_lowercase().as_str() {
@@ -117,6 +134,59 @@ impl AgentStore {
                     if let Some(app) = val.get("appearance").and_then(|v| v.as_str()) {
                         if !app.is_empty() { appearance_str = app.to_string(); }
                     }
+
+                    if let Some(ap_id) = val.get("activeProviderId").and_then(|v| v.as_str()) {
+                        if !ap_id.is_empty() { active_pid = ap_id.to_string(); }
+                    }
+
+                    if let Some(p_array) = val.get("providers").and_then(|v| v.as_array()) {
+                        if let Ok(parsed_providers) = serde_json::from_value::<Vec<crate::ai::ProviderEntry>>(serde_json::Value::Array(p_array.clone())) {
+                            providers_list = parsed_providers;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 如果配置中未指定多供应商（旧版配置迁移），构造并填充默认供应商
+        if providers_list.is_empty() {
+            providers_list.push(crate::ai::ProviderEntry {
+                id: "default".to_string(),
+                name: "默认大模型".to_string(),
+                protocol: prov.protocol,
+                base_url: prov.base_url.clone(),
+                api_key: prov.api_key.clone(),
+                models: vec![crate::ai::ModelEntry {
+                    id: prov.model.clone(),
+                    name: Some(prov.model.clone()),
+                    context_window: Some(config_snapshot.context_window),
+                    max_output_tokens: config_snapshot.max_output_tokens,
+                    supports_images: Some(config_snapshot.supports_images),
+                }],
+                custom_headers: prov.custom_headers.clone(),
+            });
+        }
+
+        // 根据 activeProviderId 从 providers_list 同步更新 prov 与 config_snapshot
+        if let Some(active_entry) = providers_list.iter().find(|p| p.id == active_pid) {
+            prov.id = active_entry.id.clone();
+            prov.name = active_entry.name.clone();
+            prov.base_url = active_entry.base_url.clone();
+            prov.api_key = active_entry.api_key.clone();
+            prov.protocol = active_entry.protocol;
+            prov.custom_headers = active_entry.custom_headers.clone();
+            if let Some(first_m) = active_entry.models.first() {
+                prov.model = first_m.id.clone();
+                config_snapshot.model = first_m.id.clone();
+                if let Some(cw) = first_m.context_window {
+                    config_snapshot.context_window = cw;
+                }
+                if let Some(mot) = first_m.max_output_tokens {
+                    config_snapshot.max_output_tokens = Some(mot);
+                    prov.max_output_tokens = Some(mot);
+                }
+                if let Some(si) = first_m.supports_images {
+                    config_snapshot.supports_images = si;
                 }
             }
         }
@@ -197,6 +267,8 @@ impl AgentStore {
             },
             config: config_snapshot,
             provider: prov,
+            providers: providers_list,
+            active_provider_id: active_pid,
             pending_questions: Vec::new(),
             public_workspace: default_public_workspace,
             appearance: appearance_str,
@@ -217,9 +289,16 @@ impl AgentStore {
 
     /// 设置活动会话
     pub fn focus_thread(&mut self, thread_id: String) -> bool {
-        if self.threads.iter().any(|t| t.id == thread_id) {
+        if let Some(thread) = self.threads.iter().find(|t| t.id == thread_id) {
+            // 会话与工作区严格绑定：当前工作区跟随被聚焦的会话走，
+            // 否则 fs.roots / plugin.list / 新建会话这些"取当前工作区为默认值"的路径
+            // 会一直停留在启动时那个工作区上
+            let ws = thread.workspace.trim().to_string();
             self.active_id = thread_id.clone();
             self.ui.active_id = thread_id.clone();
+            if !ws.is_empty() {
+                self.workspace.project = ws;
+            }
             if !self.ui.open_tab_ids.contains(&thread_id) {
                 self.ui.open_tab_ids.push(thread_id);
             }
@@ -248,13 +327,20 @@ impl AgentStore {
     }
 
     /// 创建新会话
-    pub fn create_thread(&mut self, title: Option<String>) -> String {
+    ///
+    /// `workspace` 为空时继承当前工作区。传入工作区时会话即绑定到该工作区，
+    /// 后续 Agent 执行的沙箱根、会话落盘目录都以它为准。
+    pub fn create_thread(&mut self, title: Option<String>, workspace: Option<String>) -> String {
         let id = next_id("thread");
+        let ws = workspace
+            .map(|w| w.trim().to_string())
+            .filter(|w| !w.is_empty())
+            .unwrap_or_else(|| self.workspace.project.clone());
         let thread = Thread {
             id: id.clone(),
             title: title.unwrap_or_else(|| "新会话".to_string()),
             created_at: now_millis(),
-            workspace: self.workspace.project.clone(),
+            workspace: ws,
             items: Vec::new(),
             messages: Vec::new(),
             mode: Some(self.config.mode),
@@ -274,7 +360,7 @@ impl AgentStore {
         self.threads.retain(|t| t.id != thread_id);
         self.close_tab(thread_id);
         if self.threads.is_empty() {
-            self.create_thread(None);
+            self.create_thread(None, None);
         }
         self.threads.len() < prev_len
     }
@@ -382,8 +468,45 @@ impl AgentStore {
                 streaming: Some(true),
                 duration_ms: None,
                 turn_duration_ms: None,
+                usage: None,
             });
         }
+    }
+
+    /// 记录一次大模型调用的真实用量与耗时
+    ///
+    /// 遥测条只认"最后一次请求"的真实数字，所以这里既要在当前流式助手卡片上落数，
+    /// 也要在本步只调了工具、没产出文本时补一张隐藏卡片承载它——否则界面会一直
+    /// 显示上一轮的旧数字。
+    pub fn set_assistant_stats(
+        &mut self,
+        thread_id: &str,
+        usage: Option<crate::ai::TokenUsage>,
+        duration_ms: u64,
+        turn_duration_ms: u64,
+    ) {
+        let Some(t) = self.get_thread_mut(thread_id) else { return };
+
+        if matches!(t.items.last(), Some(Item::Assistant { .. })) {
+            if let Some(Item::Assistant { usage: u, duration_ms: d, turn_duration_ms: td, .. }) =
+                t.items.last_mut()
+            {
+                *u = usage;
+                *d = Some(duration_ms);
+                *td = Some(turn_duration_ms);
+            }
+            return;
+        }
+
+        t.items.push(Item::Assistant {
+            id: next_id("item_asst"),
+            at: now_millis(),
+            text: String::new(),
+            streaming: None,
+            duration_ms: Some(duration_ms),
+            turn_duration_ms: Some(turn_duration_ms),
+            usage,
+        });
     }
 
     /// 记录工具调用开始

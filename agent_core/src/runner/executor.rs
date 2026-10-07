@@ -131,9 +131,12 @@ pub fn execute_tool_call_extended<'a>(
                     let config = parent_config.cloned().unwrap_or_else(|| ProviderConfig {
                         id: "gemini".to_string(),
                         name: "Gemini".to_string(),
+                        protocol: crate::ai::ModelProtocol::OpenAiChat,
                         api_key: String::new(),
                         base_url: String::new(),
                         model: "gemini-2.5-flash".to_string(),
+                        max_output_tokens: Some(8192),
+                        custom_headers: None,
                     });
 
                     let res = crate::subagents::run_subagent(crate::subagents::RunSubagentOptions {
@@ -158,7 +161,30 @@ pub fn execute_tool_call_extended<'a>(
                 ToolResult::error(format!("找不到指定的子智能体配置: {}", subagent_id))
             }
         }
-        unknown => ToolResult::error(format!("未知工具: {}", unknown)),
+        unknown => {
+            let plugin_mgr = crate::plugins::PluginManager::new();
+            let plugins = plugin_mgr.scan_plugins(Some(workspace.to_str().unwrap_or("")));
+            let mut target_plugin_path = None;
+
+            for item in plugins {
+                if !item.enabled {
+                    continue;
+                }
+                if item.tools.iter().any(|t| t.name == unknown) {
+                    target_plugin_path = Some(std::path::PathBuf::from(item.file_path));
+                    break;
+                }
+            }
+
+            if let Some(p_path) = target_plugin_path {
+                match crate::plugins::PluginSandbox::call_tool(&p_path, unknown, args, workspace, 30).await {
+                    Ok(res) => res,
+                    Err(e) => ToolResult::error(format!("插件工具 [{}] 执行失败: {}", unknown, e)),
+                }
+            } else {
+                ToolResult::error(format!("未知工具: {}", unknown))
+            }
+        }
     };
 
         AgentMessage::ToolResult {

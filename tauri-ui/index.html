@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>a_da Agent</title>
+    <style>
+      /* 基础重置与无边框拖拽区域适配 */
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      html, body, #root {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      }
+      /* 可选中文本区域恢复正常选择 */
+      .selectable, input, textarea, pre, code {
+        user-select: text !important;
+        -webkit-user-select: text !important;
+      }
+    </style>
+  </head>
+  <body class="bg-[#18181b] text-[#f4f4f5]">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -40,14 +40,83 @@ pub enum StreamDelta {
     Error { error: String },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ModelProtocol {
+    #[serde(rename = "openai_chat")]
+    OpenAiChat,
+    #[serde(rename = "anthropic")]
+    Anthropic,
+    #[serde(rename = "openai_responses")]
+    OpenAiResponses,
+}
+
+impl Default for ModelProtocol {
+    fn default() -> Self {
+        ModelProtocol::OpenAiChat
+    }
+}
+
+impl ModelProtocol {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ModelProtocol::OpenAiChat => "openai_chat",
+            ModelProtocol::Anthropic => "anthropic",
+            ModelProtocol::OpenAiResponses => "openai_responses",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "anthropic" | "claude" => ModelProtocol::Anthropic,
+            "openai_responses" | "responses" | "openai-responses" => ModelProtocol::OpenAiResponses,
+            _ => ModelProtocol::OpenAiChat,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelEntry {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_images: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderEntry {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub protocol: ModelProtocol,
+    pub base_url: String,
+    pub api_key: String,
+    #[serde(default)]
+    pub models: Vec<ModelEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_headers: Option<std::collections::HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConfig {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub protocol: ModelProtocol,
     pub base_url: String,
     pub api_key: String,
     pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_headers: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

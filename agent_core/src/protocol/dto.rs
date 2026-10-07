@@ -163,6 +163,10 @@ pub enum Item {
         duration_ms: Option<u64>,
         #[serde(rename = "turnDurationMs", skip_serializing_if = "Option::is_none")]
         turn_duration_ms: Option<u64>,
+        /// 本次请求模型真正返回的用量（驼峰：promptTokens/completionTokens/totalTokens/cachedTokens）。
+        /// 界面遥测条与单条回复的 Token 徽章只认它，不做事后估算。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<crate::ai::TokenUsage>,
     },
     #[serde(rename = "tool")]
     Tool {
@@ -280,6 +284,8 @@ pub struct ConfigSnapshot {
     pub model: String,
     #[serde(rename = "contextWindow")]
     pub context_window: u64,
+    #[serde(rename = "maxOutputTokens", skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
     #[serde(rename = "supportsImages")]
     pub supports_images: bool,
     pub approval: ApprovalMode,
@@ -332,6 +338,10 @@ pub struct ClientSnapshot {
     pub public_workspace: String,
     pub appearance: String,
     pub ui: UiSnapshot,
+    #[serde(default)]
+    pub providers: Vec<crate::ai::ProviderEntry>,
+    #[serde(rename = "activeProviderId", default)]
+    pub active_provider_id: String,
 }
 
 /// 文件树列表条目
@@ -351,6 +361,10 @@ pub struct FsListing {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     pub entries: Vec<FsEntry>,
+    #[serde(default)]
+    pub dirs: Vec<FsEntry>,
+    #[serde(default)]
+    pub files: Vec<FsEntry>,
     pub truncated: bool,
     pub omitted: usize,
 }

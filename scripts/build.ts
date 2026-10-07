@@ -24,8 +24,25 @@ console.log('\x1b[1;36m=========================================================
 
 // 步骤 1：编译纯 Rust 原生后端核心 (agent_core)
 console.log('\x1b[33m[步骤 1/3]\x1b[0m 正在使用 Cargo 编译纯 Rust 后端核心 (agent_core)...')
-const cargoProc = Bun.spawnSync(['cargo', 'build', '--release'], {
-  cwd: path.join(root, 'agent_core'),
+
+function getCargoConfig(): { cmd: string; env: Record<string, string | undefined> } {
+  const toolchainBin = 'C:\\Users\\issue\\.rustup\\toolchains\\stable-x86_64-pc-windows-msvc\\bin'
+  const customPath = existsSync(toolchainBin)
+    ? `${toolchainBin};${process.env.PATH ?? ''}`
+    : process.env.PATH
+
+  const directCargo = path.join(toolchainBin, process.platform === 'win32' ? 'cargo.exe' : 'cargo')
+  if (existsSync(directCargo)) {
+    return { cmd: directCargo, env: { ...process.env, PATH: customPath } }
+  }
+
+  return { cmd: 'cargo', env: { ...process.env, PATH: customPath } }
+}
+
+const { cmd: cargoCmd, env: cargoEnv } = getCargoConfig()
+const cargoProc = Bun.spawnSync([cargoCmd, 'build', '--release', '-p', 'agent_core'], {
+  cwd: root,
+  env: cargoEnv,
   stdio: ['inherit', 'inherit', 'inherit'],
 })
 if (cargoProc.exitCode !== 0) {
@@ -33,16 +50,15 @@ if (cargoProc.exitCode !== 0) {
   process.exit(1)
 }
 
-const compiledCore = path.join(
-  root,
-  'agent_core',
-  'target',
-  'release',
-  process.platform === 'win32' ? 'agent_core.exe' : 'agent_core'
-)
-const targetCore = path.join(distDir, process.platform === 'win32' ? 'agent_core.exe' : 'agent_core')
-if (!existsSync(compiledCore)) {
-  console.error(`\x1b[31m[错误] 未找到 Cargo 编译产物: ${compiledCore}\x1b[0m`)
+const exeName = process.platform === 'win32' ? 'agent_core.exe' : 'agent_core'
+const candidateCorePaths = [
+  path.join(root, 'target', 'release', exeName),
+  path.join(root, 'agent_core', 'target', 'release', exeName),
+]
+const compiledCore = candidateCorePaths.find((p) => existsSync(p))
+const targetCore = path.join(distDir, exeName)
+if (!compiledCore) {
+  console.error(`\x1b[31m[错误] 未找到 Cargo 编译产物，已检查: ${candidateCorePaths.join(', ')}\x1b[0m`)
   process.exit(1)
 }
 copyFileSync(compiledCore, targetCore)

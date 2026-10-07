@@ -13,7 +13,11 @@
     "typecheck": "tsc --noEmit",
     "screenshot": "bun screenshot.ts",
     "test": "bun test",
-    "test:guarded": "bun scripts/test-run.ts"
+    "test:guarded": "bun scripts/test-run.ts",
+    "tauri:ui:dev": "npm --prefix tauri-ui run dev",
+    "tauri:ui:build": "npm --prefix tauri-ui run build",
+    "tauri:dev": "bunx @tauri-apps/cli dev",
+    "tauri:build": "bunx @tauri-apps/cli build"
   },
   "dependencies": {
     "eventsource-parser": "^4.1.0",

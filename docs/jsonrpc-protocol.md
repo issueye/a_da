@@ -264,7 +264,7 @@ UI 进程（a-da.exe）
 | 类型 | 来源 | 说明 |
 |---|---|---|
 | `Thread` | `src/agent/types.ts:140` | `id/title/createdAt/workspace/items/messages/mode/parentId/subagentId/isSubagent/lastSystemPromptChars/lastToolSpecsChars/pluginData` |
-| `Item` | `src/agent/types.ts:31` | user / assistant / thinking / tool / notice / compact 六类 |
+| `Item` | `src/agent/types.ts:31` | user / assistant / thinking / tool / notice / compact 六类；`assistant` 卡片带 `usage`（驼峰 TokenUsage）与 `durationMs`/`turnDurationMs`，是遥测条与单条回复 Token 徽章的唯一数据源 |
 | `AgentMessage` | `src/agent/core/types.ts` | `role/content/images/usage/...` |
 | `AgentQuestion` | `src/agent/types.ts:20` | 提问卡（choices/allowText/status） |
 | `DebugEntry` | `src/agent/types.ts:165` | 调试日志条目（**分页发**） |

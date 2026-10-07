@@ -30,6 +30,16 @@ pub fn get_app_home() -> PathBuf {
     PathBuf::from(".a-da")
 }
 
+/// 获取 a-da 配置文件路径，优先遵循 A_DA_CONFIG 环境变量
+pub fn get_config_path() -> PathBuf {
+    if let Ok(cfg) = std::env::var("A_DA_CONFIG") {
+        if !cfg.trim().is_empty() {
+            return PathBuf::from(cfg.trim());
+        }
+    }
+    get_app_home().join("config.json")
+}
+
 /// 会话管理器
 #[derive(Debug, Clone)]
 pub struct SessionManager {
@@ -535,12 +545,21 @@ impl SessionManager {
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(header.updated_at);
 
-            let final_workspace = if !header.workspace.trim().is_empty() {
-                header.workspace.clone()
-            } else if let Some(ws) = &pointer_ws {
-                ws.clone()
-            } else {
-                std::env::current_dir().unwrap_or_default().to_string_lossy().to_string()
+            // 工作区归属：会话头 → 目录边车文件 → 公共区。
+            // 不回落到进程当前目录：从哪个目录启动进程，不代表历史会话属于那个目录
+            let final_workspace = {
+                let header_ws = header.workspace.trim();
+                let pointer = pointer_ws
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|ws| !ws.is_empty());
+                if !header_ws.is_empty() {
+                    header_ws.to_string()
+                } else if let Some(ws) = pointer {
+                    ws.to_string()
+                } else {
+                    get_app_home().join("workspace").to_string_lossy().to_string()
+                }
             };
 
             let mut raw_entries: Vec<SessionEntry> = Vec::new();
@@ -620,6 +639,10 @@ impl SessionManager {
                                 });
                             }
                             AgentMessage::Assistant { content, thinking, tool_calls, usage, duration_ms, turn_duration_ms, stop_reason, error_message, .. } => {
+                                // 用量与耗时是遥测条与单条回复徽章的数据源，恢复时原样带回卡片
+                                let restored_usage = usage
+                                    .as_ref()
+                                    .and_then(|v| serde_json::from_value::<crate::ai::TokenUsage>(v.clone()).ok());
                                 let mut asst_val = serde_json::json!({
                                     "role": "assistant",
                                     "content": &content,
@@ -709,6 +732,7 @@ impl SessionManager {
                                         streaming: Some(false),
                                         duration_ms,
                                         turn_duration_ms,
+                                        usage: restored_usage,
                                     });
                                 }
                             }
@@ -1044,6 +1068,61 @@ mod tests {
         }
 
         // 5. 清理
+        let _ = fs::remove_dir_all(temp_dir);
+        Ok(())
+    }
+
+    /// 恢复会话时用量与耗时必须回到卡片上，否则重新打开的历史会话遥测全是 0
+    #[test]
+    fn test_restore_keeps_assistant_usage_and_durations() -> Result<()> {
+        let temp_dir = std::env::temp_dir().join(format!("a_da_test_{}", uuid::Uuid::new_v4()));
+        let manager = SessionManager::new(Some(temp_dir.clone()));
+
+        let ws = "E:/code/test_ws";
+        let sid = "session_usage_restore";
+        manager.create_session(sid, ws, Some("用量恢复测试"), None, None)?;
+        manager.append_message(
+            sid,
+            AgentMessage::Assistant {
+                content: "答案".to_string(),
+                thinking: Some("推理".to_string()),
+                tool_calls: None,
+                stop_reason: Some("stop".to_string()),
+                error_message: None,
+                timestamp: Some(2000),
+                usage: Some(serde_json::json!({
+                    "promptTokens": 1234,
+                    "completionTokens": 56,
+                    "totalTokens": 1290,
+                    "cachedTokens": 1000,
+                })),
+                duration_ms: Some(2500),
+                turn_duration_ms: Some(4100),
+            },
+            Some(ws),
+        )?;
+
+        let threads = manager.restore_all_threads();
+        let thread = threads.iter().find(|t| t.id == sid).expect("会话未恢复");
+
+        let (usage, duration_ms, turn_duration_ms) = thread
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Assistant { text, usage, duration_ms, turn_duration_ms, .. } if text == "答案" => {
+                    Some((usage.clone(), *duration_ms, *turn_duration_ms))
+                }
+                _ => None,
+            })
+            .expect("助手卡片未恢复");
+
+        let usage = usage.expect("usage 不能丢");
+        assert_eq!(usage.prompt_tokens, 1234);
+        assert_eq!(usage.completion_tokens, 56);
+        assert_eq!(usage.cached_tokens, Some(1000));
+        assert_eq!(duration_ms, Some(2500));
+        assert_eq!(turn_duration_ms, Some(4100));
+
         let _ = fs::remove_dir_all(temp_dir);
         Ok(())
     }

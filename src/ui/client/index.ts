@@ -92,7 +92,7 @@ export async function resolveAgentClient(
 ): Promise<{
   client: AgentClient
   shutdown: () => void
-  info: { transport: 'inprocess' | 'ws'; port?: number; pid?: number; url?: string }
+  info: { transport: 'inprocess' | 'ws'; port?: number; pid?: number; url?: string; execPath?: string }
 }> {
   const explicit = process.env.A_DA_TRANSPORT
   const isStandalone = typeof Bun !== 'undefined' ? Boolean(Bun.isStandaloneExecutable) : true
@@ -135,6 +135,6 @@ export async function resolveAgentClient(
   return {
     client,
     shutdown,
-    info: { transport: 'ws', port: host.port, pid: host.pid, url: host.url },
+    info: { transport: 'ws', port: host.port, pid: host.pid, url: host.url, execPath: host.execPath },
   }
 }

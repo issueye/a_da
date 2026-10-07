@@ -10,7 +10,7 @@ use super::types::{
     PluginManifest, PluginScope, PluginToolDeclaration, PluginToolInfo,
     ResolvedPluginCapabilitiesDto,
 };
-use crate::session::get_app_home;
+use crate::session::{get_app_home, get_config_path};
 
 pub struct PluginManager;
 
@@ -22,7 +22,7 @@ impl PluginManager {
     /// 获取配置中已禁用的插件集合
     pub fn load_disabled_plugins(&self) -> HashSet<String> {
         let mut disabled = HashSet::new();
-        let cfg_file = get_app_home().join("config.json");
+        let cfg_file = get_config_path();
         if cfg_file.exists() {
             if let Ok(content) = fs::read_to_string(&cfg_file) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -41,9 +41,10 @@ impl PluginManager {
 
     /// 切换插件启停状态并持久化至 ~/.a-da/config.json
     pub fn toggle_plugin(&self, plugin_id: &str, enabled: bool) -> Result<()> {
-        let home = get_app_home();
-        fs::create_dir_all(&home)?;
-        let cfg_file = home.join("config.json");
+        let cfg_file = get_config_path();
+        if let Some(parent) = cfg_file.parent() {
+            fs::create_dir_all(parent)?;
+        }
 
         let mut val = if cfg_file.exists() {
             let content = fs::read_to_string(&cfg_file)?;
@@ -79,7 +80,7 @@ impl PluginManager {
     /// 读取插件能力开关
     pub fn get_capabilities(&self, _workspace: Option<&str>) -> ResolvedPluginCapabilitiesDto {
         let mut caps = PluginCapabilities::default();
-        let cfg_file = get_app_home().join("config.json");
+        let cfg_file = get_config_path();
         if cfg_file.exists() {
             if let Ok(content) = fs::read_to_string(&cfg_file) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -122,9 +123,10 @@ impl PluginManager {
 
     /// 保存插件能力设置
     pub fn save_capabilities(&self, patch: &serde_json::Value) -> Result<()> {
-        let home = get_app_home();
-        fs::create_dir_all(&home)?;
-        let cfg_file = home.join("config.json");
+        let cfg_file = get_config_path();
+        if let Some(parent) = cfg_file.parent() {
+            fs::create_dir_all(parent)?;
+        }
         let mut val = if cfg_file.exists() {
             let content = fs::read_to_string(&cfg_file)?;
             serde_json::from_str::<serde_json::Value>(&content).unwrap_or(serde_json::json!({}))
@@ -150,9 +152,10 @@ impl PluginManager {
 
     /// 保存插件特定配置
     pub fn save_config(&self, plugin_id: &str, values: &serde_json::Value) -> Result<()> {
-        let home = get_app_home();
-        fs::create_dir_all(&home)?;
-        let cfg_file = home.join("config.json");
+        let cfg_file = get_config_path();
+        if let Some(parent) = cfg_file.parent() {
+            fs::create_dir_all(parent)?;
+        }
         let mut val = if cfg_file.exists() {
             let content = fs::read_to_string(&cfg_file)?;
             serde_json::from_str::<serde_json::Value>(&content).unwrap_or(serde_json::json!({}))
@@ -183,7 +186,7 @@ impl PluginManager {
 
     /// 读取全部插件配置
     pub fn read_configs(&self) -> serde_json::Value {
-        let cfg_file = get_app_home().join("config.json");
+        let cfg_file = get_config_path();
         if cfg_file.exists() {
             if let Ok(content) = fs::read_to_string(&cfg_file) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -329,19 +332,41 @@ impl PluginManager {
                             }
                         }
 
-                        // 探查导出的工具名
-                        let tool_name = plugin_name.replace('-', "_");
+                        // 探查导出的工具名：优先从源码中匹配 name: 'xxx'，回退到 plugin_name.replace('-', "_")
+                        let tool_name = if let Some(cap) = content.find("name: '").or_else(|| content.find("name: \"")) {
+                            let after = &content[cap + 7..];
+                            if let Some(end) = after.find('\'').or_else(|| after.find('"')) {
+                                after[..end].to_string()
+                            } else {
+                                plugin_name.replace('-', "_")
+                            }
+                        } else {
+                            plugin_name.replace('-', "_")
+                        };
+
+                        let params = if tool_name == "web_search" {
+                            serde_json::json!({
+                                "type": "object",
+                                "properties": {
+                                    "query": { "type": "string", "description": "需要联网检索的关键词或查询语句" }
+                                },
+                                "required": ["query"]
+                            })
+                        } else {
+                            serde_json::json!({ "type": "object", "properties": {} })
+                        };
+
                         tools.push(PluginToolInfo {
                             name: tool_name.clone(),
                             description: desc.clone(),
-                            parameters: Some(serde_json::json!({ "type": "object", "properties": {} })),
+                            parameters: Some(params.clone()),
                             is_write: false,
                         });
                         tools_decl.push(PluginToolDeclaration {
                             name: tool_name,
                             label: Some(plugin_name.clone()),
                             description: desc.clone(),
-                            parameters: serde_json::json!({ "type": "object", "properties": {} }),
+                            parameters: params,
                         });
                     }
                 }

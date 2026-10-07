@@ -1,37 +1,28 @@
 [package]
 name = "agent_core"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
 
 [dependencies]
-tokio = { version = "1.43", features = ["full"] }
-tokio-tungstenite = "0.26"
-futures-util = "0.3"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-clap = { version = "4.5", features = ["derive"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-anyhow = "1.0"
-thiserror = "2.0"
-similar = "2.7"
-uuid = { version = "1.15", features = ["v4"] }
-chrono = { version = "0.4", features = ["serde"] }
-sha2 = "0.10"
-base64 = "0.22"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
-tokio-stream = "0.1"
-boa_engine = "0.22.0"
-oxc_allocator = "0.146.0"
-oxc_parser = "0.146.0"
-oxc_codegen = "0.146.0"
-oxc_span = "0.146.0"
-oxc_transformer = "0.146.0"
-oxc_semantic = "0.146.0"
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tokio-stream = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+similar = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+reqwest = { workspace = true }
 
-
-
-
-
-
-
+# 引入独立的 TS 脚本与转译引擎
+ts_engine = { workspace = true }

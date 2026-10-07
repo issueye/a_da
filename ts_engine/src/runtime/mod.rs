@@ -1,4 +1,3 @@
-use crate::compiler::oxc_strip_types;
 use boa_engine::{
     builtins::promise::ResolvingFunctions,
     object::builtins::JsPromise,
@@ -26,6 +25,8 @@ thread_local! {
     static ASYNC_HANDLERS: RefCell<HashMap<&'static str, AsyncHandler>> = RefCell::new(HashMap::new());
     /// 当前关联的 Tokio 运行时调度句柄
     static TOKIO_HANDLE: RefCell<Option<tokio::runtime::Handle>> = RefCell::new(None);
+    /// 等待所有未决任务排空的回调通道队列
+    static PENDING_IDLE_WAITERS: RefCell<Vec<oneshot::Sender<()>>> = RefCell::new(Vec::new());
 }
 
 type AsyncHandler = Arc<dyn Fn(Vec<String>) -> BoxFuture<'static, Result<String, String>> + Send + Sync + 'static>;
@@ -53,6 +54,10 @@ pub enum EventLoopMsg {
         fn_name: String,
         args_json: String,
         response_tx: oneshot::Sender<Result<String, String>>,
+    },
+    /// 等待当前所有未决 Promise 与微任务全部完成（达到空闲状态）
+    WaitIdle {
+        response_tx: oneshot::Sender<()>,
     },
     /// 终止专有事件循环
     Terminate,
@@ -85,22 +90,56 @@ impl PureTsRuntime {
                 TOKIO_HANDLE.with(|cell| *cell.borrow_mut() = tokio_handle);
 
                 // 自动装配 P0 基础运行底座 (process, path, Buffer, EventEmitter, require)
-                if let Err(err) = crate::kernel::api::inject_p0_environment(&mut ctx, ws_for_thread.as_deref()) {
+                if let Err(err) = crate::env::inject_p0_environment(&mut ctx, ws_for_thread.as_deref()) {
                     tracing::error!("P0 基础运行底座注入失败: {err}");
                 }
 
-                // 注入基础全局能力，例如 console.log
+                // 注入基础全局能力，例如 console (log, error, warn, info)
                 let console_log = NativeFunction::from_copy_closure(|_this, args, ctx| {
                     let parts: Vec<String> = args
                         .iter()
                         .map(|v| v.to_string(ctx).unwrap_or_default().to_std_string_escaped())
                         .collect();
+                    println!("{}", parts.join(" "));
                     tracing::info!("[TS Console] {}", parts.join(" "));
+                    Ok(JsValue::undefined())
+                });
+
+                let console_info = NativeFunction::from_copy_closure(|_this, args, ctx| {
+                    let parts: Vec<String> = args
+                        .iter()
+                        .map(|v| v.to_string(ctx).unwrap_or_default().to_std_string_escaped())
+                        .collect();
+                    println!("{}", parts.join(" "));
+                    tracing::info!("[TS Console] {}", parts.join(" "));
+                    Ok(JsValue::undefined())
+                });
+
+                let console_error = NativeFunction::from_copy_closure(|_this, args, ctx| {
+                    let parts: Vec<String> = args
+                        .iter()
+                        .map(|v| v.to_string(ctx).unwrap_or_default().to_std_string_escaped())
+                        .collect();
+                    eprintln!("{}", parts.join(" "));
+                    tracing::error!("[TS Console Error] {}", parts.join(" "));
+                    Ok(JsValue::undefined())
+                });
+
+                let console_warn = NativeFunction::from_copy_closure(|_this, args, ctx| {
+                    let parts: Vec<String> = args
+                        .iter()
+                        .map(|v| v.to_string(ctx).unwrap_or_default().to_std_string_escaped())
+                        .collect();
+                    eprintln!("{}", parts.join(" "));
+                    tracing::warn!("[TS Console Warn] {}", parts.join(" "));
                     Ok(JsValue::undefined())
                 });
                 
                 let console_obj = boa_engine::object::ObjectInitializer::new(&mut ctx)
                     .function(console_log, boa_engine::js_string!("log"), 0)
+                    .function(console_info, boa_engine::js_string!("info"), 0)
+                    .function(console_error, boa_engine::js_string!("error"), 0)
+                    .function(console_warn, boa_engine::js_string!("warn"), 0)
                     .build();
                 ctx.register_global_property(
                     boa_engine::js_string!("console"),
@@ -155,8 +194,8 @@ impl PureTsRuntime {
                 while let Ok(msg) = rx.recv() {
                     match msg {
                         EventLoopMsg::Execute { source_code, filename, response_tx } => {
-                            // 1. OXC 内存中微秒级类型擦除 (Strip Types)
-                            let js_code = match oxc_strip_types(&source_code, filename.as_deref()) {
+                            // 1. OXC 内存中微秒级类型擦除与模块转换
+                            let js_code = match crate::compiler::transpile_ts_module(&source_code, filename.as_deref()) {
                                 Ok(code) => code,
                                 Err(err) => {
                                     let _ = response_tx.send(Err(err));
@@ -193,6 +232,15 @@ impl PureTsRuntime {
                                 }
                                 // 关键时序：每次宏任务完成 resolve/reject 之后，必须立即排空微任务
                                 let _ = ctx.run_jobs();
+                            }
+
+                            // 检查所有异步任务是否已完全排空，若是则唤醒等待空闲的线程
+                            let is_empty = PENDING_PROMISES.with(|cell| cell.borrow().is_empty());
+                            if is_empty {
+                                let waiters = PENDING_IDLE_WAITERS.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+                                for w in waiters {
+                                    let _ = w.send(());
+                                }
                             }
                         }
                         EventLoopMsg::RegisterAsyncFn { name, handler } => {
@@ -252,6 +300,14 @@ impl PureTsRuntime {
                             let _ = ctx.eval(Source::from_bytes(&js_invocation));
                             let _ = ctx.run_jobs();
                         }
+                        EventLoopMsg::WaitIdle { response_tx } => {
+                            let is_empty = PENDING_PROMISES.with(|cell| cell.borrow().is_empty());
+                            if is_empty {
+                                let _ = response_tx.send(());
+                            } else {
+                                PENDING_IDLE_WAITERS.with(|cell| cell.borrow_mut().push(response_tx));
+                            }
+                        }
                         EventLoopMsg::Terminate => break,
                     }
                 }
@@ -266,7 +322,7 @@ impl PureTsRuntime {
             let rel = args.get(0).cloned().unwrap_or_default();
             let base = ws_r.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
             async move {
-                let safe = crate::tools::sandbox::check_workspace_sandbox(&base, &rel)
+                let safe = crate::sandbox::check_workspace_sandbox(&base, &rel)
                     .map_err(|e| format!("沙箱拦截: {e}"))?;
                 tokio::fs::read_to_string(&safe).await.map_err(|e| format!("读取失败: {e}"))
             }
@@ -278,7 +334,7 @@ impl PureTsRuntime {
             let content = args.get(1).cloned().unwrap_or_default();
             let base = ws_w.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
             async move {
-                let safe = crate::tools::sandbox::check_workspace_sandbox(&base, &rel)
+                let safe = crate::sandbox::check_workspace_sandbox(&base, &rel)
                     .map_err(|e| format!("沙箱拦截: {e}"))?;
                 if let Some(parent) = safe.parent() {
                     let _ = tokio::fs::create_dir_all(parent).await;
@@ -293,7 +349,7 @@ impl PureTsRuntime {
             let rel = args.get(0).cloned().unwrap_or_default();
             let base = ws_mkdir.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
             async move {
-                let safe = crate::tools::sandbox::check_workspace_sandbox(&base, &rel)
+                let safe = crate::sandbox::check_workspace_sandbox(&base, &rel)
                     .map_err(|e| format!("沙箱拦截: {e}"))?;
                 tokio::fs::create_dir_all(&safe).await.map_err(|e| format!("创建目录失败: {e}"))?;
                 Ok("ok".to_string())
@@ -305,7 +361,7 @@ impl PureTsRuntime {
             let rel = args.get(0).cloned().unwrap_or_default();
             let base = ws_readdir.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
             async move {
-                let safe = crate::tools::sandbox::check_workspace_sandbox(&base, &rel)
+                let safe = crate::sandbox::check_workspace_sandbox(&base, &rel)
                     .map_err(|e| format!("沙箱拦截: {e}"))?;
                 let mut entries = Vec::new();
                 let mut dir = tokio::fs::read_dir(&safe).await.map_err(|e| format!("读取目录失败: {e}"))?;
@@ -323,7 +379,7 @@ impl PureTsRuntime {
             let rel = args.get(0).cloned().unwrap_or_default();
             let base = ws_stat.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
             async move {
-                let safe = crate::tools::sandbox::check_workspace_sandbox(&base, &rel)
+                let safe = crate::sandbox::check_workspace_sandbox(&base, &rel)
                     .map_err(|e| format!("沙箱拦截: {e}"))?;
                 let meta = tokio::fs::metadata(&safe).await.map_err(|e| format!("获取元数据失败: {e}"))?;
                 let size = meta.len();
@@ -348,13 +404,119 @@ impl PureTsRuntime {
             let rel = args.get(0).cloned().unwrap_or_default();
             let base = ws_rm.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
             async move {
-                let safe = crate::tools::sandbox::check_workspace_sandbox(&base, &rel)
+                let safe = crate::sandbox::check_workspace_sandbox(&base, &rel)
                     .map_err(|e| format!("沙箱拦截: {e}"))?;
                 if safe.is_dir() {
                     tokio::fs::remove_dir_all(&safe).await.map_err(|e| format!("删除目录失败: {e}"))?;
                 } else if safe.exists() {
                     tokio::fs::remove_file(&safe).await.map_err(|e| format!("删除文件失败: {e}"))?;
                 }
+                Ok("ok".to_string())
+            }
+        });
+
+        // 自动注册 Tokio 驱动的原生异步 HTTP fetch 桥接能力
+        runtime.register_async_fn("__native_fetch_async", move |args| {
+            let url = args.get(0).cloned().unwrap_or_default();
+            let opts_str = args.get(1).cloned().unwrap_or_default();
+            async move {
+                let (method, headers, body_str, proxy_str) = if let Ok(val) = serde_json::from_str::<serde_json::Value>(&opts_str) {
+                    let m = val.get("method").and_then(|v| v.as_str()).unwrap_or("GET").to_string();
+                    let mut h_map = std::collections::HashMap::new();
+                    if let Some(h_obj) = val.get("headers").and_then(|v| v.as_object()) {
+                        for (k, v) in h_obj {
+                            if let Some(vs) = v.as_str() {
+                                h_map.insert(k.clone(), vs.to_string());
+                            }
+                        }
+                    }
+                    let b = val.get("body").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let p = val.get("proxy").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                    (m, h_map, b, p)
+                } else {
+                    ("GET".to_string(), std::collections::HashMap::new(), None, None)
+                };
+
+                // 获取代理设置：优先使用请求显式指定的 proxy，其次读取环境变量
+                let effective_proxy = proxy_str.or_else(|| {
+                    std::env::var("HTTPS_PROXY")
+                        .or_else(|_| std::env::var("https_proxy"))
+                        .or_else(|_| std::env::var("HTTP_PROXY"))
+                        .or_else(|_| std::env::var("http_proxy"))
+                        .or_else(|_| std::env::var("ALL_PROXY"))
+                        .or_else(|_| std::env::var("all_proxy"))
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                });
+
+                let mut client_builder = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(30));
+
+                if let Some(ref proxy_url) = effective_proxy {
+                    match reqwest::Proxy::all(proxy_url) {
+                        Ok(p) => {
+                            client_builder = client_builder.proxy(p);
+                        }
+                        Err(e) => {
+                            tracing::warn!("配置 HTTP 代理 '{}' 失败: {}", proxy_url, e);
+                        }
+                    }
+                }
+
+                let client = client_builder
+                    .build()
+                    .map_err(|e| format!("构建 HTTP 客户端失败: {e}"))?;
+
+                let http_method = match method.to_uppercase().as_str() {
+                    "GET" => reqwest::Method::GET,
+                    "POST" => reqwest::Method::POST,
+                    "PUT" => reqwest::Method::PUT,
+                    "DELETE" => reqwest::Method::DELETE,
+                    "PATCH" => reqwest::Method::PATCH,
+                    "HEAD" => reqwest::Method::HEAD,
+                    _ => reqwest::Method::GET,
+                };
+
+                let mut req = client.request(http_method, &url);
+                for (k, v) in headers {
+                    req = req.header(k, v);
+                }
+                if let Some(b) = body_str {
+                    req = req.body(b);
+                }
+
+                let resp = req.send().await.map_err(|e| format!("HTTP 请求失败: {e}"))?;
+                let status = resp.status().as_u16();
+                let status_text = resp.status().canonical_reason().unwrap_or("").to_string();
+
+                let mut resp_headers = std::collections::HashMap::new();
+                for (k, v) in resp.headers() {
+                    if let Ok(val_str) = v.to_str() {
+                        resp_headers.insert(k.as_str().to_lowercase(), val_str.to_string());
+                    }
+                }
+
+                let body_text = resp.text().await.map_err(|e| format!("读取响应文本失败: {e}"))?;
+
+                let out_json = serde_json::json!({
+                    "status": status,
+                    "statusText": status_text,
+                    "ok": (200..300).contains(&status),
+                    "headers": resp_headers,
+                    "body": body_text
+                });
+
+                Ok(out_json.to_string())
+            }
+        });
+
+        // 自动注册 Tokio 驱动的原生异步 sleep 桥接能力（赋能 setTimeout / setInterval）
+        runtime.register_async_fn("__native_sleep_async", move |args| {
+            let ms_str = args.get(0).cloned().unwrap_or_else(|| "0".to_string());
+            let ms = ms_str.parse::<u64>().unwrap_or(0);
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
                 Ok("ok".to_string())
             }
         });
@@ -372,6 +534,21 @@ impl PureTsRuntime {
         }).map_err(|e| e.to_string())?;
 
         rx.await.map_err(|e| format!("事件循环挂起无响应: {e}"))?
+    }
+
+    /// 等待当前所有未决异步任务排空（空闲）
+    pub async fn wait_idle(&self) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        self.sender.send(EventLoopMsg::WaitIdle { response_tx: tx })
+            .map_err(|e| e.to_string())?;
+        rx.await.map_err(|e| format!("等待空闲被中断: {e}"))
+    }
+
+    /// 设置微内核中 process.argv 命令行参数列表
+    pub async fn set_process_argv(&self, argv: Vec<String>) -> Result<(), String> {
+        let json = serde_json::to_string(&argv).map_err(|e| e.to_string())?;
+        self.eval_ts(format!("if (typeof process !== 'undefined') {{ process.argv = {json}; }}"), None).await?;
+        Ok(())
     }
 
     /// 向微内核注册一个返回 Promise 的 Tokio 异步原生函数
@@ -394,6 +571,11 @@ impl PureTsRuntime {
         }).map_err(|e| e.to_string())?;
 
         rx.await.map_err(|e| format!("异步工具执行响应被中断: {e}"))?
+    }
+
+    /// 终止专有事件循环并释放后台线程资源
+    pub fn terminate(&self) {
+        let _ = self.sender.send(EventLoopMsg::Terminate);
     }
 }
 
@@ -567,13 +749,18 @@ mod tests {
             const pathReq = require("node:path");
             const sameExt = pathReq.extname("sample.tsx");
 
+            // 验证 node:crypto
+            const cryptoReq = require("node:crypto");
+            const cryptoHash = cryptoReq.createHash("sha256").update("PureTsRuntime").digest("hex");
+
             JSON.stringify({
                 cwd,
                 isWin,
                 ext,
                 bufStr,
                 triggered,
-                sameExt
+                sameExt,
+                cryptoHash
             });
         "#;
 
@@ -585,6 +772,7 @@ mod tests {
         assert_eq!(parsed["bufStr"], "Antigravity Pure Rust");
         assert_eq!(parsed["triggered"], true);
         assert_eq!(parsed["sameExt"], ".tsx");
+        assert_eq!(parsed["cryptoHash"], "d9cd7b8c78b9481c8c22505db00a81514b5e772258069babbb0a9b9792c98510");
     }
 
     #[tokio::test]
@@ -630,4 +818,107 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }
+
+    #[tokio::test]
+    async fn test_pure_ts_runtime_global_fetch() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        // 启动后台本地 Mock HTTP 服务器
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let body = r#"{"message":"Hello from Mock Server!","code":200}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+        });
+
+        let runtime = PureTsRuntime::new();
+        let url = format!("http://127.0.0.1:{port}/api/greet");
+
+        let ts_code = format!(r#"
+            // @ts-ignore
+            globalThis.fetchTest = async function(): Promise<string> {{
+                const res = await fetch("{url}");
+                const status = res.status;
+                const ok = res.ok;
+                const text = await res.text();
+                const json = JSON.parse(text);
+                return JSON.stringify({{
+                    status,
+                    ok,
+                    text,
+                    code: json.code
+                }});
+            }};
+        "#);
+
+        runtime.eval_ts(ts_code, Some("fetch_test.ts")).await.expect("加载 fetch 测试脚本失败");
+
+        let res_json_str = runtime.call_async_fn("fetchTest", "{}").await.expect("调用 fetchTest 失败");
+        let parsed: serde_json::Value = serde_json::from_str(&res_json_str).expect("解析 JSON 失败");
+
+        assert_eq!(parsed["status"], 200);
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["code"], 200);
+        assert!(parsed["text"].as_str().unwrap().contains("Hello from Mock Server!"));
+    }
+
+    #[tokio::test]
+    async fn test_pure_ts_runtime_timers_and_wait_idle() {
+        let runtime = PureTsRuntime::new();
+
+        let ts_code = r#"
+            // @ts-ignore
+            globalThis.timerState = {
+                timeoutFired: false,
+                cancelledFired: false,
+                promiseValue: null
+            };
+
+            // 1. 设置正常触发的 setTimeout
+            setTimeout(() => {
+                // @ts-ignore
+                globalThis.timerState.timeoutFired = true;
+            }, 30);
+
+            // 2. 设置被取消的 setTimeout
+            // @ts-ignore
+            const cancelId = setTimeout(() => {
+                // @ts-ignore
+                globalThis.timerState.cancelledFired = true;
+            }, 50);
+            clearTimeout(cancelId);
+
+            // 3. 验证 node:timers/promises
+            const timersPromises = require("node:timers/promises");
+            timersPromises.setTimeout(40, "AntigravityTimerOK").then((val: string) => {
+                // @ts-ignore
+                globalThis.timerState.promiseValue = val;
+            });
+        "#;
+
+        runtime.eval_ts(ts_code, Some("timers_test.ts")).await.expect("执行定时器脚本失败");
+
+        // 等待所有未决定时器宏任务排空
+        runtime.wait_idle().await.expect("等待空闲失败");
+
+        let check_res = runtime.eval_ts("JSON.stringify(globalThis.timerState)", None).await.expect("查询状态失败");
+        let parsed: serde_json::Value = serde_json::from_str(&check_res).expect("JSON 解析失败");
+
+        assert_eq!(parsed["timeoutFired"], true);
+        assert_eq!(parsed["cancelledFired"], false);
+        assert_eq!(parsed["promiseValue"], "AntigravityTimerOK");
+    }
 }
+

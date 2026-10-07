@@ -8,8 +8,8 @@ use tracing::warn;
 
 
 use super::executor::execute_tool_call_extended;
-use super::prompt::{build_system_prompt, builtin_tools, format_messages_for_model};
-use crate::ai::{stream_model_chat, ModelChatOptions, ProviderConfig, StreamDelta};
+use super::prompt::{build_system_prompt, get_all_tools_for_workspace, format_messages_for_model};
+use crate::ai::{stream_model_chat, ModelChatOptions, ProviderConfig, StreamDelta, TokenUsage};
 use crate::checkpoint::CheckpointManager;
 use crate::session::{AgentMessage, SessionManager, ToolCallBlock};
 
@@ -21,6 +21,8 @@ pub enum AgentLoopEvent {
     TextDelta { text: String },
     ToolCallStarted { name: String, id: String, args: String },
     ToolCallFinished { name: String, id: String, ok: bool, output: Option<String> },
+    /// 一次大模型调用结束后的真实用量与耗时（界面遥测条与单条回复徽章的数据源）
+    AssistantStats { usage: Option<TokenUsage>, duration_ms: u64, turn_duration_ms: u64 },
     TurnFinished { stop_reason: String },
     Error { message: String },
 }
@@ -37,6 +39,8 @@ pub async fn run_agent_loop(
     abort_rx: Option<watch::Receiver<bool>>,
 ) -> Result<()> {
     let ws_str = workspace.to_string_lossy().to_string();
+    // 整轮耗时起点：含思考、工具执行与流式生成，与界面「总耗时」口径一致
+    let turn_start = now_ms();
 
     // 1. 如果有新用户输入，先记录并落盘
     if let Some(prompt) = user_prompt {
@@ -57,10 +61,14 @@ pub async fn run_agent_loop(
     };
 
     let system_prompt = build_system_prompt(&ws_str);
-    let tools = builtin_tools();
+    let tools = get_all_tools_for_workspace(&ws_str);
 
     // 3. 多轮驱动
     for _step in 0..MAX_LOOP_STEPS {
+        let step_start = now_ms();
+        let mut step_usage: Option<TokenUsage> = None;
+        let mut accumulated_usage = TokenUsage::default();
+
         let chat_messages = format_messages_for_model(&system_prompt, &history_messages);
         let options = ModelChatOptions {
             tools: Some(tools.clone()),
@@ -97,7 +105,20 @@ pub async fn run_agent_loop(
                 StreamDelta::ToolCall { call } => {
                     tool_calls.push(call);
                 }
-                StreamDelta::Usage { .. } => {}
+                StreamDelta::Usage { usage } => {
+                    accumulated_usage.prompt_tokens += usage.prompt_tokens;
+                    accumulated_usage.completion_tokens += usage.completion_tokens;
+                    accumulated_usage.total_tokens += usage.total_tokens;
+                    if let Some(thinking) = usage.thinking_tokens {
+                        accumulated_usage.thinking_tokens =
+                            Some(accumulated_usage.thinking_tokens.unwrap_or(0) + thinking);
+                    }
+                    if usage.cached_tokens.is_some() {
+                        accumulated_usage.cached_tokens = usage.cached_tokens;
+                    }
+                    // 保持单次请求的真实用量（含缓存命中），避免用累加值把统计撑高
+                    step_usage = Some(usage);
+                }
                 StreamDelta::Done { stop_reason } => {
                     turn_stop_reason = stop_reason;
                 }
@@ -112,6 +133,13 @@ pub async fn run_agent_loop(
 
         if had_error {
             break;
+        }
+
+        // 单次调用的耗时与用量：usage 以模型返回为准，整轮耗时含此前所有工具执行
+        let step_duration_ms = (now_ms() - step_start).max(1) as u64;
+        let turn_duration_ms = (now_ms() - turn_start).max(1) as u64;
+        if step_usage.is_none() && accumulated_usage.total_tokens > 0 {
+            step_usage = Some(accumulated_usage);
         }
 
         if turn_stop_reason == "aborted" {
@@ -149,13 +177,22 @@ pub async fn run_agent_loop(
             stop_reason: Some(turn_stop_reason.clone()),
             error_message: None,
             timestamp: Some(now_ms()),
-            usage: None,
-            duration_ms: None,
-            turn_duration_ms: None,
+            usage: step_usage.as_ref().and_then(|u| serde_json::to_value(u).ok()),
+            duration_ms: Some(step_duration_ms),
+            turn_duration_ms: Some(turn_duration_ms),
         };
 
         session_mgr.append_message(thread_id, assistant_msg.clone(), Some(&ws_str))?;
         history_messages.push(assistant_msg);
+
+        // 用量与耗时上报给界面（此刻本步的助手卡片还是"流式中"，正好挂上去）
+        let _ = event_tx
+            .send(AgentLoopEvent::AssistantStats {
+                usage: step_usage,
+                duration_ms: step_duration_ms,
+                turn_duration_ms,
+            })
+            .await;
 
         // 如果没有工具调用，本轮结束
         if tool_calls.is_empty() {

@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    a_da, the app icon: a shell prompt on an ink tile.
+
+    The chevron and the block cursor read as `>_`, which is how an agent that
+    runs commands in a workspace introduces itself, and the block sits where the
+    underscore in "a_da" would be. Two shapes only, so the mark still reads at
+    16px.
+  -->
+  <rect x="48" y="48" width="928" height="928" rx="232" fill="#1F1F21"/>
+  <path
+    d="M342 372 L480 512 L342 652"
+    fill="none"
+    stroke="#FFFFFF"
+    stroke-width="88"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <rect x="548" y="598" width="180" height="76" rx="38" fill="#E8624F"/>
+</svg>

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
+  "productName": "a-da",
+  "version": "0.1.0",
+  "identifier": "com.ada.agent",
+  "build": {
+    "frontendDist": "../tauri-ui/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "a_da",
+        "url": "index.html",
+        "width": 1120,
+        "height": 780,
+        "minWidth": 860,
+        "minHeight": 620,
+        "decorations": false,
+        "transparent": false,
+        "shadow": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/logo.ico",
+      "icons/logo.png"
+    ]
+  }
+}

@@ -1,4 +1,4 @@
-use crate::tools::sandbox::check_workspace_sandbox;
+use crate::sandbox::check_workspace_sandbox;
 use boa_engine::{
     js_error, js_string, Context, JsValue, NativeFunction, Source,
 };

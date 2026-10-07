@@ -1,0 +1,51 @@
+[workspace]
+members = [
+    "agent_core",
+    "ts_engine",
+    "src-tauri",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["a_da team"]
+license = "MIT"
+
+[workspace.dependencies]
+# 基础异步运行时与工具
+tokio = { version = "1.43", features = ["full"] }
+tokio-tungstenite = "0.26"
+tokio-stream = "0.1"
+futures-util = "0.3"
+
+# 序列化与数据结构
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+uuid = { version = "1.15", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+base64 = "0.22"
+
+# 日志与错误处理
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"
+thiserror = "2.0"
+similar = "2.7"
+
+# 网络客户端
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "socks"] }
+
+# TypeScript 编译与执行引擎核心依赖 (供 ts_engine 独占消费)
+boa_engine = "0.22.0"
+oxc_allocator = "0.146.0"
+oxc_parser = "0.146.0"
+oxc_codegen = "0.146.0"
+oxc_span = "0.146.0"
+oxc_transformer = "0.146.0"
+oxc_semantic = "0.146.0"
+
+# Workspace 内部子 Crate
+ts_engine = { path = "ts_engine" }

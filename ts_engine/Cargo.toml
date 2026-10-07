@@ -1,0 +1,34 @@
+[package]
+name = "ts_engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "a_da TypeScript script engine and microkernel (OXC + Boa)"
+
+[dependencies]
+tokio = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+reqwest = { workspace = true }
+
+# TypeScript 编译与执行核心依赖
+boa_engine = { workspace = true }
+oxc_allocator = { workspace = true }
+oxc_parser = { workspace = true }
+oxc_codegen = { workspace = true }
+oxc_span = { workspace = true }
+oxc_transformer = { workspace = true }
+oxc_semantic = { workspace = true }
+clap = { workspace = true }
+
+[[bin]]
+name = "ts_engine"
+path = "src/main.rs"
+

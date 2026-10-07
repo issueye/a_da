@@ -33,6 +33,8 @@ export interface HostProcess {
   token: string
   /** 主机的 WebSocket 地址（带令牌）。 */
   url: string
+  /** 启动的核心可执行文件路径。 */
+  execPath: string
   /** 结束主机：先礼貌（SIGTERM），超时再强杀。 */
   stop(): void
   /** 主机是否还活着。 */
@@ -99,9 +101,11 @@ export function resolveDefaultHostRunner(): {
   const candidates = [
     join(cwd, 'dist', exeName),
     join(repoRoot, 'dist', exeName),
+    join(repoRoot, 'target', 'release', exeName),
     join(repoRoot, 'agent_core', 'target', 'release', exeName),
     join(appDir, exeName),
     join(cwd, exeName),
+    join(repoRoot, 'target', 'debug', exeName),
     join(repoRoot, 'agent_core', 'target', 'debug', exeName),
   ]
 
@@ -224,12 +228,15 @@ export async function spawnHostProcess(options: SpawnHostOptions = {}): Promise<
     })
   })
 
+  log(`[host] 核心启动成功: ${execPath} (pid=${ready.pid || child.pid}, port=${ready.port})`)
+
   const url = `ws://127.0.0.1:${ready.port}/rpc`
   return {
     pid: ready.pid || child.pid || 0,
     port: ready.port,
     token,
     url,
+    execPath,
     stop: () => stopChild(child),
     get alive() {
       return child.exitCode === null && !child.killed

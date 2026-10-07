@@ -127,9 +127,47 @@ pub fn builtin_tools() -> Vec<ChatCompletionTool> {
     ]
 }
 
+/// 获取当前工作区的所有可用工具（包含内置核心工具与已启用的扩展插件工具）
+pub fn get_all_tools_for_workspace(workspace: &str) -> Vec<ChatCompletionTool> {
+    let mut tools = builtin_tools();
+
+    let plugin_mgr = crate::plugins::PluginManager::new();
+    let plugins = plugin_mgr.scan_plugins(Some(workspace));
+
+    for item in plugins {
+        if !item.enabled {
+            continue;
+        }
+        for t in &item.tools {
+            if tools.iter().any(|b| b.function.name == t.name) {
+                continue;
+            }
+
+            let params = t.parameters.clone().unwrap_or_else(|| {
+                json!({ "type": "object", "properties": {} })
+            });
+
+            tools.push(ChatCompletionTool {
+                tool_type: "function".to_string(),
+                function: ChatCompletionToolFunction {
+                    name: t.name.clone(),
+                    description: if t.description.is_empty() {
+                        format!("已启用的扩展工具: {}", t.name)
+                    } else {
+                        t.description.clone()
+                    },
+                    parameters: params,
+                },
+            });
+        }
+    }
+
+    tools
+}
+
 /// 构造系统提示词
 pub fn build_system_prompt(workspace: &str) -> String {
-    format!(
+    let mut prompt = format!(
         "你是 a-da，一个由 Rust 原生核心驱动的高性能 AI 编程智能体。\n\
          当前工作区根目录为：{}\n\
          请遵循以下指引：\n\
@@ -138,7 +176,29 @@ pub fn build_system_prompt(workspace: &str) -> String {
          3. 执行终端命令时注意避免执行可能导致死循环的阻塞指令。\n\
          4. 所有的回复都使用清晰、专业的中文表达。",
         workspace
-    )
+    );
+
+    let plugin_mgr = crate::plugins::PluginManager::new();
+    let plugins = plugin_mgr.scan_plugins(Some(workspace));
+    let mut enabled_extensions = Vec::new();
+    for p in plugins {
+        if !p.enabled {
+            continue;
+        }
+        for t in p.tools {
+            enabled_extensions.push(format!("{}: {}", t.name, t.description));
+        }
+    }
+
+    if !enabled_extensions.is_empty() {
+        prompt.push_str("\n\n当前已启用的扩展工具与额外能力：\n");
+        for ext in enabled_extensions {
+            prompt.push_str(&format!("- {}\n", ext));
+        }
+        prompt.push_str("当用户询问你的能力或需要相关操作时，你具备上述扩展工具所赋予的能力（如联网搜索等）。");
+    }
+
+    prompt
 }
 
 /// 将会话流水消息转换为 OpenAI 模型请求消息序列
