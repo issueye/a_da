@@ -160,14 +160,38 @@ export const Transcript: React.FC<TranscriptProps> = ({
     return null
   }
 
+  // 对相邻连续的 assistant 碎片进行防御性聚合（兼容修复历史会话或极端流式碎块）
+  const mergedItems = React.useMemo(() => {
+    const list: Item[] = []
+    for (const cur of items) {
+      const prev = list[list.length - 1]
+      const isCurAsst = cur.kind === 'assistant' || (!cur.kind && cur.role === 'assistant')
+      const isPrevAsst = prev && (prev.kind === 'assistant' || (!prev.kind && prev.role === 'assistant'))
+
+      if (isCurAsst && isPrevAsst) {
+        list[list.length - 1] = {
+          ...prev,
+          text: (prev.text || '') + (cur.text || ''),
+          streaming: cur.streaming ?? prev.streaming,
+          turnDurationMs: cur.turnDurationMs ?? prev.turnDurationMs,
+          durationMs: cur.durationMs ?? prev.durationMs,
+          usage: cur.usage ?? prev.usage,
+        }
+      } else {
+        list.push(cur)
+      }
+    }
+    return list
+  }, [items])
+
   // 对话项目流：紧凑的时间线排版（人说的话留白，工具和思考行紧密贴合）
   return (
     <div className="relative flex-1 flex flex-col h-full overflow-hidden">
       {/* 任务规划步骤独立收缩悬浮框（右上角常驻） */}
-      <TodoFloatingPanel items={items} />
+      <TodoFloatingPanel items={mergedItems} />
 
       <div className="flex-1 overflow-y-auto px-3 md:px-6 py-2.5 space-y-1.5 select-text">
-        {items.map((item, index) => (
+        {mergedItems.map((item, index) => (
           <TranscriptItemRow
             key={item.id || index}
             item={item}
@@ -695,7 +719,7 @@ const ToolCard: React.FC<{
  */
 const AssistantRow: React.FC<{ item: Item; running: boolean }> = ({ item, running }) => {
   const text = item.text || ''
-  const isStreaming = Boolean(item.streaming)
+  const isStreaming = Boolean(item.streaming) && running
   const durationText = formatDuration(item.turnDurationMs || item.durationMs)
 
   return (

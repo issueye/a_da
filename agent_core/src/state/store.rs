@@ -431,6 +431,9 @@ impl AgentStore {
 
     /// 追加 Thinking 思考增量
     pub fn append_thinking_delta(&mut self, thread_id: &str, delta: &str) {
+        if delta.is_empty() {
+            return;
+        }
         if let Some(t) = self.get_thread_mut(thread_id) {
             if let Some(Item::Thinking { text, ended_at, .. }) = t.items.last_mut() {
                 if ended_at.is_none() {
@@ -450,16 +453,31 @@ impl AgentStore {
 
     /// 追加 Assistant 回复增量
     pub fn append_assistant_delta(&mut self, thread_id: &str, delta: &str) {
+        if delta.is_empty() {
+            return;
+        }
         // 先确保 Thinking 已结束
         self.end_thinking(thread_id);
 
         if let Some(t) = self.get_thread_mut(thread_id) {
-            if let Some(Item::Assistant { text, streaming, .. }) = t.items.last_mut() {
-                if *streaming == Some(true) {
-                    text.push_str(delta);
-                    return;
+            // 清理末尾无内容的空思考卡片（避免模型思考为空时占位隔断）
+            if let Some(Item::Thinking { text, .. }) = t.items.last() {
+                if text.trim().is_empty() {
+                    t.items.pop();
                 }
             }
+
+            // 倒序寻找当前仍处于流式中的 Assistant Item，优先复用追加
+            for item in t.items.iter_mut().rev() {
+                if let Item::Assistant { text, streaming, .. } = item {
+                    if *streaming == Some(true) {
+                        text.push_str(delta);
+                        return;
+                    }
+                    break;
+                }
+            }
+
             // 否则创建新的流式 Assistant 卡片
             t.items.push(Item::Assistant {
                 id: next_id("item_asst"),
@@ -512,9 +530,11 @@ impl AgentStore {
     /// 记录工具调用开始
     pub fn start_tool_call(&mut self, thread_id: &str, call_id: &str, name: &str, raw_args: &str) {
         if let Some(t) = self.get_thread_mut(thread_id) {
-            // 如果最后一个是流式 Assistant，停止其流式标记
-            if let Some(Item::Assistant { streaming, .. }) = t.items.last_mut() {
-                *streaming = None;
+            // 停止所有未闭合 Assistant 的流式标记
+            for item in t.items.iter_mut() {
+                if let Item::Assistant { streaming, .. } = item {
+                    *streaming = None;
+                }
             }
 
             t.items.push(Item::Tool {
@@ -554,8 +574,17 @@ impl AgentStore {
     pub fn finish_turn(&mut self, thread_id: &str) {
         self.end_thinking(thread_id);
         if let Some(t) = self.get_thread_mut(thread_id) {
-            if let Some(Item::Assistant { streaming, .. }) = t.items.last_mut() {
-                *streaming = None;
+            // 闭合该会话中全部处于流式中的 Assistant 卡片
+            for item in t.items.iter_mut() {
+                if let Item::Assistant { streaming, .. } = item {
+                    *streaming = None;
+                }
+            }
+            // 清理末尾无内容的空思考卡片
+            if let Some(Item::Thinking { text, .. }) = t.items.last() {
+                if text.trim().is_empty() {
+                    t.items.pop();
+                }
             }
         }
         self.set_thread_running(thread_id, false);

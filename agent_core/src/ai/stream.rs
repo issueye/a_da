@@ -196,7 +196,8 @@ async fn run_stream_openai_chat(
                                                 let reasoning = delta.get("reasoning_content")
                                                     .or_else(|| delta.get("reasoning"))
                                                     .or_else(|| delta.get("thinking"))
-                                                    .and_then(|r| r.as_str());
+                                                    .and_then(|r| r.as_str())
+                                                    .filter(|s| !s.trim().is_empty());
 
                                                 if let Some(thinking_str) = reasoning {
                                                     let _ = tx.send(StreamDelta::Thinking {
@@ -205,15 +206,19 @@ async fn run_stream_openai_chat(
                                                 }
 
                                                 // 正文
-                                                if let Some(content_str) = delta.get("content").and_then(|c| c.as_str()) {
+                                                if let Some(content_str) = delta.get("content").and_then(|c| c.as_str()).filter(|s| !s.is_empty()) {
                                                     let parts = think_filter.feed(content_str);
                                                     for part in parts {
                                                         match part {
                                                             ThinkFilterPart::Thinking(th) => {
-                                                                let _ = tx.send(StreamDelta::Thinking { thinking: th }).await;
+                                                                if !th.trim().is_empty() {
+                                                                    let _ = tx.send(StreamDelta::Thinking { thinking: th }).await;
+                                                                }
                                                             }
                                                             ThinkFilterPart::Text(txt) => {
-                                                                let _ = tx.send(StreamDelta::Text { text: txt }).await;
+                                                                if !txt.is_empty() {
+                                                                    let _ = tx.send(StreamDelta::Text { text: txt }).await;
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -277,10 +282,14 @@ async fn run_stream_openai_chat(
     for part in think_filter.flush() {
         match part {
             ThinkFilterPart::Thinking(th) => {
-                let _ = tx.send(StreamDelta::Thinking { thinking: th }).await;
+                if !th.trim().is_empty() {
+                    let _ = tx.send(StreamDelta::Thinking { thinking: th }).await;
+                }
             }
             ThinkFilterPart::Text(txt) => {
-                let _ = tx.send(StreamDelta::Text { text: txt }).await;
+                if !txt.is_empty() {
+                    let _ = tx.send(StreamDelta::Text { text: txt }).await;
+                }
             }
         }
     }
@@ -512,21 +521,25 @@ async fn run_stream_anthropic(
                                             if let Some(delta) = val.get("delta") {
                                                 let delta_type = delta.get("type").and_then(|v| v.as_str()).unwrap_or("");
                                                 if delta_type == "text_delta" {
-                                                    if let Some(txt) = delta.get("text").and_then(|v| v.as_str()) {
+                                                    if let Some(txt) = delta.get("text").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
                                                         let parts = think_filter.feed(txt);
                                                         for part in parts {
                                                             match part {
                                                                 ThinkFilterPart::Thinking(th) => {
-                                                                    let _ = tx.send(StreamDelta::Thinking { thinking: th }).await;
+                                                                    if !th.trim().is_empty() {
+                                                                        let _ = tx.send(StreamDelta::Thinking { thinking: th }).await;
+                                                                    }
                                                                 }
                                                                 ThinkFilterPart::Text(t) => {
-                                                                    let _ = tx.send(StreamDelta::Text { text: t }).await;
+                                                                    if !t.is_empty() {
+                                                                        let _ = tx.send(StreamDelta::Text { text: t }).await;
+                                                                    }
                                                                 }
                                                             }
                                                         }
                                                     }
                                                 } else if delta_type == "thinking_delta" {
-                                                    if let Some(th) = delta.get("thinking").and_then(|v| v.as_str()) {
+                                                    if let Some(th) = delta.get("thinking").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) {
                                                         let _ = tx.send(StreamDelta::Thinking { thinking: th.to_string() }).await;
                                                     }
                                                 } else if delta_type == "input_json_delta" {
@@ -590,10 +603,14 @@ async fn run_stream_anthropic(
     for part in think_filter.flush() {
         match part {
             ThinkFilterPart::Thinking(th) => {
-                let _ = tx.send(StreamDelta::Thinking { thinking: th }).await;
+                if !th.trim().is_empty() {
+                    let _ = tx.send(StreamDelta::Thinking { thinking: th }).await;
+                }
             }
             ThinkFilterPart::Text(txt) => {
-                let _ = tx.send(StreamDelta::Text { text: txt }).await;
+                if !txt.is_empty() {
+                    let _ = tx.send(StreamDelta::Text { text: txt }).await;
+                }
             }
         }
     }
@@ -761,22 +778,26 @@ async fn run_stream_openai_responses(
 
                                     match event_type {
                                         "response.output_text.delta" => {
-                                            if let Some(delta) = val.get("delta").and_then(|v| v.as_str()) {
+                                            if let Some(delta) = val.get("delta").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
                                                 let parts = think_filter.feed(delta);
                                                 for part in parts {
                                                     match part {
                                                         ThinkFilterPart::Thinking(th) => {
-                                                            let _ = tx.send(StreamDelta::Thinking { thinking: th }).await;
+                                                            if !th.trim().is_empty() {
+                                                                let _ = tx.send(StreamDelta::Thinking { thinking: th }).await;
+                                                            }
                                                         }
                                                         ThinkFilterPart::Text(txt) => {
-                                                            let _ = tx.send(StreamDelta::Text { text: txt }).await;
+                                                            if !txt.is_empty() {
+                                                                let _ = tx.send(StreamDelta::Text { text: txt }).await;
+                                                            }
                                                         }
                                                     }
                                                 }
                                             }
                                         }
                                         "response.reasoning_text.delta" => {
-                                            if let Some(th) = val.get("delta").and_then(|v| v.as_str()) {
+                                            if let Some(th) = val.get("delta").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) {
                                                 let _ = tx.send(StreamDelta::Thinking { thinking: th.to_string() }).await;
                                             }
                                         }
@@ -847,10 +868,14 @@ async fn run_stream_openai_responses(
     for part in think_filter.flush() {
         match part {
             ThinkFilterPart::Thinking(th) => {
-                let _ = tx.send(StreamDelta::Thinking { thinking: th }).await;
+                if !th.trim().is_empty() {
+                    let _ = tx.send(StreamDelta::Thinking { thinking: th }).await;
+                }
             }
             ThinkFilterPart::Text(txt) => {
-                let _ = tx.send(StreamDelta::Text { text: txt }).await;
+                if !txt.is_empty() {
+                    let _ = tx.send(StreamDelta::Text { text: txt }).await;
+                }
             }
         }
     }
