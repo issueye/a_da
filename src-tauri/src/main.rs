@@ -32,6 +32,18 @@ pub struct CliArgs {
     #[arg(long, default_value = "")]
     pub workspace: String,
 
+    /// 直连外部 ada-coding 核心服务 WebSocket 地址 (如 ws://127.0.0.1:4000/rpc)
+    #[arg(long)]
+    pub connect: Option<String>,
+
+    /// 显式指定外部 ada-coding 二进制可执行文件路径
+    #[arg(long)]
+    pub host_bin: Option<String>,
+
+    /// 强制使用同进程内嵌微内核，不连接也不拉起外部 ada-coding
+    #[arg(long, default_value_t = false)]
+    pub inprocess: bool,
+
     #[command(subcommand)]
     pub command: Option<CliCommand>,
 }
@@ -186,8 +198,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let is_headless_or_cli = args.headless || args.command.is_some();
 
     if !is_headless_or_cli {
-        // GUI 桌面模式（默认无参数双击启动）
-        a_da_tauri::run(args.workspace.clone());
+        // GUI 桌面模式（默认双击启动或命令行带参启动窗口）
+        let launcher_config = a_da_tauri::LauncherConfig {
+            workspace: args.workspace.clone(),
+            connect: args.connect,
+            token: args.token,
+            host_bin: args.host_bin,
+            force_inprocess: args.inprocess,
+        };
+        a_da_tauri::run(launcher_config);
         return Ok(());
     }
 
