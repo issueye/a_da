@@ -1,6 +1,7 @@
 pub mod cmd_tools;
 pub mod command;
 pub mod core;
+pub mod decision;
 pub mod diff;
 pub mod fs;
 pub mod fs_tools;

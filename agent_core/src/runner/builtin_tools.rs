@@ -270,7 +270,29 @@ pub async fn execute_builtin_plugin_tool(
                 Some(ToolResult::error("缺少 files / old_string / new_string 参数"))
             }
         }
-        // 空壳工具 check_gate / evaluate_diff / manage_ponytail 已按计划 §1.3 下线
+        "decide" => {
+            let tool = crate::tools::decision::DecideTool::new();
+            let receipt = tool.run(args).await;
+            Some(ToolResult {
+                output: receipt.output,
+                ok: receipt.status == agent_base::domain::ToolStatus::Success,
+                details: receipt.data.or(receipt.details),
+                patch: None,
+                terminate: None,
+            })
+        }
+        "check_gate" => {
+            let tool = crate::tools::decision::CheckGateTool::new(workspace);
+            let receipt = tool.run(args).await;
+            Some(ToolResult {
+                output: receipt.output,
+                ok: receipt.status == agent_base::domain::ToolStatus::Success,
+                details: receipt.data.or(receipt.details),
+                patch: None,
+                terminate: None,
+            })
+        }
+        // 空壳工具 evaluate_diff / manage_ponytail 已按计划 §1.3 下线
         _ => None,
     }
 }
@@ -495,12 +517,89 @@ mod tests {
             panic!("预期是 CheckpointEntry::Checkpoint");
         }
 
-        // 3. 断言空壳工具下线（M2-T4 核心验收）
+        // 3. 断言空壳工具下线（M2-T4：evaluate_diff / manage_ponytail 仍按下线处置）
         let dummy_args = serde_json::json!({});
-        let gate_res = execute_builtin_plugin_tool(&temp_dir, thread_id, "check_gate", &dummy_args, None).await;
-        assert!(gate_res.is_none(), "check_gate 空壳工具必须已下线返回 None");
+        let diff_res = execute_builtin_plugin_tool(&temp_dir, thread_id, "evaluate_diff", &dummy_args, None).await;
+        assert!(diff_res.is_none(), "evaluate_diff 空壳工具必须已下线返回 None");
         let ponytail_res = execute_builtin_plugin_tool(&temp_dir, thread_id, "manage_ponytail", &dummy_args, None).await;
         assert!(ponytail_res.is_none(), "manage_ponytail 空壳工具必须已下线返回 None");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_execute_decide_tool() {
+        let temp_dir = std::env::temp_dir().join(format!("a_da_test_decide_{}", uuid::Uuid::new_v4()));
+        let args = serde_json::json!({
+            "state": "本项目使用纯 Rust 原生开发，代码整洁，所有单元测试均已通过。",
+            "questions": {
+                "is_rust": {
+                    "type": "noul",
+                    "instructions": "该项目是否基于 Rust 语言实现？"
+                },
+                "stack": {
+                    "type": "choice",
+                    "instructions": "识别项目技术栈",
+                    "criteria": {
+                        "rust": "Rust 语言项目",
+                        "python": "Python 语言项目"
+                    }
+                }
+            }
+        });
+
+        let res = execute_builtin_plugin_tool(&temp_dir, "thread_decide", "decide", &args, None).await;
+        assert!(res.is_some(), "decide 工具必须成功派发并执行");
+        let tool_res = res.unwrap();
+        assert!(tool_res.ok, "decide 评估应当执行成功");
+        assert!(tool_res.output.contains("决策结果"));
+        assert!(tool_res.output.contains("is_rust"));
+        assert!(tool_res.output.contains("stack"));
+
+        let details = tool_res.details.expect("必须返回 details 结构化结果");
+        assert_eq!(details.get("engine").and_then(|v| v.as_str()), Some("heuristic"));
+        // 断言 calibrated 绝不捏造确定性（AGENTS.md §9）
+        let answers = details.get("answers").and_then(|v| v.as_object()).expect("包含 answers 映射");
+        for (_k, ans) in answers {
+            assert_eq!(ans.get("calibrated").and_then(|v| v.as_bool()), Some(false));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_check_gate_tool() {
+        let temp_dir = std::env::temp_dir().join(format!("a_da_test_gate_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        // 1. 测试成功通过的文本准入
+        let pass_args = serde_json::json!({
+            "criteria": "必须包含所有单元测试通过的字样",
+            "source": "text",
+            "text": "test result: ok. 15 passed; 0 failed; all tests green",
+            "threshold": 0.6
+        });
+        let pass_res = execute_builtin_plugin_tool(&temp_dir, "thread_gate", "check_gate", &pass_args, None).await;
+        assert!(pass_res.is_some(), "check_gate 工具必须成功派发");
+        let pass_tool_res = pass_res.unwrap();
+        assert!(pass_tool_res.ok);
+        assert!(pass_tool_res.output.contains("通过 [PASS]"));
+        let pass_details = pass_tool_res.details.expect("包含 details");
+        assert_eq!(pass_details.get("passed").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(pass_details.get("calibrated").and_then(|v| v.as_bool()), Some(false));
+
+        // 2. 测试材料缺失下的 fail-close 默认拦截
+        let fail_args = serde_json::json!({
+            "criteria": "必须包含所有单元测试通过的字样",
+            "source": "file",
+            "file": "non_existent_result_file.txt",
+            "threshold": 0.6
+        });
+        let fail_res = execute_builtin_plugin_tool(&temp_dir, "thread_gate", "check_gate", &fail_args, None).await;
+        assert!(fail_res.is_some());
+        let fail_tool_res = fail_res.unwrap();
+        assert!(fail_tool_res.ok, "工具自身完成判定回执输出");
+        assert!(fail_tool_res.output.contains("未通过 [BLOCKED]"));
+        let fail_details = fail_tool_res.details.expect("包含 details");
+        assert_eq!(fail_details.get("passed").and_then(|v| v.as_bool()), Some(false));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

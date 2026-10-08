@@ -57,8 +57,11 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
     BuiltinPluginDefinition {
         id: "decision",
         name: "决策评估与准入门禁 (decision)",
-        description: "对代码变动进行量化准入评估与风险筛查（TS 决策引擎已登记 M6 移植项）。",
-        tools: &[],
+        description: "提供结构化概率决策自评与基于 diff/文件/文本的代码变动准入门禁评估能力。",
+        tools: &[
+            ("decide", "基于加权规则与线索对二选一、多选或评分问题进行结构化决策判断。", false),
+            ("check_gate", "对工作区 git diff、指定文件或文本内容执行严格准入门禁规则检查。", false),
+        ],
     },
     BuiltinPluginDefinition {
         id: "approval-guard",

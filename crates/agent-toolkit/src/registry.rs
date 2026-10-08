@@ -211,6 +211,39 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                 execution: Execution::ParallelSafe,
                 termination: Termination::ContinueTurn,
             },
+            ToolDescriptor {
+                name: "decide".to_string(),
+                summary: "对给定材料进行结构化类型决策（choice/noul/score）".to_string(),
+                schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "state": { "description": "被判断的材料" },
+                        "questions": { "type": "object", "description": "问题映射" }
+                    },
+                    "required": ["state", "questions"]
+                }),
+                access: Access::ReadOnly,
+                approval: ApprovalPolicy::Never,
+                rollback: RollbackPolicy::None,
+                execution: Execution::Sequential,
+                termination: Termination::ContinueTurn,
+            },
+            ToolDescriptor {
+                name: "check_gate".to_string(),
+                summary: "对工作区改动、指定文件或文本依据验收标准执行门禁判定（fail-close 安全默认）".to_string(),
+                schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "criteria": { "type": "string", "description": "验收标准" }
+                    },
+                    "required": ["criteria"]
+                }),
+                access: Access::ReadOnly,
+                approval: ApprovalPolicy::Never,
+                rollback: RollbackPolicy::None,
+                execution: Execution::Sequential,
+                termination: Termination::ContinueTurn,
+            },
         ]
     })
 }
