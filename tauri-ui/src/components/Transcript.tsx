@@ -59,7 +59,7 @@ interface TranscriptProps {
   onRetry?: () => void
 }
 
-/** 工具名称映射（对齐 src/ui/Transcript.tsx） */
+/** 工具名称映射（对齐产品工具集与内置插件） */
 const TOOL_LABEL: Record<string, string> = {
   list_files: '列出文件',
   read_file: '读取文件',
@@ -75,6 +75,17 @@ const TOOL_LABEL: Record<string, string> = {
   invoke_subagent: '委派子智能体',
   check_subagent: '查询子智能体',
   ask_user: '向用户提问',
+  decide: '结构化决策',
+  check_gate: '验收门禁',
+  git_status: 'Git 状态',
+  git_diff: 'Git 变更',
+  git_log: 'Git 历史',
+  code_outline: '代码大纲',
+  run_tests: '运行测试',
+  batch_write: '批量写入',
+  batch_replace: '批量替换',
+  project_inspect: '项目诊断',
+  read_url_content: '网页抓取',
 }
 
 /** 工具图标渲染 */
@@ -85,14 +96,21 @@ function renderToolIcon(name: string, size = 13, className = '') {
     case 'read_file':
     case 'write_file':
     case 'edit_file':
+    case 'batch_write':
+    case 'code_outline':
       return <FileText size={size} className={className} />
+    case 'batch_replace':
+      return <Edit3 size={size} className={className} />
     case 'search_files':
+    case 'project_inspect':
       return <Search size={size} className={className} />
     case 'find_symbol':
       return <Code size={size} className={className} />
     case 'run_command':
     case 'run_background':
       return <Terminal size={size} className={className} />
+    case 'run_tests':
+      return <CheckCircle2 size={size} className={className} />
     case 'check_task':
       return <Clock size={size} className={className} />
     case 'kill_task':
@@ -104,16 +122,48 @@ function renderToolIcon(name: string, size = 13, className = '') {
       return <Bot size={size} className={className} />
     case 'ask_user':
       return <Sparkles size={size} className={className} />
+    case 'check_gate':
+      return <ShieldAlert size={size} className={className} />
+    case 'decide':
+      return <Compass size={size} className={className} />
+    case 'git_status':
+      return <FolderGit2 size={size} className={className} />
+    case 'git_diff':
+      return <Code size={size} className={className} />
+    case 'git_log':
+      return <Clock size={size} className={className} />
     default:
       return <Terminal size={size} className={className} />
   }
 }
 
 /** 路径工具集合 */
-const PATH_TOOLS = new Set(['read_file', 'write_file', 'edit_file', 'list_files'])
+const PATH_TOOLS = new Set(['read_file', 'write_file', 'edit_file', 'list_files', 'code_outline'])
 
-/** 智能拆分目标路径：文件名是正文，目录是暗色小字（对齐 src/ui/Transcript.tsx toolTarget） */
+/** 智能拆分目标路径：文件名是正文，目录是暗色小字 */
 function toolTarget(name: string, args: any): { target: string; dir: string } {
+  if (name === 'check_gate') {
+    const crit = args?.criteria || ''
+    return { target: crit ? `标准: ${crit}` : '验收门禁检查', dir: '' }
+  }
+  if (name === 'decide') {
+    const qCount = args?.questions ? Object.keys(args.questions).length : 0
+    return { target: qCount > 0 ? `${qCount} 个判断问题` : '结构化决策', dir: '' }
+  }
+  if (name === 'git_status') return { target: '检查仓库工作区改动', dir: '' }
+  if (name === 'git_diff') return { target: args?.file || args?.path || '工作区未暂存差异', dir: '' }
+  if (name === 'git_log') return { target: `近期 ${args?.limit || 10} 次提交`, dir: '' }
+  if (name === 'run_tests') return { target: '执行测试套件', dir: '' }
+  if (name === 'project_inspect') return { target: '探测技术栈与项目环境', dir: '' }
+  if (name === 'batch_write') {
+    const count = Array.isArray(args?.files) ? args.files.length : 0
+    return { target: `写入 ${count} 个文件`, dir: '' }
+  }
+  if (name === 'batch_replace') {
+    const count = Array.isArray(args?.files) ? args.files.length : 0
+    return { target: `在 ${count} 个文件中替换`, dir: '' }
+  }
+
   const rawPath =
     typeof args === 'string'
       ? args
@@ -687,6 +737,15 @@ const ToolCard: React.FC<{
       return { label: '等待批准', color: 'text-amber-500/90 bg-amber-500/10 border-amber-500/20' }
     }
     if (isRunning) return { label: '执行中', color: 'text-blue-500/90 bg-blue-500/10 border-blue-500/20' }
+    if (toolName === 'check_gate') {
+      const outputText = typeof item.output === 'string' ? item.output : String((item.result as any)?.output || '')
+      if (outputText.includes('通过 [PASS]') || structuredData?.passed === true) {
+        return { label: '门禁通过', color: 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/20' }
+      }
+      if (outputText.includes('未通过 [BLOCKED]') || structuredData?.passed === false) {
+        return { label: '门禁未通过', color: 'text-rose-600 dark:text-rose-400 bg-rose-500/10 border-rose-500/20' }
+      }
+    }
     if (isError) return { label: '失败', color: 'text-rose-500/90 bg-rose-500/10 border-rose-500/20' }
     return null
   })()

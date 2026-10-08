@@ -405,3 +405,18 @@ export interface DebugEntry {
   raw?: string
   error?: string
 }
+
+export interface ProductInfo {
+  id: string
+  name: string
+  archetype: string
+  persona?: string
+}
+
+export interface InitializeResult {
+  sessionId: string
+  protocolVersion: string
+  host: { pid: number }
+  capabilities: ServerCapabilities
+  product?: ProductInfo
+}

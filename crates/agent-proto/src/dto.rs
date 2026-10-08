@@ -104,6 +104,17 @@ pub struct HostInfo {
     pub pid: u32,
 }
 
+/// 产品元数据（支持多产品架构体系）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductInfo {
+    pub id: String,
+    pub name: String,
+    pub archetype: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona: Option<String>,
+}
+
 /// 客户端初始化握手响应负载
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -112,6 +123,8 @@ pub struct InitializeResult {
     pub protocol_version: String,
     pub host: HostInfo,
     pub capabilities: ServerCapabilities,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub product: Option<ProductInfo>,
 }
 
 /// 快照事件负载

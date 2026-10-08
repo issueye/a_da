@@ -333,9 +333,11 @@ export function App() {
       <TitleBar
         title={activeThread?.title || '新对话'}
         workspace={activeThread?.workspace}
+        productName={agentClient.productInfo?.name || agentClient.productInfo?.id || 'ada-coding'}
         mode={snapshot.currentMode}
         connected={connected}
         isDark={isDark}
+        onReconnect={() => agentClient.reconnectImmediately()}
         onToggleTheme={() => setIsDark(!isDark)}
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenPlugins={() => setPluginsOpen(true)}
@@ -343,6 +345,25 @@ export function App() {
         onOpenChanges={() => setChangesOpen(true)}
         activeChangeCount={activeChangeCount}
       />
+
+      {/* 服务离线/正在重连提示横幅 */}
+      {!connected && (
+        <div className="bg-amber-500/10 dark:bg-amber-500/20 border-b border-amber-500/30 px-3 py-1 flex items-center justify-between text-xs text-amber-700 dark:text-amber-300 z-10">
+          <div className="flex items-center space-x-2">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500" />
+            </span>
+            <span>与核心服务连接断开，正在尝试重连...</span>
+          </div>
+          <button
+            onClick={() => agentClient.reconnectImmediately()}
+            className="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-800 dark:text-amber-200 border border-amber-500/40 text-[11px] font-medium transition-colors cursor-pointer"
+          >
+            立即重连
+          </button>
+        </div>
+      )}
 
       {/* 主体工作区（左右分栏） */}
       <div className="flex-1 flex overflow-hidden">

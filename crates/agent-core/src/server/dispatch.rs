@@ -289,6 +289,12 @@ impl Dispatcher {
                     protocol_version: PROTOCOL_VERSION.to_string(),
                     host: HostInfo { pid: self.host_pid },
                     capabilities: ServerCapabilities::default(),
+                    product: Some(agent_proto::ProductInfo {
+                        id: "ada-coding".to_string(),
+                        name: "a_da 编程助手".to_string(),
+                        archetype: "coding".to_string(),
+                        persona: Some("你是一个严谨且专业的 AI 编程助手，负责代码编辑、终端指令执行与代码库维护。".to_string()),
+                    }),
                 };
                 serde_json::to_value(init_res).map_err(|e| ProtocolError::internal_error(e.to_string()))
             }
@@ -2407,6 +2413,11 @@ mod tests {
         assert_eq!(caps.get("hooks").and_then(|v| v.as_bool()), Some(false));
         let evts = caps.get("events").expect("必须包含 events 能力");
         assert_eq!(evts.get("snapshotSeq").and_then(|v| v.as_bool()), Some(true));
+
+        let prod = init_val.get("product").expect("必须包含 product 节点");
+        assert_eq!(prod.get("id").and_then(|v| v.as_str()), Some("ada-coding"));
+        assert_eq!(prod.get("archetype").and_then(|v| v.as_str()), Some("coding"));
+        assert_eq!(prod.get("name").and_then(|v| v.as_str()), Some("a_da 编程助手"));
 
         // 2. 测试 session.snapshot 包含 seq 序号（M3-T2）
         let snap_val = dispatcher

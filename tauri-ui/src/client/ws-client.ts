@@ -29,6 +29,7 @@ import type {
   ModelEntry,
   ProviderEntry,
   QueuedItem,
+  ProductInfo,
 } from '../types'
 
 export type Listener = (snapshot: ClientSnapshot) => void
@@ -75,6 +76,78 @@ export class AgentWebSocketClient {
   private listeners = new Set<Listener>()
   private reconnectTimer: any = null
   private _connected = false
+  public productInfo: ProductInfo | null = null
+
+  public reconnectImmediately() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    console.log('[AgentWS] 触发立即重连...')
+    this.connect()
+  }
+
+  /**
+   * 将指定会话完整序列化导出为标准 Markdown 格式
+   */
+  public exportThreadToMarkdown(thread: Thread): string {
+    const title = thread.title || '无标题会话'
+    const dateStr = thread.createdAt ? new Date(thread.createdAt).toLocaleString('zh-CN') : '未知时间'
+    const ws = thread.workspace || '默认工作区'
+    const prodName = this.productInfo?.name || 'a_da 编程助手'
+
+    const lines: string[] = [
+      `# ${title}`,
+      ``,
+      `> - **工作区**: \`${ws}\``,
+      `> - **创建时间**: ${dateStr}`,
+      `> - **助手规格**: ${prodName} (${this.productInfo?.id || 'ada-coding'})`,
+      ``,
+      `---`,
+      ``,
+    ]
+
+    for (const item of thread.items || []) {
+      if (item.kind === 'user') {
+        lines.push(`## 👤 用户`)
+        lines.push(``)
+        lines.push(item.text || '')
+        lines.push(``)
+      } else if (item.kind === 'thinking') {
+        if (item.text && item.text.trim()) {
+          lines.push(`> 💭 **思考过程**`)
+          lines.push(`>`)
+          const quoted = item.text.trim().split('\n').map((l) => `> ${l}`).join('\n')
+          lines.push(quoted)
+          lines.push(``)
+        }
+      } else if (item.kind === 'toolCall') {
+        lines.push(`🔧 **工具调用**: \`${item.name}\``)
+        if (item.args && Object.keys(item.args).length > 0) {
+          lines.push('```json')
+          lines.push(JSON.stringify(item.args, null, 2))
+          lines.push('```')
+        }
+        lines.push(``)
+      } else if (item.kind === 'tool') {
+        const status = item.status === 'error' ? '❌ 失败' : '✅ 成功'
+        lines.push(`📋 **工具结果** (${status})`)
+        if (item.output) {
+          lines.push('```')
+          lines.push(item.output.trim())
+          lines.push('```')
+        }
+        lines.push(``)
+      } else if (item.kind === 'assistant') {
+        lines.push(`## 🤖 助手`)
+        lines.push(``)
+        lines.push(item.text || '')
+        lines.push(``)
+      }
+    }
+
+    return lines.join('\n')
+  }
 
   public debugLogs: DebugEntry[] = []
   private debugListeners = new Set<(logs: DebugEntry[]) => void>()
@@ -186,11 +259,16 @@ export class AgentWebSocketClient {
         console.log('[AgentWS] WebSocket 已连接:', this.url)
         this._connected = true
         try {
-          await this.request('session.initialize', {
+          const initRes = await this.request('session.initialize', {
             token: this.token,
             protocolVersion: '1.0',
             client: { name: 'a-da-tauri', version: '0.1.0', platform: 'tauri' },
           })
+          if (initRes && initRes.product) {
+            const prod = initRes.product
+            this.productInfo = prod
+            console.log('[AgentWS] 成功接入产品:', prod.name, `(${prod.id})`)
+          }
           const snap = await this.request('session.snapshot', {})
           if (snap) {
             this.applySnapshot(snap)

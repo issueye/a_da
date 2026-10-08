@@ -10,9 +10,11 @@ import {
   ChevronRight,
   ChevronDown,
   Bot,
+  Download,
 } from 'lucide-react'
 import type { Thread } from '../types'
 import { agentClient } from '../client/ws-client'
+import { notify } from './ToastHost'
 
 interface SidebarProps {
   threads: Thread[]
@@ -62,6 +64,37 @@ const SidebarComponent: React.FC<SidebarProps> = ({
 
   const toggleWorkspace = (key: string) => {
     setExpandedWorkspaceKey((prev) => (prev === key ? null : key))
+  }
+
+  const handleExportThread = (e: React.MouseEvent, t: Thread) => {
+    e.stopPropagation()
+    try {
+      const md = agentClient.exportThreadToMarkdown(t)
+      if (navigator?.clipboard?.writeText) {
+        navigator.clipboard.writeText(md).catch(() => {})
+      }
+      const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      const safeTitle = (t.title || '会话导出').replace(/[\\/:*?"<>|]/g, '_')
+      a.download = `${safeTitle}-${t.id.slice(0, 8)}.md`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      notify({
+        level: 'success',
+        message: '导出会话成功',
+        detail: `已导出「${t.title || '未命名会话'}」，内容已复制到剪贴板`,
+      })
+    } catch (err: any) {
+      notify({
+        level: 'error',
+        message: '导出失败',
+        detail: err?.message || String(err),
+      })
+    }
   }
 
   // 将会话按工作区树形归纳分组，并在工作区内按父子关系构建树形会话列表
@@ -437,16 +470,25 @@ const SidebarComponent: React.FC<SidebarProps> = ({
                                 )}
                               </div>
 
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  onDeleteThread(thread.id)
-                                }}
-                                className="opacity-0 group-hover:opacity-100 p-0.5 text-zinc-400 hover:text-rose-500 hover:bg-zinc-200/70 dark:hover:bg-zinc-700/40 rounded transition-opacity flex-shrink-0 ml-1 cursor-pointer"
-                                title="删除会话"
-                              >
-                                <Trash2 size={11} />
-                              </button>
+                              <div className="flex items-center space-x-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 ml-1">
+                                <button
+                                  onClick={(e) => handleExportThread(e, thread)}
+                                  className="p-0.5 text-zinc-400 hover:text-blue-500 hover:bg-zinc-200/70 dark:hover:bg-zinc-700/40 rounded cursor-pointer"
+                                  title="导出会话为 Markdown 并复制"
+                                >
+                                  <Download size={11} />
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    onDeleteThread(thread.id)
+                                  }}
+                                  className="p-0.5 text-zinc-400 hover:text-rose-500 hover:bg-zinc-200/70 dark:hover:bg-zinc-700/40 rounded cursor-pointer"
+                                  title="删除会话"
+                                >
+                                  <Trash2 size={11} />
+                                </button>
+                              </div>
                             </div>
 
                             {/* 嵌套子项：所属子代理会话列表 */}
@@ -480,16 +522,25 @@ const SidebarComponent: React.FC<SidebarProps> = ({
                                         </span>
                                       </div>
 
-                                      <button
-                                        onClick={(e) => {
-                                          e.stopPropagation()
-                                          onDeleteThread(sub.id)
-                                        }}
-                                        className="opacity-0 group-hover:opacity-100 p-0.5 text-zinc-400 hover:text-rose-500 hover:bg-zinc-200/70 dark:hover:bg-zinc-700/40 rounded transition-opacity flex-shrink-0 ml-1 cursor-pointer"
-                                        title="删除子代理会话"
-                                      >
-                                        <Trash2 size={11} />
-                                      </button>
+                                      <div className="flex items-center space-x-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 ml-1">
+                                        <button
+                                          onClick={(e) => handleExportThread(e, sub)}
+                                          className="p-0.5 text-zinc-400 hover:text-blue-500 hover:bg-zinc-200/70 dark:hover:bg-zinc-700/40 rounded cursor-pointer"
+                                          title="导出子代理会话为 Markdown 并复制"
+                                        >
+                                          <Download size={11} />
+                                        </button>
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            onDeleteThread(sub.id)
+                                          }}
+                                          className="p-0.5 text-zinc-400 hover:text-rose-500 hover:bg-zinc-200/70 dark:hover:bg-zinc-700/40 rounded cursor-pointer"
+                                          title="删除子代理会话"
+                                        >
+                                          <Trash2 size={11} />
+                                        </button>
+                                      </div>
                                     </div>
                                   )
                                 })}

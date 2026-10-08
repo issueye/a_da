@@ -17,6 +17,7 @@ import type { AgentMode } from '../types'
 interface TitleBarProps {
   title: string
   workspace?: string
+  productName?: string
   mode: AgentMode
   connected: boolean
   isDark: boolean
@@ -25,12 +26,14 @@ interface TitleBarProps {
   onOpenPlugins: () => void
   onOpenCommandPalette?: () => void
   onOpenChanges?: () => void
+  onReconnect?: () => void
   activeChangeCount?: number
 }
 
 export const TitleBar: React.FC<TitleBarProps> = ({
   title,
   workspace,
+  productName,
   mode,
   connected,
   isDark,
@@ -39,6 +42,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onOpenPlugins,
   onOpenCommandPalette,
   onOpenChanges,
+  onReconnect,
   activeChangeCount = 0,
 }) => {
   const handleMinimize = async () => {
@@ -86,6 +90,9 @@ export const TitleBar: React.FC<TitleBarProps> = ({
             <Terminal size={12} strokeWidth={2.5} />
           </div>
           <span className="text-sm font-semibold tracking-tight">a_da</span>
+          <span className="text-[10px] px-1.5 py-0.2 rounded font-mono font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
+            {productName || 'ada-coding'}
+          </span>
         </div>
 
         {workspace && (
@@ -115,13 +122,19 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       </div>
 
       {/* 中间：连接状态 */}
-      <div className="flex items-center space-x-1.5 pointer-events-none">
+      <div
+        className={`flex items-center space-x-1.5 px-2 py-0.5 rounded transition-colors ${
+          !connected ? 'cursor-pointer hover:bg-rose-500/10 pointer-events-auto' : 'pointer-events-none'
+        }`}
+        onClick={!connected ? onReconnect : undefined}
+        title={!connected ? '核心服务断开，点击立即尝试重连' : '核心在线'}
+      >
         <Circle
           size={7}
           className={`${connected ? 'fill-emerald-500 text-emerald-500' : 'fill-rose-500 text-rose-500'} animate-pulse`}
         />
         <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
-          {connected ? '核心在线' : '等待核心连接...'}
+          {connected ? '核心在线' : '未连接 (点击重试)'}
         </span>
       </div>
 
