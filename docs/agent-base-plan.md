@@ -581,7 +581,29 @@ archive/
 - `bun run verify:archive` 全绿
 - `bun run typecheck` 全绿
 
+### 8.8 批次 8（2026-10-08）：M3 协议单源 + 投影层收敛落地
+
+**工作内容**：
+1. **协议单源与规范定义（M3-T1）**：
+   - 建立 `spec/proto/base.json`（24 个 L0 核心基础方法、能力位、错误码表）与 `spec/proto/ada-coding.ext.json`（52 个 L2 编程产品扩展方法）。
+   - 在 `crates/agent-proto/src/methods.rs` 汇总定义 `ALL_METHODS`（76 个）与 `ALL_EVENTS`（3 个），编写双向集合一致性校验单测，保证 Rust 常量与 JSON spec 逐项完全吻合且无孤儿臂。
+2. **快照补齐单调序号 `seq`（M3-T2, INV-6）**：
+   - `crates/agent-proto/src/dto.rs`：在 `ClientSnapshot` 结构体上增加 `#[serde(default)] pub seq: u64`。
+   - `agent_core/src/state/snapshot.rs`：新增 `generate_snapshot_with_seq`；在快照推流广播器（`emitter.rs`）与 WebSocket 首帧连接（`ws.rs`）中统一注入状态版本号，保证重连和长轮询重放有序。
+3. **TypeScript 客户端类型生成与单一真源（M3-T3, INV-9）**：
+   - 在 `crates/agent-proto/client-ts/` 生成 `dto.ts`、`methods.ts` 与 `index.ts`。
+   - 重构 `tauri-ui/src/types/index.ts`，全量 re-export 生成的客户端协议类型，彻底废除第三份手写协议 DTO。
+4. **能力位如实回答（M3-T4, INV-10）**：
+   - `agent_core/src/server/dispatch.rs` 在 `session.initialize` 响应中如实声明 `capabilities`（例如 `images: false`, `rollback: true`, `plugins: true`, `events.snapshotSeq: true` 等），避免前端误假设多模态图片支持。
+
+**验收**：
+- `cargo check --workspace --all-targets` 通过
+- `cargo test --workspace -- --test-threads=1` **105 项全绿**
+- `bun run verify:archive` 全绿
+- `bun run typecheck` 全绿
+
 ---
+
 
 ## 9. INV → 任务映射（谁保证哪条不变量）
 

@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0",
+  "title": "AGENT BASE Line Protocol Specification (L0 + L1)",
+  "description": "AGENT BASE 基座线协议标准：L0 核心通信与调度方法、L1 系统能力位以及标准错误码定义。",
+  "capabilities": {
+    "images": false,
+    "rollback": true,
+    "plugins": true,
+    "hooks": false,
+    "resync": false,
+    "events": {
+      "granularity": "coarse",
+      "snapshotSeq": true
+    }
+  },
+  "errorCodes": {
+    "parseError": -32700,
+    "invalidRequest": -32600,
+    "methodNotFound": -32601,
+    "invalidParams": -32602,
+    "internalError": -32603,
+    "protocolVersionMismatch": -32000,
+    "threadNotFound": -32001,
+    "turnAlreadyActive": -32002,
+    "turnAborted": -32003,
+    "approvalDenied": -32004,
+    "providerNotConfigured": -32005,
+    "modelApiError": -32006,
+    "toolNotFound": -32007,
+    "toolExecutionFailed": -32008,
+    "unauthorized": -32009
+  },
+  "events": [
+    {
+      "topic": "evt.state.snapshot",
+      "description": "服务端推送的全量/增量合帧状态快照",
+      "since": "1.0"
+    },
+    {
+      "topic": "evt.message.delta",
+      "description": "大模型即时流式输出片段增量通知",
+      "since": "1.0"
+    },
+    {
+      "topic": "evt.card.updated",
+      "description": "单个卡片或工具调用执行状态即时变更通知",
+      "since": "1.0"
+    }
+  ],
+  "methods": [
+    { "name": "session.initialize", "kind": "command", "since": "1.0", "description": "客户端与服务端初始化握手与能力协商" },
+    { "name": "session.snapshot", "kind": "command", "since": "1.0", "description": "主动请求拉取当前最新快照" },
+    { "name": "ui.setShell", "kind": "command", "since": "1.0", "description": "同步客户端外壳 UI 面板展开/折叠状态" },
+    { "name": "ui.openTab", "kind": "command", "since": "1.0", "description": "打开新标签页" },
+    { "name": "ui.closeTab", "kind": "command", "since": "1.0", "description": "关闭指定标签页" },
+    { "name": "ui.activeThread", "kind": "command", "since": "1.0", "description": "切换当前激活会话" },
+    { "name": "ui.activeProject", "kind": "command", "since": "1.0", "description": "切换当前激活项目" },
+    { "name": "thread.focus", "kind": "command", "since": "1.0", "description": "聚焦指定会话" },
+    { "name": "thread.create", "kind": "command", "since": "1.0", "description": "新建会话线程" },
+    { "name": "thread.delete", "kind": "command", "since": "1.0", "description": "删除会话线程" },
+    { "name": "thread.send", "kind": "command", "since": "1.0", "description": "向会话发送用户指令开启回合" },
+    { "name": "thread.abort", "kind": "command", "since": "1.0", "description": "中止正在运行的会话回合" },
+    { "name": "thread.update", "kind": "command", "since": "1.0", "description": "更新会话标题或属性" },
+    { "name": "thread.compact", "kind": "command", "since": "1.0", "description": "执行会话历史上下文压缩整理" },
+    { "name": "thread.setMode", "kind": "command", "since": "1.0", "description": "切换会话工作模式（code/plan/create）" },
+    { "name": "thread.setWorkspace", "kind": "command", "since": "1.0", "description": "绑定会话专属工作区目录" },
+    { "name": "thread.editAndResend", "kind": "command", "since": "1.0", "description": "编辑历史用户消息并重新生成分支" },
+    { "name": "thread.retry", "kind": "command", "since": "1.0", "description": "重试上一轮执行" },
+    { "name": "approval.decide", "kind": "command", "since": "1.0", "description": "提交高危指令审批决议" },
+    { "name": "question.answer", "kind": "command", "since": "1.0", "description": "答复交互提问" },
+    { "name": "queue.clear", "kind": "command", "since": "1.0", "description": "清空用户待发指令队列" },
+    { "name": "queue.promote", "kind": "command", "since": "1.0", "description": "置顶队列指令" },
+    { "name": "queue.remove", "kind": "command", "since": "1.0", "description": "移除指定排队指令" },
+    { "name": "subagent.resume", "kind": "command", "since": "1.0", "description": "唤醒或恢复挂起的子智能体" }
+  ]
+}

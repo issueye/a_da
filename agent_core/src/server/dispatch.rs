@@ -284,13 +284,13 @@ impl Dispatcher {
                     ));
                 }
 
-                Ok(serde_json::json!({
-                    "sessionId": self.session_id,
-                    "protocolVersion": PROTOCOL_VERSION,
-                    "host": {
-                        "pid": self.host_pid
-                    }
-                }))
+                let init_res = InitializeResult {
+                    session_id: self.session_id.clone(),
+                    protocol_version: PROTOCOL_VERSION.to_string(),
+                    host: HostInfo { pid: self.host_pid },
+                    capabilities: ServerCapabilities::default(),
+                };
+                serde_json::to_value(init_res).map_err(|e| ProtocolError::internal_error(e.to_string()))
             }
 
             SESSION_SNAPSHOT => {
@@ -2368,6 +2368,54 @@ mod tests {
         let ans = rx.await.expect("应该唤醒等待者");
         assert_eq!(ans.answered_by, "user");
         assert!(!crate::approval::global_question_manager().has_pending(call_id));
+    }
+
+    #[tokio::test]
+    async fn test_session_initialize_returns_capabilities_and_snapshot_has_seq() {
+        let store = Arc::new(tokio::sync::RwLock::new(AgentStore::new("E:/codes/default_ws".to_string())));
+        let session_mgr = Arc::new(crate::session::SessionManager::new(None));
+        let checkpoint_mgr = Arc::new(crate::checkpoint::CheckpointManager::new(None));
+        let subagent_mgr = Arc::new(crate::subagents::SubagentManager::new());
+        let approval_mgr = Arc::new(crate::approval::ApprovalManager::new());
+        let plugin_mgr = Arc::new(crate::plugins::PluginManager::new());
+        let skill_mgr = Arc::new(crate::skills::SkillManager::new());
+
+        let dispatcher = Dispatcher::new(
+            store,
+            session_mgr,
+            checkpoint_mgr,
+            subagent_mgr,
+            approval_mgr,
+            plugin_mgr,
+            skill_mgr,
+            None,
+        );
+
+        // 1. 测试 session.initialize 能力位握手返回（M3-T4）
+        let init_params = serde_json::json!({
+            "protocolVersion": "1.0"
+        });
+        let init_val = dispatcher
+            .dispatch(crate::protocol::methods::SESSION_INITIALIZE, init_params)
+            .await
+            .expect("握手成功");
+
+        let caps = init_val.get("capabilities").expect("必须包含 capabilities 节点");
+        assert_eq!(caps.get("images").and_then(|v| v.as_bool()), Some(false), "MVP 如实声明 images: false");
+        assert_eq!(caps.get("rollback").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(caps.get("plugins").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(caps.get("hooks").and_then(|v| v.as_bool()), Some(false));
+        let evts = caps.get("events").expect("必须包含 events 能力");
+        assert_eq!(evts.get("snapshotSeq").and_then(|v| v.as_bool()), Some(true));
+
+        // 2. 测试 session.snapshot 包含 seq 序号（M3-T2）
+        let snap_val = dispatcher
+            .dispatch(crate::protocol::methods::SESSION_SNAPSHOT, serde_json::json!({}))
+            .await
+            .expect("拉取快照成功");
+
+        assert!(snap_val.get("seq").is_some(), "快照必须携带 seq 字段");
+        assert_eq!(snap_val.get("seq").and_then(|v| v.as_u64()), Some(0));
     }
 }
 

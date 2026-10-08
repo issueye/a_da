@@ -106,3 +106,158 @@ pub const EVT_STATE_SNAPSHOT: &str = "evt.state.snapshot";
 pub const EVT_MESSAGE_DELTA: &str = "evt.message.delta";
 pub const EVT_CARD_UPDATED: &str = "evt.card.updated";
 
+/// 全量协议方法列表（L0 核心 + L2 产品扩展）
+pub const ALL_METHODS: &[&str] = &[
+    SESSION_INITIALIZE,
+    SESSION_SNAPSHOT,
+    UI_SET_SHELL,
+    UI_OPEN_TAB,
+    UI_CLOSE_TAB,
+    UI_ACTIVE_THREAD,
+    UI_ACTIVE_PROJECT,
+    FS_ROOTS,
+    FS_LIST,
+    FS_MKDIR,
+    FS_READ_BASE64,
+    THREAD_FOCUS,
+    THREAD_CREATE,
+    THREAD_DELETE,
+    THREAD_SEND,
+    THREAD_ABORT,
+    THREAD_UPDATE,
+    THREAD_COMPACT,
+    THREAD_SET_MODE,
+    THREAD_SET_WORKSPACE,
+    THREAD_EDIT_AND_RESEND,
+    THREAD_RETRY,
+    APPROVAL_DECIDE,
+    QUESTION_ANSWER,
+    WORKSPACE_SET,
+    WORKSPACE_ADD,
+    WORKSPACE_REMOVE,
+    WORKSPACE_ENTRIES,
+    WORKSPACE_OPEN_PUBLIC,
+    WORKSPACE_RESCAN,
+    CONFIG_UPDATE,
+    CONFIG_GET,
+    CONFIG_PRESETS,
+    CONFIG_SET_PROVIDER,
+    CONFIG_CHECK_PROVIDER,
+    CONFIG_SET_APPROVAL,
+    CONFIG_SET_EFFORT,
+    PROVIDER_LIST,
+    PROVIDER_SAVE,
+    PROVIDER_DELETE,
+    PROVIDER_SET_ACTIVE,
+    PROVIDER_FETCH_MODELS,
+    DEBUG_TRACE,
+    DEBUG_LOG_CLEAR,
+    DEBUG_HOST_INFO,
+    STATS_PROMPT_CHARS,
+    PLUGIN_BUILTIN_CATALOG,
+    CHANGE_COUNT,
+    CHANGE_LIST,
+    CHANGE_REVERT_CARD,
+    CHANGE_REVERT_CHECKPOINT,
+    CHANGE_REVERT_FILE,
+    CHANGE_REVERT_ALL,
+    PLUGIN_LIST,
+    PLUGIN_CAPABILITIES_SET,
+    PLUGIN_CONFIG_SET,
+    PLUGIN_SECRET_SET,
+    PLUGIN_SET_ENABLED,
+    PLUGIN_DELETE,
+    PLUGIN_CREATE_TEMPLATE,
+    PROMPT_LIST,
+    PROMPT_SET_ENABLED,
+    PROMPT_CREATE,
+    PROMPT_UPDATE,
+    PROMPT_DELETE,
+    SKILL_LIST,
+    SKILL_SET_ENABLED,
+    SKILL_CREATE,
+    SKILL_DELETE,
+    SUBAGENT_PROFILE_LIST,
+    SUBAGENT_PROFILE_SET_ENABLED,
+    SUBAGENT_PROFILE_DELETE,
+    SUBAGENT_RESUME,
+    QUEUE_CLEAR,
+    QUEUE_PROMOTE,
+    QUEUE_REMOVE,
+];
+
+pub const ALL_EVENTS: &[&str] = &[
+    EVT_STATE_SNAPSHOT,
+    EVT_MESSAGE_DELTA,
+    EVT_CARD_UPDATED,
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::path::Path;
+
+    #[test]
+    fn test_methods_and_events_have_no_duplicates() {
+        let mut method_set = HashSet::new();
+        for &m in ALL_METHODS {
+            assert!(method_set.insert(m), "发现重复协议方法: {}", m);
+        }
+        assert_eq!(ALL_METHODS.len(), 76);
+
+        let mut event_set = HashSet::new();
+        for &e in ALL_EVENTS {
+            assert!(event_set.insert(e), "发现重复事件主题: {}", e);
+        }
+        assert_eq!(ALL_EVENTS.len(), 3);
+    }
+
+    #[test]
+    fn test_spec_consistency_across_rust_and_json_spec() {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root_dir = manifest_dir.parent().unwrap().parent().unwrap();
+
+        let base_spec_path = root_dir.join("spec/proto/base.json");
+        let ext_spec_path = root_dir.join("spec/proto/ada-coding.ext.json");
+
+        assert!(base_spec_path.exists(), "spec/proto/base.json 必须存在");
+        assert!(ext_spec_path.exists(), "spec/proto/ada-coding.ext.json 必须存在");
+
+        let base_raw = std::fs::read_to_string(&base_spec_path).unwrap();
+        let base_val: serde_json::Value = serde_json::from_str(&base_raw).unwrap();
+
+        let ext_raw = std::fs::read_to_string(&ext_spec_path).unwrap();
+        let ext_val: serde_json::Value = serde_json::from_str(&ext_raw).unwrap();
+
+        let mut spec_methods = HashSet::new();
+        for item in base_val["methods"].as_array().unwrap() {
+            spec_methods.insert(item["name"].as_str().unwrap().to_string());
+        }
+        for item in ext_val["methods"].as_array().unwrap() {
+            spec_methods.insert(item["name"].as_str().unwrap().to_string());
+        }
+
+        let rust_methods: HashSet<String> = ALL_METHODS.iter().map(|s| s.to_string()).collect();
+
+        // 验证 spec 定义的方法集合与 Rust 常量集合严格相等（INV-11 协议单源）
+        assert_eq!(
+            spec_methods, rust_methods,
+            "spec 与 Rust 常量存在集合差异！孤儿臂或无臂常量不为 0"
+        );
+
+        // 验证 TS 客户端类型也包含这 76 个方法
+        let ts_methods_path = manifest_dir.join("client-ts/methods.ts");
+        assert!(ts_methods_path.exists(), "client-ts/methods.ts 必须存在");
+        let ts_content = std::fs::read_to_string(&ts_methods_path).unwrap();
+        for &m in ALL_METHODS {
+            assert!(
+                ts_content.contains(&format!("'{}'", m)),
+                "TS client-ts 缺失协议方法常量: {}",
+                m
+            );
+        }
+    }
+}
+
+

@@ -2,8 +2,13 @@ use crate::protocol::*;
 use crate::state::store::AgentStore;
 use std::collections::HashSet;
 
-/// 根据当前内存状态组装一份高轻量、高性能的可渲染快照
+/// 根据当前内存状态组装一份高轻量、高性能的可渲染快照（seq 默认为 0）
 pub fn generate_snapshot(store: &AgentStore) -> ClientSnapshot {
+    generate_snapshot_with_seq(store, 0)
+}
+
+/// 组装带单调递增版本序号的可渲染快照（M3-T2）
+pub fn generate_snapshot_with_seq(store: &AgentStore, seq: u64) -> ClientSnapshot {
     let active_id = &store.active_id;
     let open_tabs: HashSet<&str> = store.ui.open_tab_ids.iter().map(|s| s.as_str()).collect();
     let running: HashSet<&str> = store.running_thread_ids.iter().map(|s| s.as_str()).collect();
@@ -50,6 +55,7 @@ pub fn generate_snapshot(store: &AgentStore) -> ClientSnapshot {
     };
 
     ClientSnapshot {
+        seq,
         threads,
         active_thread_id: store.active_id.clone(),
         running_thread_ids: store.running_thread_ids.clone(),

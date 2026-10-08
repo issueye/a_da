@@ -61,6 +61,59 @@ impl<T: Serialize> JsonRpcNotification<T> {
     }
 }
 
+/// 服务端事件能力位细项
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerEventsCapability {
+    pub granularity: String,
+    pub snapshot_seq: bool,
+}
+
+/// 服务端声明的能力位集合（INV-10 / M3-T4：如实回答，绝不捏造）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerCapabilities {
+    pub images: bool,
+    pub rollback: bool,
+    pub plugins: bool,
+    pub hooks: bool,
+    pub resync: bool,
+    pub events: ServerEventsCapability,
+}
+
+impl Default for ServerCapabilities {
+    fn default() -> Self {
+        Self {
+            images: false, // MVP 如实声明不支持图片，绝不做半吊子
+            rollback: true,
+            plugins: true,
+            hooks: false,
+            resync: false,
+            events: ServerEventsCapability {
+                granularity: "coarse".to_string(),
+                snapshot_seq: true,
+            },
+        }
+    }
+}
+
+/// 宿主进程信息
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostInfo {
+    pub pid: u32,
+}
+
+/// 客户端初始化握手响应负载
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InitializeResult {
+    pub session_id: String,
+    pub protocol_version: String,
+    pub host: HostInfo,
+    pub capabilities: ServerCapabilities,
+}
+
 /// 快照事件负载
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotEvent {
@@ -327,6 +380,8 @@ pub struct UiSnapshot {
 /// 客户端全量快照 (ClientSnapshot)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientSnapshot {
+    #[serde(default)]
+    pub seq: u64,
     pub threads: Vec<Thread>,
     #[serde(rename = "activeThreadId")]
     pub active_thread_id: String,

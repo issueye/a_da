@@ -1,5 +1,5 @@
 use crate::protocol::*;
-use crate::state::{generate_snapshot, AgentStore};
+use crate::state::{generate_snapshot_with_seq, AgentStore};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,7 +55,7 @@ impl StateBroadcaster {
         self.dirty.store(false, Ordering::Relaxed);
         let current_seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
         let store = self.store.read().await;
-        let snapshot = generate_snapshot(&store);
+        let snapshot = generate_snapshot_with_seq(&store, current_seq);
         let event = SnapshotEvent {
             seq: current_seq,
             topic: EVT_STATE_SNAPSHOT.to_string(),
