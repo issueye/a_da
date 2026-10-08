@@ -11,7 +11,7 @@ name = "ada-coding"
 path = "src/main.rs"
 
 [dependencies]
-agent_core = { path = "../../agent_core" }
+agent_core = { workspace = true }
 agent-base = { workspace = true }
 agent-runtime = { workspace = true }
 agent-conformance = { workspace = true }

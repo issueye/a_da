@@ -19,7 +19,7 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 uuid = { workspace = true }
 anyhow = { workspace = true }
-agent_core = { path = "../agent_core" }
+agent_core = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

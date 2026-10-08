@@ -3,9 +3,9 @@
 给在本仓库工作的 AI 智能体与协作者的注意事项。**本文件会被自动注入系统提示词**，因此只留
 「接手就必须知道的事」；深度约定全文已迁至 **[docs/agent-conventions.md](docs/agent-conventions.md)**。
 
-项目速览：**纯 Rust 微内核**（`agent_core/`：主循环、工具执行、插件沙箱、会话与检查点持久化）+
+项目速览：**纯 Rust 微内核**（`crates/agent-core/`：主循环、工具执行、插件沙箱、会话与检查点持久化）+
 **Tauri 桌面宿主**（`src-tauri/`，同进程起 `WsHostServer`）+ **React 前端**（`tauri-ui/`）；
-`ts_engine/` 是独立的 TS 执行引擎，只作插件运行时。
+`crates/ts-engine/` 是独立的 TS 执行引擎，只作插件运行时。
 **TypeScript 时代的实现（Bun + GPUIX 客户端 + TS 侧 agent/宿主）已整体归档到
 [`archive/ts-legacy/`](archive/ts-legacy)**：它不再是参考设计、不参与构建与测试。
 设计与计划的唯一口径是 [docs/agent-base-design.md](docs/agent-base-design.md) 与
@@ -42,14 +42,15 @@ bun run tauri:dev           # 桌面客户端开发（前端热重载 + 宿主�
 - `crates/agent-base` 基座内核（零 IO、零产品名词）：`model/`（模型面类型）、`domain/`（消息·工具描述符与回执·事件·错误与失败方向）、`ports/`（8 个端口，**无默认实现**）、`testing/`（FixedClock/RecordingSink/TempAppHome）；`engine/` 待落
 - `crates/agent-proto` 线协议：JSON-RPC 帧、方法常量、线上 DTO、错误码
 - `crates/agent-adapter` 适配器：`model/`（三家协议 SSE + 中止）、`app_home.rs`（**全仓唯一**读 `A_DA_HOME`/`USERPROFILE` 的地方）、`clock.rs`（**全仓唯一**读系统时间的地方）；`store/`、`plugin/`、`scope/` 待搬
-- `crates/agent-toolkit` 工具包：文件读写、路径沙箱、命令执行、文本 diff
-- `products/ada-coding` 产品二进制（`--host/--port/--token/--parent-pid/--workspace`）；`agent_core` 已变纯库
-- `agent_core/src/{ai,protocol,tools}/mod.rs` 是**兼容 shim**（`pub use` 转发到上面四个 crate），调用点不动
+- `crates/agent-toolkit` 工具包：文件读写、路径沙箱、命令执行、文本 diff、决策与门禁判定
+- `crates/agent-core` 核心纯库：主循环、分发、会话状态与插件执行
+- `crates/ts-engine` 插件运行时（Boa + oxc）；插件契约见 [docs/plugin-sdk/v1.md](docs/plugin-sdk/v1.md)
+- `products/ada-coding` 产品二进制（`--host/--port/--token/--parent-pid/--workspace`）
+- `crates/agent-core/src/{ai,protocol,tools}/mod.rs` 是**兼容 shim**（`pub use` 转发到基座各 crate），调用点不动
 - 端口已接线处：`session::{app_home,set_app_home,get_app_home,get_config_path}`、`state::{clock,set_clock,now_millis}`、`AgentStore::with_home`（单元测试默认 home 在临时目录，不再碰用户真实 `~/.a-da`）
-- `agent_core/src/{runner,server,state,session,plugins,subagents,skills,approval,checkpoint}` 仍是权威实现，M1 收敛
-- `agent_core/src/server` —— `dispatch.rs`（JSON-RPC 分发，最大文件）、`ws.rs`（宿主）、`emitter.rs`（快照合帧）
+- `crates/agent-core/src/{runner,server,state,session,plugins,subagents,skills,approval,checkpoint}` 仍是权威实现，M1 收敛
+- `crates/agent-core/src/server` —— `dispatch.rs`（JSON-RPC 分发，最大文件）、`ws.rs`（宿主）、`emitter.rs`（快照合帧）
 - `src-tauri` Tauri 宿主（同进程起核心服务）；`tauri-ui` React 前端（`src/client/ws-client.ts` 是协议客户端）
-- `ts_engine` 插件运行时（Boa + oxc）；插件契约见 [docs/plugin-sdk/v1.md](docs/plugin-sdk/v1.md)
 - `archive/ts-legacy` **只读归档**（TS 时代的 src + scripts + app.tsx）
 
 ## 三条会立刻绊倒你的规矩

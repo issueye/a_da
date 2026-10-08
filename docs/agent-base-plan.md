@@ -677,9 +677,8 @@ archive/
 `scripts/link.ts` | —（删除） | 只服务 `../gpuix` |
 `src/shared/protocol/**` | —（删除） | 被 `crates/agent-proto/client-ts/**` 取代 |
 `agent_core/src/{kernel,compiler}/mod.rs` | —（删除） | 直连 `ts_engine` |
-`tauri-ui/src/types/index.ts` | 改为 re-export 生成类型 | 编辑 |
-`ts_engine/**` | 保留（M6 可搬 `crates/agent-adapter/plugin-ts`） | 原地 |
-`agent_core/**` | → `crates/agent-base` + `agent-runtime` + 适配器；`agent_core` 保留 facade 一个版本 | 拆分 |
+`ts_engine/**` | → `crates/ts-engine`（已整体迁移至 crates/ 规范化管理） | `git mv` |
+`agent_core/**` | → `crates/agent-core`（纯库 facade，已整体迁移至 crates/ 规范化管理） | `git mv` |
 `src-tauri/**` | 保留；`AgentStore` 依赖改指向 `agent-runtime` | 编辑 |
 
 ## 附录 B：MVP 之后的路线（M6+）

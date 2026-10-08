@@ -11,9 +11,9 @@ members = [
     "products/ada-coding",
     "products/ada-skeleton",
     "tools/xtask",
-    # 现有实现（M1 收敛中：agent_core 逐步变薄，最终只剩 facade）
-    "agent_core",
-    "ts_engine",
+    # 核心与插件运行时（位于 crates/）
+    "crates/agent-core",
+    "crates/ts-engine",
     "src-tauri",
 ]
 resolver = "2"
@@ -66,4 +66,5 @@ agent-adapter = { path = "crates/agent-adapter" }
 agent-toolkit = { path = "crates/agent-toolkit" }
 agent-runtime = { path = "crates/agent-runtime" }
 agent-conformance = { path = "crates/agent-conformance" }
-ts_engine = { path = "ts_engine" }
+agent_core = { path = "crates/agent-core" }
+ts_engine = { path = "crates/ts-engine" }

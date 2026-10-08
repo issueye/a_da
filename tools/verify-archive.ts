@@ -18,7 +18,7 @@ const ROOT = join(import.meta.dir, '..')
 const ARCHIVE = 'archive'
 
 /** 主干侧需要扫描的目录（归档/deps/产物除外） */
-const SCAN_DIRS = ['agent_core', 'crates', 'products', 'src-tauri', 'tauri-ui', 'ts_engine', 'tools']
+const SCAN_DIRS = ['crates', 'products', 'src-tauri', 'tauri-ui', 'tools']
 /** 主干侧需要扫描的根文件 */
 const SCAN_ROOT_FILES = ['Cargo.toml', 'package.json', 'Cargo.lock']
 /** 只看这些扩展名的内容（.md 是文档，允许提到归档路径） */
@@ -157,12 +157,12 @@ console.log(`\nverify-archive：扫描 ${files.length} 个主干文件（跳过 
 // 5. 死 shim 已删
 {
   const details: string[] = []
-  for (const p of ['agent_core/src/kernel', 'agent_core/src/compiler']) {
+  for (const p of ['crates/agent-core/src/kernel', 'crates/agent-core/src/compiler']) {
     if (existsSync(join(ROOT, p))) details.push(`${p} 仍存在`)
   }
-  const lib = readFileSync(join(ROOT, 'agent_core/src/lib.rs'), 'utf8')
+  const lib = readFileSync(join(ROOT, 'crates/agent-core/src/lib.rs'), 'utf8')
   for (const m of ['pub mod kernel;', 'pub mod compiler;']) {
-    if (lib.includes(m)) details.push(`agent_core/src/lib.rs 仍有 ${m}`)
+    if (lib.includes(m)) details.push(`crates/agent-core/src/lib.rs 仍有 ${m}`)
   }
   check('kernel/compiler 转发 shim 已删除', details.length === 0, details)
 }
