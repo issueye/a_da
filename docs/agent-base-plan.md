@@ -602,7 +602,47 @@ archive/
 - `bun run verify:archive` 全绿
 - `bun run typecheck` 全绿
 
+### 8.9 批次 9（2026-10-08）：M5 合规套件 + 多产品声明式交付 + xtask 出包落地
+
+**工作内容**：
+1. **合规套件体系建立（`crates/agent-conformance`，M5-T1）**：
+   - **8 个端口契约合规套件**：
+     - `ports::model`：增量 Delta 累加、stop_reason 合法性、取消响应与能力位一致性断言。
+     - `ports::tool`：未知工具 resolve 返回 Err、schema 合法 object、5 类消费者 validate 全绿、回执字段非空与耗时派生。
+     - `ports::approval`：受控调用前必须拦截、Denied 以工具结果回传模型、answered_by 如实上报、默认 Closed 闭合。
+     - `ports::session`：append → load 往返等价、加载空会话返回空列表、顺序严格保持。
+     - `ports::rollback`：变更工具必须声明有效回滚策略（SingleTarget 或 PerTargetInBatch），批量必须 PerTargetInBatch。
+     - `ports::plugin`：插件工具描述符格式合规。
+     - `ports::scope`：作用域沙箱越界逃逸强力拦截（resolve_path 越界返回 DenialKind::Sandbox）。
+     - `ports::event`：事件全局单调严格递增 `seq`、TurnStarted 与 TurnFinished 成对出现。
+   - **8 条跨端口系统级不变量**：
+     - `inv1_single_engine`：单一引擎驱动产品单轮运转。
+     - `inv2_no_global_state`：同进程启动两个独立 runtime 且数据与时钟完全隔离无全局态干扰。
+     - `inv3_registry_single_source`：CompositeToolCatalog 单一真源合规断言。
+     - `inv4_fail_direction`：基座默认安全方向必须是 Closed。
+     - `inv5_receipt_structure`：回执结构与时间戳单调非负、耗时自动派生无偏差。
+     - `inv6_event_monotonic_seq`：事件流 seq 单调严格递增。
+     - `inv7_domain_projection_split`：领域模型与 UI 渲染投影严格分离。
+     - `inv8_cancellation_penetration`：取消令牌贯穿中断执行流并如实输出 Aborted。
+2. **产品声明式装配（M5-T2, M5-T3）**：
+   - 建立骨架验证产品 `products/ada-skeleton`（≤200 行代码极简 CLI），配置 `agent.spec.json`，验证基座零内核修改与跨产品复用能力。
+   - `products/ada-coding` 配置官方 `agent.spec.json`，接入 `agent-conformance` 产品单一引擎合规单测。
+3. **出包与工作流自动化（`tools/xtask`，M5-T4）**：
+   - 建立 `tools/xtask` 二进制，提供 `cargo xtask verify`、`cargo xtask verify-archive` 以及 `cargo xtask ship --product <name>`。
+   - 实现 Windows PE GUI 子系统补丁逻辑（消除启动黑框控制台），将构建完成的可执行二进制自动收集并交付至 `dist/<product>.exe`。
+4. **文档同步与架构达成（M5-T5）**：
+   - 根目录 `package.json` 接入 `verify` 与 `ship` 任务。
+   - `README.md` 与 `AGENTS.md` 更新至纯 Rust 微内核 + 现代化产品线架构。
+
+**验收**：
+- `cargo check --workspace --all-targets` 通过
+- `cargo test --workspace -- --test-threads=1` **125+ 项全绿**（conformance 20 项、ada-skeleton 3 项、ada-coding 2 项）
+- `cargo xtask verify-archive` 全绿
+- `bun run typecheck` 全绿
+- `cargo xtask ship --product ada-skeleton` 产出 `dist/ada-skeleton.exe`（1.53MB），运行 demo 验证无误
+
 ---
+
 
 
 ## 9. INV → 任务映射（谁保证哪条不变量）

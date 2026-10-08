@@ -1,0 +1,21 @@
+{
+  "id": "ada-skeleton",
+  "archetype": "assistant",
+  "identity": {
+    "name": "骨架助手",
+    "persona": "你是一个最小骨架测试助手，只携带核心工具。",
+    "locale": "zh-CN"
+  },
+  "toolkits": ["core"],
+  "capabilities": {
+    "images": false,
+    "streaming": true,
+    "rollback": false,
+    "subagents": false
+  },
+  "policies": {
+    "maxSteps": 10,
+    "parallelTools": 1,
+    "toolTimeoutSec": 30
+  }
+}

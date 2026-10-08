@@ -9,6 +9,8 @@
     "test": "cargo test --workspace -- --test-threads=1",
     "test:core": "cargo test -p agent_core -- --test-threads=1",
     "verify:archive": "bun tools/verify-archive.ts",
+    "verify": "cargo run -p xtask -- verify",
+    "ship": "cargo run -p xtask -- ship",
     "tauri:ui:dev": "npm --prefix tauri-ui run dev",
     "tauri:ui:build": "npm --prefix tauri-ui run build",
     "tauri:dev": "bunx @tauri-apps/cli dev",

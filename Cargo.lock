@@ -24,6 +24,9 @@ dependencies = [
 name = "ada-coding"
 version = "0.1.0"
 dependencies = [
+ "agent-base",
+ "agent-conformance",
+ "agent-runtime",
  "agent_core",
  "anyhow",
  "clap",
@@ -32,6 +35,22 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "ada-skeleton"
+version = "0.1.0"
+dependencies = [
+ "agent-base",
+ "agent-conformance",
+ "agent-runtime",
+ "agent-toolkit",
+ "anyhow",
+ "clap",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -61,6 +80,24 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "agent-conformance"
+version = "0.1.0"
+dependencies = [
+ "agent-adapter",
+ "agent-base",
+ "agent-proto",
+ "agent-runtime",
+ "agent-toolkit",
+ "anyhow",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -6292,6 +6329,14 @@ name = "xsum"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0637d3a5566a82fa5214bae89087bc8c9fb94cd8e8a3c07feb691bb8d9c632db"
+
+[[package]]
+name = "xtask"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+]
 
 [[package]]
 name = "yoke"

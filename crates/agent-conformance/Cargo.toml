@@ -1,0 +1,21 @@
+[package]
+name = "agent-conformance"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "AGENT BASE 合规套件：8 个端口契约 + 8 条跨端口不变量验证（M5-T1）"
+
+[dependencies]
+agent-base = { workspace = true }
+agent-proto = { workspace = true }
+agent-adapter = { workspace = true }
+agent-toolkit = { workspace = true }
+agent-runtime = { workspace = true }
+anyhow = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

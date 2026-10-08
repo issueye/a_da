@@ -1,19 +1,21 @@
 # a_da
 
-> ### ⚠️ 状态（2026-10-08）：TS 实现已归档
+> ### 状态（2026-10-08）：纯 Rust 微内核基座与产品线架构已全面落地（M1–M5 完成）
 >
-> 本文档描述的是 **Bun + GPUIX** 那一代实现（`app.tsx`、`src/**`、`scripts/**`）。
-> 它已**整体冻结并搬到 [`archive/ts-legacy/`](archive/ts-legacy)**：不参与构建与测试，也不再是参考设计。
+> 仓库采用现代化**纯 Rust 微内核**架构（`crates/agent-base`），实现多产品声明式装配（`products/ada-coding`、`products/ada-skeleton`）：
 >
-> 现在的仓库是：**纯 Rust 微内核** [`agent_core/`](agent_core) + **Tauri 宿主** [`src-tauri/`](src-tauri)
-> + **React 前端** [`tauri-ui/`](tauri-ui)，插件运行时是 [`ts_engine/`](ts_engine)。
+> - **微内核**：[`crates/agent-base/`](crates/agent-base)（零 IO、零产品名词、唯一循环驱动 `run_turn`）
+> - **协议单源**：[`crates/agent-proto/`](crates/agent-proto) 与 [`spec/proto/`](spec/proto)（JSON-RPC 76 个方法、TypeScript 客户端类型单一真源生成）
+> - **组合根与工具包**：[`crates/agent-runtime/`](crates/agent-runtime) 与 [`crates/agent-toolkit/`](crates/agent-toolkit)
+> - **合规测试套件**：[`crates/agent-conformance/`](crates/agent-conformance)（8 个核心端口契约 + 8 条跨端口不变量，全自动化验证）
+> - **产品交付**：[`products/ada-coding/`](products/ada-coding) 结合 Tauri 桌面宿主（[`src-tauri/`](src-tauri) + [`tauri-ui/`](tauri-ui)），极简骨架 [`products/ada-skeleton/`](products/ada-skeleton)
+> - **出包与工作流**：`cargo xtask ship --product <id>` 一键打出独立可执行交付二进制（支持 Windows GUI 子系统补丁）
 >
-> - 归档说明与复活办法：[archive/README.md](archive/README.md)
-> - 设计与计划（唯一口径）：[docs/agent-base-design.md](docs/agent-base-design.md)、[docs/agent-base-plan.md](docs/agent-base-plan.md)
-> - 日常命令见 [AGENTS.md](AGENTS.md) 的「开发与验证」
+> 历史 TS 实现已整体冻结至 [`archive/ts-legacy/`](archive/ts-legacy)。
 >
-> **下文所有 `bun run dev` / `bun run build` / `scripts/*` 的说明均已过期**，保留仅作历史记录；
-> README 的 Rust/Tauri 重写排在计划 M5。
+> - 架构设计与规划：[docs/agent-base-design.md](docs/agent-base-design.md)、[docs/agent-base-plan.md](docs/agent-base-plan.md)
+> - 协作者规范与规矩：[AGENTS.md](AGENTS.md)
+
 
 <img src="./assets/logo.svg" width="88" align="right" alt="a_da logo" />
 

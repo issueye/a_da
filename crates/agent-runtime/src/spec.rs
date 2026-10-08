@@ -35,6 +35,8 @@ pub struct CapabilitySpec {
     pub rollback: bool,
     #[serde(default)]
     pub subagents: bool,
+    #[serde(default)]
+    pub plugins: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]

@@ -115,3 +115,24 @@ async fn main() -> Result<(), anyhow::Error> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    const SPEC_JSON: &str = include_str!("../agent.spec.json");
+
+    #[test]
+    fn test_ada_coding_spec_is_valid() {
+        let spec = agent_runtime::AgentSpec::from_json_str(SPEC_JSON).expect("spec 必须合法");
+        assert_eq!(spec.id, "ada-coding");
+        assert_eq!(spec.archetype, "coding");
+        assert!(spec.capabilities.rollback);
+        assert!(spec.capabilities.plugins);
+    }
+
+    #[tokio::test]
+    async fn test_ada_coding_conformance() {
+        agent_conformance::assert_single_engine_executes_turn(SPEC_JSON)
+            .await
+            .expect("ada-coding 产品单一引擎合规性校验通过");
+    }
+}

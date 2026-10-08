@@ -234,7 +234,12 @@ impl Scope for MockScope {
     }
 
     fn resolve_path(&self, raw: &str) -> Result<PathBuf, DenialKind> {
-        Ok(PathBuf::from(raw))
+        if raw.contains("..") || raw.starts_with('/') || raw.starts_with('\\') {
+            return Err(DenialKind::Sandbox {
+                path: raw.to_string(),
+            });
+        }
+        Ok(PathBuf::from(&self.id).join(raw))
     }
 }
 
@@ -396,8 +401,12 @@ impl ModelClient for ScriptedModelClient {
     fn stream<'a>(
         &'a self,
         _req: CompletionRequest,
-        _cancel: Option<&'a dyn CancelToken>,
+        cancel: Option<&'a dyn CancelToken>,
     ) -> BoxFuture<'a, Result<DeltaStream, ModelError>> {
+        if cancel.map_or(false, |c| c.is_cancelled()) {
+            return Box::pin(async move { Err(ModelError::Cancelled) });
+        }
+
         let mut rounds = self.rounds.lock().expect("lock");
         let deltas = if !rounds.is_empty() {
             rounds.remove(0)

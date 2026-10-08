@@ -1,0 +1,22 @@
+{
+  "id": "ada-coding",
+  "archetype": "coding",
+  "identity": {
+    "name": "a_da 编程助手",
+    "persona": "你是一个严谨且专业的 AI 编程助手，负责代码编辑、终端指令执行与代码库维护。",
+    "locale": "zh-CN"
+  },
+  "toolkits": ["core", "fs", "command", "patch"],
+  "capabilities": {
+    "images": false,
+    "streaming": true,
+    "rollback": true,
+    "subagents": true,
+    "plugins": true
+  },
+  "policies": {
+    "maxSteps": 50,
+    "parallelTools": 4,
+    "toolTimeoutSec": 120
+  }
+}
