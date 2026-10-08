@@ -30,6 +30,23 @@ pub async fn stream_model_chat(
     rx
 }
 
+async fn wait_abort_signal(abort_rx: &mut Option<watch::Receiver<bool>>) {
+    if let Some(rx) = abort_rx.as_mut() {
+        if *rx.borrow() {
+            return;
+        }
+        while let Ok(_) = rx.changed().await {
+            if *rx.borrow() {
+                return;
+            }
+        }
+        if *rx.borrow() {
+            return;
+        }
+    }
+    std::future::pending::<()>().await;
+}
+
 async fn run_stream(
     config: ProviderConfig,
     messages: Vec<ChatCompletionMessage>,
@@ -87,9 +104,19 @@ async fn run_stream_openai_chat(
         body["reasoning_effort"] = serde_json::json!(effort);
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()?;
+    let mut builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120));
+
+    if let Some(ref proxy_str) = config.proxy_url {
+        let trimmed = proxy_str.trim();
+        if !trimmed.is_empty() {
+            if let Ok(proxy) = reqwest::Proxy::all(trimmed) {
+                builder = builder.proxy(proxy);
+            }
+        }
+    }
+
+    let client = builder.build()?;
 
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -111,7 +138,13 @@ async fn run_stream_openai_chat(
 
     let request = client.post(&url).headers(headers).json(&body);
 
-    let response = match request.send().await {
+    let response = match tokio::select! {
+        res = request.send() => res,
+        _ = wait_abort_signal(abort_rx) => {
+            let _ = tx.send(StreamDelta::Done { stop_reason: "aborted".to_string() }).await;
+            return Ok(());
+        }
+    } {
         Ok(res) => {
             if !res.status().is_success() {
                 let status = res.status();
@@ -262,16 +295,7 @@ async fn run_stream_openai_chat(
                     }
                 }
             }
-            _ = async {
-                if let Some(rx) = abort_rx {
-                    while rx.changed().await.is_ok() {
-                        if *rx.borrow() {
-                            return;
-                        }
-                    }
-                }
-                std::future::pending::<()>().await;
-            } => {
+            _ = wait_abort_signal(abort_rx) => {
                 let _ = tx.send(StreamDelta::Done { stop_reason: "aborted".to_string() }).await;
                 return Ok(());
             }
@@ -426,9 +450,19 @@ async fn run_stream_anthropic(
         body["temperature"] = serde_json::json!(temp);
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()?;
+    let mut builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120));
+
+    if let Some(ref proxy_str) = config.proxy_url {
+        let trimmed = proxy_str.trim();
+        if !trimmed.is_empty() {
+            if let Ok(proxy) = reqwest::Proxy::all(trimmed) {
+                builder = builder.proxy(proxy);
+            }
+        }
+    }
+
+    let client = builder.build()?;
 
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -449,7 +483,15 @@ async fn run_stream_anthropic(
         }
     }
 
-    let response = match client.post(&url).headers(headers).json(&body).send().await {
+    let request = client.post(&url).headers(headers).json(&body);
+
+    let response = match tokio::select! {
+        res = request.send() => res,
+        _ = wait_abort_signal(abort_rx) => {
+            let _ = tx.send(StreamDelta::Done { stop_reason: "aborted".to_string() }).await;
+            return Ok(());
+        }
+    } {
         Ok(res) => {
             if !res.status().is_success() {
                 let status = res.status();
@@ -586,14 +628,7 @@ async fn run_stream_anthropic(
                     None => break,
                 }
             }
-            _ = async {
-                if let Some(rx) = abort_rx {
-                    while rx.changed().await.is_ok() {
-                        if *rx.borrow() { return; }
-                    }
-                }
-                std::future::pending::<()>().await;
-            } => {
+            _ = wait_abort_signal(abort_rx) => {
                 let _ = tx.send(StreamDelta::Done { stop_reason: "aborted".to_string() }).await;
                 return Ok(());
             }
@@ -709,9 +744,19 @@ async fn run_stream_openai_responses(
         body["temperature"] = serde_json::json!(temp);
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()?;
+    let mut builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120));
+
+    if let Some(ref proxy_str) = config.proxy_url {
+        let trimmed = proxy_str.trim();
+        if !trimmed.is_empty() {
+            if let Ok(proxy) = reqwest::Proxy::all(trimmed) {
+                builder = builder.proxy(proxy);
+            }
+        }
+    }
+
+    let client = builder.build()?;
 
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -733,7 +778,13 @@ async fn run_stream_openai_responses(
 
     let request = client.post(&url).headers(headers).json(&body);
 
-    let response = match request.send().await {
+    let response = match tokio::select! {
+        res = request.send() => res,
+        _ = wait_abort_signal(abort_rx) => {
+            let _ = tx.send(StreamDelta::Done { stop_reason: "aborted".to_string() }).await;
+            return Ok(());
+        }
+    } {
         Ok(res) => {
             if !res.status().is_success() {
                 let status = res.status();
@@ -851,14 +902,7 @@ async fn run_stream_openai_responses(
                     None => break,
                 }
             }
-            _ = async {
-                if let Some(rx) = abort_rx {
-                    while rx.changed().await.is_ok() {
-                        if *rx.borrow() { return; }
-                    }
-                }
-                std::future::pending::<()>().await;
-            } => {
+            _ = wait_abort_signal(abort_rx) => {
                 let _ = tx.send(StreamDelta::Done { stop_reason: "aborted".to_string() }).await;
                 return Ok(());
             }

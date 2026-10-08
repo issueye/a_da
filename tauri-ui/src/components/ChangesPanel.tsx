@@ -14,6 +14,7 @@ import type { Thread, FileChange } from '../types'
 import { deriveThreadFileChanges, deriveActiveChangeCount } from '../utils/derive-changes'
 import { agentClient } from '../client/ws-client'
 import { notify } from './ToastHost'
+import { ConfirmModal } from './ConfirmModal'
 
 interface ChangesPanelProps {
   thread?: Thread
@@ -36,6 +37,7 @@ function dirName(path: string): string {
 export const ChangesPanel: React.FC<ChangesPanelProps> = ({ thread, isOpen, onClose }) => {
   const [expandedPath, setExpandedPath] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [showRevertConfirm, setShowRevertConfirm] = useState(false)
 
   if (!isOpen || !thread) return null
 
@@ -60,9 +62,8 @@ export const ChangesPanel: React.FC<ChangesPanelProps> = ({ thread, isOpen, onCl
     }
   }
 
-  const handleRevertAll = async () => {
+  const handleRevertAllConfirm = async () => {
     if (busy || activeCount === 0) return
-    if (!window.confirm(`确定要撤销当前会话所有的 ${activeCount} 个文件修改吗？`)) return
     setBusy(true)
     try {
       const res = await agentClient.revertAllChanges(thread.id)
@@ -75,6 +76,7 @@ export const ChangesPanel: React.FC<ChangesPanelProps> = ({ thread, isOpen, onCl
       notify({ message: `恢复全部改动失败: ${err.message}`, level: 'error' })
     } finally {
       setBusy(false)
+      setShowRevertConfirm(false)
     }
   }
 
@@ -93,7 +95,7 @@ export const ChangesPanel: React.FC<ChangesPanelProps> = ({ thread, isOpen, onCl
         <div className="flex items-center space-x-1.5">
           {activeCount > 0 && (
             <button
-              onClick={handleRevertAll}
+              onClick={() => setShowRevertConfirm(true)}
               disabled={busy}
               className="flex items-center space-x-1 px-2 py-1 rounded-lg bg-rose-50 dark:bg-rose-950/30 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-900/50 text-[11px] font-medium transition-colors cursor-pointer disabled:opacity-50"
               title="撤销本会话所有文件改动"
@@ -224,6 +226,18 @@ export const ChangesPanel: React.FC<ChangesPanelProps> = ({ thread, isOpen, onCl
           })
         )}
       </div>
+
+      <ConfirmModal
+        isOpen={showRevertConfirm}
+        title="撤销全部文件修改"
+        message={`确定要撤销当前会话中的所有 ${activeCount} 个文件修改吗？`}
+        subMessage="此操作将把所有受影响文件恢复至会话初始状态，不可撤销。"
+        confirmText="确认恢复"
+        cancelText="取消"
+        variant="danger"
+        onConfirm={handleRevertAllConfirm}
+        onCancel={() => setShowRevertConfirm(false)}
+      />
     </div>
   )
 }

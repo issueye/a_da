@@ -201,6 +201,67 @@ pub fn make_directory(raw_path: &str) -> Result<String, ProtocolError> {
     Ok(target.to_string_lossy().replace('\\', "/"))
 }
 
+pub fn read_file_base64(raw_path: &str) -> Result<String, ProtocolError> {
+    #[cfg(windows)]
+    let normalized = raw_path.trim().replace('/', "\\");
+    #[cfg(not(windows))]
+    let normalized = raw_path.trim().to_string();
+
+    let target = PathBuf::from(&normalized);
+    if !target.exists() || !target.is_file() {
+        return Err(ProtocolError::new(
+            AppErrorCode::NotFound.code(),
+            format!("文件不存在或不是文件：{}", raw_path),
+            None,
+        ));
+    }
+
+    let metadata = fs::metadata(&target).map_err(|e| {
+        ProtocolError::new(
+            AppErrorCode::Denied.code(),
+            format!("无法读取文件信息: {}", e),
+            None,
+        )
+    })?;
+    if metadata.len() > 20 * 1024 * 1024 {
+        return Err(ProtocolError::new(
+            RpcErrorCode::InvalidParams.code(),
+            "文件过大，单附件上限为 20MB".to_string(),
+            None,
+        ));
+    }
+
+    let bytes = fs::read(&target).map_err(|e| {
+        ProtocolError::new(
+            AppErrorCode::Denied.code(),
+            format!("无法读取文件内容: {}", e),
+            None,
+        )
+    })?;
+
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+
+    let ext = target
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        _ => "application/octet-stream",
+    };
+
+    Ok(format!("data:{};base64,{}", mime, b64))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,5 +281,12 @@ mod tests {
             let listing = list_directory("E:/", false, None).unwrap();
             assert!(!listing.dirs.is_empty() || !listing.files.is_empty(), "E:/ 应当能列出内容");
         }
+    }
+
+    #[test]
+    fn test_read_file_base64() {
+        let cargo_toml = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let res = read_file_base64(&cargo_toml.to_string_lossy()).unwrap();
+        assert!(res.starts_with("data:application/octet-stream;base64,"));
     }
 }

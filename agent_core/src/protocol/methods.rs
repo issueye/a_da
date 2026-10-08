@@ -16,6 +16,7 @@ pub const UI_ACTIVE_PROJECT: &str = "ui.activeProject";
 pub const FS_ROOTS: &str = "fs.roots";
 pub const FS_LIST: &str = "fs.list";
 pub const FS_MKDIR: &str = "fs.mkdir";
+pub const FS_READ_BASE64: &str = "fs.read_base64";
 
 // 线程与会话
 pub const THREAD_FOCUS: &str = "thread.focus";
@@ -92,6 +93,7 @@ pub const THREAD_COMPACT: &str = "thread.compact";
 pub const THREAD_SET_MODE: &str = "thread.setMode";
 pub const THREAD_SET_WORKSPACE: &str = "thread.setWorkspace";
 pub const THREAD_EDIT_AND_RESEND: &str = "thread.editAndResend";
+pub const THREAD_RETRY: &str = "thread.retry";
 pub const SUBAGENT_RESUME: &str = "subagent.resume";
 pub const WORKSPACE_OPEN_PUBLIC: &str = "workspace.openPublic";
 pub const WORKSPACE_RESCAN: &str = "workspace.rescan";

@@ -31,7 +31,7 @@
  * window buttons.
  */
 
-// 动态安全获取 bun:ffi，避免在 Hermes / Node 纯 JS 环境下报 require("bun:ffi") 错误
+// 动态安全获取 bun:ffi，避免在 Node / Web 纯 JS 环境下报 require("bun:ffi") 错误
 function getBunFfi(): any {
   try {
     if (typeof Bun !== 'undefined') {

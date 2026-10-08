@@ -29,6 +29,8 @@ import type {
   ProviderEntry,
 } from '../types'
 import { agentClient } from '../client/ws-client'
+import { notify } from './ToastHost'
+import { ConfirmModal } from './ConfirmModal'
 
 interface SettingsModalProps {
   isOpen: boolean
@@ -60,12 +62,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [providers, setProviders] = useState<ProviderEntry[]>([])
   const [activeProviderId, setActiveProviderId] = useState<string>('')
   const [editingId, setEditingId] = useState<string>('')
+  const [deleteProviderTarget, setDeleteProviderTarget] = useState<ProviderEntry | null>(null)
 
   // 当前编辑中的供应商表单状态
   const [editName, setEditName] = useState<string>('')
   const [editProtocol, setEditProtocol] = useState<ModelProtocol>('openai_chat')
   const [editBaseUrl, setEditBaseUrl] = useState<string>('')
   const [editApiKey, setEditApiKey] = useState<string>('')
+  const [editProxyUrl, setEditProxyUrl] = useState<string>('')
   const [editCustomHeadersText, setEditCustomHeadersText] = useState<string>('')
   const [editModels, setEditModels] = useState<ModelEntry[]>([])
   const [editDefaultModel, setEditDefaultModel] = useState<string>('')
@@ -141,6 +145,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setEditProtocol(p.protocol || 'openai_chat')
     setEditBaseUrl(p.baseUrl)
     setEditApiKey(p.apiKey)
+    setEditProxyUrl(p.proxyUrl || '')
     setEditCustomHeadersText(formatHeaders(p.customHeaders))
     setEditModels(p.models || [])
     setEditDefaultModel(p.models?.[0]?.id || '')
@@ -190,6 +195,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               },
             ],
             customHeaders: config.customHeaders,
+            proxyUrl: config.proxyUrl,
           }
           pList = [fallbackEntry]
           curActiveId = 'default'
@@ -250,6 +256,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               protocol: editProtocol,
               baseUrl: editBaseUrl.trim(),
               apiKey: editApiKey.trim(),
+              proxyUrl: editProxyUrl.trim() || undefined,
               models: editModels,
               customHeaders: parseHeaders(editCustomHeadersText),
             }
@@ -267,34 +274,45 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           contextWindow: targetM?.contextWindow || 128000,
           supportsImages: targetM?.supportsImages ?? true,
           customHeaders: currentLatest.customHeaders,
+          proxyUrl: currentLatest.proxyUrl,
         })
       }
     } catch (err: any) {
-      alert(`切换激活供应商失败: ${err?.message || err}`)
+      notify({ message: `切换激活供应商失败: ${err?.message || err}`, level: 'error' })
     }
   }
 
   // 删除供应商
-  const handleDeleteProvider = async (id: string, e: React.MouseEvent) => {
+  const handleDeleteProvider = (id: string, e: React.MouseEvent) => {
     e.stopPropagation()
     if (providers.length <= 1) {
-      alert('至少保留一个供应商，无法删除最后一个供应商。')
+      notify({ message: '至少保留一个供应商，无法删除最后一个供应商', level: 'warn' })
       return
     }
-    if (!confirm('确定要删除此供应商配置吗？')) return
+    const target = providers.find((p) => p.id === id)
+    if (target) {
+      setDeleteProviderTarget(target)
+    }
+  }
 
+  const handleDeleteProviderConfirm = async () => {
+    if (!deleteProviderTarget) return
+    const id = deleteProviderTarget.id
     try {
       await agentClient.deleteProvider(id)
       const remaining = providers.filter((p) => p.id !== id)
       setProviders(remaining)
-      if (editingId === id) {
+      if (editingId === id && remaining.length > 0) {
         loadProviderIntoForm(remaining[0])
       }
-      if (activeProviderId === id) {
+      if (activeProviderId === id && remaining.length > 0) {
         setActiveProviderId(remaining[0].id)
       }
+      notify({ message: `已删除供应商: ${deleteProviderTarget.name}`, level: 'success' })
     } catch (err: any) {
-      alert(`删除供应商失败: ${err?.message || err}`)
+      notify({ message: `删除供应商失败: ${err?.message || err}`, level: 'error' })
+    } finally {
+      setDeleteProviderTarget(null)
     }
   }
 
@@ -316,6 +334,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         baseUrl: editBaseUrl.trim(),
         apiKey: editApiKey.trim(),
         customHeaders: headers,
+        proxyUrl: editProxyUrl.trim() || undefined,
       })
 
       const list = res?.models || []
@@ -368,7 +387,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     const id = manualModelId.trim()
     if (!id) return
     if (editModels.some((m) => m.id === id)) {
-      alert('该模型已存在于列表中')
+      notify({ message: '该模型已存在于列表中', level: 'warn' })
       return
     }
 
@@ -416,12 +435,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (!editingModelId || !editingModelDraft) return
     const newId = editingModelDraft.id.trim()
     if (!newId) {
-      alert('模型 ID 不能为空')
+      notify({ message: '模型 ID 不能为空', level: 'warn' })
       return
     }
     // 检查 ID 是否与除了自身以外的其他模型重名
     if (newId !== editingModelId && editModels.some((m) => m.id === newId)) {
-      alert('该模型 ID 已存在，请使用其他 ID')
+      notify({ message: '该模型 ID 已存在，请使用其他 ID', level: 'warn' })
       return
     }
 
@@ -453,7 +472,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // 从当前列表移除模型
   const handleRemoveModel = (id: string) => {
     if (editModels.length <= 1) {
-      alert('每个供应商至少保留一个模型标识。')
+      notify({ message: '每个供应商至少保留一个模型标识', level: 'warn' })
       return
     }
     const next = editModels.filter((m) => m.id !== id)
@@ -480,6 +499,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         model: activeModel,
         protocol: editProtocol,
         customHeaders: parseHeaders(editCustomHeadersText),
+        proxyUrl: editProxyUrl.trim() || undefined,
       }
       const res = await agentClient.checkProvider(testConfig)
       setTestResult({
@@ -499,15 +519,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // 保存当前编辑的供应商（彻底杜绝旧默认值覆盖）
   const handleSaveCurrentProvider = async (makeActive: boolean = false) => {
     if (!editName.trim()) {
-      alert('请输入供应商名称')
+      notify({ message: '请输入供应商名称', level: 'warn' })
       return
     }
     if (!editBaseUrl.trim()) {
-      alert('请输入供应商 API 端点 (Base URL)')
+      notify({ message: '请输入供应商 API 端点 (Base URL)', level: 'warn' })
       return
     }
     if (editModels.length === 0) {
-      alert('请至少配置或获取一个模型')
+      notify({ message: '请至少配置或获取一个模型', level: 'warn' })
       return
     }
 
@@ -520,6 +540,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       apiKey: editApiKey.trim(),
       models: editModels,
       customHeaders: parseHeaders(editCustomHeadersText),
+      proxyUrl: editProxyUrl.trim() || undefined,
     }
 
     try {
@@ -549,6 +570,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           maxOutputTokens: activeM?.maxOutputTokens || 8192,
           supportsImages: activeM?.supportsImages ?? true,
           customHeaders: finalEntry.customHeaders,
+          proxyUrl: finalEntry.proxyUrl,
         })
       }
 
@@ -561,7 +583,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         onClose()
       }, 500)
     } catch (err: any) {
-      alert(`保存失败: ${err?.message || err}`)
+      notify({ message: `保存失败: ${err?.message || err}`, level: 'error' })
     }
   }
 
@@ -802,26 +824,49 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                 </div>
 
-                {/* 自定义请求头 */}
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between text-zinc-600 dark:text-zinc-400 text-[11px]">
-                    <span className="flex items-center space-x-1">
-                      <Layers size={11} className="text-emerald-500" />
-                      <span>自定义请求头 (可选)</span>
-                    </span>
-                    <span className="text-[10px] text-zinc-400">格式：Key: Value; Key2: Value2</span>
+                {/* 网络代理与自定义请求头 */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-zinc-600 dark:text-zinc-400 text-[11px]">
+                      <span className="flex items-center space-x-1">
+                        <Globe size={11} className="text-cyan-500" />
+                        <span>网络代理 (Proxy URL 可选)</span>
+                      </span>
+                      <span className="text-[10px] text-zinc-400">HTTP / HTTPS / SOCKS5</span>
+                    </div>
+                    <input
+                      type="text"
+                      value={editProxyUrl}
+                      onChange={(e) => {
+                        const val = e.target.value
+                        setEditProxyUrl(val)
+                        updateCurrentProviderField('proxyUrl', val.trim() || undefined)
+                      }}
+                      placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
+                      className="w-full bg-zinc-50 dark:bg-[#121214] border border-zinc-300 dark:border-[#2f2f35] rounded-lg px-3 py-1.5 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 outline-none focus:border-blue-500 font-mono text-xs"
+                    />
                   </div>
-                  <input
-                    type="text"
-                    value={editCustomHeadersText}
-                    onChange={(e) => {
-                      const val = e.target.value
-                      setEditCustomHeadersText(val)
-                      updateCurrentProviderField('customHeaders', parseHeaders(val))
-                    }}
-                    placeholder="X-Custom-Auth: token; Custom-Header: 123"
-                    className="w-full bg-zinc-50 dark:bg-[#121214] border border-zinc-300 dark:border-[#2f2f35] rounded-lg px-3 py-1.5 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 outline-none focus:border-blue-500 font-mono text-xs"
-                  />
+
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-zinc-600 dark:text-zinc-400 text-[11px]">
+                      <span className="flex items-center space-x-1">
+                        <Layers size={11} className="text-emerald-500" />
+                        <span>自定义请求头 (可选)</span>
+                      </span>
+                      <span className="text-[10px] text-zinc-400">Key: Value; Key2: Value2</span>
+                    </div>
+                    <input
+                      type="text"
+                      value={editCustomHeadersText}
+                      onChange={(e) => {
+                        const val = e.target.value
+                        setEditCustomHeadersText(val)
+                        updateCurrentProviderField('customHeaders', parseHeaders(val))
+                      }}
+                      placeholder="X-Custom-Auth: token; Custom-Header: 123"
+                      className="w-full bg-zinc-50 dark:bg-[#121214] border border-zinc-300 dark:border-[#2f2f35] rounded-lg px-3 py-1.5 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 outline-none focus:border-blue-500 font-mono text-xs"
+                    />
+                  </div>
                 </div>
 
                 {/* 可用模型列表与远程获取 */}
@@ -1460,6 +1505,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </div>
         </div>
       </div>
+
+      {/* 删除供应商确认弹窗 */}
+      <ConfirmModal
+        isOpen={Boolean(deleteProviderTarget)}
+        title="删除供应商配置"
+        message={`确定要删除供应商「${deleteProviderTarget?.name || ''}」吗？`}
+        subMessage="删除后该供应商下的所有模型配置将被清除，且不可恢复。"
+        confirmText="确认删除"
+        cancelText="取消"
+        variant="danger"
+        onConfirm={handleDeleteProviderConfirm}
+        onCancel={() => setDeleteProviderTarget(null)}
+      />
     </div>
   )
 }

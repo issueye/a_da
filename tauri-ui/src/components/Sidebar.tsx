@@ -22,6 +22,7 @@ interface SidebarProps {
   onSelectThread: (threadId: string) => void
   onCreateThread: (workspace?: string) => void
   onDeleteThread: (threadId: string) => void
+  onRemoveWorkspace?: (workspace: string) => void
   onOpenWorkspacePicker?: () => void
 }
 
@@ -39,6 +40,7 @@ const SidebarComponent: React.FC<SidebarProps> = ({
   onSelectThread,
   onCreateThread,
   onDeleteThread,
+  onRemoveWorkspace,
   onOpenWorkspacePicker,
 }) => {
   const [collapsed, setCollapsed] = useState(false)
@@ -290,6 +292,19 @@ const SidebarComponent: React.FC<SidebarProps> = ({
                     >
                       <Plus size={12} />
                     </button>
+
+                    {onRemoveWorkspace && workspaceGroups.length > 1 && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onRemoveWorkspace(group.workspace)
+                        }}
+                        className="opacity-0 group-hover:opacity-100 p-0.5 text-zinc-400 hover:text-rose-500 hover:bg-zinc-200/70 dark:hover:bg-zinc-700/60 rounded transition-opacity cursor-pointer"
+                        title={`从列表中移除工作区「${group.dirName}」`}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    )}
 
                     <span className="text-[10px] px-1.5 py-0.2 rounded-full font-mono text-zinc-400 dark:text-zinc-500 bg-zinc-200/60 dark:bg-zinc-800/60">
                       {group.totalCount}

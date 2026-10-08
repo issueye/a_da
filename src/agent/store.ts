@@ -2252,6 +2252,40 @@ export class AgentStore {
   }
 
   /**
+   * 重试当前失败的请求或重新驱动会话
+   */
+  async retryThread(threadId?: string): Promise<{ accepted: boolean; reason?: string }> {
+    const targetId = threadId ?? this.active.id
+    const thread = this.threads.find((t) => t.id === targetId)
+    if (!thread) return { accepted: false, reason: '会话不存在' }
+    if (this.isThreadRunning(targetId)) return { accepted: false, reason: '会话正在运行中' }
+
+    // 清理尾部异常状态或报错通知
+    if (thread.items.length > 0) {
+      const last = thread.items[thread.items.length - 1]
+      if (last.kind === 'notice' && last.level === 'error') {
+        thread.items.pop()
+      } else if (last.kind === 'assistant' && (last.text?.includes('请求异常') || last.text?.includes('请求失败'))) {
+        thread.items.pop()
+      }
+    }
+
+    // 找到最近一条用户消息重新触发执行
+    const lastUserItem = thread.items.slice().reverse().find((it) => it.kind === 'user')
+    if (lastUserItem) {
+      await this.editUserMessageAndResend(
+        lastUserItem.id,
+        lastUserItem.text || '',
+        lastUserItem.images,
+        targetId
+      )
+      return { accepted: true }
+    }
+
+    return { accepted: false, reason: '没有可重试的用户输入' }
+  }
+
+  /**
    * 启动子智能体异步执行会话：
    * 在 store.threads 中作为 parentThread 的子会话挂载，自动在 TabStrip 中开启独立页签，
    * 启动独立的 runAgentLoop，将思考过程、工具调用与总结报告实时流式推送到子会话，

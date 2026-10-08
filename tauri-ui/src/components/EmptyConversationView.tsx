@@ -14,6 +14,7 @@ interface EmptyConversationViewProps {
   currentWorkspace: string
   allWorkspaces: string[]
   onSelectWorkspace: (workspace: string) => void
+  onRemoveWorkspace?: (workspace: string) => void
   onOpenWorkspacePicker: () => void
   onSend: (text: string, images?: string[]) => void
   onAbort: () => void
@@ -48,6 +49,7 @@ export const EmptyConversationView: React.FC<EmptyConversationViewProps> = ({
   currentWorkspace,
   allWorkspaces,
   onSelectWorkspace,
+  onRemoveWorkspace,
   onOpenWorkspacePicker,
   onSend,
   onAbort,
@@ -83,6 +85,7 @@ export const EmptyConversationView: React.FC<EmptyConversationViewProps> = ({
             currentWorkspace={currentWorkspace}
             allWorkspaces={allWorkspaces}
             onSelectWorkspace={onSelectWorkspace}
+            onRemoveWorkspace={onRemoveWorkspace}
             onOpenPicker={onOpenWorkspacePicker}
           />
         </div>

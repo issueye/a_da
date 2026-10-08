@@ -14,6 +14,7 @@ import { CommandPalette } from './components/CommandPalette'
 import { FilePicker } from './components/FilePicker'
 import { DebugPanel } from './components/DebugPanel'
 import { ToastHost, notify } from './components/ToastHost'
+import { ConfirmModal } from './components/ConfirmModal'
 import { deriveActiveChangeCount } from './utils/derive-changes'
 
 export function App() {
@@ -31,6 +32,20 @@ export function App() {
   const [filePickerOpen, setFilePickerOpen] = useState(false)
   const [filePickerMode, setFilePickerMode] = useState<'directory' | 'files'>('directory')
   const [openTabIds, setOpenTabIds] = useState<string[]>([])
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean
+    title?: string
+    message: string
+    subMessage?: string
+    confirmText?: string
+    cancelText?: string
+    variant?: 'danger' | 'warning' | 'primary'
+    onConfirm: (val?: string) => void | Promise<void>
+  }>({
+    isOpen: false,
+    message: '',
+    onConfirm: () => {},
+  })
 
   // 同步激活会话至打开的标签页列表中
   useEffect(() => {
@@ -110,8 +125,20 @@ export function App() {
     agentClient.sendPrompt(text, images)
   }
 
-  const handleAbort = (targetThreadId?: string) => {
-    agentClient.abortCurrent(targetThreadId || activeThread?.id)
+  const handleAbort = (targetThreadId?: unknown) => {
+    const tid = typeof targetThreadId === 'string' && targetThreadId.trim().length > 0
+      ? targetThreadId.trim()
+      : activeThread?.id
+    if (tid) {
+      agentClient.abortCurrent(tid)
+    }
+  }
+
+  const handleRetry = (targetThreadId?: string) => {
+    const tid = targetThreadId || activeThread?.id
+    if (tid) {
+      agentClient.retry(tid)
+    }
   }
 
   const handleSetMode = (mode: AgentMode) => {
@@ -171,6 +198,47 @@ export function App() {
     }
   }
 
+  // 移除指定工作区
+  const handleRemoveWorkspace = async (targetWs: string) => {
+    if (!targetWs) return
+    if (allWorkspaces.length <= 1) {
+      notify({ message: '至少保留一个工作区', level: 'warn' })
+      return
+    }
+    const runningInWs = snapshot.threads.some(
+      (t) => t.workspace === targetWs && (snapshot.runningThreadIds || []).includes(t.id)
+    )
+    if (runningInWs) {
+      notify({ message: '该工作区内有会话正在运行，先停止再移除', level: 'warn' })
+      return
+    }
+    const dirName = targetWs.split(/[\\/]/).filter(Boolean).pop() || targetWs
+    setConfirmModal({
+      isOpen: true,
+      title: '移除工作区',
+      message: `确定要从列表中移除工作区「${dirName}」吗？`,
+      subMessage: '该工作区下的所有会话记录将被清除，但本地实际代码文件不会被删除。',
+      confirmText: '确定移除',
+      cancelText: '取消',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await agentClient.removeWorkspace(targetWs)
+          // 若当前打开的标签页属于被移除的工作区，从 openTabIds 中清理
+          setOpenTabIds((prev) => {
+            const remainingIds = new Set(snapshot.threads.filter((t) => t.workspace !== targetWs).map((t) => t.id))
+            return prev.filter((id) => remainingIds.has(id))
+          })
+          notify({ message: `已移除工作区: ${dirName}`, level: 'success' })
+        } catch (err: any) {
+          notify({ message: err?.message || '移除工作区失败', level: 'error' })
+        } finally {
+          setConfirmModal((prev) => ({ ...prev, isOpen: false }))
+        }
+      },
+    })
+  }
+
   // 全局键盘快捷键监听
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
@@ -228,7 +296,7 @@ export function App() {
         return
       }
 
-      // Esc 关闭模态层
+      // Esc 关闭模态层；若无模态层且当前会话正在运行，则中止当前执行
       if (e.key === 'Escape') {
         if (commandPaletteOpen) setCommandPaletteOpen(false)
         else if (changesOpen) setChangesOpen(false)
@@ -236,6 +304,9 @@ export function App() {
         else if (filePickerOpen) setFilePickerOpen(false)
         else if (settingsOpen) setSettingsOpen(false)
         else if (pluginsOpen) setPluginsOpen(false)
+        else if (activeThread?.id && (snapshot.runningThreadIds || []).includes(activeThread.id)) {
+          handleAbort(activeThread.id)
+        }
       }
     }
 
@@ -284,6 +355,7 @@ export function App() {
           onSelectThread={handleSelectThread}
           onCreateThread={handleCreateThread}
           onDeleteThread={handleDeleteThread}
+          onRemoveWorkspace={handleRemoveWorkspace}
           onOpenWorkspacePicker={() => {
             setFilePickerMode('directory')
             setFilePickerOpen(true)
@@ -316,6 +388,7 @@ export function App() {
               currentWorkspace={activeThread?.workspace || snapshot.activeWorkspace}
               allWorkspaces={allWorkspaces}
               onSelectWorkspace={handleSelectWorkspace}
+              onRemoveWorkspace={handleRemoveWorkspace}
               onOpenWorkspacePicker={() => {
                 setFilePickerMode('directory')
                 setFilePickerOpen(true)
@@ -334,14 +407,17 @@ export function App() {
             />
           ) : (
             <>
-              {/* 对话消息流（含深度思考折叠、Markdown、工具卡片等） */}
+              {/* 对话消息流（含深度思考折叠、Markdown、工具卡片等，key/threadId 确保独立容器与滚动隔离） */}
               <Transcript
+                key={activeThread.id}
+                threadId={activeThread.id}
                 items={activeThread.items}
                 running={Boolean(activeThread?.id && (snapshot.runningThreadIds || []).includes(activeThread.id))}
                 activeWorkspace={activeThread.workspace || snapshot.activeWorkspace}
                 currentMode={snapshot.currentMode}
                 onAnswerQuestion={handleAnswerQuestion}
                 onDecideApproval={handleDecideApproval}
+                onRetry={() => handleRetry(activeThread.id)}
               />
 
               {/* 底部输入框与加号菜单、模式选择、排队队列与遥测底栏 */}
@@ -352,7 +428,7 @@ export function App() {
                 providerConfig={snapshot.providerConfig}
                 approvalMode={snapshot.approvalMode}
                 effort={snapshot.effort}
-                queue={snapshot.queue}
+                queue={(snapshot.queue || []).filter((q) => !q.threadId || q.threadId === activeThread?.id)}
                 onSend={handleSend}
                 onAbort={handleAbort}
                 onSetMode={handleSetMode}
@@ -365,9 +441,9 @@ export function App() {
                 onNewThread={() => handleCreateThread(activeThread.workspace || snapshot.activeWorkspace)}
                 activeChangeCount={activeChangeCount}
                 onAnswerQuestion={handleAnswerQuestion}
-                onPromoteQueueItem={(idx) => agentClient.promoteQueueItem(idx)}
-                onRemoveQueueItem={(idx) => agentClient.removeFromQueue(idx)}
-                onClearQueue={() => agentClient.clearQueue()}
+                onPromoteQueueItem={(idx) => agentClient.promoteQueueItem(idx, activeThread?.id)}
+                onRemoveQueueItem={(idx) => agentClient.removeFromQueue(idx, activeThread?.id)}
+                onClearQueue={() => agentClient.clearQueue(activeThread?.id)}
                 onResumeSubagent={(subagentThreadId) => agentClient.resumeSubagent(subagentThreadId)}
                 onSwitchThread={(threadId) => agentClient.setActiveThread(threadId)}
                 onCompact={handleCompact}
@@ -433,6 +509,19 @@ export function App() {
       <PluginsModal
         isOpen={pluginsOpen}
         onClose={() => setPluginsOpen(false)}
+      />
+
+      {/* 统一操作确认弹窗 (无原生 window.confirm) */}
+      <ConfirmModal
+        isOpen={confirmModal.isOpen}
+        title={confirmModal.title}
+        message={confirmModal.message}
+        subMessage={confirmModal.subMessage}
+        confirmText={confirmModal.confirmText}
+        cancelText={confirmModal.cancelText}
+        variant={confirmModal.variant}
+        onConfirm={confirmModal.onConfirm}
+        onCancel={() => setConfirmModal((prev) => ({ ...prev, isOpen: false }))}
       />
 
       {/* 全局轻提示 Toast 宿主 */}

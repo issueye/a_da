@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { FolderGit2, FolderOpen, ChevronDown, Check, Plus } from 'lucide-react'
+import { FolderGit2, FolderOpen, ChevronDown, Check, Plus, Trash2 } from 'lucide-react'
 
 interface WorkspaceSelectorProps {
   currentWorkspace: string
   allWorkspaces: string[]
   onSelectWorkspace: (workspace: string) => void
+  onRemoveWorkspace?: (workspace: string) => void
   onOpenPicker: () => void
 }
 
@@ -15,6 +16,7 @@ export const WorkspaceSelector: React.FC<WorkspaceSelectorProps> = ({
   currentWorkspace,
   allWorkspaces,
   onSelectWorkspace,
+  onRemoveWorkspace,
   onOpenPicker,
 }) => {
   const [dropdownOpen, setDropdownOpen] = useState(false)
@@ -89,14 +91,13 @@ export const WorkspaceSelector: React.FC<WorkspaceSelectorProps> = ({
               const isSelected = ws === currentWorkspace
 
               return (
-                <button
+                <div
                   key={ws}
-                  type="button"
                   onClick={() => {
                     onSelectWorkspace(ws)
                     setDropdownOpen(false)
                   }}
-                  className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-left transition-colors cursor-pointer ${
+                  className={`group w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-left transition-colors cursor-pointer ${
                     isSelected
                       ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 font-medium'
                       : 'text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
@@ -108,8 +109,23 @@ export const WorkspaceSelector: React.FC<WorkspaceSelectorProps> = ({
                       {ws}
                     </div>
                   </div>
-                  {isSelected && <Check size={14} className="text-blue-500 flex-shrink-0" />}
-                </button>
+                  <div className="flex items-center space-x-1 flex-shrink-0">
+                    {onRemoveWorkspace && allWorkspaces.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onRemoveWorkspace(ws)
+                        }}
+                        className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-rose-500 hover:bg-zinc-200/80 dark:hover:bg-zinc-700/80 rounded transition-all cursor-pointer"
+                        title={`从列表中移除工作区「${name}」`}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    )}
+                    {isSelected && <Check size={14} className="text-blue-500 flex-shrink-0" />}
+                  </div>
+                </div>
               )
             })}
           </div>

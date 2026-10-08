@@ -530,6 +530,7 @@ function fromEnv(): Partial<ProviderConfig> {
     contextWindow: env.A_DA_CONTEXT_WINDOW ? parseInt(env.A_DA_CONTEXT_WINDOW, 10) : undefined,
     supportsImages: env.A_DA_SUPPORTS_IMAGES ? env.A_DA_SUPPORTS_IMAGES === '1' || env.A_DA_SUPPORTS_IMAGES === 'true' : undefined,
     headers: parseHeadersText(env.A_DA_HEADERS),
+    proxyUrl: env.A_DA_PROXY_URL || env.ALL_PROXY || env.HTTPS_PROXY || env.HTTP_PROXY || undefined,
   }
 }
 
@@ -595,7 +596,9 @@ export function envOverrides(): string[] {
                 ? 'A_DA_CONTEXT_WINDOW'
                 : key === 'headers'
                   ? 'A_DA_HEADERS'
-                  : 'A_DA_SUPPORTS_IMAGES',
+                  : key === 'proxyUrl'
+                    ? 'A_DA_PROXY_URL'
+                    : 'A_DA_SUPPORTS_IMAGES',
       )
     }
   }
@@ -620,6 +623,7 @@ export async function readLlmConfig(): Promise<LlmConfig | null> {
     env.supportsImages !== undefined
       ? env.supportsImages
       : Boolean(file.supportsImages)
+  const proxyUrl = env.proxyUrl || (typeof file.proxyUrl === 'string' ? file.proxyUrl : undefined)
 
   return {
     baseUrl,
@@ -627,6 +631,7 @@ export async function readLlmConfig(): Promise<LlmConfig | null> {
     model,
     contextWindow,
     supportsImages,
+    proxyUrl,
     source: env.apiKey ? 'env' : configPath(),
   }
 }
@@ -641,7 +646,7 @@ export async function testConnection(
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 20_000)
   try {
-    const response = await fetch(`${baseUrl}/chat/completions`, {
+    const fetchOptions: RequestInit = {
       method: 'POST',
       headers: buildRequestHeaders(config),
       body: JSON.stringify({
@@ -651,7 +656,9 @@ export async function testConnection(
         stream: false,
       }),
       signal: controller.signal,
-    })
+      ...(config.proxyUrl ? ({ proxy: config.proxyUrl } as any) : {}),
+    }
+    const response = await fetch(`${baseUrl}/chat/completions`, fetchOptions)
     if (!response.ok) {
       const detail = await response.text().catch(() => '')
       return { ok: false, detail: `HTTP ${response.status}：${detail.slice(0, 200)}` }

@@ -95,7 +95,88 @@ fn attach_console_if_needed() {
 #[cfg(not(windows))]
 fn attach_console_if_needed() {}
 
+/// 把 panic 信息落到磁盘。
+///
+/// 注意：`PanicHookInfo` 的 `Debug` 输出会把 payload 折叠成 `Any { .. }`，
+/// 真正的原因文本（panic! 的第一个参数）会丢失。必须手动 downcast 取出，
+/// 否则日志里只剩一行 `Failed to setup app` 的位置，等于没有诊断信息。
+fn write_panic_log(text: &str) {
+    // 优先写到可执行文件旁边（双击启动时 cwd 就是 exe 目录，但安装到别处时不保证）
+    let mut targets: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            targets.push(dir.join("tauri_panic.log"));
+        }
+    }
+    targets.push(std::path::PathBuf::from("tauri_panic.log"));
+
+    for target in targets {
+        if std::fs::write(&target, text).is_ok() {
+            return;
+        }
+    }
+}
+
+/// GUI 模式下（双击启动、无任何控制台）必须弹一个框。
+///
+/// release 版是 `windows_subsystem = "windows"`，stderr 无人接收、日志没人会主动去翻，
+/// 用户看到的就是"双击之后毫无反应"。这里把致命错误显式端到用户面前。
+#[cfg(windows)]
+fn show_fatal_dialog(text: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TOPMOST,
+    };
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    let body = wide(text);
+    let caption = wide("a_da 启动失败");
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            body.as_ptr(),
+            caption.as_ptr(),
+            MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn show_fatal_dialog(_text: &str) {}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    std::panic::set_hook(Box::new(|info| {
+        let payload = info.payload();
+        let message = if let Some(s) = payload.downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "<非字符串 panic payload>".to_string()
+        };
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<未知位置>".to_string());
+
+        let text = format!(
+            "panic: {}\nlocation: {}\nbacktrace: {}\n",
+            message,
+            location,
+            std::backtrace::Backtrace::force_capture()
+        );
+        // 无控制台时 eprintln 是空操作，写文件才是唯一可靠的证据
+        eprintln!("{}", text);
+        write_panic_log(&text);
+
+        // 无参数启动 = 双击进入 GUI 模式，此时没有任何可见通道，只能弹框
+        if std::env::args().len() <= 1 {
+            show_fatal_dialog(&text);
+        }
+    }));
+
     // 优先尝试附加控制台（仅有命令行参数时附加）
     attach_console_if_needed();
 

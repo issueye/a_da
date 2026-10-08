@@ -23,6 +23,7 @@ export interface ProviderEntry {
   apiKey: string
   models: ModelEntry[]
   customHeaders?: Record<string, string>
+  proxyUrl?: string
 }
 
 export interface ProviderConfig {
@@ -35,6 +36,7 @@ export interface ProviderConfig {
   maxOutputTokens?: number
   supportsImages?: boolean
   customHeaders?: Record<string, string>
+  proxyUrl?: string
 }
 
 export interface ProviderPreset {
@@ -96,6 +98,8 @@ export interface Item {
   patch?: string
   error?: string
   durationMs?: number
+  startedAt?: number
+  finishedAt?: number
   turnDurationMs?: number
   checkpointId?: string
   reverted?: boolean

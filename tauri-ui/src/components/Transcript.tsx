@@ -28,6 +28,7 @@ import {
   Copy,
   Check,
   RotateCcw,
+  RotateCw,
   Edit3,
   AlertTriangle,
   X,
@@ -38,6 +39,7 @@ import {
   XCircle,
   ShieldAlert,
   ArrowUp,
+  ArrowDown,
   Circle,
   Compass,
 } from 'lucide-react'
@@ -47,12 +49,14 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 import { TodoFloatingPanel } from './TodoFloatingPanel'
 
 interface TranscriptProps {
+  threadId?: string
   items: Item[]
   running: boolean
   activeWorkspace?: string
   currentMode?: AgentMode
   onAnswerQuestion: (callId: string, choice?: string, text?: string) => void
   onDecideApproval: (toolItemId: string, approved: boolean) => void
+  onRetry?: () => void
 }
 
 /** 工具名称映射（对齐 src/ui/Transcript.tsx） */
@@ -141,19 +145,92 @@ export function formatTokenShort(n: number): string {
   return m >= 10 ? `${Math.round(m)}M` : `${m.toFixed(1).replace(/\.0$/, '')}M`
 }
 
+/** 每个会话的独立滚动高度记忆，防止切换标签页时丢失阅读位置 */
+const threadScrollMap = new Map<string, number>()
+
 export const Transcript: React.FC<TranscriptProps> = ({
+  threadId,
   items,
   running,
   activeWorkspace,
   currentMode = 'code',
   onAnswerQuestion,
   onDecideApproval,
+  onRetry,
 }) => {
+  const containerRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const isAutoScrollEnabledRef = useRef<boolean>(true)
+  const [showScrollBottomBtn, setShowScrollBottomBtn] = useState<boolean>(false)
+  const prevItemsCountRef = useRef<number>(items.length)
+  const isInitialMountRef = useRef<boolean>(true)
 
+  // 监听容器滚动，计算距离底部的间距
+  const handleScroll = () => {
+    const el = containerRef.current
+    if (!el) return
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    const atBottom = distanceToBottom <= 80
+    isAutoScrollEnabledRef.current = atBottom
+    setShowScrollBottomBtn(!atBottom)
+
+    if (threadId) {
+      threadScrollMap.set(threadId, el.scrollTop)
+    }
+  }
+
+  // 切换会话或初次挂载时，恢复该会话的历史滚动高度；若无历史记录则滚到底部
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = containerRef.current
+    if (!el) return
+
+    if (threadId && threadScrollMap.has(threadId)) {
+      el.scrollTop = threadScrollMap.get(threadId)!
+      const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+      const atBottom = distanceToBottom <= 80
+      isAutoScrollEnabledRef.current = atBottom
+      setShowScrollBottomBtn(!atBottom)
+    } else {
+      el.scrollTop = el.scrollHeight
+      isAutoScrollEnabledRef.current = true
+      setShowScrollBottomBtn(false)
+    }
+    isInitialMountRef.current = false
+  }, [threadId])
+
+  // 当 items 内容增加或模型流式输出时
+  useEffect(() => {
+    if (isInitialMountRef.current) return
+    const el = containerRef.current
+    if (!el) return
+
+    const itemsGrew = items.length > prevItemsCountRef.current
+    prevItemsCountRef.current = items.length
+
+    // 若有新消息加入（如用户发送新消息），且用户在底部附近，吸附到底部
+    if (itemsGrew && isAutoScrollEnabledRef.current) {
+      el.scrollTop = el.scrollHeight
+      return
+    }
+
+    // 只有在当前会话真正处于运行中 (running)，且用户当前保持在底部 (isAutoScrollEnabled) 时，才执行流式吐字自动跟随到底部。
+    // 绝不拉扯未在运行的会话或用户已经向上翻阅历史的会话！
+    if (running && isAutoScrollEnabledRef.current) {
+      el.scrollTop = el.scrollHeight
+    }
   }, [items, running])
+
+  // 手动点击悬浮“跳至底部”按钮
+  const scrollToBottom = () => {
+    const el = containerRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    isAutoScrollEnabledRef.current = true
+    setShowScrollBottomBtn(false)
+    if (threadId) {
+      threadScrollMap.set(threadId, el.scrollHeight)
+    }
+  }
 
   // 空对话状态由外层 EmptyConversationView / App 统一接管
   if (items.length === 0) {
@@ -190,14 +267,20 @@ export const Transcript: React.FC<TranscriptProps> = ({
       {/* 任务规划步骤独立收缩悬浮框（右上角常驻） */}
       <TodoFloatingPanel items={mergedItems} />
 
-      <div className="flex-1 overflow-y-auto px-3 md:px-6 py-2.5 space-y-1.5 select-text">
+      <div
+        ref={containerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto px-3 md:px-6 py-2.5 space-y-1.5 select-text relative [scrollbar-gutter:stable]"
+      >
         {mergedItems.map((item, index) => (
           <TranscriptItemRow
             key={item.id || index}
             item={item}
             running={running}
+            threadId={threadId}
             onAnswerQuestion={onAnswerQuestion}
             onDecideApproval={onDecideApproval}
+            onRetry={onRetry}
           />
         ))}
 
@@ -208,8 +291,21 @@ export const Transcript: React.FC<TranscriptProps> = ({
           </div>
         )}
 
-        <div ref={bottomRef} />
+        <div ref={bottomRef} className="h-1" />
       </div>
+
+      {/* 悬浮的快速跳至底部按钮 */}
+      {showScrollBottomBtn && (
+        <button
+          type="button"
+          onClick={scrollToBottom}
+          className="absolute right-6 bottom-4 flex items-center space-x-1.5 px-3 py-1.5 bg-white/95 dark:bg-zinc-800/95 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700 rounded-full shadow-lg text-xs font-medium backdrop-blur transition-all duration-150 hover:scale-105 z-20 cursor-pointer animate-in fade-in"
+          title="回到底部"
+        >
+          <ArrowDown size={14} className="text-blue-500" />
+          <span>跳至底部</span>
+        </button>
+      )}
     </div>
   )
 }
@@ -218,9 +314,11 @@ export const Transcript: React.FC<TranscriptProps> = ({
 const TranscriptItemRow: React.FC<{
   item: Item
   running: boolean
+  threadId?: string
   onAnswerQuestion: (callId: string, choice?: string, text?: string) => void
   onDecideApproval: (toolItemId: string, approved: boolean) => void
-}> = ({ item, running, onAnswerQuestion, onDecideApproval }) => {
+  onRetry?: () => void
+}> = ({ item, running, threadId, onAnswerQuestion, onDecideApproval, onRetry }) => {
   // 1. 思考过程块
   if (item.kind === 'thinking') {
     return <ThinkingRow item={item} />
@@ -251,8 +349,8 @@ const TranscriptItemRow: React.FC<{
     return <UserRow item={item} />
   }
 
-  // 5. 模型助手回复（对齐 AssistantRow：Markdown 渲染 + 底部遥测状态条）
-  return <AssistantRow item={item} running={running} />
+  // 5. 模型助手回复（对齐 AssistantRow：Markdown 渲染 + 请求异常警示与重试 + 底部遥测状态条）
+  return <AssistantRow item={item} running={running} threadId={threadId} onRetry={onRetry} />
 }
 
 /**
@@ -506,6 +604,18 @@ const ThinkingRow: React.FC<{ item: Item }> = ({ item }) => {
   )
 }
 
+function formatTimeMs(ts?: number): string {
+  if (!ts) return ''
+  try {
+    const d = new Date(ts)
+    if (isNaN(d.getTime())) return String(ts)
+    const pad = (n: number, z = 2) => String(n).padStart(z, '0')
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`
+  } catch {
+    return String(ts)
+  }
+}
+
 /**
  * 工具调用卡片（ToolCard）
  * 严格对齐 src/ui/Transcript.tsx ToolCard 哲学：
@@ -523,6 +633,25 @@ const ToolCard: React.FC<{
   const isAwaiting = toolStatus === 'waiting_approval' || toolStatus === 'awaiting'
   const isRunning = toolStatus === 'running'
   const isError = toolStatus === 'failed' || toolStatus === 'error'
+
+  // 解析工具返回的 JSON 结构化数据
+  const structuredData = (() => {
+    const raw = item.result || item.output
+    if (!raw) return null
+    if (typeof raw === 'object') return raw as Record<string, any>
+    if (typeof raw === 'string' && raw.trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(raw)
+        if (parsed && typeof parsed === 'object') return parsed as Record<string, any>
+      } catch {}
+    }
+    return null
+  })()
+
+  const durationMs = item.durationMs ?? structuredData?.duration_ms ?? structuredData?.durationMs
+  const startedAt = item.startedAt ?? structuredData?.started_at ?? structuredData?.startedAt
+  const finishedAt = item.finishedAt ?? structuredData?.finished_at ?? structuredData?.finishedAt
+  const resultStatus = structuredData?.status || (item.state || item.status)
 
   const rawQuestion = item.question || (item.details as any)?.question
   const isQuestionTool = toolName === 'ask_user' || Boolean(rawQuestion)
@@ -604,9 +733,9 @@ const ToolCard: React.FC<{
 
         {/* 耗时与状态指示：浅灰色 */}
         <div className="flex items-center space-x-1.5 flex-shrink-0">
-          {item.durationMs ? (
+          {durationMs ? (
             <span className="text-[9.5px] text-zinc-400/80 dark:text-zinc-500 font-mono">
-              {item.durationMs}ms
+              {durationMs}ms
             </span>
           ) : null}
 
@@ -735,6 +864,46 @@ const ToolCard: React.FC<{
 
             {/* 3. 参数与输出展示：采用更浅更清爽的字色 */}
             <div className="p-2 space-y-1.5 select-text font-mono text-[11px]">
+              {/* 结构化运行信息：执行状态、开始时间、结束时间、耗时 */}
+              {(durationMs != null || startedAt != null || finishedAt != null || structuredData) && (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1 px-2.5 rounded bg-zinc-100/60 dark:bg-black/30 text-[10px] text-zinc-500 dark:text-zinc-400 border border-zinc-200/40 dark:border-zinc-800/40 font-mono">
+                  {resultStatus && (
+                    <span className="flex items-center space-x-1">
+                      <span className="text-zinc-400 dark:text-zinc-500 font-sans">状态:</span>
+                      <span
+                        className={
+                          resultStatus === 'success' || resultStatus === 'done'
+                            ? 'text-emerald-600 dark:text-emerald-400 font-medium'
+                            : resultStatus === 'running'
+                            ? 'text-blue-500 font-medium'
+                            : 'text-rose-500 font-medium'
+                        }
+                      >
+                        {resultStatus === 'success' || resultStatus === 'done' ? '✓ 成功' : resultStatus === 'running' ? '● 执行中' : '✕ 失败'}
+                      </span>
+                    </span>
+                  )}
+                  {startedAt != null && (
+                    <span className="flex items-center space-x-1">
+                      <span className="text-zinc-400 dark:text-zinc-500 font-sans">开始:</span>
+                      <span>{formatTimeMs(startedAt)}</span>
+                    </span>
+                  )}
+                  {finishedAt != null && (
+                    <span className="flex items-center space-x-1">
+                      <span className="text-zinc-400 dark:text-zinc-500 font-sans">结束:</span>
+                      <span>{formatTimeMs(finishedAt)}</span>
+                    </span>
+                  )}
+                  {durationMs != null && (
+                    <span className="flex items-center space-x-1">
+                      <span className="text-zinc-400 dark:text-zinc-500 font-sans">耗时:</span>
+                      <span className="text-blue-600 dark:text-blue-400 font-semibold">{durationMs}ms</span>
+                    </span>
+                  )}
+                </div>
+              )}
+
               {item.args && toolName !== 'run_command' && (
                 <div>
                   <span className="text-zinc-400 dark:text-zinc-500 font-sans text-[10px]">输入参数：</span>
@@ -812,17 +981,86 @@ const ToolCard: React.FC<{
  * - 流式状态指示（脉动点 + 已用时）
  * - 每轮对话底栏遥测（总耗时、Token 统计、复制全文）
  */
-const AssistantRow: React.FC<{ item: Item; running: boolean }> = ({ item, running }) => {
+const AssistantRow: React.FC<{
+  item: Item
+  running: boolean
+  threadId?: string
+  onRetry?: () => void
+}> = ({ item, running, threadId, onRetry }) => {
   const text = item.text || ''
   const isStreaming = Boolean(item.streaming) && running
   const durationText = formatDuration(item.turnDurationMs || item.durationMs)
 
+  // 识别并分离请求异常内容（如 "**请求异常**：发起模型请求失败: ..." 或 "请求异常: ..." 或 item.error）
+  const { normalText, errorDetail } = React.useMemo(() => {
+    if (item.error) {
+      return { normalText: text, errorDetail: item.error }
+    }
+    // 匹配末尾出现的异常模式，允许前面包含已经流式输出的正常文字
+    const markerRegex = /(?:\r?\n)*(\*{0,2}(?:请求异常|模型请求失败|发起模型请求失败|请求失败|执行异常)\*{0,2}[：:]\s*[\s\S]+)$/
+    const match = text.match(markerRegex)
+    if (match && match.index !== undefined) {
+      const normal = text.slice(0, match.index).trim()
+      const rawError = match[1]
+      // 提取核心错误信息
+      const detail = rawError
+        .replace(/^\*{0,2}(?:请求异常|模型请求失败|发起模型请求失败|请求失败|执行异常)\*{0,2}[：:]\s*/, '')
+        .trim()
+      return { normalText: normal, errorDetail: detail || rawError }
+    }
+    // 兼容首部直接为请求异常的情况
+    if (text.startsWith('请求异常') || text.startsWith('**请求异常**')) {
+      const detail = text
+        .replace(/^\*{0,2}(?:请求异常|模型请求失败|发起模型请求失败|请求失败|执行异常)\*{0,2}[：:]\s*/, '')
+        .trim()
+      return { normalText: '', errorDetail: detail || text }
+    }
+    return { normalText: text, errorDetail: null }
+  }, [text, item.error])
+
+  const handleRetry = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (onRetry) {
+      onRetry()
+    } else {
+      agentClient.retry(threadId)
+    }
+  }
+
   return (
     <div className="flex flex-col w-full my-1 space-y-1 select-text">
-      {/* Markdown 正文排版：全功能渲染（标题、列表、表格、代码块及行内语法） */}
-      {text ? (
-        <MarkdownRenderer content={text} />
+      {/* Markdown 正文排版：全功能渲染（若存在正常部分） */}
+      {normalText ? (
+        <MarkdownRenderer content={normalText} />
       ) : null}
+
+      {/* 请求异常警示卡片与请求重试按钮（严格对齐设计与报错截图） */}
+      {errorDetail && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3 rounded-xl bg-red-50/80 dark:bg-red-950/25 border border-red-200/80 dark:border-red-900/50 text-xs my-1.5 shadow-2xs">
+          <div className="flex items-start space-x-2 min-w-0 flex-1">
+            <AlertTriangle size={15} className="text-red-500 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0 text-red-700 dark:text-red-300">
+              <span className="font-semibold text-red-600 dark:text-red-400 mr-1.5">
+                请求异常:
+              </span>
+              <span className="font-mono text-[11.5px] break-all leading-relaxed">
+                {errorDetail}
+              </span>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleRetry}
+            disabled={running}
+            className="flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-lg text-xs font-medium transition-all shadow-xs shrink-0 cursor-pointer active:scale-95 self-start sm:self-center"
+            title="重新发起此模型请求"
+          >
+            <RotateCw size={12} className={running ? 'animate-spin' : ''} />
+            <span>请求重试</span>
+          </button>
+        </div>
+      )}
 
       {/* 正在流式生成指示条（对齐原版） */}
       {isStreaming && (
@@ -838,7 +1076,7 @@ const AssistantRow: React.FC<{ item: Item; running: boolean }> = ({ item, runnin
       )}
 
       {/* 跑完后的底栏指标条（对齐原版 turn-stats） */}
-      {!isStreaming && text.trim() && (
+      {!isStreaming && (normalText.trim() || errorDetail) && (
         <div className="flex items-center justify-between pt-1 mt-1 border-t border-zinc-200/70 dark:border-zinc-800/80 text-[10.5px] text-zinc-500">
           <div className="flex items-center space-x-2.5">
             {durationText ? (
@@ -859,7 +1097,21 @@ const AssistantRow: React.FC<{ item: Item; running: boolean }> = ({ item, runnin
             ) : null}
           </div>
 
-          <CopyButton text={text} label="复制全文" />
+          <div className="flex items-center space-x-2">
+            {errorDetail && (
+              <button
+                type="button"
+                onClick={handleRetry}
+                disabled={running}
+                className="flex items-center space-x-1 px-1.5 py-0.2 rounded text-[10px] text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 border border-red-200 dark:border-red-900/40 transition-colors cursor-pointer"
+                title="重新发起此请求"
+              >
+                <RotateCw size={10} className={running ? 'animate-spin' : ''} />
+                <span>重试</span>
+              </button>
+            )}
+            <CopyButton text={text} label="复制全文" />
+          </div>
         </div>
       )}
     </div>

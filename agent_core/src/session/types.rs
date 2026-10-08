@@ -85,6 +85,14 @@ pub enum AgentMessage {
         checkpoint_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         timestamp: Option<i64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(alias = "duration_ms", rename = "durationMs", skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        #[serde(alias = "started_at", rename = "startedAt", skip_serializing_if = "Option::is_none")]
+        started_at: Option<i64>,
+        #[serde(alias = "finished_at", rename = "finishedAt", skip_serializing_if = "Option::is_none")]
+        finished_at: Option<i64>,
     },
     #[serde(other)]
     Unknown,
@@ -252,6 +260,10 @@ mod tests {
             patch: None,
             checkpoint_id: None,
             timestamp: Some(1),
+            status: Some("success".to_string()),
+            duration_ms: Some(10),
+            started_at: Some(0),
+            finished_at: Some(10),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"toolCallId\""), "落盘需与 TS 版兼容：{json}");

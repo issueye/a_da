@@ -53,6 +53,8 @@ export interface ProviderConfig {
    * **同名（大小写不敏感）会覆盖默认头**。
    */
   headers?: Record<string, string>
+  /** 网络代理地址，例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080 */
+  proxyUrl?: string
 }
 
 /** 内置供应商预设（只描述形状；预设数据表仍在 `agent/config.ts`）。 */

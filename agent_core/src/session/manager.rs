@@ -679,8 +679,22 @@ impl SessionManager {
                                         let mut checkpoint_id: Option<String> = None;
                                         let mut details: Option<serde_json::Value> = None;
                                         let mut tool_at = at;
+                                        let mut duration_ms: Option<u64> = None;
+                                        let mut started_at: Option<i64> = None;
+                                        let mut finished_at: Option<i64> = None;
 
-                                        if let Some(AgentMessage::ToolResult { content: res_content, is_error: res_err, details: res_det, patch: res_patch, checkpoint_id: res_cp, timestamp: res_ts, .. }) = res {
+                                        if let Some(AgentMessage::ToolResult {
+                                            content: res_content,
+                                            is_error: res_err,
+                                            details: res_det,
+                                            patch: res_patch,
+                                            checkpoint_id: res_cp,
+                                            timestamp: res_ts,
+                                            duration_ms: res_dur,
+                                            started_at: res_st,
+                                            finished_at: res_fin,
+                                            ..
+                                        }) = res {
                                             if res_content == "用户拒绝了此工具调用" || res_content == "用户拒绝了这次调用。不要重试同样的调用，先说明原因或换一种做法。" {
                                                 is_denied = true;
                                             }
@@ -690,6 +704,20 @@ impl SessionManager {
                                             checkpoint_id = res_cp.clone();
                                             details = res_det.clone();
                                             if let Some(ts) = res_ts { tool_at = *ts as u64; }
+                                            duration_ms = *res_dur;
+                                            started_at = *res_st;
+                                            finished_at = *res_fin;
+                                            if duration_ms.is_none() {
+                                                if let Ok(val) = serde_json::from_str::<serde_json::Value>(res_content) {
+                                                    duration_ms = val.get("duration_ms").and_then(|v| v.as_u64()).or_else(|| val.get("durationMs").and_then(|v| v.as_u64()));
+                                                    if started_at.is_none() {
+                                                        started_at = val.get("started_at").and_then(|v| v.as_i64()).or_else(|| val.get("startedAt").and_then(|v| v.as_i64()));
+                                                    }
+                                                    if finished_at.is_none() {
+                                                        finished_at = val.get("finished_at").and_then(|v| v.as_i64()).or_else(|| val.get("finishedAt").and_then(|v| v.as_i64()));
+                                                    }
+                                                }
+                                            }
                                         }
 
                                         let status = if is_denied {
@@ -720,6 +748,9 @@ impl SessionManager {
                                             thread_id: Some(header.id.clone()),
                                             checkpoint_id,
                                             reverted: None,
+                                            duration_ms,
+                                            started_at,
+                                            finished_at,
                                         });
                                     }
                                 }
@@ -736,7 +767,35 @@ impl SessionManager {
                                     });
                                 }
                             }
-                            AgentMessage::ToolResult { tool_call_id, tool_name, content, is_error, details, patch, checkpoint_id, timestamp: _ } => {
+                            AgentMessage::ToolResult {
+                                tool_call_id,
+                                tool_name,
+                                content,
+                                is_error,
+                                details,
+                                patch,
+                                checkpoint_id,
+                                timestamp: _,
+                                duration_ms,
+                                started_at,
+                                finished_at,
+                                status: res_status,
+                            } => {
+                                let mut dur = duration_ms;
+                                let mut st = started_at;
+                                let mut fin = finished_at;
+                                if dur.is_none() {
+                                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                                        dur = val.get("duration_ms").and_then(|v| v.as_u64()).or_else(|| val.get("durationMs").and_then(|v| v.as_u64()));
+                                        if st.is_none() {
+                                            st = val.get("started_at").and_then(|v| v.as_i64()).or_else(|| val.get("startedAt").and_then(|v| v.as_i64()));
+                                        }
+                                        if fin.is_none() {
+                                            fin = val.get("finished_at").and_then(|v| v.as_i64()).or_else(|| val.get("finishedAt").and_then(|v| v.as_i64()));
+                                        }
+                                    }
+                                }
+
                                 messages.push(serde_json::json!({
                                     "role": "toolResult",
                                     "toolCallId": &tool_call_id,
@@ -747,6 +806,10 @@ impl SessionManager {
                                     "patch": &patch,
                                     "checkpointId": &checkpoint_id,
                                     "timestamp": at,
+                                    "durationMs": dur,
+                                    "startedAt": st,
+                                    "finishedAt": fin,
+                                    "status": res_status,
                                 }));
 
                                 if !rendered_tool_call_ids.contains(&tool_call_id) {
@@ -773,6 +836,9 @@ impl SessionManager {
                                         thread_id: Some(header.id.clone()),
                                         checkpoint_id,
                                         reverted: None,
+                                        duration_ms: dur,
+                                        started_at: st,
+                                        finished_at: fin,
                                     });
                                 }
                             }
@@ -1031,6 +1097,10 @@ mod tests {
                 patch: None,
                 checkpoint_id: None,
                 timestamp: Some(1005),
+                status: Some("success".to_string()),
+                duration_ms: Some(50),
+                started_at: Some(1000),
+                finished_at: Some(1050),
             },
             Some(ws),
         )?;

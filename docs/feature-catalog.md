@@ -35,7 +35,7 @@
 | [`agent_core`](file:///E:/codes/rust_projects/a_da/agent_core) | 纯 Rust 后端微内核，提供全部主循环、工具执行、插件沙箱与持久化 | Rust 2021、Tokio、Reqwest、Tracing |
 | [`src-tauri`](file:///E:/codes/rust_projects/a_da/src-tauri) | 现代跨平台桌面宿主，负责窗口管理、进程级双角色分流与端口调度 | Tauri 2、Windows API、Clap |
 | [`tauri-ui`](file:///E:/codes/rust_projects/a_da/tauri-ui) | 现代轻量化 Webview 桌面交互前端 | React 19、TypeScript、Tailwind CSS、Vite、Lucide |
-| [`src/ui`](file:///E:/codes/rust_projects/a_da/src/ui) | 原生 GPU 硬件加速桌面前端 | GPUIX、React 19、Hermes 字节码引擎 |
+| [`src/ui`](file:///E:/codes/rust_projects/a_da/src/ui) | 原生 GPU 硬件加速桌面前端 | GPUIX、React 19 |
 
 ### 运行形态矩阵
 

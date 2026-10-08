@@ -218,6 +218,7 @@ async function openStreamingResponse(
         headers: buildRequestHeaders(config),
         body: JSON.stringify(body),
         signal: options.signal,
+        ...(config.proxyUrl ? ({ proxy: config.proxyUrl } as any) : {}),
       })
 
       if (response.ok) return { response }

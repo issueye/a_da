@@ -21,7 +21,7 @@
  *   界面必须说出来（"不允许静默失效"）。
  */
 
-import { existsSync, readdirSync, statSync, mkdirSync } from 'node:fs'
+import { existsSync, readdirSync, statSync, mkdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { appError, ProtocolError, RpcErrorCode } from '../../shared/protocol'
@@ -180,4 +180,36 @@ export function resolveExistingPath(rawPath: string): string {
     throw appError('NotFound', `路径不存在：${target}`, { kind: 'path', id: target })
   }
   return target
+}
+
+/**
+ * 读取本地文件（如图片）并返回 Base64 Data URI，用于附件预览与向模型透传。
+ */
+export function readFileBase64(rawPath: string): { dataUri: string; path: string } {
+  const target = resolveExistingPath(rawPath)
+  const stats = statSync(target)
+  if (!stats.isFile()) {
+    throw new ProtocolError(RpcErrorCode.InvalidParams, `不是文件：${target}`, { path: target })
+  }
+  if (stats.size > 20 * 1024 * 1024) {
+    throw new ProtocolError(RpcErrorCode.InvalidParams, '文件过大，单附件上限为 20MB', { path: target })
+  }
+  const buf = readFileSync(target)
+  const b64 = buf.toString('base64')
+  const ext = path.extname(target).toLowerCase().slice(1)
+  const mimeMap: Record<string, string> = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    webp: 'image/webp',
+    gif: 'image/gif',
+    svg: 'image/svg+xml',
+    bmp: 'image/bmp',
+    ico: 'image/x-icon',
+  }
+  const mime = mimeMap[ext] || 'application/octet-stream'
+  return {
+    dataUri: `data:${mime};base64,${b64}`,
+    path: target,
+  }
 }

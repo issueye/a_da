@@ -41,6 +41,7 @@ pub fn execute_tool_call_extended<'a>(
     abort_rx: Option<&'a watch::Receiver<bool>>,
 ) -> BoxFuture<'a, AgentMessage> {
     async move {
+        let started_at = now_ms();
         let args: Value = serde_json::from_str(&call.args).unwrap_or_else(|_| serde_json::json!({}));
         let mut checkpoint_id: Option<String> = None;
 
@@ -143,6 +144,7 @@ pub fn execute_tool_call_extended<'a>(
                         model: "gemini-2.5-flash".to_string(),
                         max_output_tokens: Some(8192),
                         custom_headers: None,
+                        proxy_url: None,
                     });
 
                     let res = crate::subagents::run_subagent(crate::subagents::RunSubagentOptions {
@@ -205,15 +207,45 @@ pub fn execute_tool_call_extended<'a>(
         }
     };
 
+        let finished_at = now_ms();
+        let duration_ms = (finished_at - started_at).max(0) as u64;
+        let status_str = if result.ok { "success" } else { "error" };
+
+        let mut structured = serde_json::Map::new();
+        structured.insert("status".to_string(), serde_json::Value::String(status_str.to_string()));
+        structured.insert("ok".to_string(), serde_json::Value::Bool(result.ok));
+        structured.insert("duration_ms".to_string(), serde_json::json!(duration_ms));
+        structured.insert("durationMs".to_string(), serde_json::json!(duration_ms));
+        structured.insert("started_at".to_string(), serde_json::json!(started_at));
+        structured.insert("startedAt".to_string(), serde_json::json!(started_at));
+        structured.insert("finished_at".to_string(), serde_json::json!(finished_at));
+        structured.insert("finishedAt".to_string(), serde_json::json!(finished_at));
+
+        if let Ok(parsed_data) = serde_json::from_str::<Value>(&result.output) {
+            structured.insert("data".to_string(), parsed_data);
+        }
+        structured.insert("output".to_string(), serde_json::Value::String(result.output.clone()));
+
+        if let Some(ref det) = result.details {
+            structured.insert("details".to_string(), det.clone());
+        }
+
+        let structured_content = serde_json::to_string_pretty(&Value::Object(structured))
+            .unwrap_or_else(|_| result.output.clone());
+
         AgentMessage::ToolResult {
             tool_call_id: call.id.clone(),
             tool_name: call.name.clone(),
-            content: result.output,
+            content: structured_content,
             is_error: if result.ok { None } else { Some(true) },
             details: result.details,
             patch: result.patch,
             checkpoint_id,
-            timestamp: Some(now_ms()),
+            timestamp: Some(finished_at),
+            status: Some(status_str.to_string()),
+            duration_ms: Some(duration_ms),
+            started_at: Some(started_at),
+            finished_at: Some(finished_at),
         }
     }
     .boxed()

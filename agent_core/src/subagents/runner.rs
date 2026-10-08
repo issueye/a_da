@@ -215,20 +215,36 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
         for call in &tool_calls {
             // 安全双重防线：只读模式拦截
             if options.profile.mode == SubagentMode::Readonly && is_write_tool(&call.name) {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as i64;
+                let err_text = format!("安全拦截：子智能体 [{}] 为只读模式，严禁调用写工具 [{}]", options.profile.name, call.name);
+                let structured = serde_json::json!({
+                    "status": "error",
+                    "ok": false,
+                    "duration_ms": 0,
+                    "durationMs": 0,
+                    "started_at": now,
+                    "startedAt": now,
+                    "finished_at": now,
+                    "finishedAt": now,
+                    "output": err_text,
+                });
+                let content = serde_json::to_string_pretty(&structured).unwrap_or_else(|_| err_text);
                 let err_msg = AgentMessage::ToolResult {
                     tool_call_id: call.id.clone(),
                     tool_name: call.name.clone(),
-                    content: format!("安全拦截：子智能体 [{}] 为只读模式，严禁调用写工具 [{}]", options.profile.name, call.name),
+                    content,
                     is_error: Some(true),
                     details: None,
                     patch: None,
                     checkpoint_id: None,
-                    timestamp: Some(
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as i64,
-                    ),
+                    timestamp: Some(now),
+                    status: Some("error".to_string()),
+                    duration_ms: Some(0),
+                    started_at: Some(now),
+                    finished_at: Some(now),
                 };
                 history_messages.push(err_msg);
                 continue;

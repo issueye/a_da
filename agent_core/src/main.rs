@@ -59,17 +59,9 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let args = CliArgs::parse();
 
-    // 未传入 --host，默认进入原生桌面 UI 模式（双角色看门狗 + Meta Hermes 宿主）
-    if !args.host {
-        return agent_core::run_desktop_mode(&args.workspace);
-    }
-
     let token = match args.token {
         Some(t) if !t.trim().is_empty() => t,
-        _ => {
-            eprintln!("错误: 必须通过 --token 提供认证令牌");
-            std::process::exit(1);
-        }
+        _ => uuid::Uuid::new_v4().simple().to_string(),
     };
 
     // 启动父进程看门狗

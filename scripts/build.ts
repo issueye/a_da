@@ -26,17 +26,13 @@ console.log('\x1b[1;36m=========================================================
 console.log('\x1b[33m[步骤 1/3]\x1b[0m 正在使用 Cargo 编译纯 Rust 后端核心 (agent_core)...')
 
 function getCargoConfig(): { cmd: string; env: Record<string, string | undefined> } {
-  const toolchainBin = 'C:\\Users\\issue\\.rustup\\toolchains\\stable-x86_64-pc-windows-msvc\\bin'
-  const customPath = existsSync(toolchainBin)
-    ? `${toolchainBin};${process.env.PATH ?? ''}`
-    : process.env.PATH
+  const userHome = process.env.USERPROFILE || process.env.HOME || ''
+  const toolchainBin = path.join(userHome, '.rustup', 'toolchains', 'stable-x86_64-pc-windows-msvc', 'bin')
+  const cargoBin = path.join(userHome, '.cargo', 'bin')
+  const customPath = [toolchainBin, cargoBin, process.env.PATH].filter(Boolean).join(path.delimiter)
+  const targetDir = process.env.CARGO_TARGET_DIR || path.join(root, '..', 'cargo_target_ada')
 
-  const directCargo = path.join(toolchainBin, process.platform === 'win32' ? 'cargo.exe' : 'cargo')
-  if (existsSync(directCargo)) {
-    return { cmd: directCargo, env: { ...process.env, PATH: customPath } }
-  }
-
-  return { cmd: 'cargo', env: { ...process.env, PATH: customPath } }
+  return { cmd: 'cargo', env: { ...process.env, PATH: customPath, CARGO_TARGET_DIR: targetDir } }
 }
 
 const { cmd: cargoCmd, env: cargoEnv } = getCargoConfig()
@@ -51,7 +47,9 @@ if (cargoProc.exitCode !== 0) {
 }
 
 const exeName = process.platform === 'win32' ? 'agent_core.exe' : 'agent_core'
+const targetDir = cargoEnv.CARGO_TARGET_DIR
 const candidateCorePaths = [
+  ...(targetDir ? [path.join(targetDir, 'release', exeName)] : []),
   path.join(root, 'target', 'release', exeName),
   path.join(root, 'agent_core', 'target', 'release', exeName),
 ]
@@ -64,14 +62,6 @@ if (!compiledCore) {
 copyFileSync(compiledCore, targetCore)
 const coreSizeMb = (statSync(targetCore).size / 1024 / 1024).toFixed(2)
 console.log(`  ✔ 原生 Rust 核心就绪: ${path.relative(root, targetCore)} (${coreSizeMb} MB)`)
-
-if (process.platform === 'win32') {
-  const hermesDll = path.join(root, 'agent_core', 'vendor', 'hermes', 'bin', 'x64', 'hermes.dll')
-  if (existsSync(hermesDll)) {
-    copyFileSync(hermesDll, path.join(distDir, 'hermes.dll'))
-    console.log(`  ✔ Hermes 动态库就绪: dist/hermes.dll`)
-  }
-}
 console.log('')
 
 // 步骤 2：打包单文件独立可执行桌面应用 (内嵌原生核心与 GPUIX 渲染驱动)

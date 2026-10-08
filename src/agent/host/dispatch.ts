@@ -11,7 +11,7 @@
 import type { AgentStore } from '../store'
 import { PROTOCOL_VERSION, RpcErrorCode, appError, AppErrorCode, ProtocolError } from '../../shared/protocol'
 import { readHostSnapshot } from './snapshot'
-import { listDirectory, listRoots, makeDirectory } from './fs-service'
+import { listDirectory, listRoots, makeDirectory, readFileBase64 } from './fs-service'
 import type {
   AgentMode,
   ParamsOf,
@@ -132,6 +132,8 @@ export function createCommandDispatcher(
         })
       case 'fs.mkdir':
         return makeDirectory(String(p.path))
+      case 'fs.read_base64':
+        return readFileBase64(String(p.path))
 
       // ── 会话内容 ──
       case 'thread.create': {
@@ -172,6 +174,8 @@ export function createCommandDispatcher(
           p.threadId as string
         )
         return undefined
+      case 'thread.retry':
+        return await store.retryThread(p.threadId as string | undefined)
 
       // ── 排队指令 ──
       case 'queue.clear':

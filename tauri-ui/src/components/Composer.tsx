@@ -38,6 +38,7 @@ import { ContextUsagePopover } from './ContextUsagePopover'
 import { computeContextBreakdown } from '../utils/context-breakdown'
 import { MentionMenu, type MentionItem } from './MentionMenu'
 import { SlashCommandMenu, type SlashCommandItem } from './SlashCommandMenu'
+import { FilePicker } from './FilePicker'
 
 export interface ComposerProps {
   thread?: Thread
@@ -131,6 +132,24 @@ export const Composer: React.FC<ComposerProps> = ({
   const [selectedCommand, setSelectedCommand] = useState<string | null>(null)
   const [isFocused, setIsFocused] = useState(false)
 
+  // 会话草稿隔离：保存与恢复每个会话独立的输入框草稿，防止 A 会话输入串到 B 会话
+  const draftsRef = useRef<Map<string, { text: string; images: string[] }>>(new Map())
+  const prevThreadIdRef = useRef<string | undefined>(thread?.id)
+
+  useEffect(() => {
+    const curId = thread?.id
+    const prevId = prevThreadIdRef.current
+    if (prevId && prevId !== curId) {
+      draftsRef.current.set(prevId, { text, images })
+    }
+    if (curId && curId !== prevId) {
+      const saved = draftsRef.current.get(curId)
+      setText(saved?.text || '')
+      setImages(saved?.images || [])
+    }
+    prevThreadIdRef.current = curId
+  }, [thread?.id])
+
   // 下拉菜单与浮窗控制
   const [plusMenuOpen, setPlusMenuOpen] = useState(false)
   const [modeMenuOpen, setModeMenuOpen] = useState(false)
@@ -145,13 +164,23 @@ export const Composer: React.FC<ComposerProps> = ({
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const imageInputRef = useRef<HTMLInputElement>(null)
   const plusMenuRef = useRef<HTMLDivElement>(null)
   const modeMenuRef = useRef<HTMLDivElement>(null)
   const modelMenuRef = useRef<HTMLDivElement>(null)
   const approvalMenuRef = useRef<HTMLDivElement>(null)
   const effortMenuRef = useRef<HTMLDivElement>(null)
+
+  // 自建文件/图片选择浮窗状态（避免原生弹窗导致 H5 无法兼容）
+  const [filePickerState, setFilePickerState] = useState<{
+    isOpen: boolean
+    title: string
+    filterExts?: string[]
+    type: 'image' | 'file'
+  }>({
+    isOpen: false,
+    title: '',
+    type: 'file',
+  })
 
   // 点击外部关闭所有下拉菜单
   useEffect(() => {
@@ -281,9 +310,8 @@ export const Composer: React.FC<ComposerProps> = ({
     }
   }
 
-  // 触发发送消息
+  // 触发发送消息（支持运行中输入追加排队）
   const handleSend = () => {
-    if (running) return
     const trimmed = text.trim()
     let finalPayload = trimmed
     if (selectedCommand) {
@@ -296,28 +324,14 @@ export const Composer: React.FC<ComposerProps> = ({
     onSend(finalPayload, images.length > 0 ? images : undefined)
     setText('')
     setImages([])
+    if (thread?.id) {
+      draftsRef.current.delete(thread.id)
+    }
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
   }
 
-  // 添加本地图片文件
-  const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files
-    if (!files || files.length === 0) return
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i]
-      const reader = new FileReader()
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          setImages((prev) => [...prev, event.target!.result as string])
-        }
-      }
-      reader.readAsDataURL(file)
-    }
-    e.target.value = ''
-    setPlusMenuOpen(false)
-  }
 
   // 插入字符前缀
   const insertPrefix = (char: string) => {
@@ -454,7 +468,7 @@ export const Composer: React.FC<ComposerProps> = ({
             {running ? (
               <button
                 type="button"
-                onClick={onAbort}
+                onClick={() => onAbort()}
                 className="flex items-center space-x-1 px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded-lg transition-colors shadow-xs text-xs font-medium cursor-pointer"
                 title="中止子智能体执行"
               >
@@ -799,16 +813,31 @@ export const Composer: React.FC<ComposerProps> = ({
                     附件资源
                   </div>
                   <button
-                    onClick={() => imageInputRef.current?.click()}
-                    className="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-left text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+                    onClick={() => {
+                      setPlusMenuOpen(false)
+                      setFilePickerState({
+                        isOpen: true,
+                        title: '选择图片附件',
+                        filterExts: ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico'],
+                        type: 'image',
+                      })
+                    }}
+                    className="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-left text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
                   >
                     <ImageIcon size={13} className="text-indigo-500" />
                     <span>添加图片附件</span>
                   </button>
 
                   <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-left text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+                    onClick={() => {
+                      setPlusMenuOpen(false)
+                      setFilePickerState({
+                        isOpen: true,
+                        title: '选择引用本地文件',
+                        type: 'file',
+                      })
+                    }}
+                    className="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-left text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
                   >
                     <FileCode size={13} className="text-cyan-500" />
                     <span>引用本地文件</span>
@@ -817,17 +846,16 @@ export const Composer: React.FC<ComposerProps> = ({
               )}
             </div>
 
-            {/* 模式切换快捷药丸 */}
+            {/* 模式切换快捷药丸（仅展示 SVG 图标，适配 H5 布局） */}
             <div className="relative" ref={modeMenuRef}>
               <button
                 type="button"
                 onClick={() => setModeMenuOpen(!modeMenuOpen)}
-                className="flex items-center space-x-1 px-2 py-1 rounded-md bg-zinc-100 dark:bg-zinc-800/80 hover:bg-zinc-200 dark:hover:bg-zinc-700/80 text-zinc-700 dark:text-zinc-300 text-[11px] transition-colors font-medium border border-zinc-200 dark:border-zinc-700/50"
+                className="p-1.5 rounded-md bg-zinc-100 dark:bg-zinc-800/80 hover:bg-zinc-200 dark:hover:bg-zinc-700/80 text-zinc-700 dark:text-zinc-300 transition-colors border border-zinc-200 dark:border-zinc-700/50 cursor-pointer"
                 title={`当前模式: ${currentModeOption.label}。点击切换`}
+                aria-label={`当前模式: ${currentModeOption.label}`}
               >
-                <currentModeOption.icon size={12} className="text-blue-500" />
-                <span>{currentModeOption.label.split(' ')[0]}</span>
-                <ChevronDown size={10} className="text-zinc-400 dark:text-zinc-500" />
+                <currentModeOption.icon size={13} className="text-blue-500" />
               </button>
 
               {modeMenuOpen && (
@@ -853,17 +881,16 @@ export const Composer: React.FC<ComposerProps> = ({
               )}
             </div>
 
-            {/* 模型选择配置药丸 */}
+            {/* 模型选择配置药丸（仅展示 SVG 图标，适配 H5 布局） */}
             <div className="relative" ref={modelMenuRef}>
               <button
                 type="button"
                 onClick={() => setModelMenuOpen(!modelMenuOpen)}
-                className="flex items-center space-x-1 px-2 py-1 rounded-md bg-zinc-100 dark:bg-zinc-800/80 hover:bg-zinc-200 dark:hover:bg-zinc-700/80 text-zinc-700 dark:text-zinc-300 text-[11px] transition-colors font-medium border border-zinc-200 dark:border-zinc-700/50"
+                className="p-1.5 rounded-md bg-zinc-100 dark:bg-zinc-800/80 hover:bg-zinc-200 dark:hover:bg-zinc-700/80 text-zinc-700 dark:text-zinc-300 transition-colors border border-zinc-200 dark:border-zinc-700/50 cursor-pointer"
                 title={`当前模型: ${providerConfig.model || 'gpt-4o'}。点击快速切换或调整`}
+                aria-label={`当前模型: ${providerConfig.model || 'gpt-4o'}`}
               >
-                <Sparkles size={11} className="text-blue-500" />
-                <span className="truncate max-w-[110px]">{providerConfig.model || 'gpt-4o'}</span>
-                <ChevronDown size={10} className="text-zinc-400 dark:text-zinc-500" />
+                <Sparkles size={13} className="text-blue-500" />
               </button>
 
               {modelMenuOpen && (
@@ -926,17 +953,16 @@ export const Composer: React.FC<ComposerProps> = ({
               )}
             </div>
 
-            {/* 权限审批策略药丸 */}
+            {/* 权限审批策略药丸（仅展示 SVG 图标，适配 H5 布局） */}
             <div className="relative" ref={approvalMenuRef}>
               <button
                 type="button"
                 onClick={() => setApprovalMenuOpen(!approvalMenuOpen)}
-                className="flex items-center space-x-1 px-2 py-1 rounded-md bg-zinc-100 dark:bg-zinc-800/80 hover:bg-zinc-200 dark:hover:bg-zinc-700/80 text-zinc-700 dark:text-zinc-300 text-[11px] transition-colors font-medium border border-zinc-200 dark:border-zinc-700/50"
+                className="p-1.5 rounded-md bg-zinc-100 dark:bg-zinc-800/80 hover:bg-zinc-200 dark:hover:bg-zinc-700/80 text-zinc-700 dark:text-zinc-300 transition-colors border border-zinc-200 dark:border-zinc-700/50 cursor-pointer"
                 title={`审批权限: ${currentApprovalOption.label}。点击切换`}
+                aria-label={`审批权限: ${currentApprovalOption.label}`}
               >
-                <Shield size={11} className="text-emerald-500" />
-                <span>{currentApprovalOption.label}</span>
-                <ChevronDown size={10} className="text-zinc-400 dark:text-zinc-500" />
+                <Shield size={13} className="text-emerald-500" />
               </button>
 
               {approvalMenuOpen && (
@@ -965,17 +991,16 @@ export const Composer: React.FC<ComposerProps> = ({
               )}
             </div>
 
-            {/* 思考深度药丸 */}
+            {/* 思考深度药丸（仅展示 SVG 图标，适配 H5 布局） */}
             <div className="relative" ref={effortMenuRef}>
               <button
                 type="button"
                 onClick={() => setEffortMenuOpen(!effortMenuOpen)}
-                className="flex items-center space-x-1 px-2 py-1 rounded-md bg-zinc-100 dark:bg-zinc-800/80 hover:bg-zinc-200 dark:hover:bg-zinc-700/80 text-zinc-700 dark:text-zinc-300 text-[11px] transition-colors font-medium border border-zinc-200 dark:border-zinc-700/50"
+                className="p-1.5 rounded-md bg-zinc-100 dark:bg-zinc-800/80 hover:bg-zinc-200 dark:hover:bg-zinc-700/80 text-zinc-700 dark:text-zinc-300 transition-colors border border-zinc-200 dark:border-zinc-700/50 cursor-pointer"
                 title={`思考深度: ${currentEffortOption.label}。点击切换`}
+                aria-label={`思考深度: ${currentEffortOption.label}`}
               >
-                <Brain size={11} className="text-purple-500" />
-                <span>{currentEffortOption.label.split(' ')[0]}</span>
-                <ChevronDown size={10} className="text-zinc-400 dark:text-zinc-500" />
+                <Brain size={13} className="text-purple-500" />
               </button>
 
               {effortMenuOpen && (
@@ -1005,33 +1030,34 @@ export const Composer: React.FC<ComposerProps> = ({
             </div>
           </div>
 
-          {/* 右侧：发送 / 停止按钮 */}
-          <div className="flex items-center space-x-2 ml-2">
-            {running ? (
+          {/* 右侧：发送 / 排队与停止操作区（参考 src/ui 原版设计：运行中同时显示停止与排队发送按钮） */}
+          <div className="flex items-center space-x-1.5 ml-2">
+            {running && (
               <button
                 type="button"
-                onClick={onAbort}
-                className="flex items-center space-x-1.5 px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg transition-colors shadow-sm text-xs font-medium cursor-pointer"
+                onClick={() => onAbort()}
+                className="p-1.5 bg-rose-500/15 hover:bg-rose-500/25 text-rose-600 dark:text-rose-400 border border-rose-500/30 rounded-lg transition-colors cursor-pointer shadow-2xs flex items-center justify-center"
                 title="中止当前执行 (ESC)"
+                aria-label="中止当前执行"
               >
-                <Square size={11} className="fill-current" />
-                <span>停止</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={handleSend}
-                disabled={!text.trim() && images.length === 0 && !selectedCommand}
-                className={`p-1.5 rounded-lg transition-all flex items-center justify-center shadow-sm ${
-                  text.trim() || images.length > 0 || selectedCommand
-                    ? 'bg-blue-600 hover:bg-blue-500 text-white cursor-pointer active:scale-95'
-                    : 'bg-zinc-200 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-500 cursor-not-allowed'
-                }`}
-                title="发送指令 (Enter)"
-              >
-                <ArrowUp size={15} strokeWidth={2.5} />
+                <Square size={13} className="fill-current" />
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={handleSend}
+              disabled={!text.trim() && images.length === 0 && !selectedCommand}
+              className={`p-1.5 rounded-lg transition-all flex items-center justify-center shadow-sm ${
+                text.trim() || images.length > 0 || selectedCommand
+                  ? 'bg-blue-600 hover:bg-blue-500 text-white cursor-pointer active:scale-95'
+                  : 'bg-zinc-200 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-500 cursor-not-allowed'
+              }`}
+              title={running ? '排队这条指令 (Enter)' : '发送指令 (Enter)'}
+              aria-label={running ? '排队这条指令' : '发送'}
+            >
+              <ArrowUp size={15} strokeWidth={2.5} />
+            </button>
           </div>
         </div>
       </div>
@@ -1162,29 +1188,45 @@ export const Composer: React.FC<ComposerProps> = ({
         </div>
       )}
 
-      {/* 隐藏的文件上传 input */}
-      <input
-        ref={imageInputRef}
-        type="file"
-        accept="image/*"
-        multiple
-        className="hidden"
-        onChange={handleImageFileChange}
-      />
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={(e) => {
-          const files = e.target.files
-          if (files && files.length > 0) {
-            const names = Array.from(files).map((f) => f.name).join(', ')
-            insertPrefix(`[文件: ${names}]`)
-          }
-          e.target.value = ''
-        }}
-      />
+      {/* 跨平台自建文件/图片附件选择浮窗（避免原生弹窗导致 H5 无法兼容） */}
+      {filePickerState.isOpen && (
+        <FilePicker
+          isOpen={filePickerState.isOpen}
+          mode="files"
+          title={filePickerState.title}
+          filterExts={filePickerState.filterExts}
+          startPath={thread?.workspace}
+          onPicked={async (paths) => {
+            if (filePickerState.type === 'image') {
+              for (const p of paths) {
+                try {
+                  const res = await agentClient.readFileBase64(p)
+                  if (res?.dataUri) {
+                    setImages((prev) => [...prev, res.dataUri])
+                  }
+                } catch (err: any) {
+                  console.error('读取图片附件失败:', err)
+                }
+              }
+            } else {
+              if (paths.length > 0) {
+                const ws = thread?.workspace
+                const formatted = paths.map((p) => {
+                  if (ws && p.startsWith(ws)) {
+                    const rel = p.slice(ws.length).replace(/^[\\/]+/, '')
+                    return rel || p
+                  }
+                  return p
+                })
+                const tags = formatted.map((f) => `[文件: ${f}]`).join(' ')
+                insertPrefix(tags)
+              }
+            }
+            setFilePickerState((prev) => ({ ...prev, isOpen: false }))
+          }}
+          onClose={() => setFilePickerState((prev) => ({ ...prev, isOpen: false }))}
+        />
+      )}
     </div>
   )
 }

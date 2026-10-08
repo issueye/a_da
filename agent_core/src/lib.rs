@@ -9,15 +9,10 @@ pub mod state;
 pub mod tools;
 pub mod compiler;
 pub mod kernel;
-pub mod hermes_host;
 pub mod subagents;
 pub mod approval;
 pub mod skills;
-pub mod desktop_ui;
-pub mod native_ws;
 
-pub use hermes_host::HermesHost;
-pub use desktop_ui::run_desktop_mode;
 pub use skills::{SkillManager, SkillSummary, get_builtin_skills};
 
 pub use ai::{
@@ -494,6 +489,102 @@ mod tests {
         {
             let s = store.read().await;
             assert!(!s.providers.iter().any(|p| p.id == old_id));
+        }
+
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[tokio::test]
+    async fn test_conversation_queue_lifecycle() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let store = Arc::new(RwLock::new(AgentStore::new("E:/codes/rust_projects/a_da".to_string())));
+        let test_dir = std::env::temp_dir().join(format!("a_da_queue_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&test_dir);
+        let session_mgr = Arc::new(SessionManager::new(Some(test_dir.clone())));
+        let checkpoint_mgr = Arc::new(CheckpointManager::new(Some(test_dir.clone())));
+        let dispatcher = Dispatcher::new(
+            store.clone(),
+            session_mgr.clone(),
+            checkpoint_mgr,
+            Arc::new(subagents::SubagentManager::new()),
+            Arc::new(approval::ApprovalManager::new()),
+            Arc::new(PluginManager::new()),
+            Arc::new(SkillManager::new()),
+            None,
+        );
+
+        // 1. 创建测试会话
+        let created = dispatcher
+            .dispatch("thread.create", serde_json::json!({ "title": "队列排队测试" }))
+            .await
+            .unwrap();
+        let tid = created.get("threadId").and_then(|v| v.as_str()).unwrap().to_string();
+
+        // 2. 模拟该会话当前处于运行态
+        {
+            let mut s = store.write().await;
+            s.set_thread_running(&tid, true);
+        }
+
+        // 3. 在运行中发送第 1 条后续指令，预期进入队列
+        let res1 = dispatcher
+            .dispatch("thread.send", serde_json::json!({ "threadId": tid, "text": "第 1 条后续指令" }))
+            .await
+            .unwrap();
+        assert_eq!(res1.get("queued").and_then(|v| v.as_bool()), Some(true));
+
+        // 4. 在运行中发送第 2 条后续指令，预期进入队尾
+        let res2 = dispatcher
+            .dispatch("thread.send", serde_json::json!({ "threadId": tid, "text": "第 2 条后续指令" }))
+            .await
+            .unwrap();
+        assert_eq!(res2.get("queued").and_then(|v| v.as_bool()), Some(true));
+
+        {
+            let s = store.read().await;
+            assert_eq!(s.queue.len(), 2);
+            assert_eq!(s.queue[0].text, "第 1 条后续指令");
+            assert_eq!(s.queue[1].text, "第 2 条后续指令");
+        }
+
+        // 5. 插队：调用 queue.promote 将第 2 条（索引 1）提升至队首
+        dispatcher
+            .dispatch("queue.promote", serde_json::json!({ "index": 1, "threadId": tid }))
+            .await
+            .unwrap();
+
+        {
+            let s = store.read().await;
+            assert_eq!(s.queue.len(), 2);
+            assert_eq!(s.queue[0].text, "第 2 条后续指令");
+            assert_eq!(s.queue[1].text, "第 1 条后续指令");
+        }
+
+        // 6. 移出队列：调用 queue.remove 移除第 1 项
+        let removed = dispatcher
+            .dispatch("queue.remove", serde_json::json!({ "index": 0, "threadId": tid }))
+            .await
+            .unwrap();
+        assert_eq!(removed.get("text").and_then(|v| v.as_str()), Some("第 2 条后续指令"));
+
+        {
+            let s = store.read().await;
+            assert_eq!(s.queue.len(), 1);
+            assert_eq!(s.queue[0].text, "第 1 条后续指令");
+        }
+
+        // 7. 用户中止会话：调用 thread.abort，预期队列中属于该会话的条目被全部清空
+        dispatcher
+            .dispatch("thread.abort", serde_json::json!({ "threadId": tid }))
+            .await
+            .unwrap();
+
+        {
+            let s = store.read().await;
+            assert_eq!(s.queue.len(), 0);
+            assert!(!s.is_thread_running(&tid));
         }
 
         let _ = std::fs::remove_dir_all(&test_dir);

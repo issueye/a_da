@@ -28,6 +28,7 @@ import type {
   PluginCapabilities,
 } from '../types'
 import { agentClient } from '../client/ws-client'
+import { ConfirmModal } from './ConfirmModal'
 
 interface PluginsModalProps {
   isOpen: boolean
@@ -45,6 +46,8 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
   const [builtinCatalog, setBuiltinCatalog] = useState<BuiltinToolInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [actionNotice, setActionNotice] = useState<string | null>(null)
+  const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<PluginItem | null>(null)
+  const [createTemplateScope, setCreateTemplateScope] = useState<'workspace' | 'global' | null>(null)
 
   // 插件配置编辑状态：pluginId -> { [key]: value }
   const [configDrafts, setConfigDrafts] = useState<Record<string, Record<string, string>>>({})
@@ -139,30 +142,42 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
   }
 
   // 删除插件
-  const handleDeletePlugin = async (item: PluginItem) => {
-    if (!window.confirm(`确定要彻底删除插件 ${item.name} 吗？`)) return
+  const handleDeletePlugin = (item: PluginItem) => {
+    setDeleteConfirmTarget(item)
+  }
+
+  const handleDeletePluginConfirm = async () => {
+    if (!deleteConfirmTarget) return
     try {
-      await agentClient.deletePlugin(item.filePath)
-      showNotice(`插件 ${item.name} 已成功删除`)
+      await agentClient.deletePlugin(deleteConfirmTarget.filePath)
+      showNotice(`插件 ${deleteConfirmTarget.name} 已成功删除`)
       loadData()
     } catch (err: any) {
       showNotice(`删除失败: ${err.message}`)
+    } finally {
+      setDeleteConfirmTarget(null)
     }
   }
 
   // 新建插件模板
-  const handleCreateTemplate = async (scope: 'workspace' | 'global') => {
-    const name = window.prompt('请输入新插件名称（仅支持英文字母与横线）：', 'custom-tool')
-    if (!name || !name.trim()) return
+  const handleCreateTemplate = (scope: 'workspace' | 'global') => {
+    setCreateTemplateScope(scope)
+  }
+
+  const handleCreateTemplateConfirm = async (nameVal?: string) => {
+    const scope = createTemplateScope
+    if (!scope || !nameVal || !nameVal.trim()) return
     try {
       const res = await agentClient.createPluginTemplate({
         scope,
-        name: name.trim(),
+        name: nameVal.trim(),
       })
       showNotice(`创建插件模板成功: ${res?.filePath}`)
       loadData()
     } catch (err: any) {
       showNotice(`创建模板失败: ${err.message}`)
+    } finally {
+      setCreateTemplateScope(null)
     }
   }
 
@@ -586,6 +601,34 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
           </button>
         </div>
       </div>
+
+      {/* 删除插件确认弹窗 */}
+      <ConfirmModal
+        isOpen={Boolean(deleteConfirmTarget)}
+        title="删除插件"
+        message={`确定要彻底删除插件「${deleteConfirmTarget?.name || ''}」吗？`}
+        subMessage={`文件将被物理移除：${deleteConfirmTarget?.filePath || ''}`}
+        confirmText="确认删除"
+        cancelText="取消"
+        variant="danger"
+        onConfirm={handleDeletePluginConfirm}
+        onCancel={() => setDeleteConfirmTarget(null)}
+      />
+
+      {/* 新建插件模板输入弹窗 */}
+      <ConfirmModal
+        isOpen={Boolean(createTemplateScope)}
+        title="新建插件模板"
+        message="请输入新插件名称（仅支持英文字母、数字与横线）："
+        promptMode={true}
+        promptDefaultValue="custom-tool"
+        promptPlaceholder="custom-tool"
+        confirmText="创建"
+        cancelText="取消"
+        variant="primary"
+        onConfirm={handleCreateTemplateConfirm}
+        onCancel={() => setCreateTemplateScope(null)}
+      />
     </div>
   )
 }

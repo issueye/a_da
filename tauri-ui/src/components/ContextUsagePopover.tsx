@@ -4,7 +4,7 @@
  * 提供上下文多段彩色进度条、各构成维度细分、执行遥测明细、缓存收益与健康度建议
  */
 
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useLayoutEffect, useRef } from 'react'
 import {
   Brain,
   X,
@@ -68,11 +68,31 @@ export const ContextUsagePopover: React.FC<ContextUsagePopoverProps> = ({
     }
   }, [onClose])
 
+  // 视口边界自适应修正：防止超出左右可视区域被裁剪遮挡
+  useLayoutEffect(() => {
+    const adjustPosition = () => {
+      if (!popoverRef.current) return
+      popoverRef.current.style.transform = ''
+      const rect = popoverRef.current.getBoundingClientRect()
+      if (rect.left < 8) {
+        const offset = 8 - rect.left
+        popoverRef.current.style.transform = `translateX(${offset}px)`
+      } else if (rect.right > window.innerWidth - 8) {
+        const offset = rect.right - (window.innerWidth - 8)
+        popoverRef.current.style.transform = `translateX(-${offset}px)`
+      }
+    }
+
+    adjustPosition()
+    window.addEventListener('resize', adjustPosition)
+    return () => window.removeEventListener('resize', adjustPosition)
+  }, [])
+
   return (
     <div
       ref={popoverRef}
       data-testid="context-usage-popover"
-      className="absolute bottom-full right-0 mb-2 w-[360px] max-w-[90vw] bg-white dark:bg-[#1a1a1e] border border-zinc-200 dark:border-[#2d2d32] rounded-xl shadow-2xl p-3.5 flex flex-col space-y-2.5 z-50 select-none animate-in fade-in slide-in-from-bottom-2 duration-150 text-zinc-800 dark:text-zinc-200 text-xs"
+      className="absolute bottom-full left-0 mb-2 w-[360px] max-w-[90vw] bg-white dark:bg-[#1a1a1e] border border-zinc-200 dark:border-[#2d2d32] rounded-xl shadow-2xl p-3.5 flex flex-col space-y-2.5 z-50 select-none animate-in fade-in slide-in-from-bottom-2 duration-150 text-zinc-800 dark:text-zinc-200 text-xs"
       onClick={(e) => e.stopPropagation()}
     >
       {/* 1. 头部标题与关闭按钮 */}

@@ -56,6 +56,7 @@ impl AgentStore {
             model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string()),
             max_output_tokens: Some(8192),
             custom_headers: None,
+            proxy_url: std::env::var("A_DA_PROXY_URL").or_else(|_| std::env::var("ALL_PROXY")).or_else(|_| std::env::var("HTTPS_PROXY")).or_else(|_| std::env::var("HTTP_PROXY")).ok(),
         };
         let mut providers_list: Vec<crate::ai::ProviderEntry> = Vec::new();
         let mut active_pid = "default".to_string();
@@ -89,6 +90,9 @@ impl AgentStore {
                     }
                     if let Some(nm) = val.get("name").and_then(|v| v.as_str()) {
                         if !nm.is_empty() { prov.name = nm.to_string(); }
+                    }
+                    if let Some(pu) = val.get("proxyUrl").and_then(|v| v.as_str()) {
+                        prov.proxy_url = if pu.trim().is_empty() { None } else { Some(pu.trim().to_string()) };
                     }
                     if let Some(cw) = val.get("contextWindow").and_then(|v| v.as_u64()) {
                         config_snapshot.context_window = cw;
@@ -164,6 +168,7 @@ impl AgentStore {
                     supports_images: Some(config_snapshot.supports_images),
                 }],
                 custom_headers: prov.custom_headers.clone(),
+                proxy_url: prov.proxy_url.clone(),
             });
         }
 
@@ -175,6 +180,7 @@ impl AgentStore {
             prov.api_key = active_entry.api_key.clone();
             prov.protocol = active_entry.protocol;
             prov.custom_headers = active_entry.custom_headers.clone();
+            prov.proxy_url = active_entry.proxy_url.clone();
             if let Some(first_m) = active_entry.models.first() {
                 prov.model = first_m.id.clone();
                 config_snapshot.model = first_m.id.clone();
@@ -400,6 +406,33 @@ impl AgentStore {
         }
     }
 
+    /// 查询指定会话是否处于运行中
+    pub fn is_thread_running(&self, thread_id: &str) -> bool {
+        self.running_thread_ids.iter().any(|id| id == thread_id)
+    }
+
+    /// 追加排队消息
+    pub fn enqueue_message(&mut self, thread_id: &str, text: &str, images: Option<Vec<String>>) -> String {
+        let qid = next_id("queue");
+        self.queue.push(QueuedItem {
+            id: qid.clone(),
+            thread_id: thread_id.to_string(),
+            text: text.to_string(),
+            enqueued_at: now_millis(),
+            images,
+        });
+        qid
+    }
+
+    /// 取出指定会话的下一个排队消息
+    pub fn pop_next_queued(&mut self, thread_id: &str) -> Option<QueuedItem> {
+        if let Some(idx) = self.queue.iter().position(|q| q.thread_id == thread_id) {
+            Some(self.queue.remove(idx))
+        } else {
+            None
+        }
+    }
+
     /// 查找指定会话的可变引用
     pub fn get_thread_mut(&mut self, thread_id: &str) -> Option<&mut Thread> {
         self.threads.iter_mut().find(|t| t.id == thread_id)
@@ -407,12 +440,17 @@ impl AgentStore {
 
     /// 追加用户提问 Item
     pub fn add_user_message(&mut self, thread_id: &str, text: &str) {
+        self.add_user_message_with_images(thread_id, text, None);
+    }
+
+    /// 追加用户提问 Item（支持图片）
+    pub fn add_user_message_with_images(&mut self, thread_id: &str, text: &str, images: Option<Vec<String>>) {
         if let Some(t) = self.get_thread_mut(thread_id) {
             t.items.push(Item::User {
                 id: next_id("item_user"),
                 at: now_millis(),
                 text: text.to_string(),
-                images: None,
+                images,
                 queued: None,
             });
         }
@@ -551,18 +589,44 @@ impl AgentStore {
                 thread_id: Some(thread_id.to_string()),
                 checkpoint_id: None,
                 reverted: None,
+                duration_ms: None,
+                started_at: Some(now_millis() as i64),
+                finished_at: None,
             });
         }
     }
 
     /// 记录工具调用完成
-    pub fn finish_tool_call(&mut self, thread_id: &str, call_id: &str, ok: bool, output: Option<String>) {
+    pub fn finish_tool_call(
+        &mut self,
+        thread_id: &str,
+        call_id: &str,
+        ok: bool,
+        output: Option<String>,
+        duration_ms: Option<u64>,
+        started_at: Option<i64>,
+        finished_at: Option<i64>,
+    ) {
         if let Some(t) = self.get_thread_mut(thread_id) {
             for item in t.items.iter_mut().rev() {
-                if let Item::Tool { call_id: cid, status, output: out, .. } = item {
+                if let Item::Tool {
+                    call_id: cid,
+                    status,
+                    output: out,
+                    duration_ms: dur,
+                    started_at: st,
+                    finished_at: fin,
+                    ..
+                } = item
+                {
                     if cid == call_id {
                         *status = if ok { "done".to_string() } else { "error".to_string() };
                         *out = output;
+                        *dur = duration_ms;
+                        if started_at.is_some() {
+                            *st = started_at;
+                        }
+                        *fin = finished_at;
                         break;
                     }
                 }

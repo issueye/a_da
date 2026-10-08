@@ -98,6 +98,8 @@ export interface ProtocolCommands {
   }
   /** 新建一层目录（父目录必须已存在；已存在则报错，不静默复用）。 */
   'fs.mkdir': { params: { path: string }; result: { path: string } }
+  /** 读取本地文件（如图片）并返回 Base64 Data URI，用于附件预览与跨端兼容 */
+  'fs.read_base64': { params: { path: string }; result: { dataUri: string; path: string } }
 
   // ── 会话内容 ──
   'thread.create': { params: { workspace: string; mode?: AgentMode }; result: { threadId: string } }
@@ -113,6 +115,10 @@ export interface ProtocolCommands {
   'thread.editAndResend': {
     params: { threadId: string; itemId: string; text: string; images?: string[] }
     result: void
+  }
+  'thread.retry': {
+    params: { threadId?: string }
+    result: { accepted?: boolean; reason?: string }
   }
 
   // ── 排队指令 ──

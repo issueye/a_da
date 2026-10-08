@@ -81,7 +81,7 @@ pub fn run(workspace: String) {
     let core_state = CoreServiceState::new();
     let inner_clone = core_state.inner.clone();
 
-    tauri::Builder::default()
+    let app_res = tauri::Builder::default()
         .manage(core_state)
         .setup(move |_app| {
             // 利用同进程异步任务启动 agent_core::WsHostServer::bind(0, token, store)
@@ -115,21 +115,31 @@ pub fn run(workspace: String) {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![get_core_info])
-        .build(tauri::generate_context!())
-        .expect("运行 Tauri 桌面应用失败")
-        .run(|app_handle, event| {
-            if let tauri::RunEvent::Exit = event {
-                info!("接收到 Tauri 窗口退出事件，正在清理同进程核心服务资源...");
-                if let Some(state) = app_handle.try_state::<CoreServiceState>() {
-                    let inner = state.inner.clone();
-                    tauri::async_runtime::block_on(async move {
-                        let mut guard = inner.write().await;
-                        guard.alive = false;
-                        guard.server = None;
-                    });
-                }
+        .build(tauri::generate_context!());
+
+    let app = match app_res {
+        Ok(a) => a,
+        Err(e) => {
+            let msg = format!("Tauri build error: {:?}", e);
+            let _ = std::fs::write("tauri_error.log", &msg);
+            eprintln!("{}", msg);
+            return;
+        }
+    };
+
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            info!("接收到 Tauri 窗口退出事件，正在清理同进程核心服务资源...");
+            if let Some(state) = app_handle.try_state::<CoreServiceState>() {
+                let inner = state.inner.clone();
+                tauri::async_runtime::block_on(async move {
+                    let mut guard = inner.write().await;
+                    guard.alive = false;
+                    guard.server = None;
+                });
             }
-        });
+        }
+    });
 }
 
 #[cfg(test)]

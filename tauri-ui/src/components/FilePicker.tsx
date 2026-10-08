@@ -11,15 +11,17 @@ import {
   Check,
   Search,
   Code2,
+  Image as ImageIcon,
 } from 'lucide-react'
 import type { FsRoot, FsEntry, FsListing } from '../types'
 import { agentClient } from '../client/ws-client'
 
-interface FilePickerProps {
+export interface FilePickerProps {
   isOpen: boolean
   mode: 'directory' | 'files'
   title?: string
   startPath?: string
+  filterExts?: string[]
   onPicked: (paths: string[]) => void
   onClose: () => void
 }
@@ -29,6 +31,7 @@ export const FilePicker: React.FC<FilePickerProps> = ({
   mode,
   title,
   startPath,
+  filterExts,
   onPicked,
   onClose,
 }) => {
@@ -294,9 +297,26 @@ export const FilePicker: React.FC<FilePickerProps> = ({
               })}
 
               {/* 文件列表 (文件模式可见) */}
-              {mode === 'files' &&
-                files.map((file) => {
+              {mode === 'files' && (() => {
+                const isImageFile = (fileName: string) => {
+                  const ext = fileName.toLowerCase()
+                  return ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico'].some((e) => ext.endsWith(e))
+                }
+                const filteredFiles = filterExts && filterExts.length > 0
+                  ? files.filter((f) => filterExts.some((ext) => f.name.toLowerCase().endsWith(ext.toLowerCase())))
+                  : files
+
+                if (filteredFiles.length === 0 && dirs.length === 0) {
+                  return (
+                    <div className="py-12 text-center text-xs text-zinc-400">
+                      当前目录暂无符合条件的文件
+                    </div>
+                  )
+                }
+
+                return filteredFiles.map((file) => {
                   const isSelected = selectedPaths.includes(file.path)
+                  const isImg = isImageFile(file.name)
                   return (
                     <div
                       key={file.path}
@@ -308,10 +328,17 @@ export const FilePicker: React.FC<FilePickerProps> = ({
                       }`}
                     >
                       <div className="flex items-center space-x-2.5 min-w-0 flex-1">
-                        <FileText
-                          size={14}
-                          className={isSelected ? 'text-white' : 'text-zinc-400 flex-shrink-0'}
-                        />
+                        {isImg ? (
+                          <ImageIcon
+                            size={14}
+                            className={isSelected ? 'text-white' : 'text-indigo-500 flex-shrink-0'}
+                          />
+                        ) : (
+                          <FileText
+                            size={14}
+                            className={isSelected ? 'text-white' : 'text-zinc-400 flex-shrink-0'}
+                          />
+                        )}
                         <span className="font-mono truncate">{file.name}</span>
                       </div>
 
@@ -324,7 +351,8 @@ export const FilePicker: React.FC<FilePickerProps> = ({
                       </span>
                     </div>
                   )
-                })}
+                })
+              })()}
             </div>
           )}
         </div>

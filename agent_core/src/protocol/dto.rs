@@ -191,6 +191,12 @@ pub enum Item {
         checkpoint_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         reverted: Option<bool>,
+        #[serde(rename = "durationMs", skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        #[serde(rename = "startedAt", skip_serializing_if = "Option::is_none")]
+        started_at: Option<i64>,
+        #[serde(rename = "finishedAt", skip_serializing_if = "Option::is_none")]
+        finished_at: Option<i64>,
     },
     #[serde(rename = "notice")]
     Notice {

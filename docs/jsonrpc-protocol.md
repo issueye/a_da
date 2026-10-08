@@ -358,6 +358,7 @@ interface Progress { id: number|string; done?: number; total?: number; label?: s
 | `thread.send` | `{threadId, text, images?, clientTag?}` | `{accepted: true}` | `send()`（:1723） |
 | `thread.abort` | `{threadId}` | `{aborted: boolean}` | `stop()`（:1759） |
 | `thread.editAndResend` | `{threadId, itemId, text, images?}` | `{accepted: true}` | `editUserMessageAndResend()`（:2169） |
+| `thread.retry` | `{threadId?}` | `{accepted: boolean, reason?}` | `retryThread()` / `run_agent_loop` |
 | `thread.compact` | `{threadId, customInstructions?, trigger}` | `{success, reason?}` | `compactThread()`（:3205） |
 | `thread.stats` | `{threadId}` | `ThreadStats` | `activeThreadStats`（:286） |
 | `thread.clear` | `{threadId}` | `{}` | 清空会话（若产品需要） |
@@ -522,6 +523,7 @@ interface Progress { id: number|string; done?: number; total?: number; label?: s
 | `fs.roots` | `{}` | `FsRoot[]` | 可跳转的根：**当前工作区与已知项目**（排最前）、主目录、驱动器 / 文件系统根 |
 | `fs.list` | `{ path, showHidden?, limit? }` | `FsListing` | 列一个目录：目录在前、各自按名字排序；`truncated`/`omitted`/`hiddenCount` **如实报告** |
 | `fs.mkdir` | `{ path }` | `{ path }` | 新建**一层**目录：父目录必须已存在；已存在就报错（不静默复用） |
+| `fs.read_base64` | `{ path }` | `{ dataUri, path }` | 读取本地文件（如图片）并返回 Base64 Data URI，用于附件预览与跨端兼容 |
 
 **边界（重要）**
 

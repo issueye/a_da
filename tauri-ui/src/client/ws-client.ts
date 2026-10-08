@@ -28,6 +28,7 @@ import type {
   ModelProtocol,
   ModelEntry,
   ProviderEntry,
+  QueuedItem,
 } from '../types'
 
 export type Listener = (snapshot: ClientSnapshot) => void
@@ -306,30 +307,69 @@ export class AgentWebSocketClient {
     const payload = snap.payload || snap
 
     if (Array.isArray(payload.threads)) {
-      this.snapshot.threads = payload.threads.map((t: any) => ({
-        id: t.id,
-        title: t.title || '新对话',
-        workspace: t.workspace || this.snapshot.activeWorkspace,
-        mode: t.mode || this.snapshot.currentMode,
-        createdAt: t.createdAt || t.created_at || Date.now(),
-        updatedAt: t.updatedAt || t.updated_at || Date.now(),
-        parentId: t.parentId ?? t.parent_id,
-        subagentId: t.subagentId ?? t.subagent_id,
-        isSubagent: Boolean(t.isSubagent ?? t.is_subagent),
-        items: Array.isArray(t.items) ? t.items.map((it: any) => this.normalizeItem(it)) : [],
-      }))
+      const existingMap = new Map(this.snapshot.threads.map((t) => [t.id, t]))
+      this.snapshot.threads = payload.threads.map((t: any) => {
+        const prev = existingMap.get(t.id)
+        const newItemsRaw = Array.isArray(t.items) ? t.items : []
+
+        // 如果前后 items 数量一致，且每一个 item 的属性（id, text, thinking, streaming, tool, status）完全相同，
+        // 则保留旧的 items 数组引用，防止未激活的会话因为其它会话吐字导致 items 引用每 16ms 变化一次进而打乱滚动位置！
+        let items = prev?.items || []
+        const isItemsUnchanged =
+          Boolean(prev) &&
+          prev!.items.length === newItemsRaw.length &&
+          newItemsRaw.every((rawIt: any, idx: number) => {
+            const prevIt = prev!.items[idx]
+            if (!prevIt) return false
+            const rawText = rawIt.text || (rawIt.kind === 'thinking' ? rawIt.text : '')
+            const rawThinking = rawIt.thinking || (rawIt.kind === 'thinking' ? rawIt.text : undefined)
+            return (
+              prevIt.id === rawIt.id &&
+              prevIt.text === rawText &&
+              prevIt.thinking === rawThinking &&
+              prevIt.streaming === rawIt.streaming &&
+              (prevIt.tool || (prevIt as any).name) === (rawIt.tool || rawIt.name) &&
+              (prevIt as any).status === rawIt.status
+            )
+          })
+
+        if (!isItemsUnchanged) {
+          items = newItemsRaw.map((it: any) => this.normalizeItem(it))
+        }
+
+        return {
+          id: t.id,
+          title: t.title || prev?.title || '新对话',
+          workspace: t.workspace || prev?.workspace || this.snapshot.activeWorkspace,
+          mode: t.mode || prev?.mode || this.snapshot.currentMode,
+          createdAt: t.createdAt || t.created_at || prev?.createdAt || Date.now(),
+          updatedAt: t.updatedAt || t.updated_at || prev?.updatedAt || Date.now(),
+          parentId: t.parentId ?? t.parent_id ?? prev?.parentId,
+          subagentId: t.subagentId ?? t.subagent_id ?? prev?.subagentId,
+          isSubagent: Boolean(t.isSubagent ?? t.is_subagent ?? prev?.isSubagent),
+          items,
+        }
+      })
     }
 
     if (Array.isArray(payload.queue)) {
       this.snapshot.queue = payload.queue
     }
 
-    if (payload.activeThreadId) {
-      this.snapshot.activeThreadId = payload.activeThreadId
-    } else if (payload.activeId) {
-      this.snapshot.activeThreadId = payload.activeId
-    } else if (!this.snapshot.activeThreadId && this.snapshot.threads.length > 0) {
-      this.snapshot.activeThreadId = this.snapshot.threads[0].id
+    // 保护客户端正在查看的会话：
+    // 只有在本地尚未设置 activeThreadId，或者当前 activeThreadId 在 threads 中已不存在时，才采用服务端推送的 activeThreadId
+    const currentActiveExists =
+      this.snapshot.activeThreadId &&
+      this.snapshot.threads.some((t) => t.id === this.snapshot.activeThreadId)
+
+    if (!currentActiveExists) {
+      if (payload.activeThreadId) {
+        this.snapshot.activeThreadId = payload.activeThreadId
+      } else if (payload.activeId) {
+        this.snapshot.activeThreadId = payload.activeId
+      } else if (this.snapshot.threads.length > 0) {
+        this.snapshot.activeThreadId = this.snapshot.threads[0].id
+      }
     }
 
     if (Array.isArray(payload.runningThreadIds)) {
@@ -408,6 +448,20 @@ export class AgentWebSocketClient {
       }
     }
 
+    let durationMs = it.durationMs ?? it.duration_ms
+    let startedAt = it.startedAt ?? it.started_at
+    let finishedAt = it.finishedAt ?? it.finished_at
+    if (durationMs === undefined && typeof it.output === 'string' && it.output.trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(it.output)
+        if (parsed && typeof parsed === 'object') {
+          durationMs = parsed.durationMs ?? parsed.duration_ms
+          if (startedAt === undefined) startedAt = parsed.startedAt ?? parsed.started_at
+          if (finishedAt === undefined) finishedAt = parsed.finishedAt ?? parsed.finished_at
+        }
+      } catch {}
+    }
+
     return {
       ...it,
       id: it.id || `item_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -418,6 +472,9 @@ export class AgentWebSocketClient {
       text: it.text || (kind === 'thinking' ? it.text : ''),
       thinking: it.thinking || (kind === 'thinking' ? it.text : undefined),
       question,
+      durationMs,
+      startedAt,
+      finishedAt,
     }
   }
 
@@ -468,27 +525,44 @@ export class AgentWebSocketClient {
       }
     }
 
-    // 乐观更新：在客户端立即追加一条用户消息，保证界面瞬间变化
-    const activeThread = this.snapshot.threads.find((t) => t.id === targetThreadId)
-    if (activeThread) {
-      const optimisticUserItem: Item = {
-        id: `optimistic_${Date.now()}`,
-        kind: 'user',
-        role: 'user',
+    const isCurrentlyRunning = (this.snapshot.runningThreadIds || []).includes(targetThreadId)
+    let optimisticQueueId: string | null = null
+
+    if (isCurrentlyRunning) {
+      // 正在运行：乐观追加至本地 queue，使排队浮动面板立即弹起展示
+      optimisticQueueId = `queued_${Date.now()}`
+      const queuedItem: QueuedItem = {
+        id: optimisticQueueId,
+        threadId: targetThreadId,
         text,
         images,
-        at: Date.now(),
-        createdAt: Date.now(),
+        enqueuedAt: Date.now(),
       }
-      activeThread.items.push(optimisticUserItem)
-    }
+      this.snapshot.queue = [...(this.snapshot.queue || []), queuedItem]
+      this.notify()
+    } else {
+      // 处于空闲：乐观在会话中追加用户消息，并切换为运行态
+      const activeThread = this.snapshot.threads.find((t) => t.id === targetThreadId)
+      if (activeThread) {
+        const optimisticUserItem: Item = {
+          id: `optimistic_${Date.now()}`,
+          kind: 'user',
+          role: 'user',
+          text,
+          images,
+          at: Date.now(),
+          createdAt: Date.now(),
+        }
+        activeThread.items.push(optimisticUserItem)
+      }
 
-    const currentRunning = this.snapshot.runningThreadIds || []
-    if (!currentRunning.includes(targetThreadId)) {
-      this.snapshot.runningThreadIds = [...currentRunning, targetThreadId]
+      const currentRunning = this.snapshot.runningThreadIds || []
+      if (!currentRunning.includes(targetThreadId)) {
+        this.snapshot.runningThreadIds = [...currentRunning, targetThreadId]
+      }
+      this.snapshot.running = this.snapshot.runningThreadIds.includes(this.snapshot.activeThreadId)
+      this.notify()
     }
-    this.snapshot.running = this.snapshot.runningThreadIds.includes(this.snapshot.activeThreadId)
-    this.notify()
 
     try {
       return await this.request('thread.send', {
@@ -497,18 +571,28 @@ export class AgentWebSocketClient {
         images,
       })
     } catch (err) {
-      this.snapshot.runningThreadIds = (this.snapshot.runningThreadIds || []).filter((id) => id !== targetThreadId)
-      this.snapshot.running = this.snapshot.runningThreadIds.includes(this.snapshot.activeThreadId)
-      this.notify()
+      if (isCurrentlyRunning && optimisticQueueId) {
+        this.snapshot.queue = (this.snapshot.queue || []).filter((q) => q.id !== optimisticQueueId)
+        this.notify()
+      } else {
+        this.snapshot.runningThreadIds = (this.snapshot.runningThreadIds || []).filter((id) => id !== targetThreadId)
+        this.snapshot.running = this.snapshot.runningThreadIds.includes(this.snapshot.activeThreadId)
+        this.notify()
+      }
       throw err
     }
   }
 
   public abortCurrent(targetThreadId?: string) {
-    const tid = targetThreadId || this.snapshot.activeThreadId
+    const tid =
+      typeof targetThreadId === 'string' && targetThreadId.trim().length > 0
+        ? targetThreadId.trim()
+        : this.snapshot.activeThreadId
     if (!tid) return
     this.snapshot.runningThreadIds = (this.snapshot.runningThreadIds || []).filter((id) => id !== tid)
     this.snapshot.running = this.snapshot.runningThreadIds.includes(this.snapshot.activeThreadId)
+    // 同时也清除属于该会话的本地排队消息
+    this.snapshot.queue = (this.snapshot.queue || []).filter((q) => q.threadId && q.threadId !== tid)
     this.notify()
     return this.request('thread.abort', { threadId: tid })
   }
@@ -572,6 +656,30 @@ export class AgentWebSocketClient {
     return this.request('thread.editAndResend', { threadId, itemId, text, images })
   }
 
+  /** 请求重试指定会话最近失败的请求 */
+  public async retry(threadId?: string) {
+    const tid = threadId || this.snapshot.activeThreadId
+    try {
+      return await this.request('thread.retry', { threadId: tid })
+    } catch (e) {
+      console.warn('thread.retry 请求异常，尝试通过最近用户指令降级恢复重试:', e)
+      const thread = this.snapshot.threads?.find((t) => t.id === tid)
+      const lastUserItem = thread?.items
+        ?.slice()
+        .reverse()
+        .find((it) => it.kind === 'user' || it.role === 'user')
+      if (lastUserItem) {
+        return await this.editAndResend(
+          tid,
+          lastUserItem.id,
+          lastUserItem.text || '',
+          lastUserItem.images
+        )
+      }
+      throw e
+    }
+  }
+
   public revertCard(threadId: string, cardId: string) {
     return this.request('change.revertCard', { threadId, cardId })
   }
@@ -612,6 +720,7 @@ export class AgentWebSocketClient {
     baseUrl?: string
     apiKey?: string
     customHeaders?: Record<string, string>
+    proxyUrl?: string
   }) {
     return this.request<{ models: ModelEntry[] }>('provider.fetchModels', params)
   }
@@ -709,9 +818,14 @@ export class AgentWebSocketClient {
   // ── 会话排队与子代理调度 ──
 
   public clearQueue(threadId?: string) {
-    this.snapshot.queue = []
+    const tid = threadId || this.snapshot.activeThreadId
+    if (tid) {
+      this.snapshot.queue = (this.snapshot.queue || []).filter((q) => q.threadId && q.threadId !== tid)
+    } else {
+      this.snapshot.queue = []
+    }
     this.notify()
-    return this.request('queue.clear', { threadId: threadId || this.snapshot.activeThreadId })
+    return this.request('queue.clear', { threadId: tid })
   }
 
   public promoteQueueItem(index: number, threadId?: string) {
@@ -766,6 +880,10 @@ export class AgentWebSocketClient {
     return this.request<{ path: string }>('fs.mkdir', { path })
   }
 
+  public readFileBase64(path: string) {
+    return this.request<{ dataUri: string; path: string }>('fs.read_base64', { path })
+  }
+
   public fetchWorkspaceEntries(workspace?: string) {
     return this.request<string[]>('workspace.entries', { workspace: workspace || this.snapshot.activeWorkspace })
   }
@@ -774,6 +892,34 @@ export class AgentWebSocketClient {
     this.snapshot.activeWorkspace = workspace
     this.notify()
     return this.request('ui.activeProject', { workspace })
+  }
+
+  public async removeWorkspace(workspace: string) {
+    if (!workspace) return { ok: false }
+    const res = await this.request<{ message?: string; error?: string }>('workspace.remove', { workspace })
+    if (res?.message) {
+      if (
+        res.message.includes('至少保留') ||
+        res.message.includes('正在运行') ||
+        res.message.includes('不能移除')
+      ) {
+        throw new Error(res.message)
+      }
+    }
+    // 本地同步更新 snapshot: 过滤掉该工作区下的所有会话
+    this.snapshot.threads = this.snapshot.threads.filter((t) => t.workspace !== workspace)
+    // 更新活跃工作区
+    if (this.snapshot.activeWorkspace === workspace) {
+      const nextThread = this.snapshot.threads[0]
+      if (nextThread?.workspace) {
+        this.snapshot.activeWorkspace = nextThread.workspace
+      }
+      if (nextThread?.id) {
+        this.snapshot.activeThreadId = nextThread.id
+      }
+    }
+    this.notify()
+    return res
   }
 
   // ── 改动审查与代码撤销 ──

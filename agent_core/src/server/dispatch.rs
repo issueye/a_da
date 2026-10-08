@@ -94,6 +94,7 @@ async fn fetch_remote_models(
     base_url: &str,
     api_key: &str,
     custom_headers: Option<&std::collections::HashMap<String, String>>,
+    proxy_url: Option<&str>,
 ) -> Result<Vec<crate::ai::ModelEntry>, String> {
     let clean_base = base_url.trim_end_matches('/');
     if clean_base.is_empty() {
@@ -117,8 +118,19 @@ async fn fetch_remote_models(
         }
     };
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10));
+
+    if let Some(p) = proxy_url {
+        let trimmed = p.trim();
+        if !trimmed.is_empty() {
+            if let Ok(proxy) = reqwest::Proxy::all(trimmed) {
+                builder = builder.proxy(proxy);
+            }
+        }
+    }
+
+    let client = builder
         .build()
         .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
@@ -213,6 +225,7 @@ pub struct Dispatcher {
     host_pid: u32,
     session_id: String,
     abort_senders: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
+    running_tasks: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
 }
 
 impl Dispatcher {
@@ -238,6 +251,7 @@ impl Dispatcher {
             host_pid: std::process::id(),
             session_id: uuid::Uuid::new_v4().to_string(),
             abort_senders: Arc::new(Mutex::new(HashMap::new())),
+            running_tasks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -440,7 +454,11 @@ impl Dispatcher {
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
                 let text = params.get("text")
                     .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 text 参数"))?;
+                let images = params.get("images")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<String>>());
 
                 let mut store = self.store.write().await;
                 let target_tid = if store.threads.iter().any(|t| t.id == thread_id) {
@@ -454,7 +472,27 @@ impl Dispatcher {
                 };
 
                 store.active_id = target_tid.clone();
-                store.add_user_message(&target_tid, text);
+
+                // 若当前会话已在运行，则推入对话队列，不并发创建执行任务
+                if store.is_thread_running(&target_tid) {
+                    let qid = store.enqueue_message(&target_tid, &text, images);
+                    let q_count = store.queue.iter().filter(|q| q.thread_id == target_tid).count();
+                    store.push_log("info", format!("已排队第 {} 条后续指令", q_count), None);
+                    drop(store);
+
+                    if let Some(ref bc) = self.broadcaster {
+                        bc.broadcast_immediate().await;
+                    }
+
+                    return Ok(serde_json::json!({
+                        "accepted": true,
+                        "queued": true,
+                        "queueId": qid
+                    }));
+                }
+
+                // 首次启动该会话：注入用户消息，标记为运行态并启动 drain 连续执行循环
+                store.add_user_message_with_images(&target_tid, &text, images);
                 store.set_thread_running(&target_tid, true);
                 let ws = PathBuf::from(thread_workspace(&store, &target_tid));
                 let provider_config = store.provider.clone();
@@ -464,115 +502,164 @@ impl Dispatcher {
                     bc.broadcast_immediate().await;
                 }
 
-                let (abort_tx, abort_rx) = watch::channel(false);
-                self.abort_senders.lock().await.insert(target_tid.clone(), abort_tx);
-
-                let session_mgr = Arc::clone(&self.session_mgr);
-                let checkpoint_mgr = Arc::clone(&self.checkpoint_mgr);
-                let (event_tx, mut event_rx) = mpsc::channel::<AgentLoopEvent>(128);
-                let tid = target_tid.clone();
-                let prompt = text.to_string();
-
-                tokio::spawn(async move {
-                    let _ = run_agent_loop(
-                        &ws,
-                        &tid,
-                        Some(&prompt),
-                        provider_config,
-                        session_mgr,
-                        checkpoint_mgr,
-                        event_tx,
-                        Some(abort_rx),
-                    ).await;
-                });
-
-                // 后台接收 Agent 事件，更新内存模型并通过 16ms 节流广播器推送到前端 UI
+                let session_mgr_clone = Arc::clone(&self.session_mgr);
+                let checkpoint_mgr_clone = Arc::clone(&self.checkpoint_mgr);
                 let store_clone = Arc::clone(&self.store);
                 let broadcaster_clone = self.broadcaster.clone();
                 let abort_senders_clone = Arc::clone(&self.abort_senders);
-                let thread_id_clone = target_tid.clone();
+                let running_tasks_clone = Arc::clone(&self.running_tasks);
+                let target_tid_clone = target_tid.clone();
 
-                tokio::spawn(async move {
-                    while let Some(event) = event_rx.recv().await {
-                        let mut store = store_clone.write().await;
-                        match event {
-                            AgentLoopEvent::Thinking { text } => {
-                                store.append_thinking_delta(&thread_id_clone, &text);
-                                drop(store);
-                                if let Some(ref bc) = broadcaster_clone {
-                                    bc.mark_dirty();
+                let runner_task = tokio::spawn(async move {
+                    let mut current_prompt: Option<String> = Some(text.to_string());
+                    loop {
+                        let (abort_tx, abort_rx) = watch::channel(false);
+                        abort_senders_clone.lock().await.insert(target_tid_clone.clone(), abort_tx);
+
+                        let (event_tx, mut event_rx) = mpsc::channel::<AgentLoopEvent>(128);
+                        let tid = target_tid_clone.clone();
+                        let prompt = current_prompt.take();
+                        let session_mgr = Arc::clone(&session_mgr_clone);
+                        let checkpoint_mgr = Arc::clone(&checkpoint_mgr_clone);
+                        let p_cfg = provider_config.clone();
+                        let ws_clone = ws.clone();
+
+                        let loop_handle = tokio::spawn(async move {
+                            run_agent_loop(
+                                &ws_clone,
+                                &tid,
+                                prompt.as_deref(),
+                                p_cfg,
+                                session_mgr,
+                                checkpoint_mgr,
+                                event_tx,
+                                Some(abort_rx),
+                            ).await
+                        });
+
+                        while let Some(event) = event_rx.recv().await {
+                            let mut store = store_clone.write().await;
+                            match event {
+                                AgentLoopEvent::Thinking { text } => {
+                                    store.append_thinking_delta(&target_tid_clone, &text);
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.mark_dirty();
+                                    }
+                                }
+                                AgentLoopEvent::TextDelta { text } => {
+                                    store.append_assistant_delta(&target_tid_clone, &text);
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.mark_dirty();
+                                    }
+                                }
+                                AgentLoopEvent::ToolCallStarted { name, id, args } => {
+                                    store.start_tool_call(&target_tid_clone, &id, &name, &args);
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.broadcast_immediate().await;
+                                    }
+                                }
+                                AgentLoopEvent::ToolCallFinished { name: _, id, ok, output, duration_ms, started_at, finished_at, status: _ } => {
+                                    store.finish_tool_call(&target_tid_clone, &id, ok, output, duration_ms, started_at, finished_at);
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.broadcast_immediate().await;
+                                    }
+                                }
+                                AgentLoopEvent::ToolAwaitingQuestion { id, question } => {
+                                    store.set_tool_awaiting_question(&target_tid_clone, &id, question);
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.broadcast_immediate().await;
+                                    }
+                                }
+                                AgentLoopEvent::AssistantStats { usage, duration_ms, turn_duration_ms } => {
+                                    store.set_assistant_stats(
+                                        &target_tid_clone,
+                                        usage,
+                                        duration_ms,
+                                        turn_duration_ms,
+                                    );
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.mark_dirty();
+                                    }
+                                }
+                                AgentLoopEvent::TurnFinished { .. } => {
+                                    drop(store);
+                                    break;
+                                }
+                                AgentLoopEvent::Error { message } => {
+                                    store.append_assistant_delta(&target_tid_clone, &format!("\n\n**请求异常**：{message}"));
+                                    store.push_log("error", format!("Agent 执行异常: {message}"), None);
+                                    drop(store);
+                                    break;
                                 }
                             }
-                            AgentLoopEvent::TextDelta { text } => {
-                                store.append_assistant_delta(&thread_id_clone, &text);
-                                drop(store);
-                                if let Some(ref bc) = broadcaster_clone {
-                                    bc.mark_dirty();
+                        }
+
+                        let _ = loop_handle.await;
+
+                        // 收尾并闭合本轮卡片状态
+                        {
+                            let mut store = store_clone.write().await;
+                            store.end_thinking(&target_tid_clone);
+                            if let Some(t) = store.get_thread_mut(&target_tid_clone) {
+                                for item in t.items.iter_mut() {
+                                    if let Item::Assistant { streaming, .. } = item {
+                                        *streaming = None;
+                                    }
+                                }
+                                if let Some(Item::Thinking { text, .. }) = t.items.last() {
+                                    if text.trim().is_empty() {
+                                        t.items.pop();
+                                    }
                                 }
                             }
-                            AgentLoopEvent::ToolCallStarted { name, id, args } => {
-                                store.start_tool_call(&thread_id_clone, &id, &name, &args);
-                                drop(store);
-                                if let Some(ref bc) = broadcaster_clone {
-                                    bc.broadcast_immediate().await;
-                                }
-                            }
-                            AgentLoopEvent::ToolCallFinished { name: _, id, ok, output } => {
-                                store.finish_tool_call(&thread_id_clone, &id, ok, output);
-                                drop(store);
-                                if let Some(ref bc) = broadcaster_clone {
-                                    bc.broadcast_immediate().await;
-                                }
-                            }
-                            AgentLoopEvent::ToolAwaitingQuestion { id, question } => {
-                                store.set_tool_awaiting_question(&thread_id_clone, &id, question);
-                                drop(store);
-                                if let Some(ref bc) = broadcaster_clone {
-                                    bc.broadcast_immediate().await;
-                                }
-                            }
-                            AgentLoopEvent::AssistantStats { usage, duration_ms, turn_duration_ms } => {
-                                store.set_assistant_stats(
-                                    &thread_id_clone,
-                                    usage,
-                                    duration_ms,
-                                    turn_duration_ms,
-                                );
-                                drop(store);
-                                if let Some(ref bc) = broadcaster_clone {
-                                    bc.mark_dirty();
-                                }
-                            }
-                            AgentLoopEvent::TurnFinished { .. } => {
-                                store.finish_turn(&thread_id_clone);
-                                drop(store);
-                                if let Some(ref bc) = broadcaster_clone {
-                                    bc.broadcast_immediate().await;
-                                }
-                                break;
-                            }
-                            AgentLoopEvent::Error { message } => {
-                                store.append_assistant_delta(&thread_id_clone, &format!("\n\n**请求异常**：{message}"));
-                                store.finish_turn(&thread_id_clone);
-                                store.push_log("error", format!("Agent 执行异常: {message}"), None);
-                                drop(store);
-                                if let Some(ref bc) = broadcaster_clone {
-                                    bc.broadcast_immediate().await;
-                                }
+                        }
+
+                        // 如果该会话已被主动停止（用户点击了中止），则不再消费队列
+                        {
+                            let store = store_clone.read().await;
+                            if !store.is_thread_running(&target_tid_clone) {
                                 break;
                             }
                         }
+
+                        // 检查会话队列中是否还有待执行的排队指令
+                        let next_item = {
+                            let mut store = store_clone.write().await;
+                            store.pop_next_queued(&target_tid_clone)
+                        };
+
+                        if let Some(queued) = next_item {
+                            let mut store = store_clone.write().await;
+                            store.add_user_message_with_images(&target_tid_clone, &queued.text, queued.images);
+                            drop(store);
+                            if let Some(ref bc) = broadcaster_clone {
+                                bc.broadcast_immediate().await;
+                            }
+                            current_prompt = Some(queued.text);
+                        } else {
+                            // 对话队列已清空，退出 drain 循环
+                            break;
+                        }
                     }
 
-                    // 循环结束时安全兜底：确保 abort_senders 与 runningThreadIds 彻底清除
-                    abort_senders_clone.lock().await.remove(&thread_id_clone);
+                    // 整个执行链（含排队消息）全部完成，统一收尾
+                    abort_senders_clone.lock().await.remove(&target_tid_clone);
+                    running_tasks_clone.lock().await.remove(&target_tid_clone);
                     let mut store = store_clone.write().await;
-                    store.finish_turn(&thread_id_clone);
+                    store.finish_turn(&target_tid_clone);
                     drop(store);
                     if let Some(ref bc) = broadcaster_clone {
                         bc.broadcast_immediate().await;
                     }
                 });
+
+                self.running_tasks.lock().await.insert(target_tid.clone(), runner_task);
 
                 Ok(serde_json::json!({ "accepted": true }))
             }
@@ -604,10 +691,79 @@ impl Dispatcher {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 workspace 参数"))?;
                 let mut store = self.store.write().await;
-                if store.workspace.project == ws {
-                    store.workspace.project.clear();
+
+                // 1. 公共区保护：公共区由 a-da 提供，不能移除
+                if !store.public_workspace.is_empty() && store.public_workspace == ws {
+                    return Ok(serde_json::json!({ "message": "公共区由 a-da 提供，不能移除", "error": "公共区由 a-da 提供，不能移除" }));
                 }
-                Ok(serde_json::json!({ "message": null }))
+
+                // 2. 运行中保护：工作区内若有正在运行的会话，阻止移除
+                let running_in_ws = store.threads.iter().any(|candidate| {
+                    candidate.workspace == ws && store.running_thread_ids.contains(&candidate.id)
+                });
+                if running_in_ws {
+                    return Ok(serde_json::json!({ "message": "该工作区内有会话正在运行，先停止再移除", "error": "该工作区内有会话正在运行，先停止再移除" }));
+                }
+
+                // 3. 最少保留保护：若所有会话与当前工作区加起来仅剩唯一工作区，阻止移除
+                let mut all_projects = std::collections::HashSet::new();
+                if !store.workspace.project.is_empty() {
+                    all_projects.insert(store.workspace.project.clone());
+                }
+                for t in &store.threads {
+                    if !t.workspace.is_empty() {
+                        all_projects.insert(t.workspace.clone());
+                    }
+                }
+                if all_projects.len() <= 1 && all_projects.contains(ws) {
+                    return Ok(serde_json::json!({ "message": "至少保留一个工作区", "error": "至少保留一个工作区" }));
+                }
+
+                // 4. 清理该工作区下的全部会话及其检查点与终止信号
+                let doomed: Vec<String> = store.threads.iter()
+                    .filter(|candidate| candidate.workspace == ws)
+                    .map(|candidate| candidate.id.clone())
+                    .collect();
+                let doomed_ids: std::collections::HashSet<String> = doomed.into_iter().collect();
+
+                store.threads.retain(|candidate| candidate.workspace != ws);
+                store.ui.open_tab_ids.retain(|candidate| !doomed_ids.contains(candidate));
+                store.queue.retain(|q| !doomed_ids.contains(&q.thread_id));
+
+                for tid in &doomed_ids {
+                    let _ = self.checkpoint_mgr.discard(tid);
+                    self.abort_senders.lock().await.remove(tid);
+                }
+
+                // 5. 调用 SessionManager 移除该工作区本地持久化目录
+                let _ = self.session_mgr.delete_workspace(ws);
+
+                // 6. 若移除的是当前激活的工作区，将焦点转移到剩余工作区
+                if store.workspace.project == ws || doomed_ids.contains(&store.active_id) {
+                    let next_project = store.threads.first()
+                        .map(|t| t.workspace.clone())
+                        .unwrap_or_else(|| store.public_workspace.clone());
+                    store.workspace.project = next_project.clone();
+
+                    if store.threads.is_empty() {
+                        let new_id = store.create_thread(Some(next_project), None);
+                        store.active_id = new_id;
+                    } else {
+                        store.active_id = store.threads[0].id.clone();
+                    }
+                    let active_id = store.active_id.clone();
+                    if !store.ui.open_tab_ids.contains(&active_id) {
+                        store.ui.open_tab_ids.push(active_id);
+                    }
+                }
+
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
+                Ok(serde_json::json!({ "message": null, "ok": true }))
             }
 
             CHANGE_COUNT => {
@@ -835,6 +991,9 @@ impl Dispatcher {
                         }
                         store.provider.custom_headers = Some(map);
                     }
+                    if let Some(pu) = cfg.get("proxyUrl").and_then(|v| v.as_str()) {
+                        store.provider.proxy_url = if pu.trim().is_empty() { None } else { Some(pu.trim().to_string()) };
+                    }
                     if let Some(proto) = cfg.get("protocol").and_then(|v| v.as_str()) {
                         if let Ok(p) = serde_json::from_value::<crate::ai::ModelProtocol>(serde_json::Value::String(proto.to_string())) {
                             store.provider.protocol = p;
@@ -847,6 +1006,7 @@ impl Dispatcher {
                     let api_key = store.provider.api_key.clone();
                     let protocol = store.provider.protocol;
                     let custom_headers = store.provider.custom_headers.clone();
+                    let proxy_url = store.provider.proxy_url.clone();
                     let model = store.provider.model.clone();
                     let context_window = store.config.context_window;
                     let max_output_tokens = store.config.max_output_tokens;
@@ -857,6 +1017,7 @@ impl Dispatcher {
                         entry.api_key = api_key;
                         entry.protocol = protocol;
                         entry.custom_headers = custom_headers;
+                        entry.proxy_url = proxy_url;
                         if !entry.models.iter().any(|m| m.id == model) {
                             entry.models.push(crate::ai::ModelEntry {
                                 id: model.clone(),
@@ -912,6 +1073,7 @@ impl Dispatcher {
                     store.provider.api_key = entry.api_key.clone();
                     store.provider.protocol = entry.protocol;
                     store.provider.custom_headers = entry.custom_headers.clone();
+                    store.provider.proxy_url = entry.proxy_url.clone();
                     if let Some(first_model) = entry.models.first() {
                         store.provider.model = first_model.id.clone();
                         store.config.model = first_model.id.clone();
@@ -957,6 +1119,7 @@ impl Dispatcher {
                         store.provider.api_key = first.api_key.clone();
                         store.provider.protocol = first.protocol;
                         store.provider.custom_headers = first.custom_headers.clone();
+                        store.provider.proxy_url = first.proxy_url.clone();
                         if let Some(first_model) = first.models.first() {
                             store.provider.model = first_model.id.clone();
                             store.config.model = first_model.id.clone();
@@ -999,6 +1162,7 @@ impl Dispatcher {
                         store.provider.api_key = provider.api_key.clone();
                         store.provider.protocol = provider.protocol;
                         store.provider.custom_headers = provider.custom_headers.clone();
+                        store.provider.proxy_url = provider.proxy_url.clone();
 
                         let target_model = selected_model
                             .and_then(|m| provider.models.iter().find(|item| item.id == m))
@@ -1036,12 +1200,12 @@ impl Dispatcher {
             }
 
             PROVIDER_FETCH_MODELS => {
-                let (protocol, base_url, api_key, custom_headers) = if let Some(id) = params.get("providerId").and_then(|v| v.as_str()) {
+                let (protocol, base_url, api_key, custom_headers, proxy_url) = if let Some(id) = params.get("providerId").and_then(|v| v.as_str()) {
                     let store = self.store.read().await;
                     let found = store.providers.iter().find(|p| p.id == id).cloned();
                     drop(store);
                     if let Some(p) = found {
-                        (p.protocol, p.base_url, p.api_key, p.custom_headers)
+                        (p.protocol, p.base_url, p.api_key, p.custom_headers, p.proxy_url)
                     } else {
                         return Err(ProtocolError::invalid_params(format!("未找到供应商: {}", id)));
                     }
@@ -1054,10 +1218,11 @@ impl Dispatcher {
                     let custom_headers = params.get("customHeaders").and_then(|v| {
                         serde_json::from_value::<std::collections::HashMap<String, String>>(v.clone()).ok()
                     });
-                    (protocol, base_url, api_key, custom_headers)
+                    let proxy_url = params.get("proxyUrl").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    (protocol, base_url, api_key, custom_headers, proxy_url)
                 };
 
-                let models = fetch_remote_models(protocol, &base_url, &api_key, custom_headers.as_ref())
+                let models = fetch_remote_models(protocol, &base_url, &api_key, custom_headers.as_ref(), proxy_url.as_deref())
                     .await
                     .map_err(|e| ProtocolError::internal_error(e))?;
 
@@ -1133,6 +1298,14 @@ impl Dispatcher {
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 path 参数"))?;
                 let created = fs_service::make_directory(path)?;
                 Ok(serde_json::json!({ "path": created }))
+            }
+
+            FS_READ_BASE64 => {
+                let path = params.get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ProtocolError::invalid_params("缺少 path 参数"))?;
+                let data_uri = fs_service::read_file_base64(path)?;
+                Ok(serde_json::json!({ "dataUri": data_uri, "path": path }))
             }
 
             DEBUG_LOG_CLEAR => {
@@ -1313,23 +1486,251 @@ impl Dispatcher {
                 Ok(serde_json::Value::Null)
             }
 
+            THREAD_RETRY => {
+                let thread_id = params.get("threadId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let mut store = self.store.write().await;
+                let target_tid = if !thread_id.is_empty() && store.threads.iter().any(|t| t.id == thread_id) {
+                    thread_id.to_string()
+                } else if !store.active_id.is_empty() && store.threads.iter().any(|t| t.id == store.active_id) {
+                    store.active_id.clone()
+                } else if let Some(first) = store.threads.first() {
+                    first.id.clone()
+                } else {
+                    return Err(ProtocolError::invalid_params("没有可重试的会话"));
+                };
+
+                if store.is_thread_running(&target_tid) {
+                    return Ok(serde_json::json!({ "accepted": false, "reason": "会话正在运行中" }));
+                }
+
+                // 清理上一次失败留下的「请求异常」报错文本或空的 Assistant 卡片
+                if let Some(t) = store.get_thread_mut(&target_tid) {
+                    if let Some(pos) = t.items.iter().rposition(|it| match it {
+                        Item::Assistant { text, .. } => text.contains("请求异常"),
+                        _ => false,
+                    }) {
+                        if let Item::Assistant { ref mut text, .. } = t.items[pos] {
+                            if let Some(idx) = text.find("\n\n**请求异常**") {
+                                text.truncate(idx);
+                            } else if text.contains("请求异常") {
+                                t.items.remove(pos);
+                            }
+                        }
+                    }
+                }
+
+                store.set_thread_running(&target_tid, true);
+                let ws = PathBuf::from(thread_workspace(&store, &target_tid));
+                let provider_config = store.provider.clone();
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
+                let session_mgr_clone = Arc::clone(&self.session_mgr);
+                let checkpoint_mgr_clone = Arc::clone(&self.checkpoint_mgr);
+                let store_clone = Arc::clone(&self.store);
+                let broadcaster_clone = self.broadcaster.clone();
+                let abort_senders_clone = Arc::clone(&self.abort_senders);
+                let running_tasks_clone = Arc::clone(&self.running_tasks);
+                let target_tid_clone = target_tid.clone();
+
+                let runner_task = tokio::spawn(async move {
+                    let mut current_prompt: Option<String> = None;
+                    loop {
+                        let (abort_tx, abort_rx) = watch::channel(false);
+                        abort_senders_clone.lock().await.insert(target_tid_clone.clone(), abort_tx);
+
+                        let (event_tx, mut event_rx) = mpsc::channel::<AgentLoopEvent>(128);
+                        let tid = target_tid_clone.clone();
+                        let prompt = current_prompt.take();
+                        let session_mgr = Arc::clone(&session_mgr_clone);
+                        let checkpoint_mgr = Arc::clone(&checkpoint_mgr_clone);
+                        let p_cfg = provider_config.clone();
+                        let ws_clone = ws.clone();
+
+                        let loop_handle = tokio::spawn(async move {
+                            run_agent_loop(
+                                &ws_clone,
+                                &tid,
+                                prompt.as_deref(),
+                                p_cfg,
+                                session_mgr,
+                                checkpoint_mgr,
+                                event_tx,
+                                Some(abort_rx),
+                            ).await
+                        });
+
+                        while let Some(event) = event_rx.recv().await {
+                            let mut store = store_clone.write().await;
+                            match event {
+                                AgentLoopEvent::Thinking { text } => {
+                                    store.append_thinking_delta(&target_tid_clone, &text);
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.mark_dirty();
+                                    }
+                                }
+                                AgentLoopEvent::TextDelta { text } => {
+                                    store.append_assistant_delta(&target_tid_clone, &text);
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.mark_dirty();
+                                    }
+                                }
+                                AgentLoopEvent::ToolCallStarted { name, id, args } => {
+                                    store.start_tool_call(&target_tid_clone, &id, &name, &args);
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.broadcast_immediate().await;
+                                    }
+                                }
+                                AgentLoopEvent::ToolCallFinished { name: _, id, ok, output, duration_ms, started_at, finished_at, status: _ } => {
+                                    store.finish_tool_call(&target_tid_clone, &id, ok, output, duration_ms, started_at, finished_at);
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.broadcast_immediate().await;
+                                    }
+                                }
+                                AgentLoopEvent::ToolAwaitingQuestion { id, question } => {
+                                    store.set_tool_awaiting_question(&target_tid_clone, &id, question);
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.broadcast_immediate().await;
+                                    }
+                                }
+                                AgentLoopEvent::AssistantStats { usage, duration_ms, turn_duration_ms } => {
+                                    store.set_assistant_stats(
+                                        &target_tid_clone,
+                                        usage,
+                                        duration_ms,
+                                        turn_duration_ms,
+                                    );
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.mark_dirty();
+                                    }
+                                }
+                                AgentLoopEvent::TurnFinished { .. } => {
+                                    drop(store);
+                                    break;
+                                }
+                                AgentLoopEvent::Error { message } => {
+                                    store.append_assistant_delta(&target_tid_clone, &format!("\n\n**请求异常**：{message}"));
+                                    store.push_log("error", format!("Agent 执行异常: {message}"), None);
+                                    drop(store);
+                                    break;
+                                }
+                            }
+                        }
+
+                        let _ = loop_handle.await;
+
+                        // 收尾并闭合本轮卡片状态
+                        {
+                            let mut store = store_clone.write().await;
+                            store.end_thinking(&target_tid_clone);
+                            if let Some(t) = store.get_thread_mut(&target_tid_clone) {
+                                for item in t.items.iter_mut() {
+                                    if let Item::Assistant { streaming, .. } = item {
+                                        *streaming = None;
+                                    }
+                                }
+                                if let Some(Item::Thinking { text, .. }) = t.items.last() {
+                                    if text.trim().is_empty() {
+                                        t.items.pop();
+                                    }
+                                }
+                            }
+                        }
+
+                        {
+                            let store = store_clone.read().await;
+                            if !store.is_thread_running(&target_tid_clone) {
+                                break;
+                            }
+                        }
+
+                        let next_item = {
+                            let mut store = store_clone.write().await;
+                            store.pop_next_queued(&target_tid_clone)
+                        };
+
+                        if let Some(queued) = next_item {
+                            let mut store = store_clone.write().await;
+                            store.add_user_message_with_images(&target_tid_clone, &queued.text, queued.images);
+                            drop(store);
+                            if let Some(ref bc) = broadcaster_clone {
+                                bc.broadcast_immediate().await;
+                            }
+                            current_prompt = Some(queued.text);
+                        } else {
+                            break;
+                        }
+                    }
+
+                    abort_senders_clone.lock().await.remove(&target_tid_clone);
+                    running_tasks_clone.lock().await.remove(&target_tid_clone);
+                    let mut store = store_clone.write().await;
+                    store.finish_turn(&target_tid_clone);
+                    drop(store);
+                    if let Some(ref bc) = broadcaster_clone {
+                        bc.broadcast_immediate().await;
+                    }
+                });
+
+                self.running_tasks.lock().await.insert(target_tid.clone(), runner_task);
+
+                Ok(serde_json::json!({
+                    "accepted": true,
+                    "threadId": target_tid
+                }))
+            }
+
             THREAD_ABORT => {
                 let thread_id = params.get("threadId")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
 
-                // 1. 发送中止信号给正在执行的 agent_loop 及底层流式网络任务并唤醒任何挂起的提问
+                // 1. 发送中止信号给 watch 频道
                 if let Some(tx) = self.abort_senders.lock().await.remove(thread_id) {
                     let _ = tx.send(true);
                 }
+
+                // 2. 强力终止：直接 abort 掉该会话的后台 Tokio 协程任务，立刻掐断任何正在进行的网络请求与耗时执行！
+                if let Some(handle) = self.running_tasks.lock().await.remove(thread_id) {
+                    handle.abort();
+                }
+
                 crate::approval::global_question_manager().cancel_all();
 
-                // 2. 立即在 store 中闭合该会话的流式状态并从 runningThreadIds 移除
+                // 3. 立即在 store 中清空该会话所有排队消息、闭合流式卡片与未完成工具卡片并置为非运行态
                 let mut store = self.store.write().await;
+                store.queue.retain(|q| q.thread_id != thread_id);
                 store.finish_turn(thread_id);
+
+                if let Some(t) = store.get_thread_mut(thread_id) {
+                    for item in t.items.iter_mut() {
+                        if let Item::Tool { status, output, .. } = item {
+                            if status == "running" || status == "awaiting" {
+                                *status = "error".to_string();
+                                if output.is_none() {
+                                    *output = Some("用户主动中止了执行".to_string());
+                                }
+                            }
+                        }
+                        if let Item::Assistant { streaming, .. } = item {
+                            *streaming = None;
+                        }
+                    }
+                }
                 drop(store);
 
-                // 3. 立即广播最新状态到客户端
+                // 4. 立即广播最新状态到客户端
                 if let Some(ref bc) = self.broadcaster {
                     bc.broadcast_immediate().await;
                 }
@@ -1351,17 +1752,46 @@ impl Dispatcher {
             }
 
             QUEUE_CLEAR => {
+                let thread_id = params.get("threadId").and_then(|v| v.as_str());
                 let mut store = self.store.write().await;
-                store.queue.clear();
+                if let Some(tid) = thread_id {
+                    store.queue.retain(|q| q.thread_id != tid);
+                } else {
+                    store.queue.clear();
+                }
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
                 Ok(serde_json::Value::Null)
             }
 
             QUEUE_PROMOTE => {
                 let index = params.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let target_tid = params.get("threadId").and_then(|v| v.as_str()).map(|s| s.to_string());
+
                 let mut store = self.store.write().await;
-                if index > 0 && index < store.queue.len() {
+                let promoted_tid = if index < store.queue.len() {
                     let item = store.queue.remove(index);
+                    let tid = item.thread_id.clone();
                     store.queue.insert(0, item);
+                    Some(tid)
+                } else {
+                    None
+                };
+                drop(store);
+
+                // 中止当前轮次，触发后台 drain 循环立即执行刚刚移至队首的插队消息
+                let final_tid = promoted_tid.or(target_tid);
+                if let Some(tid) = final_tid {
+                    if let Some(tx) = self.abort_senders.lock().await.get(&tid) {
+                        let _ = tx.send(true);
+                    }
+                }
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
                 }
                 Ok(serde_json::Value::Null)
             }
@@ -1369,15 +1799,21 @@ impl Dispatcher {
             QUEUE_REMOVE => {
                 let index = params.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                 let mut store = self.store.write().await;
-                if index < store.queue.len() {
+                let res = if index < store.queue.len() {
                     let item = store.queue.remove(index);
-                    Ok(serde_json::json!({
+                    serde_json::json!({
                         "text": item.text,
                         "images": item.images
-                    }))
+                    })
                 } else {
-                    Ok(serde_json::Value::Null)
+                    serde_json::Value::Null
+                };
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
                 }
+                Ok(res)
             }
 
             APPROVAL_DECIDE => {

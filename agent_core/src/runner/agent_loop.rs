@@ -13,14 +13,21 @@ use crate::ai::{stream_model_chat, ModelChatOptions, ProviderConfig, StreamDelta
 use crate::checkpoint::CheckpointManager;
 use crate::session::{AgentMessage, SessionManager, ToolCallBlock};
 
-const MAX_LOOP_STEPS: usize = 30;
-
 #[derive(Debug, Clone)]
 pub enum AgentLoopEvent {
     Thinking { text: String },
     TextDelta { text: String },
     ToolCallStarted { name: String, id: String, args: String },
-    ToolCallFinished { name: String, id: String, ok: bool, output: Option<String> },
+    ToolCallFinished {
+        name: String,
+        id: String,
+        ok: bool,
+        output: Option<String>,
+        duration_ms: Option<u64>,
+        started_at: Option<i64>,
+        finished_at: Option<i64>,
+        status: Option<String>,
+    },
     ToolAwaitingQuestion { id: String, question: serde_json::Value },
     /// 一次大模型调用结束后的真实用量与耗时（界面遥测条与单条回复徽章的数据源）
     AssistantStats { usage: Option<TokenUsage>, duration_ms: u64, turn_duration_ms: u64 },
@@ -64,8 +71,8 @@ pub async fn run_agent_loop(
     let system_prompt = build_system_prompt(&ws_str);
     let tools = get_all_tools_for_workspace(&ws_str);
 
-    // 3. 多轮驱动
-    for _step in 0..MAX_LOOP_STEPS {
+    // 3. 多轮驱动：完全由模型（无工具调用即完成）、异常或用户中断决定退出，不设人为步数上限
+    loop {
         // 如果已接收到取消信号，直接终止多轮循环
         if let Some(ref rx) = abort_rx {
             if *rx.borrow() {
@@ -207,7 +214,7 @@ pub async fn run_agent_loop(
             })
             .await;
 
-        // 如果没有工具调用，本轮结束
+        // 如果没有工具调用，说明模型已输出最终回答，本轮自然结束
         if tool_calls.is_empty() {
             let _ = event_tx
                 .send(AgentLoopEvent::TurnFinished {
@@ -252,12 +259,27 @@ pub async fn run_agent_loop(
             )
             .await;
 
-            let (is_ok, output_str) = match &result_msg {
-                AgentMessage::ToolResult { is_error, content, .. } => {
+            let (is_ok, output_str, duration_ms, started_at, finished_at, status_val) = match &result_msg {
+                AgentMessage::ToolResult {
+                    is_error,
+                    content,
+                    duration_ms,
+                    started_at,
+                    finished_at,
+                    status,
+                    ..
+                } => {
                     let ok = is_error.is_none() || is_error == &Some(false);
-                    (ok, Some(content.clone()))
+                    (
+                        ok,
+                        Some(content.clone()),
+                        *duration_ms,
+                        *started_at,
+                        *finished_at,
+                        status.clone(),
+                    )
                 }
-                _ => (true, None),
+                _ => (true, None, None, None, None, None),
             };
 
             let _ = event_tx
@@ -266,6 +288,10 @@ pub async fn run_agent_loop(
                     id: call.id.clone(),
                     ok: is_ok,
                     output: output_str,
+                    duration_ms,
+                    started_at,
+                    finished_at,
+                    status: status_val,
                 })
                 .await;
 
@@ -310,9 +336,29 @@ mod tests {
 
         let result_write = execute_tool_call(&temp_dir, "thread_01", &call_write, None).await;
         match result_write {
-            AgentMessage::ToolResult { content, is_error, .. } => {
+            AgentMessage::ToolResult {
+                content,
+                is_error,
+                duration_ms,
+                started_at,
+                finished_at,
+                status,
+                ..
+            } => {
                 assert!(is_error.is_none() || is_error == Some(false));
-                assert!(content.contains("已写入"));
+                assert_eq!(status.as_deref(), Some("success"));
+                assert!(duration_ms.is_some());
+                assert!(started_at.is_some());
+                assert!(finished_at.is_some());
+
+                // 验证 content 返回合法结构化 JSON 并包含所有要求字段
+                let parsed: serde_json::Value = serde_json::from_str(&content).expect("工具返回必须为结构化 JSON");
+                assert_eq!(parsed["status"], "success");
+                assert_eq!(parsed["ok"], true);
+                assert!(parsed["duration_ms"].as_u64().is_some());
+                assert!(parsed["started_at"].as_i64().is_some());
+                assert!(parsed["finished_at"].as_i64().is_some());
+                assert!(parsed["output"].as_str().unwrap().contains("已写入"));
             }
             _ => panic!("返回类型必须为 ToolResult"),
         }
@@ -327,8 +373,12 @@ mod tests {
 
         let result_read = execute_tool_call(&temp_dir, "thread_01", &call_read, None).await;
         match result_read {
-            AgentMessage::ToolResult { content, .. } => {
-                assert!(content.contains("1 | Hello Runner"));
+            AgentMessage::ToolResult { content, duration_ms, status, .. } => {
+                assert_eq!(status.as_deref(), Some("success"));
+                assert!(duration_ms.is_some());
+                let parsed: serde_json::Value = serde_json::from_str(&content).expect("工具返回必须为结构化 JSON");
+                assert_eq!(parsed["status"], "success");
+                assert!(parsed["output"].as_str().unwrap().contains("1 | Hello Runner"));
             }
             _ => panic!("返回类型必须为 ToolResult"),
         }
