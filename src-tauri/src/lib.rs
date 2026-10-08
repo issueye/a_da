@@ -70,6 +70,21 @@ pub fn extract_port_from_url(url: &str) -> Option<u16> {
     None
 }
 
+/// 拉起子进程时禁止为它新建控制台窗口。
+///
+/// `ada-coding` 是**控制台子系统**的二进制，而 GUI 自身是 windows 子系统、没有控制台：
+/// 这种情况下 CreateProcess 默认会给子进程**新分配一个控制台**，也就是双击后一闪而出的
+/// 黑窗。加 `CREATE_NO_WINDOW` 后子进程依旧拿得到我们 pipe 过去的 stdout/stderr
+/// （`A_DA_HOST_READY` 就绪行照常读到），只是不再有窗口。
+#[cfg(windows)]
+fn hide_child_console_window(cmd: &mut tokio::process::Command) {
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_child_console_window(_cmd: &mut tokio::process::Command) {}
+
 /// 探测本地可用的 ada-coding 二进制可执行文件路径
 pub fn find_ada_coding_binary(custom_bin: Option<&str>) -> Option<std::path::PathBuf> {
     if let Some(custom) = custom_bin {
@@ -211,6 +226,7 @@ pub fn run(config: LauncherConfig) {
                         }
                         cmd.stdout(std::process::Stdio::piped());
                         cmd.stderr(std::process::Stdio::piped());
+                        hide_child_console_window(&mut cmd);
 
                         match cmd.spawn() {
                             Ok(mut child) => {
