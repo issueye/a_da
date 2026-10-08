@@ -343,6 +343,36 @@ M3 之后打包形态是**两个进程**（UI + 自己 spawn 的 `--host`）。�
 `bun scripts/binary-check.ts` 现在验两关：UI 角色（画出首帧 + 日志里确认走的是 `ws` 传输，
 即"自己 spawn 了自己当主机"）与主机角色（`--host` 报端口 + WebSocket 握手 + 快照）。
 
+### 18. 工具结果是**结构化回执**，不是字符串——绕过它不报错，只让界面静默变空
+
+每次工具调用都由 `runner/executor.rs` 的 `execute_tool_call_extended` 统一收尾，`AgentMessage::ToolResult`
+的 `content` 就是一份 pretty JSON 回执（模型读到的也是它）：
+
+```json
+{ "status": "success|error", "ok": true,
+  "duration_ms": 12, "durationMs": 12,
+  "started_at": …, "startedAt": …, "finished_at": …, "finishedAt": …,
+  "data": <工具输出能解析成 JSON 时的那份>, "output": "<原始文本>", "details": { … } }
+```
+
+同一批值还会落到 `ToolResult` 的 `status` / `duration_ms` / `started_at` / `finished_at` 字段上。
+读侧一律是"**先看字段，再回捞 content JSON**"，且**两种命名都要认**：
+
+- `session/types.rs` 用 serde `alias` 同时接受 `duration_ms` 与 `durationMs`（老会话落盘的是 snake_case）；
+- `session/manager.rs` 重建 `Item::Tool`（读历史 / 做快照）时，字段为 `None` 会从 content JSON 里回捞
+  （两种命名都试），再交给 `state/store.rs` 的 `finish_tool_call` 落到工具条目上；
+- 界面 `tauri-ui/src/components/Transcript.tsx` 同理：
+  `item.durationMs ?? structuredData?.duration_ms ?? structuredData?.durationMs`，状态徽章读 `structuredData.status`。
+
+**坑的形状**：任何"不走执行器"的 `ToolResult`（拦下、超时、兜底、子智能体里的短路分支）如果直接把业务文本
+塞进 `content`，**没有任何报错**——模型照样读得到，但工具卡片上的耗时、状态徽章、起止时间全是空的，
+因为回捞逻辑只认上面那几个键。`subagents/runner.rs` 里"只读子体被拦下"那条分支就是照这份形状手工补的
+（同样字段、`duration_ms: 0`）；新写这类分支时照它抄，别只写一段 `err_text`。
+
+守门在 `runner/agent_loop.rs` 的用例：断言 `content` 是合法 JSON、`parsed["status"] == "success"`，
+且 `duration_ms` / `started_at` / `finished_at` 都在。只写 `assert!(content.contains("已写入"))` 那种断言
+**测不出这个**（它只证明文本还在，证明不了回执还在）。
+
 ## 二、开发与验证
 ```bash
 bun install

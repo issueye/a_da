@@ -3,40 +3,53 @@
 给在本仓库工作的 AI 智能体与协作者的注意事项。**本文件会被自动注入系统提示词**，因此只留
 「接手就必须知道的事」；深度约定全文已迁至 **[docs/agent-conventions.md](docs/agent-conventions.md)**。
 
-项目速览：Bun + TypeScript 的本地 AI 编码 Agent，UI 用 GPUIX（React 风格 GPU 渲染，无 Electron、
-无 WebView）。模型侧全部在 `src/agent/core`，`src/agent/store.ts` 是运行时与界面之间的状态层。
+项目速览：**纯 Rust 微内核**（`agent_core/`：主循环、工具执行、插件沙箱、会话与检查点持久化）+
+**Tauri 桌面宿主**（`src-tauri/`，同进程起 `WsHostServer`）+ **React 前端**（`tauri-ui/`）；
+`ts_engine/` 是独立的 TS 执行引擎，只作插件运行时。
+**TypeScript 时代的实现（Bun + GPUIX 客户端 + TS 侧 agent/宿主）已整体归档到
+[`archive/ts-legacy/`](archive/ts-legacy)**：它不再是参考设计、不参与构建与测试。
+设计与计划的唯一口径是 [docs/agent-base-design.md](docs/agent-base-design.md) 与
+[docs/agent-base-plan.md](docs/agent-base-plan.md)（含"看起来装上了其实没接线"的逐条处置表）。
 **功能缺口清单在 [docs/unfinished-features.md](docs/unfinished-features.md)**：接活前先看一眼，
 别把"已知未做"当成 bug 去修；做完一项顺手划掉。
 
 ## 开发与验证
 
 ```bash
-bun install
-bun run link        # 连本地 ../gpuix，克隆后必做一次
-bun run dev         # 开发：保存即热重载
-bun run typecheck   # 门一
-bun test            # 门二；bun test src/agent 是真实回归线
-bun run build       # 产出单文件 dist/a-da.exe（依赖同级 ../gpuix 已 build）
+cargo build --workspace     # 编译 agent_core + ts_engine + tauri 宿主
+cargo test --workspace      # 门二（TS 归档后，"bun test" 已无测试可跑）
+bun run typecheck           # 门一：tauri-ui 的 tsc --noEmit
+bun run verify:archive      # 归档门：主干不得引用 archive/、不得有第二份引擎
+bun run tauri:dev           # 桌面客户端开发（前端热重载 + 宿主）
 ```
 
-- **`typecheck` 与 `bun test` 是两个独立的门，两个都要过**，别只跑一个。
-- 测试用 `A_DA_HOME` 指向临时目录（`scripts/test-preload.ts`），不要碰用户真实的 `~/.a-da`。
+- **`typecheck` 与 `cargo test` 是两个独立的门，两个都要过**，别只跑一个。
+- 本机 `cargo` 默认 target 目录编译 `ring` 会报 MSVC `D8050`；加上
+  `CARGO_TARGET_DIR=../cargo_target_ada` 复用已有缓存即可（与代码无关）。
+- 测试用 `A_DA_HOME` 指向临时目录，不要碰用户真实的 `~/.a-da`。
+- **别跑 `bun test`**：TS 测试已随归档冻结，`bunfig.toml` 已把 `archive/**` 排除在 test 发现之外（跑只会得到 "No tests found"）；门是 `cargo test --workspace`。
 
 ## 代码结构
 
-- `src/agent/core` —— 模型侧全部逻辑（`agent-loop.ts` 主循环、`events.ts` 钩子契约）
-- `src/agent/store.ts` —— 状态层（最大文件，运行时 ↔ 界面）；`src/agent/tools` 工具与官方插件
-- `src/agent/{plugins,subagents,skills,prompts,compact,stats}` —— 各子系统
-- `src/ui` GPUIX 界面组件；`src/platform` 原生能力（`win32.ts` 等）
+- `agent_core/src/runner` —— Rust 主循环（`agent_loop.rs`）与工具执行（`executor.rs`）、系统提示词与工具表（`prompt.rs`）
+- `agent_core/src/server` —— `dispatch.rs`（JSON-RPC 方法分发，最大文件）、`ws.rs`（宿主）、`emitter.rs`（快照合帧）
+- `agent_core/src/{state,session,ai,tools,plugins,subagents,skills,approval,checkpoint,protocol}` —— 状态层、落盘、模型流、工具、插件沙箱、子智能体、技能、审批、检查点、协议
+- `src-tauri` Tauri 宿主（同进程起核心服务）；`tauri-ui` React 前端（`src/client/ws-client.ts` 是协议客户端）
+- `ts_engine` 插件运行时（Boa + oxc）；插件契约见 [docs/plugin-sdk/v1.md](docs/plugin-sdk/v1.md)
+- `archive/ts-legacy` **只读归档**（TS 时代的 src + scripts + app.tsx）
 
 ## 三条会立刻绊倒你的规矩
 
-- **测工具必须用 store 单例**（`import { store }`）：工具内部动态取单例，`new AgentStore()` 会测到
-  一个工具根本看不见的实例。
-- **UI 测试同一时刻只让一个真窗口活着**：按坐标派发的 `click` 会落到别的窗口上。
-- **改核心前先查下面的 §索引**：每条都对应一个"看起来装上了、其实没生效"的静默坑。
+- **不许引用归档**：主干任何代码/配置都不得 import 或指向 `archive/ts-legacy/**`——那会把"两份实现"的漂移重新引进来；`bun run verify:archive` 会红。
+- **改 Rust 核心前先看 [docs/agent-base-plan.md](docs/agent-base-plan.md) §1.3**：审批闸门、取消贯穿、`terminate`、插件 `enabled`、空壳工具等**目前多数是"看起来装上了、其实没接线"**，那里逐条写明了处置口径（补实现 / 删声明）。
+- **工具元数据现在仍是五处名单**（`tools/mod.rs` 的读写判定、`approval/types.rs` 的命令工具、`executor.rs` 的检查点、子智能体白名单、插件自述 `is_write`）：改一个工具的语义要五处同步；M2 会收敛成 `ToolDescriptor`，在那之前别只改一处。
 
 ## § 索引（`AGENTS.md §N` 一律指下表第 N 条，正文见 docs/agent-conventions.md）
+
+> ⚠️ **归档说明（2026-10-08）**：§1–§15 的正文描述的是**已归档的 TS 实现**（`archive/ts-legacy/`）里的机制，
+> 它们在 Rust 权威路径上多数**尚未落地**——逐条处置（补实现 / 删声明）见
+> [docs/agent-base-plan.md](docs/agent-base-plan.md) §1.3。§16（协议方法多端同步）与 §18（工具结构化回执）
+> 按原样继续生效；§17 的"用应用日志当证据"仍然有效，但那条 `console.log` 劫持链路本身已随 `src/platform/` 归档。
 
 | § | 一句话警告 |
 |---|---|
@@ -57,6 +70,7 @@ bun run build       # 产出单文件 dist/a-da.exe（依赖同级 ../gpuix 已 
 | 15 | 陷阱：钩子"声明了却没人调用"是静默失效——**断言副作用**，别断言钩子被调用 |
 | 16 | 界面只认 `ui/client` 四条通道；**加协议方法要同步三处**（有守门测试，改错方向会红） |
 | 17 | 打包后的 exe **收不到自动化通道**（`console.log` 被劫持进日志）——二进制检查要用应用日志当证据 |
+| 18 | 工具结果是一份**结构化回执**（`status`／`duration_ms`／`started_at`／`finished_at`，读写两侧都认 snake/camel）：塞裸文本不报错，只是界面耗时与状态徽章**静默变空** |
 
 > 兼容说明：历史上写作「`AGENTS.md` §9」「`AGENTS.md` 第 1 条」的引用，按上表第 N 条理解。
 > 编号在迁出后**原样保留**，故 `docs/` 与源码注释里的既有引用无需改动。

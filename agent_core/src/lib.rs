@@ -7,8 +7,6 @@ pub mod server;
 pub mod session;
 pub mod state;
 pub mod tools;
-pub mod compiler;
-pub mod kernel;
 pub mod subagents;
 pub mod approval;
 pub mod skills;

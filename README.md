@@ -1,5 +1,20 @@
 # a_da
 
+> ### ⚠️ 状态（2026-10-08）：TS 实现已归档
+>
+> 本文档描述的是 **Bun + GPUIX** 那一代实现（`app.tsx`、`src/**`、`scripts/**`）。
+> 它已**整体冻结并搬到 [`archive/ts-legacy/`](archive/ts-legacy)**：不参与构建与测试，也不再是参考设计。
+>
+> 现在的仓库是：**纯 Rust 微内核** [`agent_core/`](agent_core) + **Tauri 宿主** [`src-tauri/`](src-tauri)
+> + **React 前端** [`tauri-ui/`](tauri-ui)，插件运行时是 [`ts_engine/`](ts_engine)。
+>
+> - 归档说明与复活办法：[archive/README.md](archive/README.md)
+> - 设计与计划（唯一口径）：[docs/agent-base-design.md](docs/agent-base-design.md)、[docs/agent-base-plan.md](docs/agent-base-plan.md)
+> - 日常命令见 [AGENTS.md](AGENTS.md) 的「开发与验证」
+>
+> **下文所有 `bun run dev` / `bun run build` / `scripts/*` 的说明均已过期**，保留仅作历史记录；
+> README 的 Rust/Tauri 重写排在计划 M5。
+
 <img src="./assets/logo.svg" width="88" align="right" alt="a_da logo" />
 
 一个本地 AI 编码 Agent 的桌面程序，用 [GPUIX](../gpuix) 写界面：React 组件直接由
