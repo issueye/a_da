@@ -166,7 +166,7 @@ pub enum Item {
         /// 本次请求模型真正返回的用量（驼峰：promptTokens/completionTokens/totalTokens/cachedTokens）。
         /// 界面遥测条与单条回复的 Token 徽章只认它，不做事后估算。
         #[serde(skip_serializing_if = "Option::is_none")]
-        usage: Option<crate::ai::TokenUsage>,
+        usage: Option<agent_base::model::TokenUsage>,
     },
     #[serde(rename = "tool")]
     Tool {
@@ -345,7 +345,7 @@ pub struct ClientSnapshot {
     pub appearance: String,
     pub ui: UiSnapshot,
     #[serde(default)]
-    pub providers: Vec<crate::ai::ProviderEntry>,
+    pub providers: Vec<agent_base::model::ProviderEntry>,
     #[serde(rename = "activeProviderId", default)]
     pub active_provider_id: String,
 }

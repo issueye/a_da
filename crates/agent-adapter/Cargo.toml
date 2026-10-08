@@ -1,0 +1,15 @@
+[package]
+name = "agent-adapter"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "AGENT BASE 适配器：模型供应商、会话存储、插件运行时、作用域（按设计 v0.2 §3 逐步落地）"
+
+[dependencies]
+agent-base = { workspace = true }
+anyhow = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }

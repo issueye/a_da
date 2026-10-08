@@ -26,3 +26,9 @@ reqwest = { workspace = true }
 
 # 引入独立的 TS 脚本与转译引擎
 ts_engine = { workspace = true }
+
+# 基座分层（按 docs/agent-base-design.md v0.2 §3）：agent_core 正在收敛为产品装配 + 兼容 facade
+agent-base = { workspace = true }
+agent-proto = { workspace = true }
+agent-adapter = { workspace = true }
+agent-toolkit = { workspace = true }

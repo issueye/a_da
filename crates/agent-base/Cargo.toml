@@ -1,0 +1,11 @@
+[package]
+name = "agent-base"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "AGENT BASE 内核：零 IO、零产品名词的领域类型与端口（按 docs/agent-base-design.md v0.2 逐步落地）"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

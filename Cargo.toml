@@ -1,5 +1,13 @@
 [workspace]
 members = [
+    # 基座（按 docs/agent-base-design.md v0.2 §3 的目录结构）
+    "crates/agent-base",
+    "crates/agent-proto",
+    "crates/agent-adapter",
+    "crates/agent-toolkit",
+    # 产品（一个产品一个 bin，几乎只写声明）
+    "products/ada-coding",
+    # 现有实现（M1 收敛中：agent_core 逐步变薄，最终只剩 facade）
     "agent_core",
     "ts_engine",
     "src-tauri",
@@ -48,4 +56,8 @@ oxc_transformer = "0.146.0"
 oxc_semantic = "0.146.0"
 
 # Workspace 内部子 Crate
+agent-base = { path = "crates/agent-base" }
+agent-proto = { path = "crates/agent-proto" }
+agent-adapter = { path = "crates/agent-adapter" }
+agent-toolkit = { path = "crates/agent-toolkit" }
 ts_engine = { path = "ts_engine" }

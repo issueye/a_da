@@ -21,15 +21,75 @@ dependencies = [
 ]
 
 [[package]]
+name = "ada-coding"
+version = "0.1.0"
+dependencies = [
+ "agent_core",
+ "anyhow",
+ "clap",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agent-adapter"
+version = "0.1.0"
+dependencies = [
+ "agent-base",
+ "anyhow",
+ "futures-util",
+ "reqwest 0.12.28",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "agent-base"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "agent-proto"
+version = "0.1.0"
+dependencies = [
+ "agent-base",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "agent-toolkit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "similar",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "agent_core"
 version = "0.1.0"
 dependencies = [
+ "agent-adapter",
+ "agent-base",
+ "agent-proto",
+ "agent-toolkit",
  "anyhow",
  "base64 0.22.1",
  "chrono",

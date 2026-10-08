@@ -1,7 +1,6 @@
-pub mod stream;
-pub mod think_filter;
-pub mod types;
+//! 兼容 shim：模型面已按设计搬到 `agent-base`（类型）与 `agent-adapter`（供应商 IO）。
+//!
+//! 保留 `crate::ai::*` 这条历史路径，避免一次性改动所有调用点；M1 收敛完后删除本文件。
 
-pub use stream::stream_model_chat;
-pub use think_filter::{ThinkFilterPart, ThinkTagFilter};
-pub use types::*;
+pub use agent_adapter::model::*;
+pub use agent_base::model::*;

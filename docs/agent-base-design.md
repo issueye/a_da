@@ -142,6 +142,9 @@ cargo xtask verify-archive                                  # 7 没有第二份�
 
 零 IO、零产品名词、零传输。**它只认识四件事：会话状态、模型流、工具调用、策略与事件。**
 
+> **落地进度（2026-10-08）**：`crates/agent-base` 已建，先搬入 `model/`（原 `agent_core::ai::types`
+> 与 `think_filter` 这两个纯类型/纯逻辑模块）。`domain/`、`ports/`、`engine/`、`policy/` 见计划 §8 的批次表。
+
 ### 3.1 领域类型（不含产品词汇）
 
 ```rust

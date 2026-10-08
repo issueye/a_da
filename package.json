@@ -6,8 +6,8 @@
   "description": "A local AI coding agent: pure Rust core (agent_core) + Tauri desktop host + React UI",
   "scripts": {
     "typecheck": "npm --prefix tauri-ui run typecheck",
-    "test": "cargo test --workspace",
-    "test:core": "cargo test -p agent_core",
+    "test": "cargo test --workspace -- --test-threads=1",
+    "test:core": "cargo test -p agent_core -- --test-threads=1",
     "verify:archive": "bun tools/verify-archive.ts",
     "tauri:ui:dev": "npm --prefix tauri-ui run dev",
     "tauri:ui:build": "npm --prefix tauri-ui run build",

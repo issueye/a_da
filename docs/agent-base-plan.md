@@ -407,7 +407,52 @@ archive/
 
 ---
 
-## 8. INV → 任务映射（谁保证哪条不变量）
+## 8. 目录结构迁移执行记录（M1 第一批，2026-10-08）
+
+目标结构见设计 v0.2 §3 / 计划 §9。**做法：先搬"叶子"（依赖少、无产品名词的模块），
+每批都用 `cargo check --workspace --all-targets` + `cargo test --workspace` 验收；
+`agent_core` 保留同名 shim，调用点一行不改**——这样搬迁与行为改动彻底分离。
+
+### 8.1 本批已落地
+
+| 目标 | 内容 | 来源 | 依赖 |
+|---|---|---|---|
+| `crates/agent-base` | `model/`（`types.rs` + `think_filter.rs`）：对话消息、流式增量、用量、供应商配置、思考标签过滤 | `agent_core/src/ai/{types,think_filter}.rs` | serde / serde_json |
+| `crates/agent-proto` | `lib.rs` + `dto.rs` + `errors.rs` + `methods.rs`：JSON-RPC 帧、线上 DTO、错误码、方法常量 | `agent_core/src/protocol/*` | agent-base |
+| `crates/agent-adapter` | `model/stream.rs`：三家协议的 SSE 解析 + 中止（出网 IO） | `agent_core/src/ai/stream.rs` | agent-base、reqwest、tokio |
+| `crates/agent-toolkit` | `lib.rs` + `fs_tools.rs` + `cmd_tools.rs` + `sandbox.rs` + `diff.rs`：文件读写、路径围栏、命令执行、文本 diff | `agent_core/src/tools/*` | anyhow、similar、tokio |
+| `products/ada-coding` | 二进制入口（原 `agent_core` 的 `main.rs`，`--host/--port/--token/--parent-pid/--workspace`） | `agent_core/src/main.rs` | agent_core、clap、tracing |
+| shim | `agent_core/src/{ai,protocol,tools}/mod.rs` 三处 `pub use` 转发，历史路径 `crate::ai::*`/`crate::protocol::*`/`crate::tools::*` 全部保持可用 | 新建 | 上面四个 crate |
+
+**依赖方向**（一条都不许反向）：`agent-base` ← `agent-proto` / `agent-adapter` / `agent-toolkit` ← `agent_core` ← `products/*`。
+`agent_core/src/main.rs` 搬走后，`agent_core` 变成**纯库**；`--host` 二进制现在叫 `ada-coding`。
+
+### 8.2 为什么本批只搬这些（被依赖卡住的部分）
+
+| 模块 | 卡在哪 |
+|---|---|
+| `plugins/*` → `agent-adapter/plugin` | `plugins/types.rs` 里 `PluginItem.skills: Vec<crate::skills::SkillSummary>` 与 `capabilities` 反向依赖产品侧的 skills；先把 `SkillSummary` 提到 `agent-base` 才能搬（否则成环） |
+| `session/manager.rs`、`checkpoint/*` → `agent-adapter/store` | 都直接读 `get_app_home()` 与环境变量（`A_DA_HOME`/`A_DA_CONFIG`）；要先有 `Clock` + `AppHome` 端口，否则适配器里会继续写死进程环境 |
+| `session/types.rs` → `agent-base/domain` | 落盘格式与领域模型混在一起（`SessionHeader`/`SessionEntry` 是**文件格式**，`AgentMessage` 是领域）；先拆再搬，否则把 IO 语义带进基座 |
+| `state/`、`runner/`、`server/`、`subagents/`、`skills/`、`approval/` | 互相直接调用具体实现（engine 还没有端口）；这批就是 M1 的主工作：先定 `ports/`，再让它们实现端口 |
+| `crates/agent-runtime`、`agent-host`、`agent-conformance` | 需要 `ports/` 与 `domain/` 存在才有内容；**刻意不建空壳 crate**（空目录会腐烂） |
+
+### 8.3 本批的验收与遗留
+
+| 检查 | 结果 |
+|---|---|
+| `cargo check --workspace --all-targets` | 通过（agent-base / agent-proto / agent-adapter / agent-toolkit / agent_core / ada-coding / ts_engine / src-tauri） |
+| `cargo test --workspace`（并行） | **2 个既有用例互相干扰**：`tests::test_plugin_and_skill_lifecycle`（读 `~/.a-da` 配置）与 `runner::builtin_tools::tests::test_execute_ask_user_aborted`（读全局 `question_manager` 单例）。单独跑各自通过、失败集合每次还会变 |
+| `cargo test --workspace -- --test-threads=1` | 44/44 通过（`bun run test` 已改为串行） |
+| `bun run verify:archive` | 全绿（扫描目录已加入 `crates/`、`products/`） |
+
+**两条要记在 M1 账上的事**：① 那两个用例是**共享全局态**的典型症状，正是 INV-8（无隐藏全局态）要治的病；
+② **Rust 测试会写用户真实的 `~/.a-da`**（TS 时代靠 `scripts/test-preload.ts` 重定向，Rust 侧没有等价物）
+——M1 引入 `AppHome` 端口时，测试必须注入临时 home，这条不能只靠"串行跑"掩盖。
+
+---
+
+## 9. INV → 任务映射（谁保证哪条不变量）
 
 | INV | 落地点 | 验收 |
 |---|---|---|

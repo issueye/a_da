@@ -18,7 +18,7 @@ const ROOT = join(import.meta.dir, '..')
 const ARCHIVE = 'archive'
 
 /** 主干侧需要扫描的目录（归档/deps/产物除外） */
-const SCAN_DIRS = ['agent_core', 'src-tauri', 'tauri-ui', 'ts_engine', 'tools']
+const SCAN_DIRS = ['agent_core', 'crates', 'products', 'src-tauri', 'tauri-ui', 'ts_engine', 'tools']
 /** 主干侧需要扫描的根文件 */
 const SCAN_ROOT_FILES = ['Cargo.toml', 'package.json', 'Cargo.lock']
 /** 只看这些扩展名的内容（.md 是文档，允许提到归档路径） */

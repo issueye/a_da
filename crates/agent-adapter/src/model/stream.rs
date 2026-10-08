@@ -7,10 +7,10 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
 
-use super::think_filter::{ThinkFilterPart, ThinkTagFilter};
-use super::types::{
+use agent_base::model::{
     ChatCompletionMessage, ModelChatOptions, ModelProtocol, ProviderConfig, StreamDelta, TokenUsage, ToolCallInfo,
 };
+use agent_base::model::{ThinkFilterPart, ThinkTagFilter};
 
 /// 异步流式调用模型并将 Delta 增量推送到 Channel
 pub async fn stream_model_chat(
