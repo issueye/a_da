@@ -148,6 +148,16 @@ pub struct ChatCompletionMessage {
     pub tool_calls: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// 思考链。thinking 模式的上游（如 DeepSeek 系 / 部分 OpenAI 兼容网关）要求把模型上一轮
+    /// 返回的 `reasoning_content` **原样回传**，否则多轮工具调用会以
+    /// HTTP 400「The `reasoning_content` in the thinking mode must be passed back to the API」失败。
+    /// 无思考链时（非 thinking 模型、或该轮没吐思考）保持缺省，不下发空字符串。
+    #[serde(
+        rename = "reasoning_content",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -170,6 +180,7 @@ mod tests {
             content: Some("ok".to_string()),
             tool_calls: None,
             tool_call_id: Some("call_123".to_string()),
+            reasoning_content: None,
         };
         let json = serde_json::to_string(&tool_msg).unwrap();
         // 关键断言：必须是 tool_call_id 而非 toolCallId
@@ -181,10 +192,48 @@ mod tests {
             content: None,
             tool_calls: Some(vec![serde_json::json!({ "id": "call_123" })]),
             tool_call_id: None,
+            reasoning_content: None,
         };
         let json_asst = serde_json::to_string(&asst_msg).unwrap();
         // 关键断言：必须是 tool_calls 而非 toolCalls
         assert!(json_asst.contains("\"tool_calls\":["));
         assert!(!json_asst.contains("toolCalls"));
+    }
+
+    /// thinking 模式的上游要求历史里的助手消息原样带回 reasoning_content；
+    /// 没有思考链时不得下发该字段（部分供应商一见空串就报错）。
+    #[test]
+    fn test_chat_completion_message_carries_reasoning_content() {
+        let with_thinking = ChatCompletionMessage {
+            role: "assistant".to_string(),
+            content: Some("答案".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: Some("先看用户要什么".to_string()),
+        };
+        let json = serde_json::to_string(&with_thinking).unwrap();
+        assert!(
+            json.contains("\"reasoning_content\":\"先看用户要什么\""),
+            "回传思考链必须是蛇形键 reasoning_content：{json}"
+        );
+        assert!(!json.contains("reasoningContent"));
+
+        let without = ChatCompletionMessage {
+            role: "assistant".to_string(),
+            content: Some("答案".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+        };
+        let json = serde_json::to_string(&without).unwrap();
+        assert!(!json.contains("reasoning_content"), "无思考链时不应下发该字段：{json}");
+
+        // 兼容：老请求体里带 reasoning_content 也能读进来（缺省时是 None）
+        let parsed: ChatCompletionMessage =
+            serde_json::from_str(r#"{"role":"assistant","content":"x","reasoning_content":"y"}"#).unwrap();
+        assert_eq!(parsed.reasoning_content.as_deref(), Some("y"));
+        let parsed_none: ChatCompletionMessage =
+            serde_json::from_str(r#"{"role":"assistant","content":"x"}"#).unwrap();
+        assert_eq!(parsed_none.reasoning_content, None);
     }
 }

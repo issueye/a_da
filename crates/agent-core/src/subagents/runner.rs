@@ -169,12 +169,17 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
         .await;
 
         let mut accumulated_text = String::new();
+        let mut accumulated_thinking = String::new();
         let mut tool_calls = Vec::new();
 
         while let Some(delta) = stream_rx.recv().await {
             match delta {
                 StreamDelta::Text { text } => {
                     accumulated_text.push_str(&text);
+                }
+                StreamDelta::Thinking { thinking } => {
+                    // 思考链必须留住：thinking 模式上游要求随历史原样回传（见 ChatCompletionMessage::reasoning_content）
+                    accumulated_thinking.push_str(&thinking);
                 }
                 StreamDelta::ToolCall { call } => {
                     tool_calls.push(call);
@@ -208,7 +213,11 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
 
         history_messages.push(AgentMessage::Assistant {
             content: accumulated_text,
-            thinking: None,
+            thinking: if accumulated_thinking.is_empty() {
+                None
+            } else {
+                Some(accumulated_thinking)
+            },
             tool_calls: Some(assistant_tool_calls),
             stop_reason: Some("tool_calls".to_string()),
             error_message: None,

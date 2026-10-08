@@ -61,6 +61,7 @@ mod tests {
                 content: Some("你好".into()),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }],
             options: ModelChatOptions::default(),
         };

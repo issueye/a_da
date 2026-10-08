@@ -214,6 +214,7 @@ pub fn format_messages_for_model(
             content: Some(system_prompt.to_string()),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         });
     }
 
@@ -225,10 +226,12 @@ pub fn format_messages_for_model(
                     content: Some(content.clone()),
                     tool_calls: None,
                     tool_call_id: None,
+                    reasoning_content: None,
                 });
             }
             AgentMessage::Assistant {
                 content,
+                thinking,
                 tool_calls,
                 ..
             } => {
@@ -261,6 +264,10 @@ pub fn format_messages_for_model(
                     },
                     tool_calls: tc_json,
                     tool_call_id: None,
+                    // thinking 模式：上游要求把上一轮思考链原样带回，否则多轮工具调用直接 400
+                    reasoning_content: thinking
+                        .clone()
+                        .filter(|t| !t.trim().is_empty()),
                 });
             }
             AgentMessage::ToolResult {
@@ -273,6 +280,7 @@ pub fn format_messages_for_model(
                     content: Some(content.clone()),
                     tool_calls: None,
                     tool_call_id: Some(tool_call_id.clone()),
+                    reasoning_content: None,
                 });
             }
             AgentMessage::Unknown => {}
