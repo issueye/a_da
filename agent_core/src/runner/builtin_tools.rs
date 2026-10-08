@@ -150,10 +150,10 @@ pub async fn execute_ask_user(
 /// 执行内置插件工具（彻底规避虚拟路径 (builtin):xxx 造成沙箱读盘失败）
 pub async fn execute_builtin_plugin_tool(
     workspace: &Path,
-    _thread_id: &str,
+    thread_id: &str,
     name: &str,
     args: &Value,
-    _checkpoint_mgr: Option<&std::sync::Arc<CheckpointManager>>,
+    checkpoint_mgr: Option<&std::sync::Arc<CheckpointManager>>,
 ) -> Option<ToolResult> {
     match name {
         "project_inspect" | "inspect_project" => {
@@ -201,6 +201,22 @@ pub async fn execute_builtin_plugin_tool(
         "batch_write" => {
             let files = args.get("files").and_then(|v| v.as_array());
             if let Some(list) = files {
+                // 拍摄批量写前检查点（M2-T3：批量写每个目标都有回滚记录）
+                if let Some(mgr) = checkpoint_mgr {
+                    let mut abs_paths = Vec::new();
+                    for f in list {
+                        if let Some(p) = f.get("path").and_then(|v| v.as_str()) {
+                            if let Ok(abs) = crate::tools::check_workspace_sandbox(workspace, p) {
+                                abs_paths.push((p, abs));
+                            }
+                        }
+                    }
+                    let targets: Vec<(&str, &Path)> = abs_paths.iter().map(|(p, abs)| (*p, abs.as_path())).collect();
+                    if !targets.is_empty() {
+                        let _ = mgr.capture(thread_id, "batch_write", &targets);
+                    }
+                }
+
                 let mut written = 0;
                 for f in list {
                     if let (Some(p), Some(c)) = (
@@ -224,6 +240,22 @@ pub async fn execute_builtin_plugin_tool(
             let old_str = args.get("old_string").and_then(|v| v.as_str());
             let new_str = args.get("new_string").and_then(|v| v.as_str());
             if let (Some(list), Some(old_s), Some(new_s)) = (files, old_str, new_str) {
+                // 拍摄批量替换前检查点（M2-T3：批量写每个目标都有回滚记录）
+                if let Some(mgr) = checkpoint_mgr {
+                    let mut abs_paths = Vec::new();
+                    for f in list {
+                        if let Some(p) = f.as_str() {
+                            if let Ok(abs) = crate::tools::check_workspace_sandbox(workspace, p) {
+                                abs_paths.push((p, abs));
+                            }
+                        }
+                    }
+                    let targets: Vec<(&str, &Path)> = abs_paths.iter().map(|(p, abs)| (*p, abs.as_path())).collect();
+                    if !targets.is_empty() {
+                        let _ = mgr.capture(thread_id, "batch_replace", &targets);
+                    }
+                }
+
                 let mut replaced = 0;
                 for f in list {
                     if let Some(p) = f.as_str() {
@@ -238,12 +270,7 @@ pub async fn execute_builtin_plugin_tool(
                 Some(ToolResult::error("缺少 files / old_string / new_string 参数"))
             }
         }
-        "check_gate" | "evaluate_diff" => {
-            Some(ToolResult::success("门禁准入校验通过，无高危阻断项。"))
-        }
-        "manage_ponytail" => {
-            Some(ToolResult::success("技能与提示词调度就绪。"))
-        }
+        // 空壳工具 check_gate / evaluate_diff / manage_ponytail 已按计划 §1.3 下线
         _ => None,
     }
 }
@@ -426,6 +453,56 @@ mod tests {
         assert!(!res.ok);
         assert!(res.output.contains("用户中止了这次运行"));
         assert!(!global_question_manager().has_pending(call_id));
+    }
+
+    #[tokio::test]
+    async fn test_batch_write_captures_checkpoint_and_empty_tools_offline() {
+        let temp_dir = std::env::temp_dir().join(format!("a_da_test_batch_cp_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let cp_dir = temp_dir.join("cp_storage");
+        let cp_mgr = std::sync::Arc::new(CheckpointManager::new(Some(cp_dir)));
+        let thread_id = "thread_batch_test";
+
+        // 先预先创建一个文件以备覆盖拍摄
+        let file_a = temp_dir.join("a.txt");
+        std::fs::write(&file_a, "initial A").unwrap();
+
+        let args = serde_json::json!({
+            "files": [
+                { "path": "a.txt", "content": "modified A" },
+                { "path": "b.txt", "content": "created B" }
+            ]
+        });
+
+        // 1. 执行 batch_write
+        let res = execute_builtin_plugin_tool(&temp_dir, thread_id, "batch_write", &args, Some(&cp_mgr)).await;
+        assert!(res.is_some());
+        let tool_res = res.unwrap();
+        assert!(tool_res.ok);
+        assert!(tool_res.output.contains("成功原子写入 2 个文件"));
+
+        // 2. 断言检查点已被成功拍摄且能被读取（M2-T3 核心验收）
+        let loaded = cp_mgr.load(thread_id, true).expect("读取检查点成功");
+        assert!(loaded.is_some());
+        let entries = loaded.unwrap();
+        assert_eq!(entries.len(), 1);
+        if let crate::checkpoint::CheckpointEntry::Checkpoint(ref record) = entries[0] {
+            assert_eq!(record.files.len(), 2);
+            assert!(record.files.iter().any(|f| f.path == "a.txt" && f.existed));
+            assert!(record.files.iter().any(|f| f.path == "b.txt" && !f.existed));
+        } else {
+            panic!("预期是 CheckpointEntry::Checkpoint");
+        }
+
+        // 3. 断言空壳工具下线（M2-T4 核心验收）
+        let dummy_args = serde_json::json!({});
+        let gate_res = execute_builtin_plugin_tool(&temp_dir, thread_id, "check_gate", &dummy_args, None).await;
+        assert!(gate_res.is_none(), "check_gate 空壳工具必须已下线返回 None");
+        let ponytail_res = execute_builtin_plugin_tool(&temp_dir, thread_id, "manage_ponytail", &dummy_args, None).await;
+        assert!(ponytail_res.is_none(), "manage_ponytail 空壳工具必须已下线返回 None");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
 

@@ -7,6 +7,7 @@ license.workspace = true
 description = "AGENT BASE 工具包：文件读写、路径沙箱、命令执行、文本 diff"
 
 [dependencies]
+agent-base = { path = "../agent-base" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

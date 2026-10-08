@@ -57,11 +57,8 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
     BuiltinPluginDefinition {
         id: "decision",
         name: "决策评估与准入门禁 (decision)",
-        description: "对代码变动进行量化准入评估与风险筛查。",
-        tools: &[
-            ("check_gate", "检查当前改动是否符合既定架构准入准则与质量门限要求。", false),
-            ("evaluate_diff", "分析评估当前变更对系统各模块产生的影响范围与风险等级。", false),
-        ],
+        description: "对代码变动进行量化准入评估与风险筛查（TS 决策引擎已登记 M6 移植项）。",
+        tools: &[],
     },
     BuiltinPluginDefinition {
         id: "approval-guard",
@@ -81,9 +78,7 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
         id: "ponytail",
         name: "马尾调度管理器 (ponytail)",
         description: "提示词、技能生命周期管理与上下文任务调度。",
-        tools: &[
-            ("manage_ponytail", "管理技能与提示词的快速检索、动态组合与优先级配置。", false),
-        ],
+        tools: &[],
     },
 ];
 
@@ -97,22 +92,36 @@ pub fn get_builtin_plugin_items(disabled_ids: &std::collections::HashSet<String>
             let tools_decl: Vec<PluginToolDeclaration> = def
                 .tools
                 .iter()
-                .map(|(name, desc, _)| PluginToolDeclaration {
-                    name: name.to_string(),
-                    label: Some(name.to_string()),
-                    description: desc.to_string(),
-                    parameters: serde_json::json!({ "type": "object", "properties": {} }),
+                .map(|(name, desc, _)| {
+                    let param_schema = crate::tools::find_tool_descriptor(name)
+                        .map(|d| d.schema.clone())
+                        .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
+                    PluginToolDeclaration {
+                        name: name.to_string(),
+                        label: Some(name.to_string()),
+                        description: desc.to_string(),
+                        parameters: param_schema,
+                    }
                 })
                 .collect();
 
             let tools_info: Vec<PluginToolInfo> = def
                 .tools
                 .iter()
-                .map(|(name, desc, is_w)| PluginToolInfo {
-                    name: name.to_string(),
-                    description: desc.to_string(),
-                    parameters: Some(serde_json::json!({ "type": "object", "properties": {} })),
-                    is_write: *is_w,
+                .map(|(name, desc, _)| {
+                    let descriptor_opt = crate::tools::find_tool_descriptor(name);
+                    let param_schema = descriptor_opt
+                        .map(|d| d.schema.clone())
+                        .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
+                    let is_write = descriptor_opt
+                        .map(|d| !d.is_readonly())
+                        .unwrap_or(false);
+                    PluginToolInfo {
+                        name: name.to_string(),
+                        description: desc.to_string(),
+                        parameters: Some(param_schema),
+                        is_write,
+                    }
                 })
                 .collect();
 

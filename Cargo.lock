@@ -93,6 +93,7 @@ dependencies = [
 name = "agent-toolkit"
 version = "0.1.0"
 dependencies = [
+ "agent-base",
  "anyhow",
  "serde",
  "serde_json",

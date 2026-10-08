@@ -4,7 +4,7 @@ use super::types::ApprovalGuardConfig;
 use crate::protocol::ApprovalMode;
 use crate::tools::is_write_tool;
 
-/// 从工具参数中提取命令行文本
+/// 从工具参数中提取命令行文本（优先依据 ToolDescriptor 声明的字段）
 pub fn extract_command(args: &Value) -> Option<String> {
     if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
         return Some(cmd.to_string());
@@ -13,6 +13,18 @@ pub fn extract_command(args: &Value) -> Option<String> {
         return Some(cmd.to_string());
     }
     None
+}
+
+/// 判断工具是否属于命令执行类工具（真源：ToolDescriptor::access）
+pub fn is_command_tool(tool_name: &str, config: &ApprovalGuardConfig) -> bool {
+    if config.command_tools.iter().any(|t| t == tool_name) {
+        return true;
+    }
+    if let Some(desc) = crate::tools::find_tool_descriptor(tool_name) {
+        matches!(desc.access, agent_base::domain::Access::Executes { .. })
+    } else {
+        false
+    }
 }
 
 /// 检查是否包含破坏性危险命令
@@ -35,8 +47,8 @@ pub fn should_ask_approval(
     config: &ApprovalGuardConfig,
 ) -> bool {
     // 规则 1：高危需二次确认。
-    // 命令类工具命中危险模式时，即使用户开了自动批准也必须强制问用户。
-    if config.command_tools.iter().any(|t| t == tool_name) {
+    // 命令类工具（由 ToolDescriptor 或自定义配置驱动）命中危险模式时，即使用户开了自动批准也必须强制问用户。
+    if is_command_tool(tool_name, config) {
         if let Some(cmd) = extract_command(args) {
             if is_destructive_command(&cmd, &config.confirm_commands) {
                 return true;

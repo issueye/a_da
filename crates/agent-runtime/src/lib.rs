@@ -153,4 +153,63 @@ mod tests {
         let outcome = runtime.run_turn(req, &sink, &cancel).await.expect("执行成功");
         assert_eq!(outcome.steps_taken, 1);
     }
+
+    #[test]
+    fn test_catalog_validate_across_all_five_consumers() {
+        use agent_base::domain::PathSelector;
+        use agent_base::ports::Consumer;
+
+        // 1. 合规工具列表通过所有 5 类消费者校验
+        let valid_tool = Arc::new(DummyTool {
+            descriptor: ToolDescriptor {
+                name: "clean_tool".to_string(),
+                summary: "一个合格的工具".to_string(),
+                schema: serde_json::json!({ "type": "object" }),
+                access: Access::Mutates { paths: PathSelector::Single("path") },
+                approval: ApprovalPolicy::Named("approval-guard"),
+                rollback: RollbackPolicy::SingleTarget,
+                execution: Execution::Sequential,
+                termination: Termination::ContinueTurn,
+            },
+        });
+        let catalog = CompositeToolCatalog::new(vec![valid_tool], None);
+        let violations = catalog.validate(&Consumer::ALL);
+        assert!(violations.is_empty(), "合规工具不应产生任何违规: {:?}", violations);
+
+        // 2. 变更类工具未声明回滚策略（None），必须被 RollbackPolicy 消费者检出违约
+        let invalid_rollback_tool = Arc::new(DummyTool {
+            descriptor: ToolDescriptor {
+                name: "unsafe_write".to_string(),
+                summary: "不安全写入".to_string(),
+                schema: serde_json::json!({ "type": "object" }),
+                access: Access::Mutates { paths: PathSelector::Single("path") },
+                approval: ApprovalPolicy::Never,
+                rollback: RollbackPolicy::None, // 违约！
+                execution: Execution::Sequential,
+                termination: Termination::ContinueTurn,
+            },
+        });
+        let catalog_bad = CompositeToolCatalog::new(vec![invalid_rollback_tool], None);
+        let violations = catalog_bad.validate(&[Consumer::RollbackPolicy]);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].consumer, Consumer::RollbackPolicy);
+        assert_eq!(violations[0].tool, "unsafe_write");
+
+        // 3. 插件声明不规范（包含空格）与 schema 非 object 违约
+        let invalid_decl_tool = Arc::new(DummyTool {
+            descriptor: ToolDescriptor {
+                name: "bad name with space".to_string(),
+                summary: "".to_string(), // 空摘要触发 SubagentAllowlist
+                schema: serde_json::json!("not an object"), // 非 object
+                access: Access::ReadOnly,
+                approval: ApprovalPolicy::Never,
+                rollback: RollbackPolicy::None,
+                execution: Execution::Sequential,
+                termination: Termination::ContinueTurn,
+            },
+        });
+        let catalog_decl = CompositeToolCatalog::new(vec![invalid_decl_tool], None);
+        let violations = catalog_decl.validate(&[Consumer::PluginDeclaration, Consumer::SubagentAllowlist]);
+        assert_eq!(violations.len(), 3); // name + schema + summary
+    }
 }

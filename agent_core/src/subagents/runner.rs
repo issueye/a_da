@@ -15,7 +15,14 @@ use crate::checkpoint::CheckpointManager;
 use crate::runner::executor::execute_tool_call;
 use crate::runner::prompt::format_messages_for_model;
 use crate::session::AgentMessage;
-use crate::tools::is_write_tool;
+use crate::tools::find_tool_descriptor;
+
+/// 基于 ToolDescriptor 的只读安全判定（失败安全原则：未知工具一律视为写操作拦截）
+fn is_tool_readonly(name: &str) -> bool {
+    find_tool_descriptor(name)
+        .map(|d| d.is_readonly())
+        .unwrap_or(false)
+}
 
 /// 子智能体永远禁止调用的套娃/递归工具
 pub const NEVER_FOR_SUBAGENT: &[&str] = &[
@@ -52,7 +59,7 @@ pub fn resolve_subagent_tools(
                 return false;
             }
             // 3. 只读安全防护：只读模式严格禁止任何写工具 (AGENTS.md §2)
-            if profile.mode == SubagentMode::Readonly && is_write_tool(name) {
+            if profile.mode == SubagentMode::Readonly && !is_tool_readonly(name) {
                 return false;
             }
             true
@@ -214,7 +221,7 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
         // 依次执行工具调用
         for call in &tool_calls {
             // 安全双重防线：只读模式拦截
-            if options.profile.mode == SubagentMode::Readonly && is_write_tool(&call.name) {
+            if options.profile.mode == SubagentMode::Readonly && !is_tool_readonly(&call.name) {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()

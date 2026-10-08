@@ -553,6 +553,34 @@ archive/
 - `bun run verify:archive` 全绿
 - `bun run typecheck` 全绿
 
+### 8.7 批次 7（2026-10-08）：M2 工具包与注册表重构落地
+
+**工作内容**：
+1. **工具包体系建立（`agent-toolkit::{core, fs, command}`）**：
+   - `core`：`AskUserTool`（schema 完整对齐、无交互通道时报错而非 hang 住）、`TodoTool`、`FinishTool`（自述 `Termination::EndTurn`）。
+   - `fs`：`ReadFileTool`、`WriteFileTool`、`EditFileTool`、`ListFilesTool`、`SearchFilesTool`、`BatchWriteTool`、`BatchReplaceTool`，均自述完整 `ToolDescriptor`。
+   - `command`：`RunCommandTool`，支持超时与取消贯穿。
+2. **五处名单彻底删除与单一真源收敛（INV-3）**：
+   - `tools/mod.rs:13-36`：收敛至 `agent-toolkit::registry::find_tool_descriptor`，只读/写判定全走 `ToolDescriptor::is_readonly()`。
+   - `approval/types.rs:15-18`：移除硬编码 `command_tools`，由 `Access::Executes` 动态判定。
+   - `executor.rs:59-66/88-95`：写前检查点判定统一收敛至 `capture_tool_checkpoint`，依据 `RollbackPolicy` 与 `Access::Mutates` 驱动。
+   - `subagents/runner.rs:55/217`：统一依据 `ToolDescriptor::is_readonly()` 进行失败安全只读拦截。
+   - `plugins/builtins.rs`：内置插件参数 schema 与 `is_write` 统一派生自 `ToolDescriptor`，不再填空对象。
+3. **空壳工具下线（M2-T4）**：
+   - `check_gate`、`evaluate_diff`、`manage_ponytail` 从插件声明、子智能体白名单和内置执行器中全面下线，M6 登记移植。
+4. **回滚策略与批量写修复（M2-T3）**：
+   - `builtin_tools.rs` 中 `batch_write` 和 `batch_replace` 接入 `checkpoint_mgr`，为所有批次目标拍摄统一检查点记录。
+5. **插件启停执行顺序修复（M2-T5）**：
+   - `executor.rs` 中执行插件工具前先检查 `enabled`，禁用插件直接报错拦截，杜绝绕过。
+6. **启动期注册表完整性校验（`CompositeToolCatalog::validate`）**：
+   - 覆盖全部 5 类消费者（`ReadonlyFilter`, `ApprovalPolicy`, `RollbackPolicy`, `SubagentAllowlist`, `PluginDeclaration`）并附全套单测。
+
+**验收**：
+- `cargo check --workspace --all-targets` 通过
+- `cargo test --workspace -- --test-threads=1` **102 项全绿**
+- `bun run verify:archive` 全绿
+- `bun run typecheck` 全绿
+
 ---
 
 ## 9. INV → 任务映射（谁保证哪条不变量）

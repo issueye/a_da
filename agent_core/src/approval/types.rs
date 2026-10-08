@@ -12,10 +12,8 @@ impl Default for ApprovalGuardConfig {
     fn default() -> Self {
         Self {
             auto_approve: Vec::new(),
-            command_tools: vec![
-                "run_command".to_string(),
-                "run_background".to_string(),
-            ],
+            // command_tools 默认交由 ToolDescriptor::access 动态判定（INV-3），不再维护硬编码名单
+            command_tools: Vec::new(),
             confirm_commands: vec![
                 "rm ".to_string(),
                 "rmdir".to_string(),

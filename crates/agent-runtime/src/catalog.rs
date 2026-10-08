@@ -101,25 +101,101 @@ impl ToolCatalog for CompositeToolCatalog {
 
     fn validate(&self, consumers: &[Consumer]) -> Vec<ContractViolation> {
         let descs = self.descriptors();
-        let violations = Vec::new();
+        let mut violations = Vec::new();
 
-        for _d in &descs {
+        for d in &descs {
             for c in consumers {
                 match c {
                     Consumer::ReadonlyFilter => {
-                        // 只读性必须由 Access 显式判定
+                        match &d.access {
+                            agent_base::domain::Access::ReadOnly => {}
+                            agent_base::domain::Access::Mutates { paths } => match paths {
+                                agent_base::domain::PathSelector::Single(field)
+                                    if field.trim().is_empty() =>
+                                {
+                                    violations.push(ContractViolation {
+                                        consumer: *c,
+                                        tool: d.name.clone(),
+                                        detail: "写工具 Single 路径字段名不能为空".to_string(),
+                                    });
+                                }
+                                agent_base::domain::PathSelector::Batch(field)
+                                    if field.trim().is_empty() =>
+                                {
+                                    violations.push(ContractViolation {
+                                        consumer: *c,
+                                        tool: d.name.clone(),
+                                        detail: "写工具 Batch 路径列表字段名不能为空".to_string(),
+                                    });
+                                }
+                                _ => {}
+                            },
+                            agent_base::domain::Access::Executes { command_arg } => {
+                                if command_arg.trim().is_empty() {
+                                    violations.push(ContractViolation {
+                                        consumer: *c,
+                                        tool: d.name.clone(),
+                                        detail: "执行工具命令字段名不能为空".to_string(),
+                                    });
+                                }
+                            }
+                        }
                     }
                     Consumer::ApprovalPolicy => {
-                        // 审批策略不能处于未决状态
+                        if let agent_base::domain::ApprovalPolicy::DangerScan { patterns } = &d.approval {
+                            if patterns.is_empty() {
+                                violations.push(ContractViolation {
+                                    consumer: *c,
+                                    tool: d.name.clone(),
+                                    detail: "DangerScan 审批策略未配置任何危险匹配模式".to_string(),
+                                });
+                            }
+                        }
                     }
                     Consumer::RollbackPolicy => {
-                        // 回滚策略验证
+                        if matches!(d.access, agent_base::domain::Access::Mutates { .. })
+                            && d.rollback == agent_base::domain::RollbackPolicy::None
+                        {
+                            violations.push(ContractViolation {
+                                consumer: *c,
+                                tool: d.name.clone(),
+                                detail: "变更类工具未声明回滚策略（不得为 None）".to_string(),
+                            });
+                        }
+                        if d.access == agent_base::domain::Access::ReadOnly
+                            && d.rollback != agent_base::domain::RollbackPolicy::None
+                        {
+                            violations.push(ContractViolation {
+                                consumer: *c,
+                                tool: d.name.clone(),
+                                detail: "只读工具不应声明写回滚策略".to_string(),
+                            });
+                        }
                     }
                     Consumer::SubagentAllowlist => {
-                        // 子智能体白名单验证
+                        if d.summary.trim().is_empty() {
+                            violations.push(ContractViolation {
+                                consumer: *c,
+                                tool: d.name.clone(),
+                                detail: "工具摘要为空，子智能体无法进行语义选择".to_string(),
+                            });
+                        }
                     }
                     Consumer::PluginDeclaration => {
-                        // 插件声明验证
+                        if d.name.trim().is_empty() || d.name.contains(' ') {
+                            violations.push(ContractViolation {
+                                consumer: *c,
+                                tool: d.name.clone(),
+                                detail: "工具名称不符合命名规范（不能为空且不得包含空格）".to_string(),
+                            });
+                        }
+                        if !d.schema.is_object() {
+                            violations.push(ContractViolation {
+                                consumer: *c,
+                                tool: d.name.clone(),
+                                detail: "工具参数 schema 必须为 JSON Object".to_string(),
+                            });
+                        }
                     }
                 }
             }

@@ -165,7 +165,6 @@ pub fn builtin_subagents() -> Vec<SubagentProfile> {
                 "git_diff".to_string(),
                 "Skill".to_string(),
                 "decide".to_string(),
-                "check_gate".to_string(),
                 "todo".to_string(),
             ],
             disallowed_tools: Some(vec![

@@ -19,6 +19,52 @@ use crate::tools::{
     write_file, EditPair, ToolResult,
 };
 
+/// 依据 ToolDescriptor 声明的 RollbackPolicy 与 Access 拍摄写前检查点（INV-3：单一真源）
+fn capture_tool_checkpoint(
+    mgr: &Arc<CheckpointManager>,
+    workspace: &Path,
+    thread_id: &str,
+    call_id: &str,
+    tool_name: &str,
+    args: &Value,
+) -> Option<String> {
+    if let Some(desc) = crate::tools::find_tool_descriptor(tool_name) {
+        if let agent_base::domain::Access::Mutates { paths } = &desc.access {
+            match paths {
+                agent_base::domain::PathSelector::Single(field) => {
+                    if let Some(path) = args.get(*field).and_then(|v| v.as_str()) {
+                        if let Ok(abs) = check_workspace_sandbox(workspace, path) {
+                            if let Ok(record) = mgr.capture(thread_id, call_id, &[(path, &abs)]) {
+                                return Some(record.id);
+                            }
+                        }
+                    }
+                }
+                agent_base::domain::PathSelector::Batch(field) => {
+                    if let Some(arr) = args.get(*field).and_then(|v| v.as_array()) {
+                        let mut abs_paths = Vec::new();
+                        for item in arr {
+                            let p_opt = item.as_str().or_else(|| item.get("path").and_then(|v| v.as_str()));
+                            if let Some(p) = p_opt {
+                                if let Ok(abs) = check_workspace_sandbox(workspace, p) {
+                                    abs_paths.push((p, abs));
+                                }
+                            }
+                        }
+                        let targets: Vec<(&str, &Path)> = abs_paths.iter().map(|(p, abs)| (*p, abs.as_path())).collect();
+                        if !targets.is_empty() {
+                            if let Ok(record) = mgr.capture(thread_id, call_id, &targets) {
+                                return Some(record.id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// 派发并执行单个工具调用
 pub fn execute_tool_call<'a>(
     workspace: &'a Path,
@@ -45,6 +91,11 @@ pub fn execute_tool_call_extended<'a>(
         let args: Value = serde_json::from_str(&call.args).unwrap_or_else(|_| serde_json::json!({}));
         let mut checkpoint_id: Option<String> = None;
 
+        // INV-3 / M2-T1：统一由 ToolDescriptor 声明的 RollbackPolicy 与 Access 驱动拍摄检查点，彻底消除五处名单之手写检查点名单
+        if let Some(mgr) = checkpoint_mgr {
+            checkpoint_id = capture_tool_checkpoint(mgr, workspace, thread_id, &call.id, &call.name, &args);
+        }
+
     let result = match call.name.as_str() {
         "read_file" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
@@ -55,16 +106,6 @@ pub fn execute_tool_call_extended<'a>(
         "write_file" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
             let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
-
-            // 拍摄写前检查点
-            if let Some(mgr) = checkpoint_mgr {
-                if let Ok(abs) = check_workspace_sandbox(workspace, path) {
-                    if let Ok(record) = mgr.capture(thread_id, &call.id, &[(path, &abs)]) {
-                        checkpoint_id = Some(record.id);
-                    }
-                }
-            }
-
             write_file(workspace, path, content)
         }
         "edit_file" => {
@@ -84,15 +125,6 @@ pub fn execute_tool_call_extended<'a>(
                     })
                     .collect()
             });
-
-            // 拍摄写前检查点
-            if let Some(mgr) = checkpoint_mgr {
-                if let Ok(abs) = check_workspace_sandbox(workspace, path) {
-                    if let Ok(record) = mgr.capture(thread_id, &call.id, &[(path, &abs)]) {
-                        checkpoint_id = Some(record.id);
-                    }
-                }
-            }
 
             edit_file(workspace, path, old_string, new_string, edits)
         }
@@ -173,36 +205,35 @@ pub fn execute_tool_call_extended<'a>(
             execute_ask_user(&call.id, &args, event_tx, abort_rx).await
         }
         unknown => {
-            // 优先检查内置插件原生工具（彻底杜绝将 (builtin):xxx 虚拟路径传给沙箱造成读盘失败）
-            if let Some(res) = execute_builtin_plugin_tool(workspace, thread_id, unknown, &args, checkpoint_mgr).await {
-                res
-            } else {
-                let plugin_mgr = crate::plugins::PluginManager::new();
-                let plugins = plugin_mgr.scan_plugins(Some(workspace.to_str().unwrap_or("")));
-                let mut target_plugin_path = None;
+            // M2-T3 / M2-T5：先判启用再执行（含内置插件工具，杜绝静默绕过）
+            let plugin_mgr = crate::plugins::PluginManager::new();
+            let plugins = plugin_mgr.scan_plugins(Some(workspace.to_str().unwrap_or("")));
 
-                for item in plugins {
-                    if !item.enabled {
-                        continue;
-                    }
-                    if item.tools.iter().any(|t| t.name == unknown) {
-                        // 过滤虚拟内置路径，避免沙箱在 Windows 读取 "(builtin):xxx" 产生 os error 123
-                        if item.file_path.starts_with("(builtin):") {
-                            continue;
-                        }
-                        target_plugin_path = Some(std::path::PathBuf::from(item.file_path));
-                        break;
-                    }
-                }
+            // 查找提供该工具的插件项
+            let matched_plugin = plugins.iter().find(|item| {
+                item.tools.iter().any(|t| t.name == unknown)
+            });
 
-                if let Some(p_path) = target_plugin_path {
+            if let Some(plugin) = matched_plugin {
+                if !plugin.enabled {
+                    ToolResult::error(format!("插件 [{}] 已被禁用，无法执行工具 [{}]", plugin.name, unknown))
+                } else if plugin.file_path.starts_with("(builtin):") {
+                    // 内置插件原生工具执行
+                    if let Some(res) = execute_builtin_plugin_tool(workspace, thread_id, unknown, &args, checkpoint_mgr).await {
+                        res
+                    } else {
+                        ToolResult::error(format!("内置插件工具 [{}] 未注册有效执行器", unknown))
+                    }
+                } else {
+                    // 第三方/工作区沙箱插件执行
+                    let p_path = std::path::PathBuf::from(&plugin.file_path);
                     match crate::plugins::PluginSandbox::call_tool(&p_path, unknown, args, workspace, 30).await {
                         Ok(res) => res,
                         Err(e) => ToolResult::error(format!("插件工具 [{}] 执行失败: {}", unknown, e)),
                     }
-                } else {
-                    ToolResult::error(format!("未知工具: {}", unknown))
                 }
+            } else {
+                ToolResult::error(format!("未知工具: {}", unknown))
             }
         }
     };
@@ -257,3 +288,46 @@ fn now_ms() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::PluginManager;
+
+    #[tokio::test]
+    async fn test_disabled_plugin_tool_cannot_be_executed() {
+        let temp_dir = std::env::temp_dir().join(format!("a_da_test_executor_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let pm = PluginManager::new();
+        // 禁用内置插件 batch-ops
+        let _ = pm.toggle_plugin("builtin:batch-ops", false);
+
+        let call = ToolCallInfo {
+            id: "call_batch_write_disabled".to_string(),
+            name: "batch_write".to_string(),
+            args: serde_json::json!({
+                "files": [
+                    { "path": "test.txt", "content": "hello" }
+                ]
+            }).to_string(),
+        };
+
+        // 执行工具调用
+        let msg = execute_tool_call(&temp_dir, "thread_test", &call, None).await;
+
+        // 恢复插件启用状态以防影响其他单测
+        let _ = pm.toggle_plugin("builtin:batch-ops", true);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        // 验证由于插件被禁用而直接被拦截报错（M2-T5 验收点）
+        match msg {
+            AgentMessage::ToolResult { is_error, content, .. } => {
+                assert_eq!(is_error, Some(true));
+                assert!(content.contains("已被禁用，无法执行工具 [batch_write]"), "实际内容: {}", content);
+            }
+            _ => panic!("预期返回 ToolResult"),
+        }
+    }
+}
+
