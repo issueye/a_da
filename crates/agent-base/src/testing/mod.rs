@@ -113,6 +113,311 @@ impl AppHome for TempAppHome {
     }
 }
 
+/// 可动态触发取消的令牌。
+pub struct ManualCancel {
+    cancelled: std::sync::atomic::AtomicBool,
+}
+
+impl ManualCancel {
+    pub fn new() -> Self {
+        Self { cancelled: std::sync::atomic::AtomicBool::new(false) }
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Default for ManualCancel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CancelToken for ManualCancel {
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use crate::domain::{AgentError, AgentMessage, DenialKind, FailDirection, ToolCall, ToolDescriptor, ToolReceipt};
+use crate::model::StreamDelta;
+use crate::ports::{
+    AnsweredBy, ApprovalGate, ApprovalOutcome, ApprovalRequest, BoxFuture,
+    CompletionRequest, Consumer, ContractViolation, DeltaStream, ModelCapabilities,
+    ModelClient, ModelError, PromptSource, Scope, SessionStore, Tool,
+    ToolCatalog, ToolContext, ToolError,
+};
+
+/// 内存会话存储替身：线程安全、零 IO。
+#[derive(Default)]
+pub struct InMemorySessionStore {
+    messages: Mutex<HashMap<String, Vec<AgentMessage>>>,
+}
+
+impl InMemorySessionStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get(&self, thread_id: &str) -> Vec<AgentMessage> {
+        self.messages.lock().expect("store lock").get(thread_id).cloned().unwrap_or_default()
+    }
+}
+
+impl SessionStore for InMemorySessionStore {
+    fn load_messages<'a>(
+        &'a self,
+        thread_id: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<AgentMessage>, AgentError>> {
+        let msgs = self.get(thread_id);
+        Box::pin(async move { Ok(msgs) })
+    }
+
+    fn append_message<'a>(
+        &'a self,
+        thread_id: &'a str,
+        message: &'a AgentMessage,
+    ) -> BoxFuture<'a, Result<(), AgentError>> {
+        let msg = message.clone();
+        let mut lock = self.messages.lock().expect("store lock");
+        lock.entry(thread_id.to_string()).or_default().push(msg);
+        Box::pin(async move { Ok(()) })
+    }
+}
+
+/// 固定提示词替身。
+pub struct FixedPrompt {
+    prompt: String,
+}
+
+impl FixedPrompt {
+    pub fn new(prompt: impl Into<String>) -> Self {
+        Self { prompt: prompt.into() }
+    }
+}
+
+impl Default for FixedPrompt {
+    fn default() -> Self {
+        Self::new("test system prompt")
+    }
+}
+
+impl PromptSource for FixedPrompt {
+    fn system_prompt(&self) -> String {
+        self.prompt.clone()
+    }
+}
+
+/// 模拟作用域替身。
+pub struct MockScope {
+    id: String,
+}
+
+impl MockScope {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self { id: id.into() }
+    }
+}
+
+impl Default for MockScope {
+    fn default() -> Self {
+        Self::new("mock_scope")
+    }
+}
+
+impl Scope for MockScope {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn resolve_path(&self, raw: &str) -> Result<PathBuf, DenialKind> {
+        Ok(PathBuf::from(raw))
+    }
+}
+
+/// 记录型审批闸门替身。
+pub struct RecordingApprovalGate {
+    outcomes: Mutex<Vec<ApprovalOutcome>>,
+    calls: Mutex<Vec<ApprovalRequest>>,
+    direction: FailDirection,
+}
+
+impl RecordingApprovalGate {
+    pub fn new(default_approved: bool) -> Self {
+        let outcome = if default_approved {
+            ApprovalOutcome::allowed(AnsweredBy::Policy)
+        } else {
+            ApprovalOutcome::denied(AnsweredBy::Policy, "测试策略拒绝")
+        };
+        Self {
+            outcomes: Mutex::new(vec![outcome]),
+            calls: Mutex::new(Vec::new()),
+            direction: FailDirection::Closed,
+        }
+    }
+
+    pub fn with_outcomes(outcomes: Vec<ApprovalOutcome>) -> Self {
+        Self {
+            outcomes: Mutex::new(outcomes),
+            calls: Mutex::new(Vec::new()),
+            direction: FailDirection::Closed,
+        }
+    }
+
+    pub fn recorded_calls(&self) -> Vec<ApprovalRequest> {
+        self.calls.lock().expect("lock").clone()
+    }
+}
+
+impl ApprovalGate for RecordingApprovalGate {
+    fn direction(&self) -> FailDirection {
+        self.direction
+    }
+
+    fn decide<'a>(
+        &'a self,
+        req: ApprovalRequest,
+        _cancel: Option<&'a dyn CancelToken>,
+    ) -> BoxFuture<'a, ApprovalOutcome> {
+        self.calls.lock().expect("lock").push(req);
+        let mut outcomes = self.outcomes.lock().expect("lock");
+        let outcome = if outcomes.len() > 1 {
+            outcomes.remove(0)
+        } else {
+            outcomes.first().cloned().unwrap_or_else(|| ApprovalOutcome::allowed(AnsweredBy::Policy))
+        };
+        Box::pin(async move { outcome })
+    }
+}
+
+/// 模拟工具替身。
+pub struct MockTool {
+    descriptor: ToolDescriptor,
+    receipt: Mutex<ToolReceipt>,
+}
+
+impl MockTool {
+    pub fn new(descriptor: ToolDescriptor, receipt: ToolReceipt) -> Self {
+        Self {
+            descriptor,
+            receipt: Mutex::new(receipt),
+        }
+    }
+
+    pub fn set_receipt(&self, receipt: ToolReceipt) {
+        *self.receipt.lock().expect("lock") = receipt;
+    }
+}
+
+impl Tool for MockTool {
+    fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    fn execute<'a>(
+        &'a self,
+        _call: &'a ToolCall,
+        _ctx: &'a ToolContext<'a>,
+    ) -> BoxFuture<'a, ToolReceipt> {
+        let r = self.receipt.lock().expect("lock").clone();
+        Box::pin(async move { r })
+    }
+}
+
+/// 内存工具目录替身。
+#[derive(Default)]
+pub struct InMemoryToolCatalog {
+    tools: Mutex<HashMap<String, Arc<dyn Tool>>>,
+}
+
+impl InMemoryToolCatalog {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(&self, tool: Arc<dyn Tool>) {
+        let name = tool.descriptor().name.clone();
+        self.tools.lock().expect("lock").insert(name, tool);
+    }
+}
+
+impl ToolCatalog for InMemoryToolCatalog {
+    fn descriptors(&self) -> Vec<ToolDescriptor> {
+        self.tools
+            .lock()
+            .expect("lock")
+            .values()
+            .map(|t| t.descriptor().clone())
+            .collect()
+    }
+
+    fn resolve(&self, name: &str) -> Result<Arc<dyn Tool>, ToolError> {
+        self.tools
+            .lock()
+            .expect("lock")
+            .get(name)
+            .cloned()
+            .ok_or_else(|| ToolError::Unknown(name.to_string()))
+    }
+
+    fn validate(&self, _consumers: &[Consumer]) -> Vec<ContractViolation> {
+        Vec::new()
+    }
+}
+
+/// 脚本化大模型客户端替身（按轮次依次吐出预设的 StreamDelta 序列）。
+pub struct ScriptedModelClient {
+    capabilities: ModelCapabilities,
+    rounds: Mutex<Vec<Vec<StreamDelta>>>,
+}
+
+impl ScriptedModelClient {
+    pub fn new(rounds: Vec<Vec<StreamDelta>>) -> Self {
+        Self {
+            capabilities: ModelCapabilities {
+                streaming: true,
+                tools: true,
+                images: false,
+                thinking: true,
+            },
+            rounds: Mutex::new(rounds),
+        }
+    }
+}
+
+impl ModelClient for ScriptedModelClient {
+    fn capabilities(&self) -> ModelCapabilities {
+        self.capabilities
+    }
+
+    fn stream<'a>(
+        &'a self,
+        _req: CompletionRequest,
+        _cancel: Option<&'a dyn CancelToken>,
+    ) -> BoxFuture<'a, Result<DeltaStream, ModelError>> {
+        let mut rounds = self.rounds.lock().expect("lock");
+        let deltas = if !rounds.is_empty() {
+            rounds.remove(0)
+        } else {
+            Vec::new()
+        };
+
+        let (tx, rx) = tokio::sync::mpsc::channel(deltas.len().max(1));
+        tokio::spawn(async move {
+            for d in deltas {
+                if tx.send(d).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        Box::pin(async move { Ok(rx) })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

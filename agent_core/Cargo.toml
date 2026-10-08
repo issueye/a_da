@@ -32,3 +32,4 @@ agent-base = { workspace = true }
 agent-proto = { workspace = true }
 agent-adapter = { workspace = true }
 agent-toolkit = { workspace = true }
+agent-runtime = { workspace = true }

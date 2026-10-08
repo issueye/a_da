@@ -11,6 +11,9 @@ pub mod subagents;
 pub mod approval;
 pub mod skills;
 
+/// 组合根转发：支持新基座装配与产品规格解析
+pub use agent_runtime as runtime;
+
 pub use skills::{SkillManager, SkillSummary, get_builtin_skills};
 
 pub use ai::{

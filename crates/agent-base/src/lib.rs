@@ -16,6 +16,7 @@
 //! 当前落地进度见 `docs/agent-base-plan.md` §8、§10。
 
 pub mod domain;
+pub mod engine;
 pub mod model;
 pub mod ports;
 pub mod testing;

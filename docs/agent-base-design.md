@@ -144,10 +144,11 @@ cargo xtask verify-archive                                  # 7 没有第二份�
 
 > **落地进度（2026-10-08）**：`crates/agent-base` 已建，`model/`（模型面类型）、`domain/`（消息 / 工具描述符与回执 /
 > 事件 / 错误与失败方向）、`ports/`（Clock / AppHome / EventSink / CancelToken / Scope / Tool(Catalog) /
-> ModelClient / ApprovalGate，全部无默认实现）、`testing/`（FixedClock / RecordingSink / NeverCancel /
-> TempAppHome）已落地；`AppHome` 与 `Clock` 已在生产路径上接线（`agent_core::session::app_home`、
-> `agent_core::state::now_millis`、`AgentStore::with_home`）。`engine/`、`policy/`（引擎与运行策略）是下一步。
-> 详细批次见计划 §8。
+> ModelClient / ApprovalGate / SessionStore / PromptSource，全部无默认实现）、`engine/`（`AgentRuntime::run_turn` /
+> `RunPolicy` / `TurnRequest` / `TurnOutcome` / 纯函数消息格式化）、`testing/`（FixedClock / RecordingSink /
+> NeverCancel / ManualCancel / TempAppHome / InMemorySessionStore / FixedPrompt / MockScope / RecordingApprovalGate /
+> MockTool / InMemoryToolCatalog / ScriptedModelClient）已全量落地并完成 8 组核心合规单测。
+> `AppHome` 与 `Clock` 已在生产路径接线；详细批次见计划 §8。
 
 ### 3.1 领域类型（不含产品词汇）
 

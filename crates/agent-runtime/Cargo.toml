@@ -1,0 +1,19 @@
+[package]
+name = "agent-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "AGENT BASE 组合根：按产品规格装配端口、工具目录缓存校验与运行时初始化（INV-8）"
+
+[dependencies]
+agent-base = { workspace = true }
+agent-proto = { workspace = true }
+agent-adapter = { workspace = true }
+agent-toolkit = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

@@ -47,6 +47,90 @@ async fn wait_abort_signal(abort_rx: &mut Option<watch::Receiver<bool>>) {
     std::future::pending::<()>().await;
 }
 
+#[derive(Debug)]
+enum SendOutcome {
+    Success(reqwest::Response),
+    Aborted,
+}
+
+async fn send_http_request_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    headers: HeaderMap,
+    body: Value,
+    provider_name: &'static str,
+    max_retries: usize,
+    abort_rx: &mut Option<watch::Receiver<bool>>,
+    tx: &mpsc::Sender<StreamDelta>,
+) -> Result<SendOutcome> {
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let request = client.post(url).headers(headers.clone()).json(&body);
+
+        let send_result = tokio::select! {
+            res = request.send() => res,
+            _ = wait_abort_signal(abort_rx) => {
+                let _ = tx.send(StreamDelta::Done { stop_reason: "aborted".to_string() }).await;
+                return Ok(SendOutcome::Aborted);
+            }
+        };
+
+        match send_result {
+            Ok(res) => {
+                let status = res.status();
+                if status.is_success() {
+                    return Ok(SendOutcome::Success(res));
+                }
+
+                let err_text = res.text().await.unwrap_or_default();
+                let is_retryable = status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+
+                if is_retryable && attempt <= max_retries {
+                    #[cfg(not(test))]
+                    let backoff_ms = 500u64 * (1 << (attempt - 1));
+                    #[cfg(test)]
+                    let backoff_ms = 10u64 * (1 << (attempt - 1));
+                    tracing::warn!(
+                        "{} API 返回 HTTP {}，第 {}/{} 次重试，退避 {}ms: {}",
+                        provider_name, status, attempt, max_retries, backoff_ms, err_text
+                    );
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_millis(backoff_ms)) => continue,
+                        _ = wait_abort_signal(abort_rx) => {
+                            let _ = tx.send(StreamDelta::Done { stop_reason: "aborted".to_string() }).await;
+                            return Ok(SendOutcome::Aborted);
+                        }
+                    }
+                }
+
+                anyhow::bail!("{} API 错误 (HTTP {}): {}", provider_name, status, err_text);
+            }
+            Err(e) => {
+                if attempt <= max_retries {
+                    #[cfg(not(test))]
+                    let backoff_ms = 500u64 * (1 << (attempt - 1));
+                    #[cfg(test)]
+                    let backoff_ms = 10u64 * (1 << (attempt - 1));
+                    tracing::warn!(
+                        "发起 {} 请求失败，第 {}/{} 次重试，退避 {}ms: {}",
+                        provider_name, attempt, max_retries, backoff_ms, e
+                    );
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_millis(backoff_ms)) => continue,
+                        _ = wait_abort_signal(abort_rx) => {
+                            let _ = tx.send(StreamDelta::Done { stop_reason: "aborted".to_string() }).await;
+                            return Ok(SendOutcome::Aborted);
+                        }
+                    }
+                }
+
+                anyhow::bail!("发起 {} 请求失败: {}", provider_name, e);
+            }
+        }
+    }
+}
+
 async fn run_stream(
     config: ProviderConfig,
     messages: Vec<ChatCompletionMessage>,
@@ -136,24 +220,21 @@ async fn run_stream_openai_chat(
         }
     }
 
-    let request = client.post(&url).headers(headers).json(&body);
-
-    let response = match tokio::select! {
-        res = request.send() => res,
-        _ = wait_abort_signal(abort_rx) => {
-            let _ = tx.send(StreamDelta::Done { stop_reason: "aborted".to_string() }).await;
-            return Ok(());
-        }
-    } {
-        Ok(res) => {
-            if !res.status().is_success() {
-                let status = res.status();
-                let err_text = res.text().await.unwrap_or_default();
-                anyhow::bail!("OpenAI API 错误 (HTTP {}): {}", status, err_text);
-            }
-            res
-        }
-        Err(e) => anyhow::bail!("发起模型请求失败: {}", e),
+    let max_retries = options.max_retries.unwrap_or(3);
+    let response = match send_http_request_with_retry(
+        &client,
+        &url,
+        headers,
+        body,
+        "OpenAI",
+        max_retries,
+        abort_rx,
+        &tx,
+    )
+    .await?
+    {
+        SendOutcome::Success(res) => res,
+        SendOutcome::Aborted => return Ok(()),
     };
 
     let mut byte_stream = response.bytes_stream();
@@ -483,24 +564,21 @@ async fn run_stream_anthropic(
         }
     }
 
-    let request = client.post(&url).headers(headers).json(&body);
-
-    let response = match tokio::select! {
-        res = request.send() => res,
-        _ = wait_abort_signal(abort_rx) => {
-            let _ = tx.send(StreamDelta::Done { stop_reason: "aborted".to_string() }).await;
-            return Ok(());
-        }
-    } {
-        Ok(res) => {
-            if !res.status().is_success() {
-                let status = res.status();
-                let err_text = res.text().await.unwrap_or_default();
-                anyhow::bail!("Anthropic API 错误 (HTTP {}): {}", status, err_text);
-            }
-            res
-        }
-        Err(e) => anyhow::bail!("发起 Anthropic 请求失败: {}", e),
+    let max_retries = options.max_retries.unwrap_or(3);
+    let response = match send_http_request_with_retry(
+        &client,
+        &url,
+        headers,
+        body,
+        "Anthropic",
+        max_retries,
+        abort_rx,
+        &tx,
+    )
+    .await?
+    {
+        SendOutcome::Success(res) => res,
+        SendOutcome::Aborted => return Ok(()),
     };
 
     let mut byte_stream = response.bytes_stream();
@@ -776,24 +854,21 @@ async fn run_stream_openai_responses(
         }
     }
 
-    let request = client.post(&url).headers(headers).json(&body);
-
-    let response = match tokio::select! {
-        res = request.send() => res,
-        _ = wait_abort_signal(abort_rx) => {
-            let _ = tx.send(StreamDelta::Done { stop_reason: "aborted".to_string() }).await;
-            return Ok(());
-        }
-    } {
-        Ok(res) => {
-            if !res.status().is_success() {
-                let status = res.status();
-                let err_text = res.text().await.unwrap_or_default();
-                anyhow::bail!("OpenAI Responses API 错误 (HTTP {}): {}", status, err_text);
-            }
-            res
-        }
-        Err(e) => anyhow::bail!("发起 OpenAI Responses 请求失败: {}", e),
+    let max_retries = options.max_retries.unwrap_or(3);
+    let response = match send_http_request_with_retry(
+        &client,
+        &url,
+        headers,
+        body,
+        "OpenAI Responses",
+        max_retries,
+        abort_rx,
+        &tx,
+    )
+    .await?
+    {
+        SendOutcome::Success(res) => res,
+        SendOutcome::Aborted => return Ok(()),
     };
 
     let mut byte_stream = response.bytes_stream();
@@ -940,3 +1015,113 @@ async fn run_stream_openai_responses(
     let _ = tx.send(StreamDelta::Done { stop_reason: final_reason }).await;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn test_http_5xx_retries_and_reports_final_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server_url = format!("http://127.0.0.1:{}/v1/chat/completions", port);
+
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let count_clone = request_count.clone();
+
+        tokio::spawn(async move {
+            loop {
+                if let Ok((mut socket, _)) = listener.accept().await {
+                    count_clone.fetch_add(1, Ordering::SeqCst);
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let body = "server error detail";
+                    let response = format!(
+                        "HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                }
+            }
+        });
+
+        let client = reqwest::Client::new();
+        let (tx, _rx) = mpsc::channel(16);
+        let mut abort_rx = None;
+
+        let res = send_http_request_with_retry(
+            &client,
+            &server_url,
+            HeaderMap::new(),
+            serde_json::json!({}),
+            "TestProvider",
+            2, // 重试 2 次 -> 预期共请求 3 次
+            &mut abort_rx,
+            &tx,
+        )
+        .await;
+
+        assert!(res.is_err());
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains("HTTP 500"));
+        assert!(err.contains("server error detail"));
+        assert_eq!(request_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_http_400_fails_fast_without_retry() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server_url = format!("http://127.0.0.1:{}/v1/chat/completions", port);
+
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let count_clone = request_count.clone();
+
+        tokio::spawn(async move {
+            loop {
+                if let Ok((mut socket, _)) = listener.accept().await {
+                    count_clone.fetch_add(1, Ordering::SeqCst);
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let body = "invalid payload";
+                    let response = format!(
+                        "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                }
+            }
+        });
+
+        let client = reqwest::Client::new();
+        let (tx, _rx) = mpsc::channel(16);
+        let mut abort_rx = None;
+
+        let res = send_http_request_with_retry(
+            &client,
+            &server_url,
+            HeaderMap::new(),
+            serde_json::json!({}),
+            "TestProvider",
+            3,
+            &mut abort_rx,
+            &tx,
+        )
+        .await;
+
+        assert!(res.is_err());
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains("HTTP 400"));
+        assert!(err.contains("invalid payload"));
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+    }
+}
+

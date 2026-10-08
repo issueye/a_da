@@ -496,6 +496,63 @@ archive/
 **91 项全绿**（`agent-base` 25 项含 8 个端口/领域用例、`agent-toolkit` 6、`agent_core` 41…）；
 `bun run verify:archive` 全绿。
 
+### 8.5 第三批：AgentRuntime 引擎落地与单测验收（M1-T2 完成，2026-10-08）
+
+**目标**：落下单一引擎 `AgentRuntime::run_turn`、相关策略与测试替身，接通审批/取消/终止语义，
+单测覆盖全部合规断言（无工具自然收尾、取消即 Aborted、恰好一个收尾、审批拒绝回模型、Termination 消费、预算自报、seq 单调）。
+
+| 落地 | 内容 | 作用 |
+|---|---|---|
+| `agent-base/ports/store.rs` | `SessionStore` trait | 零 IO 的会话存储接缝（`load_messages`/`append_message`） |
+| `agent-base/ports/prompt.rs` | `PromptSource` trait | 零产品名词的系统提示词源 |
+| `agent-base/engine/policy.rs` | `RunPolicy` | 轮内预算（`max_steps`）、并发工具数、超时 |
+| `agent-base/engine/turn.rs` | `TurnRequest` / `TurnOutcome` | 单轮请求入参与结束摘要 |
+| `agent-base/engine/prompt_format.rs` | `format_messages_for_model` | 领域消息与模型消息转换纯函数 |
+| `agent-base/engine/runtime.rs` | `AgentRuntime::run_turn` | 多轮流式驱动单一引擎（INV-1） |
+| `agent-base/testing` | 扩展测试替身全家桶 | `ManualCancel` / `InMemorySessionStore` / `FixedPrompt` / `MockScope` / `RecordingApprovalGate` / `MockTool` / `InMemoryToolCatalog` / `ScriptedModelClient` |
+| `agent-base/engine/runtime.rs::tests` | 8 个核心合规单测 | 覆盖无工具结束、取消即 Aborted、模型错误单收尾、时序先后、审批 Denied 回模型、Termination::EndTurn、预算自报、seq 单调递增 |
+
+**断言保证验证（M1-T2 / M1-T4 / M1-T5 / M1-T6）**：
+1. **无工具调用即结束**：模型仅产出文本时步数为 1，事件流完整自然结束。
+2. **取消贯穿与单收尾**：启动前取消、流式中取消均恰好发出一个 `TurnFinished(Aborted)`。
+3. **每轮恰好一个收尾**：任何路径（错误、取消、预算耗尽、正常完成）收尾事件数恒为 1。
+4. **审批接线**：受约束工具触发 `ApprovalRequested` 与 `ApprovalGate::decide`；拒绝时以 `ToolReceipt::denied` 回模型，不抛错。
+5. **终止语义**：声明 `Termination::EndTurn` 的工具执行后立即收尾，不进入下一轮大模型推理。
+6. **预算自报**：达到 `max_steps` 上限后自报 `BudgetExhausted`，杜绝隐式截断。
+7. **事件单调有序**：事件信封 `seq` 严格单调自增（INV-6）。
+
+**验收**：
+- `cargo check --workspace --all-targets` 通过
+- `cargo test --workspace -- --test-threads=1` **99 项全绿**（`agent-base` 单测扩充至 22 项）
+- `bun run verify:archive` 全绿
+- `bun run typecheck` 全绿
+
+### 8.6 第四批：模型重试（M1-T7）与组合根装配（M1-T3 / M1-T8 完成，2026-10-08）
+
+**目标**：消除 `max_retries` 幻觉配置，在 `ModelClient` 与 `stream.rs` 内实现 3 次指数退避重试；
+建立 `crates/agent-runtime` 组合根，实现 `CompositeToolCatalog`（装配一次，取代每轮扫盘）与 `ProductBuilder`。
+
+| 落地 | 内容 | 作用 |
+|---|---|---|
+| `agent-adapter/model/stream.rs` | `send_http_request_with_retry` | HTTP 5xx / 429 / 连接失败时 3 次指数退避重试（500ms, 1000ms, 2000ms），4xx 快速失败，支持取消中断，消费 `max_retries` 配置 |
+| `agent-adapter/model/client.rs` | `NetworkModelClient` | 真实网络模型客户端，实现 `agent_base::ports::ModelClient`（三家协议 + 重试 + 中止） |
+| `crates/agent-runtime` | 新 crate 组合根 | `catalog.rs`、`spec.rs`、`builder.rs`、`lib.rs`（INV-8） |
+| `agent-runtime/catalog.rs` | `CompositeToolCatalog` | 工具注册表常驻内存，装配一次取代每轮扫盘（M1-T3），带 `scan_count` 计数器验证 |
+| `agent-runtime/spec.rs` | `AgentSpec` | 产品声明数据结构（identity / toolkits / capabilities / policies） |
+| `agent-runtime/builder.rs` | `ProductBuilder` | 产品组合根，负责声明双向校验（`validate`）与端口装配（`build` 产出 `AgentRuntime`） |
+| `agent_core/src/lib.rs` | `pub use agent_runtime as runtime;` | `agent_core` 开始作为 facade 转发组合根能力 |
+
+**断言保证验证（M1-T3 / M1-T7 / M1-T8）**：
+1. **模型重试（M1-T7）**：测试验证 HTTP 500 时重试 2 次（共 3 次请求）并如实报错；HTTP 400 时立即报错（请求 1 次），不盲目重试。
+2. **工具目录装配一次（M1-T3）**：测试验证初始装配后计数为 1，任意多次查询 `descriptors` 与 `resolve` 均不递增扫描计数，只有显式 `reload` 时才重载。
+3. **组合根端到端构建（M1-T8）**：测试验证从 JSON 规格解析到注入各端口装配并成功执行多轮循环，全链路打通。
+
+**验收**：
+- `cargo check --workspace --all-targets` 通过（覆盖 8 个 crates 与二进制目标）
+- `cargo test --workspace -- --test-threads=1` **104 项全绿**（`agent-adapter` 3 项、`agent-runtime` 2 项）
+- `bun run verify:archive` 全绿
+- `bun run typecheck` 全绿
+
 ---
 
 ## 9. INV → 任务映射（谁保证哪条不变量）

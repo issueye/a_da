@@ -121,6 +121,14 @@ impl ToolReceipt {
         Self::new(ToolStatus::Error, output, started_at, finished_at)
     }
 
+    pub fn denied(output: impl Into<String>, started_at: i64, finished_at: i64) -> Self {
+        Self::new(ToolStatus::Denied, output, started_at, finished_at)
+    }
+
+    pub fn aborted(output: impl Into<String>, started_at: i64, finished_at: i64) -> Self {
+        Self::new(ToolStatus::Aborted, output, started_at, finished_at)
+    }
+
     /// 耗时由起止时间派生——**不存在**"duration 字段没填"这种状态。
     pub fn duration_ms(&self) -> u64 {
         (self.finished_at - self.started_at).max(0) as u64

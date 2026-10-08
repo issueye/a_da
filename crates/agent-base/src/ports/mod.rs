@@ -10,7 +10,9 @@ pub mod cancel;
 pub mod clock;
 pub mod events;
 pub mod model;
+pub mod prompt;
 pub mod scope;
+pub mod store;
 pub mod tools;
 
 pub use app_home::AppHome;
@@ -19,5 +21,7 @@ pub use cancel::CancelToken;
 pub use clock::Clock;
 pub use events::EventSink;
 pub use model::{CompletionRequest, DeltaStream, ModelCapabilities, ModelClient, ModelError};
+pub use prompt::PromptSource;
 pub use scope::Scope;
+pub use store::SessionStore;
 pub use tools::{BoxFuture, Consumer, ContractViolation, Tool, ToolCatalog, ToolContext, ToolError};
