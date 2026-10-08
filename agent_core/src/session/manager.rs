@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use agent_base::ports::AppHome;
 use anyhow::{Context, Result};
 
 
@@ -14,30 +16,48 @@ use super::types::{
 };
 use crate::protocol::{AgentMode, Item, Thread};
 
-/// 获取默认的 a-da 配置和数据主目录
-pub fn get_app_home() -> PathBuf {
-    if let Ok(dir) = std::env::var("A_DA_HOME") {
-        if !dir.trim().is_empty() {
-            return PathBuf::from(dir.trim());
-        }
-    }
-    if let Ok(userprofile) = std::env::var("USERPROFILE") {
-        return PathBuf::from(userprofile).join(".a-da");
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".a-da");
-    }
-    PathBuf::from(".a-da")
+/// 进程内的应用目录端口（组合根/测试可注入；默认见 `default_app_home`）。
+///
+/// 为什么是全局单例：现状有 10 多处直接调 `get_app_home()`，一次性改成参数注入会把
+/// 本批次（目录迁移）与行为改动混在一起。这里是**过渡期的显式缝隙**：
+/// 迁移完成后 `get_app_home()` 会消失，调用方改为接收 `&dyn AppHome`。
+static APP_HOME: OnceLock<Box<dyn AppHome>> = OnceLock::new();
+
+/// 当前应用目录端口。
+pub fn app_home() -> &'static dyn AppHome {
+    APP_HOME.get_or_init(default_app_home_boxed).as_ref()
 }
 
-/// 获取 a-da 配置文件路径，优先遵循 A_DA_CONFIG 环境变量
+/// 注入应用目录。返回 `Err` 表示本进程已经初始化过（只允许一次）。
+pub fn set_app_home(home: Box<dyn AppHome>) -> Result<(), Box<dyn AppHome>> {
+    APP_HOME.set(home)
+}
+
+/// 单元测试默认落在临时目录：**绝不碰用户真实的 `~/.a-da`**。
+/// （TS 时代靠 `scripts/test-preload.ts` 重定向，Rust 侧此前没有等价物。）
+///
+/// 目录名带 PID：`cargo test` 每次运行都是新的空目录，避免"上一轮跑剩下的 config.json
+/// 影响下一轮"这种跨运行状态泄漏（这类泄漏会伪装成随机失败）。
+#[cfg(test)]
+fn default_app_home_boxed() -> Box<dyn AppHome> {
+    Box::new(agent_base::testing::TempAppHome::at(
+        std::env::temp_dir().join(format!("a_da_agent_core_test_home_{}", std::process::id())),
+    ))
+}
+
+#[cfg(not(test))]
+fn default_app_home_boxed() -> Box<dyn AppHome> {
+    Box::new(agent_adapter::app_home::SystemAppHome::from_env())
+}
+
+/// 获取默认的 a-da 配置和数据主目录（兼容旧签名；实现在 `AppHome` 端口里）。
+pub fn get_app_home() -> PathBuf {
+    app_home().root().to_path_buf()
+}
+
+/// 获取 a-da 配置文件路径，优先遵循 `A_DA_CONFIG` 环境变量（实现在 `AppHome` 端口里）。
 pub fn get_config_path() -> PathBuf {
-    if let Ok(cfg) = std::env::var("A_DA_CONFIG") {
-        if !cfg.trim().is_empty() {
-            return PathBuf::from(cfg.trim());
-        }
-    }
-    get_app_home().join("config.json")
+    app_home().config_file()
 }
 
 /// 会话管理器

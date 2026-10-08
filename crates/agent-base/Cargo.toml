@@ -9,3 +9,6 @@ description = "AGENT BASE 内核：零 IO、零产品名词的领域类型与端
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
+# 只用来表达"增量流"的类型（mpsc::Receiver / BoxFuture 无 IO）；不含 tokio::net / tokio::fs
+tokio = { workspace = true }

@@ -1,12 +1,26 @@
 use crate::protocol::*;
+use agent_base::ports::{AppHome, Clock};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::OnceLock;
+
+/// 进程内时钟端口（组合根/测试可注入）。
+///
+/// 现状是每个模块各写一份 `SystemTime::now()`（`runner::executor::now_ms`、本文件的
+/// `now_millis`…），测试无法确定性重放。这里是过渡期的显式缝隙：调用方仍用 `now_millis()`，
+/// 但时间源已经可替换（测试注入 `agent_base::testing::FixedClock`）。
+static CLOCK: OnceLock<Box<dyn Clock>> = OnceLock::new();
+
+pub fn clock() -> &'static dyn Clock {
+    CLOCK.get_or_init(|| Box::new(agent_adapter::clock::SystemClock)).as_ref()
+}
+
+/// 注入时钟。返回 `Err` 表示本进程已经初始化过（只允许一次）。
+pub fn set_clock(c: Box<dyn Clock>) -> Result<(), Box<dyn Clock>> {
+    CLOCK.set(c)
+}
 
 pub fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    clock().now_ms().max(0) as u64
 }
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -43,9 +57,19 @@ impl Default for AgentStore {
 }
 
 impl AgentStore {
+    /// 用进程默认的应用目录端口构造（组合根/生产路径）。
     pub fn new(workspace_path: String) -> Self {
+        Self::with_home(workspace_path, crate::session::app_home())
+    }
+
+    /// 注入应用目录端口构造（测试与组合根用）。
+    ///
+    /// 这是本批次引入端口后的第一个**真实使用点**：测试不再靠
+    /// `std::env::set_var("A_DA_HOME")`（那种做法在端口被 `OnceLock` 初始化后即失效），
+    /// 而是显式传入一个 [`AppHome`]——身份明确、可并行、不污染进程环境。
+    pub fn with_home(workspace_path: String, home: &dyn AppHome) -> Self {
         let explicit_workspace = workspace_path.trim().to_string();
-        let default_public_workspace = crate::session::get_app_home().join("workspace").to_string_lossy().to_string();
+        let default_public_workspace = home.dir("workspace").to_string_lossy().to_string();
 
         let mut prov = crate::ai::ProviderConfig {
             id: "default".to_string(),
@@ -71,7 +95,7 @@ impl AgentStore {
         };
         let mut appearance_str = "dark".to_string();
 
-        let cfg_file = crate::session::get_config_path();
+        let cfg_file = home.config_file();
 
         if cfg_file.exists() {
             if let Ok(content) = std::fs::read_to_string(&cfg_file) {
@@ -701,12 +725,10 @@ mod tests {
             "appearance": "light"
         }).to_string()).unwrap();
 
-        unsafe {
-            std::env::set_var("A_DA_HOME", &temp_home);
-            std::env::set_var("A_DA_CONFIG", &cfg_path);
-        }
+        // 注入式应用目录：不再依赖 `std::env::set_var`（端口化后那种做法已失效）
+        let home = agent_base::testing::TempAppHome::at(&temp_home).with_config_file(&cfg_path);
 
-        let store = AgentStore::new("".to_string());
+        let store = AgentStore::with_home("".to_string(), &home);
         assert_eq!(store.config.model, "deepseek/deepseek-v4.1-flash");
         assert_eq!(store.provider.base_url, "http://ai.20301024.xyz:36302/v1");
         assert_eq!(store.provider.api_key, "sk-test-key");
@@ -714,9 +736,6 @@ mod tests {
         assert_eq!(store.appearance, "light");
 
         let _ = std::fs::remove_dir_all(temp_home);
-        unsafe {
-            std::env::remove_var("A_DA_CONFIG");
-        }
     }
 }
 

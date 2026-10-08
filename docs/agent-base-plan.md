@@ -450,6 +450,52 @@ archive/
 ② **Rust 测试会写用户真实的 `~/.a-da`**（TS 时代靠 `scripts/test-preload.ts` 重定向，Rust 侧没有等价物）
 ——M1 引入 `AppHome` 端口时，测试必须注入临时 home，这条不能只靠"串行跑"掩盖。
 
+### 8.4 第二批：domain 拆分 + 端口落地（2026-10-08）
+
+**目标**：把"领域模型"从"落盘格式"里拆出来，并落下 8 个端口与它们的真实实现/测试替身，
+让后面 `session` / `checkpoint` / `plugins` 的搬迁有接缝可用。
+
+| 落地 | 内容 |
+|---|---|
+| `agent-base/domain/message.rs` | `AgentMessage` / `ToolCallBlock`（含 serde 兼容与 3 个用例）从 `agent_core::session::types` 拆出；**领域**进基座 |
+| `agent_core/session/types.rs` | 只留**落盘格式**（`SessionHeader` / `SessionEntry*` / `SessionSummary` / `CURRENT_SESSION_VERSION`），并 `pub use agent_base::domain::{AgentMessage, ToolCallBlock}` 保持旧路径 |
+| `agent-base/domain/tool.rs` | `ToolCall` / `ToolDescriptor` / `Access` / `PathSelector` / `ApprovalPolicy` / `RollbackPolicy` / `Execution` / `Termination` / `ToolReceipt` / `ToolStatus`。**§1/§2/§4/§5/§6/§10/§18 在这里变成类型**；`ToolReceipt::duration_ms()` 是派生值，不存在"没填"状态 |
+| `agent-base/domain/event.rs` | `AgentEvent`（`seq` + `at_ms` + `thread_id` + body）与 `AgentEventBody`（12 种）、`TurnStopReason`（含 `BudgetExhausted`：有预算必须自报，**没有隐式步数上限**） |
+| `agent-base/domain/error.rs` | `FailDirection`（默认 `Closed`）、`DenialKind`、`AgentError`（含 `Unsupported`：INV-2 的显式出口） |
+| `agent-base/ports/*` | `Clock` / `AppHome` / `EventSink` / `CancelToken` / `Scope` / `Tool`+`ToolCatalog` / `ModelClient` / `ApprovalGate`；**全部无默认实现**（INV-2）。`ToolCatalog::validate(consumers)` 把"声明↔实现"双向核对做成返回值 |
+| `agent-base/testing` | `FixedClock` / `RecordingSink` / `NeverCancel` / `TempAppHome`（测试替身进基座，适配器与产品共用同一套契约） |
+| `agent-adapter/app_home.rs` | `SystemAppHome`：**全仓唯一**读 `A_DA_HOME`/`A_DA_CONFIG`/`USERPROFILE`/`HOME` 的地方（原逻辑从 `session/manager.rs` 搬来，行为逐字一致） |
+| `agent-adapter/clock.rs` | `SystemClock`：**全仓唯一**直接读系统时间的地方 |
+
+**接线（两个端口已经在生产路径上生效，不是空壳）**：
+
+- `agent_core::session::{app_home, set_app_home, get_app_home, get_config_path}`：`get_app_home()` 签名不变，
+  内部走 `AppHome` 端口；`#[cfg(test)]` 默认指向 `temp/a_da_agent_core_test_home_<pid>`。
+- `agent_core::state::{clock, set_clock, now_millis}`：`now_millis()` 内部走 `Clock` 端口。
+- **`AgentStore::with_home(workspace, &dyn AppHome)`**：`new()` 委托给它。这是端口的第一个真实使用点。
+
+**这一批顺手修掉的两个既有问题**：
+
+1. **测试写用户真实的 `~/.a-da`**：`#[cfg(test)]` 默认 home 改为临时目录，实测用户目录不再被改动
+   （此前最后一次被改是 17:56，改完后再跑测试不再触碰）。
+2. **跨运行状态泄漏**：临时目录名带 PID，避免"上一轮跑剩下的 `config.json` 影响下一轮"——
+   这个泄漏会伪装成随机失败（第一版没带 PID，立刻在 `test_store_config_and_session_restore`
+   与 `test_dispatcher_provider_management` 上炸出来）。
+3. `test_store_config_and_session_restore` 原来靠 `std::env::set_var("A_DA_HOME")` 改环境变量；
+   端口被 `OnceLock` 初始化后那种做法**必然失效**。改为 `AgentStore::with_home(...)` +
+   `TempAppHome` 注入——同一份语义，但不再碰进程环境、可以并行。
+
+**自检发现的一处自身设计问题（已修）**：`AppHome` 最初用 `DataKind::{Plugins, Workspace, Checkpoints…}`
+枚举分区，等于把某个产品的目录表写进基座（生活类助手没有 checkpoints/插件这些概念）。
+改成 `fn dir(&self, name: &str)`：**名字由产品层决定，基座只提供具名子路径**。
+
+**已知残留（记在 M2）**：`AgentMessage::ToolResult.patch` 是编码助手味的字段名，
+但它是**已落盘的兼容键**，不能直接改名；等回执模型收敛到 `ToolReceipt.data/details` 时再谈迁移。
+
+**验收**：`cargo check --workspace --all-targets` 通过；`cargo test --workspace -- --test-threads=1`
+**91 项全绿**（`agent-base` 25 项含 8 个端口/领域用例、`agent-toolkit` 6、`agent_core` 41…）；
+`bun run verify:archive` 全绿。
+
 ---
 
 ## 9. INV → 任务映射（谁保证哪条不变量）

@@ -29,20 +29,23 @@ bun run tauri:dev           # 桌面客户端开发（前端热重载 + 宿主�
   （单独跑各自通过）。根因是共享全局态（INV-8），M1 用依赖注入根治后再改回并行。
 - 本机 `cargo` 默认 target 目录编译 `ring` 会报 MSVC `D8050`；加上
   `CARGO_TARGET_DIR=../cargo_target_ada` 复用已有缓存即可（与代码无关）。
-- **Rust 测试目前会写用户真实的 `~/.a-da`**（TS 时代的 `scripts/test-preload.ts` 重定向已随归档失效）：
-  M1 引入 `AppHome` 端口后改为注入临时 home。
+- **Rust 测试不再写用户真实的 `~/.a-da`**：`agent_core::session::app_home()` 在 `cfg(test)` 下指向
+  `temp/a_da_agent_core_test_home_<pid>`（端口化后的默认值）。要自己控制目录就用
+  `AgentStore::with_home(workspace, &TempAppHome::at(dir))` 注入，**不要用 `std::env::set_var`**
+  （端口是 `OnceLock`，初始化后改环境变量无效——已有用例栽在这上面）。
 - **别跑 `bun test`**：TS 测试已随归档冻结，`bunfig.toml` 已把 `archive/**` 排除在 test 发现之外（跑只会得到 "No tests found"）；门是 `cargo test`。
 
 ## 代码结构
 
 **目录结构按设计落地中**（`docs/agent-base-design.md` v0.2 §3；已搬批次见 `docs/agent-base-plan.md` §8）：
 
-- `crates/agent-base` 基座内核（零 IO、零产品名词）：已落地 `model/`；`domain/`、`ports/`、`engine/`、`policy/` 待搬
+- `crates/agent-base` 基座内核（零 IO、零产品名词）：`model/`（模型面类型）、`domain/`（消息·工具描述符与回执·事件·错误与失败方向）、`ports/`（8 个端口，**无默认实现**）、`testing/`（FixedClock/RecordingSink/TempAppHome）；`engine/` 待落
 - `crates/agent-proto` 线协议：JSON-RPC 帧、方法常量、线上 DTO、错误码
-- `crates/agent-adapter` 适配器：已落地 `model/`（三家协议 SSE + 中止）；`store/`、`plugin/`、`scope/` 待搬
+- `crates/agent-adapter` 适配器：`model/`（三家协议 SSE + 中止）、`app_home.rs`（**全仓唯一**读 `A_DA_HOME`/`USERPROFILE` 的地方）、`clock.rs`（**全仓唯一**读系统时间的地方）；`store/`、`plugin/`、`scope/` 待搬
 - `crates/agent-toolkit` 工具包：文件读写、路径沙箱、命令执行、文本 diff
 - `products/ada-coding` 产品二进制（`--host/--port/--token/--parent-pid/--workspace`）；`agent_core` 已变纯库
 - `agent_core/src/{ai,protocol,tools}/mod.rs` 是**兼容 shim**（`pub use` 转发到上面四个 crate），调用点不动
+- 端口已接线处：`session::{app_home,set_app_home,get_app_home,get_config_path}`、`state::{clock,set_clock,now_millis}`、`AgentStore::with_home`（单元测试默认 home 在临时目录，不再碰用户真实 `~/.a-da`）
 - `agent_core/src/{runner,server,state,session,plugins,subagents,skills,approval,checkpoint}` 仍是权威实现，M1 收敛
 - `agent_core/src/server` —— `dispatch.rs`（JSON-RPC 分发，最大文件）、`ws.rs`（宿主）、`emitter.rs`（快照合帧）
 - `src-tauri` Tauri 宿主（同进程起核心服务）；`tauri-ui` React 前端（`src/client/ws-client.ts` 是协议客户端）
