@@ -68,12 +68,17 @@ async function resolveCoreConnection(
     if (isTauri) {
       const { invoke } = await import('@tauri-apps/api/core')
       const info = await invoke<CoreInfo>('get_core_info')
-      if (info && info.alive && info.port > 0) {
+      if (info && info.alive && (info.port > 0 || Boolean(info.url))) {
+        const resolvedUrl = info.url || `ws://127.0.0.1:${info.port}/rpc`
+        console.log(`[AgentWS] 获取到核心服务连接信息: ${resolvedUrl} (mode: ${info.mode || 'direct'})`)
         return {
-          url: info.url || `ws://127.0.0.1:${info.port}/rpc`,
+          url: resolvedUrl,
           token: info.token || '',
           mode: info.mode,
         }
+      }
+      if (info?.error) {
+        console.warn('[AgentWS] 核心服务启动返回错误:', info.error)
       }
     }
   } catch (err) {
@@ -169,12 +174,18 @@ export class AgentWebSocketClient {
     }, delay)
   }
 
-  public reconnectImmediately() {
+  public async reconnectImmediately() {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
-    console.log('[AgentWS] 触发立即重连...')
+    console.log('[AgentWS] 触发立即重连，正在探测服务端点...')
+    const conn = await resolveCoreConnection(this.url, this.token)
+    this.url = conn.url
+    this.token = conn.token
+    if (conn.mode) {
+      this.desktopMode = conn.mode
+    }
     this.connect()
   }
 

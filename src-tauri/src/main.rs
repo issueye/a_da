@@ -58,30 +58,28 @@ pub enum CliCommand {
     },
 }
 
-/// 仅当命令行带有参数调用时附加父进程控制台，确保双击启动无黑框，而命令行下运行可正常输出
+/// 尝试附加父进程控制台（如果是在命令行运行），确保能正常输出日志
 #[cfg(windows)]
 fn attach_console_if_needed() {
-    if std::env::args().len() > 1 {
-        unsafe {
-            use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-            use windows_sys::Win32::System::Console::{
-                AttachConsole, GetStdHandle, SetStdHandle, ATTACH_PARENT_PROCESS,
-                STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
-            };
+    unsafe {
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::System::Console::{
+            AttachConsole, GetStdHandle, SetStdHandle, ATTACH_PARENT_PROCESS,
+            STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+        };
 
-            if AttachConsole(ATTACH_PARENT_PROCESS) != 0 {
-                let h_stdout = GetStdHandle(STD_OUTPUT_HANDLE);
-                if !h_stdout.is_null() && h_stdout != INVALID_HANDLE_VALUE {
-                    SetStdHandle(STD_OUTPUT_HANDLE, h_stdout);
-                }
-                let h_stderr = GetStdHandle(STD_ERROR_HANDLE);
-                if !h_stderr.is_null() && h_stderr != INVALID_HANDLE_VALUE {
-                    SetStdHandle(STD_ERROR_HANDLE, h_stderr);
-                }
-                let h_stdin = GetStdHandle(STD_INPUT_HANDLE);
-                if !h_stdin.is_null() && h_stdin != INVALID_HANDLE_VALUE {
-                    SetStdHandle(STD_INPUT_HANDLE, h_stdin);
-                }
+        if AttachConsole(ATTACH_PARENT_PROCESS) != 0 {
+            let h_stdout = GetStdHandle(STD_OUTPUT_HANDLE);
+            if !h_stdout.is_null() && h_stdout != INVALID_HANDLE_VALUE {
+                SetStdHandle(STD_OUTPUT_HANDLE, h_stdout);
+            }
+            let h_stderr = GetStdHandle(STD_ERROR_HANDLE);
+            if !h_stderr.is_null() && h_stderr != INVALID_HANDLE_VALUE {
+                SetStdHandle(STD_ERROR_HANDLE, h_stderr);
+            }
+            let h_stdin = GetStdHandle(STD_INPUT_HANDLE);
+            if !h_stdin.is_null() && h_stdin != INVALID_HANDLE_VALUE {
+                SetStdHandle(STD_INPUT_HANDLE, h_stdin);
             }
         }
     }
@@ -161,6 +159,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
 
     attach_console_if_needed();
+
+    let app_home = agent_node::session::get_app_home();
+    let log_file_path = std::path::Path::new(&app_home).join("launcher.log");
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_file_path);
+
+    if let Ok(file) = log_file {
+        let subscriber = tracing_subscriber::FmtSubscriber::builder()
+            .with_max_level(tracing::Level::INFO)
+            .with_target(false)
+            .with_writer(file)
+            .finish();
+        let _ = tracing::subscriber::set_global_default(subscriber);
+    }
 
     let args = CliArgs::parse();
 

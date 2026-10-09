@@ -272,7 +272,7 @@ fn pipe_child_stderr(stderr: Option<tokio::process::ChildStderr>, process_name: 
 async fn get_core_info(
     state: tauri::State<'_, CoreServiceState>,
 ) -> Result<serde_json::Value, String> {
-    for _ in 0..60 {
+    for _ in 0..250 {
         let guard = state.inner.read().await;
         if guard.alive && (guard.port > 0 || !guard.url.is_empty()) {
             let port = if guard.port > 0 { guard.port } else { 52353 };
@@ -585,72 +585,94 @@ pub fn run(config: LauncherConfig) {
 
                         let gateway_endpoint = format!("ws://127.0.0.1:{}/rpc", gw_port);
                         info!("成功连接 a-da-gateway 网关服务: {}", gateway_endpoint);
-
-                        // 2. 启动 ada-coding（Coding Agent），带上 --gateway 参数主动自连接网关
-                        info!("正在拉起 ada-coding 并连接网关: {}", ada_bin.display());
-                        let ada_token = uuid::Uuid::new_v4().simple().to_string();
-                        let mut ada_cmd = tokio::process::Command::new(&ada_bin);
-                        ada_cmd.arg("--host")
-                            .arg("--port").arg("0")
-                            .arg("--token").arg(&ada_token)
-                            .arg("--parent-pid").arg(current_pid.to_string())
-                            .arg("--gateway").arg(&gateway_endpoint);
-                        if !cfg.workspace.is_empty() {
-                            ada_cmd.arg("--workspace").arg(&cfg.workspace);
+                        {
+                            let mut guard = state_arc.write().await;
+                            guard.child_pid = Some(gw_pid);
+                            guard.child_pids = vec![gw_pid];
                         }
-                        ada_cmd.stdout(std::process::Stdio::piped());
-                        ada_cmd.stderr(std::process::Stdio::piped());
-                        hide_child_console_window(&mut ada_cmd);
 
-                        let ada_pid = match ada_cmd.spawn() {
-                            Ok(mut child) => {
-                                let pid = child.id().unwrap_or(0);
-                                pipe_child_stderr(child.stderr.take(), "ada-coding");
-                                if let Some(out) = child.stdout.take() {
-                                    let reader = BufReader::new(out).lines();
-                                    let _ = wait_for_ready_line(reader, "A_DA_HOST_READY ", std::time::Duration::from_secs(10), "ada-coding").await;
+                        // 2. 并发拉起 ada-coding（Coding Agent）与 pm-assistant（PM Agent），主动连接网关
+                        let ada_task = {
+                            let ada_bin = ada_bin.clone();
+                            let ws = cfg.workspace.clone();
+                            let gw = gateway_endpoint.clone();
+                            async move {
+                                info!("正在拉起 ada-coding 并连接网关: {}", ada_bin.display());
+                                let ada_token = uuid::Uuid::new_v4().simple().to_string();
+                                let mut ada_cmd = tokio::process::Command::new(&ada_bin);
+                                ada_cmd.arg("--host")
+                                    .arg("--port").arg("0")
+                                    .arg("--token").arg(&ada_token)
+                                    .arg("--parent-pid").arg(current_pid.to_string())
+                                    .arg("--gateway").arg(&gw);
+                                if !ws.is_empty() {
+                                    ada_cmd.arg("--workspace").arg(&ws);
                                 }
-                                pid
-                            }
-                            Err(e) => {
-                                warn!("启动 ada-coding 失败: {e}");
-                                0
+                                ada_cmd.stdout(std::process::Stdio::piped());
+                                ada_cmd.stderr(std::process::Stdio::piped());
+                                hide_child_console_window(&mut ada_cmd);
+
+                                match ada_cmd.spawn() {
+                                    Ok(mut child) => {
+                                        let pid = child.id().unwrap_or(0);
+                                        pipe_child_stderr(child.stderr.take(), "ada-coding");
+                                        if let Some(out) = child.stdout.take() {
+                                            let reader = BufReader::new(out).lines();
+                                            let _ = wait_for_ready_line(reader, "A_DA_HOST_READY ", std::time::Duration::from_secs(12), "ada-coding").await;
+                                        }
+                                        info!("ada-coding 启动并就绪，PID: {}", pid);
+                                        pid
+                                    }
+                                    Err(e) => {
+                                        warn!("启动 ada-coding 失败: {e}");
+                                        0
+                                    }
+                                }
                             }
                         };
 
-                        // 3. 启动 pm-assistant（PM Agent），带上 --gateway 参数主动自连接网关
-                        info!("正在拉起 pm-assistant 并连接网关: {}", pm_bin.display());
-                        let pm_token = uuid::Uuid::new_v4().simple().to_string();
-                        let mut pm_cmd = tokio::process::Command::new(&pm_bin);
-                        pm_cmd.arg("--host")
-                            .arg("--port").arg("0")
-                            .arg("--token").arg(&pm_token)
-                            .arg("--parent-pid").arg(current_pid.to_string())
-                            .arg("--gateway").arg(&gateway_endpoint);
-                        if !cfg.workspace.is_empty() {
-                            pm_cmd.arg("--workspace").arg(&cfg.workspace);
-                        }
-                        pm_cmd.stdout(std::process::Stdio::piped());
-                        pm_cmd.stderr(std::process::Stdio::piped());
-                        hide_child_console_window(&mut pm_cmd);
-
-                        let pm_pid = match pm_cmd.spawn() {
-                            Ok(mut child) => {
-                                let pid = child.id().unwrap_or(0);
-                                pipe_child_stderr(child.stderr.take(), "pm-assistant");
-                                if let Some(out) = child.stdout.take() {
-                                    let reader = BufReader::new(out).lines();
-                                    let _ = wait_for_ready_line(reader, "A_DA_HOST_READY ", std::time::Duration::from_secs(10), "pm-assistant").await;
+                        let pm_task = {
+                            let pm_bin = pm_bin.clone();
+                            let ws = cfg.workspace.clone();
+                            let gw = gateway_endpoint.clone();
+                            async move {
+                                info!("正在拉起 pm-assistant 并连接网关: {}", pm_bin.display());
+                                let pm_token = uuid::Uuid::new_v4().simple().to_string();
+                                let mut pm_cmd = tokio::process::Command::new(&pm_bin);
+                                pm_cmd.arg("--host")
+                                    .arg("--port").arg("0")
+                                    .arg("--token").arg(&pm_token)
+                                    .arg("--parent-pid").arg(current_pid.to_string())
+                                    .arg("--gateway").arg(&gw);
+                                if !ws.is_empty() {
+                                    pm_cmd.arg("--workspace").arg(&ws);
                                 }
-                                pid
-                            }
-                            Err(e) => {
-                                warn!("启动 pm-assistant 失败: {e}");
-                                0
+                                pm_cmd.stdout(std::process::Stdio::piped());
+                                pm_cmd.stderr(std::process::Stdio::piped());
+                                hide_child_console_window(&mut pm_cmd);
+
+                                match pm_cmd.spawn() {
+                                    Ok(mut child) => {
+                                        let pid = child.id().unwrap_or(0);
+                                        pipe_child_stderr(child.stderr.take(), "pm-assistant");
+                                        if let Some(out) = child.stdout.take() {
+                                            let reader = BufReader::new(out).lines();
+                                            let _ = wait_for_ready_line(reader, "A_DA_HOST_READY ", std::time::Duration::from_secs(12), "pm-assistant").await;
+                                        }
+                                        info!("pm-assistant 启动并就绪，PID: {}", pid);
+                                        pid
+                                    }
+                                    Err(e) => {
+                                        warn!("启动 pm-assistant 失败: {e}");
+                                        0
+                                    }
+                                }
                             }
                         };
 
-                        // 4. 更新核心状态（前端连接网关，网关统一路由）
+                        let (ada_pid, pm_pid) = tokio::join!(ada_task, pm_task);
+
+                        // 3. 更新核心状态（前端连接网关，网关统一路由）
                         info!("网关及子 Agent 全部就绪，托管 PID: 网关={}, coding={}, pm={}", gw_pid, ada_pid, pm_pid);
                         let mut guard = state_arc.write().await;
                         guard.alive = true;
