@@ -19,6 +19,7 @@ import {
   Search,
   CheckCircle2,
   Edit2,
+  Radio,
 } from 'lucide-react'
 import type {
   ProviderConfig,
@@ -28,7 +29,14 @@ import type {
   ModelEntry,
   ProviderEntry,
 } from '../types'
-import { agentClient } from '../client/ws-client'
+import {
+  agentClient,
+  getDesktopConfig,
+  setDesktopConfig,
+  restartDesktopApp,
+  type DesktopConfig,
+  type DesktopMode,
+} from '../client/ws-client'
 import { notify } from './ToastHost'
 import { ConfirmModal } from './ConfirmModal'
 
@@ -55,8 +63,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
   onSave,
 }) => {
-  // 选项卡
-  const [activeTab, setActiveTab] = useState<'provider' | 'runtime'>('provider')
+  // 选项卡：供应商 / 运行环境 / 运行模式
+  const [activeTab, setActiveTab] = useState<'provider' | 'runtime' | 'launcher'>('provider')
+
+  // 运行模式配置
+  const [desktopConfig, setDesktopConfigState] = useState<DesktopConfig>({ mode: 'direct' })
+  const [initialDesktopMode, setInitialDesktopMode] = useState<DesktopMode>('direct')
+  const [modeModified, setModeModified] = useState(false)
+  const [savingMode, setSavingMode] = useState(false)
 
   // 多供应商体系
   const [providers, setProviders] = useState<ProviderEntry[]>([])
@@ -207,6 +221,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         // 优先载入激活中的供应商
         const activeEntry = pList.find((p) => p.id === curActiveId) || pList[0]
         loadProviderIntoForm(activeEntry)
+
+        // 载入桌面端运行模式配置
+        getDesktopConfig().then((dCfg) => {
+          if (!cancelled) {
+            setDesktopConfigState(dCfg)
+            setInitialDesktopMode(dCfg.mode)
+            setModeModified(false)
+          }
+        })
       } catch (err) {
         console.warn('获取供应商数据失败:', err)
       }
@@ -216,6 +239,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       cancelled = true
     }
   }, [isOpen, loadProviderIntoForm])
+
+  // 保存桌面端运行模式配置
+  const handleSaveModeConfig = async (restartAfter: boolean = false) => {
+    setSavingMode(true)
+    try {
+      await setDesktopConfig(desktopConfig)
+      setInitialDesktopMode(desktopConfig.mode)
+      setModeModified(false)
+      notify({
+        level: 'success',
+        message: '运行模式配置已保存',
+        detail: restartAfter ? '正在重启桌面端程序...' : '切换运行模式将在重启程序后生效',
+      })
+      if (restartAfter) {
+        setTimeout(() => {
+          restartDesktopApp()
+        }, 500)
+      }
+    } catch (err: any) {
+      notify({
+        level: 'error',
+        message: '保存运行模式配置失败',
+        detail: err?.message || String(err),
+      })
+    } finally {
+      setSavingMode(false)
+    }
+  }
 
   if (!isOpen) return null
 
@@ -634,6 +685,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           >
             <ShieldCheck size={13} />
             <span>执行策略与推演力度</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('launcher')}
+            className={`flex items-center space-x-1.5 px-3 py-2 font-medium border-b-2 transition-colors ${
+              activeTab === 'launcher'
+                ? 'border-blue-600 dark:border-blue-500 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+            }`}
+          >
+            <Cpu size={13} />
+            <span>运行模式与连接</span>
           </button>
         </div>
 
@@ -1464,6 +1526,203 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
             </div>
           )}
+
+          {activeTab === 'launcher' && (
+            <div className="p-6 space-y-6 overflow-y-auto flex-1">
+              <div>
+                <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 mb-1 flex items-center space-x-2">
+                  <Cpu size={16} className="text-blue-500" />
+                  <span>桌面端运行模式</span>
+                </h3>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  选择桌面客户端连接后端 Agent 的架构模式。切换后需重启桌面端生效。默认使用 AGENT 直连模式。
+                </p>
+              </div>
+
+              {/* 两个模式单选卡片 */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* 1. AGENT 直连模式 */}
+                <div
+                  onClick={() => {
+                    setDesktopConfigState((prev) => ({ ...prev, mode: 'direct' }))
+                    setModeModified(true)
+                  }}
+                  className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                    desktopConfig.mode === 'direct'
+                      ? 'border-blue-600 bg-blue-50/40 dark:bg-blue-950/20 shadow-sm'
+                      : 'border-zinc-200 dark:border-zinc-800 hover:border-zinc-300 dark:hover:border-zinc-700 bg-white dark:bg-[#18181b]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-semibold text-blue-600 dark:text-blue-400 flex items-center space-x-1.5">
+                      <Radio size={14} />
+                      <span>AGENT 直连模式（默认推荐）</span>
+                    </span>
+                    {desktopConfig.mode === 'direct' && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-600 text-white font-medium">当前所选</span>
+                    )}
+                  </div>
+                  <p className="text-xs text-zinc-600 dark:text-zinc-400 leading-relaxed mb-3">
+                    桌面端直接连接独立的 Agent 核心进程（主要是 <strong className="text-zinc-800 dark:text-zinc-200">ada-coding</strong> 和 <strong className="text-zinc-800 dark:text-zinc-200">pm-assistant</strong>）。无需额外平台代理，具备最低交互延迟与最轻链路。
+                  </p>
+                  <div className="text-[11px] text-zinc-500 dark:text-zinc-500 bg-zinc-100/70 dark:bg-zinc-800/60 p-2.5 rounded-lg space-y-1">
+                    <div>• 自动探测并拉起本地独立 ada-coding 守护进程</div>
+                    <div>• 支持 CODING 模式与 PM 模式多 Agent 双向分发</div>
+                  </div>
+                </div>
+
+                {/* 2. 网关模式 */}
+                <div
+                  onClick={() => {
+                    setDesktopConfigState((prev) => ({ ...prev, mode: 'gateway' }))
+                    setModeModified(true)
+                  }}
+                  className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                    desktopConfig.mode === 'gateway'
+                      ? 'border-amber-600 bg-amber-50/40 dark:bg-amber-950/20 shadow-sm'
+                      : 'border-zinc-200 dark:border-zinc-800 hover:border-zinc-300 dark:hover:border-zinc-700 bg-white dark:bg-[#18181b]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-semibold text-amber-600 dark:text-amber-400 flex items-center space-x-1.5">
+                      <Server size={14} />
+                      <span>网关模式 (Gateway Mode)</span>
+                    </span>
+                    {desktopConfig.mode === 'gateway' && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-600 text-white font-medium">当前所选</span>
+                    )}
+                  </div>
+                  <p className="text-xs text-zinc-600 dark:text-zinc-400 leading-relaxed mb-3">
+                    桌面端连接到统一的 <strong className="text-zinc-800 dark:text-zinc-200">a-da-gateway</strong> 网关平台。由网关统一管理所有 Agent 实例的注册发现、跨 Agent 任务委派、集群调度与 Web 集中鉴权。
+                  </p>
+                  <div className="text-[11px] text-zinc-500 dark:text-zinc-500 bg-zinc-100/70 dark:bg-zinc-800/60 p-2.5 rounded-lg space-y-1">
+                    <div>• 自动探测并拉起本地 a-da-gateway 或连接远程网关</div>
+                    <div>• 适合企业集中管理、多 Agent 复杂协作与统一治理</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 高级连接参数配置 */}
+              <div className="bg-zinc-50 dark:bg-zinc-900/40 border border-zinc-200 dark:border-zinc-800/80 rounded-xl p-4 space-y-4">
+                <h4 className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">
+                  {desktopConfig.mode === 'direct' ? 'AGENT 直连模式参数' : '网关模式参数'}
+                </h4>
+
+                {desktopConfig.mode === 'direct' ? (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+                        自定义 Agent WebSocket 地址（可选）
+                      </label>
+                      <input
+                        type="text"
+                        value={desktopConfig.agent_connect_url || ''}
+                        onChange={(e) => {
+                          setDesktopConfigState((prev) => ({ ...prev, agent_connect_url: e.target.value }))
+                          setModeModified(true)
+                        }}
+                        placeholder="默认自动拉起并动态绑定端口（如 ws://127.0.0.1:4000/rpc）"
+                        className="w-full text-xs px-3 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg outline-none focus:border-blue-500 text-zinc-800 dark:text-zinc-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+                        自定义 ada-coding 可执行文件路径（可选）
+                      </label>
+                      <input
+                        type="text"
+                        value={desktopConfig.agent_bin_path || ''}
+                        onChange={(e) => {
+                          setDesktopConfigState((prev) => ({ ...prev, agent_bin_path: e.target.value }))
+                          setModeModified(true)
+                        }}
+                        placeholder="默认在当前目录或标准 target 缓存中自动探测"
+                        className="w-full text-xs px-3 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg outline-none focus:border-blue-500 text-zinc-800 dark:text-zinc-200"
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+                        网关 WebSocket 地址（可选）
+                      </label>
+                      <input
+                        type="text"
+                        value={desktopConfig.gateway_url || ''}
+                        onChange={(e) => {
+                          setDesktopConfigState((prev) => ({ ...prev, gateway_url: e.target.value }))
+                          setModeModified(true)
+                        }}
+                        placeholder="默认自动拉起本地网关（如 ws://127.0.0.1:4000/rpc）"
+                        className="w-full text-xs px-3 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg outline-none focus:border-blue-500 text-zinc-800 dark:text-zinc-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+                        自定义 a-da-gateway 可执行文件路径（可选）
+                      </label>
+                      <input
+                        type="text"
+                        value={desktopConfig.gateway_bin_path || ''}
+                        onChange={(e) => {
+                          setDesktopConfigState((prev) => ({ ...prev, gateway_bin_path: e.target.value }))
+                          setModeModified(true)
+                        }}
+                        placeholder="默认自动探测本地 a-da-gateway.exe"
+                        className="w-full text-xs px-3 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg outline-none focus:border-blue-500 text-zinc-800 dark:text-zinc-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+                        认证 Token / 配对密钥（可选）
+                      </label>
+                      <input
+                        type="password"
+                        value={desktopConfig.token || ''}
+                        onChange={(e) => {
+                          setDesktopConfigState((prev) => ({ ...prev, token: e.target.value }))
+                          setModeModified(true)
+                        }}
+                        placeholder="若网关要求认证请输入 token"
+                        className="w-full text-xs px-3 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg outline-none focus:border-blue-500 text-zinc-800 dark:text-zinc-200"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* 重启提示条与操作按钮 */}
+              <div className="p-4 rounded-xl border border-amber-500/30 bg-amber-50/50 dark:bg-amber-950/20 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="flex items-center space-x-2 text-xs text-amber-700 dark:text-amber-300">
+                  <AlertCircle size={15} className="flex-shrink-0" />
+                  <span>
+                    {desktopConfig.mode !== initialDesktopMode || modeModified
+                      ? '已变更运行模式设置，点击保存后重启生效。'
+                      : '当前运行模式配置已就绪。切换模式后请重启程序。'}
+                  </span>
+                </div>
+                <div className="flex items-center space-x-2 self-end sm:self-auto">
+                  <button
+                    type="button"
+                    onClick={() => handleSaveModeConfig(false)}
+                    disabled={savingMode}
+                    className="px-3 py-1.5 text-xs font-medium rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 transition-colors cursor-pointer"
+                  >
+                    保存配置
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSaveModeConfig(true)}
+                    disabled={savingMode}
+                    className="px-3.5 py-1.5 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors cursor-pointer shadow-xs"
+                  >
+                    保存并立即重启
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* 底部按钮区 */}
@@ -1489,19 +1748,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             >
               取消
             </button>
-            <button
-              onClick={() => handleSaveCurrentProvider(false)}
-              className="px-4 py-1.5 rounded-lg border border-blue-600 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 font-medium transition-colors shadow-sm"
-            >
-              保存修改
-            </button>
-            <button
-              onClick={() => handleSaveCurrentProvider(true)}
-              className="flex items-center space-x-1.5 px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium transition-colors shadow-sm"
-            >
-              {savedSuccess ? <Check size={13} /> : null}
-              <span>{savedSuccess ? '已生效' : '保存并激活'}</span>
-            </button>
+            {activeTab !== 'launcher' && (
+              <>
+                <button
+                  onClick={() => handleSaveCurrentProvider(false)}
+                  className="px-4 py-1.5 rounded-lg border border-blue-600 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 font-medium transition-colors shadow-sm cursor-pointer"
+                >
+                  保存修改
+                </button>
+                <button
+                  onClick={() => handleSaveCurrentProvider(true)}
+                  className="flex items-center space-x-1.5 px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium transition-colors shadow-sm cursor-pointer"
+                >
+                  {savedSuccess ? <Check size={13} /> : null}
+                  <span>{savedSuccess ? '已生效' : '保存并激活'}</span>
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>

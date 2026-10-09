@@ -10,6 +10,7 @@ use tracing_subscriber::FmtSubscriber;
 
 /// 产品声明（W3-T2：宿主按它装配真引擎）。
 const SPEC_JSON: &str = include_str!("../agent.spec.json");
+const PM_SPEC_JSON: &str = include_str!("../../pm-assistant/agent.spec.json");
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "a_da 原生 Agent 核心服务 (Rust)", long_about = None)]
@@ -33,6 +34,10 @@ struct CliArgs {
     /// 工作区默认路径
     #[arg(long, default_value = "")]
     workspace: String,
+
+    /// 网关服务 WebSocket 端点（如 ws://127.0.0.1:4000/rpc），指定后将主动连接并自注册
+    #[arg(long)]
+    gateway: Option<String>,
 }
 
 /// 按产品声明装配真引擎；任何失败都**如实降级**为 legacy（返回 `None`）。
@@ -92,6 +97,53 @@ fn build_engine_injection(
     }
 }
 
+/// 按 PM 产品声明装配真引擎；失败返回 None。
+fn build_pm_engine_injection(
+    store: &Arc<RwLock<AgentStore>>,
+    workspace: &str,
+) -> Option<agent_rpc::server::dispatch::EngineInjection> {
+    let spec = match agent_runtime::AgentSpec::from_json_str(PM_SPEC_JSON) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("解析 PM 规格失败：{e}");
+            return None;
+        }
+    };
+    let ws = if workspace.trim().is_empty() {
+        match std::env::current_dir() {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("取当前目录失败：{e}");
+                return None;
+            }
+        }
+    } else {
+        std::path::PathBuf::from(workspace)
+    };
+    let sessions_root =
+        std::path::Path::new(&agent_node::session::get_app_home()).join("sessions");
+    let options = agent_host::HostOptions::new(ws)
+        .with_store(store.clone())
+        .with_sessions_root(sessions_root);
+
+    match agent_host::run_from_spec(spec, options) {
+        Ok(hosted) => {
+            let tool_count = hosted.tool_names().len();
+            let agent_host::HostedProduct { runtime, approval, spec, .. } = hosted;
+            info!("已按 PM 产品声明装配真引擎：工具 {tool_count} 个");
+            Some(agent_rpc::server::dispatch::EngineInjection {
+                runtime: Arc::new(runtime),
+                approval_mgr: approval,
+                spec: Arc::new(spec),
+            })
+        }
+        Err(e) => {
+            warn!("PM 真引擎装配未完成：{e}");
+            None
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let app_home = agent_node::session::get_app_home();
@@ -131,15 +183,12 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let store = Arc::new(RwLock::new(AgentStore::new(args.workspace.clone())));
 
-    // W3-T2：按产品声明装配**真引擎**并注入宿主。
-    //
-    // 走哪条引擎由 `A_DA_ENGINE` 决定（默认 `legacy` → 行为与切换前完全一致，
-    // 保证可回滚）；设 `A_DA_ENGINE=runtime` 才真的切到 `AgentRuntime::run_turn`。
-    // 装配失败**不致命**：如实打日志并降级为 legacy，而不是让宿主起不来。
+    // W3-T2：按产品声明装配**真引擎**（Coding 与 PM 双引擎）并注入宿主。
     let injection = build_engine_injection(&store, &args.workspace);
+    let pm_injection = build_pm_engine_injection(&store, &args.workspace);
 
     // 启动 WebSocket 服务
-    let server = WsHostServer::bind_with_engine(args.port, token.clone(), store, injection).await?;
+    let server = WsHostServer::bind_with_engines(args.port, token.clone(), store, injection, pm_injection).await?;
     let current_pid = std::process::id();
 
     // 打印符合协议 §1.8 规范的标准就绪行至 stdout
@@ -155,6 +204,16 @@ async fn main() -> Result<(), anyhow::Error> {
     std::io::stdout().flush()?;
 
     info!("a-da 原生核心就绪，PID: {}, 监听端口: {}", current_pid, server.port);
+
+    // 若配置了 --gateway，启动后台协程主动向网关注册自身并保持长连接通道
+    if let Some(gateway_endpoint) = args.gateway {
+        let server_port = server.port;
+        let auth_token = token.clone();
+        let ws_path = args.workspace.clone();
+        tokio::spawn(async move {
+            register_to_gateway("ada-coding", &gateway_endpoint, server_port, &auth_token, &ws_path, current_pid).await;
+        });
+    }
 
     // 持续运行服务直到收到终止信号或父进程看门狗触发退出
     #[cfg(target_os = "windows")]
@@ -182,6 +241,90 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 
     Ok(())
+}
+
+/// 主动连接网关并完成自主注册。
+async fn register_to_gateway(
+    product: &str,
+    gateway_url: &str,
+    server_port: u16,
+    token: &str,
+    workspace: &str,
+    pid: u32,
+) {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let ws = if workspace.trim().is_empty() {
+        std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()
+    } else {
+        workspace.to_string()
+    };
+
+    let mut connect_url = gateway_url.trim().to_string();
+    let delim = if connect_url.contains('?') { "&" } else { "?" };
+    connect_url.push_str(&format!("{delim}role=agent"));
+
+    info!("正在连接网关进行自注册: {}", connect_url);
+
+    let mut stream = None;
+    for attempt in 1..=30 {
+        match connect_url.clone().into_client_request() {
+            Ok(req) => match tokio_tungstenite::connect_async(req).await {
+                Ok((ws_stream, _)) => {
+                    stream = Some(ws_stream);
+                    break;
+                }
+                Err(e) => {
+                    warn!("连接网关失败（尝试 {attempt}/30）: {e}");
+                }
+            },
+            Err(e) => {
+                warn!("构造网关连接请求失败: {e}");
+                return;
+            }
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+    }
+
+    let Some(mut ws_stream) = stream else {
+        warn!("未能连上网关服务，放弃自注册");
+        return;
+    };
+
+    let endpoint = format!("ws://127.0.0.1:{server_port}/rpc?token={token}");
+    let register_req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "gateway.register",
+        "params": {
+            "product": product,
+            "workspace": ws,
+            "endpoint": endpoint,
+            "pid": pid,
+        }
+    });
+
+    if let Err(e) = ws_stream.send(tokio_tungstenite::tungstenite::Message::Text(register_req.to_string().into())).await {
+        warn!("发送 gateway.register 失败: {e}");
+        return;
+    }
+
+    if let Some(Ok(resp)) = ws_stream.next().await {
+        info!("网关注册响应: {resp}");
+    }
+
+    info!("{} 已成功向网关自注册，保持长连接通道...", product);
+    while let Some(msg) = ws_stream.next().await {
+        if let Ok(m) = msg {
+            if m.is_close() {
+                warn!("网关控制连接已关闭");
+                break;
+            }
+        } else {
+            break;
+        }
+    }
 }
 
 #[cfg(test)]

@@ -2,9 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use clap::{Parser, Subcommand};
-use std::io::Write;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// 命令行参数定义
 #[derive(Parser, Debug)]
@@ -12,37 +9,29 @@ use tokio::sync::RwLock;
     name = "a-da",
     author = "a_da team",
     version,
-    about = "a_da 原生双角色 AI 编码智能体 (Tauri GUI + Headless Core)",
-    long_about = "a_da 是一款基于 Rust 与 Tauri 的本地 AI 编码智能体。\n支持作为 GUI 桌面端双击启动，亦支持在命令行作为 Headless 核心后台服务或 CLI 执行器运行。"
+    about = "a_da 原生桌面客户端 (Tauri GUI 独立客户端)",
+    long_about = "a_da 是一款基于 Rust 与 Tauri 的本地 AI 智能体桌面端。\n支持 AGENT 直连模式（连接 ada-coding / pm-assistant）与网关模式（连接 a-da-gateway）。"
 )]
 pub struct CliArgs {
-    /// 以 Headless / 后台服务模式运行（无桌面 GUI）
-    #[arg(long, default_value_t = false)]
-    pub headless: bool,
-
-    /// 核心服务监听端口（0 表示由操作系统自动分配空闲端口）
-    #[arg(long, default_value_t = 0)]
-    pub port: u16,
-
-    /// 握手认证令牌（若未指定则自动生成 UUID）
+    /// 运行模式：direct（直连 Agent 模式，默认）或 gateway（网关模式）
     #[arg(long)]
-    pub token: Option<String>,
+    pub mode: Option<String>,
 
-    /// 工作区根目录路径
-    #[arg(long, default_value = "")]
-    pub workspace: String,
-
-    /// 直连外部 ada-coding 核心服务 WebSocket 地址 (如 ws://127.0.0.1:4000/rpc)
+    /// 目标服务 WebSocket 地址（直连 Agent 或网关的 ws:// 地址）
     #[arg(long)]
     pub connect: Option<String>,
 
-    /// 显式指定外部 ada-coding 二进制可执行文件路径
+    /// 握手认证令牌 / 配对密钥
+    #[arg(long)]
+    pub token: Option<String>,
+
+    /// 默认工作区根目录路径
+    #[arg(long, default_value = "")]
+    pub workspace: String,
+
+    /// 自定义 Agent 或网关二进制可执行文件路径
     #[arg(long)]
     pub host_bin: Option<String>,
-
-    /// 强制使用同进程内嵌微内核，不连接也不拉起外部 ada-coding
-    #[arg(long, default_value_t = false)]
-    pub inprocess: bool,
 
     #[command(subcommand)]
     pub command: Option<CliCommand>,
@@ -50,31 +39,20 @@ pub struct CliArgs {
 
 #[derive(Subcommand, Debug, PartialEq)]
 pub enum CliCommand {
-    /// 以守护进程/核心服务模式启动
+    /// 启动后台守护服务 (提示：建议直接运行 ada-coding 或 a-da-gateway)
     Daemon {
-        /// 服务监听端口（0 表示由操作系统分配空闲端口）
         #[arg(long, default_value_t = 0)]
         port: u16,
-
-        /// 握手认证令牌
         #[arg(long)]
         token: Option<String>,
-
-        /// 工作区根目录
         #[arg(long, default_value = "")]
         workspace: String,
     },
-    /// 执行单次 CLI 指令任务
+    /// 执行单次 CLI 指令任务 (提示：建议直接运行 ada-coding run)
     Run {
-        /// 工作区根目录
         #[arg(long, default_value = "")]
         workspace: String,
-
-        /// 任务描述或指令提示词
         prompt: Option<String>,
-
-        /// 装配 + 跑一轮 + 落盘全部照常，只把模型换成回显替身（不联网）。
-        /// 用来验证"装配是否正确"，也是集成测试的抓手。
         #[arg(long, default_value_t = false)]
         dry_run: bool,
     },
@@ -112,13 +90,7 @@ fn attach_console_if_needed() {
 #[cfg(not(windows))]
 fn attach_console_if_needed() {}
 
-/// 把 panic 信息落到磁盘。
-///
-/// 注意：`PanicHookInfo` 的 `Debug` 输出会把 payload 折叠成 `Any { .. }`，
-/// 真正的原因文本（panic! 的第一个参数）会丢失。必须手动 downcast 取出，
-/// 否则日志里只剩一行 `Failed to setup app` 的位置，等于没有诊断信息。
 fn write_panic_log(text: &str) {
-    // 优先写到可执行文件旁边（双击启动时 cwd 就是 exe 目录，但安装到别处时不保证）
     let mut targets: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -134,10 +106,6 @@ fn write_panic_log(text: &str) {
     }
 }
 
-/// GUI 模式下（双击启动、无任何控制台）必须弹一个框。
-///
-/// release 版是 `windows_subsystem = "windows"`，stderr 无人接收、日志没人会主动去翻，
-/// 用户看到的就是"双击之后毫无反应"。这里把致命错误显式端到用户面前。
 #[cfg(windows)]
 fn show_fatal_dialog(text: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -184,202 +152,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             location,
             std::backtrace::Backtrace::force_capture()
         );
-        // 无控制台时 eprintln 是空操作，写文件才是唯一可靠的证据
         eprintln!("{}", text);
         write_panic_log(&text);
 
-        // 无参数启动 = 双击进入 GUI 模式，此时没有任何可见通道，只能弹框
         if std::env::args().len() <= 1 {
             show_fatal_dialog(&text);
         }
     }));
 
-    // 优先尝试附加控制台（仅有命令行参数时附加）
     attach_console_if_needed();
 
     let args = CliArgs::parse();
 
-    // 判断是否进入 Headless / CLI 模式
-    let is_headless_or_cli = args.headless || args.command.is_some();
-
-    if !is_headless_or_cli {
-        // GUI 桌面模式（默认双击启动或命令行带参启动窗口）
-        let launcher_config = a_da_tauri::LauncherConfig {
-            workspace: args.workspace.clone(),
-            connect: args.connect,
-            token: args.token,
-            host_bin: args.host_bin,
-            force_inprocess: args.inprocess,
-        };
-        a_da_tauri::run(launcher_config);
-        return Ok(());
-    }
-
-    // 初始化日志记录器（命令行/Headless 模式下输出至终端）
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .try_init();
-
-    // 分流处理不同 CLI 场景
-    match args.command {
-        Some(CliCommand::Run {
-            workspace,
-            prompt,
-            dry_run,
-        }) => {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()?;
-            let ws = if !workspace.is_empty() {
-                workspace
-            } else if !args.workspace.is_empty() {
-                args.workspace.clone()
-            } else {
-                std::env::current_dir()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string()
-            };
-
-            let Some(task_prompt) = prompt.filter(|p| !p.trim().is_empty()) else {
-                eprintln!(
-                    "提示: 请提供需要执行的任务指令，例如: a-da run --workspace . \"审查代码\""
-                );
-                std::process::exit(2);
-            };
-
-            println!("a-da 命令行任务执行器，工作区: {ws}");
-            if dry_run {
-                println!("模式: --dry-run（不联网，验证装配与会话落盘）");
+    if let Some(ref cmd) = args.command {
+        match cmd {
+            CliCommand::Run { prompt, .. } => {
+                println!("a-da 桌面端现已完全独立为纯 GUI 宿主客户端。");
+                println!("提示：若需在命令行执行指令任务，请直接使用 ada-coding 独立程序：");
+                println!("  ada-coding run --workspace . {:?}", prompt.as_deref().unwrap_or(""));
+                return Ok(());
             }
-
-            // W6-T3：真的装配引擎、跑一轮、落盘。原先这里只 create_thread 就退出。
-            let model: Option<std::sync::Arc<dyn agent_base::ports::ModelClient>> = if dry_run {
-                Some(a_da_tauri::cli_run::dry_run_model(&task_prompt))
-            } else {
-                None
-            };
-
-            let result = rt.block_on(a_da_tauri::cli_run::run_task(&ws, &task_prompt, model));
-            match result {
-                Ok(outcome) => {
-                    println!("会话: {}（{}）", outcome.thread_id, outcome.stop_reason);
-                    if outcome.text.trim().is_empty() {
-                        println!("（模型没有返回文本）");
-                    } else {
-                        println!("{}", outcome.text);
-                    }
-                    println!("会话文件目录: {}", outcome.sessions_root.display());
-                    std::io::stdout().flush()?;
-                    // 退出码 0：任务真的跑完了
-                }
-                Err(e) => {
-                    // 退出码 1：**如实失败**，不要"创建会话成功"就退出 0
-                    eprintln!("执行失败: {e}");
-                    std::process::exit(1);
-                }
+            CliCommand::Daemon { port, .. } => {
+                println!("a-da 桌面端现已完全独立为纯 GUI 宿主客户端。");
+                println!("提示：若需启动后台守护服务，请直接运行 ada-coding 或 a-da-gateway：");
+                println!("  ada-coding --host --port {}", port);
+                return Ok(());
             }
-        }
-        Some(CliCommand::Daemon {
-            port,
-            token,
-            workspace,
-        }) => {
-            let actual_port = if port > 0 { port } else { args.port };
-            let actual_token = token
-                .filter(|t| !t.trim().is_empty())
-                .or(args.token)
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            let actual_ws = if !workspace.is_empty() {
-                workspace
-            } else if !args.workspace.is_empty() {
-                args.workspace.clone()
-            } else {
-                std::env::current_dir()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string()
-            };
-
-            run_headless_server(actual_port, actual_token, actual_ws)?;
-        }
-        None => {
-            // --headless 模式
-            let actual_token = args
-                .token
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            let actual_ws = if !args.workspace.is_empty() {
-                args.workspace
-            } else {
-                std::env::current_dir()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string()
-            };
-
-            run_headless_server(args.port, actual_token, actual_ws)?;
         }
     }
 
-    Ok(())
-}
+    // 解析命令行指定的运行模式覆盖
+    let parsed_mode = args.mode.as_deref().and_then(|m| match m.to_lowercase().as_str() {
+        "direct" | "agent" => Some(a_da_tauri::DesktopMode::Direct),
+        "gateway" => Some(a_da_tauri::DesktopMode::Gateway),
+        _ => None,
+    });
 
-/// 运行 Headless 核心 WebSocket 服务
-fn run_headless_server(
-    port: u16,
-    token: String,
-    workspace: String,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
+    let launcher_config = a_da_tauri::LauncherConfig {
+        workspace: args.workspace,
+        mode: parsed_mode,
+        connect: args.connect,
+        token: args.token,
+        host_bin: args.host_bin,
+    };
 
-    rt.block_on(async {
-        let store = Arc::new(RwLock::new(agent_rpc::state::AgentStore::new(workspace.clone())));
-        // W3-T4：legacy 主循环已删除 → headless 模式同样必须注入真引擎
-        let injection = a_da_tauri::build_engine_injection(&store, &workspace)
-            .map_err(|e| anyhow::anyhow!("真引擎装配失败：{e}"))?;
-        let server =
-            agent_rpc::server::WsHostServer::bind_with_engine(port, token.clone(), store, Some(injection))
-                .await?;
-        let current_pid = std::process::id();
-
-        let ready_json = serde_json::json!({
-            "ready": true,
-            "port": server.port,
-            "token": token,
-            "pid": current_pid,
-            "protocolVersion": agent_proto::PROTOCOL_VERSION,
-        });
-
-        // 打印符合协议规范的标准就绪行
-        println!("A_DA_HOST_READY {}", ready_json);
-        std::io::stdout().flush()?;
-
-        // 监听退出信号
-        #[cfg(target_os = "windows")]
-        {
-            match tokio::signal::windows::ctrl_c() {
-                Ok(mut sig) => {
-                    sig.recv().await;
-                }
-                Err(_) => {
-                    std::future::pending::<()>().await;
-                }
-            }
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = tokio::signal::ctrl_c().await;
-        }
-
-        println!("a-da 核心后台服务已安全退出");
-        Ok::<(), anyhow::Error>(())
-    })?;
-
+    a_da_tauri::run(launcher_config);
     Ok(())
 }
 
@@ -390,72 +207,23 @@ mod tests {
     #[test]
     fn test_cli_args_parsing_defaults() {
         let args = CliArgs::try_parse_from(["a-da"]).expect("解析默认参数失败");
-        assert!(!args.headless);
-        assert_eq!(args.port, 0);
+        assert_eq!(args.mode, None);
         assert_eq!(args.token, None);
         assert_eq!(args.workspace, "");
         assert_eq!(args.command, None);
     }
 
     #[test]
-    fn test_cli_args_parsing_headless() {
+    fn test_cli_args_parsing_mode() {
         let args = CliArgs::try_parse_from([
             "a-da",
-            "--headless",
-            "--port",
-            "52353",
-            "--token",
-            "secret_token",
-            "--workspace",
-            "E:/workspace",
+            "--mode",
+            "gateway",
+            "--connect",
+            "ws://127.0.0.1:4000/rpc",
         ])
-        .expect("解析 headless 参数失败");
-        assert!(args.headless);
-        assert_eq!(args.port, 52353);
-        assert_eq!(args.token, Some("secret_token".to_string()));
-        assert_eq!(args.workspace, "E:/workspace");
-    }
-
-    #[test]
-    fn test_cli_args_parsing_daemon_subcommand() {
-        let args = CliArgs::try_parse_from([
-            "a-da",
-            "daemon",
-            "--port",
-            "9999",
-            "--token",
-            "token_abc",
-            "--workspace",
-            "E:/codes",
-        ])
-        .expect("解析 daemon 子命令失败");
-        assert_eq!(
-            args.command,
-            Some(CliCommand::Daemon {
-                port: 9999,
-                token: Some("token_abc".to_string()),
-                workspace: "E:/codes".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn test_cli_args_parsing_run_subcommand() {
-        let args = CliArgs::try_parse_from([
-            "a-da",
-            "run",
-            "--workspace",
-            "E:/projects",
-            "修复这个编译错误",
-        ])
-        .expect("解析 run 子命令失败");
-        assert_eq!(
-            args.command,
-            Some(CliCommand::Run {
-                workspace: "E:/projects".to_string(),
-                prompt: Some("修复这个编译错误".to_string()),
-                dry_run: false,
-            })
-        );
+        .expect("解析网关参数失败");
+        assert_eq!(args.mode.as_deref(), Some("gateway"));
+        assert_eq!(args.connect.as_deref(), Some("ws://127.0.0.1:4000/rpc"));
     }
 }

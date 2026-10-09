@@ -42,6 +42,17 @@ impl WsHostServer {
         store: Arc<RwLock<AgentStore>>,
         injection: Option<crate::server::dispatch::EngineInjection>,
     ) -> Result<Arc<Self>, anyhow::Error> {
+        Self::bind_with_engines(bind_port, token, store, injection, None).await
+    }
+
+    /// 绑定并同时注入多个真引擎（如 `ada-coding` 主引擎与 `pm-assistant` PM 引擎）。
+    pub async fn bind_with_engines(
+        bind_port: u16,
+        token: String,
+        store: Arc<RwLock<AgentStore>>,
+        coding_injection: Option<crate::server::dispatch::EngineInjection>,
+        pm_injection: Option<crate::server::dispatch::EngineInjection>,
+    ) -> Result<Arc<Self>, anyhow::Error> {
         let addr = SocketAddr::from(([127, 0, 0, 1], bind_port));
         let listener = TcpListener::bind(addr).await?;
         let local_addr = listener.local_addr()?;
@@ -66,10 +77,11 @@ impl WsHostServer {
         let session_mgr = Arc::new(agent_node::session::SessionManager::new(None));
         let checkpoint_mgr = Arc::new(agent_node::checkpoint::CheckpointManager::new(None));
         let subagent_mgr = Arc::new(agent_node::subagents::SubagentManager::new());
-        // 审批 waiter 表：注入了引擎就用**它的**那张（UI 决策必须落到同一张表）
-        let approval_mgr = match &injection {
-            Some(i) => i.approval_mgr.clone(),
-            None => Arc::new(agent_node::approval::ApprovalManager::new()),
+        // 审批 waiter 表：优先使用 coding 引擎的审批表（UI 决策必须落到同一张表）
+        let approval_mgr = match (&coding_injection, &pm_injection) {
+            (Some(i), _) => i.approval_mgr.clone(),
+            (None, Some(i)) => i.approval_mgr.clone(),
+            (None, None) => Arc::new(agent_node::approval::ApprovalManager::new()),
         };
         let plugin_mgr = Arc::new(agent_node::plugins::PluginManager::new());
         let skill_mgr = Arc::new(agent_node::skills::SkillManager::new());
@@ -90,8 +102,9 @@ impl WsHostServer {
                 skill_mgr,
                 Some(broadcaster.clone()),
             )
-            // W3-T2：宿主注入真引擎；`None` 时不注入（保持 legacy）
-            .pipe_engine(injection),
+            // 宿主注入主引擎与 PM 引擎
+            .pipe_engine(coding_injection)
+            .pipe_pm_engine(pm_injection),
         );
 
         let server = Arc::new(Self {

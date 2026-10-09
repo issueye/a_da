@@ -13,6 +13,7 @@ import {
   History,
 } from 'lucide-react'
 import type { AgentMode } from '../types'
+import { agentClient } from '../client/ws-client'
 
 interface TitleBarProps {
   title: string
@@ -74,9 +75,10 @@ export const TitleBar: React.FC<TitleBarProps> = ({
 
   const modeBadge = {
     code: { label: '编码', color: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
+    pm: { label: 'PM管理', color: 'bg-amber-500/20 text-amber-500 border-amber-500/30' },
     plan: { label: '规划', color: 'bg-purple-500/20 text-purple-400 border-purple-500/30' },
     create: { label: '创造', color: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' },
-  }[mode]
+  }[mode] || { label: '编码', color: 'bg-blue-500/20 text-blue-400 border-blue-500/30' }
 
   return (
     <header
@@ -121,20 +123,24 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         </span>
       </div>
 
-      {/* 中间：连接状态 */}
+      {/* 中间：连接状态与运行模式 */}
       <div
         className={`flex items-center space-x-1.5 px-2 py-0.5 rounded transition-colors ${
           !connected ? 'cursor-pointer hover:bg-rose-500/10 pointer-events-auto' : 'pointer-events-none'
         }`}
         onClick={!connected ? onReconnect : undefined}
-        title={!connected ? '核心服务断开，点击立即尝试重连' : '核心在线'}
+        title={
+          !connected
+            ? '服务连接断开，点击立即重试'
+            : `服务在线 · 当前运行模式：${agentClient.desktopMode === 'gateway' ? '网关模式' : 'AGENT 直连模式'}`
+        }
       >
         <Circle
           size={7}
           className={`${connected ? 'fill-emerald-500 text-emerald-500' : 'fill-rose-500 text-rose-500'} animate-pulse`}
         />
         <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
-          {connected ? '核心在线' : '未连接 (点击重试)'}
+          {connected ? (agentClient.desktopMode === 'gateway' ? '网关在线' : '直连在线') : '未连接 (点击重试)'}
         </span>
       </div>
 

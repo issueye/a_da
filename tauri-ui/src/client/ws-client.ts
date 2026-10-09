@@ -36,11 +36,24 @@ import { reconnectDelayMs } from './reconnect-policy'
 
 export type Listener = (snapshot: ClientSnapshot) => void
 
-interface CoreInfo {
+export type DesktopMode = 'direct' | 'gateway'
+
+export interface DesktopConfig {
+  mode: DesktopMode
+  agent_connect_url?: string | null
+  agent_bin_path?: string | null
+  gateway_url?: string | null
+  gateway_bin_path?: string | null
+  token?: string | null
+}
+
+export interface CoreInfo {
   alive: boolean
+  mode?: DesktopMode
   port: number
   token: string
   url: string
+  error?: string | null
 }
 
 /**
@@ -49,7 +62,7 @@ interface CoreInfo {
 async function resolveCoreConnection(
   defaultUrl = 'ws://127.0.0.1:52353/rpc',
   defaultToken = ''
-): Promise<{ url: string; token: string }> {
+): Promise<{ url: string; token: string; mode?: DesktopMode }> {
   try {
     const isTauri = typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__TAURI__)
     if (isTauri) {
@@ -59,6 +72,7 @@ async function resolveCoreConnection(
         return {
           url: info.url || `ws://127.0.0.1:${info.port}/rpc`,
           token: info.token || '',
+          mode: info.mode,
         }
       }
     }
@@ -68,6 +82,38 @@ async function resolveCoreConnection(
   return {
     url: defaultUrl,
     token: defaultToken,
+  }
+}
+
+/** 获取桌面端运行模式配置 */
+export async function getDesktopConfig(): Promise<DesktopConfig> {
+  try {
+    const isTauri = typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__TAURI__)
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return await invoke<DesktopConfig>('get_desktop_config')
+    }
+  } catch (err) {
+    console.warn('[AgentWS] 获取桌面端配置失败:', err)
+  }
+  return { mode: 'direct' }
+}
+
+/** 保存桌面端运行模式配置 */
+export async function setDesktopConfig(config: DesktopConfig): Promise<void> {
+  const isTauri = typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__TAURI__)
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('set_desktop_config', { config })
+  }
+}
+
+/** 重启桌面端应用程序 */
+export async function restartDesktopApp(): Promise<void> {
+  const isTauri = typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__TAURI__)
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('restart_desktop_app')
   }
 }
 
@@ -116,6 +162,9 @@ export class AgentWebSocketClient {
       const conn = await resolveCoreConnection(this.url, this.token)
       this.url = conn.url
       this.token = conn.token
+      if (conn.mode) {
+        this.desktopMode = conn.mode
+      }
       this.connect()
     }, delay)
   }
@@ -136,14 +185,16 @@ export class AgentWebSocketClient {
     const title = thread.title || '无标题会话'
     const dateStr = thread.createdAt ? new Date(thread.createdAt).toLocaleString('zh-CN') : '未知时间'
     const ws = thread.workspace || '默认工作区'
-    const prodName = this.productInfo?.name || 'a_da 编程助手'
+    const isPm = thread.mode === 'pm' || thread.agentId === 'pm-assistant'
+    const prodName = isPm ? '项目管理助手' : (this.productInfo?.name || 'a_da 编程助手')
+    const agentId = isPm ? 'pm-assistant' : (this.productInfo?.id || 'ada-coding')
 
     const lines: string[] = [
       `# ${title}`,
       ``,
       `> - **工作区**: \`${ws}\``,
       `> - **创建时间**: ${dateStr}`,
-      `> - **助手规格**: ${prodName} (${this.productInfo?.id || 'ada-coding'})`,
+      `> - **助手规格**: ${prodName} (${agentId})`,
       ``,
       `---`,
       ``,
@@ -244,6 +295,8 @@ export class AgentWebSocketClient {
     activeProviderId: '',
   }
 
+  public desktopMode: DesktopMode = 'direct'
+
   constructor(
     private url: string = 'ws://127.0.0.1:52353/rpc',
     private token: string = ''
@@ -255,6 +308,9 @@ export class AgentWebSocketClient {
     const conn = await resolveCoreConnection(this.url, this.token)
     this.url = conn.url
     this.token = conn.token
+    if (conn.mode) {
+      this.desktopMode = conn.mode
+    }
     this.connect()
   }
 
@@ -737,24 +793,31 @@ export class AgentWebSocketClient {
     return this.request('thread.abort', { threadId: tid })
   }
 
-  public async createThread(workspace?: string, mode?: AgentMode) {
+  public async createThread(workspace?: string, mode?: AgentMode, agentId?: string) {
     // 优先采用当前激活会话的上级工作区，确保一个会话严格对应其所属工程目录
     const activeThread = this.snapshot.threads.find((t) => t.id === this.snapshot.activeThreadId)
     const ws = workspace || activeThread?.workspace || this.snapshot.activeWorkspace
     const m = mode || this.snapshot.currentMode
-    const res = await this.request<{ threadId: string }>('thread.create', { workspace: ws, mode: m })
+    const resolvedAgentId = agentId || (m === 'pm' ? 'pm-assistant' : 'ada-coding')
+    const res = await this.request<{ threadId: string }>('thread.create', {
+      workspace: ws,
+      mode: m,
+      agentId: resolvedAgentId,
+    })
     if (res?.threadId) {
       this.snapshot.activeThreadId = res.threadId
       this.snapshot.activeWorkspace = ws
+      this.snapshot.currentMode = m
       this.snapshot.running = (this.snapshot.runningThreadIds || []).includes(res.threadId)
       // 服务端的即时快照可能先于本次响应抵达（id 已在列表中）。
       // 此时以服务端数据为准，避免同一个会话在本地出现两份、被分到两个工作区组里
       if (!this.snapshot.threads.some((t) => t.id === res.threadId)) {
         const newThread: Thread = {
           id: res.threadId,
-          title: '新对话',
+          title: m === 'pm' ? '新 PM 项目会话' : '新对话',
           workspace: ws,
           mode: m,
+          agentId: resolvedAgentId,
           items: [],
           createdAt: Date.now(),
           updatedAt: Date.now(),

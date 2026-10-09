@@ -318,6 +318,10 @@ pub struct Dispatcher {
     ///
     /// `None` = 没注入声明（老调用点/测试）→ 退回 `ServerCapabilities::default()`。
     product_spec: Option<Arc<agent_runtime::AgentSpec>>,
+    /// PM 助手专属真引擎（`pm-assistant`）。
+    ///
+    /// 会话模式为 `Pm` 或 `agent_id` 为 `pm-assistant` 时调度此引擎。若未注入则回退到主引擎。
+    pm_engine: Option<Arc<agent_base::engine::AgentRuntime>>,
 }
 
 impl Dispatcher {
@@ -343,6 +347,7 @@ impl Dispatcher {
                 let target_tid_clone = thread_id;
                 // W3-T2：把注入的真引擎（若有）带进 drain 循环
                 let engine_clone = self.engine.clone();
+                let pm_engine_clone = self.pm_engine.clone();
 
                 let runner_task = tokio::spawn(async move {
                     let mut current_prompt: Option<String> = first_prompt;
@@ -354,12 +359,23 @@ impl Dispatcher {
                         let tid = target_tid_clone.clone();
                         let prompt = current_prompt.take();
                         let p_cfg = provider_config.clone();
-                        // 每轮取一份引擎克隆：`async move` 会吞掉捕获值，
-                        // 直接在闭包里 `.clone()` 会把外层那份也 move 走（循环第二轮就报错）。
-                        let engine_for_turn = engine_clone.clone();
+
+                        // 每轮根据当前会话绑定的 Agent / 模式分发对应引擎：
+                        let (thread_agent_id, thread_mode) = {
+                            let s = store_clone.read().await;
+                            let t = s.threads.iter().find(|t| t.id == tid);
+                            (t.and_then(|t| t.agent_id.clone()), t.and_then(|t| t.mode))
+                        };
+                        let is_pm = thread_agent_id.as_deref() == Some("pm-assistant")
+                            || thread_mode == Some(AgentMode::Pm);
+                        let engine_for_turn = if is_pm {
+                            pm_engine_clone.clone().or_else(|| engine_clone.clone())
+                        } else {
+                            engine_clone.clone()
+                        };
 
                         let loop_handle = tokio::spawn(async move {
-                            // W3-T2：统一入口——按 `A_DA_ENGINE` 与是否注入引擎决定走哪条。
+                            // W3-T2：统一入口——按是否注入引擎决定执行。
                             if let Err(e) = run_agent_turn(
                                 engine_for_turn,
                                 &tid,
@@ -530,6 +546,7 @@ impl Dispatcher {
             running_tasks: Arc::new(Mutex::new(HashMap::new())),
             engine: None,
             product_spec: None,
+            pm_engine: None,
         }
     }
 
@@ -538,6 +555,12 @@ impl Dispatcher {
     /// 保持 builder 风格：既有调用点与测试**一行不改**，只有真正要切引擎的宿主才调它。
     pub fn with_engine(mut self, engine: Arc<agent_base::engine::AgentRuntime>) -> Self {
         self.engine = Some(engine);
+        self
+    }
+
+    /// 注入 PM 助手真引擎。
+    pub fn with_pm_engine(mut self, engine: Arc<agent_base::engine::AgentRuntime>) -> Self {
+        self.pm_engine = Some(engine);
         self
     }
 
@@ -553,6 +576,14 @@ impl Dispatcher {
             self.engine = Some(i.runtime);
             // W3-T6：声明一起带进来，握手才能如实回报能力位
             self.product_spec = Some(i.spec);
+        }
+        self
+    }
+
+    /// 管道式注入 PM 助手引擎注入包。
+    pub fn pipe_pm_engine(mut self, injection: Option<EngineInjection>) -> Self {
+        if let Some(i) = injection {
+            self.pm_engine = Some(i.runtime);
         }
         self
     }
@@ -737,6 +768,7 @@ impl Dispatcher {
             THREAD_CREATE => {
                 let title = params.get("title").and_then(|v| v.as_str()).map(|s| s.to_string());
                 let mode_param = params.get("mode").and_then(|v| v.as_str());
+                let agent_id_param = params.get("agentId").and_then(|v| v.as_str()).map(|s| s.to_string());
                 let ws_param = params.get("workspace")
                     .and_then(|v| v.as_str())
                     .map(|s| s.trim().to_string())
@@ -747,21 +779,19 @@ impl Dispatcher {
                     .get("delegationDepth")
                     .and_then(|v| v.as_u64())
                     .map(|v| v as u32);
+                let parsed_mode = mode_param.map(|m| match m.to_lowercase().as_str() {
+                    "plan" => AgentMode::Plan,
+                    "create" => AgentMode::Create,
+                    "pm" => AgentMode::Pm,
+                    _ => AgentMode::Code,
+                });
                 let mut store = self.store.write().await;
-                let id = store.create_thread(title.clone(), ws_param.clone());
+                let id = store.create_thread_with_agent(title.clone(), ws_param.clone(), parsed_mode, agent_id_param);
                 if let Some(d) = delegation_depth {
                     store.delegation_depths.insert(id.clone(), d);
                 }
-                if let Some(m) = mode_param {
-                    let parsed_mode = match m.to_lowercase().as_str() {
-                        "plan" => AgentMode::Plan,
-                        "create" => AgentMode::Create,
-                        _ => AgentMode::Code,
-                    };
-                    if let Some(t) = store.threads.iter_mut().find(|t| t.id == id) {
-                        t.mode = Some(parsed_mode);
-                    }
-                    store.config.mode = parsed_mode;
+                if let Some(m) = parsed_mode {
+                    store.config.mode = m;
                 }
                 // 会话落在调用方指定的工作区；未指定则沿用当前工作区（历史行为）
                 let ws = thread_workspace(&store, &id);
@@ -1556,6 +1586,7 @@ impl Dispatcher {
                 let mode = match mode_str.to_lowercase().as_str() {
                     "plan" => AgentMode::Plan,
                     "create" => AgentMode::Create,
+                    "pm" => AgentMode::Pm,
                     _ => AgentMode::Code,
                 };
                 let mut store = self.store.write().await;
@@ -1563,6 +1594,11 @@ impl Dispatcher {
                 let thread_id = params.get("threadId").and_then(|v| v.as_str()).unwrap_or(&store.active_id).to_string();
                 if let Some(t) = store.threads.iter_mut().find(|t| t.id == thread_id) {
                     t.mode = Some(mode);
+                    if mode == AgentMode::Pm {
+                        t.agent_id = Some("pm-assistant".to_string());
+                    } else if t.agent_id.as_deref() == Some("pm-assistant") {
+                        t.agent_id = Some("ada-coding".to_string());
+                    }
                 }
                 drop(store);
 
@@ -1974,7 +2010,25 @@ impl Dispatcher {
                     if let Some(title) = params.get("title").and_then(|v| v.as_str()) {
                         t.title = title.to_string();
                     }
+                    if let Some(agent_id) = params.get("agentId").and_then(|v| v.as_str()) {
+                        t.agent_id = Some(agent_id.to_string());
+                    }
+                    if let Some(mode_str) = params.get("mode").and_then(|v| v.as_str()) {
+                        let parsed = match mode_str.to_lowercase().as_str() {
+                            "plan" => AgentMode::Plan,
+                            "create" => AgentMode::Create,
+                            "pm" => AgentMode::Pm,
+                            _ => AgentMode::Code,
+                        };
+                        t.mode = Some(parsed);
+                    }
                 }
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
                 Ok(serde_json::Value::Null)
             }
 

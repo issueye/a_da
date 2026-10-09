@@ -70,6 +70,7 @@ export interface ComposerProps {
 /** 模式定义选项（对齐原版 GPUIX Composer） */
 export const MODE_OPTIONS: { value: AgentMode; label: string; icon: any; desc: string }[] = [
   { value: 'code', label: 'Code 编码', icon: Code2, desc: '全能敏捷编码与工程构建 (默认)' },
+  { value: 'pm', label: 'PM 项目管理', icon: ListTodo, desc: '目标拆解与分派，经网关驱动 Coding Agent 落地' },
   { value: 'plan', label: 'Plan 规划', icon: Compass, desc: '只读架构分析与实施计划设计 (只读防写)' },
   { value: 'create', label: 'Create 创造', icon: Sparkles, desc: '智能体自我进化与工具/技能 CRUD' },
 ]

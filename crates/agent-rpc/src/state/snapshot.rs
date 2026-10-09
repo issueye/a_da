@@ -34,6 +34,7 @@ pub fn generate_snapshot_with_seq(store: &AgentStore, seq: u64) -> ClientSnapsho
                 items: if need_full { t.items.clone() } else { Vec::new() },
                 messages: Vec::new(),
                 mode: t.mode,
+                agent_id: t.agent_id.clone(),
                 parent_id: t.parent_id.clone(),
                 subagent_id: t.subagent_id.clone(),
                 is_subagent: t.is_subagent,

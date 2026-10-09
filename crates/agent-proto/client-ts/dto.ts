@@ -2,7 +2,7 @@
  * AGENT BASE 线协议数据结构 DTO (与 agent-proto/src/dto.rs 严格对齐)
  */
 
-export type AgentMode = 'code' | 'plan' | 'create'
+export type AgentMode = 'code' | 'plan' | 'create' | 'pm'
 export type ApprovalMode = 'auto' | 'ask' | 'readonly'
 export type Effort = 'max' | 'high' | 'medium' | 'low'
 export type ModelProtocol = 'openai_chat' | 'anthropic' | 'openai_responses'
@@ -138,6 +138,7 @@ export interface Thread {
   title: string
   workspace: string
   mode: AgentMode
+  agentId?: string
   items: Item[]
   stats?: ThreadStats
   createdAt: number

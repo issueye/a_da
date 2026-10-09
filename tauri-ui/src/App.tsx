@@ -102,8 +102,8 @@ export function App() {
     agentClient.setActiveThread(threadId)
   }
 
-  const handleCreateThread = (workspace?: string) => {
-    agentClient.createThread(workspace)
+  const handleCreateThread = (workspace?: string, mode?: AgentMode) => {
+    agentClient.createThread(workspace, mode)
   }
 
   const handleDeleteThread = (threadId: string) => {
@@ -333,7 +333,11 @@ export function App() {
       <TitleBar
         title={activeThread?.title || '新对话'}
         workspace={activeThread?.workspace}
-        productName={agentClient.productInfo?.name || agentClient.productInfo?.id || 'ada-coding'}
+        productName={
+          activeThread?.mode === 'pm' || activeThread?.agentId === 'pm-assistant'
+            ? 'pm-assistant'
+            : (agentClient.productInfo?.name || agentClient.productInfo?.id || 'ada-coding')
+        }
         mode={snapshot.currentMode}
         connected={connected}
         isDark={isDark}
@@ -372,9 +376,11 @@ export function App() {
           threads={snapshot.threads}
           activeThreadId={activeThread?.id || ''}
           activeWorkspace={activeThread?.workspace || snapshot.activeWorkspace}
+          currentMode={snapshot.currentMode}
           runningThreadIds={snapshot.runningThreadIds || []}
           onSelectThread={handleSelectThread}
           onCreateThread={handleCreateThread}
+          onSelectMode={handleSetMode}
           onDeleteThread={handleDeleteThread}
           onRemoveWorkspace={handleRemoveWorkspace}
           onOpenWorkspacePicker={() => {

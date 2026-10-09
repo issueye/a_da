@@ -92,6 +92,15 @@ export const TabStrip: React.FC<TabStripProps> = ({
                         : 'text-purple-400 dark:text-purple-500 flex-shrink-0'
                     }
                   />
+                ) : thread.mode === 'pm' || thread.agentId === 'pm-assistant' ? (
+                  <MessageSquare
+                    size={12}
+                    className={
+                      isSelected
+                        ? 'text-amber-500 flex-shrink-0'
+                        : 'text-amber-500/70 dark:text-amber-400/60 flex-shrink-0'
+                    }
+                  />
                 ) : (
                   <MessageSquare
                     size={12}
@@ -104,8 +113,14 @@ export const TabStrip: React.FC<TabStripProps> = ({
                 )}
 
                 <span className="truncate text-xs">
-                  {thread.title || (isSubagent ? '子代理会话' : '新对话')}
+                  {thread.title || (isSubagent ? '子代理会话' : (thread.mode === 'pm' ? 'PM 会话' : '新对话'))}
                 </span>
+
+                {(thread.mode === 'pm' || thread.agentId === 'pm-assistant') && !isSubagent && (
+                  <span className="px-1 py-0.2 rounded text-[8px] bg-amber-500/15 text-amber-600 dark:text-amber-400 font-semibold flex-shrink-0 leading-tight">
+                    PM
+                  </span>
+                )}
               </div>
 
               {/* 右侧：关闭标签按钮 */}

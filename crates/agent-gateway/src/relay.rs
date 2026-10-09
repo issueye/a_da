@@ -38,8 +38,8 @@ use crate::auth::{query_param, AuthError, AuthOutcome};
 use crate::delegate::{
     delegate, DelegateError, DelegateOutcome, DelegationRegistry, DEFAULT_DELEGATION_TIMEOUT,
 };
-use crate::registry::{AgentInstance, AgentRegistry};
-use crate::supervisor::{ensure_agent, SpawnSpec};
+use crate::registry::{AgentInstance, AgentRegistry, AgentStatus, normalize_workspace};
+use crate::supervisor::{ensure_agent, now_ms, SpawnSpec};
 
 /// 网关自己处理的方法前缀。
 ///
@@ -51,6 +51,7 @@ pub const GATEWAY_METHOD_PREFIX: &str = "gateway.";
 pub mod methods {
     pub const LIST_AGENTS: &str = "gateway.listAgents";
     pub const ATTACH: &str = "gateway.attach";
+    pub const REGISTER: &str = "gateway.register";
     pub const STATUS: &str = "gateway.status";
     pub const DETACH: &str = "gateway.detach";
     /// **交互平台**：派活给某个 agent 并等它跑完（S6）
@@ -212,10 +213,10 @@ pub async fn serve_client(
     // 回调可以返回 `ErrorResponse`，于是拒绝表现为**一个 HTTP 状态码**
     // （401/403）——浏览器与 curl 都能直接看到原因，而不是"连上了又莫名其妙断开"。
     let auth = gateway.auth.clone();
-    // 刻意用 `std::sync::Mutex`：这里的临界区**不含 await**（只是拷两个 Option），
+    // 刻意用 `std::sync::Mutex`：这里的临界区**不含 await**（只是拷四个 Option），
     // 用异步锁反而要求跨 await 持锁。与 `Gateway` 里那个 tokio 锁不是一回事。
-    let captured: Arc<std::sync::Mutex<(Option<String>, Option<String>)>> =
-        Arc::new(std::sync::Mutex::new((None, None)));
+    let captured: Arc<std::sync::Mutex<(Option<String>, Option<String>, Option<String>, Option<String>)>> =
+        Arc::new(std::sync::Mutex::new((None, None, None, None)));
     let cap = captured.clone();
 
     let client_ws = tokio_tungstenite::accept_hdr_async(
@@ -225,6 +226,8 @@ pub async fn serve_client(
             let uri = req.uri().to_string();
             let token = query_param(&uri, "token");
             let workspace = query_param(&uri, "workspace");
+            let role = query_param(&uri, "role");
+            let product = query_param(&uri, "product");
             let origin = req
                 .headers()
                 .get("origin")
@@ -241,13 +244,13 @@ pub async fn serve_client(
                 return Err(handshake_error(401, &e.to_string()));
             }
 
-            *cap.lock().expect("captured 锁") = (token, workspace);
+            *cap.lock().expect("captured 锁") = (token, workspace, role, product);
             Ok(resp)
         },
     )
     .await?;
 
-    let (token, uri_workspace) = {
+    let (token, uri_workspace, uri_role, uri_product) = {
         let g = captured.lock().expect("captured 锁");
         g.clone()
     };
@@ -269,6 +272,13 @@ pub async fn serve_client(
         unreachable!("Anonymous 已在上面返回");
     };
 
+    // 2.5 **Agent / 控制面专用连接**：如果连接声明了 role=agent 或 role=control，
+    // 不需要也不应当触发 ensure_agent 去启动实例，直接进入 Agent 控制与自注册通道。
+    if uri_role.as_deref() == Some("agent") || uri_role.as_deref() == Some("control") {
+        info!("Agent / 控制面专用连接已接入");
+        return serve_agent_control(gateway, client_ws).await;
+    }
+
     // 3. 工作区：URL 上的 `?workspace=` 优先，其次调用方给的默认值
     let ws = uri_workspace
         .or(requested_workspace)
@@ -285,13 +295,103 @@ pub async fn serve_client(
         ));
     }
 
-    let spec = SpawnSpec::new(gateway.default_product.clone(), &ws);
+    let target_product = uri_product.unwrap_or_else(|| gateway.default_product.clone());
+    let spec = SpawnSpec::new(target_product, &ws);
     let instance = ensure_agent(&spec, &gateway.registry, &gateway.spawn_lock, gateway.pid)
         .await
         .map_err(|e| anyhow::anyhow!("绑定 agent 失败：{e}"))?;
     info!("客户端已接入网关，绑定实例 {}", instance.id);
 
     relay(gateway, client_ws, instance).await
+}
+
+/// Agent 控制与自注册通道：专用于 Agent 进程向网关自报家门与保活。
+async fn serve_agent_control(
+    gateway: Arc<Gateway>,
+    client_ws: tokio_tungstenite::WebSocketStream<TcpStream>,
+) -> Result<(), anyhow::Error> {
+    let (mut tx, mut rx) = client_ws.split();
+    let mut registered_agent_id: Option<String> = None;
+
+    while let Some(msg) = rx.next().await {
+        let msg = match msg {
+            Ok(m) => m,
+            Err(e) => {
+                warn!("读取 Agent 控制帧失败：{e}");
+                break;
+            }
+        };
+        if msg.is_close() {
+            break;
+        }
+        let Message::Text(text) = msg else { continue };
+        let Ok(req) = serde_json::from_str::<agent_proto::JsonRpcRequest>(&text) else {
+            continue;
+        };
+
+        let id = req.id.clone();
+        let params = req.params.clone().unwrap_or(serde_json::Value::Null);
+
+        let out: Result<serde_json::Value, String> = if let Some(method) = req.method.strip_prefix(GATEWAY_METHOD_PREFIX) {
+            match method {
+                "register" => {
+                    let product = params.get("product").and_then(|v| v.as_str()).unwrap_or("");
+                    let workspace = params.get("workspace").and_then(|v| v.as_str()).unwrap_or("");
+                    let endpoint = params.get("endpoint").and_then(|v| v.as_str()).unwrap_or("");
+                    let pid = params.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32);
+                    if product.is_empty() || workspace.is_empty() || endpoint.is_empty() {
+                        Err("gateway.register 参数缺失：需要 product, workspace, endpoint".to_string())
+                    } else {
+                        let norm_ws = normalize_workspace(workspace);
+                        let agent_id = AgentRegistry::id_for_workspace(product, &norm_ws);
+                        let inst = AgentInstance {
+                            id: agent_id.clone(),
+                            product: product.to_string(),
+                            workspace: norm_ws.to_string_lossy().to_string(),
+                            endpoint: endpoint.to_string(),
+                            status: AgentStatus::Ready,
+                            pid,
+                            started_at: now_ms(),
+                        };
+                        let is_new = gateway.registry.register(inst);
+                        info!("Agent 成功向网关注册: {} -> {} (pid: {:?})", agent_id, endpoint, pid);
+                        registered_agent_id = Some(agent_id.clone());
+                        Ok(serde_json::json!({
+                            "registered": true,
+                            "id": agent_id,
+                            "isNew": is_new,
+                        }))
+                    }
+                }
+                "info" => Ok(gateway.info_result()),
+                "listAgents" => Ok(gateway.list_agents_result()),
+                "status" => Ok(gateway.status_result()),
+                other => Err(format!("Agent 控制连接不支持方法：{GATEWAY_METHOD_PREFIX}{other}")),
+            }
+        } else {
+            Err(format!("Agent 控制连接仅接受 gateway.* 方法，收到: {}", req.method))
+        };
+
+        let frame = match out {
+            Ok(result) => agent_proto::JsonRpcResponse::<serde_json::Value>::success(id, result),
+            Err(msg) => agent_proto::JsonRpcResponse::<serde_json::Value>::error(
+                id,
+                agent_proto::ProtocolError::new(
+                    agent_proto::RpcErrorCode::InvalidRequest.code(),
+                    msg,
+                    None,
+                ),
+            ),
+        };
+        tx.send(Message::Text(serde_json::to_string(&frame)?.into())).await?;
+    }
+
+    if let Some(agent_id) = registered_agent_id {
+        warn!("Agent 控制连接已关闭，标记实例离线: {}", agent_id);
+        gateway.registry.set_status(&agent_id, AgentStatus::Stopped);
+    }
+
+    Ok(())
 }
 
 /// 造一个握手期的 HTTP 错误响应。
@@ -548,6 +648,34 @@ async fn relay(
             }
 
             let out: Result<serde_json::Value, String> = match method {
+                "register" => {
+                    let product = params.get("product").and_then(|v| v.as_str()).unwrap_or("");
+                    let workspace = params.get("workspace").and_then(|v| v.as_str()).unwrap_or("");
+                    let endpoint = params.get("endpoint").and_then(|v| v.as_str()).unwrap_or("");
+                    let pid = params.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32);
+                    if product.is_empty() || workspace.is_empty() || endpoint.is_empty() {
+                        Err("gateway.register 参数缺失：需要 product, workspace, endpoint".to_string())
+                    } else {
+                        let norm_ws = normalize_workspace(workspace);
+                        let id = AgentRegistry::id_for_workspace(product, &norm_ws);
+                        let inst = AgentInstance {
+                            id: id.clone(),
+                            product: product.to_string(),
+                            workspace: norm_ws.to_string_lossy().to_string(),
+                            endpoint: endpoint.to_string(),
+                            status: AgentStatus::Ready,
+                            pid,
+                            started_at: now_ms(),
+                        };
+                        let is_new = gw.registry.register(inst);
+                        info!("Agent 成功向网关注册: {} -> {} (pid: {:?})", id, endpoint, pid);
+                        Ok(serde_json::json!({
+                            "registered": true,
+                            "id": id,
+                            "isNew": is_new,
+                        }))
+                    }
+                }
                 "info" => Ok(gw.info_result()),
                 "listAgents" => Ok(gw.list_agents_result()),
                 "status" => Ok(gw.status_result()),

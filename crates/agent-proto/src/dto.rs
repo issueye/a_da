@@ -143,6 +143,7 @@ pub enum AgentMode {
     Code,
     Plan,
     Create,
+    Pm,
 }
 
 /// 审批模式
@@ -300,6 +301,8 @@ pub struct Thread {
     pub messages: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<AgentMode>,
+    #[serde(rename = "agentId", skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     #[serde(rename = "parentId", skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
     #[serde(rename = "subagentId", skip_serializing_if = "Option::is_none")]

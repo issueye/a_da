@@ -1,4 +1,4 @@
-import React, { useState, useMemo, memo } from 'react'
+import React, { useState, useMemo, useEffect, memo } from 'react'
 import {
   Plus,
   MessageSquare,
@@ -12,7 +12,7 @@ import {
   Bot,
   Download,
 } from 'lucide-react'
-import type { Thread } from '../types'
+import type { Thread, AgentMode } from '../types'
 import { agentClient } from '../client/ws-client'
 import { notify } from './ToastHost'
 
@@ -20,9 +20,11 @@ interface SidebarProps {
   threads: Thread[]
   activeThreadId: string
   activeWorkspace: string
+  currentMode?: AgentMode
   runningThreadIds?: string[]
   onSelectThread: (threadId: string) => void
-  onCreateThread: (workspace?: string) => void
+  onCreateThread: (workspace?: string, mode?: AgentMode) => void
+  onSelectMode?: (mode: AgentMode) => void
   onDeleteThread: (threadId: string) => void
   onRemoveWorkspace?: (workspace: string) => void
   onOpenWorkspacePicker?: () => void
@@ -38,14 +40,24 @@ const SidebarComponent: React.FC<SidebarProps> = ({
   threads,
   activeThreadId,
   activeWorkspace,
+  currentMode = 'code',
   runningThreadIds = [],
   onSelectThread,
   onCreateThread,
+  onSelectMode,
   onDeleteThread,
   onRemoveWorkspace,
   onOpenWorkspacePicker,
 }) => {
   const [collapsed, setCollapsed] = useState(false)
+  const [mode, setMode] = useState<AgentMode>(currentMode)
+
+  useEffect(() => {
+    if (currentMode) {
+      setMode(currentMode)
+    }
+  }, [currentMode])
+
   const [search, setSearch] = useState('')
   // 工作区手风琴状态：默认全收起 (null)，每次仅允许展开一个节点，展开另一个时其余自动收起
   const [expandedWorkspaceKey, setExpandedWorkspaceKey] = useState<string | null>(null)
@@ -217,9 +229,9 @@ const SidebarComponent: React.FC<SidebarProps> = ({
           <ChevronRight size={16} />
         </button>
         <button
-          onClick={() => onCreateThread(currentThreadWorkspace)}
-          className="p-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors shadow-xs mb-4 cursor-pointer"
-          title="在所属工作区新建对话"
+          onClick={() => onCreateThread(currentThreadWorkspace, mode)}
+          className={`p-2 ${mode === 'pm' ? 'bg-amber-600 hover:bg-amber-500' : 'bg-blue-600 hover:bg-blue-500'} text-white rounded-lg transition-colors shadow-xs mb-4 cursor-pointer`}
+          title={`新建 ${mode === 'pm' ? 'PM' : 'CODING'} 对话`}
         >
           <Plus size={16} />
         </button>
@@ -229,15 +241,19 @@ const SidebarComponent: React.FC<SidebarProps> = ({
 
   return (
     <aside className="w-64 bg-zinc-50 dark:bg-[#121214] border-r border-zinc-200 dark:border-[#27272a] flex flex-col h-full flex-shrink-0 select-none transition-colors duration-100">
-      {/* 顶部：新建、打开工作区与折叠 */}
+      {/* 顶部：新建对话、打开工作区与折叠 */}
       <div className="p-3 border-b border-zinc-200 dark:border-[#27272a]/60 flex items-center justify-between gap-1.5">
         <button
-          onClick={() => onCreateThread(currentThreadWorkspace)}
-          className="flex-1 flex items-center justify-center space-x-1.5 py-1.5 px-2.5 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white text-xs font-medium rounded-lg transition-colors shadow-xs cursor-pointer"
-          title="在所属工作区新建对话"
+          onClick={() => onCreateThread(currentThreadWorkspace, mode)}
+          className={`flex-1 flex items-center justify-center space-x-1.5 py-1.5 px-2.5 ${
+            mode === 'pm'
+              ? 'bg-amber-600 hover:bg-amber-500 active:bg-amber-700'
+              : 'bg-blue-600 hover:bg-blue-500 active:bg-blue-700'
+          } text-white text-xs font-medium rounded-lg transition-colors shadow-xs cursor-pointer`}
+          title={`在所属工作区新建 ${mode === 'pm' ? 'PM' : 'CODING'} 对话`}
         >
           <Plus size={14} />
-          <span>新建对话</span>
+          <span>新建 {mode === 'pm' ? 'PM' : 'CODING'} 对话</span>
         </button>
 
         {onOpenWorkspacePicker && (
@@ -260,7 +276,7 @@ const SidebarComponent: React.FC<SidebarProps> = ({
       </div>
 
       {/* 搜索框 */}
-      <div className="px-3 pt-2 pb-1">
+      <div className="px-3 py-2 border-b border-zinc-200/80 dark:border-[#27272a]/60">
         <div className="relative flex items-center">
           <Search size={12} className="absolute left-2.5 text-zinc-400 dark:text-zinc-500 pointer-events-none" />
           <input
@@ -318,10 +334,10 @@ const SidebarComponent: React.FC<SidebarProps> = ({
                       onClick={(e) => {
                         e.stopPropagation()
                         setExpandedWorkspaceKey(group.key)
-                        onCreateThread(group.workspace)
+                        onCreateThread(group.workspace, mode)
                       }}
                       className="opacity-0 group-hover:opacity-100 p-0.5 text-zinc-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded transition-opacity cursor-pointer"
-                      title={`在此工作区新建对话`}
+                      title={`在此工作区新建 ${mode === 'pm' ? 'PM' : 'CODING'} 对话`}
                     >
                       <Plus size={12} />
                     </button>
@@ -350,10 +366,10 @@ const SidebarComponent: React.FC<SidebarProps> = ({
                   <div className="ml-3 pl-2 border-l border-zinc-200/80 dark:border-zinc-800 space-y-0.5 pt-0.5">
                     {group.nodes.length === 0 ? (
                       <div
-                        onClick={() => onCreateThread(group.workspace)}
+                        onClick={() => onCreateThread(group.workspace, mode)}
                         className="px-2 py-1 text-[11px] text-zinc-400 dark:text-zinc-500 hover:text-blue-500 cursor-pointer italic"
                       >
-                        暂无会话 · 点击新建
+                        暂无会话 · 点击新建 {mode === 'pm' ? 'PM' : 'CODING'}
                       </div>
                     ) : (
                       group.nodes.map((node) => {
@@ -454,9 +470,23 @@ const SidebarComponent: React.FC<SidebarProps> = ({
                                   </span>
                                 )}
 
-                                {isSubagent && (
+                                {isSubagent ? (
                                   <span className="px-1 py-0.2 rounded text-[9px] bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800/50 font-medium flex-shrink-0">
                                     子代理
+                                  </span>
+                                ) : thread.mode === 'pm' || thread.agentId === 'pm-assistant' ? (
+                                  <span
+                                    className="px-1 py-0.2 rounded text-[9px] bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800/50 font-semibold flex-shrink-0"
+                                    title="已连接: pm-assistant (项目管理助手)"
+                                  >
+                                    PM
+                                  </span>
+                                ) : (
+                                  <span
+                                    className="px-1 py-0.2 rounded text-[9px] bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border border-blue-200/50 dark:border-blue-800/40 font-mono font-medium flex-shrink-0"
+                                    title="已连接: ada-coding (编程助手)"
+                                  >
+                                    CODING
                                   </span>
                                 )}
 

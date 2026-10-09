@@ -274,6 +274,7 @@ impl AgentStore {
                 items: Vec::new(),
                 messages: Vec::new(),
                 mode: Some(config_snapshot.mode),
+                agent_id: Some("ada-coding".to_string()),
                 parent_id: None,
                 subagent_id: None,
                 is_subagent: Some(false),
@@ -366,11 +367,30 @@ impl AgentStore {
     /// `workspace` 为空时继承当前工作区。传入工作区时会话即绑定到该工作区，
     /// 后续 Agent 执行的沙箱根、会话落盘目录都以它为准。
     pub fn create_thread(&mut self, title: Option<String>, workspace: Option<String>) -> String {
+        self.create_thread_with_agent(title, workspace, None, None)
+    }
+
+    /// 创建带指定模式和 Agent 角色的会话
+    pub fn create_thread_with_agent(
+        &mut self,
+        title: Option<String>,
+        workspace: Option<String>,
+        mode: Option<AgentMode>,
+        agent_id: Option<String>,
+    ) -> String {
         let id = next_id("thread");
         let ws = workspace
             .map(|w| w.trim().to_string())
             .filter(|w| !w.is_empty())
             .unwrap_or_else(|| self.workspace.project.clone());
+        let m = mode.unwrap_or(self.config.mode);
+        let actual_agent_id = agent_id.or_else(|| {
+            if m == AgentMode::Pm {
+                Some("pm-assistant".to_string())
+            } else {
+                Some("ada-coding".to_string())
+            }
+        });
         let thread = Thread {
             id: id.clone(),
             title: title.unwrap_or_else(|| "新会话".to_string()),
@@ -378,7 +398,8 @@ impl AgentStore {
             workspace: ws,
             items: Vec::new(),
             messages: Vec::new(),
-            mode: Some(self.config.mode),
+            mode: Some(m),
+            agent_id: actual_agent_id,
             parent_id: None,
             subagent_id: None,
             is_subagent: Some(false),

@@ -835,6 +835,7 @@ impl SessionManager {
                 items,
                 messages,
                 mode: Some(AgentMode::Code),
+                agent_id: Some("ada-coding".to_string()),
                 parent_id: header.parent_id,
                 subagent_id: header.subagent_id,
                 is_subagent: Some(is_sub),
