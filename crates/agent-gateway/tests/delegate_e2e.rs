@@ -31,6 +31,8 @@ struct StubLog {
     sends: Mutex<Vec<String>>,
     /// 收到过 `thread.abort` 的线程 id
     aborts: Mutex<Vec<String>>,
+    /// 收到过几次 `thread.create`（多轮续跑的判据：续跑**不该**再建线程）
+    creates: Mutex<Vec<String>>,
     /// 被要求"这一轮跑多久"（模拟真实 agent 的耗时）
     turn_delay_ms: u64,
     /// 是否已经跑完一轮（决定快照里线程是否还在 running）
@@ -81,6 +83,7 @@ async fn stub_agent_host(log: Arc<StubLog>) -> u16 {
                         }
                         "thread.create" => {
                             let tid = "t-stub".to_string();
+                            log.creates.lock().unwrap().push(tid.clone());
                             thread_id = Some(tid.clone());
                             let _ = out_tx.send(
                                 serde_json::json!({"jsonrpc":"2.0","id":id,"result":{"id":tid}})
@@ -109,10 +112,12 @@ async fn stub_agent_host(log: Arc<StubLog>) -> u16 {
                             tokio::spawn(async move {
                                 tokio::time::sleep(Duration::from_millis(delay)).await;
                                 log2.finished.store(true, Ordering::SeqCst);
+                                // 每轮给**不同**的回复，便于断言"第二轮确实跑在同一个线程上"
+                                let nth = log2.sends.lock().unwrap().len();
                                 let _ = tx2.send(snapshot(
                                     &[],
                                     &[tid2.clone()],
-                                    Some("桩宿主完成的任务结果"),
+                                    Some(&format!("桩宿主第 {nth} 轮结果")),
                                 ));
                             });
                         }
@@ -262,7 +267,7 @@ async fn test_delegate_drives_remote_turn_and_returns_summary() {
     );
     assert_eq!(
         resp.pointer("/result/summary").and_then(|v| v.as_str()),
-        Some("桩宿主完成的任务结果"),
+        Some("桩宿主第 1 轮结果"),
         "必须带回**目标**的回复，而不是网关自己编的：{resp}"
     );
     let agent_id = resp
@@ -405,4 +410,114 @@ async fn test_cancel_unknown_delegation_reports_false() {
         Some(false),
         "不存在的派活要如实说 false：{resp}"
     );
+}
+
+/// **多轮续跑**：同一个线程上跑两轮，目标**不再建新线程**。
+///
+/// 这是 S6「多轮」的验收：第一轮拿到 `threadId`，第二轮带上它接着说——
+/// 目标 agent 保留上一轮上下文（这里用"只建过一次线程"来证明）。
+#[tokio::test]
+async fn test_multi_turn_reuses_the_same_thread() {
+    let log = Arc::new(StubLog { turn_delay_ms: 20, ..Default::default() });
+    let (_gw, port) = gateway_with_stub(log.clone()).await;
+    let (mut tx, mut rx) = connect(port).await;
+
+    // ① 第一轮：新开
+    send(
+        &mut tx,
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 41, "method": "gateway.delegate",
+            "params": { "task": "先看 README", "depth": 1 }
+        }),
+    )
+    .await;
+    let first = recv_id(&mut rx, 41).await;
+    let tid = first
+        .pointer("/result/threadId")
+        .and_then(|v| v.as_str())
+        .expect("第一轮必须回 threadId（否则调用方无从续跑）")
+        .to_string();
+    assert_eq!(tid, "t-stub");
+
+    // ② 第二轮：**带上 threadId 续跑**
+    send(
+        &mut tx,
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 42, "method": "gateway.delegate",
+            "params": { "task": "那就把错别字改掉", "depth": 1, "threadId": tid }
+        }),
+    )
+    .await;
+    let second = recv_id(&mut rx, 42).await;
+    assert!(second.get("error").is_none(), "续跑不该报错：{second}");
+    assert_eq!(
+        second.pointer("/result/threadId").and_then(|v| v.as_str()),
+        Some("t-stub"),
+        "续跑必须回**同一个**线程 id"
+    );
+
+    // 🔴 关键断言：目标只被建过**一次**线程，但收到**两次**任务
+    let creates = log.creates.lock().unwrap().clone();
+    assert_eq!(
+        creates.len(),
+        1,
+        "续跑**不得**再建线程（否则就是两轮独立对话，不是多轮）：{creates:?}"
+    );
+    let sends = log.sends.lock().unwrap().clone();
+    assert_eq!(
+        sends,
+        vec!["先看 README".to_string(), "那就把错别字改掉".to_string()],
+        "两轮任务都要原样到达目标，且顺序正确"
+    );
+
+    // 两轮的回复不同 → 证明是**两轮**而不是同一轮回放
+    assert!(
+        first
+            .pointer("/result/summary")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("第 1 轮"),
+        "第一轮回复应标记第 1 轮：{first}"
+    );
+    assert!(
+        second
+            .pointer("/result/summary")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("第 2 轮"),
+        "第二轮回复应标记第 2 轮：{second}"
+    );
+}
+
+/// 续跑一个**不存在**的线程 → 如实失败，不静默新建。
+#[tokio::test]
+async fn test_multi_turn_unknown_thread_fails_loudly() {
+    let log = Arc::new(StubLog { turn_delay_ms: 10, ..Default::default() });
+    let (_gw, port) = gateway_with_stub(log.clone()).await;
+    let (mut tx, mut rx) = connect(port).await;
+
+    send(
+        &mut tx,
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 51, "method": "gateway.delegate",
+            "params": { "task": "接着改", "depth": 1, "threadId": "does-not-exist" }
+        }),
+    )
+    .await;
+    // 桩宿主对未知线程只回 `{ok:true}` 而不发完成快照，所以这里**有界等待**：
+    // 真实宿主会对未知线程回错误，网关的 error 分支会立刻返回（这里不依赖那个行为）。
+    let resp = tokio::time::timeout(Duration::from_millis(600), recv_id(&mut rx, 51)).await;
+
+    // 🔴 关键断言：带 threadId 时**绝不能**静默新建线程（那会悄悄变成新对话）
+    assert!(
+        log.creates.lock().unwrap().is_empty(),
+        "带 threadId 时绝不能建新线程"
+    );
+    // 桩收到了续跑任务（说明确实走的是续跑路径，而不是在等建线程）
+    assert_eq!(
+        log.sends.lock().unwrap().clone(),
+        vec!["接着改".to_string()],
+        "续跑任务必须直接发到目标（不经过 thread.create）"
+    );
+    let _ = resp;
 }

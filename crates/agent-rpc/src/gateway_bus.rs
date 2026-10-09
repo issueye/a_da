@@ -175,6 +175,8 @@ impl AgentBus for GatewayAgentBus {
                     // 深度：装配期给的节点深度（`self.depth`）与调用方携带的取较大者。
                     // 两者都表示"这条委派链已经走了多远"，取较大者是**保守**的一侧。
                     "depth": req.depth.max(self.depth),
+                    // 多轮：带上目标线程则**续跑**（网关不再建新线程），不带则新开一轮
+                    "threadId": req.thread_id,
                     "delegationId": delegation_id,
                 }
             });
@@ -290,6 +292,7 @@ mod tests {
                 additional_context: None,
                 cancel: None,
                 depth: 1,
+                thread_id: None,
             })
             .await;
         assert!(!out.ok);

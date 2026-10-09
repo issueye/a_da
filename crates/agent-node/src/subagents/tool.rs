@@ -122,6 +122,8 @@ impl Tool for InvokeSubagentTool {
                     cancel: Some(ctx.cancel),
                     // 委派深度：跨网关时由网关强制上限（S6）
                     depth: self.delegation_depth,
+                    // 多轮续跑：把上一轮回执里的 `details.threadId` 传回来即可续跑（S6）
+                    thread_id: call.args.get("thread_id").and_then(|v| v.as_str()),
                 })
                 .await;
 

@@ -2433,6 +2433,65 @@ S7a 用同一个回调把 `?workspace=` 与 `?token=` 一起解析了——**桩
 2. **桩要顺手删掉**。`extract_workspace` 那个 `return None` 的桩躺了三个阶段；
    本次因为要拿 query 而自然做掉了。判据：**碰到桩就当场做掉或明确登记**，别让它继续躺。
 
+### 13.34 S6c 多轮续跑：把「交互协作」补成真的（2026-10-09，已完成）
+
+**动机**：objective 里 S6 写的是「多轮/取消跨网关/深度约束」。取消与深度已做，
+**多轮没做**——`gateway.delegate` 每次建新线程，所以"PM 与 coding agent 交互协作"
+实际只是**一次性派活**：第二轮目标完全不记得第一轮。
+
+#### 交付物
+
+| 位置 | 内容 |
+|---|---|
+| `agent-node/src/agent_bus.rs` | `DispatchRequest.thread_id: Option<&'a str>` |
+| `agent-node/src/subagents/tool.rs` | `invoke_subagent` 读 `thread_id` 参数并透传 |
+| `agent-node/src/subagents/local_bus.rs` | **如实拒绝** `thread_id`（见下） |
+| `agent-rpc/src/gateway_bus.rs` | 透传成 `gateway.delegate { threadId }` |
+| `agent-gateway/src/delegate.rs` | 给了 `threadId` 就**跳过 `thread.create`**，直接 `thread.send` |
+| `agent-gateway/src/relay.rs` | 解析并透传 `threadId` |
+
+#### 多轮的用法（模型看得见的那条链）
+
+1. 第一轮：`invoke_subagent(subagent_id=…, task=…)` → 回执 `details.threadId`
+2. 第二轮：`invoke_subagent(…, task=…, thread_id=<上一步的 threadId>)` → **同一线程接着说**
+
+#### 🔴 本地总线必须**如实拒绝**，不能静默忽略
+
+进程内子智能体是**一次性**的（跑完即散，没有可续的线程）。
+静默忽略 `thread_id` 会让调用方以为"续上了"，而目标完全不记得上一轮——
+正是本仓反复清理的"看起来装上了"。所以 `LocalAgentBus` 返回：
+
+```
+本地子智能体是一次性的，无法续跑线程 `t-1`；
+需要多轮协作的产品应声明 capabilities.delegation = "gateway"
+```
+
+**拒绝信息里要指出正确做法**——只说"不支持"等于把问题丢回给调用方。
+
+#### 一处容易漏的实现细节（我自己漏了）
+
+续跑路径没有 `thread.create`，所以**发任务那一步也得跟着挪**：
+新开一轮是在 `thread.create` 的**响应**里发 `thread.send`（那时才拿到新线程 id），
+续跑则要立刻发。漏掉的话续跑会一直等到超时——**目标根本没收到任务**。
+（这个漏法在测试里表现为"未知线程"用例超时，而多轮用例反而先过了，
+因为桩宿主对任何 `thread.send` 都会回完成快照。判据：**两条路径要各有独立用例**。）
+
+#### 转绿证据
+
+| 证据 | 结果 |
+|---|---|
+| `cargo test --workspace` | **350 → 353 passed / 0 failed**；零编译警告 |
+| 六条门禁 + `typecheck` | 全绿 / exit 0 |
+| **多轮端到端** | 两轮派活 → 桩宿主**只被建过 1 次线程**、收到**2 次**任务（顺序正确）、两轮回复分别为「第 1 轮」「第 2 轮」 |
+| 未知线程 | 带 `threadId` 时**绝不**再建新线程（不会静默变成新对话），任务直接发到目标 |
+| 本地总线契约 | `thread_id: Some` → `ok=false`、理由含「一次性」与「gateway」、`details == None`（未进入执行） |
+
+#### S6c 的一条记录
+
+**"接口加了字段"不等于"两条路径都实现了"**。续跑是**第二条路径**，
+它与新开一轮共用大部分代码但**入口不同**；共用越多，越容易只改一条。
+判据：**给每条路径写独立用例**，别指望"共用代码自然就对"。
+
 #### 尚未做的 S7 部分（**登记，不是已完成**）
 
 - **TLS**：网关目前是明文 WS。浏览器从 `https://` 页面连 `ws://` 会被拦（混合内容），

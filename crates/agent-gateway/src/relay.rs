@@ -121,6 +121,8 @@ impl Gateway {
         workspace: Option<&str>,
         task: &str,
         depth: u32,
+        // `Some(tid)` = 多轮续跑该线程
+        thread_id: Option<String>,
         delegation_id: &str,
     ) -> Result<DelegateOutcome, DelegateError> {
         if task.trim().is_empty() {
@@ -154,6 +156,7 @@ impl Gateway {
             task,
             delegation_id,
             depth,
+            thread_id,
             cancel,
             self.delegations.clone(),
             DEFAULT_DELEGATION_TIMEOUT,
@@ -464,6 +467,11 @@ async fn relay(
                     .map(|s| s.to_string());
                 // 深度：**缺省即拒绝**（0），不默认成 1——拿不到依据时不放开
                 let depth = params.get("depth").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                // 多轮：带 threadId 则续跑已有线程
+                let thread_id = params
+                    .get("threadId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 let delegation_id = params
                     .get("delegationId")
                     .and_then(|v| v.as_str())
@@ -474,7 +482,7 @@ async fn relay(
                 let tx_task = client_tx.clone();
                 tokio::spawn(async move {
                     let out = gw_task
-                        .delegate_result(agent_id.as_deref(), workspace.as_deref(), &task, depth, &delegation_id)
+                        .delegate_result(agent_id.as_deref(), workspace.as_deref(), &task, depth, thread_id, &delegation_id)
                         .await;
                     let frame = match out {
                         Ok(DelegateOutcome { agent_id, thread_id, summary, details, .. }) => {

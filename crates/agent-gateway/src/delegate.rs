@@ -154,6 +154,8 @@ pub async fn delegate(
     task: &str,
     delegation_id: &str,
     depth: u32,
+    // `Some(tid)` = **续跑**这个线程（多轮）；`None` = 新开一轮
+    thread_id: Option<String>,
     cancel: Arc<AtomicBool>,
     registry: Arc<DelegationRegistry>,
     timeout: Duration,
@@ -167,7 +169,7 @@ pub async fn delegate(
 
     let result = tokio::time::timeout(
         timeout,
-        run_delegation(instance, task, delegation_id, cancel, registry.clone()),
+        run_delegation(instance, task, delegation_id, thread_id, cancel, registry.clone()),
     )
     .await;
 
@@ -183,6 +185,7 @@ async fn run_delegation(
     instance: &AgentInstance,
     task: &str,
     delegation_id: &str,
+    resume_thread: Option<String>,
     cancel: Arc<AtomicBool>,
     _registry: Arc<DelegationRegistry>,
 ) -> Result<DelegateOutcome, DelegateError> {
@@ -210,23 +213,45 @@ async fn run_delegation(
     )
     .await?;
 
-    // ② 建线程（派活用一个**全新线程**：不复用别人的 active，也不污染它）
-    send_frame(
-        &mut tx,
-        &mut next_id,
-        "thread.create",
-        serde_json::json!({ "title": format!("委派 {delegation_id}") }),
-    )
-    .await?;
+    // ② 线程：**续跑**就不建（多轮），否则建一个全新线程
+    //    （不复用别人的 active，也不污染它）
+    let mut thread_id: Option<String> = None;
+    if let Some(tid) = resume_thread {
+        // 续跑：直接在已有线程上接着说，目标保留上一轮上下文
+        info!("派活 {delegation_id} 续跑线程 {tid}");
+        thread_id = Some(tid);
+    } else {
+        send_frame(
+            &mut tx,
+            &mut next_id,
+            "thread.create",
+            serde_json::json!({ "title": format!("委派 {delegation_id}") }),
+        )
+        .await?;
+    }
 
     // ③ 发任务
-    let mut thread_id: Option<String> = None;
     let mut sent_task = false;
     let mut last_assistant = String::new();
     let mut steps: u64 = 0;
     let mut tool_calls: u64 = 0;
     let started_at = now_ms();
     let mut saw_running = false;
+
+    // ②.5 **续跑**时线程已经存在，直接发任务。
+    //
+    // 新开一轮的路径是在 `thread.create` 的**响应**里发（那时才拿到新线程 id），
+    // 续跑没有那一步——漏了这里，续跑会一直等到超时（目标根本没收到任务）。
+    if let Some(tid) = thread_id.clone() {
+        send_frame(
+            &mut tx,
+            &mut next_id,
+            "thread.send",
+            serde_json::json!({ "threadId": tid, "text": task }),
+        )
+        .await?;
+        sent_task = true;
+    }
 
     loop {
         // 取消检查必须**与读帧并发**，不能只在"收到下一帧时"顺带查一次。
@@ -457,7 +482,7 @@ mod tests {
             started_at: 0,
         };
         let err = f
-            .block_on(delegate(&inst, "t", "d1", 0, Arc::new(AtomicBool::new(false)), reg, Duration::from_millis(10)))
+            .block_on(delegate(&inst, "t", "d1", 0, None, Arc::new(AtomicBool::new(false)), reg, Duration::from_millis(10)))
             .expect_err("depth=0 应被拒绝");
         assert!(matches!(err, DelegateError::DepthExceeded { depth: 0, .. }), "{err}");
     }
@@ -476,7 +501,7 @@ mod tests {
             started_at: 0,
         };
         let err = f
-            .block_on(delegate(&inst, "t", "d1", MAX_DELEGATION_DEPTH + 1, Arc::new(AtomicBool::new(false)), reg, Duration::from_millis(10)))
+            .block_on(delegate(&inst, "t", "d1", MAX_DELEGATION_DEPTH + 1, None, Arc::new(AtomicBool::new(false)), reg, Duration::from_millis(10)))
             .expect_err("超限应被拒绝");
         assert!(matches!(err, DelegateError::DepthExceeded { .. }), "{err}");
     }

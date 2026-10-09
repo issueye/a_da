@@ -65,6 +65,20 @@ impl AgentBus for LocalAgentBus {
     }
 
     fn dispatch<'a>(&'a self, req: DispatchRequest<'a>) -> BoxFuture<'a, DispatchOutcome> {
+        // **多轮续跑本地做不到，如实拒绝**（S6）。
+        //
+        // 进程内子智能体是**一次性**的：跑完即散，没有可续的线程与上下文。
+        // 静默忽略 `thread_id` 会让调用方以为"续上了"，而实际上目标完全不记得上一轮——
+        // 那正是本仓反复清理的"看起来装上了"。
+        // 要真正的多轮，产品得声明 `capabilities.delegation = "gateway"`（见 pm-assistant）。
+        if let Some(tid) = req.thread_id {
+            return Box::pin(async move {
+                DispatchOutcome::rejected(format!(
+                    "本地子智能体是一次性的，无法续跑线程 `{tid}`；\
+                     需要多轮协作的产品应声明 capabilities.delegation = \"gateway\""
+                ))
+            });
+        }
         Box::pin(async move {
             // 1. 目标必须存在——**不编造**、不"随便挑一个继续跑"
             let Some(profile) = self
@@ -183,6 +197,7 @@ mod tests {
                 additional_context: None,
                 cancel: None,
                 depth: 0,
+                thread_id: None,
             })
             .await;
 
@@ -210,6 +225,7 @@ mod tests {
                 additional_context: None,
                 cancel: None,
                 depth: 0,
+                thread_id: None,
             })
             .await;
 
@@ -229,5 +245,47 @@ mod tests {
         assert!(!o.ok);
         assert_eq!(o.details, None);
         assert_eq!(o.error_message, None);
+    }
+
+    /// **多轮在本地做不到，必须如实拒绝**（S6）。
+    ///
+    /// 静默忽略 `thread_id` 会让调用方以为"续上了"，而目标完全不记得上一轮——
+    /// 那正是本仓反复清理的"看起来装上了"。判据：**拒绝要能被调用方看见**
+    /// （`ok=false` + 说明为什么 + 指出正确做法），而不是"悄悄当成新的一轮"。
+    #[tokio::test]
+    async fn test_thread_id_is_honestly_rejected_by_local_bus() {
+        let bus = bus_with(ProviderConfig {
+            id: "p".into(),
+            name: "p".into(),
+            protocol: Default::default(),
+            base_url: "http://localhost".into(),
+            api_key: "k".into(),
+            model: "m".into(),
+            max_output_tokens: None,
+            custom_headers: None,
+            proxy_url: None,
+        });
+        let out = bus
+            .dispatch(DispatchRequest {
+                agent_id: "explore",
+                task: "接着看",
+                additional_context: None,
+                cancel: None,
+                depth: 0,
+                thread_id: Some("t-1"),
+            })
+            .await;
+        assert!(!out.ok, "本地总线必须拒绝续跑");
+        assert!(
+            out.summary.contains("一次性"),
+            "拒绝理由要说明本地子智能体是一次性的：{}",
+            out.summary
+        );
+        assert!(
+            out.summary.contains("gateway"),
+            "要指出正确做法（声明 gateway 委派）：{}",
+            out.summary
+        );
+        assert_eq!(out.details, None, "未进入执行 → details 必须是 None");
     }
 }
