@@ -352,28 +352,53 @@ L0 **base 协议** | `session.*`、`thread.*`（create/send/abort/retry/editAndR
 
 ### 6.2 单源与产物（INV-11）
 
+> **决策更新（2026-10-09，W5-T1）：不引入 `cargo xtask gen`，正式降级为「手写 + 双向校验」。**
+>
+> 原计划（下方第一版内容）是四产物生成。评估后判定**不划算**，理由是可验证的：
+>
+> 1. **变更频率极低**：整轮 M1–M5 计划里，方法集合只动过一次（W5-T2 删掉 2 个孤儿方法）。
+>    生成器的收益与"手写副本的变更次数"成正比——一年改一次的表，生成器是纯负债。
+> 2. **生成器本身也要被校验**：生成器写错、产物过期、生成后忘了提交，都是
+>    "看起来装上了其实没接线"的经典形态。**真正防漂移的是校验，不是生成**。
+> 3. **校验已经能覆盖三对副本**（见下），且**已证明能红**（3 种故障注入全被抓住）。
+>
+> 因此产出是"把校验补齐"而不是"新增一台机器"。
+
+**唯一手写源**（INV-11：协议单源）：
+
 ```
-spec/proto/base.json      ← 唯一手写（L0 + L1 登记表）
-spec/proto/<product>.ext.json
-        │  cargo xtask gen
-        ├─► agent-proto/src/methods.rs         （Rust 常量 + 参数/结果类型）
-        ├─► crates/agent-proto/client-ts/*.ts  （客户端类型，供 tauri-ui 用）
-        ├─► products/<id>/src/dispatch_ext.rs  （只含产品扩展臂；L0 臂由基座提供）
-        ├─► docs/protocol/<product>.md         （文档表格块）
-        └─► spec/__generated__/catalog.json    （供校验）
-        │  cargo xtask verify
-        └─► 断言：base 各产品一致 · 目录 = base ∪ ext · 四份产物集合相等 · 无孤儿臂/无无臂常量
+spec/proto/base.json              ← L0 + L1 登记表（基座协议，全仓唯一）
+spec/proto/<product>.ext.json     ← 产品扩展（L2），不得重新定义 base 方法
 ```
 
-`verify-proto` 会立刻报出今日的漂移（附录 A：10 个 Rust-only 方法、2 个无臂常量、TS 多出的 24 个主题），
-**这正是它存在的意义**。
+**三对副本 + 三条机械校验**（每对都**双向**，改错名/改错值/多加/少加都会红）：
 
-### 6.3 校验机制落在生成的类型上
+| # | 副本对 | 校验位置 | 口径 |
+|---|---|---|---|
+| 1 | `spec/proto/*.json` ↔ `agent-proto/src/methods.rs` | `agent-proto` 的 `test_spec_consistency_across_rust_and_json_spec` | 方法名**集合相等**（base ∪ ext = `ALL_METHODS`） |
+| 2 | `methods.rs` ↔ `agent-core/src/server/dispatch.rs` | `cargo xtask verify-wiring` check A | `ALL_METHODS` 每个都有 `match` 臂；无孤儿臂 |
+| 3 | `methods.rs` ↔ `client-ts/methods.ts` | 同 #1 的测试（W5-T1 新增） | **`name → value` 映射双向相等** |
 
-方法表带 `kind`（`command`/`event`/`server_request`）与 `since`（协议版本），生成器据此产出：
-`enum` 形式的方法常量（不再散装 `&str`）、参数/结果的 strong type、客户端联合类型、文档表。
-dispatch 侧用 `match` 覆盖枚举，**穷尽性由编译器保证**——"声明了没实现"在 Rust 里直接编译失败，
-不再需要 §1.1 那种人工对账。
+> 校验 #3 在 W5-T1 前是**假校验**：旧写法只做 `ts_content.contains("'<方法值>'")`，
+> 有三个洞——**单向**（TS 多出常量不报）、**子串匹配**（注释里出现也算过）、
+> **不校验 name↔value 映射**（把 `CONFIG_GET` 的值写成另一个存在的方法照样通过）。
+> 现在改为解析两侧 `name → value` 映射后双向比对，并用 3 种故障注入证明它真的会红。
+
+**如实降级的两项**（不是"没做"，是**明确不做**，避免留空头承诺）：
+
+- ~~`cargo xtask gen` 四产物生成~~ → 手写 + 上述三条校验；
+- ~~`enum` 化方法常量 + 编译器穷尽性~~ → 仍是散装 `&str` + 机械校验
+  （见 §6.3）。收益是"声明了没实现直接编译失败"，代价是重写全部调用点；
+  当前 74 个方法已由校验 #2 覆盖，**优先级低于 M6 的运行时缺口**。
+
+### 6.3 校验机制落在手写产物上（原"落在生成的类型上"）
+
+方法表带 `kind`（`command`/`event`/`server_request`）与 `since`（协议版本）。
+生成器方案下它们会驱动 `enum` 化常量与 strong type；**当前降级为手写**，
+因此这些字段暂时只作为**文档与审计输入**（`spec/proto/README.md` 说明命名规则与
+`x.<product>.*` 约定），不驱动代码生成。
+
+`kind` 字段的消费者是 `cargo xtask compat`（base 与 ext 的 `kind` 必须一致）。
 
 ---
 

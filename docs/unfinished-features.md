@@ -2,118 +2,127 @@
 
 > **维护约定**：每条写清「现状证据（`file:line` 或 grep 判据）／影响／最小实现路径／状态」。
 > 状态取值：`未排期`（没人做）、`待拍板`（缺一个产品决定）、`明确不做`（设计上划出去了）。
-> 最后核对：2026-09-29，核对方式＝全仓 grep + 跑门禁，**不是凭印象**。改动功能后请顺手更新本文件。
+>
+> **最后核对**：2026-10-09。核对方式＝全仓 grep + 跑六条门禁，**不是凭印象**。
+> 改动功能后请顺手更新本文件。
+>
+> **注意**：本文件只写"**功能缺口**"。接线类问题（"看起来装上了其实没接线"）
+> 的唯一口径在 [`docs/agent-base-wiring-plan.md`](agent-base-wiring-plan.md)——
+> 那里有逐条证据与处置状态，不要在这里重复。
 
-门禁基线（核对时）：`bun run typecheck` exit 0；`bun test src/agent` 470 pass / 0 fail；
-全量 `bun test` 617 pass / 0 fail（79 个文件）。
+## 门禁基线（核对时）
+
+| 命令 | 结果 |
+|---|---|
+| `cargo test --workspace -- --test-threads=1` | **302 passed / 0 failed** |
+| `cargo xtask verify` | ✔ 全仓 Verify 通过 |
+| `cargo xtask verify-wiring` | ✔ 无违约（协议方法 72 / match 臂 72；端口 11 个全有生产实现） |
+| `cargo xtask verify-spec` | ✔ 无违约 |
+| `cargo xtask compat` | ✔ 无违约 |
+| `cargo xtask verify-archive` | ✔ 全绿（8 条断言） |
+| `bun run typecheck` | ✔ exit 0 |
+
+> `cargo xtask verify-docs` 的**红例基线已清零**（W6-T7）：README / 本文件 / `feature-catalog.md`
+> 不再把归档布局当现行路径描述。
 
 ---
 
 ## 一、产品功能缺口（按价值排序）
 
-### 1. `@` 提及：聚合工作区文件、扩展技能与智能体补全　`已定案并完成`
+### 1. MCP client　`待拍板`
 
-- **现状与闭环（2026-10-01 完成）**：
-  - 新增独立组件 [src/ui/MentionMenu.tsx](file:///E:/codes/rust_projects/a_da/src/ui/MentionMenu.tsx)，聚合工作区文件清单（`client.state.entries`）、扩展技能（`skill.list`）与特化子智能体（`subagentProfile.list`）。
-  - 输入框敲入 `@` 或在句中输入 `@query` 自动呼出补全浮层，支持分类过滤（全部/文件/技能/智能体）与模糊搜索。
-  - 选中条目后智能补全路径或命名空间标识（如 `@src/index.ts`、`@skill:review`、`@subagent:coder`）。
-  - 底部工具栏新增「`@ 提及`」快捷触发按钮，支持快捷唤起/收起与 Esc 键安全关闭。
-- **守门测试**：
-  - 纯函数与组件渲染测试：[src/ui/MentionMenu.test.tsx](file:///E:/codes/rust_projects/a_da/src/ui/MentionMenu.test.tsx)（图标推断、多分类过滤、条目渲染全覆盖）。
-  - 输入框集成测试：[src/ui/Composer.test.tsx](file:///E:/codes/rust_projects/a_da/src/ui/Composer.test.tsx)（工具栏提及按钮唤起与收起）。
-
-### 2. MCP client　`待拍板`
-
-- **现状**：全仓无 `mcp` 字样；设计文档也从未提及（`grep -rn "mcp" docs/*.md` 零命中）。
-- **已评估的最小路径**：stdio 传输 + `tools/list` / `tools/call` 桥接进 `ToolRegistry`
+- **现状**：全仓 `grep mcp` **零命中**（`crates/` 与 `tauri-ui/` 都没有），设计文档也从未提及。
+- **已评估的最小路径**：stdio 传输 + `tools/list` / `tools/call` 桥接进 `ToolCatalog`
   （`mcp__<server>__<tool>` 前缀），配置放 `~/.a-da/mcp.json`；resource / prompt 后置。
-- **需要决定**：外部进程可以注册工具这件事是否接受，以及它的工具按什么分类——按
-  `READ_ONLY` 的失败安全语义，未登记的一律按写操作处理（该审批就审批）。
+- **需要决定**：是否接受"外部进程可以注册工具"，以及它的工具按什么分类——
+  按 `is_readonly` 的失败安全语义（AGENTS.md §2），**未登记的一律按写操作处理**（该审批就审批）。
 
-### 3. 审批的持久化 allowlist　`未排期`
+### 2. 审批的持久化 allowlist（"以后都允许"）　`未排期`
 
-- **现状**：审批只有全局三档 `auto | ask | readonly`（`src/agent/store.ts` 的 `ApprovalMode`），
-  没有"记住这个工具，以后别再问我"。
-- **变通**：插件现在可以用 `beforeApproval` 实现等价策略（M3-5，见 `README` 的钩子一节）。
-- **最小实现路径**：在 `config.json` 里按「工具名 + 工作区」记 allowlist，审批卡片上加一个
-  "以后都允许"的勾选。
+- **现状**：审批档位只有全局三档 `auto | ask | readonly`
+  （`crates/agent-proto/src/dto.rs` 的 `ApprovalMode`）。
+- 🔴 **同时是一处"声明了没接线"**：`ApprovalGuardConfig.auto_approve`
+  （`crates/agent-adapter/src/approval/`）存在，但**全仓零消费者**——
+  即使有人往里填工具名也不会生效。详见接线计划的缺口台账。
+- **最小实现路径**：给 `auto_approve` 接上消费者（按「工具名 + 工作区」匹配），
+  审批卡片加一个"以后都允许"的勾选；配置落 `config.json`。
 
-### 4. 会话管理缺三件：重命名 / 导出 / 全文搜索　`重命名与导出已完成，全文搜索未排期`
+### 3. 会话全文搜索　`未排期`
 
-- **现状**：
-  - 重命名：已支持在侧栏双击会话标题就地编辑并回车保存；
-  - 导出：已在客户端实现 `exportThreadToMarkdown`，侧栏主会话与子代理卡片悬浮提供「导出为 Markdown」按钮，支持一键下载 `.md` 文件并写入剪贴板；
-  - 全文搜索：`listSessionsForWorkspace` 已能列出文件，目前全仓未实现搜索会话内容功能。
-- **最小实现路径（剩余全文搜索）**：
-  - 扫工作区下各会话 JSONL 内容并支持关键词高亮过滤。
+- **现状**：`SessionManager::list_sessions_for_workspace` 能列出会话摘要；
+  没有搜索**会话内容**的能力（无索引、无关键词过滤）。
+- **最小实现路径**：扫工作区下各会话 JSONL 内容并支持关键词高亮过滤。
+  会话已是 JSONL（`FsSessionStore` 落盘），逐行读即可，不需要引入索引。
 
-### 5. 文件树与编辑器视图　`未排期`
+### 4. 文件树与编辑器视图　`未排期`
 
-- **现状**：侧栏只列工作区与会话，`store.entries`（`scanWorkspace` 的产出）不渲染成树；
-  看代码只能靠工具调用与工作区搜索。
-- **最小实现路径**：加一个可折叠的树组件复用 `entries`；代码编辑是更大的工程
-  （当前定位是"改代码都经工具 + 改动审阅面板"）。
-- **2026-09-30 补充**：**底盘已经有了**——协议新增 `fs.roots` / `fs.list` / `fs.mkdir`（§3.14），
-  应用内的 `FilePicker` 已经用它做目录浏览。做文件树时可以直接复用这两个方法
-  （`fs.list` 已是"目录在前 + 截断如实报告"的形状），不必再走 `store.entries` 那条只覆盖工作区的路。
+- **现状**：侧栏列工作区与会话；工作区文件**不渲染成树**，看代码只能靠工具调用与搜索。
+- **底盘已就绪**：协议有 `fs.roots` / `fs.list` / `fs.mkdir`，
+  应用内的 `FilePicker` 已用它们做目录浏览。做文件树可直接复用 `fs.list`
+  （已是"目录在前 + 截断如实报告"的形状）。
+- **编辑是更大的工程**：当前定位是"改代码都经工具 + 改动审阅面板"。
 
-### 6. 成本统计　`未排期`
+### 5. 成本统计（计价）　`未排期`
 
-- **现状**：用量遥测很细（`src/ui/ContextUsagePopover.tsx` 与调试面板的 token 拆解，含系统提示词
-  与工具开销），但没有计价：全仓无 pricing / cost 表。
-- **最小实现路径**：给 `PROVIDER_PRESETS` 加每百万 token 单价，按 `assistantMessage.usage`
-  累计到会话与全局。
+- **现状**：用量遥测很细（`assistantMessage.usage` 有 prompt/completion/total tokens，
+  界面有上下文用量细分），但**没有计价**：全仓 `grep pricing|pricePerMillion` 零命中。
+- **最小实现路径**：给 `PROVIDER_PRESETS` 加每百万 token 单价，按 `usage` 累计到会话与全局。
 
-### 7. 只有 OpenAI 兼容协议　`未排期（按需）`
+### 6. 子智能体无法"续跑"　`明确不做（按当前设计）`
 
-- **现状**：`src/agent/ai/stream.ts` 只实现 OpenAI 兼容的 `chat/completions` + SSE；
-  `src/agent/compact/policy.ts` 会按模型名认上下文窗口（gemini / qwen-long 等），
-  但不支持 Anthropic Messages / Gemini 原生协议。
-- **影响**：用 OpenAI 兼容网关（预设里的 DeepSeek、百炼、Moonshot、Ollama 等）不受影响；
-  要直连 Anthropic / Gemini 官方端点则需要中间网关。
+- **现状**：协议方法 `subagent.resume` 已在 W6-T1 **按 R3 删除**（原先是只回 `{ok:true}` 的桩，
+  前端"恢复执行"按钮点了没反应）。**W4-T6 之后子智能体上下文刻意是临时的**
+  （`EphemeralSessionStore`：一次性委派，不污染主会话），因此没有"可恢复"的会话。
+- **如果要做**：得先决定"子智能体会话是否持久化"——那是对 W4-T6 设计决定的反转，
+  不能顺手加回来。
 
-### 8. 无 i18n　`未排期`
+### 7. `stats.promptChars` 缺前端消费者　`未排期`
+
+- **现状**：W6-T2 把它从硬编码 `{1200, 800}` 改成了**实测值**（系统提示词长度 +
+  工具 schema 字符数之和），但前端 `tauri-ui/src/utils/context-breakdown.ts`
+  **从未被调用**，`systemChars` 输入也没人提供——界面仍在客户端估算。
+- **最小实现路径**：在上下文用量 Popover 打开时调 `stats.promptChars`，
+  把它作为 `buildContextBreakdown` 的输入。
+
+### 8. 图片输入从未送进模型　`未排期（当前产品都声明 images=false）`
+
+- **现状**：`TurnRequest::with_images` **全仓零消费者**；`thread.start` 把 images 存进
+  UI store（`add_user_message_with_images`）后就**没有下文**——模型永远收不到图片。
+- **已就位的部分**：`capabilities.images` 的**门禁**是真的（W5-T4：
+  声明 `false` 的产品会在 `run_turn_with_images` 里被拒）。
+- **最小实现路径**：`dispatch.rs` 的 `run_agent_turn` 调用点把 images 透传进 `TurnRequest`；
+  并在模型侧按 `ModelCapabilities.images` 决定是否携带。
+
+### 9. 钩子点位 = 0　`未排期`
+
+- **现状**：插件契约承诺"机制 + 3 个点位"，实际**一个点位都没接**——
+  `grep HookPoint|beforeTurn|afterAgentEnd` 在 `crates/` 零命中。
+- **口径**：要么接上点位（至少 1 个真被调用的），要么把契约里的点位声明删掉（R3）。
+  **不能保持"契约里有、实现里没有"**——那正是 AGENTS.md §15 警告的"静默失效"。
+
+### 10. i18n　`未排期`
 
 - **现状**：文案硬编码中文（部分中英混排）。`grep i18n|useTranslation` 零命中。
-
-### 9. 子智能体的两条"续跑"入口绕过 profile 白名单与门禁　`已定案并修复`
-
-**拍板结论（2026-09-30）：子智能体标签页不接受直接输入。** 用户在子智能体标签页里打字会被挡掉，
-并提示改用 `send_subagent_message` / `resume_subagent`（主会话侧的工具）。
-
-**修法（三处，一起做才算闭环）**
-
-1. **`send` 挡掉**（`src/agent/store.ts`）：目标会话是子智能体时不再入队/入流，而是推一条
-   指路提示 + 记 trace 后返回。放在这里是因为它是**唯一的用户输入入口**，
-   协议命令 `thread.send` 也走它——所以命令通道同样挡得住。
-2. **`turn()` 兜底拒绝**：即使有人绕过 `send` 往子智能体会话塞了排队项，也不会以主会话身份执行。
-   为什么是"拒绝"而不是"就地改造成子智能体身份"：后一种要把门禁、profile 解析、父会话唤醒
-   在第三个地方再实现一遍；子智能体的执行路径只有 `startSubagentThread` / `resumeSubagentThread` 两条，
-   它们都带着门禁与 profile。拒绝时同样给出指路提示，不静默。
-3. **`steerSubagentThread` 的续跑分支改为委派 `resumeSubagentThread`**：不再自己
-   "重新排队 + drain"。这样它自带门禁（判定输入 `resumeGateTask`）、profile 白名单、
-   `kind: 'subagent'` 钩子，并且会通知父会话。
-
-**守门测试**：`src/agent/subagents/direct-input-guard.test.ts`（3 条）分别钉住上面三件事。
-门禁与 profile 白名单自身的覆盖在 `src/agent/subagents/gate-delegation.test.ts`。
-
-**原先的证据（留档）**：`turn()` 用的是主会话工具表（`getToolsForMode`）且 `kind: 'main'` 写死；
-`steerSubagentThread` 的停止分支走 `queue.push + drain`；门禁接入点曾只有
-`startSubagentThread` / `resumeSubagentThread` / `subagents/runner.ts` 三处。
+- **注**：产品声明里有 `identity.locale`（W5-T4 已接进系统提示词），
+  但**界面文案**仍与 locale 无关。
 
 ---
 
 ## 二、明确不做的（设计上划出去了，别当缺口）
 
 - **第三优先钩子点位**：模型选择、上下文超限前的主动裁剪、并发批次控制、错误 / 重试、
-  用户输入改写（见 `docs/plugin-system-design.md` §6.6.2 第三优先与 §6.8）。
-- **`casual` 惰性工具档位**（core 阶段 B）：契约里保留了该取值，运行层**明确拒绝并记 trace**
-  （`src/agent/plugins/hook-runtime.ts`），不会假装降级成功。开发计划里标注为"不在 MVP"。
-- **决策插件的引擎驱动"自动模式"**：每轮多一次引擎调用（成本与延迟翻倍），没有可用引擎时只能
-  靠启发式——按本项目"拿不到真实判断就不假装有判断"的原则不做。已实现的是确定性工具路由。
-- **`beforeTurn.replaceText` / `afterAgentEnd.appendNote`**：本项目没有"改写已渲染回复"与"向已
-  结束会话追加旁注"的交付通道，声明它们只会变成静默失效，所以契约里没有这两个字段
+  用户输入改写（见 `docs/plugin-system-design.md` §6.6.2 与 §6.8）。
+- **`casual` 惰性工具档位**：契约里保留了该取值，运行层**明确拒绝并记 trace**，
+  不会假装降级成功。开发计划里标注为"不在 MVP"。
+- **决策插件的引擎驱动"自动模式"**：每轮多一次引擎调用（成本与延迟翻倍），
+  没有可用引擎时只能靠启发式——按本项目"拿不到真实判断就不假装有判断"的原则不做。
+  已实现的是确定性工具路由。
+- **`beforeTurn.replaceText` / `afterAgentEnd.appendNote`**：本项目没有"改写已渲染回复"与
+  "向已结束会话追加旁注"的交付通道，声明它们只会变成静默失效，所以契约里没有这两个字段
   （原因写在 `AGENTS.md` §12）。
+- **`cargo xtask gen`（协议四产物生成）**：W5-T1 判定不划算，**正式降级**为
+  "手写 + 三对副本双向校验"（决策与依据见 `docs/agent-base-design.md` §6.2）。
+- **`enum` 化协议方法常量 + 编译器穷尽性**：同上，降级为散装 `&str` + 机械校验。
 
 ---
 
@@ -131,20 +140,32 @@
 
 ## 四、工程与交付注意
 
-- **打包产物**：已随 M3 重建（`dist/a-da.exe` 与当前源码一致），并且
-  `bun scripts/binary-check.ts` 现在验两关——UI 角色画出首帧且日志确认走 `ws`（自 spawn 主机）、
-  主机角色 `--host` 报端口 + 握手 + 快照。**注意**：打包产物是 GUI 子系统（无控制台），
-  自动化通道到不了管道，所以二进制检查只能用应用自己的启动日志当证据（详见
-  `docs/agent-conventions.md` §17）。
-- **拆分后的已知缺口跟踪**：
-  1. **主机被杀时界面没有提示**：`已闭环`。前端已在 TitleBar 状态指示灯（支持点击重连）与顶部醒目黄色横幅（显示断线状态 + 一键「立即重连」按钮）实现实时反馈，不再静默；
-  2. **冷启动退化未测量**：打包形态多了"spawn 主机 + 握手 + 首帧快照"三步，只验过"能画出首帧"，
-     没有与 M0–M2 的进程内形态对比过数字。
-- **分支未合**：M0–M3 全部工作在一个特性分支 `feat/ui-host-split` 上（分阶段提交，可逐里程碑合并），
-  未合回 `main`。
-- **测试有偶发**：全量测试连跑 8 次出现过 1 次单条失败（每次失败的用例名不同），属既有的
-  跨文件干扰类——`store` 是进程级单例、若干测试会临时改 `A_DA_HOME`，而 `bun` 把各测试文件
-  放在同一进程里并发跑。不是新引入的，但新加会 mount 窗口或改环境变量的用例要格外小心
-  （约束见 `AGENTS.md` §13 末尾）。
-- **与设计文档的刻意偏差**：插件系统那三处见 `AGENTS.md` §12 / §13；拆分（M0–M3）期间的偏差
-  逐条写在 `docs/ui-host-split-dev-plan.md` 的里程碑完成记录里（**合并前先读那两处**）。
+- **构建**：本机 `cargo` 默认 target 目录编译 `ring` 会报 MSVC `D8050`；
+  加 `CARGO_TARGET_DIR=../cargo_target_ada` 复用已有缓存即可（与代码无关）。
+- **Rust 测试必须串行**：`cargo test --workspace -- --test-threads=1`。
+  根因是共享全局态（`AppHome` 单例、若干测试读 `~/.a-da`）；
+  测试默认 home 已指向临时目录，但仍有个别用例共享进程级状态。
+- **两个独立的门**：`bun run typecheck` 与 `cargo test` **都要过**，别只跑一个。
+- **TS 测试已整体冻结**：`bunfig.toml` 已把旧实现排除在测试发现之外，
+  跑 TS 测试只会得到 "No tests found"。**门就是 `cargo test` 与 `bun run typecheck`。**
+- **打包产物检查**：产物是 GUI 子系统（无控制台），自动化通道到不了管道，
+  所以二进制检查只能用应用自己的启动日志当证据（详见 `docs/agent-conventions.md` §17）。
+- **冷启动退化未测量**：打包形态多了"spawn 主机 + 握手 + 首帧快照"三步，
+  只验过"能画出首帧"，没有与进程内形态对比过数字。
+- **前端重连**：W6-T6 已改为指数退避（500ms 起 / 30s 封顶 / ±20% 抖动）+ 代次保护 +
+  断线立刻失败在途请求；策略在 `tauri-ui/src/client/reconnect-policy.ts`，
+  由 `cargo xtask verify-wiring` 的结构性断言守住。
+- **CLI `run`**：W6-T3 已从"只建会话就退出"改为真执行（装配 → 跑一轮 → 落盘），
+  退出码 0/1/2 分明；`--dry-run` 可离线验证装配。
+
+---
+
+## 相关文档
+
+| 文档 | 用途 |
+|---|---|
+| [`docs/agent-base-wiring-plan.md`](agent-base-wiring-plan.md) | **接线类问题的唯一口径**：缺口台账、任务表、执行记录、断言变更 |
+| [`docs/agent-base-design.md`](agent-base-design.md) | 设计口径（分层、端口、协议单源、装配） |
+| [`AGENTS.md`](../AGENTS.md) | 接手须知与 § 索引 |
+| [`docs/protocol/README.md`](protocol/README.md) | 线协议总览 |
+| [`docs/feature-catalog.md`](feature-catalog.md) | 已实现功能清单 |

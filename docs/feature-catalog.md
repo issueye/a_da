@@ -21,7 +21,7 @@
   - [2.9 上下文压缩与紧凑化 (Compact)](#29-上下文压缩与紧凑化-compact)
   - [2.10 全双工 JSON-RPC 2.0 服务网关](#210-全双工-json-rpc-20-服务网关)
 - [三、 前端交互界面功能 (UI Capabilities)](#三-前端交互界面功能-ui-capabilities)
-- [四、 两套 UI 实现对比表 (GPUIX vs Tauri)](#四-两套-ui-实现对比表-gpuix-vs-tauri)
+- [四、 前端交互界面功能清单（`tauri-ui`）](#四-前端交互界面功能清单tauri-ui)
 - [五、 CLI 与终端执行生态](#五-cli-与终端执行生态)
 
 ---
@@ -190,33 +190,40 @@
 
 ---
 
-## 四、 两套 UI 实现对比表 (GPUIX vs Tauri)
+## 四、 前端交互界面功能清单（`tauri-ui`）
 
-| 功能项 | GPUIX 原生版 ([`src/ui`](file:///E:/codes/rust_projects/a_da/src/ui)) | Tauri 版 ([`tauri-ui`](file:///E:/codes/rust_projects/a_da/tauri-ui/src)) | 状态评估 |
-|---|---|---|:---:|
-| **基础对话流与 Markdown** | 完整实现，GPU 加速渲染 | 完整实现，基于 `marked` 渲染 |  已对齐 |
-| **思考折叠与单行工具卡** | 完整实现，微色调与导引线 | 完整实现，高度复刻交互与色彩 |  已对齐 |
-| **单卡代码撤销** | 支持 | 支持（调用 `change.revertCard`） |  已对齐 |
-| **敏感工具审批横幅** | 支持批准/拒绝 | 支持批准/拒绝 |  已对齐 |
-| **交互式提问卡片** | 支持选项点击与自定义答复 | 支持选项点击与自定义答复 |  已对齐 |
-| **输入框与加号综合菜单** | 完整实现 | 完整实现（模式/指令/附件） |  已对齐 |
-| **排队消息管理浮动面板** | 完整实现 | 完整实现 |  已对齐 |
-| **子智能体专属只读保护条**| 完整实现 | 完整实现 |  已对齐 |
-| **待办任务看板 (Todo)** | 完整实现 | 完整实现 |  已对齐 |
-| **上下文用量细分 Popover**| 完整实现 | 完整实现 |  已对齐 |
-| **插件与能力管理弹窗** | 完整实现 ([`PluginsDialog.tsx`](file:///E:/codes/rust_projects/a_da/src/ui/PluginsDialog.tsx) 130KB) | 完整实现 ([`PluginsModal.tsx`](file:///E:/codes/rust_projects/a_da/tauri-ui/src/components/PluginsModal.tsx) 32KB) |  已对齐 |
-| **供应商设置弹窗** | 完整实现 | 完整实现 |  已对齐 |
-| **侧边栏工作区与父子树** | 完整实现 | 完整实现（手风琴 + 树形索引） |  已对齐 |
-| **多标签页 (TabStrip)** | 完整实现 | 完整实现 |  已对齐 |
-| **改动审查面板 (ChangesPanel)**| 独立面板，聚合文件 Diff、逐文件恢复与一键重置 | 完整实现 ([`ChangesPanel.tsx`](file:///E:/codes/rust_projects/a_da/tauri-ui/src/components/ChangesPanel.tsx))，支持 Diff 对比、逐文件与全部重置 | 🟢 已对齐 |
-| **全局命令面板 (Ctrl+K)** | 独立面板 ([`CommandPalette.tsx`](file:///E:/codes/rust_projects/a_da/src/ui/CommandPalette.tsx))，支持键盘导航执行动作 | 完整实现 ([`CommandPalette.tsx`](file:///E:/codes/rust_projects/a_da/tauri-ui/src/components/CommandPalette.tsx))，支持模糊搜索与键盘动作导航 | 🟢 已对齐 |
-| **内置文件/目录选择器** | 独立组件 ([`FilePicker.tsx`](file:///E:/codes/rust_projects/a_da/src/ui/FilePicker.tsx))，跨平台浏览主机文件系统 | 完整实现 ([`FilePicker.tsx`](file:///E:/codes/rust_projects/a_da/tauri-ui/src/components/FilePicker.tsx))，支持盘符切换、新建目录与路径浏览 | 🟢 已对齐 |
-| **`@` 提及文件/技能/子智能体** | 键盘输入 `@` 自动呼出模糊联想列表并高亮补全 | 完整实现 ([`MentionMenu.tsx`](file:///E:/codes/rust_projects/a_da/tauri-ui/src/components/MentionMenu.tsx))，支持文件/技能/子体联想补全 | 🟢 已对齐 |
-| **`/` 斜杠指令实时联想** | 键盘输入 `/` 自动呼出所有系统指令与 Prompt 模板 | 完整实现 ([`SlashCommandMenu.tsx`](file:///E:/codes/rust_projects/a_da/tauri-ui/src/components/SlashCommandMenu.tsx))，支持指令与 Prompt 模板联想 | 🟢 已对齐 |
-| **通信底层调试面板** | 独立面板 ([`DebugPanel.tsx`](file:///E:/codes/rust_projects/a_da/src/ui/DebugPanel.tsx))，监视原始 RPC 与事件 | 完整实现 ([`DebugPanel.tsx`](file:///E:/codes/rust_projects/a_da/tauri-ui/src/components/DebugPanel.tsx))，实时监控 JSON-RPC 报文与一键复制 | 🟢 已对齐 |
-| **全局 Toast 轻提示体系** | 全局队列通知宿主 ([`ToastHost.tsx`](file:///E:/codes/rust_projects/a_da/src/ui/ToastHost.tsx)) | 完整实现 ([`ToastHost.tsx`](file:///E:/codes/rust_projects/a_da/tauri-ui/src/components/ToastHost.tsx))，支持队列、各级别通知与撤销操作 | 🟢 已对齐 |
-| **全局快捷键注册体系** | 完善的快捷键系统 ([`shortcuts.ts`](file:///E:/codes/rust_projects/a_da/src/ui/shortcuts.ts)) | 完整实现，支持 Ctrl+K/N/W/Shift+C/Shift+D/Shift+X 等快捷键联动 | 🟢 已对齐 |
-| **会话内联重命名** | 双击标题内联重命名会话 | 完整实现，侧边栏双击进入内联重命名编辑模式 | 🟢 已对齐 |
+> **历史说明**：本节原先是一张 "GPUIX vs Tauri" 两套 UI 的对比表。GPUIX 客户端
+> **已整体归档**（不再参与构建与测试），继续按"两套实现"描述会误导读者以为有两条产品线。
+> 现在只列**当前唯一前端** `tauri-ui` 的功能项与实现位置。
+
+| 功能项 | 实现位置 | 状态 |
+|---|---|:---:|
+| **基础对话流与 Markdown** | `tauri-ui/src/components/Transcript.tsx`（`marked` 渲染） | ✅ |
+| **思考折叠与单行工具卡** | `tauri-ui/src/components/Transcript.tsx` | ✅ |
+| **单卡代码撤销** | `tauri-ui/src/components/Transcript.tsx` + `change.revertCard` | ✅ |
+| **敏感工具审批横幅** | `tauri-ui/src/components/Transcript.tsx`（读 `status == "waiting_approval"`） | ✅ |
+| **交互式提问卡片** | `tauri-ui/src/components/Transcript.tsx` + `question.answer` | ✅ |
+| **输入框与加号综合菜单** | `tauri-ui/src/components/Composer.tsx`（模式/指令/附件） | ✅ |
+| **排队消息管理浮动面板** | `tauri-ui/src/components/Composer.tsx` | ✅ |
+| **子智能体专属只读保护条** | `tauri-ui/src/components/Composer.tsx` | ✅ |
+| **待办任务看板 (Todo)** | `tauri-ui/src/components/Transcript.tsx` | ✅ |
+| **上下文用量细分 Popover** | `tauri-ui/src/utils/context-breakdown.ts`（客户端估算） | ⚠️ 未接服务端实测值 |
+| **插件与能力管理弹窗** | `tauri-ui/src/components/PluginsModal.tsx` | ✅ |
+| **供应商设置弹窗** | `tauri-ui/src/components/SettingsModal.tsx` | ✅ |
+| **侧边栏工作区与父子树** | `tauri-ui/src/components/Sidebar.tsx`（手风琴 + 树形索引） | ✅ |
+| **多标签页 (TabStrip)** | `tauri-ui/src/components/TabStrip.tsx` | ✅ |
+| **改动审查面板 (ChangesPanel)** | `tauri-ui/src/components/ChangesPanel.tsx`（Diff 对比、逐文件与全部重置） | ✅ |
+| **全局命令面板 (Ctrl+K)** | `tauri-ui/src/components/CommandPalette.tsx`（模糊搜索 + 键盘动作导航） | ✅ |
+| **内置文件/目录选择器** | `tauri-ui/src/components/FilePicker.tsx`（盘符切换、新建目录、路径浏览） | ✅ |
+| **`@` 提及文件/技能/子智能体** | `tauri-ui/src/components/MentionMenu.tsx` | ✅ |
+| **`/` 斜杠指令实时联想** | `tauri-ui/src/components/SlashCommandMenu.tsx` | ✅ |
+| **通信底层调试面板** | `tauri-ui/src/components/DebugPanel.tsx`（实时 JSON-RPC 报文与一键复制） | ✅ |
+| **全局 Toast 轻提示体系** | `tauri-ui/src/components/ToastHost.tsx`（队列、分级、撤销） | ✅ |
+| **全局快捷键注册体系** | `tauri-ui/src/utils/shortcuts.ts`（Ctrl+K/N/W/Shift+C/D/X…） | ✅ |
+| **会话内联重命名** | `tauri-ui/src/components/Sidebar.tsx`（双击标题进入编辑） | ✅ |
+
+**连接层**：`tauri-ui/src/client/ws-client.ts` 是唯一协议客户端，
+重连策略在 `tauri-ui/src/client/reconnect-policy.ts`（指数退避 + 封顶 + 抖动，W6-T6）。
 
 ---
 
@@ -237,6 +244,12 @@ a-da.exe --headless
 # 4. 指定固定端口与认证令牌启动守护进程
 a-da.exe daemon --port 52353 --token "my-secret-token" --workspace "."
 
-# 5. CLI 单次自动化编程任务执行
+# 5. CLI 单次任务：装配引擎 → 跑一轮 → 会话落盘（W6-T3）
 a-da.exe run --workspace "." "审查当前项目所有的 Rust 文件并指出潜在错误"
+
+# 5b. 同上但不联网：只验证装配与会话落盘（模型换成回显替身）
+a-da.exe run --workspace "." --dry-run "冒烟"
+
+# 退出码：0 = 任务完成；1 = 执行失败（含未配置模型供应商）；2 = 用法错误（缺任务指令）
 ```
+
