@@ -102,6 +102,9 @@ bun run typecheck
 | P2-4 | 合规套件两处空壳（INV-7 空函数、`ports/model.rs` 自比）；"8 端口"名不副实 | `inv7:5-8`；`ports/model.rs:43-44` | W6-T5 |
 | P2-5 | 前端重连无退避/无上限/竞态；`onclose` 不清 `pendingRequests` | `tauri-ui/src/client/ws-client.ts:290-312` | W6-T6 |
 | P2-6 | README 正文仍是 TS/GPUIX 时代；`unfinished-features.md` / `feature-catalog.md` 过期 | README 656 行 + 另两份文档共 60 条归档引用 | **✅ W6-T7 已修复**：三份文档按当前实现重写，`verify-docs` **60 → 0** |
+| **P0-5** | 🔴 **`ask_user` 在新引擎上不可用**：工具在 catalog 里、UI 卡片组件也在，但链路永远不触发 | `AskUserTool::execute` 直接返回错误（`agent-toolkit/src/core/ask_user.rs`）；`AgentEventBody::QuestionAsked` **全仓无发射者**；唯一会注册 waiter 的 legacy `execute_ask_user` 已随 S1 删除 | **S1a**（提问端口化 + 真实现；门禁已用 `UNEMITTED_EVENT_ALLOW` 钉住） |
+| **P1-17** | 🔴 **子智能体生命周期未上报**：`SubagentStarted` / `SubagentFinished` 定义了却无发射者，`engine_bridge` 把两者映射为 `None` | `crates/agent-base/src/domain/event.rs:32-33`；`engine_bridge.rs:94-95`；进度通道 `SubagentStepUpdate` 在 `InvokeSubagentTool` 里被置 `None`（`subagents/tool.rs:167`） | **S6**（交互平台一并解决：进度/生命周期上报是 agent 间交互的一部分） |
+| P2-7 | `runner/` 遗留 991 行死代码，被 `pub use` 遮蔽 `dead_code` 检测 | `runner/{builtin_tools,executor,prompt}.rs` = 436+253+302 行 | **✅ S1 已删除** + 防复活断言（`test_legacy_runner_residue_must_not_come_back`） |
 
 ---
 
@@ -1798,6 +1801,86 @@ product: Some(ProductInfo { id: "ada-coding",         // 硬编码产品身份
 3. **断言要选"两种实现结果不同"的样本**。用 `ada-coding`（`rollback:true, plugins:true`）
    测"是否派生"是**测不出来**的——它恰好与默认值相同。改用 `ada-skeleton`
    （`rollback:false`、无 `plugins`）后，硬编码与派生**结果不同**，断言才有判别力。
+
+
+### 13.26 S1 删 991 行死代码 + 事件发射者门禁（2026-10-09，已完成）
+
+**背景**：为"网关 = 管理平台 + agent 间交互平台 + 桥接平台"做准备，按
+**删死代码 → 修分层倒置 → 拆包** 的顺序重构 `agent-core`。S1 = 删死代码。
+
+#### ① 门禁先行：`check_event_emitters`（新增，`verify-wiring` check G）
+
+判据：**每个 `AgentEventBody` 变体都必须在 `crates/agent-base/src/engine/**` 的生产段里有发射者**
+（引擎是 `AgentEvent` 的唯一生产者，INV-6）。
+
+这条门禁**一上来就抓到 3 个"定义了没人发"**——不是 1 个：
+
+| 变体 | 缺口 |
+|---|---|
+| `QuestionAsked` | `ask_user` 不可用（P0-5） |
+| `SubagentStarted` | 子智能体生命周期未上报（P1-17） |
+| `SubagentFinished` | 同上 |
+
+**为什么这类缺口能躺这么久**：消费方写好了、界面组件写好了、测试也在（喂的是**手工构造**的事件），
+唯独生产路径上没有任何东西发出它。**测试全绿，功能不通。**
+
+**豁免机制**（与 `LEGACY_ONLY_TOOLS` 同一手法）：三个变体登记在
+`UNEMITTED_EVENT_ALLOW` 里，**逐项写明理由**；并且：
+
+- **缺发射者**且不在豁免表 → 报红；
+- **陈旧豁免**（已有发射者却还在表里）→ 报红，强制收敛；
+- **豁免项拼错名字**（不是真实变体）→ 报红，防豁免表悄悄失效。
+
+#### ② 删死代码：`runner/` 三个残渣文件
+
+| 文件 | 行数 | 为何是死的 |
+|---|---|---|
+| `runner/builtin_tools.rs` | 436 | `execute_ask_user` / `execute_builtin_plugin_tool` 无调用者 |
+| `runner/executor.rs` | 253 | `execute_tool_call` / `capture_tool_checkpoint` 无调用者 |
+| `runner/prompt.rs` | 302 | `builtin_tools()` / `build_system_prompt` / `format_messages_for_model` 无调用者（后者是 `agent-base` 同名函数的**第二份实现**） |
+
+合计 **991 行**。**不报 `dead_code` 的原因**：`runner/mod.rs` 用 `pub use` 把它们公开了——
+`pub` 遮蔽死代码检测。所以同样的东西可以悄无声息地长回来 → 加了**防复活断言**。
+
+**删除前逐条确认**（不敢凭"看起来没人用"）：
+1. 外部零引用（用 `grep` 工具复查，不用 PowerShell `**` 通配——它在本仓已被证明漏文件）；
+2. 行为有替代：`batch_write`/`decide`/`check_gate` 在 `agent-toolkit` 有真 `Tool` 实现与测试；
+   `build_system_prompt` 由 `agent-adapter` 的 `CodingPromptSource` 取代（8 条测试）；
+3. `evaluate_diff` / `manage_ponytail` **连描述符都不在**（不在 24 个工具里）——那些测试测的是死分支。
+
+#### ③ 诚实交代：删掉的 7 个测试里有 1 个是"唯一实现"
+
+`ask_user` 的问句流程：legacy `execute_ask_user` 是**唯一**会注册 waiter 并发 `QuestionAsked`
+的实现。**这次删除没有引入回归**（该能力在新路径上本来就不通），但缺口已登记为 **P0-5**，
+并由门禁豁免钉住。
+
+#### 转绿证据
+
+| 证据 | 结果 |
+|---|---|
+| `cargo test --workspace` | **304 → 299**（−7 删除的测试 +2 新增断言），**0 failed**；零编译警告 |
+| **故障注入 1**：豁免项改名 | ✘ `事件变体 QuestionAsked 定义了却没有任何生产发射者` |
+| **故障注入 2**：在生产段给 `SubagentStarted` 造发射者 | ✘ `陈旧豁免：SubagentStarted 已经有生产发射者了` |
+| **故障注入 3**：建回 `runner/prompt.rs` | ✘ `是 W3-T4 的 legacy 残渣（991 行死代码）…请勿加回` |
+| 六条门禁 | 全绿（`verify-wiring` 新增 `事件变体 12 个：有发射者 9 个、待补发射者 3 个（已登记豁免）`） |
+
+#### S1 期间的四条记录
+
+1. 🔴 **"有实现"≠"被调用"≠"真的做了那件事"**。我之前的审计判据是"描述符有 `Tool` 实现"
+   （`ask_user` ✅ 有），所以漏掉了"实现直接返回错误"。**判据必须落到行为**——
+   这次改成了"事件有没有发射者"，因为那是**机械可查**的行为证据。
+2. **`pub use` 会遮蔽死代码检测**。991 行死代码零警告，就是因为 `runner/mod.rs` 把它们公开了。
+   判据：**看一个 `pub mod` 的模块时，要问"外面真的有人用吗"**，而不是"编译器没说话"。
+3. **故障注入必须能编译**。第一次注入我改了豁免表的元组元素，直接编译失败 → 门根本没跑到
+   （上轮踩过同一个坑）。改成语义等价但语法完整的注入后才证明门有效。
+4. **注入位置要落在"被判定的区域"内**。给 `SubagentStarted` 造发射者时，我把它追加在文件末尾——
+   而那里已经在 `#[cfg(test)]` 之后，被 `production_prefix` 正确排除了。**门是对的，注入是错的。**
+   → 教训：注入无效时，先确认注入**落在判据覆盖的范围内**。
+5. 🔴 **同一个文档坑踩了第二次**：我用"替换 §13.25 的标题行"来插入 §13.26，结果是
+   ① §13.26 落到了 §13.25 **前面**（顺序错），② §13.25 的**标题被吞掉**（只剩正文）。
+   自检只查了"§13 段落数"，25 与 26 只差 1，**没看出异常**——是后来核对顺序才发现的。
+   → 教训：**新增 §13.x 必须追加在最后一个 §13.x 之后（`## 附录 A` 之前）**，绝不用替换标题的方式；
+   自检要加"**编号连续且递增**"，不能只看总数。
 
 
 ## 附录 A：缺口 → 任务反查表

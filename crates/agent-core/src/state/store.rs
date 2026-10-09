@@ -5,8 +5,8 @@ use std::sync::OnceLock;
 
 /// 进程内时钟端口（组合根/测试可注入）。
 ///
-/// 现状是每个模块各写一份 `SystemTime::now()`（`runner::executor::now_ms`、本文件的
-/// `now_millis`…），测试无法确定性重放。这里是过渡期的显式缝隙：调用方仍用 `now_millis()`，
+/// 现状是若干模块各写一份 `SystemTime::now()`（本文件的 `now_millis` 等），
+/// 测试无法确定性重放。这里是过渡期的显式缝隙：调用方仍用 `now_millis()`，
 /// 但时间源已经可替换（测试注入 `agent_base::testing::FixedClock`）。
 static CLOCK: OnceLock<Box<dyn Clock>> = OnceLock::new();
 

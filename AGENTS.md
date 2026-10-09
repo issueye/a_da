@@ -17,7 +17,7 @@
 
 ```bash
 cargo build --workspace     # 编译基座四 crate + agent_core + ada-coding + ts_engine + tauri 宿主
-cargo test --workspace -- --test-threads=1   # 门二（必须串行：有 2 个用例共享全局态）
+cargo test --workspace -- --test-threads=1   # 门二（必须串行：有共享全局态的用例）
 bun run typecheck           # 门一：tauri-ui 的 tsc --noEmit
 bun run verify:archive      # 归档门：主干不得引用 archive/、不得有第二份引擎
 bun run tauri:dev           # 桌面客户端开发（前端热重载 + 宿主）
@@ -25,8 +25,9 @@ bun run tauri:dev           # 桌面客户端开发（前端热重载 + 宿主�
 
 - **`typecheck` 与 `cargo test` 是两个独立的门，两个都要过**，别只跑一个。
 - **Rust 测试必须串行跑**（`--test-threads=1`，`bun run test` 已带）：`test_plugin_and_skill_lifecycle`
-  与 `test_execute_ask_user_aborted` 分别读 `~/.a-da` 配置和全局 `question_manager` 单例，并行会互相污染
-  （单独跑各自通过）。根因是共享全局态（INV-8），M1 用依赖注入根治后再改回并行。
+  读 `~/.a-da` 配置，而提问链路仍走全局单例 `approval::question_manager::GLOBAL_QUESTION_MANAGER`
+  （`OnceLock`），并行会互相污染（单独跑各自通过）。根因是共享全局态（INV-8）；
+  提问端口化（S1a）会去掉这个单例，届时再改回并行。
 - 本机 `cargo` 默认 target 目录编译 `ring` 会报 MSVC `D8050`；加上
   `CARGO_TARGET_DIR=../cargo_target_ada` 复用已有缓存即可（与代码无关）。
 - **Rust 测试不再写用户真实的 `~/.a-da`**：`agent_core::session::app_home()` 在 `cfg(test)` 下指向
@@ -48,7 +49,10 @@ bun run tauri:dev           # 桌面客户端开发（前端热重载 + 宿主�
 - `products/ada-coding` 产品二进制（`--host/--port/--token/--parent-pid/--workspace`）
 - `crates/agent-core/src/{ai,protocol,tools}/mod.rs` 是**兼容 shim**（`pub use` 转发到基座各 crate），调用点不动
 - 端口已接线处：`session::{app_home,set_app_home,get_app_home,get_config_path}`、`state::{clock,set_clock,now_millis}`、`AgentStore::with_home`（单元测试默认 home 在临时目录，不再碰用户真实 `~/.a-da`）
-- `crates/agent-core/src/{runner,server,state,session,plugins,subagents,skills,approval,checkpoint}` 仍是权威实现，M1 收敛
+- `crates/agent-core/src/{server,state,session,plugins,subagents,skills,approval,checkpoint}` 仍是权威实现，M1 收敛
+- `crates/agent-core/src/runner` 只剩 `engine_bridge.rs`（引擎 ↔ UI 事件投影）与 `ui_events.rs`；
+  另三个文件（`builtin_tools` / `executor` / `prompt`，共 **991 行** legacy 残渣）已于 S1 删除，
+  并有防复活断言 `test_legacy_runner_residue_must_not_come_back` 钉住（见 `runner/mod.rs` 顶部注释）
 - `crates/agent-core/src/server` —— `dispatch.rs`（JSON-RPC 分发，最大文件）、`ws.rs`（宿主）、`emitter.rs`（快照合帧）
 - `src-tauri` Tauri 宿主（同进程起核心服务）；`tauri-ui` React 前端（`src/client/ws-client.ts` 是协议客户端）
 - `archive/ts-legacy` **只读归档**（TS 时代的 src + scripts + app.tsx）
@@ -57,7 +61,12 @@ bun run tauri:dev           # 桌面客户端开发（前端热重载 + 宿主�
 
 - **不许引用归档**：主干任何代码/配置都不得 import 或指向 `archive/ts-legacy/**`——那会把"两份实现"的漂移重新引进来；`bun run verify:archive` 会红。
 - **改 Rust 核心前先看 [docs/agent-base-plan.md](docs/agent-base-plan.md) §1.3**：审批闸门、取消贯穿、`terminate`、插件 `enabled`、空壳工具等**目前多数是"看起来装上了、其实没接线"**，那里逐条写明了处置口径（补实现 / 删声明）。
-- **工具元数据现在仍是五处名单**（`crates/agent-toolkit/src/lib.rs` 的读写判定、`approval/types.rs` 的命令工具、`executor.rs` 的检查点、子智能体白名单、插件自述 `is_write`）：改一个工具的语义要五处同步；M2 会收敛成 `ToolDescriptor`，在那之前别只改一处。
+- **工具元数据已收敛为 `ToolDescriptor` 单一真源**（W2-T2 完成）：读写性（`is_write`）、审批要求、
+  检查点回滚策略（`rollback`）、终止语义都在 `crates/agent-toolkit/src/registry.rs`；
+  `is_write_tool` / `is_readonly_tool` 由它派生，`PLUGIN_BUILTIN_CATALOG` 也由它派生
+  （`cargo xtask verify-wiring` 的 check B/C 盯着"派生"这件事）。
+  历史上那五处手写名单（`lib.rs` 读写判定、`approval/types.rs` 命令工具、`executor.rs` 检查点、
+  子智能体白名单、插件自述 `is_write`）**只剩插件自述一处**，且已改为按描述符校验。
 
 ## § 索引（`AGENTS.md §N` 一律指下表第 N 条，正文见 docs/agent-conventions.md）
 

@@ -400,6 +400,7 @@ pub fn verify_wiring() -> anyhow::Result<Report> {
     check_port_impls(&root, &mut rep)?;
     check_fail_direction_is_consumed(&root, &mut rep)?;
     check_frontend_reconnect(&root, &mut rep)?;
+    check_event_emitters(&root, &mut rep)?;
 
     Ok(rep)
 }
@@ -689,6 +690,143 @@ fn check_frontend_reconnect(root: &Path, rep: &mut Report) -> anyhow::Result<()>
             "前端重连：退避（指数+封顶+抖动）、代次保护、断线清空在途请求 均就位".to_string(),
         );
     }
+    Ok(())
+}
+
+/// 尚未有发射者的 `AgentEventBody` 变体（**显式豁免，逐项写明理由**）。
+///
+/// 机制与 `LEGACY_ONLY_TOOLS` 相同：**临时豁免必须收敛**——
+/// 一旦某变体有了发射者，它必须从这张表里删掉，否则门会报"陈旧豁免"。
+/// 这样缺口不会被"记在某个文档里然后忘掉"，而是**钉在门禁上**。
+const UNEMITTED_EVENT_ALLOW: &[(&str, &str)] = &[
+    (
+        "QuestionAsked",
+        "缺口：`ask_user` 工具（agent-toolkit/src/core/ask_user.rs）不提问就返回错误，\
+         因此无人注册 waiter、无人发射本事件 → 界面永不显示提问卡片、`question.answer` 找不到 waiter",
+    ),
+    (
+        "SubagentStarted",
+        "缺口：子智能体生命周期未上报（engine_bridge 把本事件映射为 None）；\
+         子智能体进度通道 `SubagentStepUpdate` 在 `InvokeSubagentTool` 里被置为 None",
+    ),
+    (
+        "SubagentFinished",
+        "同上（与 SubagentStarted 同一处缺口）",
+    ),
+];
+
+/// G. 每个 `AgentEventBody` 变体都必须有**生产发射者**（W6-T7 后新增）。
+///
+/// 为什么需要这条：`AgentEventBody` 是领域事件的**定义处**，而"定义了却没人发"
+/// 是一类**静默失效**——消费方写好了、界面渲染写好了、测试也在（喂的是手工构造的事件），
+/// 唯独生产路径上没有任何东西发出它。`QuestionAsked` 就是这么躺了很久的：
+/// `ask_user` 在 catalog 里、工具实现存在、UI 卡片组件存在，**但那条链路永远不触发**。
+///
+/// 判据：变体必须出现在 `crates/agent-base/src/engine/**` 的生产段里——
+/// 引擎是 `AgentEvent` 的**唯一生产者**（INV-6：`seq` 由 runtime 生成）。
+///
+/// 豁免必须显式登记 + 写明理由，且**陈旧豁免会报红**（已有发射者却还在豁免表里）。
+fn check_event_emitters(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
+    let event_src = read(root, "crates/agent-base/src/domain/event.rs")?;
+    let Some(body) = match_region(&event_src, "pub enum AgentEventBody") else {
+        rep.violations
+            .push("解析不出 `AgentEventBody` 枚举体——审计失效（不会静默通过）".to_string());
+        return Ok(());
+    };
+
+    let variants: Vec<String> = body
+        .lines()
+        .filter_map(|l| {
+            let t = l.trim_start();
+            if l.len() - t.len() != 4 || !t.starts_with(|c: char| c.is_ascii_uppercase()) {
+                return None;
+            }
+            let name: String = t
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if name.is_empty() {
+                None
+            } else {
+                Some(name)
+            }
+        })
+        .collect();
+
+    if variants.is_empty() {
+        rep.violations
+            .push("`AgentEventBody` 解析出 0 个变体——审计失效".to_string());
+        return Ok(());
+    }
+
+    // 引擎生产段（发射者只可能在这里）
+    let mut engine_src = String::new();
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_rs(&root.join("crates/agent-base/src/engine"), &mut files);
+    for p in &files {
+        let Ok(src) = fs::read_to_string(p) else { continue };
+        let prod = production_prefix(&src).unwrap_or(&src);
+        engine_src.push_str(prod);
+        engine_src.push('\n');
+    }
+
+    let allowed: BTreeSet<&str> = UNEMITTED_EVENT_ALLOW.iter().map(|(v, _)| *v).collect();
+    let mut unemitted: Vec<&String> = Vec::new();
+    let mut emitted: BTreeSet<&String> = BTreeSet::new();
+
+    for v in &variants {
+        if engine_src.contains(&format!("AgentEventBody::{v}")) {
+            emitted.insert(v);
+        } else {
+            unemitted.push(v);
+        }
+    }
+
+    // 1. 没有发射者的变体必须在豁免表里
+    for v in &unemitted {
+        if !allowed.contains(v.as_str()) {
+            rep.violations.push(format!(
+                "事件变体 `{v}` 定义了却**没有任何生产发射者**（引擎里不出现）——\
+                 消费方/界面可能已经写好，但那条链路永远不触发。\
+                 要么补发射者，要么加入 `UNEMITTED_EVENT_ALLOW` 并写明理由"
+            ));
+        }
+    }
+
+    // 2. 陈旧豁免：已有发射者却还在豁免表里 → 必须收敛
+    for (v, _) in UNEMITTED_EVENT_ALLOW {
+        if emitted.contains(&v.to_string()) {
+            rep.violations.push(format!(
+                "陈旧豁免：`{v}` 已经有生产发射者了，请从 `UNEMITTED_EVENT_ALLOW` 里删掉它\
+                 （临时豁免必须收敛）"
+            ));
+        }
+        // 3. 豁免项必须是**真实存在的变体**——拼错名字会让豁免表悄悄失效
+        if !variants.iter().any(|x| x == v) {
+            rep.violations.push(format!(
+                "`UNEMITTED_EVENT_ALLOW` 里的 `{v}` 不是 `AgentEventBody` 的变体\
+                 （拼错名字会让豁免表悄悄失效）"
+            ));
+        }
+    }
+
+    let mut unemitted_allowed: Vec<&str> = unemitted
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|s| allowed.contains(s))
+        .collect();
+    unemitted_allowed.sort_unstable();
+    rep.notes.push(format!(
+        "事件变体 {} 个：有发射者 {} 个、**待补发射者 {} 个**（已登记豁免：{}）",
+        variants.len(),
+        emitted.len(),
+        unemitted.len(),
+        if unemitted_allowed.is_empty() {
+            "无".to_string()
+        } else {
+            unemitted_allowed.join(", ")
+        }
+    ));
     Ok(())
 }
 
