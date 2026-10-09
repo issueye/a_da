@@ -401,6 +401,7 @@ pub fn verify_wiring() -> anyhow::Result<Report> {
     check_fail_direction_is_consumed(&root, &mut rep)?;
     check_frontend_reconnect(&root, &mut rep)?;
     check_event_emitters(&root, &mut rep)?;
+    check_no_ui_store_in_node_layer(&root, &mut rep)?;
 
     Ok(rep)
 }
@@ -826,6 +827,92 @@ fn check_event_emitters(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
         } else {
             unemitted_allowed.join(", ")
         }
+    ));
+    Ok(())
+}
+
+/// 节点层目录（S2）：这些是**领域行为**所在处，不得依赖 UI 投影 `AgentStore`。
+///
+/// 为什么用"目录清单"而不是"文件清单"：S4 拆包时这些目录会整体搬进 `agent-node`，
+/// 清单跟着目录走即可；而且新增文件自动纳入检查，不用逐个登记。
+///
+/// 目前只有这两个（S2 范围内实测**仅**这两处有倒置）。后续收敛 `session` /
+/// `checkpoint` / `plugins` / `skills` 时，把目录名加进来即可。
+const NODE_LAYER_DIRS: &[&str] = &["approval", "subagents"];
+
+/// H. 节点层不得依赖 UI 投影（S2 新增）。
+///
+/// 判据：`crates/agent-core/src/{approval,subagents}/**` 的**生产段**里，
+/// 非注释行不得出现 `AgentStore`。
+///
+/// 为什么这条重要：`approval/gate.rs` 决定"要不要问用户"、`subagents/tool.rs` 决定
+/// "子智能体用哪个模型"——都是**领域行为**。它们原先直接读 `AgentStore`（给界面看的投影），
+/// 而 `AgentStore.config` 的类型是 `agent_proto::ConfigSnapshot`（**线上 DTO**）。
+/// 也就是说：**节点行为在依据"准备发给界面的那串 JSON 的形状"做决定**。
+/// 这是拆包（S4）之前必须先断掉的依赖——否则 `agent-node` 的 crate 边界是假的。
+///
+/// 注释不算依赖（注释里提到 `AgentStore` 是在**解释这段历史**，是有价值的信息）。
+fn check_no_ui_store_in_node_layer(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
+    let src_root = root.join("crates/agent-core/src");
+    let mut scanned = 0usize;
+
+    for dir in NODE_LAYER_DIRS {
+        let mut files: Vec<PathBuf> = Vec::new();
+        collect_rs(&src_root.join(dir), &mut files);
+        for p in &files {
+            let Ok(src) = fs::read_to_string(p) else { continue };
+            let prod = production_prefix(&src).unwrap_or(&src);
+            scanned += 1;
+            for (i, line) in prod.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue; // 注释是在解释历史，不是依赖
+                }
+                if line.contains("AgentStore") {
+                    let rel = p.strip_prefix(root).unwrap_or(p).display().to_string();
+                    rep.violations.push(format!(
+                        "节点层 `{dir}/` 的 `{rel}:{}` 引用了 UI 投影 `AgentStore`——分层倒置。\
+                         请改用 `crate::node_config::NodeConfigSource` 端口；\
+                         唯一知情者是 `server::StoreBackedNodeConfig`（桥接层）",
+                        i + 1
+                    ));
+                }
+            }
+        }
+    }
+
+    if scanned == 0 {
+        rep.violations.push(format!(
+            "节点层目录清单 {NODE_LAYER_DIRS:?} 一个文件都没扫到——审计失效（不会静默通过）"
+        ));
+    }
+
+    // 正向断言：端口必须有**生产实现**（否则"改用端口"这句话没有落点）
+    //
+    // 注意：端口与实现**同名不同路径**（`src/node_config.rs` vs `src/server/node_config.rs`），
+    // 所以只能按**完整路径**排除端口本身，不能按文件名。
+    let port_file = src_root.join("node_config.rs");
+    let mut core_files: Vec<PathBuf> = Vec::new();
+    collect_rs(&src_root, &mut core_files);
+    let impls: Vec<String> = core_files
+        .iter()
+        .filter(|p| **p != port_file)
+        .filter_map(|p| fs::read_to_string(p).ok())
+        .filter(|src| {
+            let prod = production_prefix(src).unwrap_or(src);
+            prod.contains("impl NodeConfigSource for")
+                || prod.contains("impl crate::node_config::NodeConfigSource for")
+        })
+        .collect();
+    if impls.is_empty() {
+        rep.violations.push(
+            "`NodeConfigSource` 没有任何生产实现——节点层「改用端口」没有落点".to_string(),
+        );
+    }
+
+    rep.notes.push(format!(
+        "节点层（{}）已断 UI 投影依赖：扫了 {scanned} 个文件，0 处倒置；`NodeConfigSource` 生产实现 {} 个",
+        NODE_LAYER_DIRS.join(" / "),
+        impls.len()
     ));
     Ok(())
 }

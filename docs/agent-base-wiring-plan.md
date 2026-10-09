@@ -102,9 +102,10 @@ bun run typecheck
 | P2-4 | 合规套件两处空壳（INV-7 空函数、`ports/model.rs` 自比）；"8 端口"名不副实 | `inv7:5-8`；`ports/model.rs:43-44` | W6-T5 |
 | P2-5 | 前端重连无退避/无上限/竞态；`onclose` 不清 `pendingRequests` | `tauri-ui/src/client/ws-client.ts:290-312` | W6-T6 |
 | P2-6 | README 正文仍是 TS/GPUIX 时代；`unfinished-features.md` / `feature-catalog.md` 过期 | README 656 行 + 另两份文档共 60 条归档引用 | **✅ W6-T7 已修复**：三份文档按当前实现重写，`verify-docs` **60 → 0** |
-| **P0-5** | 🔴 **`ask_user` 在新引擎上不可用**：工具在 catalog 里、UI 卡片组件也在，但链路永远不触发 | `AskUserTool::execute` 直接返回错误（`agent-toolkit/src/core/ask_user.rs`）；`AgentEventBody::QuestionAsked` **全仓无发射者**；唯一会注册 waiter 的 legacy `execute_ask_user` 已随 S1 删除 | **S1a**（提问端口化 + 真实现；门禁已用 `UNEMITTED_EVENT_ALLOW` 钉住） |
+| **P0-6** | 🔴 **`ask_user` 在新引擎上不可用**：工具在 catalog 里、UI 卡片组件也在，但链路永远不触发 | `AskUserTool::execute` 直接返回错误（`agent-toolkit/src/core/ask_user.rs`）；`AgentEventBody::QuestionAsked` **全仓无发射者**；唯一会注册 waiter 的 legacy `execute_ask_user` 已随 S1 删除 | **S1a**（提问端口化 + 真实现；门禁已用 `UNEMITTED_EVENT_ALLOW` 钉住） |
 | **P1-17** | 🔴 **子智能体生命周期未上报**：`SubagentStarted` / `SubagentFinished` 定义了却无发射者，`engine_bridge` 把两者映射为 `None` | `crates/agent-base/src/domain/event.rs:32-33`；`engine_bridge.rs:94-95`；进度通道 `SubagentStepUpdate` 在 `InvokeSubagentTool` 里被置 `None`（`subagents/tool.rs:167`） | **S6**（交互平台一并解决：进度/生命周期上报是 agent 间交互的一部分） |
 | P2-7 | `runner/` 遗留 991 行死代码，被 `pub use` 遮蔽 `dead_code` 检测 | `runner/{builtin_tools,executor,prompt}.rs` = 436+253+302 行 | **✅ S1 已删除** + 防复活断言（`test_legacy_runner_residue_must_not_come_back`） |
+| **P0-7** | 🔴 **节点层依赖 UI 投影**：审批闸门与委派工具直接读 `AgentStore`，而 `AgentStore.config` 的类型是 `agent_proto::ConfigSnapshot`（**线上 DTO**）——节点行为依据"发给界面的 JSON 形状"做决定 | `approval/gate.rs`（`store.config.approval`）、`subagents/tool.rs`（`store.provider`） | **✅ S2 已修**：`NodeConfigSource` 端口 + 桥接层唯一实现；新增 `verify-wiring` check H 防复发 |
 
 ---
 
@@ -1817,7 +1818,7 @@ product: Some(ProductInfo { id: "ada-coding",         // 硬编码产品身份
 
 | 变体 | 缺口 |
 |---|---|
-| `QuestionAsked` | `ask_user` 不可用（P0-5） |
+| `QuestionAsked` | `ask_user` 不可用（P0-6） |
 | `SubagentStarted` | 子智能体生命周期未上报（P1-17） |
 | `SubagentFinished` | 同上 |
 
@@ -1851,7 +1852,7 @@ product: Some(ProductInfo { id: "ada-coding",         // 硬编码产品身份
 #### ③ 诚实交代：删掉的 7 个测试里有 1 个是"唯一实现"
 
 `ask_user` 的问句流程：legacy `execute_ask_user` 是**唯一**会注册 waiter 并发 `QuestionAsked`
-的实现。**这次删除没有引入回归**（该能力在新路径上本来就不通），但缺口已登记为 **P0-5**，
+的实现。**这次删除没有引入回归**（该能力在新路径上本来就不通），但缺口已登记为 **P0-6**，
 并由门禁豁免钉住。
 
 #### 转绿证据
@@ -1881,6 +1882,84 @@ product: Some(ProductInfo { id: "ada-coding",         // 硬编码产品身份
    自检只查了"§13 段落数"，25 与 26 只差 1，**没看出异常**——是后来核对顺序才发现的。
    → 教训：**新增 §13.x 必须追加在最后一个 §13.x 之后（`## 附录 A` 之前）**，绝不用替换标题的方式；
    自检要加"**编号连续且递增**"，不能只看总数。
+
+### 13.27 S2 断掉节点层对 UI 投影的依赖（2026-10-09，已完成）
+
+**目标**：`approval/gate.rs` 与 `subagents/tool.rs` 不再读 `AgentStore`。
+
+#### 实测：倒置比预想的更严重
+
+两处调用点加起来看着有 14 处，但真正的**读取**只有两处：
+
+| 文件 | 读什么 | 用途 |
+|---|---|---|
+| `approval/gate.rs` | `store.config.approval` | 决定"要不要问用户" |
+| `subagents/tool.rs` | `store.provider` | 子智能体用哪个模型 |
+
+问题不在"读了 UI 结构"，而在**`AgentStore.config` 的类型是 `agent_proto::ConfigSnapshot`——一个线上 DTO**：
+
+```text
+节点层（审批/委派） ──读──► AgentStore（UI 投影） ──含──► ConfigSnapshot（准备发给界面的那串 JSON）
+```
+
+也就是说：**节点行为在依据"发给界面的 JSON 的形状"做决定**。
+
+#### 修法：端口 + 桥接层唯一知情者
+
+```text
+节点层 ──► NodeConfigSource（端口，crates/agent-core/src/node_config.rs）
+                ▲
+                └── StoreBackedNodeConfig（桥接层，server/node_config.rs）◄── AgentStore
+                        ↑ 唯一知道"配置存在 AgentStore 里"的地方
+```
+
+| 新增/改动 | 内容 |
+|---|---|
+| `node_config.rs`（新） | `NodeConfigSource` 端口（`provider()` / `approval_mode()`）+ `FixedNodeConfig` 测试替身 |
+| `server/node_config.rs`（新） | `StoreBackedNodeConfig`——**唯一**知情者；持共享句柄而非快照 |
+| `approval/gate.rs` | 构造参数从 `Arc<RwLock<AgentStore>>` 换成 `Arc<dyn NodeConfigSource>`；`AgentStore` 只剩注释 |
+| `subagents/tool.rs` | 同上 |
+| `agent-host/src/lib.rs` | 组合根构造一次 `node_config`，同时喂给闸门与委派工具 |
+
+**两个顺带的好处**：
+1. **测试替身变小了**：原先要构造一整个 UI 投影（`AgentStore::new(...)` + 改字段），
+   现在给一个 `FixedNodeConfig` 就够——这正是端口化的收益，`gate.rs` 的 `gate_with_mode` 从 6 行缩到 5 行且不再依赖 `state`。
+2. **失效方向是安全的**：`StoreBackedNodeConfig` 拿不到锁时，档位倒向 **`Ask`（每次都问）**
+   而不是 `Auto`（自动放行）——与 `FailDirection::Closed` 同一原则。
+
+#### 新增门禁：`check_no_ui_store_in_node_layer`（`verify-wiring` check H）
+
+判据：`crates/agent-core/src/{approval,subagents}/**` 的**生产段**里，**非注释行**不得出现 `AgentStore`。
+注释不算依赖——注释里提 `AgentStore` 是在**解释这段历史**。
+
+用**目录清单**（`NODE_LAYER_DIRS`）而不是文件清单：S4 拆包时这些目录整体搬进 `agent-node`，
+清单跟着走；新增文件自动纳入，不用逐个登记。后续收敛 `session`/`checkpoint`/`plugins`/`skills` 时把目录名加进来即可。
+
+**正向断言**：`NodeConfigSource` 必须有**生产实现**——否则"改用端口"这句话没有落点。
+（实现与端口**同名不同路径**，所以按完整路径排除，不能按文件名。）
+
+#### 转绿证据
+
+| 证据 | 结果 |
+|---|---|
+| 节点层 `AgentStore` 代码引用 | **0 处**（`gate.rs` / `tool.rs` 剩余全是注释） |
+| `cargo test --workspace` | **299 → 301 passed / 0 failed**（+2：端口读实时值、失效倒向安全侧）；零编译警告 |
+| 六条门禁 | 全绿；`verify-wiring` 新增 `节点层（approval / subagents）已断 UI 投影依赖：扫了 13 个文件，0 处倒置；NodeConfigSource 生产实现 1 个` |
+| **故障注入 A**：节点层加回一行 `AgentStore` | ✘ `节点层 approval/ 的 gate.rs:37 引用了 UI 投影 AgentStore——分层倒置` |
+| **故障注入 B**：把实现的 `impl NodeConfigSource for` 改名 | ✘ `NodeConfigSource 没有任何生产实现——节点层「改用端口」没有落点` |
+
+#### S2 期间的三条记录
+
+1. **"依赖 X"与"依赖 X 的形状"是两件事**。修之前我以为问题只是"节点读了 UI 结构"；
+   读了类型定义才发现 `AgentStore.config` 是**线上 DTO**——严重程度高一档。
+   → 判据：**排查分层问题时，要顺着类型定义走到它的归属层**，不能停在字段名。
+2. 🔴 **同名文件让"按文件名排除"失效**。我的正向断言排除 `node_config.rs`，
+   结果把**实现**也排除了（端口与实现同名不同路径）→ 门报"生产实现 0 个"。
+   → 教训：排除条件要按**完整路径**，尤其在"同名文件分处两层"这种刻意设计的结构里。
+3. 🔴 **S1 里我复用了已存在的台账编号 `P0-5`**（台账里因此有两个 P0-5）——
+   是这轮加 P0-6 时才发现的。**缺口编号是跨轮次追加的，凭记忆取号必然撞号**。
+   → 处置：改为 **P0-6 / P0-7**；并把"**台账编号不得重复**"加入自检
+   （对 `^\| \*?\*?(P[012]-\d+)\*?\*? \|` 去重，重复即报）。
 
 
 ## 附录 A：缺口 → 任务反查表

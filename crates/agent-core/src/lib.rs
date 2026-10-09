@@ -9,6 +9,7 @@ pub mod state;
 pub mod tools;
 pub mod subagents;
 pub mod approval;
+pub mod node_config;
 pub mod skills;
 
 /// 组合根转发：支持新基座装配与产品规格解析

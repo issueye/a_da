@@ -19,10 +19,9 @@ use agent_base::ports::{
     AnsweredBy, ApprovalGate, ApprovalOutcome, ApprovalRequest, BoxFuture, CancelToken,
 };
 use agent_proto::ApprovalMode;
-use tokio::sync::RwLock;
 
 use crate::approval::manager::ApprovalManager;
-use crate::state::AgentStore;
+use crate::node_config::NodeConfigSource;
 
 /// 默认审批等待上限：超时按**拒绝**处理（fail-closed）。
 pub const DEFAULT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
@@ -35,8 +34,11 @@ pub const DEFAULT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 pub struct HostApprovalGate {
-    /// 权威档位来源：`AgentStore.config.approval`（**真实读取**，不再是"只写不读"）
-    store: Arc<RwLock<AgentStore>>,
+    /// 权威档位来源（S2）。
+    ///
+    /// **不再是 `AgentStore`**：节点层不得读 UI 投影。端口背后的生产实现是
+    /// [`crate::server::node_config::StoreBackedNodeConfig`]，由组合根装配注入。
+    config_source: Arc<dyn NodeConfigSource>,
     /// 前端答复通道
     manager: Arc<ApprovalManager>,
     /// 策略配置（免问白名单 / 危险命令清单）
@@ -45,9 +47,9 @@ pub struct HostApprovalGate {
 }
 
 impl HostApprovalGate {
-    pub fn new(store: Arc<RwLock<AgentStore>>, manager: Arc<ApprovalManager>) -> Self {
+    pub fn new(config_source: Arc<dyn NodeConfigSource>, manager: Arc<ApprovalManager>) -> Self {
         Self {
-            store,
+            config_source,
             manager,
             config: agent_adapter::approval::ApprovalGuardConfig::default(),
             timeout: DEFAULT_APPROVAL_TIMEOUT,
@@ -65,8 +67,10 @@ impl HostApprovalGate {
     }
 
     /// 读权威档位。
+    ///
+    /// S2：经 [`NodeConfigSource`] 端口读，不再直接读 `AgentStore`。
     async fn mode(&self) -> ApprovalMode {
-        self.store.read().await.config.approval
+        self.config_source.approval_mode()
     }
 }
 
@@ -165,12 +169,16 @@ mod tests {
     use agent_adapter::cancel::CancelHandle;
     use serde_json::json;
 
+    /// S2：闸门不再需要整个 `AgentStore`——测试直接给一个固定值端口替身。
+    /// 这正是端口化的收益：**测试替身变小了**（原先要构造一整个 UI 投影）。
     fn gate_with_mode(mode: ApprovalMode) -> (HostApprovalGate, Arc<ApprovalManager>) {
-        let mut store = AgentStore::new("E:/approval_test".to_string());
-        store.config.approval = mode;
-        let store = Arc::new(RwLock::new(store));
+        let cfg = crate::node_config::FixedNodeConfig::new(
+            agent_base::model::ProviderConfig::default(),
+            mode,
+        );
         let manager = Arc::new(ApprovalManager::new());
-        let gate = HostApprovalGate::new(store, manager.clone()).with_timeout(Duration::from_millis(80));
+        let gate = HostApprovalGate::new(Arc::new(cfg), manager.clone())
+            .with_timeout(Duration::from_millis(80));
         (gate, manager)
     }
 

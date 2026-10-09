@@ -251,8 +251,13 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
         .model
         .clone()
         .unwrap_or_else(|| Arc::new(NetworkModelClient::new()));
-    let approval_gate: Arc<dyn agent_base::ports::ApprovalGate> =
-        Arc::new(HostApprovalGate::new(store.clone(), approval.clone()));
+    // S2：节点配置端口。**唯一**知道"配置存在 AgentStore 里"的地方在这里
+    // （组合根）——节点层（审批闸门、委派工具）只认端口。
+    let node_config: Arc<dyn agent_core::node_config::NodeConfigSource> =
+        Arc::new(agent_core::server::StoreBackedNodeConfig::new(store.clone()));
+    let approval_gate: Arc<dyn agent_base::ports::ApprovalGate> = Arc::new(
+        HostApprovalGate::new(node_config.clone(), approval.clone()),
+    );
 
     // ── 按声明装配工具包（`spec.toolkits` 的真实消费者）────────────────────
     let tools: Vec<Arc<dyn Tool>> = agent_toolkit::tools_for_toolkits(&spec.toolkits, &workspace)
@@ -268,7 +273,7 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
     if caps.subagents {
         tools.push(Arc::new(agent_core::subagents::InvokeSubagentTool::new(
             workspace.clone(),
-            store.clone(),
+            node_config.clone(),
             subagent_mgr.clone(),
             None,
             // W4-T6：子智能体的工具按**同一份产品声明**装配，而不是另一张手写清单

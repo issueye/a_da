@@ -6,7 +6,8 @@
 //! 而子智能体委派天然是**宿主耦合**的：它需要
 //!
 //! - `SubagentManager`（读子智能体配置：内置 4 个 + 用户自定义）；
-//! - `AgentStore`（拿**父会话**的 provider 配置——子智能体要用同一个模型）；
+//! - **节点配置端口** `NodeConfigSource`（拿父会话的 provider——子智能体要用同一个模型。
+//!   S2 之前这里读的是 `AgentStore`，属分层倒置，已修）；
 //! - `CheckpointManager`（子智能体的写操作要能回滚）。
 //!
 //! 这三样都无法从一个工作区路径构造出来。所以分工是：
@@ -29,18 +30,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt, ToolStatus};
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
-use tokio::sync::RwLock;
 
 use super::types::SubagentProfile;
 use super::{RunSubagentOptions, SubagentManager};
 use crate::checkpoint::CheckpointManager;
-use crate::state::AgentStore;
+use crate::node_config::NodeConfigSource;
 
 /// 委派给子智能体的工具。
 pub struct InvokeSubagentTool {
     descriptor: ToolDescriptor,
     workspace: PathBuf,
-    store: Arc<RwLock<AgentStore>>,
+    /// 节点配置端口（S2）。
+    ///
+    /// 原先直接读 `AgentStore` 拿父会话的 provider——节点层读 UI 投影是分层倒置。
+    /// 现在只认端口，生产实现由组合根注入（`server::StoreBackedNodeConfig`）。
+    config_source: Arc<dyn NodeConfigSource>,
     subagent_mgr: Arc<SubagentManager>,
     checkpoint_mgr: Option<Arc<CheckpointManager>>,
     /// 产品的工具包声明（`spec.toolkits`）：子智能体按**同一处装配**取工具（W4-T6）
@@ -51,7 +55,7 @@ impl InvokeSubagentTool {
     /// 描述符取自注册表——实现了却没声明会**立刻 panic**，而不是造出一个没有描述符的工具。
     pub fn new(
         workspace: impl Into<PathBuf>,
-        store: Arc<RwLock<AgentStore>>,
+        config_source: Arc<dyn NodeConfigSource>,
         subagent_mgr: Arc<SubagentManager>,
         checkpoint_mgr: Option<Arc<CheckpointManager>>,
         toolkits: Vec<String>,
@@ -62,7 +66,7 @@ impl InvokeSubagentTool {
         Self {
             descriptor,
             workspace: workspace.into(),
-            store,
+            config_source,
             subagent_mgr,
             checkpoint_mgr,
             toolkits,
@@ -130,10 +134,9 @@ impl Tool for InvokeSubagentTool {
 
             // 父会话的 provider 配置：子智能体用**同一个**模型。
             // 读不到就如实失败——legacy 会在这里编造一个 gemini 配置继续跑，那更糟。
-            let parent_config = {
-                let s = self.store.read().await;
-                s.provider.clone()
-            };
+            //
+            // S2：经端口读，不直接读 `AgentStore`。
+            let parent_config = self.config_source.provider();
             if parent_config.base_url.trim().is_empty() {
                 return ToolReceipt::error(
                     "父会话没有可用的 provider 配置，无法委派子智能体（请先在设置里配置模型）",
@@ -227,14 +230,22 @@ mod tests {
         (RootScope(ws.to_path_buf()), NoCancel, NoopSink)
     }
 
-    fn tool(ws: &std::path::Path, store: Arc<RwLock<AgentStore>>) -> InvokeSubagentTool {
+    /// S2：测试替身从"一整个 `AgentStore`"缩小成"一个固定值配置端口"。
+    fn tool(ws: &std::path::Path, provider: agent_base::model::ProviderConfig) -> InvokeSubagentTool {
+        let cfg = crate::node_config::FixedNodeConfig::new(provider, agent_proto::ApprovalMode::Auto);
         InvokeSubagentTool::new(
             ws,
-            store,
+            Arc::new(cfg),
             Arc::new(SubagentManager::new()),
             None,
             vec!["core".to_string(), "fs".to_string()],
         )
+    }
+
+    fn default_provider() -> agent_base::model::ProviderConfig {
+        let mut p = agent_base::model::ProviderConfig::default();
+        p.base_url = "https://example.invalid/v1".to_string();
+        p
     }
 
     fn call(args: serde_json::Value) -> ToolCall {
@@ -245,8 +256,7 @@ mod tests {
     #[test]
     fn test_descriptor_comes_from_registry_and_is_not_readonly() {
         let ws = std::env::current_dir().unwrap();
-        let store = Arc::new(RwLock::new(AgentStore::new(ws.to_string_lossy().to_string())));
-        let t = tool(&ws, store);
+        let t = tool(&ws, default_provider());
         let from_registry = crate::tools::find_tool_descriptor("invoke_subagent").expect("注册表里必须有");
         assert_eq!(t.descriptor(), from_registry, "描述符必须与注册表逐字段一致");
         assert!(
@@ -258,8 +268,7 @@ mod tests {
     #[tokio::test]
     async fn test_missing_args_is_an_error() {
         let ws = std::env::current_dir().unwrap();
-        let store = Arc::new(RwLock::new(AgentStore::new(ws.to_string_lossy().to_string())));
-        let t = tool(&ws, store);
+        let t = tool(&ws, default_provider());
         let (scope, cancel, sink) = ctx_parts(&ws);
         let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1" };
 
@@ -271,8 +280,7 @@ mod tests {
     #[tokio::test]
     async fn test_unknown_profile_is_an_error_not_a_silent_success() {
         let ws = std::env::current_dir().unwrap();
-        let store = Arc::new(RwLock::new(AgentStore::new(ws.to_string_lossy().to_string())));
-        let t = tool(&ws, store);
+        let t = tool(&ws, default_provider());
         let (scope, cancel, sink) = ctx_parts(&ws);
         let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1" };
 
@@ -287,11 +295,10 @@ mod tests {
     #[tokio::test]
     async fn test_missing_parent_provider_fails_instead_of_fabricating_one() {
         let ws = std::env::current_dir().unwrap();
-        let mut st = AgentStore::new(ws.to_string_lossy().to_string());
-        st.provider.base_url = String::new();
-        st.provider.api_key = String::new();
-        let store = Arc::new(RwLock::new(st));
-        let t = tool(&ws, store);
+        let mut empty = agent_base::model::ProviderConfig::default();
+        empty.base_url = String::new();
+        empty.api_key = String::new();
+        let t = tool(&ws, empty);
         let (scope, cancel, sink) = ctx_parts(&ws);
         let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1" };
 

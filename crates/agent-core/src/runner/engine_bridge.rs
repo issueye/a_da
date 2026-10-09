@@ -624,8 +624,12 @@ mod tests {
         store.write().await.config.approval = ApprovalMode::Ask;
 
         let approval_mgr = Arc::new(crate::approval::ApprovalManager::new());
+        // S2：这里用**真实**的桥接实现（store → 端口 → 闸门），
+        // 于是这条测试同时证明了"界面改档位，闸门立刻看到"这条链路。
+        let node_config: Arc<dyn crate::node_config::NodeConfigSource> =
+            Arc::new(crate::server::StoreBackedNodeConfig::new(store.clone()));
         let gate = Arc::new(
-            crate::approval::HostApprovalGate::new(store.clone(), approval_mgr.clone())
+            crate::approval::HostApprovalGate::new(node_config, approval_mgr.clone())
                 .with_timeout(Duration::from_secs(5)),
         );
 
