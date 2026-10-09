@@ -1,6 +1,6 @@
-use agent_core::protocol::PROTOCOL_VERSION;
-use agent_core::server::{start_parent_watchdog, WsHostServer};
-use agent_core::state::AgentStore;
+use agent_proto::PROTOCOL_VERSION;
+use agent_rpc::server::{start_parent_watchdog, WsHostServer};
+use agent_rpc::state::AgentStore;
 use clap::Parser;
 use std::io::Write;
 use std::sync::Arc;
@@ -46,7 +46,7 @@ struct CliArgs {
 fn build_engine_injection(
     store: &Arc<RwLock<AgentStore>>,
     workspace: &str,
-) -> Option<agent_core::server::dispatch::EngineInjection> {
+) -> Option<agent_rpc::server::dispatch::EngineInjection> {
     let ws = if workspace.trim().is_empty() {
         match std::env::current_dir() {
             Ok(p) => p,
@@ -68,7 +68,7 @@ fn build_engine_injection(
     };
 
     let sessions_root =
-        std::path::Path::new(&agent_core::session::get_app_home()).join("sessions");
+        std::path::Path::new(&agent_node::session::get_app_home()).join("sessions");
     let options = agent_host::HostOptions::new(ws)
         .with_store(store.clone())
         .with_sessions_root(sessions_root);
@@ -78,7 +78,7 @@ fn build_engine_injection(
             let tool_count = hosted.tool_names().len();
             let agent_host::HostedProduct { runtime, approval, spec, .. } = hosted;
             info!("已按产品声明装配真引擎：工具 {tool_count} 个");
-            Some(agent_core::server::dispatch::EngineInjection {
+            Some(agent_rpc::server::dispatch::EngineInjection {
                 runtime: Arc::new(runtime),
                 approval_mgr: approval,
                 // W3-T6：声明一起注入，握手才能如实回报能力位
@@ -93,7 +93,8 @@ fn build_engine_injection(
 }
 
 #[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {    let app_home = agent_core::session::get_app_home();
+async fn main() -> Result<(), anyhow::Error> {
+    let app_home = agent_node::session::get_app_home();
     let log_file_path = std::path::Path::new(&app_home).join("host.log");
     let log_file = std::fs::OpenOptions::new()
         .create(true)

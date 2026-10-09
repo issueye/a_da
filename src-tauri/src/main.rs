@@ -338,12 +338,12 @@ fn run_headless_server(
         .build()?;
 
     rt.block_on(async {
-        let store = Arc::new(RwLock::new(agent_core::AgentStore::new(workspace.clone())));
+        let store = Arc::new(RwLock::new(agent_rpc::state::AgentStore::new(workspace.clone())));
         // W3-T4：legacy 主循环已删除 → headless 模式同样必须注入真引擎
         let injection = a_da_tauri::build_engine_injection(&store, &workspace)
             .map_err(|e| anyhow::anyhow!("真引擎装配失败：{e}"))?;
         let server =
-            agent_core::WsHostServer::bind_with_engine(port, token.clone(), store, Some(injection))
+            agent_rpc::server::WsHostServer::bind_with_engine(port, token.clone(), store, Some(injection))
                 .await?;
         let current_pid = std::process::id();
 
@@ -352,7 +352,7 @@ fn run_headless_server(
             "port": server.port,
             "token": token,
             "pid": current_pid,
-            "protocolVersion": agent_core::protocol::PROTOCOL_VERSION,
+            "protocolVersion": agent_proto::PROTOCOL_VERSION,
         });
 
         // 打印符合协议规范的标准就绪行

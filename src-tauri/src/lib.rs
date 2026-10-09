@@ -1,5 +1,5 @@
-use agent_core::server::WsHostServer;
-use agent_core::state::AgentStore;
+use agent_rpc::server::WsHostServer;
+use agent_rpc::state::AgentStore;
 use std::sync::Arc;
 use tauri::Manager;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -21,13 +21,13 @@ pub const PRODUCT_SPEC_JSON: &str = include_str!("../../products/ada-coding/agen
 pub fn build_engine_injection(
     store: &Arc<RwLock<AgentStore>>,
     workspace: &str,
-) -> Result<agent_core::server::EngineInjection, String> {
+) -> Result<agent_rpc::server::EngineInjection, String> {
     let ws = if workspace.trim().is_empty() {
         std::env::current_dir().map_err(|e| format!("取当前目录失败：{e}"))?
     } else {
         std::path::PathBuf::from(workspace)
     };
-    let sessions_root = std::path::Path::new(&agent_core::session::get_app_home()).join("sessions");
+    let sessions_root = std::path::Path::new(&agent_node::session::get_app_home()).join("sessions");
     agent_host::build_engine_injection(store, ws, PRODUCT_SPEC_JSON, sessions_root)
         .map_err(|e| e.to_string())
 }

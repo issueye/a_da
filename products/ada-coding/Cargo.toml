@@ -4,14 +4,16 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "a_da CODING 助手：按产品声明装配 agent_core，产出单文件宿主二进制"
+description = "a_da CODING 助手：按产品声明装配 AgentRuntime，产出单文件宿主二进制"
 
 [[bin]]
 name = "ada-coding"
 path = "src/main.rs"
 
 [dependencies]
-agent_core = { workspace = true }
+agent-proto = { workspace = true }
+agent-node = { workspace = true }
+agent-rpc = { workspace = true }
 agent-base = { workspace = true }
 agent-runtime = { workspace = true }
 # W3-T2：宿主装配层（按声明装配真引擎并注入 ws 宿主）

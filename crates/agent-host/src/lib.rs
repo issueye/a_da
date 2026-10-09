@@ -49,9 +49,9 @@ use agent_base::domain::ToolDescriptor;
 use agent_base::engine::{AgentRuntime, TurnOutcome};
 use agent_base::model::ProviderConfig;
 use agent_base::ports::{ModelClient, Tool};
-use agent_core::approval::{ApprovalManager, HostApprovalGate};
-use agent_core::server::{EngineInjection, StateBroadcaster, WsEventSink};
-use agent_core::state::AgentStore;
+use agent_node::approval::{ApprovalManager, HostApprovalGate};
+use agent_rpc::server::{EngineInjection, StateBroadcaster, WsEventSink};
+use agent_rpc::state::AgentStore;
 use agent_runtime::{AgentSpec, CapabilitySpec, IdentitySpec, ProductBuilder, SpecError};
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -148,7 +148,7 @@ pub struct HostedProduct {
     pub tool_descriptors: Vec<ToolDescriptor>,
     /// 子智能体配置表（W4-T5）。宿主若要与 Dispatcher 共用（`SUBAGENT_RESUME` 等），
     /// 可把它传给 `WsHostServer`；不传也不会出错——profile 来自内置表 + 用户配置。
-    pub subagent_mgr: Arc<agent_core::subagents::SubagentManager>,
+    pub subagent_mgr: Arc<agent_node::subagents::SubagentManager>,
     /// 产品声明的 `capabilities.images`（W5-T4）：**真实消费者**——
     /// 声明 `false` 的产品不得把图片送进模型。
     pub accepts_images: bool,
@@ -253,8 +253,8 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
         .unwrap_or_else(|| Arc::new(NetworkModelClient::new()));
     // S2：节点配置端口。**唯一**知道"配置存在 AgentStore 里"的地方在这里
     // （组合根）——节点层（审批闸门、委派工具）只认端口。
-    let node_config: Arc<dyn agent_core::node_config::NodeConfigSource> =
-        Arc::new(agent_core::server::StoreBackedNodeConfig::new(store.clone()));
+    let node_config: Arc<dyn agent_node::node_config::NodeConfigSource> =
+        Arc::new(agent_rpc::server::StoreBackedNodeConfig::new(store.clone()));
     let approval_gate: Arc<dyn agent_base::ports::ApprovalGate> = Arc::new(
         HostApprovalGate::new(node_config.clone(), approval.clone()),
     );
@@ -272,8 +272,8 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
     // S3：工具不再自己跑子智能体，而是经 `AgentBus` 端口派活。
     // S6：**用哪个总线由声明决定**（`capabilities.delegation`）——
     // 这决定"这个实例在委派链上的位置"，是装配事实，不是运行时探测出来的。
-    let subagent_mgr = Arc::new(agent_core::subagents::SubagentManager::new());
-    let (agent_bus, delegation_depth): (Arc<dyn agent_core::agent_bus::AgentBus>, u32) =
+    let subagent_mgr = Arc::new(agent_node::subagents::SubagentManager::new());
+    let (agent_bus, delegation_depth): (Arc<dyn agent_node::agent_bus::AgentBus>, u32) =
         match spec.capabilities.delegation {
             agent_runtime::DelegationMode::Gateway => {
                 // 声明了经网关委派，却没说网关在哪 → **装配失败**，不是"回退到本地"。
@@ -300,7 +300,7 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
                 )
             }
             agent_runtime::DelegationMode::Local => (
-                Arc::new(agent_core::subagents::LocalAgentBus::new(
+                Arc::new(agent_node::subagents::LocalAgentBus::new(
                     workspace.clone(),
                     subagent_mgr.clone(),
                     node_config.clone(),
@@ -317,14 +317,14 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
         // S6 补完：深度来源。有会话态就用它（网关派活会在线程上记深度），
         // 没有就退化成固定 0 —— 那是**正确**的默认（没有会话态 = 不是被派活的）。
         // `store` 在这个作用域里已经是 `Arc<RwLock<AgentStore>>`（上面 unwrap_or_else 保证）
-        let depth_source: Arc<dyn agent_core::delegation_depth::DelegationDepthSource> =
+        let depth_source: Arc<dyn agent_node::delegation_depth::DelegationDepthSource> =
             Arc::new(
                 agent_rpc::server::delegation_depth::StoreBackedDelegationDepth::new(
                     store.clone(),
                 ),
             );
         tools.push(Arc::new(
-            agent_core::subagents::InvokeSubagentTool::with_depth_source(
+            agent_node::subagents::InvokeSubagentTool::with_depth_source(
                 agent_bus.clone(),
                 delegation_depth,
                 Some(depth_source),

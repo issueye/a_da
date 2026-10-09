@@ -19,7 +19,9 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 uuid = { workspace = true }
 anyhow = { workspace = true }
-agent_core = { workspace = true }
+agent-proto = { workspace = true }
+agent-node = { workspace = true }
+agent-rpc = { workspace = true }
 # W3-T4：宿主装配层（legacy 主循环已删除，宿主必须注入真引擎）
 agent-host = { workspace = true }
 agent-runtime = { workspace = true }

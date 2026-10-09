@@ -35,7 +35,27 @@ pub fn strip_unc_prefix(path: &Path) -> PathBuf {
 pub fn resolve_real_path(path: &Path) -> PathBuf {
     match std::fs::canonicalize(path) {
         Ok(canonical) => strip_unc_prefix(&canonical),
-        Err(_) => path.to_path_buf(),
+        Err(_) => {
+            let mut current = path.to_path_buf();
+            for _ in 0..16 {
+                if let Ok(target) = std::fs::read_link(&current) {
+                    let resolved_target = if target.is_absolute() {
+                        target
+                    } else if let Some(parent) = current.parent() {
+                        parent.join(target)
+                    } else {
+                        target
+                    };
+                    if let Ok(can) = std::fs::canonicalize(&resolved_target) {
+                        return strip_unc_prefix(&can);
+                    }
+                    current = resolved_target;
+                } else {
+                    break;
+                }
+            }
+            strip_unc_prefix(&current)
+        }
     }
 }
 
@@ -45,7 +65,7 @@ fn realpath_deepest_existing(path: &Path) -> PathBuf {
     let mut missing_tail = Vec::new();
 
     for _ in 0..64 {
-        if current.exists() {
+        if current.symlink_metadata().is_ok() {
             let real = resolve_real_path(&current);
             let mut result = real;
             for part in missing_tail.into_iter().rev() {

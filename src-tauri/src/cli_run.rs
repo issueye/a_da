@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use agent_base::domain::{AgentMessage, TurnStopReason};
+use agent_base::model::ProviderConfig;
 use agent_base::ports::ModelClient;
 use agent_host::{HostOptions, HostedProduct};
 use agent_runtime::AgentSpec;
@@ -71,7 +72,7 @@ fn now_ms() -> i64 {
 ///
 /// legacy 在这里的旧行为是**造一个 `gemini-2.5-flash` + 空 api_key 的配置继续跑**——
 /// 等于静默用一个用户没配过的模型。这条断言钉住"不许编造"。
-fn check_provider_available(config: &agent_core::ai::ProviderConfig, model_injected: bool) -> Result<(), String> {
+fn check_provider_available(config: &ProviderConfig, model_injected: bool) -> Result<(), String> {
     if model_injected {
         return Ok(());
     }
@@ -111,7 +112,7 @@ pub async fn run_task(
         .map_err(|e| anyhow::anyhow!("产品声明解析失败：{e}"))?;
 
     // 会话态：命令行没有界面，所以自己造一个（配置从磁盘读）
-    let store = Arc::new(RwLock::new(agent_core::AgentStore::new(
+    let store = Arc::new(RwLock::new(agent_rpc::state::AgentStore::new(
         ws_path.to_string_lossy().to_string(),
     )));
     let config = { store.read().await.provider.clone() };
@@ -299,7 +300,7 @@ mod tests {
     /// 于是"有没有配置"取决于环境（本机有配置时测试会真的发网络请求并挂住）。
     #[test]
     fn test_missing_provider_is_an_error_not_a_fabricated_config() {
-        let mut config = agent_core::ai::ProviderConfig {
+        let mut config = ProviderConfig {
             id: "p".into(),
             name: "p".into(),
             protocol: Default::default(),
