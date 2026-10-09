@@ -18,7 +18,7 @@ pub use types::*;
 /// **未知工具失败安全地当作写操作**（AGENTS.md §2）：宁可多问一次审批，
 /// 也不要悄悄给出写权限。
 pub fn plugin_tool_is_write(tool_name: &str) -> bool {
-    crate::tools::find_tool_descriptor(tool_name)
+    agent_toolkit::find_tool_descriptor(tool_name)
         .map(|d| !d.is_readonly())
         .unwrap_or(true)
 }

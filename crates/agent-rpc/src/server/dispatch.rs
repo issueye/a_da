@@ -4,10 +4,10 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex, RwLock};
 
 use agent_node::approval::ApprovalManager;
-use crate::ai::ProviderConfig;
+use agent_base::model::ProviderConfig;
 use agent_node::checkpoint::CheckpointManager;
 use agent_node::plugins::PluginManager;
-use crate::protocol::*;
+use agent_proto::*;
 use crate::runner::{run_agent_turn, AgentLoopEvent};
 use crate::server::emitter::StateBroadcaster;
 use crate::server::fs_service;
@@ -120,26 +120,26 @@ fn save_app_config(store: &AgentStore) -> Result<(), String> {
 
 /// 远程探测通用 /models 接口以获取可用模型列表
 async fn fetch_remote_models(
-    protocol: crate::ai::ModelProtocol,
+    protocol: agent_base::model::ModelProtocol,
     base_url: &str,
     api_key: &str,
     custom_headers: Option<&std::collections::HashMap<String, String>>,
     proxy_url: Option<&str>,
-) -> Result<Vec<crate::ai::ModelEntry>, String> {
+) -> Result<Vec<agent_base::model::ModelEntry>, String> {
     let clean_base = base_url.trim_end_matches('/');
     if clean_base.is_empty() {
         return Err("供应商 Base URL 不能为空".to_string());
     }
 
     let url = match protocol {
-        crate::ai::ModelProtocol::Anthropic => {
+        agent_base::model::ModelProtocol::Anthropic => {
             if clean_base.ends_with("/v1") {
                 format!("{}/models", clean_base)
             } else {
                 format!("{}/v1/models", clean_base)
             }
         }
-        crate::ai::ModelProtocol::OpenAiChat | crate::ai::ModelProtocol::OpenAiResponses => {
+        agent_base::model::ModelProtocol::OpenAiChat | agent_base::model::ModelProtocol::OpenAiResponses => {
             if clean_base.ends_with("/v1") {
                 format!("{}/models", clean_base)
             } else {
@@ -167,13 +167,13 @@ async fn fetch_remote_models(
     let mut req = client.get(&url);
 
     match protocol {
-        crate::ai::ModelProtocol::Anthropic => {
+        agent_base::model::ModelProtocol::Anthropic => {
             if !api_key.trim().is_empty() {
                 req = req.header("x-api-key", api_key.trim());
             }
             req = req.header("anthropic-version", "2023-06-01");
         }
-        crate::ai::ModelProtocol::OpenAiChat | crate::ai::ModelProtocol::OpenAiResponses => {
+        agent_base::model::ModelProtocol::OpenAiChat | agent_base::model::ModelProtocol::OpenAiResponses => {
             if !api_key.trim().is_empty() {
                 req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
             }
@@ -229,7 +229,7 @@ async fn fetch_remote_models(
         };
 
         if !id.is_empty() && seen.insert(id.clone()) {
-            models.push(crate::ai::ModelEntry {
+            models.push(agent_base::model::ModelEntry {
                 id,
                 name: Some(name),
                 context_window: None,
@@ -1211,7 +1211,7 @@ impl Dispatcher {
                         store.provider.proxy_url = if pu.trim().is_empty() { None } else { Some(pu.trim().to_string()) };
                     }
                     if let Some(proto) = cfg.get("protocol").and_then(|v| v.as_str()) {
-                        if let Ok(p) = serde_json::from_value::<crate::ai::ModelProtocol>(serde_json::Value::String(proto.to_string())) {
+                        if let Ok(p) = serde_json::from_value::<agent_base::model::ModelProtocol>(serde_json::Value::String(proto.to_string())) {
                             store.provider.protocol = p;
                         }
                     }
@@ -1235,7 +1235,7 @@ impl Dispatcher {
                         entry.custom_headers = custom_headers;
                         entry.proxy_url = proxy_url;
                         if !entry.models.iter().any(|m| m.id == model) {
-                            entry.models.push(crate::ai::ModelEntry {
+                            entry.models.push(agent_base::model::ModelEntry {
                                 id: model.clone(),
                                 name: Some(model),
                                 context_window: Some(context_window),
@@ -1273,7 +1273,7 @@ impl Dispatcher {
                     .or_else(|| Some(params.clone()))
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 provider 参数"))?;
 
-                let entry: crate::ai::ProviderEntry = serde_json::from_value(provider_val)
+                let entry: agent_base::model::ProviderEntry = serde_json::from_value(provider_val)
                     .map_err(|e| ProtocolError::invalid_params(format!("解析 provider 数据失败: {}", e)))?;
 
                 let mut store = self.store.write().await;
@@ -1427,7 +1427,7 @@ impl Dispatcher {
                     }
                 } else {
                     let proto_str = params.get("protocol").and_then(|v| v.as_str()).unwrap_or("openai_chat");
-                    let protocol: crate::ai::ModelProtocol = serde_json::from_value(serde_json::Value::String(proto_str.to_string()))
+                    let protocol: agent_base::model::ModelProtocol = serde_json::from_value(serde_json::Value::String(proto_str.to_string()))
                         .map_err(|e| ProtocolError::invalid_params(format!("无效的协议类型: {}", e)))?;
                     let base_url = params.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     let api_key = params.get("apiKey").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -2682,7 +2682,7 @@ mod tests {
 
     #[test]
     fn test_assistant_stats_lands_on_current_card() {
-        use crate::ai::TokenUsage;
+        use agent_base::model::TokenUsage;
 
         let mut store = AgentStore::new("E:/codes/default_ws".to_string());
         let tid = store.create_thread(Some("遥测".to_string()), None);
@@ -2745,7 +2745,7 @@ mod tests {
         );
 
         let catalog = dispatcher
-            .dispatch(crate::protocol::methods::PLUGIN_BUILTIN_CATALOG, serde_json::json!({}))
+            .dispatch(agent_proto::methods::PLUGIN_BUILTIN_CATALOG, serde_json::json!({}))
             .await
             .expect("plugin.builtinCatalog 分发失败");
 
@@ -2811,7 +2811,7 @@ mod tests {
             "approved": true
         });
 
-        let res = dispatcher.dispatch(crate::protocol::methods::APPROVAL_DECIDE, req).await.expect("调用应该成功");
+        let res = dispatcher.dispatch(agent_proto::methods::APPROVAL_DECIDE, req).await.expect("调用应该成功");
         assert_eq!(res.get("resolved").and_then(|v| v.as_bool()), Some(true));
 
         let ans = rx.await.expect("应该唤醒等待者");
@@ -2854,7 +2854,7 @@ mod tests {
             "protocolVersion": "1.0"
         });
         let init_val = dispatcher
-            .dispatch(crate::protocol::methods::SESSION_INITIALIZE, init_params)
+            .dispatch(agent_proto::methods::SESSION_INITIALIZE, init_params)
             .await
             .expect("握手成功");
 
@@ -2873,7 +2873,7 @@ mod tests {
 
         // 2. 测试 session.snapshot 包含 seq 序号（M3-T2）
         let snap_val = dispatcher
-            .dispatch(crate::protocol::methods::SESSION_SNAPSHOT, serde_json::json!({}))
+            .dispatch(agent_proto::methods::SESSION_SNAPSHOT, serde_json::json!({}))
             .await
             .expect("拉取快照成功");
 

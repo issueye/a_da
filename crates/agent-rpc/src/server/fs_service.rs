@@ -1,4 +1,4 @@
-use crate::protocol::{AppErrorCode, FsEntry, FsListing, FsRoot, ProtocolError, RpcErrorCode};
+use agent_proto::{AppErrorCode, FsEntry, FsListing, FsRoot, ProtocolError, RpcErrorCode};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;

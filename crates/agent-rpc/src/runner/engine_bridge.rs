@@ -32,7 +32,7 @@ use tokio::sync::{mpsc, watch};
 use tracing::warn;
 
 use super::ui_events::AgentLoopEvent;
-use crate::ai::ProviderConfig;
+use agent_base::model::ProviderConfig;
 
 /// 宿主未装配引擎时的**硬失败**（不再静默降级）。
 #[derive(Debug, Error)]

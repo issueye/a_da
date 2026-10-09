@@ -1,4 +1,4 @@
-use crate::protocol::*;
+use agent_proto::*;
 use crate::server::dispatch::Dispatcher;
 use crate::state::{generate_snapshot, AgentStore};
 use futures_util::{SinkExt, StreamExt};

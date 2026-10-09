@@ -34,7 +34,7 @@ use tokio::sync::{mpsc, watch};
 
 use super::ports::{EphemeralSessionStore, ProfilePrompt, ReadonlyEnforcingGate};
 use super::types::{SubagentMode, SubagentProfile, SubagentRunResult, SubagentStepUpdate};
-use crate::ai::ProviderConfig;
+use agent_base::model::ProviderConfig;
 use crate::checkpoint::CheckpointManager;
 
 /// 子智能体永远禁止调用的**套娃/递归**工具。

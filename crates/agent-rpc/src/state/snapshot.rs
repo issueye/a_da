@@ -1,4 +1,4 @@
-use crate::protocol::*;
+use agent_proto::*;
 use crate::state::store::AgentStore;
 use std::collections::HashSet;
 

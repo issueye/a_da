@@ -79,7 +79,7 @@ impl InvokeSubagentTool {
         delegation_depth: u32,
         depth_source: Option<Arc<dyn crate::delegation_depth::DelegationDepthSource>>,
     ) -> Self {
-        let descriptor = crate::tools::find_tool_descriptor("invoke_subagent")
+        let descriptor = agent_toolkit::find_tool_descriptor("invoke_subagent")
             .expect("`invoke_subagent` 必须在 ToolDescriptor 注册表里（INV-3）")
             .clone();
         Self {
@@ -268,7 +268,7 @@ mod tests {
     fn test_descriptor_comes_from_registry_and_is_not_readonly() {
         let ws = std::env::current_dir().unwrap();
         let t = tool(&ws, default_provider());
-        let from_registry = crate::tools::find_tool_descriptor("invoke_subagent").expect("注册表里必须有");
+        let from_registry = agent_toolkit::find_tool_descriptor("invoke_subagent").expect("注册表里必须有");
         assert_eq!(t.descriptor(), from_registry, "描述符必须与注册表逐字段一致");
         assert!(
             !t.descriptor().is_readonly(),

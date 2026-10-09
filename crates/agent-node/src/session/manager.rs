@@ -14,7 +14,7 @@ use super::types::{
     AgentMessage, CURRENT_SESSION_VERSION, SessionCompactEntry, SessionEntry, SessionHeader,
     SessionSummary,
 };
-use crate::protocol::{AgentMode, Item, Thread};
+use agent_proto::{AgentMode, Item, Thread};
 
 /// 进程内的应用目录端口（组合根/测试可注入；默认见 `default_app_home`）。
 ///
@@ -620,7 +620,7 @@ impl SessionManager {
                                 // 用量与耗时是遥测条与单条回复徽章的数据源，恢复时原样带回卡片
                                 let restored_usage = usage
                                     .as_ref()
-                                    .and_then(|v| serde_json::from_value::<crate::ai::TokenUsage>(v.clone()).ok());
+                                    .and_then(|v| serde_json::from_value::<agent_base::model::TokenUsage>(v.clone()).ok());
                                 let mut asst_val = serde_json::json!({
                                     "role": "assistant",
                                     "content": &content,

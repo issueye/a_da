@@ -13,7 +13,7 @@ pub use types::ApprovalGuardConfig;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::ApprovalMode;
+    use agent_proto::ApprovalMode;
     use serde_json::json;
 
     #[test]

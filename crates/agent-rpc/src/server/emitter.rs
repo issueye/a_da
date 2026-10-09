@@ -1,4 +1,4 @@
-use crate::protocol::*;
+use agent_proto::*;
 use crate::state::{generate_snapshot_with_seq, AgentStore};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;

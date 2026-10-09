@@ -5,7 +5,7 @@ use anyhow::Result;
 use ts_engine::{compiler::transpile_ts_module, PureTsRuntime};
 
 use super::types::PluginToolDeclaration;
-use crate::tools::ToolResult;
+use agent_toolkit::ToolResult;
 
 pub struct PluginSandbox;
 

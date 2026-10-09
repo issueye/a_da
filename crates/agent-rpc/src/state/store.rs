@@ -1,4 +1,4 @@
-use crate::protocol::*;
+use agent_proto::*;
 use agent_base::ports::{AppHome, Clock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -44,8 +44,8 @@ pub struct AgentStore {
     pub log: Vec<DebugEntry>,
     pub workspace: WorkspaceSnapshot,
     pub config: ConfigSnapshot,
-    pub provider: crate::ai::ProviderConfig,
-    pub providers: Vec<crate::ai::ProviderEntry>,
+    pub provider: agent_base::model::ProviderConfig,
+    pub providers: Vec<agent_base::model::ProviderEntry>,
     pub active_provider_id: String,
     pub pending_questions: Vec<PendingQuestionEntry>,
     pub public_workspace: String,
@@ -75,10 +75,10 @@ impl AgentStore {
         let explicit_workspace = workspace_path.trim().to_string();
         let default_public_workspace = home.dir("workspace").to_string_lossy().to_string();
 
-        let mut prov = crate::ai::ProviderConfig {
+        let mut prov = agent_base::model::ProviderConfig {
             id: "default".to_string(),
             name: "默认大模型".to_string(),
-            protocol: crate::ai::ModelProtocol::OpenAiChat,
+            protocol: agent_base::model::ModelProtocol::OpenAiChat,
             base_url: std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
             api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
             model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string()),
@@ -86,7 +86,7 @@ impl AgentStore {
             custom_headers: None,
             proxy_url: std::env::var("A_DA_PROXY_URL").or_else(|_| std::env::var("ALL_PROXY")).or_else(|_| std::env::var("HTTPS_PROXY")).or_else(|_| std::env::var("HTTP_PROXY")).ok(),
         };
-        let mut providers_list: Vec<crate::ai::ProviderEntry> = Vec::new();
+        let mut providers_list: Vec<agent_base::model::ProviderEntry> = Vec::new();
         let mut active_pid = "default".to_string();
         let mut config_snapshot = ConfigSnapshot {
             model: prov.model.clone(),
@@ -172,7 +172,7 @@ impl AgentStore {
                     }
 
                     if let Some(p_array) = val.get("providers").and_then(|v| v.as_array()) {
-                        if let Ok(parsed_providers) = serde_json::from_value::<Vec<crate::ai::ProviderEntry>>(serde_json::Value::Array(p_array.clone())) {
+                        if let Ok(parsed_providers) = serde_json::from_value::<Vec<agent_base::model::ProviderEntry>>(serde_json::Value::Array(p_array.clone())) {
                             providers_list = parsed_providers;
                         }
                     }
@@ -182,13 +182,13 @@ impl AgentStore {
 
         // 如果配置中未指定多供应商（旧版配置迁移），构造并填充默认供应商
         if providers_list.is_empty() {
-            providers_list.push(crate::ai::ProviderEntry {
+            providers_list.push(agent_base::model::ProviderEntry {
                 id: "default".to_string(),
                 name: "默认大模型".to_string(),
                 protocol: prov.protocol,
                 base_url: prov.base_url.clone(),
                 api_key: prov.api_key.clone(),
-                models: vec![crate::ai::ModelEntry {
+                models: vec![agent_base::model::ModelEntry {
                     id: prov.model.clone(),
                     name: Some(prov.model.clone()),
                     context_window: Some(config_snapshot.context_window),
@@ -566,7 +566,7 @@ impl AgentStore {
     pub fn set_assistant_stats(
         &mut self,
         thread_id: &str,
-        usage: Option<crate::ai::TokenUsage>,
+        usage: Option<agent_base::model::TokenUsage>,
         duration_ms: u64,
         turn_duration_ms: u64,
     ) {
@@ -683,9 +683,9 @@ impl AgentStore {
         }
 
         // 同步到 pending_questions 列表中
-        if let Ok(q) = serde_json::from_value::<crate::protocol::AgentQuestion>(question_val) {
+        if let Ok(q) = serde_json::from_value::<agent_proto::AgentQuestion>(question_val) {
             self.pending_questions.retain(|item| item.call_id != call_id);
-            self.pending_questions.push(crate::protocol::PendingQuestionEntry {
+            self.pending_questions.push(agent_proto::PendingQuestionEntry {
                 call_id: call_id.to_string(),
                 question: q,
             });

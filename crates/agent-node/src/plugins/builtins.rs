@@ -96,7 +96,7 @@ pub fn get_builtin_plugin_items(disabled_ids: &std::collections::HashSet<String>
                 .tools
                 .iter()
                 .map(|(name, desc)| {
-                    let param_schema = crate::tools::find_tool_descriptor(name)
+                    let param_schema = agent_toolkit::find_tool_descriptor(name)
                         .map(|d| d.schema.clone())
                         .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
                     PluginToolDeclaration {
@@ -112,7 +112,7 @@ pub fn get_builtin_plugin_items(disabled_ids: &std::collections::HashSet<String>
                 .tools
                 .iter()
                 .map(|(name, desc)| {
-                    let descriptor_opt = crate::tools::find_tool_descriptor(name);
+                    let descriptor_opt = agent_toolkit::find_tool_descriptor(name);
                     let param_schema = descriptor_opt
                         .map(|d| d.schema.clone())
                         .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));

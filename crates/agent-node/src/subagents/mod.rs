@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn test_subagent_tool_lists_have_no_ghost_names() {
         use crate::subagents::runner::LEGACY_ONLY_TOOLS;
-        use crate::tools::standard_tool_descriptors;
+        use agent_toolkit::standard_tool_descriptors;
         use std::collections::HashSet;
 
         let registry: HashSet<String> = standard_tool_descriptors()

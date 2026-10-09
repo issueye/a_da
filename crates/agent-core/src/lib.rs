@@ -609,7 +609,7 @@ mod tests {
         {
             let s = store.read().await;
             assert_eq!(s.active_provider_id, "anthropic-claude");
-            assert_eq!(s.provider.protocol, crate::ai::ModelProtocol::Anthropic);
+            assert_eq!(s.provider.protocol, agent_base::model::ModelProtocol::Anthropic);
             assert_eq!(s.provider.model, "claude-3-5-sonnet-20241022");
             assert_eq!(s.config.context_window, 200000);
             assert_eq!(s.config.max_output_tokens, Some(8192));
