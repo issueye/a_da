@@ -323,19 +323,50 @@ async fn serve_anonymous(
         let Ok(req) = serde_json::from_str::<agent_proto::JsonRpcRequest>(&text) else {
             continue;
         };
+        // `gateway.pair` 也走匿名通道：**浏览器此刻还没有 token**，
+        // 配对码就是它换取 token 的那一步。
         let frame = if req.method == "gateway.info" {
             agent_proto::JsonRpcResponse::<serde_json::Value>::success(
                 req.id,
                 gateway.info_result(),
             )
+        } else if req.method == "gateway.pair" {
+            let code = req
+                .params
+                .as_ref()
+                .and_then(|p| p.get("code"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            match gateway.auth.redeem_pairing_code(code) {
+                Ok((token, scope)) => {
+                    info!("配对成功：已发放一个 token（作用域 {}）", scope.describe());
+                    agent_proto::JsonRpcResponse::<serde_json::Value>::success(
+                        req.id,
+                        serde_json::json!({
+                            "token": token,
+                            "expiresInSec": crate::auth::PAIRING_TTL.as_secs(),
+                            "scope": scope.describe(),
+                            "note": "把 token 带在后续连接的 `?token=` 上",
+                        }),
+                    )
+                }
+                Err(e) => agent_proto::JsonRpcResponse::<serde_json::Value>::error(
+                    req.id,
+                    agent_proto::ProtocolError::new(
+                        agent_proto::RpcErrorCode::InvalidRequest.code(),
+                        e.to_string(),
+                        None,
+                    ),
+                ),
+            }
         } else {
             agent_proto::JsonRpcResponse::<serde_json::Value>::error(
                 req.id,
                 agent_proto::ProtocolError::new(
                     agent_proto::RpcErrorCode::InvalidRequest.code(),
                     format!(
-                        "未认证连接只能调用 `gateway.info`（当前：`{}`）；\
-                         请在 URL 上带 `?token=…`",
+                        "未认证连接只能调用 `gateway.info` 或 `gateway.pair`（当前：`{}`）；\
+                         已有 token 请带在 URL 的 `?token=…` 上",
                         req.method
                     ),
                     None,

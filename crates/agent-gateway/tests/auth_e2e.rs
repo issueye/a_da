@@ -288,3 +288,114 @@ fn urlencode(s: &str) -> String {
         })
         .collect()
 }
+
+/// **配对码**：浏览器用它换 token（一次性）。
+///
+/// 这是"浏览器怎么拿到 token"的答案：token 由部署侧注入，网页里没有地方放它。
+/// 配对码是人工转抄一次短码。
+#[tokio::test]
+async fn test_pairing_code_exchanges_for_a_working_token() {
+    let auth = AuthConfig::from_args(&["deploy-token".into()], &[]).unwrap();
+    let code = auth.issue_pairing_code(Vec::new());
+    assert_eq!(code.len(), 8, "配对码要够短能抄：{code}");
+    let (gw, port) = gateway_with(auth).await;
+
+    // ① 匿名通道上用配对码换 token
+    let (mut tx, mut rx) = connect(port, "", None).await.expect("匿名通道可用");
+    let frame = serde_json::json!({
+        "jsonrpc":"2.0","id":1,"method":"gateway.pair","params":{"code": code}
+    });
+    tx.send(Message::Text(frame.to_string().into())).await.unwrap();
+    let resp = recv_any(&mut rx, 1).await;
+    let token = resp
+        .pointer("/result/token")
+        .and_then(|v| v.as_str())
+        .expect("配对必须给出 token")
+        .to_string();
+    assert!(!token.is_empty());
+
+    // ② 用换来的 token 建**新连接** → 全能力
+    let (mut tx2, mut rx2) = connect(port, &format!("?token={token}"), None)
+        .await
+        .expect("配对换来的 token 必须能用");
+    let resp2 = call(&mut tx2, &mut rx2, 1, "gateway.listAgents").await;
+    assert!(resp2.get("error").is_none(), "配对后的 token 应能列 agent：{resp2}");
+
+    // ③ 配对码是**一次性**的
+    let (mut tx3, mut rx3) = connect(port, "", None).await.expect("匿名通道可用");
+    let again = serde_json::json!({
+        "jsonrpc":"2.0","id":2,"method":"gateway.pair","params":{"code": code}
+    });
+    tx3.send(Message::Text(again.to_string().into())).await.unwrap();
+    let resp3 = recv_any(&mut rx3, 2).await;
+    assert!(
+        resp3.get("error").is_some(),
+        "配对码用过一次就必须失效（否则等于长期有效口令）：{resp3}"
+    );
+    assert!(gw.auth.live_pairing_codes() == 0, "用掉后没有存活配对码");
+}
+
+/// 配对码不认识 → **如实报错**，且不发放任何 token。
+#[tokio::test]
+async fn test_bad_pairing_code_is_rejected() {
+    let auth = AuthConfig::from_args(&["deploy-token".into()], &[]).unwrap();
+    let _code = auth.issue_pairing_code(Vec::new());
+    let (gw, port) = gateway_with(auth).await;
+
+    let (mut tx, mut rx) = connect(port, "", None).await.expect("匿名通道可用");
+    let frame = serde_json::json!({
+        "jsonrpc":"2.0","id":9,"method":"gateway.pair","params":{"code":"DEADBEEF"}
+    });
+    tx.send(Message::Text(frame.to_string().into())).await.unwrap();
+    let resp = recv_any(&mut rx, 9).await;
+    assert!(resp.get("error").is_some(), "错码必须被拒：{resp}");
+    assert_eq!(
+        gw.auth.live_pairing_codes(),
+        1,
+        "错码尝试**不得**消耗掉那个真的配对码"
+    );
+}
+
+/// 配对码的作用域：换出来的 token 只覆盖发放时指定的工作区。
+#[tokio::test]
+async fn test_pairing_code_carries_scope() {
+    let mine = std::env::temp_dir().join("a_da_pair_mine");
+    let mine_s = mine.to_string_lossy().replace('\\', "/");
+    let auth = AuthConfig::from_args(&["deploy".into()], &[]).unwrap();
+    let code = auth.issue_pairing_code(vec![mine_s.clone()]);
+    let (_gw, port) = gateway_with(auth).await;
+
+    let (mut tx, mut rx) = connect(port, "", None).await.expect("匿名通道可用");
+    let frame = serde_json::json!({
+        "jsonrpc":"2.0","id":1,"method":"gateway.pair","params":{"code": code}
+    });
+    tx.send(Message::Text(frame.to_string().into())).await.unwrap();
+    let resp = recv_any(&mut rx, 1).await;
+    assert_eq!(
+        resp.pointer("/result/scope/scope").and_then(|v| v.as_str()),
+        Some("workspaces"),
+        "配对要如实回报作用域：{resp}"
+    );
+    assert!(
+        !resp.to_string().contains("deploy"),
+        "配对响应不得回显原部署 token"
+    );
+}
+
+/// 读到 `id` 匹配的那一帧。
+async fn recv_any(rx: &mut Source, id: u64) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let remain = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let msg = tokio::time::timeout(remain, rx.next())
+            .await
+            .expect("等响应超时")
+            .expect("连接应还在")
+            .expect("读帧失败");
+        let Message::Text(t) = msg else { continue };
+        let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+        if v.get("id").and_then(|x| x.as_u64()) == Some(id) {
+            return v;
+        }
+    }
+}

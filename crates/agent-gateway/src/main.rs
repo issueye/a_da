@@ -72,13 +72,41 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let auth_summary = if args.auth.requires_token() {
+    // 🔴 明文规则（S7b）：token 走明文 `ws://` 是**可嗅探的**。
+    //
+    // 非回环部署必须**显式承认**这件事（`--allow-plaintext`），典型场景是
+    // "反向代理终止 TLS、网关只在内网明文"——那时明文是可接受的，
+    // 但必须由人确认，而不是默认发生。
+    if !is_loopback(&args.host) && !args.allow_plaintext {
+        anyhow::bail!(
+            "拒绝启动：`--host {}` 不是回环地址，而网关只提供明文 `ws://`。\n\
+             明文连接上的 token 可被嗅探。两种做法：\n\
+             ① 让反向代理终止 TLS（网关只在内网监听），并显式加 `--allow-plaintext` 表示已知情；\n\
+             ② 监听回环，由本机的桌面端/浏览器连 `127.0.0.1`。",
+            args.host
+        );
+    }
+
+    let auth_required = args.auth.requires_token();
+
+    // 配了 token 就发一个**一次性配对码**：浏览器没有地方拿 token，
+    // 操作员从网关控制台抄一次短码即可（见 `gateway.pair`）。
+    if auth_required {
+        let code = args.auth.issue_pairing_code(Vec::new());
+        // 只写日志、**不进 READY 行**：READY 行是机器解析的、可能被采集，
+        // 而配对码是给**人**抄的，人在控制台看。
+        info!(
+            "配对码：{code}（一次性，{} 分钟内有效）——浏览器用它换 token：gateway.pair {{ code }}",
+            agent_gateway::auth::PAIRING_TTL.as_secs() / 60
+        );
+    }
+    let auth_summary = if auth_required {
         format!("token 鉴权已启用（{} 个令牌）", args.token_count)
     } else {
         "开放模式（仅回环；未配置 --token）".to_string()
     };
     let gateway = Arc::new(
-        Gateway::new(args.product.clone(), workspace.clone()).with_auth(args.auth.clone()),
+        Gateway::new(args.product.clone(), workspace.clone()).with_auth(args.auth),
     );
 
     let listener = TcpListener::bind((args.host.as_str(), args.port)).await?;
@@ -95,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
             "workspace": workspace,
             "host": args.host,
             // 客户端据此知道要不要带 token（**不是**把 token 放进来）
-            "authRequired": args.auth.requires_token(),
+            "authRequired": auth_required,
         })
     );
     use std::io::Write;
@@ -134,6 +162,8 @@ struct Args {
     auth: AuthConfig,
     /// 配了几个令牌（**只报数量**，不报内容——就绪行可能被写进日志）
     token_count: usize,
+    /// 显式承认"非回环 + 明文"（典型：反向代理终止 TLS）
+    allow_plaintext: bool,
 }
 
 fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
@@ -143,6 +173,7 @@ fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
     let mut workspace = String::new();
     let mut tokens: Vec<String> = Vec::new();
     let mut origins: Vec<String> = Vec::new();
+    let mut allow_plaintext = false;
     let mut it = argv.into_iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -162,6 +193,9 @@ fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
             "--token" => {
                 tokens.push(it.next().ok_or_else(|| anyhow::anyhow!("--token 需要一个值"))?);
             }
+            "--allow-plaintext" => {
+                allow_plaintext = true;
+            }
             "--allow-origin" => {
                 origins.push(
                     it.next()
@@ -176,7 +210,8 @@ fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
                      --workspace <p>   默认工作区（默认当前目录）\n\
                      --host <h>        监听地址（默认 127.0.0.1；非回环**必须**给 --token）\n\
                      --token <t>       接入令牌；`<t>` 或不限制工作区，`<t>=<ws1>|<ws2>` 限定；可重复\n\
-                     --allow-origin <o>  放行的浏览器来源（可重复；默认**拒绝**任何带 Origin 的请求）\n"
+                     --allow-origin <o>  放行的浏览器来源（可重复；默认**拒绝**任何带 Origin 的请求）\n\
+                     --allow-plaintext   显式承认「非回环 + 明文 ws」（典型：反向代理终止 TLS）\n"
                 );
                 std::process::exit(0);
             }
@@ -192,5 +227,6 @@ fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
         workspace,
         auth,
         token_count,
+        allow_plaintext,
     })
 }

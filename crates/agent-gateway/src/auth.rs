@@ -34,6 +34,10 @@ pub enum AuthError {
     OriginNotAllowed(String),
     /// token 有效，但它的作用域不包含这个工作区
     WorkspaceNotInScope { workspace: String },
+    /// 配对码不认识 / 已用过 / 已过期
+    BadPairingCode,
+    /// 这个网关没开配对（没配 token，或配对码没生成）
+    PairingNotAvailable,
 }
 
 impl std::fmt::Display for AuthError {
@@ -46,6 +50,12 @@ impl std::fmt::Display for AuthError {
             }
             Self::WorkspaceNotInScope { workspace } => {
                 write!(f, "这个 token 不允许访问工作区 `{workspace}`")
+            }
+            Self::BadPairingCode => {
+                write!(f, "配对码无效（可能已用过或已过期——配对码是**一次性**的）")
+            }
+            Self::PairingNotAvailable => {
+                write!(f, "这个网关没有可用的配对码（未配置 token，或配对码已全部用掉）")
             }
         }
     }
@@ -61,11 +71,35 @@ pub struct TokenGrant {
     pub workspaces: Vec<String>,
 }
 
+/// 配对码：**一次性 + 限时**，用来把"操作员在网关控制台看到的短码"
+/// 换成"浏览器可以长期使用的 token"。
+///
+/// 为什么需要它：token 由部署侧注入，而**浏览器没有地方拿它**——
+/// 把 token 写进网页等于公开。配对码是标准的解法：人工转抄一次短码。
+#[derive(Debug)]
+pub struct PairingCode {
+    pub code: String,
+    /// 换出来的 token 的作用域
+    pub workspaces: Vec<String>,
+    pub expires_at: std::time::Instant,
+    pub used: bool,
+}
+
+/// 配对码默认有效期。
+///
+/// 10 分钟：够操作员从控制台抄到浏览器里，又不至于长期挂着等人猜。
+pub const PAIRING_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// 接入鉴权配置。
-#[derive(Debug, Clone, Default)]
+///
+/// `grants` 用 `std::sync::RwLock`：配对换来的 token 要**立刻生效**，
+/// 而 `authorize` 是同步的（临界区不含 await）。用异步锁反而要求跨 await 持锁。
+#[derive(Debug)]
 pub struct AuthConfig {
-    grants: Vec<TokenGrant>,
+    grants: std::sync::RwLock<Vec<TokenGrant>>,
     allow_origins: Vec<String>,
+    /// 已发放的配对码（一次性）
+    pairing: std::sync::Mutex<Vec<PairingCode>>,
 }
 
 /// 鉴权结果。
@@ -106,6 +140,16 @@ impl TokenScope {
 /// 工作区比较：大小写与分隔符归一（Windows 路径同一目录有 `\` / `/` 两种写法）。
 fn normalize_ws(s: &str) -> String {
     s.trim().replace('\\', "/").to_lowercase()
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            grants: std::sync::RwLock::new(Vec::new()),
+            allow_origins: Vec::new(),
+            pairing: std::sync::Mutex::new(Vec::new()),
+        }
+    }
 }
 
 impl AuthConfig {
@@ -150,18 +194,78 @@ impl AuthConfig {
             }
         }
         Ok(Self {
-            grants,
+            grants: std::sync::RwLock::new(grants),
             allow_origins: allow_origins
                 .iter()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect(),
+            pairing: std::sync::Mutex::new(Vec::new()),
         })
     }
 
     /// 是否要求 token。
     pub fn requires_token(&self) -> bool {
-        !self.grants.is_empty()
+        !self.grants.read().expect("grants 锁").is_empty()
+    }
+
+    /// 发放一个**一次性**配对码（返回人可读的短码）。
+    ///
+    /// `workspaces` 空 = 换出来的 token 不限制工作区。
+    pub fn issue_pairing_code(&self, workspaces: Vec<String>) -> String {
+        // 8 位大写十六进制：够短能抄，够长不易猜（4×10^9 组合，且限时+一次性）
+        let raw = uuid::Uuid::new_v4().simple().to_string();
+        let code = raw[..8].to_uppercase();
+        self.pairing.lock().expect("pairing 锁").push(PairingCode {
+            code: code.clone(),
+            workspaces,
+            expires_at: std::time::Instant::now() + PAIRING_TTL,
+            used: false,
+        });
+        code
+    }
+
+    /// 兑换配对码 → 一个**新 token**（并立刻加入可用列表）。
+    ///
+    /// 三种失败**如实区分**：不认识/已用过/已过期 → `BadPairingCode`；
+    /// 根本没有码 → `PairingNotAvailable`。都归一成"无效"会让操作员无从排查。
+    pub fn redeem_pairing_code(&self, code: &str) -> Result<(String, TokenScope), AuthError> {
+        let code = code.trim().to_uppercase();
+        let mut table = self.pairing.lock().expect("pairing 锁");
+        if table.is_empty() {
+            return Err(AuthError::PairingNotAvailable);
+        }
+        let now = std::time::Instant::now();
+        let Some(entry) = table
+            .iter_mut()
+            .find(|p| p.code == code && !p.used && p.expires_at > now)
+        else {
+            return Err(AuthError::BadPairingCode);
+        };
+        entry.used = true;
+        let scope = TokenScope {
+            workspaces: entry.workspaces.clone(),
+        };
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        self.grants
+            .write()
+            .expect("grants 锁")
+            .push(TokenGrant {
+                token: token.clone(),
+                workspaces: scope.workspaces.clone(),
+            });
+        Ok((token, scope))
+    }
+
+    /// 还有几个**未用过且未过期**的配对码。
+    pub fn live_pairing_codes(&self) -> usize {
+        let now = std::time::Instant::now();
+        self.pairing
+            .lock()
+            .expect("pairing 锁")
+            .iter()
+            .filter(|p| !p.used && p.expires_at > now)
+            .count()
     }
 
     /// 放行的浏览器来源（**不含**"无 Origin"这条隐含规则）。
@@ -184,7 +288,8 @@ impl AuthConfig {
         let Some(t) = token.map(str::trim).filter(|t| !t.is_empty()) else {
             return Ok(AuthOutcome::Anonymous);
         };
-        match self.grants.iter().find(|g| g.token == t) {
+        let grants = self.grants.read().expect("grants 锁");
+        match grants.iter().find(|g| g.token == t) {
             Some(g) => Ok(AuthOutcome::Scoped(TokenScope {
                 workspaces: g.workspaces.clone(),
             })),
@@ -404,5 +509,60 @@ mod tests {
         let d = s.describe().to_string();
         assert!(!d.contains("supersecret"), "作用域描述泄露了 token：{d}");
         assert!(d.contains("E:/a"));
+    }
+
+    /// **过期的配对码必须失效**（限时是配对码的一半安全性）。
+    #[test]
+    fn test_expired_pairing_code_is_rejected() {
+        let c = cfg(&["t"], &[]);
+        let code = c.issue_pairing_code(Vec::new());
+        assert_eq!(c.live_pairing_codes(), 1);
+        // 把它手动改成过期（测试子模块可以碰私有字段）
+        {
+            let mut table = c.pairing.lock().expect("pairing 锁");
+            table[0].expires_at =
+                std::time::Instant::now() - std::time::Duration::from_secs(1);
+        }
+        assert_eq!(
+            c.redeem_pairing_code(&code).unwrap_err(),
+            AuthError::BadPairingCode,
+            "过期码必须被拒"
+        );
+        assert_eq!(c.live_pairing_codes(), 0);
+    }
+
+    /// 根本没发过码 → 报 `PairingNotAvailable`（与"码错了"区分开，便于排查）。
+    #[test]
+    fn test_pairing_not_available_when_none_issued() {
+        let c = AuthConfig::open();
+        assert_eq!(
+            c.redeem_pairing_code("ABCD1234").unwrap_err(),
+            AuthError::PairingNotAvailable
+        );
+    }
+
+    /// 配对换来的 token **立刻可用**，且与部署 token 互不影响。
+    #[test]
+    fn test_redeemed_token_works_immediately() {
+        let c = cfg(&["deploy"], &[]);
+        let code = c.issue_pairing_code(vec!["E:/a".to_string()]);
+        let (token, scope) = c.redeem_pairing_code(&code).expect("兑换成功");
+        assert_ne!(token, "deploy", "换来的必须是**新** token");
+        assert!(scope.allows("E:/a"));
+        let AuthOutcome::Scoped(s) = c.authorize(Some(&token)).expect("新 token 应立刻可用") else {
+            panic!("应已认证");
+        };
+        assert!(s.allows("E:/a"));
+        assert!(!s.allows("E:/b"), "作用域要跟着配对码走");
+        // 部署 token 仍然有效
+        assert!(c.authorize(Some("deploy")).is_ok());
+    }
+
+    /// 配对码大小写不敏感（人工抄写常全大写/小写混杂）。
+    #[test]
+    fn test_pairing_code_is_case_insensitive() {
+        let c = cfg(&["t"], &[]);
+        let code = c.issue_pairing_code(Vec::new());
+        assert!(c.redeem_pairing_code(&code.to_lowercase()).is_ok());
     }
 }
