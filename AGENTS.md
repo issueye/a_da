@@ -7,7 +7,7 @@
 + **两层拆包**（S4）：`crates/agent-node/`（节点：会话 / 审批 / 检查点 / 委派 / 插件 / 技能）
 与 `crates/agent-rpc/`（桥接面：JSON-RPC 分发 + WS 宿主 + UI 投影），
 `crates/agent-core/` 已收敛为**兼容 facade**（只转发，~680 行）
-+ **网关**（S5）：`crates/agent-gateway/`（`a-da-gateway`：AGENT 管理平台 + 桥接平台）
++ **网关**（S5/S6）：`crates/agent-gateway/`（`a-da-gateway`：AGENT 管理平台 + 交互平台 + 桥接平台）
 + **Tauri 桌面宿主**（`src-tauri/`）+ **React 前端**（`tauri-ui/`）；
 `crates/ts-engine/` 是独立的 TS 执行引擎，只作插件运行时。
 **TypeScript 时代的实现（Bun + GPUIX 客户端 + TS 侧 agent/宿主）已整体归档到
@@ -53,10 +53,10 @@ bun run tauri:dev           # 桌面客户端开发（前端热重载 + 宿主�
 - `crates/agent-proto` 线协议：JSON-RPC 帧、方法常量、线上 DTO、错误码
 - `crates/agent-adapter` 适配器：`model/`（三家协议 SSE + 中止）、`app_home.rs`（**全仓唯一**读 `A_DA_HOME`/`USERPROFILE` 的地方）、`clock.rs`（**全仓唯一**读系统时间的地方）
 - `crates/agent-toolkit` 工具包：文件读写、路径沙箱、命令执行、文本 diff、决策与门禁判定；`registry.rs` 是**工具元数据单一真源**
-- **`crates/agent-node`（S4 拆出，5.9k 行 / 36 文件）** —— 节点：`session` / `approval` / `checkpoint` / `subagents`（含 `agent_bus.rs` 委派总线端口与 `local_bus.rs` 本地实现）/ `plugins` / `skills` / `node_config.rs`（节点配置端口）。**不含协议管道**（不依赖 `tokio-tungstenite`）、**不含 UI 投影**（不依赖 `AgentStore`）
+- **`crates/agent-node`（S4 拆出，5.9k 行 / 36 文件）** —— 节点：`session` / `approval` / `checkpoint` / `subagents`（含 `agent_bus.rs` 委派总线端口与 `local_bus.rs` 本地实现）/ `plugins` / `skills` / `node_config.rs`（节点配置端口）。**不含协议管道**（不依赖 `tokio-tungstenite`）、**不含 UI 投影**（不依赖 `AgentStore`）。`AgentBus` 的网关实现（`GatewayAgentBus`）在 **`agent-rpc`**——跨进程委派需要 WS 客户端，那属于桥接面，节点只保留端口
 - **`crates/agent-rpc`（S4 拆出，5.3k 行 / 18 文件）** —— 桥接面：`server/`（`dispatch.rs` 72 个方法的 JSON-RPC 分发、`ws.rs` 宿主、`emitter.rs` 快照合帧、`fs_service.rs`）、`state/`（`AgentStore`，**给界面看的投影**）、`runner/`（引擎调用 + `AgentEvent` → `AgentLoopEvent` 投影）。**依赖方向单向：`agent-rpc → agent-node`**
 - `crates/agent-core` **兼容 facade**（~680 行，只转发上面两者，保留历史导入路径）
-- **`crates/agent-gateway`（S5 新建）** —— a-da 网关，三合一：**AGENT 管理平台**（`registry.rs` 实例注册表 / `supervisor.rs` 生命周期）+ **交互平台**（S6）+ **桥接平台**（`relay.rs` 路由与透传）。二进制 `a-da-gateway`（打印 `A_DA_GATEWAY_READY {port}`）。**只依赖线协议 `agent-proto`**——不含引擎（INV-1）、不缓存会话状态（INV-8），由 `verify-wiring` check J 守着
+- **`crates/agent-gateway`（S5 新建）** —— a-da 网关，三合一：**AGENT 管理平台**（`registry.rs` 实例注册表 / `supervisor.rs` 生命周期）+ **交互平台**（S6：`delegate.rs` 派活/取消跨网关）+ **桥接平台**（`relay.rs` 路由与透传）。二进制 `a-da-gateway`（打印 `A_DA_GATEWAY_READY {port}`）。**只依赖线协议 `agent-proto`**——不含引擎（INV-1）、不缓存会话状态（INV-8），由 `verify-wiring` check J 守着
 - `crates/ts-engine` 插件运行时（Boa + oxc）；插件契约见 [docs/plugin-sdk/v1.md](docs/plugin-sdk/v1.md)
 - `products/ada-coding` 产品二进制（`--host/--port/--token/--parent-pid/--workspace`）
 - 三个 crate 各有 `{ai,protocol,tools}/mod.rs` 兼容 shim（`pub use` 转发到基座各 crate），调用点不动

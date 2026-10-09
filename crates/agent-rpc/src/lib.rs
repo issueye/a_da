@@ -17,6 +17,7 @@
 //! 所以本 crate 是"**过渡形态**"，不是终点——它的存在是为了让拆包**分步可验证**，
 //! 而不是一次性把 `agent-core` 劈成三块。
 
+pub mod gateway_bus;
 pub mod runner;
 pub mod server;
 pub mod state;

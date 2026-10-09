@@ -286,6 +286,8 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
     if caps.subagents {
         tools.push(Arc::new(agent_core::subagents::InvokeSubagentTool::new(
             agent_bus.clone(),
+            // S6：委派深度由**装配**给出（本地总线不使用；网关总线把它带进 gateway.delegate）
+            0,
         )));
     } else {
         tracing::info!("产品声明 capabilities.subagents=false → 不装配 invoke_subagent");

@@ -53,15 +53,21 @@ pub struct InvokeSubagentTool {
     /// 委派总线（S3）。生产实现 = `subagents::local_bus::LocalAgentBus`；
     /// 网关实现（S6）会替换它，而本文件**不需要改**。
     bus: Arc<dyn AgentBus>,
+    /// 本节点的委派深度（S6）：由组合根按**产品声明**给出。
+    ///
+    /// 本地总线不使用它（进程内递归由 `NEVER_FOR_SUBAGENT` 拦）；
+    /// 网关总线把它带进 `gateway.delegate`，由网关强制上限。
+    /// 装配期给值而不是运行时猜——深度是"这个实例在委派链上的位置"，属于装配事实。
+    delegation_depth: u32,
 }
 
 impl InvokeSubagentTool {
     /// 描述符取自注册表——实现了却没声明会**立刻 panic**，而不是造出一个没有描述符的工具。
-    pub fn new(bus: Arc<dyn AgentBus>) -> Self {
+    pub fn new(bus: Arc<dyn AgentBus>, delegation_depth: u32) -> Self {
         let descriptor = crate::tools::find_tool_descriptor("invoke_subagent")
             .expect("`invoke_subagent` 必须在 ToolDescriptor 注册表里（INV-3）")
             .clone();
-        Self { descriptor, bus }
+        Self { descriptor, bus, delegation_depth }
     }
 }
 
@@ -114,6 +120,8 @@ impl Tool for InvokeSubagentTool {
                     additional_context,
                     // 父会话取消令牌：取消必须**真的**传到 agent 内部（W4-T3）
                     cancel: Some(ctx.cancel),
+                    // 委派深度：跨网关时由网关强制上限（S6）
+                    depth: self.delegation_depth,
                 })
                 .await;
 
@@ -185,7 +193,7 @@ mod tests {
             None,
             vec!["core".to_string(), "fs".to_string()],
         );
-        InvokeSubagentTool::new(Arc::new(bus))
+        InvokeSubagentTool::new(Arc::new(bus), 0)
     }
 
     fn default_provider() -> agent_base::model::ProviderConfig {

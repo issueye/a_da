@@ -53,6 +53,15 @@ pub struct DispatchRequest<'a> {
     pub additional_context: Option<String>,
     /// 父会话取消令牌：取消必须**真的**传到 agent 内部（W4-T3 的教训）
     pub cancel: Option<&'a dyn CancelToken>,
+    /// **委派深度**（S6）。
+    ///
+    /// 跨网关委派让"嵌套深度"跨过了进程边界——本地的 `NEVER_FOR_SUBAGENT`
+    /// 黑名单管不到另一台机器上的 agent。所以深度由请求**显式携带**，
+    /// 由网关强制上限（`agent-gateway` 的 `MAX_DELEGATION_DEPTH`）。
+    ///
+    /// 本地实现不使用它（进程内递归由 `NEVER_FOR_SUBAGENT` 拦），
+    /// 但网关实现**必须**如实传出去。
+    pub depth: u32,
 }
 
 /// 派活结果。
@@ -87,20 +96,25 @@ impl DispatchOutcome {
 
 /// 委派总线。
 ///
-/// 实现者只应有**一个生产实现**（`subagents::local_bus::LocalAgentBus`），
-/// 网关实现（S6）会替换它。测试可以用替身。
+/// 两个生产实现：
+/// - [`crate::subagents::local_bus::LocalAgentBus`]：进程内、一次性、临时上下文（今天的行为）
+/// - [`crate::subagents::gateway_bus::GatewayAgentBus`]：走协议经网关委派给**另一个 agent 节点**（S6）
 pub trait AgentBus: Send + Sync + 'static {
     /// 发现：当前可委派的 agent 列表。
     ///
     /// 消费者：工具层据此给出"找不到指定的子智能体配置"这类**精确**错误，
     /// 以及将来的 `list_agents` 工具 / PM agent。
-    fn list_agents(&self) -> Vec<AgentHandle>;
+    ///
+    /// **S6 起改为异步**：网关实现的列表在**另一台机器/进程**上，必须走网络拿。
+    /// （S3 时只有本地实现，同步签名够用；接口随语义变化而变，这正是"实现或删声明"
+    /// 的反面——**先有真实需求再改契约**。）
+    fn list_agents(&self) -> BoxFuture<'_, Vec<AgentHandle>>;
 
     /// 派活：把任务交给一个 agent，等它跑完（或取消）。
     ///
     /// 语义约定（两个实现都必须遵守）：
     /// - **不编造**：目标不存在 / 被禁用 / 没有可用模型 → [`DispatchOutcome::rejected`]，绝不"随便挑一个继续跑"；
-    /// - **取消穿透**：`req.cancel` 触发后必须真的传到 agent 内部（本地 = 子智能体引擎 → 进程树）；
+    /// - **取消穿透**：`req.cancel` 触发后必须真的传到 agent 内部（本地 = 子智能体引擎 → 进程树；网关 = `thread.abort` 打到目标）；
     /// - **如实回执**：`ok` / `summary` / `details` 必须反映真实执行结果。
     fn dispatch<'a>(&'a self, req: DispatchRequest<'a>) -> BoxFuture<'a, DispatchOutcome>;
 }

@@ -34,6 +34,9 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
+use crate::delegate::{
+    delegate, DelegateError, DelegateOutcome, DelegationRegistry, DEFAULT_DELEGATION_TIMEOUT,
+};
 use crate::registry::{AgentInstance, AgentRegistry};
 use crate::supervisor::{ensure_agent, SpawnSpec};
 
@@ -49,6 +52,10 @@ pub mod methods {
     pub const ATTACH: &str = "gateway.attach";
     pub const STATUS: &str = "gateway.status";
     pub const DETACH: &str = "gateway.detach";
+    /// **交互平台**：派活给某个 agent 并等它跑完（S6）
+    pub const DELEGATE: &str = "gateway.delegate";
+    /// **交互平台**：取消进行中的派活（跨网关取消，S6）
+    pub const CANCEL_DELEGATION: &str = "gateway.cancelDelegation";
 }
 
 /// 网关的共享状态（一个网关进程一份）。
@@ -62,6 +69,8 @@ pub struct Gateway {
     pub default_product: String,
     /// 默认工作区（客户端没指定时）
     pub default_workspace: String,
+    /// 进行中的派活（S6 交互平台）
+    pub delegations: Arc<DelegationRegistry>,
 }
 
 impl Gateway {
@@ -72,7 +81,58 @@ impl Gateway {
             pid: std::process::id(),
             default_product: default_product.into(),
             default_workspace: default_workspace.into(),
+            delegations: Arc::new(DelegationRegistry::new()),
         }
+    }
+
+    /// **交互平台**：派活。
+    ///
+    /// 返回 `Ok(outcome)` 或**如实的拒绝原因**——深度超限、连不上、目标拒绝、被取消
+    /// 都要能被调用方区分（否则 PM agent 只能报"失败了"）。
+    pub async fn delegate_result(
+        &self,
+        agent_id: Option<&str>,
+        workspace: Option<&str>,
+        task: &str,
+        depth: u32,
+        delegation_id: &str,
+    ) -> Result<DelegateOutcome, DelegateError> {
+        if task.trim().is_empty() {
+            return Err(DelegateError::NoResult {
+                reason: "gateway.delegate 需要一个非空 task".to_string(),
+            });
+        }
+
+        // 目标解析：显式 agentId 优先；否则按工作区找（没有就拉起）
+        let instance = match agent_id {
+            Some(id) if !id.trim().is_empty() => self
+                .registry
+                .get(id)
+                .ok_or_else(|| DelegateError::Connect(format!("没有这个 agent 实例：{id}")))?,
+            _ => {
+                let ws = workspace
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| self.default_workspace.clone());
+                let spec = SpawnSpec::new(self.default_product.clone(), &ws);
+                ensure_agent(&spec, &self.registry, &self.spawn_lock, self.pid)
+                    .await
+                    .map_err(|e| DelegateError::Connect(e.to_string()))?
+            }
+        };
+
+        // 取消标志**先注册再派活**：客户端可能刚发请求就取消，晚了会丢（丢唤醒是经典坑）
+        let cancel = self.delegations.open(delegation_id).await;
+
+        delegate(
+            &instance,
+            task,
+            delegation_id,
+            depth,
+            cancel,
+            self.delegations.clone(),
+            DEFAULT_DELEGATION_TIMEOUT,
+        )
+        .await
     }
 
     /// 管理面：列出实例（**已剥 token**）。
@@ -227,15 +287,104 @@ async fn relay(
         };
 
         if let Some(method) = req.method.strip_prefix(GATEWAY_METHOD_PREFIX) {
-            // ── 管理面：网关自己答 ──
+            // ── 管理面 / 交互平台：网关自己答 ──
             let id = req.id.clone();
             let params = req.params.clone().unwrap_or(serde_json::Value::Null);
+
+            // `gateway.delegate` 是**长任务**：必须在独立任务里跑，绝不能在这个循环里 await。
+            //
+            // 原因：取消（`gateway.cancelDelegation`）是**同一连接上的另一帧**。
+            // 若循环被派活阻塞住，那一帧永远读不到——取消就永远到不了。
+            // 所以这里 spawn 出去，结果**稍后**用同一个 `id` 发回（JSON-RPC 允许延迟响应）。
+            if method == "delegate" {
+                let task = params
+                    .get("task")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let agent_id = params
+                    .get("agentId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let workspace = params
+                    .get("workspace")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                // 深度：**缺省即拒绝**（0），不默认成 1——拿不到依据时不放开
+                let depth = params.get("depth").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let delegation_id = params
+                    .get("delegationId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
+
+                let gw_task = gw.clone();
+                let tx_task = client_tx.clone();
+                tokio::spawn(async move {
+                    let out = gw_task
+                        .delegate_result(agent_id.as_deref(), workspace.as_deref(), &task, depth, &delegation_id)
+                        .await;
+                    let frame = match out {
+                        Ok(DelegateOutcome { agent_id, thread_id, summary, details, .. }) => {
+                            agent_proto::JsonRpcResponse::<serde_json::Value>::success(
+                                id,
+                                serde_json::json!({
+                                    "ok": true,
+                                    "delegationId": delegation_id,
+                                    "agentId": agent_id,
+                                    "threadId": thread_id,
+                                    "summary": summary,
+                                    "details": details,
+                                }),
+                            )
+                        }
+                        Err(e) => {
+                            let code = match &e {
+                                DelegateError::DepthExceeded { .. } => {
+                                    agent_proto::RpcErrorCode::InvalidRequest.code()
+                                }
+                                _ => agent_proto::RpcErrorCode::InternalError.code(),
+                            };
+                            agent_proto::JsonRpcResponse::<serde_json::Value>::error(
+                                id,
+                                agent_proto::ProtocolError::new(code, e.to_string(), None),
+                            )
+                        }
+                    };
+                    let _ = tx_task.send(Message::Text(serde_json::to_string(&frame).unwrap_or_default().into()));
+                });
+                continue;
+            }
+
             let out: Result<serde_json::Value, String> = match method {
                 "listAgents" => Ok(gw.list_agents_result()),
                 "status" => Ok(gw.status_result()),
                 "attach" => {
                     let ws_param = params.get("workspace").and_then(|v| v.as_str());
                     gw.attach_result(ws_param).await
+                }
+                "cancelDelegation" => {
+                    let did = params
+                        .get("delegationId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if did.is_empty() {
+                        Err("gateway.cancelDelegation 需要 delegationId".to_string())
+                    } else if gw.delegations.cancel(did).await {
+                        Ok(serde_json::json!({
+                            "cancelled": true,
+                            "delegationId": did,
+                            "note": "取消标志已置；派活任务会在下一帧把 thread.abort 打到目标",
+                        }))
+                    } else {
+                        // 刻意不区分"已完成"与"id 写错"：网关不缓存已完成派活的历史
+                        // （那会是"网关持有会话状态"的开端）
+                        Ok(serde_json::json!({
+                            "cancelled": false,
+                            "delegationId": did,
+                            "note": "没有这个进行中的派活（已完成或 id 不存在）",
+                        }))
+                    }
                 }
                 "detach" => {
                     let agent_id = params.get("agentId").and_then(|v| v.as_str()).unwrap_or("");

@@ -49,17 +49,19 @@ impl LocalAgentBus {
 }
 
 impl AgentBus for LocalAgentBus {
-    fn list_agents(&self) -> Vec<AgentHandle> {
-        self.subagent_mgr
-            .list_profiles(Some(&self.workspace))
-            .into_iter()
-            .map(|p| AgentHandle {
-                id: p.id,
-                name: p.name,
-                description: p.description,
-                enabled: p.enabled,
-            })
-            .collect()
+    fn list_agents(&self) -> BoxFuture<'_, Vec<AgentHandle>> {
+        Box::pin(async move {
+            self.subagent_mgr
+                .list_profiles(Some(&self.workspace))
+                .into_iter()
+                .map(|p| AgentHandle {
+                    id: p.id,
+                    name: p.name,
+                    description: p.description,
+                    enabled: p.enabled,
+                })
+                .collect()
+        })
     }
 
     fn dispatch<'a>(&'a self, req: DispatchRequest<'a>) -> BoxFuture<'a, DispatchOutcome> {
@@ -154,10 +156,10 @@ mod tests {
     }
 
     /// 发现：内置 profile 必须在列表里，且带 enabled 状态。
-    #[test]
-    fn test_list_agents_exposes_builtin_profiles() {
+    #[tokio::test]
+    async fn test_list_agents_exposes_builtin_profiles() {
         let bus = bus_with(ok_provider());
-        let agents = bus.list_agents();
+        let agents = bus.list_agents().await;
         assert!(!agents.is_empty(), "内置子智能体 profile 不该为空");
         assert!(
             agents.iter().any(|a| a.id == "general_purpose"),
@@ -180,6 +182,7 @@ mod tests {
                 task: "做点事",
                 additional_context: None,
                 cancel: None,
+                depth: 0,
             })
             .await;
 
@@ -206,6 +209,7 @@ mod tests {
                 task: "做点事",
                 additional_context: None,
                 cancel: None,
+                depth: 0,
             })
             .await;
 

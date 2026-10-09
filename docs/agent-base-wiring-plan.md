@@ -109,6 +109,7 @@ bun run typecheck
 | **P1-18** | **委派语义未抽象**：`invoke_subagent` 直接调用 `run_subagent`（进程内），网关接入时会变成**第二套委派机制** | `subagents/tool.rs` 里内联的派活逻辑（profile 解析 / provider 校验 / 取消转发 / `run_subagent`） | **✅ S3 已修**：`AgentBus` 端口 + `LocalAgentBus`（行为零变化，原有测试未改）；S6 换 `GatewayAgentBus` 实现即可 |
 | **P2-8** | **`agent-core` 是 12,190 行的巨石**：混着节点行为、协议管道、UI 投影、兼容 shim 四类职责；依赖 base+proto+adapter+toolkit+runtime 全部 + `ts_engine` + `reqwest` + `tungstenite`——想用"会话/审批"的人被迫拉进一个 WS 服务器 | 实测耦合矩阵（§13.29） | **✅ S4 已拆**：`agent-node`（5,892 行）+ `agent-rpc`（5,266 行）+ `agent-core` facade（677 行）；新增 `verify-wiring` check I 守方向 |
 | P2-9 | 🔴 **`src-tauri`（UI 壳）在当 agent 的进程 supervisor**：它自己找二进制、spawn、解析 `A_DA_HOST_READY`、记 `{port, token, child_pid}`。职责错位，而且这就是"远程接入"做不到的原因（关掉界面就把 agent 带走了） | `src-tauri/src/lib.rs:239-286`；`get_core_info` | **⏳ S5 已在网关侧重建**（`agent-gateway/src/supervisor.rs`）；**桌面端尚未切换**——切换时必须**删掉 `src-tauri` 那份**，否则就是两份实现 |
+| **P1-20** | **委派无法跨进程**：`invoke_subagent` 只能在进程内跑临时子智能体；PM agent"控制和与 coding agent 协作"没有落点 | `subagents/local_bus.rs`（进程内、一次性） | **✅ S6 已完成核心**：`gateway.delegate` + `GatewayAgentBus` + 跨网关取消 + 深度上限；**PM 产品与多轮续跑**见 S6b |
 | **P1-19** | **缺"多实例管理平台"**：全仓无实例注册表（`grep AgentRegistry` = 0），没有"有哪些 agent、什么状态"的记录处 | W2 实测 | **✅ S5 已建**：`agent-gateway/src/registry.rs`（`Starting/Ready/Unhealthy/Stopped` + 按工作区派生稳定 id + `redacted()` 剥 token）；check J 守边界 |
 
 ---
@@ -2219,6 +2220,89 @@ INV-8「一个事实一个所有者」；一旦网关有了会话状态副本，
 4. **PowerShell 会把单元素 JSON 数组解包成对象**。`$resp.result.agents[0]` 报
    "Cannot index into a null array"——**不是网关的 bug**，是 `ConvertFrom-Json` 的行为。
    判据：**解析失败时先看原始响应**（`ConvertTo-Json` 出来的是什么），别急着改代码。
+
+### 13.31 S6 交互平台：派活 + 跨网关取消 + 深度约束（2026-10-09，已完成）
+
+**目标**：让"PM agent 通过网关控制和与 coding agent 交互协作"成为**平台能力**，
+而不是每个调用方自己走一遍协议（建线程 → 发消息 → 盯快照 → 判断完成）。
+
+#### 交付物
+
+| 位置 | 内容 |
+|---|---|
+| `agent-gateway/src/delegate.rs`（新） | `gateway.delegate` 的服务端：驱动目标跑一轮到完成、读回结果；`DelegationRegistry`（取消标志） |
+| `agent-gateway/src/relay.rs` | 两个新方法：`gateway.delegate`（**spawn 出去**，响应稍后用同一 `id` 发回）+ `gateway.cancelDelegation` |
+| `agent-rpc/src/gateway_bus.rs`（新） | `GatewayAgentBus`：`AgentBus` 的网关实现（走协议；含取消帧转发） |
+| `agent-node/src/agent_bus.rs` | `list_agents` **改为异步**（网关实现在另一台机器上）；`DispatchRequest` 增 `depth` |
+| `agent-node/src/subagents/tool.rs` | 装配期委派深度 |
+
+#### 三个关键设计
+
+**① `gateway.delegate` 必须在独立任务里跑。**
+取消是**同一连接上的另一帧**——若 relay 循环被派活阻塞，那一帧永远读不到，取消永远到不了。
+所以 spawn 出去、响应稍后用同一 `id` 发回（JSON-RPC 允许延迟响应）。
+
+**② 完成判据三条，缺一不可**：目标线程存在 + **不在** `runningThreadIds` + 至少一条 `assistant` 条目。
+第三条是关键：连接那刻目标会推一帧种子快照，只判前两条会**在种子快照上立刻"完成"**、拿回空结果。
+
+**③ `GatewayAgentBus` 放在 `agent-rpc` 而不是节点里。**
+它需要 WebSocket 客户端，而 check I 规定**节点不含协议管道**。
+那条边界的意图是"节点不拥有传输"——跨进程委派的传输属于桥接面。
+副产品：`agent-node` 至今**不依赖任何传输库**。
+
+#### 🔴 端到端测试抓到一个真缺陷（本轮最重要的记录）
+
+初版 `run_delegation` 的取消检查**只在"收到下一帧时"顺带做一次**：
+
+```rust
+let msg = rx.next().await;           // 目标跑长任务时是**安静的**，这里会一直等
+if cancel.load(...) { ...返回 Cancelled... }
+```
+
+后果：目标安静时取消**不生效**，要等到 600s 超时才返回。
+表现就是本仓反复清理的那类**假接线**——"取消看起来发了、实际到不了"。
+
+修法：把取消检查与读帧**并发**（`select!` + 50ms 轮询），取消在 50ms 内生效。
+**修完整个测试从 10s 降到 0.07s**——超时数字本身就是证据。
+
+**这条是被测试抓出来的，不是被读代码读出来的。** 所以"断言目标那一轮真的停了"
+（而不是"我们发了取消帧"）这个设计是值得的。
+
+#### 第二个设计修正：`cancelled` 要等**中止被受理**
+
+发完 `thread.abort` 立刻返回 `Cancelled` 的话，调用方拿到"已取消"时目标可能还没读到那一帧——
+"已取消"就成了**没有保证**的说法。改为**等中止帧的响应**（上限 2s：取消不该比任务还慢）。
+
+#### 深度约束：缺省即拒绝
+
+- 深度由请求**显式携带**（`DispatchRequest.depth` → `gateway.delegate { depth }`）；
+- 网关强制 `1 <= depth <= MAX_DELEGATION_DEPTH(2)`；
+- **缺省（0）即拒绝**，不默认成 1——与 `FailDirection::Closed` 同原则：拿不到依据时不放开；
+- 被拒绝的派活**绝不能已经打到目标**（测试断言目标侧 `sends` 为空）。
+
+**诚实登记的遗留**：被网关派活的节点，其**自身**深度目前无法从网关获知
+（需要新增 `thread.create` 参数或 spawn 参数把深度带过去）。
+当前靠"产品声明决定用哪个总线"保证叶子产品不反向委派到网关，所以深度**由构造有界**；
+但"网关委派的目标自己再声明网关委派"这条路还没有机制挡住。已登记为 S6b 待办。
+
+#### 转绿证据
+
+| 证据 | 结果 |
+|---|---|
+| `cargo test --workspace` | **318 → 328 passed / 0 failed**；零编译警告 |
+| 交互平台端到端（桩宿主，4 条） | 派活带回**目标**的 assistant 文本 + 目标真的收到任务文本 / **取消穿透到目标**（桩收到 `thread.abort`）/ 缺 depth 被拒且**没打到目标** / 未知派活回 `cancelled:false` |
+| 六条门禁 | 全绿（check J 仍成立：网关不依赖节点） |
+| `bun run typecheck` | exit 0 |
+
+#### S6 期间的三条记录
+
+1. 🔴 **"取消只在收到下一帧时检查"是一个会被测试抓出来的真 bug**（见上）。
+   判据：**取消类断言必须落在"目标侧可观察的事实"上**，不能只断言"我们发了帧"。
+2. **接口随真实需求变化，而不是提前预留**。S3 时 `list_agents` 是同步的（只有本地实现够用）；
+   S6 出现"列表在另一台机器上"的真实需求，才改成异步。这与"不许声明做不到的事"是同一原则的两面。
+3. **传输依赖的归属要按"谁在说协议"判断**。节点不拥有传输（check I），
+   但**跨进程委派的客户端**是桥接面的职责——所以实现放 `agent-rpc`。
+   边界不是"禁止某库"，而是"**谁负责那件事**"。
 
 
 ## 附录 A：缺口 → 任务反查表
