@@ -139,13 +139,14 @@ async fn main() -> Result<(), anyhow::Error> {
     let injection = build_engine_injection(&store, &args.workspace);
 
     // 启动 WebSocket 服务
-    let server = WsHostServer::bind_with_engine(args.port, token, store, injection).await?;
+    let server = WsHostServer::bind_with_engine(args.port, token.clone(), store, injection).await?;
     let current_pid = std::process::id();
 
     // 打印符合协议 §1.8 规范的标准就绪行至 stdout
     let ready_json = serde_json::json!({
         "ready": true,
         "port": server.port,
+        "token": token,
         "pid": current_pid,
         "protocolVersion": PROTOCOL_VERSION,
     });
