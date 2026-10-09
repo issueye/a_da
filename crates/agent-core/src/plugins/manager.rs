@@ -356,11 +356,17 @@ impl PluginManager {
                             serde_json::json!({ "type": "object", "properties": {} })
                         };
 
+                        // `is_write` 一律按 `ToolDescriptor` 真源判定，**不信第三方插件自述**
+                        // （W2-T7）：原先这里硬编码 `false`，于是第三方插件的**写工具在界面上
+                        // 被当成只读**，在只读档位/plan 模式/只读子智能体里也可能被放行。
+                        // 未知工具**失败安全地当作写操作**（AGENTS.md §2）。
+                        let is_write = super::plugin_tool_is_write(&tool_name);
+
                         tools.push(PluginToolInfo {
                             name: tool_name.clone(),
                             description: desc.clone(),
                             parameters: Some(params.clone()),
-                            is_write: false,
+                            is_write,
                         });
                         tools_decl.push(PluginToolDeclaration {
                             name: tool_name,

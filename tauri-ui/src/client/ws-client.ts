@@ -31,6 +31,8 @@ import type {
   QueuedItem,
   ProductInfo,
 } from '../types'
+// W6-T6：重连退避策略抽成**无副作用纯模块**（便于独立验证，见该文件注释）
+import { reconnectDelayMs } from './reconnect-policy'
 
 export type Listener = (snapshot: ClientSnapshot) => void
 
@@ -77,6 +79,46 @@ export class AgentWebSocketClient {
   private reconnectTimer: any = null
   private _connected = false
   public productInfo: ProductInfo | null = null
+
+  // ── W6-T6：重连策略 ────────────────────────────────────────────────────────
+  //
+  // 修掉的三处缺陷：
+  // 1. **固定 2s 重试**：服务端长期不在时会被无限次、等间隔地敲打；
+  // 2. **没有代次保护**：`connect()` 可被多处触发（`onclose` 的定时器 + `setConnection`），
+  //    旧连接的异步回调会覆盖新连接的 url/token，导致**多条 socket 并存**；
+  // 3. **断线不清在途请求**：`onclose` 后 `pendingRequests` 里的 Promise 无人兑现，
+  //    调用方要等 15s 超时才失败（或永久挂住）。
+
+  /** 重连代次：每次 `connect()` 递增。异步回调据此判断"我还是当前那条连接吗"。 */
+  private connectionGeneration = 0
+  /** 连续失败次数（`onopen` 成功后清零）。 */
+  private reconnectAttempts = 0
+  /** 断线时立刻失败所有在途请求——**不许让调用方干等超时**。 */
+  private failAllPending(reason: string) {
+    if (this.pendingRequests.size === 0) return
+    const entries = Array.from(this.pendingRequests.entries())
+    this.pendingRequests.clear()
+    for (const [, pending] of entries) {
+      pending.reject(new Error(reason))
+    }
+  }
+
+  /** 安排一次重连（带退避）。`onclose` 与创建失败两条路径共用。 */
+  private scheduleReconnect() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+    }
+    const delay = reconnectDelayMs(this.reconnectAttempts)
+    this.reconnectAttempts += 1
+    console.log(`[AgentWS] ${delay}ms 后重连（第 ${this.reconnectAttempts} 次尝试）`)
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null
+      const conn = await resolveCoreConnection(this.url, this.token)
+      this.url = conn.url
+      this.token = conn.token
+      this.connect()
+    }, delay)
+  }
 
   public reconnectImmediately() {
     if (this.reconnectTimer) {
@@ -251,25 +293,49 @@ export class AgentWebSocketClient {
       this.reconnectTimer = null
     }
 
+    // W6-T6：代次保护。所有异步回调都带上 `gen`，与当前代次不符就**立即返回**——
+    // 否则旧连接（或旧 `resolveCoreConnection`）的回调会覆盖新连接的状态，
+    // 造成"两条 socket 并存、消息重复处理"。
+    const gen = ++this.connectionGeneration
+
+    // 关掉旧 socket，并**摘掉它的回调**：不摘的话它关闭时会再触发一次 `onclose`
+    // → 又排一个重连定时器（这正是"重复连接"的来源之一）。
+    if (this.ws) {
+      const old = this.ws
+      old.onopen = null
+      old.onclose = null
+      old.onerror = null
+      old.onmessage = null
+      try {
+        old.close()
+      } catch {}
+      this.ws = null
+    }
+
     try {
       const fullUrl = this.token ? `${this.url}?token=${encodeURIComponent(this.token)}` : this.url
-      this.ws = new WebSocket(fullUrl)
+      const socket = new WebSocket(fullUrl)
+      this.ws = socket
 
-      this.ws.onopen = async () => {
+      socket.onopen = async () => {
+        if (gen !== this.connectionGeneration) return // 过期连接，丢弃
         console.log('[AgentWS] WebSocket 已连接:', this.url)
         this._connected = true
+        this.reconnectAttempts = 0 // 连上了 → 退避计数清零
         try {
           const initRes = await this.request('session.initialize', {
             token: this.token,
             protocolVersion: '1.0',
             client: { name: 'a-da-tauri', version: '0.1.0', platform: 'tauri' },
           })
+          if (gen !== this.connectionGeneration) return
           if (initRes && initRes.product) {
             const prod = initRes.product
             this.productInfo = prod
             console.log('[AgentWS] 成功接入产品:', prod.name, `(${prod.id})`)
           }
           const snap = await this.request('session.snapshot', {})
+          if (gen !== this.connectionGeneration) return
           if (snap) {
             this.applySnapshot(snap)
           }
@@ -278,7 +344,8 @@ export class AgentWebSocketClient {
         }
       }
 
-      this.ws.onmessage = (event) => {
+      socket.onmessage = (event) => {
+        if (gen !== this.connectionGeneration) return
         try {
           const msg = JSON.parse(event.data)
           this.handleMessage(msg)
@@ -287,28 +354,23 @@ export class AgentWebSocketClient {
         }
       }
 
-      this.ws.onclose = () => {
+      socket.onclose = () => {
+        if (gen !== this.connectionGeneration) return // 过期连接的关闭事件，忽略
         this._connected = false
+        // W6-T6：断线立刻失败在途请求，别让调用方等 15s 超时
+        this.failAllPending('连接已断开，请求未完成')
         this.notify()
-        this.reconnectTimer = setTimeout(async () => {
-          const conn = await resolveCoreConnection(this.url, this.token)
-          this.url = conn.url
-          this.token = conn.token
-          this.connect()
-        }, 2000)
+        this.scheduleReconnect()
       }
 
-      this.ws.onerror = (err) => {
+      socket.onerror = (err) => {
+        if (gen !== this.connectionGeneration) return
         console.warn('[AgentWS] 连接异常:', err)
       }
     } catch (err) {
       console.error('[AgentWS] 创建 WebSocket 失败:', err)
-      this.reconnectTimer = setTimeout(async () => {
-        const conn = await resolveCoreConnection(this.url, this.token)
-        this.url = conn.url
-        this.token = conn.token
-        this.connect()
-      }, 2000)
+      this.failAllPending('连接创建失败，请求未完成')
+      this.scheduleReconnect()
     }
   }
 
@@ -935,14 +997,15 @@ export class AgentWebSocketClient {
     })
   }
 
-  public resumeSubagent(subagentThreadId: string, instruction?: string) {
-    this.snapshot.running = true
-    this.notify()
-    return this.request<{ threadId: string }>('subagent.resume', {
-      subagentThreadId,
-      instruction,
-    })
-  }
+  // W6-T1：`resumeSubagent` 已删除。
+  //
+  // 原因：它调用的 `subagent.resume` 是一个桩（只回 `{threadId, ok:true}`，什么都没恢复），
+  // 却先把 `snapshot.running` 置为 true——**界面会显示"正在运行"，而实际什么都没发生**。
+  // W4-T6 之后子智能体上下文刻意是临时的（一次性委派，不污染主会话），
+  // 因此"恢复"在语义上不存在。协议声明与后端臂已一并删除（R3）。
+  //
+  // 唯一调用方是 Composer 的"恢复执行"按钮，而它的 `onResumeSubagent` 从来
+  // 没有任何父组件传入（点了没反应）——该按钮也已删除。
 
   // ── 文件系统浏览器与工作区 ──
 

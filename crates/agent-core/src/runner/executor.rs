@@ -6,14 +6,10 @@ use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 use serde_json::Value;
 
-use tokio::sync::{mpsc, watch};
-
-use crate::ai::{ProviderConfig, ToolCallInfo};
+use crate::ai::ToolCallInfo;
 use crate::checkpoint::CheckpointManager;
 use crate::runner::builtin_tools::{execute_ask_user, execute_builtin_plugin_tool};
-use crate::runner::AgentLoopEvent;
 use crate::session::AgentMessage;
-use crate::subagents::SubagentManager;
 use crate::tools::{
     check_workspace_sandbox, edit_file, list_files, read_file, run_command, search_files,
     write_file, EditPair, ToolResult,
@@ -65,26 +61,25 @@ fn capture_tool_checkpoint(
     None
 }
 
-/// 派发并执行单个工具调用
+/// 派发并执行单个工具调用。
+///
+/// # W3-T4 收敛说明
+///
+/// 原先有 `execute_tool_call_extended`，多出 `parent_config` / `subagent_mgr` /
+/// `event_tx` / `abort_rx` 四个参数——那是**给 legacy 主循环**用的（它支持
+/// `invoke_subagent`、把 `ask_user` 的提问事件推给界面、把中止信号传给命令）。
+///
+/// legacy 主循环删除后，这四个参数的唯一调用方（子智能体执行循环）本来就全传 `None`，
+/// 于是把它们删掉、把 `_extended` 并回本函数：
+/// - `invoke_subagent` 分支**删除**：它是 legacy 主循环独有的工具，新引擎的 catalog 里没有它
+///   （计划 §2 P1-15 已登记该能力缺口，端口化另排任务）；
+/// - `ask_user` 的提问事件与命令中止信号：新引擎走 `ask_user` 工具 + `QuestionAsked`
+///   领域事件 + `CancelToken` 端口，不再依赖这里的透传。
 pub fn execute_tool_call<'a>(
     workspace: &'a Path,
     thread_id: &'a str,
     call: &'a ToolCallInfo,
     checkpoint_mgr: Option<&'a Arc<CheckpointManager>>,
-) -> BoxFuture<'a, AgentMessage> {
-    execute_tool_call_extended(workspace, thread_id, call, checkpoint_mgr, None, None, None, None)
-}
-
-/// 派发并执行单个工具调用（扩展支持模型配置与子智能体管理、提问事件与中止信号）
-pub fn execute_tool_call_extended<'a>(
-    workspace: &'a Path,
-    thread_id: &'a str,
-    call: &'a ToolCallInfo,
-    checkpoint_mgr: Option<&'a Arc<CheckpointManager>>,
-    parent_config: Option<&'a ProviderConfig>,
-    subagent_mgr: Option<&'a Arc<SubagentManager>>,
-    event_tx: Option<&'a mpsc::Sender<AgentLoopEvent>>,
-    abort_rx: Option<&'a watch::Receiver<bool>>,
 ) -> BoxFuture<'a, AgentMessage> {
     async move {
         let started_at = now_ms();
@@ -148,61 +143,11 @@ pub fn execute_tool_call_extended<'a>(
             let timeout = args.get("timeout").and_then(|v| v.as_u64());
             run_command(workspace, command, cwd, timeout, None).await
         }
-        "invoke_subagent" => {
-            let subagent_id = args.get("subagent_id").and_then(|v| v.as_str()).unwrap_or("");
-            let task = args.get("task").and_then(|v| v.as_str()).unwrap_or("");
-            let additional_context = args
-                .get("additional_context")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            let default_mgr = SubagentManager::new();
-            let profile = if let Some(mgr) = subagent_mgr {
-                mgr.get_profile(subagent_id, Some(workspace))
-            } else {
-                default_mgr.get_profile(subagent_id, Some(workspace))
-            };
-
-            if let Some(profile) = profile {
-                if !profile.enabled {
-                    ToolResult::error(format!("子智能体 [{}] 已被禁用", profile.name))
-                } else {
-                    let config = parent_config.cloned().unwrap_or_else(|| ProviderConfig {
-                        id: "gemini".to_string(),
-                        name: "Gemini".to_string(),
-                        protocol: crate::ai::ModelProtocol::OpenAiChat,
-                        api_key: String::new(),
-                        base_url: String::new(),
-                        model: "gemini-2.5-flash".to_string(),
-                        max_output_tokens: Some(8192),
-                        custom_headers: None,
-                        proxy_url: None,
-                    });
-
-                    let res = crate::subagents::run_subagent(crate::subagents::RunSubagentOptions {
-                        profile,
-                        task: task.to_string(),
-                        additional_context,
-                        workspace: workspace.to_path_buf(),
-                        parent_config: config,
-                        checkpoint_mgr: checkpoint_mgr.map(|m| Arc::clone(m)),
-                        abort_rx: None,
-                        update_tx: None,
-                    })
-                    .await;
-
-                    if res.ok {
-                        ToolResult::success(res.summary)
-                    } else {
-                        ToolResult::error(res.error_message.unwrap_or(res.summary))
-                    }
-                }
-            } else {
-                ToolResult::error(format!("找不到指定的子智能体配置: {}", subagent_id))
-            }
-        }
+        // `invoke_subagent` 分支已随 legacy 主循环删除（W3-T4）。
+        // 新引擎的 catalog 里没有这个工具 → 子智能体委派能力缺口登记在计划 §2 P1-15，
+        // 端口化后它会以一个真正的 `Tool` 回到 catalog，而不是在字符串分派里复活。
         "ask_user" => {
-            execute_ask_user(&call.id, &args, event_tx, abort_rx).await
+            execute_ask_user(&call.id, &args, None, None).await
         }
         unknown => {
             // M2-T3 / M2-T5：先判启用再执行（含内置插件工具，杜绝静默绕过）

@@ -5,8 +5,11 @@ use clap::Parser;
 use std::io::Write;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, Level};
+use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
+
+/// 产品声明（W3-T2：宿主按它装配真引擎）。
+const SPEC_JSON: &str = include_str!("../agent.spec.json");
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "a_da 原生 Agent 核心服务 (Rust)", long_about = None)]
@@ -32,9 +35,65 @@ struct CliArgs {
     workspace: String,
 }
 
+/// 按产品声明装配真引擎；任何失败都**如实降级**为 legacy（返回 `None`）。
+///
+/// 注意三件事都是刻意的：
+/// 1. **复用宿主的 `store`**：引擎的审批闸门要读 `config.approval`，各造一份会出现
+///    "界面上是只读档、引擎按默认档跑"；
+/// 2. **会话落盘到 app home**（不是工作区），与 legacy 路径一致；
+/// 3. 返回的 `approval_mgr` 会被 ws 宿主用于构造 `Dispatcher`——**必须是同一个实例**，
+///    否则 UI 的批准送不到闸门。
+fn build_engine_injection(
+    store: &Arc<RwLock<AgentStore>>,
+    workspace: &str,
+) -> Option<agent_core::server::dispatch::EngineInjection> {
+    let ws = if workspace.trim().is_empty() {
+        match std::env::current_dir() {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("取当前目录失败，降级为 legacy 引擎：{e}");
+                return None;
+            }
+        }
+    } else {
+        std::path::PathBuf::from(workspace)
+    };
+
+    let spec = match agent_runtime::AgentSpec::from_json_str(SPEC_JSON) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("产品规格解析失败，降级为 legacy 引擎：{e}");
+            return None;
+        }
+    };
+
+    let sessions_root =
+        std::path::Path::new(&agent_core::session::get_app_home()).join("sessions");
+    let options = agent_host::HostOptions::new(ws)
+        .with_store(store.clone())
+        .with_sessions_root(sessions_root);
+
+    match agent_host::run_from_spec(spec, options) {
+        Ok(hosted) => {
+            let tool_count = hosted.tool_names().len();
+            let agent_host::HostedProduct { runtime, approval, spec, .. } = hosted;
+            info!("已按产品声明装配真引擎：工具 {tool_count} 个");
+            Some(agent_core::server::dispatch::EngineInjection {
+                runtime: Arc::new(runtime),
+                approval_mgr: approval,
+                // W3-T6：声明一起注入，握手才能如实回报能力位
+                spec: Arc::new(spec),
+            })
+        }
+        Err(e) => {
+            warn!("真引擎装配失败：{e}");
+            None
+        }
+    }
+}
+
 #[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
-    let app_home = agent_core::session::get_app_home();
+async fn main() -> Result<(), anyhow::Error> {    let app_home = agent_core::session::get_app_home();
     let log_file_path = std::path::Path::new(&app_home).join("host.log");
     let log_file = std::fs::OpenOptions::new()
         .create(true)
@@ -69,10 +128,17 @@ async fn main() -> Result<(), anyhow::Error> {
         start_parent_watchdog(parent_pid, 2000);
     }
 
-    let store = Arc::new(RwLock::new(AgentStore::new(args.workspace)));
+    let store = Arc::new(RwLock::new(AgentStore::new(args.workspace.clone())));
+
+    // W3-T2：按产品声明装配**真引擎**并注入宿主。
+    //
+    // 走哪条引擎由 `A_DA_ENGINE` 决定（默认 `legacy` → 行为与切换前完全一致，
+    // 保证可回滚）；设 `A_DA_ENGINE=runtime` 才真的切到 `AgentRuntime::run_turn`。
+    // 装配失败**不致命**：如实打日志并降级为 legacy，而不是让宿主起不来。
+    let injection = build_engine_injection(&store, &args.workspace);
 
     // 启动 WebSocket 服务
-    let server = WsHostServer::bind(args.port, token, store).await?;
+    let server = WsHostServer::bind_with_engine(args.port, token, store, injection).await?;
     let current_pid = std::process::id();
 
     // 打印符合协议 §1.8 规范的标准就绪行至 stdout
@@ -127,6 +193,53 @@ mod tests {
         assert_eq!(spec.archetype, "coding");
         assert!(spec.capabilities.rollback);
         assert!(spec.capabilities.plugins);
+    }
+
+    /// W2-T2 守门：产品**声明的工具包**必须能真的装配出工具，且与注册表逐名对齐。
+    ///
+    /// 这条把"声明 → 工具包真源 → catalog"整条链路钉在产品自己的测试里：
+    /// 声明了一个不存在的工具包（例如曾经的 `patch`）会在这里直接红。
+    #[test]
+    fn test_ada_coding_declared_toolkits_assemble() {
+        use std::collections::BTreeSet;
+
+        let spec = agent_runtime::AgentSpec::from_json_str(SPEC_JSON).expect("spec 必须合法");
+        let tools = agent_toolkit::tools_for_toolkits(&spec.toolkits, std::path::Path::new("."))
+            .expect("声明的工具包必须都能装配（未知名/重名都会 Err）");
+
+        let assembled: BTreeSet<String> =
+            tools.iter().map(|t| t.descriptor().name.clone()).collect();
+        let registry: BTreeSet<String> = agent_toolkit::standard_tool_descriptors()
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+
+        // 工具包只能提供注册表里的工具（不许造出注册表没有的名字）
+        assert!(
+            assembled.is_subset(&registry),
+            "工具包提供了注册表里没有的工具：{:?}",
+            assembled.difference(&registry).collect::<Vec<_>>()
+        );
+
+        // W4-T5：唯一**不由工具包**提供的是宿主注入的委派工具
+        // （它需要 SubagentManager/父 provider/检查点，工具包工厂构造不出来）。
+        let host_provided: BTreeSet<String> =
+            registry.difference(&assembled).cloned().collect();
+        assert_eq!(
+            host_provided,
+            BTreeSet::from(["invoke_subagent".to_string()]),
+            "除 invoke_subagent 外不应有其它工具指望宿主注入"
+        );
+        assert!(
+            spec.capabilities.subagents,
+            "ada-coding 声明支持子智能体 → 宿主会注入 invoke_subagent；\
+             若这里为 false，注册表里的 invoke_subagent 就会成为不可达工具"
+        );
+
+        assert!(
+            assembled.contains("git_status") && assembled.contains("project_inspect"),
+            "W2-T2 的插件工具应已进 catalog：{assembled:?}"
+        );
     }
 
     #[tokio::test]

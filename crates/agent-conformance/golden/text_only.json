@@ -1,0 +1,81 @@
+{
+  "name": "text_only",
+  "description": "纯文本回复：一轮结束，无工具调用（最小基线夹具）",
+  "spec": {
+    "archetype": "coding",
+    "capabilities": {
+      "images": false,
+      "rollback": false,
+      "streaming": true,
+      "subagents": false
+    },
+    "id": "ada-golden",
+    "identity": {
+      "locale": "zh-CN",
+      "name": "夹具产品",
+      "persona": "system.md"
+    },
+    "policies": {
+      "maxSteps": 8,
+      "parallelTools": 1,
+      "toolTimeoutSec": 30
+    },
+    "toolkits": [
+      "core"
+    ]
+  },
+  "threadId": "golden_text_only",
+  "provider": {
+    "id": "golden",
+    "name": "golden",
+    "protocol": "openai_chat",
+    "baseUrl": "http://localhost",
+    "apiKey": "k",
+    "model": "m"
+  },
+  "script": [
+    [
+      {
+        "type": "thinking",
+        "thinking": "先想一下。"
+      },
+      {
+        "type": "text",
+        "text": "你好，我是夹具产品。"
+      },
+      {
+        "type": "done",
+        "stopReason": "stop"
+      }
+    ]
+  ],
+  "expected": {
+    "stepsTaken": 1,
+    "stopReason": "completed",
+    "events": [
+      {
+        "seq": 1,
+        "kind": "turn.started"
+      },
+      {
+        "seq": 2,
+        "kind": "thinking.delta",
+        "text": "先想一下。"
+      },
+      {
+        "seq": 3,
+        "kind": "text.delta",
+        "text": "你好，我是夹具产品。"
+      },
+      {
+        "seq": 4,
+        "kind": "usage"
+      },
+      {
+        "seq": 5,
+        "kind": "turn.finished",
+        "stop": "completed"
+      }
+    ]
+  }
+}

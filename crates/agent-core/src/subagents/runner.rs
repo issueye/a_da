@@ -1,43 +1,70 @@
+//! 子智能体执行器（W4-T6：**并入 `AgentRuntime::run_turn`**）。
+//!
+//! # 为什么必须并入
+//!
+//! 并入前这里有一套**独立的多轮循环**（自己按步数迭代 + 自己的模型流解析 +
+//! 自己的工具分派），也就是仓库里的**第二份引擎**——INV-1「单一引擎」在子智能体侧不成立。
+//! 它带来的实际问题：取消不穿透、工具元数据另有一套判定、审批与回执结构各写一遍。
+//!
+//! 现在隔离性由**装配**决定，而不是靠"另写一个循环"：
+//!
+//! | 隔离维度 | 靠什么保证 |
+//! |---|---|
+//! | 只拿到 profile 人格（AGENTS.md §3） | [`ProfilePrompt`] |
+//! | 上下文一次性、不污染主会话 | [`EphemeralSessionStore`] |
+//! | 只读档位挡写工具（运行期第二道防线） | [`ReadonlyEnforcingGate`] |
+//! | 只装裁切后的工具（第一道防线） | [`filter_subagent_tools`] + `CompositeToolCatalog` |
+//! | 父会话取消**真的**传进来（W4-T3） | `WatchedCancel` → 引擎 `CancelToken` |
+
 use std::collections::HashSet;
-use std::sync::Arc;
-use std::time::Instant;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
+use agent_adapter::cancel::WatchedCancel;
+use agent_adapter::clock::SystemClock;
+use agent_adapter::model::client::NetworkModelClient;
+use agent_adapter::scope::WorkspaceScope;
+use agent_base::domain::{AgentEvent, AgentEventBody, TurnStopReason};
+use agent_base::engine::{AgentRuntime, RunPolicy, TurnRequest};
+use agent_base::ports::{EventSink, Tool};
+use agent_runtime::CompositeToolCatalog;
 use tokio::sync::{mpsc, watch};
-use tracing::warn;
 
-use super::types::{
-    SubagentMode, SubagentProfile, SubagentRunResult, SubagentStepUpdate,
-};
-use crate::ai::{
-    stream_model_chat, ChatCompletionTool, ModelChatOptions, ProviderConfig, StreamDelta,
-};
+use super::ports::{EphemeralSessionStore, ProfilePrompt, ReadonlyEnforcingGate};
+use super::types::{SubagentMode, SubagentProfile, SubagentRunResult, SubagentStepUpdate};
+use crate::ai::ProviderConfig;
 use crate::checkpoint::CheckpointManager;
-use crate::runner::executor::execute_tool_call;
-use crate::runner::prompt::format_messages_for_model;
-use crate::session::AgentMessage;
-use crate::tools::find_tool_descriptor;
 
-/// 基于 ToolDescriptor 的只读安全判定（失败安全原则：未知工具一律视为写操作拦截）
-fn is_tool_readonly(name: &str) -> bool {
-    find_tool_descriptor(name)
-        .map(|d| d.is_readonly())
-        .unwrap_or(false)
-}
+/// 子智能体永远禁止调用的**套娃/递归**工具。
+///
+/// W2-T6 清理：这里原先列了 5 个名字，但其中 4 个（`check_subagent`、
+/// `send_subagent_message`、`resume_subagent`、`await_subagents`）在本仓
+/// **没有任何实现**——它们只存在于这张黑名单里，是纯粹的幽灵名字。
+/// 断言"过滤掉了不存在的工具"是空转断言，所以删掉。
+///
+/// 唯一真实的是 `invoke_subagent`（W4-T5 起它已是一等 `Tool` 且在注册表里）。
+pub const NEVER_FOR_SUBAGENT: &[&str] = &["invoke_subagent"];
 
-/// 子智能体永远禁止调用的套娃/递归工具
-pub const NEVER_FOR_SUBAGENT: &[&str] = &[
-    "invoke_subagent",
-    "check_subagent",
-    "send_subagent_message",
-    "resume_subagent",
-    "await_subagents",
-];
+/// 尚未进 `ToolDescriptor` 注册表、但**确实存在实现**的 legacy 工具名。
+///
+/// W4-T5 之后**已清空**：`invoke_subagent` 现在是一等 `Tool`（`subagents/tool.rs`）
+/// 且描述符在注册表里，所以它不再是"legacy 专属"。
+/// 这张表刻意保留为空——它是"临时豁免必须收敛"的机制：
+/// 一旦某个名字进了注册表，`test_subagent_tool_lists_have_no_ghost_names` 会要求把它从这里删掉。
+pub const LEGACY_ONLY_TOOLS: &[&str] = &[];
 
-/// 解析并过滤子智能体可用工具
-pub fn resolve_subagent_tools(
+/// 按 profile 裁切可用工具（**基于 `ToolDescriptor`**，W4-T6）。
+///
+/// 三层收窄，缺一不可：
+/// 1. **递归黑名单**（`NEVER_FOR_SUBAGENT`）+ profile 自己的黑名单；
+/// 2. **白名单**（支持 `*` 通配）——只收窄不放宽（AGENTS.md §12）；
+/// 3. **只读模式**：非只读工具一律剔除（读的是描述符的 `is_readonly()`，INV-3 单一真源）。
+pub fn filter_subagent_tools(
     profile: &SubagentProfile,
-    all_tools: &[ChatCompletionTool],
-) -> Vec<ChatCompletionTool> {
+    all_tools: &[Arc<dyn Tool>],
+) -> Vec<Arc<dyn Tool>> {
     let allowed_set: HashSet<&str> = profile.allowed_tools.iter().map(|s| s.as_str()).collect();
     let mut disallowed_set: HashSet<&str> = NEVER_FOR_SUBAGENT.iter().copied().collect();
     if let Some(ref list) = profile.disallowed_tools {
@@ -49,17 +76,15 @@ pub fn resolve_subagent_tools(
     all_tools
         .iter()
         .filter(|tool| {
-            let name = tool.function.name.as_str();
-            // 1. 递归黑名单与显式黑名单
+            let desc = tool.descriptor();
+            let name = desc.name.as_str();
             if disallowed_set.contains(name) {
                 return false;
             }
-            // 2. 白名单检查（支持 '*' 通配）
             if !allowed_set.contains("*") && !allowed_set.contains(name) {
                 return false;
             }
-            // 3. 只读安全防护：只读模式严格禁止任何写工具 (AGENTS.md §2)
-            if profile.mode == SubagentMode::Readonly && !is_tool_readonly(name) {
+            if profile.mode == SubagentMode::Readonly && !desc.is_readonly() {
                 return false;
             }
             true
@@ -72,35 +97,152 @@ pub struct RunSubagentOptions {
     pub profile: SubagentProfile,
     pub task: String,
     pub additional_context: Option<String>,
-    pub workspace: std::path::PathBuf,
+    pub workspace: PathBuf,
     pub parent_config: ProviderConfig,
     pub checkpoint_mgr: Option<Arc<CheckpointManager>>,
     pub abort_rx: Option<watch::Receiver<bool>>,
     pub update_tx: Option<mpsc::Sender<SubagentStepUpdate>>,
+    /// 产品的工具包声明（`spec.toolkits`）。
+    ///
+    /// W4-T6：子智能体的工具不再来自 `prompt::builtin_tools()` 那张**手写清单**，
+    /// 而是按产品声明走**同一处装配**（`tools_for_toolkits`），再按 profile 裁切。
+    /// 这样"产品声明了什么能力"与"子智能体能用什么"是同一个真源。
+    pub toolkits: Vec<String>,
+    /// 模型客户端注入点。
+    ///
+    /// 生产路径留 `None` → 用真实的 [`NetworkModelClient`]；
+    /// 测试注入脚本化模型——**注入点存在不等于生产在用替身**（默认值就是真实实现）。
+    pub model: Option<Arc<dyn agent_base::ports::ModelClient>>,
 }
 
-/// 纯 Rust 子智能体隔离执行器
+/// 把引擎的领域事件投影成子智能体进度（W4-T6）。
+///
+/// `EventSink::emit` 是同步的，所以用 `try_send`：阻塞引擎会让"界面消费慢"
+/// 变成"子智能体停摆"，代价远大于丢一条进度。
+struct SubagentProgressSink {
+    tx: Option<mpsc::Sender<SubagentStepUpdate>>,
+    max_steps: usize,
+    summary: Mutex<String>,
+    tool_calls: AtomicUsize,
+    steps: AtomicUsize,
+}
+
+impl SubagentProgressSink {
+    fn new(tx: Option<mpsc::Sender<SubagentStepUpdate>>, max_steps: usize) -> Self {
+        Self {
+            tx,
+            max_steps,
+            summary: Mutex::new(String::new()),
+            tool_calls: AtomicUsize::new(0),
+            steps: AtomicUsize::new(0),
+        }
+    }
+
+    fn summary(&self) -> String {
+        self.summary.lock().expect("子智能体摘要锁中毒").clone()
+    }
+
+    fn tool_calls(&self) -> usize {
+        self.tool_calls.load(Ordering::Relaxed)
+    }
+
+    fn steps(&self) -> usize {
+        self.steps.load(Ordering::Relaxed)
+    }
+
+    fn send(&self, status: &str, action: Option<String>, tool: Option<String>) {
+        let Some(tx) = &self.tx else { return };
+        let _ = tx.try_send(SubagentStepUpdate {
+            thread_id: None,
+            step: self.steps(),
+            max_steps: Some(self.max_steps),
+            status: status.to_string(),
+            current_action: action,
+            tool_call_summary: tool,
+        });
+    }
+}
+
+impl EventSink for SubagentProgressSink {
+    fn emit(&self, event: AgentEvent) {
+        match &event.body {
+            AgentEventBody::TextDelta { text } => {
+                self.summary
+                    .lock()
+                    .expect("子智能体摘要锁中毒")
+                    .push_str(text);
+            }
+            AgentEventBody::ToolCallStarted { name, .. } => {
+                self.tool_calls.fetch_add(1, Ordering::Relaxed);
+                self.send(
+                    "running",
+                    Some(format!("调用工具 {name}")),
+                    Some(name.clone()),
+                );
+            }
+            // 一次模型调用结束 = 一步
+            AgentEventBody::UsageReported { .. } => {
+                self.steps.fetch_add(1, Ordering::Relaxed);
+                self.send("running", Some("思考与规划中...".to_string()), None);
+            }
+            _ => {}
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_result(
+    ok: bool,
+    summary: String,
+    steps: usize,
+    tool_calls: usize,
+    elapsed: Duration,
+    error: Option<String>,
+) -> SubagentRunResult {
+    SubagentRunResult {
+        ok,
+        summary,
+        steps_executed: steps,
+        duration_ms: elapsed.as_millis() as u64,
+        tool_calls_count: tool_calls,
+        output_file: None,
+        error_message: error,
+    }
+}
+
+/// 子智能体隔离执行器（**走 `AgentRuntime::run_turn`**）。
 pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
     let start_time = Instant::now();
     let max_steps = options.profile.max_steps.unwrap_or(25);
 
     if !options.profile.enabled {
-        return SubagentRunResult {
-            ok: false,
-            summary: format!("子智能体 [{}] 已被禁用", options.profile.name),
-            steps_executed: 0,
-            duration_ms: start_time.elapsed().as_millis() as u64,
-            tool_calls_count: 0,
-            output_file: None,
-            error_message: Some("子智能体已被禁用".to_string()),
-        };
+        return build_result(
+            false,
+            format!("子智能体 [{}] 已被禁用", options.profile.name),
+            0,
+            0,
+            start_time.elapsed(),
+            Some("子智能体已被禁用".to_string()),
+        );
     }
 
-    // 1. 构建可用工具列表并进行安全白名单裁切
-    let all_tools = crate::runner::prompt::builtin_tools();
-    let authorized_tools = resolve_subagent_tools(&options.profile, &all_tools);
+    // 1. 工具：按**产品声明**装配（同一处真源）→ 按 profile 裁切
+    let all_tools = match agent_toolkit::tools_for_toolkits(&options.toolkits, &options.workspace) {
+        Ok(t) => t,
+        Err(e) => {
+            return build_result(
+                false,
+                format!("子智能体工具装配失败：{e}"),
+                0,
+                0,
+                start_time.elapsed(),
+                Some(e),
+            )
+        }
+    };
+    let authorized = filter_subagent_tools(&options.profile, &all_tools);
 
-    // 2. 覆盖模型配置（如有）
+    // 2. 模型配置（profile 可覆盖模型名）
     let mut config = options.parent_config.clone();
     if let Some(ref override_cfg) = options.profile.model_override {
         if let Some(ref m) = override_cfg.model {
@@ -108,200 +250,302 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
         }
     }
 
-    // 3. 初始化独立上下文（遵守 AGENTS.md §3：只拿到 profile.system_prompt）
+    // 3. 任务文本（与 legacy 逐字一致：委派任务 + 可选补充上下文 + 收尾要求）
     let mut user_prompt = format!("【委派任务】\n{}", options.task);
     if let Some(ref ctx) = options.additional_context {
         if !ctx.trim().is_empty() {
             user_prompt.push_str(&format!("\n\n【补充上下文/参考信息】\n{}", ctx.trim()));
         }
     }
-    user_prompt.push_str("\n\n请针对上述任务要求，自主使用工具调研或处理。完成后直接给出结构化、高信息密度的最终总结与建议。");
+    user_prompt.push_str(
+        "\n\n请针对上述任务要求，自主使用工具调研或处理。完成后直接给出结构化、高信息密度的最终总结与建议。",
+    );
 
-    let mut history_messages = vec![AgentMessage::User {
-        content: user_prompt,
-        images: None,
-        timestamp: Some(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as i64,
-        ),
-    }];
+    // 4. 装配隔离运行时
+    let sink = Arc::new(SubagentProgressSink::new(options.update_tx.clone(), max_steps));
+    let readonly = options.profile.mode == SubagentMode::Readonly;
+    let model: Arc<dyn agent_base::ports::ModelClient> = options
+        .model
+        .clone()
+        .unwrap_or_else(|| Arc::new(NetworkModelClient::new()));
+    let runtime = AgentRuntime::new(
+        model,
+        Arc::new(CompositeToolCatalog::new(authorized, None)),
+        Arc::new(ReadonlyEnforcingGate::new(readonly)),
+        Arc::new(EphemeralSessionStore::new()),
+        Arc::new(ProfilePrompt::new(options.profile.system_prompt.clone())),
+        Arc::new(WorkspaceScope::new(options.workspace.clone())),
+        Arc::new(SystemClock),
+        RunPolicy {
+            max_steps: Some(max_steps as u32),
+            max_parallel_tools: 1,
+            tool_timeout: Some(Duration::from_secs(120)),
+        },
+    );
 
-    let mut steps_executed = 0;
-    let mut total_tool_calls = 0;
-    let mut final_summary = String::new();
+    // 5. 取消：父会话的停止键必须真的传进引擎（W4-T3）
+    let cancel = match options.abort_rx.clone() {
+        Some(rx) => WatchedCancel::new(rx),
+        None => WatchedCancel::never(),
+    };
 
-    // 4. 独立决策与工具执行流
-    for step in 0..max_steps {
-        steps_executed = step + 1;
+    // 6. 一次性隔离会话
+    let thread_id = format!("subagent_{}", uuid::Uuid::new_v4().simple());
+    let req = TurnRequest::new(&thread_id, config).with_user_prompt(user_prompt);
 
-        if let Some(ref tx) = options.update_tx {
-            let _ = tx
-                .send(SubagentStepUpdate {
-                    thread_id: None,
-                    step: steps_executed,
-                    max_steps: Some(max_steps),
-                    status: "running".to_string(),
-                    current_action: Some("思考与规划中...".to_string()),
-                    tool_call_summary: None,
-                })
-                .await;
+    let outcome = runtime.run_turn(req, sink.as_ref(), &cancel).await;
+
+    let summary = sink.summary();
+    let summary = if summary.trim().is_empty() {
+        "子智能体已完成委派步骤。".to_string()
+    } else {
+        summary
+    };
+    let steps = sink.steps();
+    let tool_calls = sink.tool_calls();
+    let elapsed = start_time.elapsed();
+
+    match outcome {
+        Ok(o) => {
+            let (ok, error) = match o.stop_reason {
+                TurnStopReason::Completed => (true, None),
+                TurnStopReason::BudgetExhausted { limit_steps } => (
+                    false,
+                    Some(format!("子智能体达到步数上限（{limit_steps} 步），未完成收敛")),
+                ),
+                TurnStopReason::Aborted => (false, Some("子智能体被取消".to_string())),
+                TurnStopReason::ModelError => (false, Some("模型调用失败".to_string())),
+                TurnStopReason::Denied => (false, Some("调用被策略拒绝".to_string())),
+            };
+            sink.send(
+                if ok { "done" } else { "failed" },
+                Some("执行完毕".to_string()),
+                None,
+            );
+            build_result(
+                ok,
+                summary,
+                o.steps_taken.max(steps as u32) as usize,
+                tool_calls,
+                elapsed,
+                error,
+            )
         }
+        Err(e) => {
+            sink.send("failed", Some(format!("执行失败：{e}")), None);
+            build_result(false, summary, steps, tool_calls, elapsed, Some(e.to_string()))
+        }
+    }
+}
 
-        let chat_messages =
-            format_messages_for_model(&options.profile.system_prompt, &history_messages);
+#[cfg(test)]
+mod tests {
+    use super::super::builtins::builtin_subagents;
+    use super::*;
 
-        let model_options = ModelChatOptions {
-            tools: Some(authorized_tools.clone()),
-            system_prompt: None,
-            temperature: Some(0.2),
-            effort: None,
-            max_retries: Some(2),
+    /// W4-T6 守门：裁切必须**基于描述符**，且只读档位挡得住写工具。
+    #[test]
+    fn test_filter_uses_descriptors_and_blocks_writes_in_readonly() {
+        let ws = std::path::Path::new("E:/subagent_filter_ws");
+        let all = agent_toolkit::tools_for_toolkits(
+            &["core".to_string(), "fs".to_string(), "command".to_string()],
+            ws,
+        )
+        .expect("工具包可装配");
+
+        let researcher = builtin_subagents()
+            .into_iter()
+            .find(|p| p.id == "researcher")
+            .expect("内置 researcher");
+        assert_eq!(researcher.mode, SubagentMode::Readonly);
+
+        let allowed = filter_subagent_tools(&researcher, &all);
+        let names: Vec<String> = allowed.iter().map(|t| t.descriptor().name.clone()).collect();
+
+        assert!(names.contains(&"read_file".to_string()), "{names:?}");
+        assert!(!names.contains(&"write_file".to_string()), "只读子体不能拿到写工具：{names:?}");
+        assert!(!names.contains(&"edit_file".to_string()), "{names:?}");
+        assert!(!names.contains(&"run_command".to_string()), "{names:?}");
+        // 递归工具永远不给
+        assert!(!names.contains(&"invoke_subagent".to_string()), "{names:?}");
+        // 白名单之外的不给（researcher 没声明 batch_write）
+        assert!(!names.contains(&"batch_write".to_string()), "{names:?}");
+    }
+
+    /// 通配白名单的 profile（general_purpose）在读写模式下拿到写工具，但**永远**拿不到递归工具。
+    #[test]
+    fn test_wildcard_profile_gets_writes_but_never_recursion() {
+        let ws = std::path::Path::new("E:/subagent_filter_ws");
+        let all = agent_toolkit::tools_for_toolkits(&["core".to_string(), "fs".to_string()], ws)
+            .expect("工具包可装配");
+
+        let general = builtin_subagents()
+            .into_iter()
+            .find(|p| p.id == "general_purpose")
+            .expect("内置 general_purpose");
+        assert_eq!(general.mode, SubagentMode::Readwrite);
+
+        let allowed = filter_subagent_tools(&general, &all);
+        let names: Vec<String> = allowed.iter().map(|t| t.descriptor().name.clone()).collect();
+        assert!(names.contains(&"write_file".to_string()), "{names:?}");
+        assert!(!names.contains(&"invoke_subagent".to_string()), "递归必须被黑名单挡住：{names:?}");
+    }
+
+    /// 进度投影：文本累加成摘要、工具调用计数、一次模型调用算一步。
+    #[test]
+    fn test_progress_sink_projects_events() {
+        let (tx, mut rx) = mpsc::channel::<SubagentStepUpdate>(16);
+        let sink = SubagentProgressSink::new(Some(tx), 5);
+
+        sink.emit(AgentEvent::new(1, 0, "sub", AgentEventBody::TextDelta { text: "结论".into() }));
+        sink.emit(AgentEvent::new(2, 0, "sub", AgentEventBody::TextDelta { text: "如下".into() }));
+        sink.emit(AgentEvent::new(
+            3,
+            0,
+            "sub",
+            AgentEventBody::ToolCallStarted {
+                call_id: "c1".into(),
+                name: "read_file".into(),
+                args: serde_json::json!({}),
+            },
+        ));
+        sink.emit(AgentEvent::new(
+            4,
+            0,
+            "sub",
+            AgentEventBody::UsageReported {
+                usage: Default::default(),
+                duration_ms: 5,
+            },
+        ));
+
+        assert_eq!(sink.summary(), "结论如下");
+        assert_eq!(sink.tool_calls(), 1);
+        assert_eq!(sink.steps(), 1);
+
+        // 进度确实发出去了（工具名 + 步骤）
+        let first = rx.try_recv().expect("应有工具进度");
+        assert_eq!(first.tool_call_summary.as_deref(), Some("read_file"));
+        let second = rx.try_recv().expect("应有步骤进度");
+        assert_eq!(second.step, 1);
+        assert_eq!(second.max_steps, Some(5));
+    }
+
+    /// 进度通道满时**丢进度而不是阻塞引擎**（引擎停摆的代价远大于丢一条进度）。
+    #[test]
+    fn test_progress_sink_never_blocks_on_full_channel() {
+        let (tx, _rx) = mpsc::channel::<SubagentStepUpdate>(1);
+        let sink = SubagentProgressSink::new(Some(tx), 3);
+        // 远超容量；只要不 panic/不阻塞就算通过
+        for i in 0..50 {
+            sink.emit(AgentEvent::new(
+                i,
+                0,
+                "sub",
+                AgentEventBody::ToolCallStarted {
+                    call_id: format!("c{i}"),
+                    name: "read_file".into(),
+                    args: serde_json::json!({}),
+                },
+            ));
+        }
+        assert_eq!(sink.tool_calls(), 50, "计数不受丢进度影响");
+    }
+
+    /// **W4-T3 出口判据**：父会话的取消必须真的让子智能体停下来。
+    ///
+    /// 场景刻意做成"子智能体正在跑一条长命令"：取消要连穿三层
+    /// （父会话 → 子智能体引擎 → `run_command` 的进程树），
+    /// 所以这条断言同时验证 **W4-T3**（子智能体取消）与 **W4-T1**（命令中止真接线）。
+    #[tokio::test]
+    async fn test_parent_cancel_stops_the_subagent() {
+        use agent_base::model::{StreamDelta, ToolCallInfo};
+        use agent_base::testing::ScriptedModelClient;
+
+        let sleep_cmd = if cfg!(windows) {
+            "ping 127.0.0.1 -n 20 > nul"
+        } else {
+            "sleep 20"
         };
 
-        let mut stream_rx = stream_model_chat(
-            config.clone(),
-            chat_messages,
-            model_options,
-            options.abort_rx.clone(),
-        )
-        .await;
+        let model = Arc::new(ScriptedModelClient::new(vec![
+            vec![
+                StreamDelta::ToolCall {
+                    call: ToolCallInfo {
+                        id: "c1".into(),
+                        name: "run_command".into(),
+                        args: serde_json::json!({ "command": sleep_cmd, "timeout": 30 }).to_string(),
+                    },
+                },
+                StreamDelta::Done { stop_reason: "tool_calls".into() },
+            ],
+            vec![
+                StreamDelta::Text { text: "不该走到这里".into() },
+                StreamDelta::Done { stop_reason: "stop".into() },
+            ],
+        ]));
 
-        let mut accumulated_text = String::new();
-        let mut accumulated_thinking = String::new();
-        let mut tool_calls = Vec::new();
+        // `general_purpose` 是 Readwrite + 通配白名单 → 能拿到 `run_command`
+        let profile = builtin_subagents()
+            .into_iter()
+            .find(|p| p.id == "general_purpose")
+            .expect("内置 general_purpose");
 
-        while let Some(delta) = stream_rx.recv().await {
-            match delta {
-                StreamDelta::Text { text } => {
-                    accumulated_text.push_str(&text);
-                }
-                StreamDelta::Thinking { thinking } => {
-                    // 思考链必须留住：thinking 模式上游要求随历史原样回传（见 ChatCompletionMessage::reasoning_content）
-                    accumulated_thinking.push_str(&thinking);
-                }
-                StreamDelta::ToolCall { call } => {
-                    tool_calls.push(call);
-                }
-                StreamDelta::Error { error } => {
-                    warn!("[SubagentRunner] stream error: {}", error);
-                }
-                _ => {}
-            }
-        }
+        let (abort_tx, abort_rx) = watch::channel(false);
+        let (update_tx, _update_rx) = mpsc::channel::<SubagentStepUpdate>(16);
 
-        final_summary = accumulated_text.clone();
-
-        // 如果模型没有调用任何工具，代表任务回答完成，直接收敛收尾
-        if tool_calls.is_empty() {
-            break;
-        }
-
-        total_tool_calls += tool_calls.len();
-
-        // 记录助手消息
-        let assistant_tool_calls: Vec<crate::session::ToolCallBlock> = tool_calls
-            .iter()
-            .map(|tc| crate::session::ToolCallBlock {
-                id: tc.id.clone(),
-                name: tc.name.clone(),
-                arguments: serde_json::from_str(&tc.args).unwrap_or(serde_json::Value::Null),
-                raw_arguments: tc.args.clone(),
-            })
-            .collect();
-
-        history_messages.push(AgentMessage::Assistant {
-            content: accumulated_text,
-            thinking: if accumulated_thinking.is_empty() {
-                None
-            } else {
-                Some(accumulated_thinking)
+        let options = RunSubagentOptions {
+            profile,
+            task: "跑一条长命令".to_string(),
+            additional_context: None,
+            workspace: std::env::current_dir().unwrap(),
+            parent_config: ProviderConfig {
+                id: "p".into(),
+                name: "p".into(),
+                protocol: Default::default(),
+                base_url: "http://localhost".into(),
+                api_key: "k".into(),
+                model: "m".into(),
+                max_output_tokens: None,
+                custom_headers: None,
+                proxy_url: None,
             },
-            tool_calls: Some(assistant_tool_calls),
-            stop_reason: Some("tool_calls".to_string()),
-            error_message: None,
-            timestamp: None,
-            usage: None,
-            duration_ms: None,
-            turn_duration_ms: None,
-        });
+            checkpoint_mgr: None,
+            abort_rx: Some(abort_rx),
+            update_tx: Some(update_tx),
+            toolkits: vec!["core".to_string(), "command".to_string()],
+            model: Some(model),
+        };
 
-        // 依次执行工具调用
-        for call in &tool_calls {
-            // 安全双重防线：只读模式拦截
-            if options.profile.mode == SubagentMode::Readonly && !is_tool_readonly(&call.name) {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as i64;
-                let err_text = format!("安全拦截：子智能体 [{}] 为只读模式，严禁调用写工具 [{}]", options.profile.name, call.name);
-                let structured = serde_json::json!({
-                    "status": "error",
-                    "ok": false,
-                    "duration_ms": 0,
-                    "durationMs": 0,
-                    "started_at": now,
-                    "startedAt": now,
-                    "finished_at": now,
-                    "finishedAt": now,
-                    "output": err_text,
-                });
-                let content = serde_json::to_string_pretty(&structured).unwrap_or_else(|_| err_text);
-                let err_msg = AgentMessage::ToolResult {
-                    tool_call_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                    content,
-                    is_error: Some(true),
-                    details: None,
-                    patch: None,
-                    checkpoint_id: None,
-                    timestamp: Some(now),
-                    status: Some("error".to_string()),
-                    duration_ms: Some(0),
-                    started_at: Some(now),
-                    finished_at: Some(now),
-                };
-                history_messages.push(err_msg);
-                continue;
-            }
+        let started = Instant::now();
+        let handle = tokio::spawn(async move { run_subagent(options).await });
+        // 等命令真的跑起来再按"停止键"
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let _ = abort_tx.send(true);
 
-            let result_msg = execute_tool_call(
-                &options.workspace,
-                "subagent_thread",
-                call,
-                options.checkpoint_mgr.as_ref(),
-            )
-            .await;
+        let res = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("取消后子智能体必须及时收尾（取消没穿透）")
+            .expect("任务不应 panic");
+        let elapsed = started.elapsed();
 
-            history_messages.push(result_msg);
-        }
-    }
-
-    if let Some(ref tx) = options.update_tx {
-        let _ = tx
-            .send(SubagentStepUpdate {
-                thread_id: None,
-                step: steps_executed,
-                max_steps: Some(max_steps),
-                status: "done".to_string(),
-                current_action: Some("执行完毕".to_string()),
-                tool_call_summary: None,
-            })
-            .await;
-    }
-
-    SubagentRunResult {
-        ok: true,
-        summary: if final_summary.is_empty() {
-            "子智能体已完成委派步骤。".to_string()
-        } else {
-            final_summary
-        },
-        steps_executed,
-        duration_ms: start_time.elapsed().as_millis() as u64,
-        tool_calls_count: total_tool_calls,
-        output_file: None,
-        error_message: None,
+        assert!(!res.ok, "被取消的子智能体不得报告成功：{:?}", res.summary);
+        assert!(
+            res.error_message
+                .as_deref()
+                .map(|m| m.contains("取消"))
+                .unwrap_or(false),
+            "错误信息应说明是取消：{:?}",
+            res.error_message
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "取消必须立刻生效，而不是等命令跑完（实际 {elapsed:?}）"
+        );
+        assert!(
+            !res.summary.contains("不该走到这里"),
+            "取消后不该继续跑第二轮：{}",
+            res.summary
+        );
     }
 }

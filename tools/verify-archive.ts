@@ -98,10 +98,12 @@ console.log(`\nverify-archive：扫描 ${files.length} 个主干文件（跳过 
     })
   }
   check('主干不存在 TS 侧多轮循环（runAgentLoop）', tsLoop.length === 0, tsLoop)
+  // W3-T4：legacy 主循环已删除。断言从"恰好一处"翻转为"**一处都不许有**"——
+  // 仓库里只剩 agent-base 一份多轮循环（AgentRuntime::run_turn，INV-1）。
   check(
-    'Rust 侧引擎入口恰好一处（fn run_agent_loop）',
-    rustLoop.length === 1,
-    rustLoop.length === 0 ? ['未找到 — 引擎入口丢失？'] : rustLoop.slice(1).map((x) => `重复定义: ${x}`),
+    '主干不存在 legacy 主循环（fn run_agent_loop）',
+    rustLoop.length === 0,
+    rustLoop.map((x) => `残留的 legacy 引擎入口: ${x}`),
   )
 }
 
@@ -174,6 +176,40 @@ console.log(`\nverify-archive：扫描 ${files.length} 个主干文件（跳过 
     if (!existsSync(join(ROOT, p))) details.push(`${p} 缺失`)
   }
   check('归档本体完整', details.length === 0, details)
+}
+
+// 7. 不存在第二份多轮引擎（W4-T6）
+//
+// 可检测的签名（刻意选"具体且不会误报"的形态）：
+//  (a) `crates/agent-core` 里出现**按步数迭代的手写循环**（`for step in`）——
+//      那是"自己再写一个引擎"最典型的写法；
+//  (b) 子智能体执行器**不调用** `run_turn`（说明它又绕开了单一引擎）；
+//  (c) 子智能体执行器还在用 legacy 工具分派 `execute_tool_call`。
+{
+  const details: string[] = []
+  const coreFiles = walk(join(ROOT, 'crates/agent-core/src')).filter((p) => p.endsWith('.rs'))
+
+  for (const p of coreFiles) {
+    const text = readFileSync(p, 'utf8')
+    if (/\bfor\s+step\s+in\b/.test(text)) {
+      details.push(`${rel(p)} 存在按步数迭代的手写循环（for step in）`)
+    }
+  }
+
+  const runnerPath = join(ROOT, 'crates/agent-core/src/subagents/runner.rs')
+  if (existsSync(runnerPath)) {
+    const runner = readFileSync(runnerPath, 'utf8')
+    if (!runner.includes('run_turn(')) {
+      details.push('subagents/runner.rs 没有调用 run_turn（子智能体未并入单一引擎）')
+    }
+    if (runner.includes('execute_tool_call(')) {
+      details.push('subagents/runner.rs 仍在使用 legacy 工具分派 execute_tool_call')
+    }
+  } else {
+    details.push('crates/agent-core/src/subagents/runner.rs 缺失')
+  }
+
+  check('主干不存在第二份多轮引擎', details.length === 0, details)
 }
 
 console.log('')

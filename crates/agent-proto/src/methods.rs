@@ -31,11 +31,12 @@ pub const APPROVAL_DECIDE: &str = "approval.decide";
 pub const QUESTION_ANSWER: &str = "question.answer";
 
 // 工作区与配置
-pub const WORKSPACE_SET: &str = "workspace.set";
+// W5-T2：`workspace.set` / `config.update` 已删除——它们**没有任何 dispatch 臂**
+// （`cargo xtask verify-wiring` 的孤儿方法），前端也从未调用。
+// 按 R3「补实现或删声明」，这里选**删声明**：留着只会让协议文档承诺不存在的能力。
 pub const WORKSPACE_ADD: &str = "workspace.add";
 pub const WORKSPACE_REMOVE: &str = "workspace.remove";
 pub const WORKSPACE_ENTRIES: &str = "workspace.entries";
-pub const CONFIG_UPDATE: &str = "config.update";
 pub const CONFIG_GET: &str = "config.get";
 pub const CONFIG_PRESETS: &str = "config.presets";
 pub const CONFIG_SET_PROVIDER: &str = "config.setProvider";
@@ -94,9 +95,13 @@ pub const THREAD_SET_MODE: &str = "thread.setMode";
 pub const THREAD_SET_WORKSPACE: &str = "thread.setWorkspace";
 pub const THREAD_EDIT_AND_RESEND: &str = "thread.editAndResend";
 pub const THREAD_RETRY: &str = "thread.retry";
-pub const SUBAGENT_RESUME: &str = "subagent.resume";
+// W6-T1：`SUBAGENT_RESUME` 已删除——W4-T6 之后子智能体上下文**刻意是临时的**
+// （`EphemeralSessionStore`：一次性委派，不污染主会话），没有"可恢复"的会话；
+// 前端"恢复执行"按钮也从未拿到 `onResumeSubagent`（父组件不传 → 点了没反应）。
 pub const WORKSPACE_OPEN_PUBLIC: &str = "workspace.openPublic";
-pub const WORKSPACE_RESCAN: &str = "workspace.rescan";
+// W6-T2：`WORKSPACE_RESCAN` 已删除——本仓没有任何工作区缓存可供失效
+// （`list_sessions_for_workspace` 每次直接读盘，`WORKSPACE_ENTRIES` 已是新鲜数据），
+// 因此"重新扫描"没有独立语义；前端也从未调用它。
 pub const QUEUE_CLEAR: &str = "queue.clear";
 pub const QUEUE_PROMOTE: &str = "queue.promote";
 pub const QUEUE_REMOVE: &str = "queue.remove";
@@ -132,13 +137,10 @@ pub const ALL_METHODS: &[&str] = &[
     THREAD_RETRY,
     APPROVAL_DECIDE,
     QUESTION_ANSWER,
-    WORKSPACE_SET,
     WORKSPACE_ADD,
     WORKSPACE_REMOVE,
     WORKSPACE_ENTRIES,
     WORKSPACE_OPEN_PUBLIC,
-    WORKSPACE_RESCAN,
-    CONFIG_UPDATE,
     CONFIG_GET,
     CONFIG_PRESETS,
     CONFIG_SET_PROVIDER,
@@ -180,7 +182,6 @@ pub const ALL_METHODS: &[&str] = &[
     SUBAGENT_PROFILE_LIST,
     SUBAGENT_PROFILE_SET_ENABLED,
     SUBAGENT_PROFILE_DELETE,
-    SUBAGENT_RESUME,
     QUEUE_CLEAR,
     QUEUE_PROMOTE,
     QUEUE_REMOVE,
@@ -204,13 +205,46 @@ mod tests {
         for &m in ALL_METHODS {
             assert!(method_set.insert(m), "发现重复协议方法: {}", m);
         }
-        assert_eq!(ALL_METHODS.len(), 76);
+        // W5-T2：`workspace.set` / `config.update` 删除后 76 → 74；
+        // W6-T1/T2：`subagent.resume` / `workspace.rescan` 删除后 74 → 72
+        assert_eq!(ALL_METHODS.len(), 72);
 
         let mut event_set = HashSet::new();
         for &e in ALL_EVENTS {
             assert!(event_set.insert(e), "发现重复事件主题: {}", e);
         }
         assert_eq!(ALL_EVENTS.len(), 3);
+    }
+
+    /// 解析 Rust 侧 `pub const NAME: &str = "VALUE";`
+    fn parse_rust_consts(src: &str) -> std::collections::BTreeMap<String, String> {
+        let mut out = std::collections::BTreeMap::new();
+        for line in src.lines() {
+            let t = line.trim();
+            let Some(rest) = t.strip_prefix("pub const ") else { continue };
+            let Some((name, rest)) = rest.split_once(':') else { continue };
+            let Some((_, rest)) = rest.split_once('=') else { continue };
+            let value = rest.trim().trim_end_matches(';').trim();
+            if let Some(v) = value.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+                out.insert(name.trim().to_string(), v.to_string());
+            }
+        }
+        out
+    }
+
+    /// 解析 TS 侧 `export const NAME = 'VALUE'`
+    fn parse_ts_consts(src: &str) -> std::collections::BTreeMap<String, String> {
+        let mut out = std::collections::BTreeMap::new();
+        for line in src.lines() {
+            let t = line.trim();
+            let Some(rest) = t.strip_prefix("export const ") else { continue };
+            let Some((name, rest)) = rest.split_once('=') else { continue };
+            let value = rest.trim().trim_end_matches(';').trim();
+            if let Some(v) = value.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
+                out.insert(name.trim().to_string(), v.to_string());
+            }
+        }
+        out
     }
 
     #[test]
@@ -246,15 +280,58 @@ mod tests {
             "spec 与 Rust 常量存在集合差异！孤儿臂或无臂常量不为 0"
         );
 
-        // 验证 TS 客户端类型也包含这 76 个方法
-        let ts_methods_path = manifest_dir.join("client-ts/methods.ts");
-        assert!(ts_methods_path.exists(), "client-ts/methods.ts 必须存在");
-        let ts_content = std::fs::read_to_string(&ts_methods_path).unwrap();
-        for &m in ALL_METHODS {
+        // ── Rust ↔ client-ts 双向逐名逐值对账（W5-T1）──────────────────────────
+        //
+        // 升级原因（旧口径有三个洞）：
+        // 1. **单向**：只查"Rust 的方法值在 TS 文件里出现过"，TS 多出常量不会报；
+        // 2. **子串匹配**：`ts_content.contains("'config.get'")` 在注释里也成立；
+        // 3. **不校验 name↔value 映射**：把 `CONFIG_GET` 的值写成另一个**存在**的方法，
+        //    旧断言照样通过。
+        //
+        // 现在按 `name → value` 映射**双向**比对：改错值、改错名、多加、少加，都会红。
+        let rust_src = std::fs::read_to_string(manifest_dir.join("src/methods.rs")).unwrap();
+        let ts_path = manifest_dir.join("client-ts/methods.ts");
+        assert!(ts_path.exists(), "client-ts/methods.ts 必须存在");
+        let ts_src = std::fs::read_to_string(&ts_path).unwrap();
+
+        let rust_consts = parse_rust_consts(&rust_src);
+        let ts_consts = parse_ts_consts(&ts_src);
+
+        assert!(
+            !rust_consts.is_empty() && !ts_consts.is_empty(),
+            "解析不出常量，对账无效（rust={} ts={}）",
+            rust_consts.len(),
+            ts_consts.len()
+        );
+
+        let only_rust: Vec<&String> = rust_consts
+            .keys()
+            .filter(|k| !ts_consts.contains_key(*k))
+            .collect();
+        assert!(only_rust.is_empty(), "client-ts 缺失这些常量：{only_rust:?}");
+
+        let only_ts: Vec<&String> = ts_consts
+            .keys()
+            .filter(|k| !rust_consts.contains_key(*k))
+            .collect();
+        assert!(only_ts.is_empty(), "client-ts 多出这些常量：{only_ts:?}");
+
+        let mismatched: Vec<String> = rust_consts
+            .iter()
+            .filter_map(|(k, v)| {
+                ts_consts
+                    .get(k)
+                    .filter(|tv| *tv != v)
+                    .map(|tv| format!("{k}: rust={v:?} ts={tv:?}"))
+            })
+            .collect();
+        assert!(mismatched.is_empty(), "常量值不一致：{mismatched:?}");
+
+        // 所有协议方法都必须来自 Rust 常量值（不许把方法值直接写在 ALL_METHODS 里）
+        for m in ALL_METHODS {
             assert!(
-                ts_content.contains(&format!("'{}'", m)),
-                "TS client-ts 缺失协议方法常量: {}",
-                m
+                rust_consts.values().any(|v| v == m),
+                "`{m}` 在 ALL_METHODS 里，但没有对应的 `pub const` 声明"
             );
         }
     }

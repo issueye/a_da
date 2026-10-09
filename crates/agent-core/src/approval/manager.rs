@@ -39,6 +39,20 @@ impl ApprovalManager {
         map.contains_key(tool_item_id)
     }
 
+    /// 撤销一个等待中的审批（超时/中止时清理）。
+    ///
+    /// 为什么需要它：`resolve_approval` 只在**前端真的答复**时移除条目；
+    /// 超时或会话中止走的是别的分支，若不清理就会在 map 里留下永久泄漏的 waiter。
+    /// 幂等：条目不存在时是空操作。
+    pub fn remove_waiter(&self, tool_item_id: &str) {
+        self.waiters.lock().unwrap().remove(tool_item_id);
+    }
+
+    /// 当前等待中的审批数量（诊断/测试用）。
+    pub fn pending_count(&self) -> usize {
+        self.waiters.lock().unwrap().len()
+    }
+
     /// 清理并拒绝所有等待中的审批（例如会话中止时）
     pub fn cancel_all(&self) {
         let mut map = self.waiters.lock().unwrap();

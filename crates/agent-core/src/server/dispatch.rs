@@ -4,16 +4,46 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex, RwLock};
 
 use crate::approval::ApprovalManager;
+use crate::ai::ProviderConfig;
 use crate::checkpoint::CheckpointManager;
 use crate::plugins::PluginManager;
 use crate::protocol::*;
-use crate::runner::{run_agent_loop, AgentLoopEvent};
+use crate::runner::{run_agent_turn, AgentLoopEvent};
 use crate::server::emitter::StateBroadcaster;
 use crate::server::fs_service;
 use crate::session::SessionManager;
 use crate::skills::SkillManager;
 use crate::state::{generate_snapshot, AgentStore};
 use crate::subagents::SubagentManager;
+
+/// 把 `ToolDescriptor` 投影成界面用的内置工具条目。
+///
+/// INV-7：领域描述符只声明"这个工具是什么"，**展示形状由投影层决定**。
+/// 这里只做派生，**不引入任何工具名清单**——一旦引入，界面就会再次广告不存在的工具
+/// （第 6 张名单的教训）。
+///
+/// `label` 用描述符的 `summary`：领域里只有这一份人类可读文本。
+/// `description` 则由声明派生（读写性 / 执行模式 / 审批要求），不另写文案。
+fn builtin_tool_info(d: &agent_base::domain::ToolDescriptor) -> serde_json::Value {
+    use agent_base::domain::{ApprovalPolicy, Execution};
+
+    let kind = if d.is_readonly() { "只读工具" } else { "写入工具" };
+    let exec = match d.execution {
+        Execution::Sequential => "顺序执行",
+        Execution::ParallelSafe => "可并行",
+    };
+    let approval = match &d.approval {
+        ApprovalPolicy::Never => "免审批",
+        _ => "需审批",
+    };
+
+    serde_json::json!({
+        "name": d.name,
+        "label": d.summary,
+        "description": format!("{kind} · {exec} · {approval}"),
+        "isReadOnly": d.is_readonly(),
+    })
+}
 
 /// 解析某个会话的执行工作区。
 ///
@@ -213,6 +243,58 @@ async fn fetch_remote_models(
     Ok(models)
 }
 
+/// W3-T2：宿主注入的**真引擎**及其**必须共用**的单例。
+///
+/// ⚠️ `approval_mgr` 不是可选项：新引擎的审批闸门（`HostApprovalGate`）把 waiter 注册到
+/// 它持有的 `ApprovalManager` 上，而 UI 的"批准/拒绝"经 `APPROVAL_DECIDE` 落到
+/// `Dispatcher.approval_mgr`。两者若是**不同实例**，UI 的答复就永远送不到闸门，
+/// 每次审批都会静默等到超时（默认 300s）。
+pub struct EngineInjection {
+    pub runtime: Arc<agent_base::engine::AgentRuntime>,
+    pub approval_mgr: Arc<ApprovalManager>,
+    /// 产品声明（W3-T6）：握手要**如实**回报这个产品的能力位与身份，
+    /// 而不是回报一份硬编码常量。
+    ///
+    /// 为什么必须带进来：`session.initialize` 是客户端第一个请求，
+    /// 界面据此决定"要不要显示图片按钮、回滚按钮、插件入口"。
+    /// 硬编码的结果是"声明的能力"与"界面看到的"各说各话——
+    /// 这正是本计划要清掉的那类脱钩（P1-7 的同一根因）。
+    pub spec: Arc<agent_runtime::AgentSpec>,
+}
+
+
+/// 把检查点回滚结果转成协议回执（W6-T4）。
+///
+/// 为什么要单独一个函数：三个 `revert_*` 臂原先都**丢弃**结果、统一回 `{ok:true}`——
+/// 界面据此显示"已回滚"，而实际上可能一个文件都没动。
+///
+/// 口径：
+/// - `Some(outcome)` → `ok: true` + **恢复/删除/跳过/失效**四份清单（界面可列出"恢复了哪些文件"）；
+/// - `None` → `ok: false` + 原因（该会话没有对应检查点，**什么都没回滚**）。
+fn revert_response(outcome: Option<crate::checkpoint::RevertOutcome>) -> serde_json::Value {
+    match outcome {
+        Some(o) => serde_json::json!({
+            "ok": true,
+            "restored": o.restored,
+            "deleted": o.deleted,
+            "skipped": o.skipped,
+            "invalidated": o.invalidated,
+            "restoredCount": o.restored.len(),
+            "deletedCount": o.deleted.len(),
+        }),
+        None => serde_json::json!({
+            "ok": false,
+            "reason": "该会话没有可回滚的检查点（什么都没回滚）",
+            "restored": [],
+            "deleted": [],
+            "skipped": [],
+            "invalidated": [],
+            "restoredCount": 0,
+            "deletedCount": 0,
+        }),
+    }
+}
+
 pub struct Dispatcher {
     store: Arc<RwLock<AgentStore>>,
     session_mgr: Arc<SessionManager>,
@@ -226,9 +308,203 @@ pub struct Dispatcher {
     session_id: String,
     abort_senders: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
     running_tasks: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    /// W3-T2：宿主注入的**真引擎**（`AgentRuntime`）。
+    ///
+    /// `None` = 没接线，仍走 legacy 主循环。注入由宿主完成（`agent-host` 装配），
+    /// 因为 `agent-host` 依赖 `agent-core`，反向依赖会成环。
+    /// 走哪条由 `A_DA_ENGINE` 决定（默认 legacy，见 `runner::engine_bridge`）。
+    engine: Option<Arc<agent_base::engine::AgentRuntime>>,
+    /// 产品声明（W3-T6）：握手回报的能力位与身份从这里派生。
+    ///
+    /// `None` = 没注入声明（老调用点/测试）→ 退回 `ServerCapabilities::default()`。
+    product_spec: Option<Arc<agent_runtime::AgentSpec>>,
 }
 
 impl Dispatcher {
+    /// 会话执行泵（**唯一实现**，W6-T4）：跑轮次 → 事件写进 store → 广播 → 消费排队指令。
+    ///
+    /// 为什么必须共用：`THREAD_EDIT_AND_RESEND` 原先自己写了一份残缺版——
+    /// **丢事件**（spawn 一个空循环把 `event_rx` 抽干丢掉）、
+    /// **吞错**（只 `tracing::warn`，客户端拿到 `Ok`）、
+    /// **不可 abort**（`abort_rx: None`）。三处缺陷同源：它没有走这条泵。
+    ///
+    /// 现在两条路径共用本函数——行为只有一份，改一处两边都对。
+    async fn spawn_thread_loop(
+        &self,
+        thread_id: String,
+        first_prompt: Option<String>,
+        provider_config: ProviderConfig,
+    ) {
+        let target_tid_clone_for_insert = thread_id.clone();
+                let store_clone = Arc::clone(&self.store);
+                let broadcaster_clone = self.broadcaster.clone();
+                let abort_senders_clone = Arc::clone(&self.abort_senders);
+                let running_tasks_clone = Arc::clone(&self.running_tasks);
+                let target_tid_clone = thread_id;
+                // W3-T2：把注入的真引擎（若有）带进 drain 循环
+                let engine_clone = self.engine.clone();
+
+                let runner_task = tokio::spawn(async move {
+                    let mut current_prompt: Option<String> = first_prompt;
+                    loop {
+                        let (abort_tx, abort_rx) = watch::channel(false);
+                        abort_senders_clone.lock().await.insert(target_tid_clone.clone(), abort_tx);
+
+                        let (event_tx, mut event_rx) = mpsc::channel::<AgentLoopEvent>(128);
+                        let tid = target_tid_clone.clone();
+                        let prompt = current_prompt.take();
+                        let p_cfg = provider_config.clone();
+                        // 每轮取一份引擎克隆：`async move` 会吞掉捕获值，
+                        // 直接在闭包里 `.clone()` 会把外层那份也 move 走（循环第二轮就报错）。
+                        let engine_for_turn = engine_clone.clone();
+
+                        let loop_handle = tokio::spawn(async move {
+                            // W3-T2：统一入口——按 `A_DA_ENGINE` 与是否注入引擎决定走哪条。
+                            if let Err(e) = run_agent_turn(
+                                engine_for_turn,
+                                &tid,
+                                prompt.as_deref(),
+                                p_cfg,
+                                event_tx,
+                                Some(abort_rx),
+                            ).await {
+                                tracing::warn!("轮次执行失败: {e}");
+                            }
+                        });
+
+                        while let Some(event) = event_rx.recv().await {
+                            let mut store = store_clone.write().await;
+                            match event {
+                                AgentLoopEvent::Thinking { text } => {
+                                    store.append_thinking_delta(&target_tid_clone, &text);
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.mark_dirty();
+                                    }
+                                }
+                                AgentLoopEvent::TextDelta { text } => {
+                                    store.append_assistant_delta(&target_tid_clone, &text);
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.mark_dirty();
+                                    }
+                                }
+                                AgentLoopEvent::ToolCallStarted { name, id, args } => {
+                                    store.start_tool_call(&target_tid_clone, &id, &name, &args);
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.broadcast_immediate().await;
+                                    }
+                                }
+                                AgentLoopEvent::ToolCallFinished { name: _, id, ok, output, duration_ms, started_at, finished_at, status: _ } => {
+                                    store.finish_tool_call(&target_tid_clone, &id, ok, output, duration_ms, started_at, finished_at);
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.broadcast_immediate().await;
+                                    }
+                                }
+                                AgentLoopEvent::ToolAwaitingQuestion { id, question } => {
+                                    store.set_tool_awaiting_question(&target_tid_clone, &id, question);
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.broadcast_immediate().await;
+                                    }
+                                }
+                                // W3-T3：审批请求 → 工具卡片进入"等待批准"，界面据此渲染批准/拒绝按钮
+                                AgentLoopEvent::ApprovalRequested { id, tool } => {
+                                    store.set_tool_waiting_approval(&target_tid_clone, &id, &tool);
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.broadcast_immediate().await;
+                                    }
+                                }
+                                AgentLoopEvent::AssistantStats { usage, duration_ms, turn_duration_ms } => {
+                                    store.set_assistant_stats(
+                                        &target_tid_clone,
+                                        usage,
+                                        duration_ms,
+                                        turn_duration_ms,
+                                    );
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.mark_dirty();
+                                    }
+                                }
+                                AgentLoopEvent::TurnFinished { .. } => {
+                                    drop(store);
+                                    break;
+                                }
+                                AgentLoopEvent::Error { message } => {
+                                    store.append_assistant_delta(&target_tid_clone, &format!("\n\n**请求异常**：{message}"));
+                                    store.push_log("error", format!("Agent 执行异常: {message}"), None);
+                                    drop(store);
+                                    break;
+                                }
+                            }
+                        }
+
+                        let _ = loop_handle.await;
+
+                        // 收尾并闭合本轮卡片状态
+                        {
+                            let mut store = store_clone.write().await;
+                            store.end_thinking(&target_tid_clone);
+                            if let Some(t) = store.get_thread_mut(&target_tid_clone) {
+                                for item in t.items.iter_mut() {
+                                    if let Item::Assistant { streaming, .. } = item {
+                                        *streaming = None;
+                                    }
+                                }
+                                if let Some(Item::Thinking { text, .. }) = t.items.last() {
+                                    if text.trim().is_empty() {
+                                        t.items.pop();
+                                    }
+                                }
+                            }
+                        }
+
+                        // 如果该会话已被主动停止（用户点击了中止），则不再消费队列
+                        {
+                            let store = store_clone.read().await;
+                            if !store.is_thread_running(&target_tid_clone) {
+                                break;
+                            }
+                        }
+
+                        // 检查会话队列中是否还有待执行的排队指令
+                        let next_item = {
+                            let mut store = store_clone.write().await;
+                            store.pop_next_queued(&target_tid_clone)
+                        };
+
+                        if let Some(queued) = next_item {
+                            let mut store = store_clone.write().await;
+                            store.add_user_message_with_images(&target_tid_clone, &queued.text, queued.images);
+                            drop(store);
+                            if let Some(ref bc) = broadcaster_clone {
+                                bc.broadcast_immediate().await;
+                            }
+                            current_prompt = Some(queued.text);
+                        } else {
+                            // 对话队列已清空，退出 drain 循环
+                            break;
+                        }
+                    }
+
+                    // 整个执行链（含排队消息）全部完成，统一收尾
+                    abort_senders_clone.lock().await.remove(&target_tid_clone);
+                    running_tasks_clone.lock().await.remove(&target_tid_clone);
+                    let mut store = store_clone.write().await;
+                    store.finish_turn(&target_tid_clone);
+                    drop(store);
+                    if let Some(ref bc) = broadcaster_clone {
+                        bc.broadcast_immediate().await;
+                    }
+                });
+
+                self.running_tasks.lock().await.insert(target_tid_clone_for_insert, runner_task);
+    }
+
     pub fn new(
         store: Arc<RwLock<AgentStore>>,
         session_mgr: Arc<SessionManager>,
@@ -252,7 +528,46 @@ impl Dispatcher {
             session_id: uuid::Uuid::new_v4().to_string(),
             abort_senders: Arc::new(Mutex::new(HashMap::new())),
             running_tasks: Arc::new(Mutex::new(HashMap::new())),
+            engine: None,
+            product_spec: None,
         }
+    }
+
+    /// W3-T2：注入真引擎（`AgentRuntime`）。宿主装配层（`agent-host`）构造后传进来。
+    ///
+    /// 保持 builder 风格：既有调用点与测试**一行不改**，只有真正要切引擎的宿主才调它。
+    pub fn with_engine(mut self, engine: Arc<agent_base::engine::AgentRuntime>) -> Self {
+        self.engine = Some(engine);
+        self
+    }
+
+    /// 同上，但接受 `Option`——宿主"有就注入、没有就保持 legacy"的形态。
+    ///
+    /// ⚠️ 这里**只取 `runtime`**：`approval_mgr` 必须由调用方在构造 `Dispatcher` 时就传对
+    /// （见 [`EngineInjection`] 的说明），事后替换会留下"闸门挂在旧表上"的坑。
+    pub fn pipe_engine(
+        mut self,
+        injection: Option<EngineInjection>,
+    ) -> Self {
+        if let Some(i) = injection {
+            self.engine = Some(i.runtime);
+            // W3-T6：声明一起带进来，握手才能如实回报能力位
+            self.product_spec = Some(i.spec);
+        }
+        self
+    }
+
+    /// 只注入产品声明（W3-T6）：用于"没有引擎也要如实回报能力位"的场景与测试。
+    pub fn with_product_spec(mut self, spec: Arc<agent_runtime::AgentSpec>) -> Self {
+        self.product_spec = Some(spec);
+        self
+    }
+
+    /// 是否已注入真引擎。
+    ///
+    /// W3-T4 之后**必须**为 `true`：legacy 主循环已删除，"没引擎"不再是可运行状态。
+    pub fn has_engine(&self) -> bool {
+        self.engine.is_some()
     }
 
     pub async fn dispatch(
@@ -284,17 +599,44 @@ impl Dispatcher {
                     ));
                 }
 
+                // W3-T6：能力位与产品身份**从产品声明派生**，不再硬编码。
+                //
+                // 判据（`cargo xtask verify-spec` 的同一根因）：声明了 `rollback: false`
+                // 的产品，握手就必须回 `rollback: false`——否则界面会显示一个
+                // 这个产品根本没有的能力。
+                let (capabilities, product) = match self.product_spec.as_ref() {
+                    Some(spec) => (
+                        ServerCapabilities {
+                            images: spec.capabilities.images,
+                            rollback: spec.capabilities.rollback,
+                            plugins: spec.capabilities.plugins,
+                            // `hooks` / `resync` 目前**如实为 false**：机制未落地
+                            // （hooks 点位为 0，见 unfinished-features.md）。
+                            // 不许因为"设计里有"就报 true。
+                            hooks: false,
+                            resync: false,
+                            events: agent_proto::ServerEventsCapability {
+                                granularity: "coarse".to_string(),
+                                snapshot_seq: true,
+                            },
+                        },
+                        Some(agent_proto::ProductInfo {
+                            id: spec.id.clone(),
+                            name: spec.identity.name.clone(),
+                            archetype: spec.archetype.clone(),
+                            persona: Some(spec.identity.persona.clone()),
+                        }),
+                    ),
+                    // 没注入声明（老调用点/测试）：退回默认值
+                    None => (ServerCapabilities::default(), None),
+                };
+
                 let init_res = InitializeResult {
                     session_id: self.session_id.clone(),
                     protocol_version: PROTOCOL_VERSION.to_string(),
                     host: HostInfo { pid: self.host_pid },
-                    capabilities: ServerCapabilities::default(),
-                    product: Some(agent_proto::ProductInfo {
-                        id: "ada-coding".to_string(),
-                        name: "a_da 编程助手".to_string(),
-                        archetype: "coding".to_string(),
-                        persona: Some("你是一个严谨且专业的 AI 编程助手，负责代码编辑、终端指令执行与代码库维护。".to_string()),
-                    }),
+                    capabilities,
+                    product,
                 };
                 serde_json::to_value(init_res).map_err(|e| ProtocolError::internal_error(e.to_string()))
             }
@@ -500,7 +842,6 @@ impl Dispatcher {
                 // 首次启动该会话：注入用户消息，标记为运行态并启动 drain 连续执行循环
                 store.add_user_message_with_images(&target_tid, &text, images);
                 store.set_thread_running(&target_tid, true);
-                let ws = PathBuf::from(thread_workspace(&store, &target_tid));
                 let provider_config = store.provider.clone();
                 drop(store);
 
@@ -508,164 +849,9 @@ impl Dispatcher {
                     bc.broadcast_immediate().await;
                 }
 
-                let session_mgr_clone = Arc::clone(&self.session_mgr);
-                let checkpoint_mgr_clone = Arc::clone(&self.checkpoint_mgr);
-                let store_clone = Arc::clone(&self.store);
-                let broadcaster_clone = self.broadcaster.clone();
-                let abort_senders_clone = Arc::clone(&self.abort_senders);
-                let running_tasks_clone = Arc::clone(&self.running_tasks);
-                let target_tid_clone = target_tid.clone();
-
-                let runner_task = tokio::spawn(async move {
-                    let mut current_prompt: Option<String> = Some(text.to_string());
-                    loop {
-                        let (abort_tx, abort_rx) = watch::channel(false);
-                        abort_senders_clone.lock().await.insert(target_tid_clone.clone(), abort_tx);
-
-                        let (event_tx, mut event_rx) = mpsc::channel::<AgentLoopEvent>(128);
-                        let tid = target_tid_clone.clone();
-                        let prompt = current_prompt.take();
-                        let session_mgr = Arc::clone(&session_mgr_clone);
-                        let checkpoint_mgr = Arc::clone(&checkpoint_mgr_clone);
-                        let p_cfg = provider_config.clone();
-                        let ws_clone = ws.clone();
-
-                        let loop_handle = tokio::spawn(async move {
-                            run_agent_loop(
-                                &ws_clone,
-                                &tid,
-                                prompt.as_deref(),
-                                p_cfg,
-                                session_mgr,
-                                checkpoint_mgr,
-                                event_tx,
-                                Some(abort_rx),
-                            ).await
-                        });
-
-                        while let Some(event) = event_rx.recv().await {
-                            let mut store = store_clone.write().await;
-                            match event {
-                                AgentLoopEvent::Thinking { text } => {
-                                    store.append_thinking_delta(&target_tid_clone, &text);
-                                    drop(store);
-                                    if let Some(ref bc) = broadcaster_clone {
-                                        bc.mark_dirty();
-                                    }
-                                }
-                                AgentLoopEvent::TextDelta { text } => {
-                                    store.append_assistant_delta(&target_tid_clone, &text);
-                                    drop(store);
-                                    if let Some(ref bc) = broadcaster_clone {
-                                        bc.mark_dirty();
-                                    }
-                                }
-                                AgentLoopEvent::ToolCallStarted { name, id, args } => {
-                                    store.start_tool_call(&target_tid_clone, &id, &name, &args);
-                                    drop(store);
-                                    if let Some(ref bc) = broadcaster_clone {
-                                        bc.broadcast_immediate().await;
-                                    }
-                                }
-                                AgentLoopEvent::ToolCallFinished { name: _, id, ok, output, duration_ms, started_at, finished_at, status: _ } => {
-                                    store.finish_tool_call(&target_tid_clone, &id, ok, output, duration_ms, started_at, finished_at);
-                                    drop(store);
-                                    if let Some(ref bc) = broadcaster_clone {
-                                        bc.broadcast_immediate().await;
-                                    }
-                                }
-                                AgentLoopEvent::ToolAwaitingQuestion { id, question } => {
-                                    store.set_tool_awaiting_question(&target_tid_clone, &id, question);
-                                    drop(store);
-                                    if let Some(ref bc) = broadcaster_clone {
-                                        bc.broadcast_immediate().await;
-                                    }
-                                }
-                                AgentLoopEvent::AssistantStats { usage, duration_ms, turn_duration_ms } => {
-                                    store.set_assistant_stats(
-                                        &target_tid_clone,
-                                        usage,
-                                        duration_ms,
-                                        turn_duration_ms,
-                                    );
-                                    drop(store);
-                                    if let Some(ref bc) = broadcaster_clone {
-                                        bc.mark_dirty();
-                                    }
-                                }
-                                AgentLoopEvent::TurnFinished { .. } => {
-                                    drop(store);
-                                    break;
-                                }
-                                AgentLoopEvent::Error { message } => {
-                                    store.append_assistant_delta(&target_tid_clone, &format!("\n\n**请求异常**：{message}"));
-                                    store.push_log("error", format!("Agent 执行异常: {message}"), None);
-                                    drop(store);
-                                    break;
-                                }
-                            }
-                        }
-
-                        let _ = loop_handle.await;
-
-                        // 收尾并闭合本轮卡片状态
-                        {
-                            let mut store = store_clone.write().await;
-                            store.end_thinking(&target_tid_clone);
-                            if let Some(t) = store.get_thread_mut(&target_tid_clone) {
-                                for item in t.items.iter_mut() {
-                                    if let Item::Assistant { streaming, .. } = item {
-                                        *streaming = None;
-                                    }
-                                }
-                                if let Some(Item::Thinking { text, .. }) = t.items.last() {
-                                    if text.trim().is_empty() {
-                                        t.items.pop();
-                                    }
-                                }
-                            }
-                        }
-
-                        // 如果该会话已被主动停止（用户点击了中止），则不再消费队列
-                        {
-                            let store = store_clone.read().await;
-                            if !store.is_thread_running(&target_tid_clone) {
-                                break;
-                            }
-                        }
-
-                        // 检查会话队列中是否还有待执行的排队指令
-                        let next_item = {
-                            let mut store = store_clone.write().await;
-                            store.pop_next_queued(&target_tid_clone)
-                        };
-
-                        if let Some(queued) = next_item {
-                            let mut store = store_clone.write().await;
-                            store.add_user_message_with_images(&target_tid_clone, &queued.text, queued.images);
-                            drop(store);
-                            if let Some(ref bc) = broadcaster_clone {
-                                bc.broadcast_immediate().await;
-                            }
-                            current_prompt = Some(queued.text);
-                        } else {
-                            // 对话队列已清空，退出 drain 循环
-                            break;
-                        }
-                    }
-
-                    // 整个执行链（含排队消息）全部完成，统一收尾
-                    abort_senders_clone.lock().await.remove(&target_tid_clone);
-                    running_tasks_clone.lock().await.remove(&target_tid_clone);
-                    let mut store = store_clone.write().await;
-                    store.finish_turn(&target_tid_clone);
-                    drop(store);
-                    if let Some(ref bc) = broadcaster_clone {
-                        bc.broadcast_immediate().await;
-                    }
-                });
-
-                self.running_tasks.lock().await.insert(target_tid.clone(), runner_task);
+                self
+                    .spawn_thread_loop(target_tid.clone(), Some(text.to_string()), provider_config)
+                    .await;
 
                 Ok(serde_json::json!({ "accepted": true }))
             }
@@ -801,7 +987,10 @@ impl Dispatcher {
                     .or_else(|| params.get("cardId"))
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 checkpointId 或 cardId 参数"))?;
-                let _outcome = self.checkpoint_mgr.revert_checkpoint(thread_id, checkpoint_id)
+                // W6-T4：把**真实回滚结果**回传，而不是丢弃后回一个 `{ok:true}`。
+                // `None` = 该会话没有对应检查点 → 什么都没回滚，必须如实说，
+                // 否则界面会显示"已回滚"而文件其实没动。
+                let outcome = self.checkpoint_mgr.revert_checkpoint(thread_id, checkpoint_id)
                     .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
 
                 let mut store = self.store.write().await;
@@ -820,7 +1009,7 @@ impl Dispatcher {
                     bc.broadcast_immediate().await;
                 }
 
-                Ok(serde_json::json!({ "ok": true }))
+                Ok(revert_response(outcome))
             }
 
             CHANGE_REVERT_FILE => {
@@ -830,7 +1019,7 @@ impl Dispatcher {
                 let file_path = params.get("path")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 path 参数"))?;
-                let _outcome = self.checkpoint_mgr.revert_file(thread_id, Path::new(file_path))
+                let outcome = self.checkpoint_mgr.revert_file(thread_id, Path::new(file_path))
                     .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
 
                 let mut store = self.store.write().await;
@@ -851,14 +1040,14 @@ impl Dispatcher {
                     bc.broadcast_immediate().await;
                 }
 
-                Ok(serde_json::json!({ "ok": true }))
+                Ok(revert_response(outcome))
             }
 
             CHANGE_REVERT_ALL => {
                 let thread_id = params.get("threadId")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
-                let _outcome = self.checkpoint_mgr.revert_all(thread_id)
+                let outcome = self.checkpoint_mgr.revert_all(thread_id)
                     .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
 
                 let mut store = self.store.write().await;
@@ -875,7 +1064,7 @@ impl Dispatcher {
                     bc.broadcast_immediate().await;
                 }
 
-                Ok(serde_json::json!({ "ok": true }))
+                Ok(revert_response(outcome))
             }
 
             DEBUG_HOST_INFO => {
@@ -889,36 +1078,48 @@ impl Dispatcher {
             }
 
             STATS_PROMPT_CHARS => {
+                // W6-T2：原先返回**编造的** `{systemChars: 1200, toolSpecsChars: 800}`——
+                // 界面拿到的"实测值"其实是两个常量，与当前提示词毫无关系。
+                //
+                // 现在从**真源**算：
+                // - 系统提示词长度 ← `PromptSource`（装配期注入的那一份）；
+                // - 工具规格长度 ← `ToolCatalog` 的描述符 schema JSON 长度之和。
+                //
+                // 用 `chars().count()` 而不是 `len()`：字段名是 `Chars`，且中文下
+                // UTF-8 字节数会虚高 3 倍（界面按字符数展示）。
+                let engine = self.engine.as_ref().ok_or_else(|| {
+                    ProtocolError::internal_error("未装配引擎，无法统计提示词长度")
+                })?;
+
+                let system_chars = engine.prompt.system_prompt().chars().count();
+                let tool_specs_chars: usize = engine
+                    .tools
+                    .descriptors()
+                    .iter()
+                    .map(|d| {
+                        serde_json::to_string(&d.schema)
+                            .map(|s| s.chars().count())
+                            .unwrap_or(0)
+                    })
+                    .sum();
+
                 Ok(serde_json::json!({
-                    "systemChars": 1200,
-                    "toolSpecsChars": 800
+                    "systemChars": system_chars,
+                    "toolSpecsChars": tool_specs_chars,
+                    "totalChars": system_chars + tool_specs_chars,
                 }))
             }
 
             PLUGIN_BUILTIN_CATALOG => {
-                Ok(serde_json::json!([
-                    { "name": "list_files", "label": "列出文件", "description": "遍历并列出指定目录下的文件与子目录结构", "isReadOnly": true },
-                    { "name": "read_file", "label": "读取文件", "description": "安全读取工作区内的代码或文本文件内容", "isReadOnly": true },
-                    { "name": "search_files", "label": "搜索文件", "description": "在工作区文件中快速全局搜索指定文本或模式", "isReadOnly": true },
-                    { "name": "find_symbol", "label": "查找符号", "description": "按名字查找函数/类/结构体等定义的位置与签名", "isReadOnly": true },
-                    { "name": "read_url_content", "label": "读取网页", "description": "抓取技术文档与开源库链接内容并提取为 Markdown", "isReadOnly": true },
-                    { "name": "todo", "label": "任务清单", "description": "管理多步骤编码任务的进度与状态", "isReadOnly": true },
-                    { "name": "Skill", "label": "加载技能", "description": "按需加载专业技能规范与操作流程指南（SKILL.md）", "isReadOnly": true },
-                    { "name": "invoke_subagent", "label": "委派子智能体", "description": "委派专项任务给隔离运行的专用子智能体", "isReadOnly": true },
-                    { "name": "check_subagent", "label": "查询子智能体", "description": "查询异步子智能体的运行状态与总结报告", "isReadOnly": true },
-                    { "name": "send_subagent_message", "label": "智能体通讯", "description": "向子智能体发送消息以动态纠偏或唤醒续跑", "isReadOnly": true },
-                    { "name": "resume_subagent", "label": "恢复子智能体工作", "description": "恢复被中断的子智能体，让它从上次的状态与上下文继续推进", "isReadOnly": true },
-                    { "name": "await_subagents", "label": "等待子智能体", "description": "挂起等待子智能体送回结论，替代反复轮询查询", "isReadOnly": true },
-                    { "name": "notify_parent", "label": "唤醒上级智能体", "description": "子智能体把结论或待决策问题送回主智能体（仅子智能体可用）", "isReadOnly": true },
-                    { "name": "write_file", "label": "写入文件", "description": "在工作区创建新文件或覆盖已有文件", "isReadOnly": false },
-                    { "name": "edit_file", "label": "编辑文件", "description": "通过精准替换文本修改已有代码文件", "isReadOnly": false },
-                    { "name": "run_command", "label": "执行命令", "description": "在项目工作区根目录下执行终端命令", "isReadOnly": false },
-                    { "name": "run_background", "label": "后台命令", "description": "后台启动长运行命令（dev server 等），立即返回任务 id", "isReadOnly": false },
-                    { "name": "check_task", "label": "查看后台任务", "description": "查询后台任务的状态与输出", "isReadOnly": true },
-                    { "name": "kill_task", "label": "停止后台任务", "description": "终止后台任务及其子进程", "isReadOnly": false },
-                    { "name": "manage_tool", "label": "工具管理", "description": "在 Create 模式下自发编写、更新与管理工具扩展插件", "isReadOnly": false },
-                    { "name": "manage_skill", "label": "技能管理", "description": "在 Create 模式下自发创建、更新与管理技能规范 (SKILL.md)", "isReadOnly": false }
-                ]))
+                // 单一真源（W2-T5）：直接由 `ToolDescriptor` 注册表**投影**，不在这里抄清单。
+                // 第 6 张名单正是"界面广告了注册表里不存在的工具"的根因——
+                // `verify-wiring` 审计 B 会盯着这一段，确保它始终是派生的。
+                Ok(serde_json::Value::Array(
+                    agent_toolkit::registry::standard_tool_descriptors()
+                        .iter()
+                        .map(builtin_tool_info)
+                        .collect(),
+                ))
             }
 
             CONFIG_GET => {
@@ -1456,40 +1657,43 @@ impl Dispatcher {
             THREAD_EDIT_AND_RESEND => {
                 let thread_id = params.get("threadId")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
+                    .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?
+                    .to_string();
                 let text = params.get("text")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ProtocolError::invalid_params("缺少 text 参数"))?;
+                    .ok_or_else(|| ProtocolError::invalid_params("缺少 text 参数"))?
+                    .to_string();
 
-                let store = self.store.read().await;
-                let ws = PathBuf::from(thread_workspace(&store, thread_id));
-                let provider_config = store.provider.clone();
-                drop(store);
+                // W6-T4：编辑重发走**与 thread.start 同一条执行泵**。
+                //
+                // 修掉的三处缺陷（原先自己写了一份残缺版）：
+                // 1. **丢事件**：它另 spawn 一个 `while let Some(_e) = rx.recv()` 把事件抽干丢掉，
+                //    于是界面既看不到流式文本也看不到工具卡片，只看到会话"卡住"；
+                // 2. **吞错**：`run_agent_turn` 的错误只 `tracing::warn`，客户端拿到 `Ok(Null)`；
+                // 3. **不可 abort**：`abort_rx: None`，用户点"停止"对这个轮次无效。
+                //
+                // 现在这些都由泵统一处理：事件写进 store 并广播、错误进 `Error` 事件、
+                // `abort_tx` 注册进 `abort_senders`（`THREAD_ABORT` 能停到它）。
+                let provider_config = {
+                    let mut store = self.store.write().await;
+                    if store.is_thread_running(&thread_id) {
+                        return Ok(serde_json::json!({
+                            "accepted": false,
+                            "reason": "会话正在运行中"
+                        }));
+                    }
+                    store.set_thread_running(&thread_id, true);
+                    store.provider.clone()
+                };
 
-                let session_mgr = Arc::clone(&self.session_mgr);
-                let checkpoint_mgr = Arc::clone(&self.checkpoint_mgr);
-                let (event_tx, mut event_rx) = mpsc::channel::<AgentLoopEvent>(64);
-                let tid = thread_id.to_string();
-                let prompt = text.to_string();
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
 
-                tokio::spawn(async move {
-                    let _ = run_agent_loop(
-                        &ws,
-                        &tid,
-                        Some(&prompt),
-                        provider_config,
-                        session_mgr,
-                        checkpoint_mgr,
-                        event_tx,
-                        None,
-                    ).await;
-                });
+                self.spawn_thread_loop(thread_id, Some(text), provider_config).await;
 
-                tokio::spawn(async move {
-                    while let Some(_event) = event_rx.recv().await {}
-                });
-
-                Ok(serde_json::Value::Null)
+                // 与 `thread.start` 同口径：**已受理**（真正完成由事件流通知）
+                Ok(serde_json::json!({ "accepted": true }))
             }
 
             THREAD_RETRY => {
@@ -1528,7 +1732,6 @@ impl Dispatcher {
                 }
 
                 store.set_thread_running(&target_tid, true);
-                let ws = PathBuf::from(thread_workspace(&store, &target_tid));
                 let provider_config = store.provider.clone();
                 drop(store);
 
@@ -1536,13 +1739,13 @@ impl Dispatcher {
                     bc.broadcast_immediate().await;
                 }
 
-                let session_mgr_clone = Arc::clone(&self.session_mgr);
-                let checkpoint_mgr_clone = Arc::clone(&self.checkpoint_mgr);
                 let store_clone = Arc::clone(&self.store);
                 let broadcaster_clone = self.broadcaster.clone();
                 let abort_senders_clone = Arc::clone(&self.abort_senders);
                 let running_tasks_clone = Arc::clone(&self.running_tasks);
                 let target_tid_clone = target_tid.clone();
+                // W3-T2：把注入的真引擎（若有）带进 drain 循环
+                let engine_clone = self.engine.clone();
 
                 let runner_task = tokio::spawn(async move {
                     let mut current_prompt: Option<String> = None;
@@ -1553,22 +1756,23 @@ impl Dispatcher {
                         let (event_tx, mut event_rx) = mpsc::channel::<AgentLoopEvent>(128);
                         let tid = target_tid_clone.clone();
                         let prompt = current_prompt.take();
-                        let session_mgr = Arc::clone(&session_mgr_clone);
-                        let checkpoint_mgr = Arc::clone(&checkpoint_mgr_clone);
                         let p_cfg = provider_config.clone();
-                        let ws_clone = ws.clone();
+                        // 每轮取一份引擎克隆：`async move` 会吞掉捕获值，
+                        // 直接在闭包里 `.clone()` 会把外层那份也 move 走（循环第二轮就报错）。
+                        let engine_for_turn = engine_clone.clone();
 
                         let loop_handle = tokio::spawn(async move {
-                            run_agent_loop(
-                                &ws_clone,
+                            // W3-T2：统一入口——按 `A_DA_ENGINE` 与是否注入引擎决定走哪条。
+                            if let Err(e) = run_agent_turn(
+                                engine_for_turn,
                                 &tid,
                                 prompt.as_deref(),
                                 p_cfg,
-                                session_mgr,
-                                checkpoint_mgr,
                                 event_tx,
                                 Some(abort_rx),
-                            ).await
+                            ).await {
+                                tracing::warn!("轮次执行失败: {e}");
+                            }
                         });
 
                         while let Some(event) = event_rx.recv().await {
@@ -1604,6 +1808,14 @@ impl Dispatcher {
                                 }
                                 AgentLoopEvent::ToolAwaitingQuestion { id, question } => {
                                     store.set_tool_awaiting_question(&target_tid_clone, &id, question);
+                                    drop(store);
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.broadcast_immediate().await;
+                                    }
+                                }
+                                // W3-T3：审批请求 → 工具卡片进入"等待批准"，界面据此渲染批准/拒绝按钮
+                                AgentLoopEvent::ApprovalRequested { id, tool } => {
+                                    store.set_tool_waiting_approval(&target_tid_clone, &id, &tool);
                                     drop(store);
                                     if let Some(ref bc) = broadcaster_clone {
                                         bc.broadcast_immediate().await;
@@ -1913,10 +2125,6 @@ impl Dispatcher {
                 let mut store = self.store.write().await;
                 let pub_ws = store.public_workspace.clone();
                 store.workspace.project = pub_ws;
-                Ok(serde_json::Value::Null)
-            }
-
-            WORKSPACE_RESCAN => {
                 Ok(serde_json::Value::Null)
             }
 
@@ -2244,15 +2452,6 @@ impl Dispatcher {
                 Ok(serde_json::json!({ "ok": ok }))
             }
 
-            SUBAGENT_RESUME => {
-                let sub_tid = params
-                    .get("subagentThreadId")
-                    .or_else(|| params.get("threadId"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                Ok(serde_json::json!({ "threadId": sub_tid, "ok": true }))
-            }
-
             _ => Err(ProtocolError::method_not_found(method)),
         }
     }
@@ -2261,6 +2460,184 @@ impl Dispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── W6-T4：回滚回执必须带真实文件清单 ────────────────────────────────────
+
+    #[test]
+    fn test_revert_response_carries_the_restored_file_list() {
+        let outcome = crate::checkpoint::RevertOutcome {
+            restored: vec!["a.rs".to_string(), "b.rs".to_string()],
+            deleted: vec!["c.tmp".to_string()],
+            skipped: vec!["d.bin".to_string()],
+            invalidated: vec!["ck_1".to_string()],
+        };
+        let v = revert_response(Some(outcome));
+
+        assert_eq!(v.get("ok").and_then(|b| b.as_bool()), Some(true));
+        let restored: Vec<&str> = v
+            .get("restored")
+            .and_then(|r| r.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(restored, vec!["a.rs", "b.rs"], "必须回传恢复的文件清单");
+        assert_eq!(v.get("restoredCount").and_then(|c| c.as_u64()), Some(2));
+        assert_eq!(v.get("deletedCount").and_then(|c| c.as_u64()), Some(1));
+    }
+
+    /// 没有检查点 → **如实说没回滚**，不许回 `{ok:true}` 骗界面。
+    #[test]
+    fn test_revert_response_reports_nothing_reverted() {
+        let v = revert_response(None);
+        assert_eq!(
+            v.get("ok").and_then(|b| b.as_bool()),
+            Some(false),
+            "什么都没回滚时不得报 ok"
+        );
+        assert!(
+            v.get("reason").and_then(|r| r.as_str()).unwrap_or("").contains("什么都没回滚"),
+            "{v}"
+        );
+        assert_eq!(v.get("restoredCount").and_then(|c| c.as_u64()), Some(0));
+    }
+
+    // ── W6-T4：抗体——"把事件抽干丢掉"的循环不许再出现 ──────────────────────
+
+    /// 编辑重发原先自己 spawn 一个空循环把 `event_rx` 抽干丢弃，
+    /// 于是界面看不到任何流式输出。这条断言钉住那个形态不再出现。
+    ///
+    /// 为什么用源码断言：它是**结构性缺陷**（"事件被丢掉"），
+    /// 而行为断言只能在有引擎+模型时才能观察到；源码断言在毫秒内守住这条线。
+    ///
+    /// 只扫**生产段**：`include_str!` 会把本测试自身的字面量也算进去，
+    /// 不切掉测试段的话断言会自己把自己判红（踩过一次）。
+    #[test]
+    fn test_no_event_discarding_drain_loop() {
+        let src = include_str!("dispatch.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
+
+        let discarded_events = prod.contains("while let Some(_event) = event_rx");
+        let discarded_events_short = prod.contains("while let Some(_e) = event_rx");
+        assert!(
+            !discarded_events && !discarded_events_short,
+            "不得再有把事件抽干丢弃的循环（W6-T4 修掉的缺陷）"
+        );
+
+        // 反向：编辑重发必须走共用执行泵
+        assert!(
+            prod.contains("self.spawn_thread_loop("),
+            "编辑重发必须与 thread.start 共用同一条执行泵"
+        );
+    }
+
+    /// **W3-T6 出口判据**：`session.initialize` 的能力位与产品身份必须
+    /// **从产品声明派生**，而不是硬编码。
+    ///
+    /// 用 `ada-skeleton` 的声明做样本：它声明 `rollback: false` 且**没有** `plugins`，
+    /// 而 `ServerCapabilities::default()` 是 `rollback: true, plugins: true`——
+    /// 所以"派生"与"硬编码"在这份声明上**结果不同**，断言才有意义。
+    #[tokio::test]
+    async fn test_handshake_capabilities_come_from_the_product_declaration() {
+        let spec = agent_runtime::AgentSpec::from_json_str(
+            r#"{
+            "id": "ada-skeleton",
+            "archetype": "assistant",
+            "identity": { "name": "骨架助手", "persona": "最小骨架测试助手。", "locale": "zh-CN" },
+            "toolkits": ["core"],
+            "capabilities": { "images": false, "streaming": true, "rollback": false, "subagents": false },
+            "policies": { "maxSteps": 10, "parallelTools": 1, "toolTimeoutSec": 30 }
+        }"#,
+        )
+        .expect("骨架声明应可解析");
+
+        let store = Arc::new(RwLock::new(AgentStore::new("E:/test".to_string())));
+        let dispatcher = Dispatcher::new(
+            store,
+            Arc::new(SessionManager::new(Some(std::env::temp_dir().join("a_da_test_home")))),
+            Arc::new(CheckpointManager::new(Some(std::env::temp_dir().join("a_da_test_home")))),
+            Arc::new(SubagentManager::new()),
+            Arc::new(ApprovalManager::new()),
+            Arc::new(PluginManager::new()),
+            Arc::new(SkillManager::new()),
+            None,
+        )
+        .with_product_spec(Arc::new(spec));
+
+        let res = dispatcher
+            .dispatch(
+                "session.initialize",
+                serde_json::json!({
+                    "protocolVersion": "1.0",
+                    "client": { "name": "test", "version": "0.0.1", "platform": "test" }
+                }),
+            )
+            .await
+            .expect("握手应成功");
+
+        let caps = res.get("capabilities").expect("应有 capabilities");
+        assert_eq!(
+            caps.get("rollback").and_then(|v| v.as_bool()),
+            Some(false),
+            "声明 rollback=false → 握手必须回 false（硬编码的 default 是 true）"
+        );
+        assert_eq!(
+            caps.get("plugins").and_then(|v| v.as_bool()),
+            Some(false),
+            "声明里没有 plugins → 必须回 false（硬编码的 default 是 true）"
+        );
+        assert_eq!(caps.get("images").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(
+            caps.get("hooks").and_then(|v| v.as_bool()),
+            Some(false),
+            "hooks 机制未落地 → 如实 false，不许因为设计里有就报 true"
+        );
+
+        // 产品身份同样来自声明
+        let product = res.get("product").expect("应有 product");
+        assert_eq!(product.get("id").and_then(|v| v.as_str()), Some("ada-skeleton"));
+        assert_eq!(
+            product.get("name").and_then(|v| v.as_str()),
+            Some("骨架助手")
+        );
+        assert_eq!(
+            product.get("archetype").and_then(|v| v.as_str()),
+            Some("assistant")
+        );
+    }
+
+    /// 没注入声明时退回默认值（老调用点/测试的兼容路径）。
+    #[tokio::test]
+    async fn test_handshake_without_spec_falls_back_to_defaults() {
+        let store = Arc::new(RwLock::new(AgentStore::new("E:/test".to_string())));
+        let dispatcher = Dispatcher::new(
+            store,
+            Arc::new(SessionManager::new(Some(std::env::temp_dir().join("a_da_test_home")))),
+            Arc::new(CheckpointManager::new(Some(std::env::temp_dir().join("a_da_test_home")))),
+            Arc::new(SubagentManager::new()),
+            Arc::new(ApprovalManager::new()),
+            Arc::new(PluginManager::new()),
+            Arc::new(SkillManager::new()),
+            None,
+        );
+
+        let res = dispatcher
+            .dispatch(
+                "session.initialize",
+                serde_json::json!({
+                    "protocolVersion": "1.0",
+                    "client": { "name": "test", "version": "0.0.1", "platform": "test" }
+                }),
+            )
+            .await
+            .expect("握手应成功");
+
+        let caps = res.get("capabilities").expect("应有 capabilities");
+        assert_eq!(
+            caps.get("rollback").and_then(|v| v.as_bool()),
+            Some(true),
+            "无声明时退回 default（rollback: true）"
+        );
+        assert!(res.get("product").is_none(), "无声明时不捏造产品身份");
+    }
 
     #[test]
     fn test_thread_workspace_follows_thread_binding() {
@@ -2337,6 +2714,63 @@ mod tests {
         }
     }
 
+    /// W2-T5 守门：内置工具目录必须与 `ToolDescriptor` 注册表**逐名相等**。
+    ///
+    /// 这是第 6 张名单的**行为断言**：目录里多一个不存在的工具（界面广告假工具）
+    /// 或少一个真实工具（用户看不到）都必须在这里红。结构侧的对应检查在
+    /// `cargo xtask verify-wiring` 的审计 B（确保这一段始终是**派生**的）。
+    #[tokio::test]
+    async fn test_builtin_catalog_matches_registry_exactly() {
+        use std::collections::BTreeSet;
+
+        let store = Arc::new(tokio::sync::RwLock::new(AgentStore::new("E:/codes/default_ws".to_string())));
+        let dispatcher = Dispatcher::new(
+            store,
+            Arc::new(crate::session::SessionManager::new(Some(std::path::PathBuf::from("E:/codes/default_ws")))),
+            Arc::new(crate::checkpoint::CheckpointManager::new(None)),
+            Arc::new(crate::subagents::SubagentManager::new()),
+            Arc::new(crate::approval::ApprovalManager::new()),
+            Arc::new(crate::plugins::PluginManager::new()),
+            Arc::new(crate::skills::SkillManager::new()),
+            None,
+        );
+
+        let catalog = dispatcher
+            .dispatch(crate::protocol::methods::PLUGIN_BUILTIN_CATALOG, serde_json::json!({}))
+            .await
+            .expect("plugin.builtinCatalog 分发失败");
+
+        let items = catalog.as_array().expect("目录必须是数组");
+        let got: BTreeSet<String> = items
+            .iter()
+            .map(|v| v["name"].as_str().expect("每条必须有 name").to_string())
+            .collect();
+        let expected: BTreeSet<String> = agent_toolkit::registry::standard_tool_descriptors()
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+
+        assert_eq!(
+            got, expected,
+            "内置工具目录必须与注册表逐名相等（不许是第二张名单）"
+        );
+
+        // 界面需要的四个字段都要在，且 isReadOnly 必须与描述符一致
+        for item in items {
+            for field in ["name", "label", "description", "isReadOnly"] {
+                assert!(!item[field].is_null(), "条目缺少字段 {field}: {item}");
+            }
+            let name = item["name"].as_str().unwrap();
+            let desc = agent_toolkit::registry::find_tool_descriptor(name)
+                .unwrap_or_else(|| panic!("目录里的 `{name}` 必须在注册表里"));
+            assert_eq!(
+                item["isReadOnly"].as_bool().unwrap(),
+                desc.is_readonly(),
+                "`{name}` 的只读性与描述符不一致"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn test_approval_decide_resolves_pending_question() {
         let store = Arc::new(tokio::sync::RwLock::new(AgentStore::new("E:/codes/default_ws".to_string())));
@@ -2395,7 +2829,16 @@ mod tests {
             plugin_mgr,
             skill_mgr,
             None,
-        );
+        )
+        // W3-T6：产品身份与能力位**从声明派生**。这条测试原先断言的是
+        // 硬编码常量（`ada-coding` / `a_da 编程助手`），所以它无法发现
+        // "声明改了、握手没跟上"。现在注入真实声明再断言。
+        .with_product_spec(std::sync::Arc::new(
+            agent_runtime::AgentSpec::from_json_str(include_str!(
+                "../../../../products/ada-coding/agent.spec.json"
+            ))
+            .expect("ada-coding 声明应可解析"),
+        ));
 
         // 1. 测试 session.initialize 能力位握手返回（M3-T4）
         let init_params = serde_json::json!({

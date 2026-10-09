@@ -71,4 +71,30 @@ mod tests {
         let store = InMemorySessionStore::new();
         verify_session_store_contract(&store).await.expect("SessionStore 契约验证必须通过");
     }
+
+    /// W1-T7：**真实实现**（`FsSessionStore`，JSONL 落盘）也要过同一份契约。
+    ///
+    /// 与替身的差别正是这里要抓的：真实实现会走路径散列、文件创建、逐行 JSON 往返，
+    /// 任何一处格式漂移都会让"追加后读回不一致"暴露出来。
+    #[tokio::test]
+    async fn test_real_fs_session_store_conformance() {
+        use agent_adapter::store::FsSessionStore;
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!(
+            "a_da_conf_session_{}_{}",
+            std::process::id(),
+            nanos
+        ));
+
+        let store = FsSessionStore::new(&root, "E:/conformance_project");
+        verify_session_store_contract(&store)
+            .await
+            .expect("真实 FsSessionStore 必须通过 SessionStore 契约");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -3,8 +3,13 @@
 //! 现状（计划 §1.3）：`should_ask_approval` 只在测试里被调用、`ApprovalManager::register_waiter`
 //! 唯一调用点在 `#[cfg(test)]` 里、`config.approval` 只写不读——整条闸门在权威路径上**没有接线**。
 //! 端口化之后，"引擎必须调用它"成为可断言的契约（合规套件：每次受约束调用前恰好调用一次）。
+//!
+//! W1-T6 的端口变更：策略判定从引擎移进端口（[`ApprovalGate::needs_approval`]）。
+//! 理由是引擎在 `agent-base`（零产品名词、不依赖适配器），而档位解释、危险命令二次确认、
+//! 免问白名单、`ApprovalPolicy::Named` 命名的策略**全在适配器**。引擎自己判
+//! `Named(_) => true` 就是把"名字"当成了"永远要问"，既不准确也把策略劈成了两处。
 
-use crate::domain::{DenialKind, FailDirection};
+use crate::domain::{ApprovalPolicy, DenialKind, FailDirection};
 use crate::ports::tools::BoxFuture;
 use crate::ports::CancelToken;
 
@@ -15,9 +20,7 @@ pub struct ApprovalRequest {
     pub tool: String,
     pub args: serde_json::Value,
     pub is_write: bool,
-    /// 当前审批档位（`auto` / `ask` / `readonly`）；语义由实现解释
-    pub mode: String,
-    /// 为什么要问（命中哪条危险模式等）
+    /// 为什么要问（命中哪条危险模式等）。**可选提示**：权威理由由实现自己判定。
     pub reason: Option<String>,
 }
 
@@ -58,6 +61,20 @@ impl ApprovalOutcome {
 pub trait ApprovalGate: Send + Sync {
     /// 拿不到判定依据时往哪边倒（INV-4）。默认实现是 `Closed`，但**必须是显式取值**。
     fn direction(&self) -> FailDirection;
+
+    /// 这次调用要不要问人？**策略归实现**（AGENTS.md §14）。
+    ///
+    /// 实现要解释的东西：当前档位（`auto`/`ask`/`readonly`）、危险命令二次确认、
+    /// 免问白名单，以及 [`ApprovalPolicy::Named`] 命名的策略。
+    /// 引擎只把工具名、声明与参数递过来——它**不解释策略**（否则策略会被劈成两处）。
+    ///
+    /// 返回 `true` 时引擎必须接着调 [`Self::decide`]。
+    fn needs_approval<'a>(
+        &'a self,
+        tool: &'a str,
+        policy: &'a ApprovalPolicy,
+        args: &'a serde_json::Value,
+    ) -> BoxFuture<'a, bool>;
 
     /// 判断一次调用是否需要人工确认；需要则挂起等待，不需要则直接返回 Policy/User 允许。
     fn decide<'a>(

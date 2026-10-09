@@ -8,9 +8,17 @@ description = "AGENT BASE 适配器：模型供应商、会话存储、插件运
 
 [dependencies]
 agent-base = { workspace = true }
+# 审批策略需要 `ApprovalMode`（线协议枚举）与工具真源
+agent-proto = { workspace = true }
+# 作用域适配器复用 agent-toolkit 的路径沙箱判定（唯一真源，见 W1-T1）：
+# 不在适配器里重写一份 `..`/realpath/junction 把关逻辑。
+agent-toolkit = { workspace = true }
 anyhow = { workspace = true }
 futures-util = { workspace = true }
 reqwest = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }

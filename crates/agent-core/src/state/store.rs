@@ -687,6 +687,37 @@ impl AgentStore {
         }
     }
 
+    /// 标记工具调用**正在等待用户批准**（W3-T3）。
+    ///
+    /// 界面按 `status == "waiting_approval"` 渲染"批准/拒绝"按钮
+    /// （`tauri-ui/src/components/Transcript.tsx:683` 的 `isAwaiting`），
+    /// 点按钮发 `approval.decide` → `Dispatcher.approval_mgr.resolve_approval(...)`
+    /// → 唤醒引擎的审批闸门。**前端无需任何改动**（R7）。
+    ///
+    /// 与 [`Self::set_tool_awaiting_question`] 的区别：那个是"等用户回答提问"（`ask_user`），
+    /// 这个是"等用户批准/拒绝这次工具调用"；界面对两者的处理相同（同一组按钮），
+    /// 但状态字符串不同，便于区分与诊断。
+    pub fn set_tool_waiting_approval(&mut self, thread_id: &str, call_id: &str, tool: &str) {
+        if let Some(t) = self.get_thread_mut(thread_id) {
+            for item in t.items.iter_mut().rev() {
+                if let Item::Tool { call_id: cid, status, details, .. } = item {
+                    if cid == call_id {
+                        *status = "waiting_approval".to_string();
+                        let mut det = details.take().unwrap_or_else(|| serde_json::json!({}));
+                        if let Some(obj) = det.as_object_mut() {
+                            obj.insert(
+                                "approval".to_string(),
+                                serde_json::json!({ "tool": tool, "pending": true }),
+                            );
+                        }
+                        *details = Some(det);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     /// 完成当前轮次
     pub fn finish_turn(&mut self, thread_id: &str) {
         self.end_thinking(thread_id);
@@ -736,6 +767,64 @@ mod tests {
         assert_eq!(store.appearance, "light");
 
         let _ = std::fs::remove_dir_all(temp_home);
+    }
+
+    /// W3-T3 守门：审批请求必须把工具卡片置为界面认得的 **`waiting_approval`**。
+    ///
+    /// 前端按这个字符串决定是否渲染"批准/拒绝"按钮
+    /// （`tauri-ui/src/components/Transcript.tsx:683` 的 `isAwaiting`）。
+    /// 改了状态字符串而没同步前端，审批按钮就会**静默消失**——所以这里钉死它。
+    #[test]
+    fn test_waiting_approval_status_is_the_ui_contract() {
+        let mut store = AgentStore::new("E:/codes/ui_contract_ws".to_string());
+        let tid = store.create_thread(Some("界面契约".to_string()), None);
+        let tid = tid.as_str();
+        store.add_user_message(tid, "执行工具");
+        store.start_tool_call(tid, "call_ui_1", "gated_tool", "{}");
+
+        // 起始状态是运行中
+        let status_of = |s: &AgentStore| -> String {
+            s.threads
+                .iter()
+                .find(|t| t.id == tid)
+                .and_then(|t| {
+                    t.items.iter().find_map(|i| match i {
+                        Item::Tool { call_id, status, .. } if call_id == "call_ui_1" => {
+                            Some(status.clone())
+                        }
+                        _ => None,
+                    })
+                })
+                .expect("工具项应存在")
+        };
+        assert_eq!(status_of(&store), "running");
+
+        store.set_tool_waiting_approval(tid, "call_ui_1", "gated_tool");
+        assert_eq!(
+            status_of(&store),
+            "waiting_approval",
+            "界面按这个字符串渲染批准/拒绝按钮（前端契约）"
+        );
+
+        // details 里带上审批信息，便于界面/诊断展示
+        let details = store
+            .threads
+            .iter()
+            .find(|t| t.id == tid)
+            .and_then(|t| {
+                t.items.iter().find_map(|i| match i {
+                    Item::Tool { call_id, details, .. } if call_id == "call_ui_1" => details.clone(),
+                    _ => None,
+                })
+            })
+            .expect("工具项应有 details");
+        assert_eq!(details["approval"]["tool"], "gated_tool");
+        assert_eq!(details["approval"]["pending"], true);
+
+        // 收尾必须覆盖等待态（否则卡片会一直停在"等批准"）
+        store.finish_tool_call(tid, "call_ui_1", true, Some("done".into()), Some(1), Some(0), Some(1));
+        let after = status_of(&store);
+        assert_ne!(after, "waiting_approval", "工具完成后不得仍停在等待批准：{after}");
     }
 }
 

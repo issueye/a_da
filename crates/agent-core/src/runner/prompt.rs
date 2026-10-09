@@ -165,19 +165,15 @@ pub fn get_all_tools_for_workspace(workspace: &str) -> Vec<ChatCompletionTool> {
     tools
 }
 
-/// 构造系统提示词
+/// 构造系统提示词。
+///
+/// **兼容 shim（计划 R6）**：人格文本的**排版规则**已按 W1-T3 搬到
+/// `agent_adapter::prompt::compose_system_prompt`（唯一真源）。这里只保留
+/// "采集哪些扩展已启用"这件事——因为插件扫描器 `PluginManager` 还在 `agent-core`，
+/// 把它也搬走属于 `plugin/` 适配器的任务，不在本批次。
+///
+/// 行为与搬运前**逐字节一致**，由 `test_prompt_shim_matches_adapter_composer_byte_for_byte` 钉住。
 pub fn build_system_prompt(workspace: &str) -> String {
-    let mut prompt = format!(
-        "你是 a-da，一个由 Rust 原生核心驱动的高性能 AI 编程智能体。\n\
-         当前工作区根目录为：{}\n\
-         请遵循以下指引：\n\
-         1. 谨慎修改代码。在修改未知文件前，先用 list_files 或 read_file 确认文件结构。\n\
-         2. 对于局部小修改，优先使用 edit_file 工具以保持代码精准并生成 Unified Diff。\n\
-         3. 执行终端命令时注意避免执行可能导致死循环的阻塞指令。\n\
-         4. 所有的回复都使用清晰、专业的中文表达。",
-        workspace
-    );
-
     let plugin_mgr = crate::plugins::PluginManager::new();
     let plugins = plugin_mgr.scan_plugins(Some(workspace));
     let mut enabled_extensions = Vec::new();
@@ -186,19 +182,11 @@ pub fn build_system_prompt(workspace: &str) -> String {
             continue;
         }
         for t in p.tools {
-            enabled_extensions.push(format!("{}: {}", t.name, t.description));
+            enabled_extensions.push((t.name, t.description));
         }
     }
 
-    if !enabled_extensions.is_empty() {
-        prompt.push_str("\n\n当前已启用的扩展工具与额外能力：\n");
-        for ext in enabled_extensions {
-            prompt.push_str(&format!("- {}\n", ext));
-        }
-        prompt.push_str("当用户询问你的能力或需要相关操作时，你具备上述扩展工具所赋予的能力（如联网搜索等）。");
-    }
-
-    prompt
+    agent_adapter::prompt::compose_system_prompt(workspace, &enabled_extensions)
 }
 
 /// 将会话流水消息转换为 OpenAI 模型请求消息序列
@@ -288,4 +276,48 @@ pub fn format_messages_for_model(
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// W1-T3 守门：提示词排版必须**只有一处真源**（`agent_adapter::prompt::compose_system_prompt`）。
+    ///
+    /// 为什么这条断言重要：提示词文本一变，模型看到的东西就变了（历史回放、截图、
+    /// 用户预期全都会漂）。所以"搬运"这件事必须可证明没有改行为。
+    ///
+    /// 用**不存在的固定工作区**：扫描不到工作区级插件；`cfg(test)` 下 `app_home`
+    /// 是临时目录（也不存在），所以扩展列表 = 9 个内置插件的工具，**确定性可断言**。
+    #[test]
+    fn test_prompt_shim_delegates_to_adapter_composer() {
+        const WS: &str = "E:/a_da_prompt_test_ws";
+
+        let shim = build_system_prompt(WS);
+        let static_only = agent_adapter::prompt::compose_system_prompt(WS, &[]);
+
+        // 1) 静态段必须**逐字节来自适配器**——证明 agent-core 里没有第二份排版
+        assert!(
+            shim.starts_with(&static_only),
+            "shim 的静态段必须来自适配器的纯函数（不许在 agent-core 里另写一份）"
+        );
+
+        // 2) 内置插件恒存在 → 必须追加扩展段落，且标题/结尾与搬运前一致
+        assert!(
+            shim.len() > static_only.len(),
+            "内置插件应当产生扩展段落（否则说明扫描链路断了）"
+        );
+        assert!(shim.contains("\n\n当前已启用的扩展工具与额外能力：\n"));
+        assert!(shim.ends_with("你具备上述扩展工具所赋予的能力（如联网搜索等）。"));
+
+        // 3) 静态文本冻结：改提示词必须是有意的改动，不是搬运事故
+        assert!(
+            static_only.starts_with(
+                "你是 a-da，一个由 Rust 原生核心驱动的高性能 AI 编程智能体。\n\
+                 当前工作区根目录为：E:/a_da_prompt_test_ws\n\
+                 请遵循以下指引：\n"
+            ),
+            "人格/指引文本被改动了：{static_only}"
+        );
+    }
 }

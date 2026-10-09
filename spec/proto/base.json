@@ -71,7 +71,6 @@
     { "name": "question.answer", "kind": "command", "since": "1.0", "description": "答复交互提问" },
     { "name": "queue.clear", "kind": "command", "since": "1.0", "description": "清空用户待发指令队列" },
     { "name": "queue.promote", "kind": "command", "since": "1.0", "description": "置顶队列指令" },
-    { "name": "queue.remove", "kind": "command", "since": "1.0", "description": "移除指定排队指令" },
-    { "name": "subagent.resume", "kind": "command", "since": "1.0", "description": "唤醒或恢复挂起的子智能体" }
+    { "name": "queue.remove", "kind": "command", "since": "1.0", "description": "移除指定排队指令" }
   ]
 }

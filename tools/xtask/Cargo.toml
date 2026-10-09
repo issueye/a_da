@@ -13,3 +13,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+# 接线审计闸（verify-spec / compat / verify-wiring）需要读真源：
+# - agent-toolkit：直接调 standard_tool_descriptors()，避免在 xtask 里另抄一份工具名单
+# - serde_json：解析 spec/proto/*.json 与 products/*/agent.spec.json
+agent-toolkit = { workspace = true }
+serde_json = { workspace = true }

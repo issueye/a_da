@@ -9,17 +9,22 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::watch;
 
-use super::fs_tools::ToolResult;
+use super::fs_tools::{ToolFailure, ToolResult};
 use super::sandbox::check_workspace_sandbox;
 
 
 const DEFAULT_TIMEOUT_S: u64 = 120;
 const MAX_TIMEOUT_S: u64 = 600;
 const MAX_BUFFER_BYTES: usize = 1024 * 1024; // 1MB 内存滑动窗口保护
+/// 轮次取消的轮询间隔（W4-T1）。
+///
+/// `CancelToken` 端口只有轮询式 `is_cancelled()`，没有"等它发生"的入口
+/// （加方法属端口变更，需单独排任务）。50ms 对"用户按停止键"完全够用。
+pub(crate) const CANCEL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// 在 Windows 上强制终结进程树
 #[cfg(windows)]
-fn kill_process_tree(pid: u32) {
+pub(crate) fn kill_process_tree(pid: u32) {
     let _ = std::process::Command::new("taskkill")
         .args(["/F", "/T", "/PID", &pid.to_string()])
         .creation_flags(0x08000000) // CREATE_NO_WINDOW
@@ -27,14 +32,14 @@ fn kill_process_tree(pid: u32) {
 }
 
 #[cfg(not(windows))]
-fn kill_process_tree(pid: u32) {
+pub(crate) fn kill_process_tree(pid: u32) {
     let _ = std::process::Command::new("kill")
         .args(["-9", &format!("-{}", pid)])
         .output();
 }
 
 /// 将过长的输出按滑动窗口截断，保留头尾
-fn truncate_buffer(buf: &str) -> String {
+pub(crate) fn truncate_buffer(buf: &str) -> String {
     if buf.len() <= MAX_BUFFER_BYTES {
         return buf.to_string();
     }
@@ -153,11 +158,14 @@ pub async fn run_command(
 
             match exit_res {
                 Ok(status) if status.success() => ToolResult::success(combined_output),
-                Ok(status) => ToolResult::error(format!(
-                    "命令非零退出（退出码 {}）\n{}",
-                    status.code().unwrap_or(-1),
-                    combined_output
-                )),
+                Ok(status) => ToolResult::failed(
+                    ToolFailure::NonZeroExit,
+                    format!(
+                        "命令非零退出（退出码 {}）\n{}",
+                        status.code().unwrap_or(-1),
+                        combined_output
+                    ),
+                ),
                 Err(e) => ToolResult::error(format!("等待命令退出失败: {}", e)),
             }
         }
@@ -165,7 +173,11 @@ pub async fn run_command(
             if let Some(pid) = child_pid {
                 kill_process_tree(pid);
             }
-            ToolResult::error(format!("命令执行超时（超过 {} 秒）", timeout_duration.as_secs()))
+            // W4-T2：结构化原因，不靠输出措辞
+            ToolResult::failed(
+                ToolFailure::Timeout,
+                format!("命令执行超时（超过 {} 秒）", timeout_duration.as_secs()),
+            )
         }
         _ = async {
             if let Some(rx) = &mut abort_rx {
@@ -180,7 +192,8 @@ pub async fn run_command(
             if let Some(pid) = child_pid {
                 kill_process_tree(pid);
             }
-            ToolResult::error("用户中止了命令执行。")
+            // W4-T2：结构化原因（原先上层靠 `output.contains("取消")` 猜）
+            ToolResult::failed(ToolFailure::Aborted, "用户中止了命令执行。")
         }
     }
 }
@@ -206,5 +219,34 @@ mod tests {
         let result = run_command(&ws, cmd, None, Some(1), None).await;
         assert!(!result.ok);
         assert!(result.output.contains("命令执行超时"));
+        // W4-T2：失败原因必须**结构化**给出，而不是靠上层解析输出措辞
+        assert_eq!(
+            result.failure(),
+            Some(ToolFailure::Timeout),
+            "超时必须带 ToolFailure::Timeout"
+        );
+    }
+
+    /// W4-T2：非零退出与"其它失败"必须能被区分开。
+    #[tokio::test]
+    async fn test_non_zero_exit_is_structurally_reported() {
+        let ws = std::env::current_dir().unwrap();
+        let result = run_command(&ws, "exit 7", None, Some(10), None).await;
+        assert!(!result.ok);
+        assert_eq!(result.failure(), Some(ToolFailure::NonZeroExit));
+
+        // 参数/IO 类失败归 Other
+        let bad_cwd = run_command(&ws, "echo x", Some("../../../../Windows"), Some(10), None).await;
+        assert!(!bad_cwd.ok);
+        assert_eq!(bad_cwd.failure(), Some(ToolFailure::Other));
+    }
+
+    /// 成功路径**不带**失败原因（否则上层无法用 `failure()` 判成功）。
+    #[tokio::test]
+    async fn test_success_has_no_failure_reason() {
+        let ws = std::env::current_dir().unwrap();
+        let result = run_command(&ws, "echo ok", None, Some(10), None).await;
+        assert!(result.ok);
+        assert_eq!(result.failure(), None);
     }
 }

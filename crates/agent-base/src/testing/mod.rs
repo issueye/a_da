@@ -9,7 +9,6 @@ use std::sync::Mutex;
 
 use crate::domain::AgentEvent;
 use crate::ports::{AppHome, CancelToken, Clock, EventSink};
-
 /// 确定性时钟：时间只在测试要求时前进。
 pub struct FixedClock {
     now_ms: AtomicI64,
@@ -142,7 +141,7 @@ impl CancelToken for ManualCancel {
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::domain::{AgentError, AgentMessage, DenialKind, FailDirection, ToolCall, ToolDescriptor, ToolReceipt};
+use crate::domain::{AgentError, AgentMessage, ApprovalPolicy, DenialKind, FailDirection, ToolCall, ToolDescriptor, ToolReceipt};
 use crate::model::StreamDelta;
 use crate::ports::{
     AnsweredBy, ApprovalGate, ApprovalOutcome, ApprovalRequest, BoxFuture,
@@ -247,7 +246,11 @@ impl Scope for MockScope {
 pub struct RecordingApprovalGate {
     outcomes: Mutex<Vec<ApprovalOutcome>>,
     calls: Mutex<Vec<ApprovalRequest>>,
+    /// 策略询问的记录（证明"引擎确实把策略问过端口"，而不是自己拍脑袋）
+    queries: Mutex<Vec<(String, ApprovalPolicy)>>,
     direction: FailDirection,
+    /// `needs_approval` 的答复（默认 `true`：受约束调用一律要问）
+    needs_approval: bool,
 }
 
 impl RecordingApprovalGate {
@@ -260,7 +263,9 @@ impl RecordingApprovalGate {
         Self {
             outcomes: Mutex::new(vec![outcome]),
             calls: Mutex::new(Vec::new()),
+            queries: Mutex::new(Vec::new()),
             direction: FailDirection::Closed,
+            needs_approval: true,
         }
     }
 
@@ -268,18 +273,51 @@ impl RecordingApprovalGate {
         Self {
             outcomes: Mutex::new(outcomes),
             calls: Mutex::new(Vec::new()),
+            queries: Mutex::new(Vec::new()),
             direction: FailDirection::Closed,
+            needs_approval: true,
         }
+    }
+
+    /// 让 `needs_approval` 回答 `false`（用于断言"策略说不用问时，`decide` 不被调用"）。
+    pub fn with_needs_approval(mut self, needs: bool) -> Self {
+        self.needs_approval = needs;
+        self
+    }
+
+    /// 声明失败方向（W5-T5）：用于断言"无判定依据时引擎按方向裁决"。
+    pub fn with_direction(mut self, direction: FailDirection) -> Self {
+        self.direction = direction;
+        self
     }
 
     pub fn recorded_calls(&self) -> Vec<ApprovalRequest> {
         self.calls.lock().expect("lock").clone()
+    }
+
+    /// 引擎问过端口的策略询问记录。
+    pub fn recorded_queries(&self) -> Vec<(String, ApprovalPolicy)> {
+        self.queries.lock().expect("lock").clone()
     }
 }
 
 impl ApprovalGate for RecordingApprovalGate {
     fn direction(&self) -> FailDirection {
         self.direction
+    }
+
+    fn needs_approval<'a>(
+        &'a self,
+        tool: &'a str,
+        policy: &'a ApprovalPolicy,
+        _args: &'a serde_json::Value,
+    ) -> BoxFuture<'a, bool> {
+        self.queries
+            .lock()
+            .expect("lock")
+            .push((tool.to_string(), policy.clone()));
+        let needs = self.needs_approval;
+        Box::pin(async move { needs })
     }
 
     fn decide<'a>(
@@ -341,6 +379,15 @@ pub struct InMemoryToolCatalog {
 impl InMemoryToolCatalog {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 一次装配一批工具（省去逐个 `register`）。
+    pub fn with_tools(tools: Vec<Arc<dyn Tool>>) -> Self {
+        let catalog = Self::default();
+        for t in tools {
+            catalog.register(t);
+        }
+        catalog
     }
 
     pub fn register(&self, tool: Arc<dyn Tool>) {

@@ -72,6 +72,11 @@ pub enum CliCommand {
 
         /// 任务描述或指令提示词
         prompt: Option<String>,
+
+        /// 装配 + 跑一轮 + 落盘全部照常，只把模型换成回显替身（不联网）。
+        /// 用来验证"装配是否正确"，也是集成测试的抓手。
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
     },
 }
 
@@ -220,34 +225,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 分流处理不同 CLI 场景
     match args.command {
-        Some(CliCommand::Run { workspace, prompt }) => {
+        Some(CliCommand::Run {
+            workspace,
+            prompt,
+            dry_run,
+        }) => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
-            rt.block_on(async {
-                let ws = if !workspace.is_empty() {
-                    workspace
-                } else if !args.workspace.is_empty() {
-                    args.workspace.clone()
-                } else {
-                    std::env::current_dir()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string()
-                };
+            let ws = if !workspace.is_empty() {
+                workspace
+            } else if !args.workspace.is_empty() {
+                args.workspace.clone()
+            } else {
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            };
 
-                println!("a-da 命令行任务执行器启动，工作区: {}", ws);
-                if let Some(task_prompt) = prompt {
-                    println!("执行任务: {}", task_prompt);
-                    let mut store = agent_core::AgentStore::new(ws);
-                    let tid = store.create_thread(Some("CLI 任务会话".to_string()), None);
-                    println!("创建任务会话成功: {}", tid);
-                } else {
-                    println!("提示: 请提供需要执行的任务指令，例如: a-da run --workspace . \"审查代码\"");
+            let Some(task_prompt) = prompt.filter(|p| !p.trim().is_empty()) else {
+                eprintln!(
+                    "提示: 请提供需要执行的任务指令，例如: a-da run --workspace . \"审查代码\""
+                );
+                std::process::exit(2);
+            };
+
+            println!("a-da 命令行任务执行器，工作区: {ws}");
+            if dry_run {
+                println!("模式: --dry-run（不联网，验证装配与会话落盘）");
+            }
+
+            // W6-T3：真的装配引擎、跑一轮、落盘。原先这里只 create_thread 就退出。
+            let model: Option<std::sync::Arc<dyn agent_base::ports::ModelClient>> = if dry_run {
+                Some(a_da_tauri::cli_run::dry_run_model(&task_prompt))
+            } else {
+                None
+            };
+
+            let result = rt.block_on(a_da_tauri::cli_run::run_task(&ws, &task_prompt, model));
+            match result {
+                Ok(outcome) => {
+                    println!("会话: {}（{}）", outcome.thread_id, outcome.stop_reason);
+                    if outcome.text.trim().is_empty() {
+                        println!("（模型没有返回文本）");
+                    } else {
+                        println!("{}", outcome.text);
+                    }
+                    println!("会话文件目录: {}", outcome.sessions_root.display());
+                    std::io::stdout().flush()?;
+                    // 退出码 0：任务真的跑完了
                 }
-                std::io::stdout().flush()?;
-                Ok::<(), anyhow::Error>(())
-            })?;
+                Err(e) => {
+                    // 退出码 1：**如实失败**，不要"创建会话成功"就退出 0
+                    eprintln!("执行失败: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
         Some(CliCommand::Daemon {
             port,
@@ -304,8 +338,13 @@ fn run_headless_server(
         .build()?;
 
     rt.block_on(async {
-        let store = Arc::new(RwLock::new(agent_core::AgentStore::new(workspace)));
-        let server = agent_core::WsHostServer::bind(port, token.clone(), store).await?;
+        let store = Arc::new(RwLock::new(agent_core::AgentStore::new(workspace.clone())));
+        // W3-T4：legacy 主循环已删除 → headless 模式同样必须注入真引擎
+        let injection = a_da_tauri::build_engine_injection(&store, &workspace)
+            .map_err(|e| anyhow::anyhow!("真引擎装配失败：{e}"))?;
+        let server =
+            agent_core::WsHostServer::bind_with_engine(port, token.clone(), store, Some(injection))
+                .await?;
         let current_pid = std::process::id();
 
         let ready_json = serde_json::json!({
@@ -415,6 +454,7 @@ mod tests {
             Some(CliCommand::Run {
                 workspace: "E:/projects".to_string(),
                 prompt: Some("修复这个编译错误".to_string()),
+                dry_run: false,
             })
         );
     }

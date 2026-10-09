@@ -5,7 +5,7 @@ use tokio::sync::{mpsc, watch};
 use crate::approval::{global_question_manager, QuestionAnswer};
 use crate::checkpoint::CheckpointManager;
 use crate::runner::AgentLoopEvent;
-use crate::tools::{read_file, run_command, write_file, edit_file, ToolResult};
+use crate::tools::{write_file, edit_file, ToolResult};
 
 /// 处理 ask_user 交互向用户提问工具
 pub async fn execute_ask_user(
@@ -144,6 +144,8 @@ pub async fn execute_ask_user(
         details: None,
         patch: None,
         terminate: None,
+        // 用户中止时如实给出结构化原因（W4-T2）
+        failure: if ok { None } else { Some(crate::tools::ToolFailure::Aborted) },
     }
 }
 
@@ -156,48 +158,25 @@ pub async fn execute_builtin_plugin_tool(
     checkpoint_mgr: Option<&std::sync::Arc<CheckpointManager>>,
 ) -> Option<ToolResult> {
     match name {
+        // W2-T2：这些插件工具的**逻辑真源**已搬到 `agent-toolkit::plugin_tools`
+        // （那边同时有 `Tool` 实现，能进 catalog）。这里只做**委派**，不复制逻辑（R2）。
         "project_inspect" | "inspect_project" => {
-            Some(execute_project_inspect(workspace).await)
+            Some(crate::tools::plugin_tools::project_inspect(workspace).await)
         }
-        "git_status" => {
-            let res = run_command(workspace, "git status --porcelain=v1 -b", None, Some(10), None).await;
-            if !res.ok && res.output.contains("not a git repository") {
-                Some(ToolResult::error("当前目录不是一个有效的 Git 仓库。"))
-            } else {
-                Some(res)
-            }
-        }
+        "git_status" => Some(crate::tools::plugin_tools::git_status(workspace).await),
         "git_diff" => {
             let file_opt = args.get("file").or_else(|| args.get("path")).and_then(|v| v.as_str());
-            let cmd = match file_opt {
-                Some(f) if !f.trim().is_empty() => format!("git diff -- {}", f.trim()),
-                _ => "git diff".to_string(),
-            };
-            Some(run_command(workspace, &cmd, None, Some(15), None).await)
+            Some(crate::tools::plugin_tools::git_diff(workspace, file_opt).await)
         }
         "git_log" => {
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10);
-            let cmd = format!("git log -n {} --oneline", limit);
-            Some(run_command(workspace, &cmd, None, Some(10), None).await)
+            Some(crate::tools::plugin_tools::git_log(workspace, limit).await)
         }
         "code_outline" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            Some(execute_code_outline(workspace, path).await)
+            Some(crate::tools::plugin_tools::code_outline(workspace, path).await)
         }
-        "run_tests" => {
-            let cmd = if workspace.join("Cargo.toml").exists() {
-                "cargo test"
-            } else if workspace.join("bun.lockb").exists() || workspace.join("bun.lock").exists() {
-                "bun test"
-            } else if workspace.join("package.json").exists() {
-                "npm test"
-            } else if workspace.join("pytest.ini").exists() || workspace.join("tests").exists() {
-                "pytest"
-            } else {
-                "cargo test"
-            };
-            Some(run_command(workspace, cmd, None, Some(180), None).await)
-        }
+        "run_tests" => Some(crate::tools::plugin_tools::run_tests(workspace).await),
         "batch_write" => {
             let files = args.get("files").and_then(|v| v.as_array());
             if let Some(list) = files {
@@ -279,6 +258,7 @@ pub async fn execute_builtin_plugin_tool(
                 details: receipt.data.or(receipt.details),
                 patch: None,
                 terminate: None,
+                failure: None,
             })
         }
         "check_gate" => {
@@ -290,6 +270,7 @@ pub async fn execute_builtin_plugin_tool(
                 details: receipt.data.or(receipt.details),
                 patch: None,
                 terminate: None,
+                failure: None,
             })
         }
         // 空壳工具 evaluate_diff / manage_ponytail 已按计划 §1.3 下线
@@ -297,115 +278,9 @@ pub async fn execute_builtin_plugin_tool(
     }
 }
 
-async fn execute_project_inspect(workspace: &Path) -> ToolResult {
-    let mut sections = vec![format!("# 项目工程与环境诊断报告: {}", workspace.display())];
-
-    let pkg_path = workspace.join("package.json");
-    if pkg_path.exists() {
-        if let Ok(raw) = tokio::fs::read_to_string(&pkg_path).await {
-            if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&raw) {
-                sections.push("## Node / TypeScript 生态配置".to_string());
-                let name = pkg.get("name").and_then(|v| v.as_str()).unwrap_or("(unnamed)");
-                let ver = pkg.get("version").and_then(|v| v.as_str()).unwrap_or("0.0.0");
-                sections.push(format!("- **包名**: {} (v{})", name, ver));
-
-                if let Some(scripts) = pkg.get("scripts").and_then(|v| v.as_object()) {
-                    sections.push("- **可用 Scripts 指令**:".to_string());
-                    for (k, v) in scripts {
-                        sections.push(format!("  - `{}`: {}", k, v.as_str().unwrap_or("")));
-                    }
-                }
-                if let Some(deps) = pkg.get("dependencies").and_then(|v| v.as_object()) {
-                    let keys: Vec<&str> = deps.keys().map(|s| s.as_str()).take(15).collect();
-                    sections.push(format!("- **生产依赖**: {} 个 ({})", deps.len(), keys.join(", ")));
-                }
-                if let Some(dev) = pkg.get("devDependencies").and_then(|v| v.as_object()) {
-                    let keys: Vec<&str> = dev.keys().map(|s| s.as_str()).take(15).collect();
-                    sections.push(format!("- **开发依赖**: {} 个 ({})", dev.len(), keys.join(", ")));
-                }
-            }
-        }
-    }
-
-    let cargo_path = workspace.join("Cargo.toml");
-    if cargo_path.exists() {
-        sections.push("## Rust / Cargo 生态配置".to_string());
-        if let Ok(raw) = tokio::fs::read_to_string(&cargo_path).await {
-            if raw.contains("[workspace]") {
-                sections.push("- **工程模式**: Cargo Workspace 多包工作区".to_string());
-            }
-            if let Some(line) = raw.lines().find(|l| l.trim().starts_with("name =")) {
-                sections.push(format!("- **Crate 包名**: {}", line.trim()));
-            }
-        }
-    }
-
-    if workspace.join("pyproject.toml").exists() || workspace.join("requirements.txt").exists() {
-        sections.push("## Python 生态配置".to_string());
-        if workspace.join("pyproject.toml").exists() {
-            sections.push("- 发现 pyproject.toml".to_string());
-        }
-        if workspace.join("requirements.txt").exists() {
-            sections.push("- 发现 requirements.txt".to_string());
-        }
-    }
-
-    if workspace.join("go.mod").exists() {
-        sections.push("## Go 生态配置".to_string());
-        sections.push("- 发现 go.mod".to_string());
-    }
-
-    ToolResult::success(sections.join("\n\n"))
-}
-
-async fn execute_code_outline(workspace: &Path, file_path: &str) -> ToolResult {
-    let res = read_file(workspace, file_path, None, Some(2000));
-    if !res.ok {
-        return res;
-    }
-
-    let mut outlines = Vec::new();
-    for (line_no, line) in res.output.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with("/*") {
-            continue;
-        }
-        if trimmed.starts_with("pub fn ")
-            || trimmed.starts_with("fn ")
-            || trimmed.starts_with("pub struct ")
-            || trimmed.starts_with("struct ")
-            || trimmed.starts_with("pub enum ")
-            || trimmed.starts_with("enum ")
-            || trimmed.starts_with("class ")
-            || trimmed.starts_with("export class ")
-            || trimmed.starts_with("interface ")
-            || trimmed.starts_with("export interface ")
-            || trimmed.starts_with("export function ")
-            || trimmed.starts_with("export const ")
-        {
-            outlines.push(format!("L{:03}: {}", line_no + 1, trimmed));
-        }
-    }
-
-    if outlines.is_empty() {
-        ToolResult::success(format!("文件 [{}] 未提取到显著类、函数或接口大纲。", file_path))
-    } else {
-        ToolResult::success(format!("## 代码大纲结构: {}\n```\n{}\n```", file_path, outlines.join("\n")))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn test_execute_project_inspect() {
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let res = execute_project_inspect(manifest_dir).await;
-        assert!(res.ok);
-        assert!(res.output.contains("项目工程与环境诊断报告"));
-        assert!(res.output.contains("Cargo"));
-    }
 
     #[tokio::test]
     async fn test_execute_ask_user_flow() {

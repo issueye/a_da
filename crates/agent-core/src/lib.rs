@@ -80,6 +80,122 @@ mod tests {
         assert!(!store.threads.iter().any(|t| t.id == t1));
     }
 
+    /// **W6-T2 出口判据**：`stats.promptChars` 必须返回**实测值**。
+    ///
+    /// 原先它返回硬编码的 `{systemChars: 1200, toolSpecsChars: 800}`——
+    /// 界面拿到的"实测值"其实是两个常量，与当前提示词毫无关系。
+    #[tokio::test]
+    async fn test_stats_prompt_chars_are_measured_not_fabricated() {
+        use agent_base::domain::{
+            Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolDescriptor,
+            ToolReceipt,
+        };
+        use agent_base::engine::{AgentRuntime, RunPolicy};
+        use agent_base::ports::ToolCatalog;
+        use agent_base::testing::{
+            FixedClock, FixedPrompt, InMemorySessionStore, InMemoryToolCatalog, MockScope, MockTool,
+            RecordingApprovalGate, ScriptedModelClient,
+        };
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        const PROMPT: &str = "你是一个测试用系统提示词。";
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "probe": { "type": "string" } }
+        });
+        let expected_tool_chars = serde_json::to_string(&schema).unwrap().chars().count();
+
+        let tool = Arc::new(MockTool::new(
+            ToolDescriptor {
+                name: "probe_tool".to_string(),
+                summary: "探针工具".to_string(),
+                schema: schema.clone(),
+                access: Access::ReadOnly,
+                approval: ApprovalPolicy::Never,
+                rollback: RollbackPolicy::None,
+                execution: Execution::Sequential,
+                termination: Termination::ContinueTurn,
+            },
+            ToolReceipt::success("ok", 0, 1),
+        ));
+        let catalog: Arc<dyn ToolCatalog> =
+            Arc::new(InMemoryToolCatalog::with_tools(vec![tool]));
+
+        let rt = Arc::new(AgentRuntime::new(
+            Arc::new(ScriptedModelClient::new(vec![])),
+            catalog,
+            Arc::new(RecordingApprovalGate::new(true)),
+            Arc::new(InMemorySessionStore::new()),
+            Arc::new(FixedPrompt::new(PROMPT)),
+            Arc::new(MockScope::new("s")),
+            Arc::new(FixedClock::new(1000)),
+            RunPolicy::default(),
+        ));
+
+        let store = Arc::new(RwLock::new(AgentStore::new("E:/test".to_string())));
+        let dispatcher = Dispatcher::new(
+            store,
+            Arc::new(SessionManager::new(Some(std::env::temp_dir().join("a_da_test_home")))),
+            Arc::new(CheckpointManager::new(Some(std::env::temp_dir().join("a_da_test_home")))),
+            Arc::new(subagents::SubagentManager::new()),
+            Arc::new(approval::ApprovalManager::new()),
+            Arc::new(PluginManager::new()),
+            Arc::new(SkillManager::new()),
+            None,
+        )
+        .with_engine(rt);
+
+        let res = dispatcher
+            .dispatch("stats.promptChars", serde_json::json!({}))
+            .await
+            .expect("stats.promptChars 应可分发");
+
+        let system_chars = res["systemChars"].as_u64().expect("systemChars") as usize;
+        let tool_chars = res["toolSpecsChars"].as_u64().expect("toolSpecsChars") as usize;
+        let total_chars = res["totalChars"].as_u64().expect("totalChars") as usize;
+
+        assert_eq!(
+            system_chars,
+            PROMPT.chars().count(),
+            "systemChars 必须是**实测**的系统提示词长度"
+        );
+        assert_ne!(system_chars, 1200, "不得再返回编造的常量");
+        assert_eq!(
+            tool_chars, expected_tool_chars,
+            "toolSpecsChars 必须等于描述符 schema 的字符数之和"
+        );
+        assert_ne!(tool_chars, 800, "不得再返回编造的常量");
+        assert_eq!(total_chars, system_chars + tool_chars);
+    }
+
+    /// 未装配引擎时**必须报错**，而不是退回编造的数字。
+    #[tokio::test]
+    async fn test_stats_prompt_chars_without_engine_is_an_error() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let store = Arc::new(RwLock::new(AgentStore::new("E:/test".to_string())));
+        let dispatcher = Dispatcher::new(
+            store,
+            Arc::new(SessionManager::new(Some(std::env::temp_dir().join("a_da_test_home")))),
+            Arc::new(CheckpointManager::new(Some(std::env::temp_dir().join("a_da_test_home")))),
+            Arc::new(subagents::SubagentManager::new()),
+            Arc::new(approval::ApprovalManager::new()),
+            Arc::new(PluginManager::new()),
+            Arc::new(SkillManager::new()),
+            None,
+        );
+
+        let err = dispatcher
+            .dispatch("stats.promptChars", serde_json::json!({}))
+            .await;
+        assert!(
+            err.is_err(),
+            "没有引擎就没有提示词可测——必须如实报错，不许编造数字"
+        );
+    }
+
     #[tokio::test]
     async fn test_dispatcher_extension_methods() {
         use std::sync::Arc;
@@ -134,7 +250,14 @@ mod tests {
             .await
             .expect("plugin.builtinCatalog 分发失败");
         assert!(catalog.is_array());
-        assert_eq!(catalog.as_array().unwrap().len(), 21);
+        // 目录必须与注册表**逐名相等**（第 6 张名单已消除，W2-T5）。
+        // 这里刻意**不写死条数**——写死条数正是"第二张名单"的温床：
+        // 加了工具忘记改这里，测试就会红在错误的地方（或更糟：悄悄放过）。
+        assert_eq!(
+            catalog.as_array().unwrap().len(),
+            agent_toolkit::registry::standard_tool_descriptors().len(),
+            "内置工具目录条数必须等于注册表描述符数"
+        );
 
         // 验证 plugin.list
         let plugins = dispatcher.dispatch("plugin.list", serde_json::json!({ "workspace": "E:/test" }))
@@ -481,15 +604,41 @@ mod tests {
         }
 
         // 5. 删除非激活供应商
-        let old_id = providers[0].get("id").and_then(|v| v.as_str()).unwrap().to_string();
+        //
+        // ⚠️ 刻意**不删** `providers[0]`：共享配置里的供应商数量与身份取决于
+        // 同进程内其他用例（`app_home()` 是进程级单例）。当列表只剩 1 个时，
+        // `provider.delete` 会按"至少保留一个供应商"的规则拒绝——这条断言曾**偶发红**
+        // （单独跑必过、全量跑偶发失败），根因是共享全局态（INV-8），不是被测逻辑错。
+        // 自己造一个专用非激活项再删它，测试才与执行顺序和共享状态无关。
+        let scratch_id = "scratch-provider-for-delete";
         dispatcher
-            .dispatch("provider.delete", serde_json::json!({ "id": old_id }))
+            .dispatch(
+                "provider.save",
+                serde_json::json!({
+                    "provider": {
+                        "id": scratch_id,
+                        "name": "Scratch",
+                        "protocol": "openai_chat",
+                        "baseUrl": "https://example.invalid",
+                        "apiKey": "sk-scratch",
+                        "models": [{ "id": "scratch-model", "name": "Scratch Model" }]
+                    }
+                }),
+            )
+            .await
+            .expect("provider.save(scratch) 失败");
+
+        dispatcher
+            .dispatch("provider.delete", serde_json::json!({ "id": scratch_id }))
             .await
             .expect("provider.delete 失败");
 
         {
             let s = store.read().await;
-            assert!(!s.providers.iter().any(|p| p.id == old_id));
+            assert!(
+                !s.providers.iter().any(|p| p.id == scratch_id),
+                "专用供应商应已被删除"
+            );
         }
 
         let _ = std::fs::remove_dir_all(&test_dir);

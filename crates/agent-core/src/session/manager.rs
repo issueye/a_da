@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use super::slug::{safe_id, workspace_slug};
 use super::types::{
     AgentMessage, CURRENT_SESSION_VERSION, SessionCompactEntry, SessionEntry, SessionHeader,
-    SessionMessageEntry, SessionSummary,
+    SessionSummary,
 };
 use crate::protocol::{AgentMode, Item, Thread};
 
@@ -208,21 +208,11 @@ impl SessionManager {
             return Ok(());
         };
 
-        let now = now_ms();
-        let random_suffix = uuid::Uuid::new_v4().to_string();
-        let entry = SessionMessageEntry {
-            entry_type: "message".to_string(),
-            id: format!("msg_{}_{}", now, &random_suffix[..6]),
-            timestamp: now,
-            message,
-        };
-
-        let line = serde_json::to_string(&entry)?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&file_path)?;
-        writeln!(file, "{}", line)?;
+        // 行级写入与 id 规则走适配器的**同一份**实现（R2：落盘格式只有一个真源）。
+        // 原先这里是内联的 `SessionMessageEntry` 构造 + 追加写，与
+        // `agent_adapter::store::fs_store` 各写一份；W1-T2a 收敛掉。
+        let entry = agent_adapter::store::jsonl::new_message_entry(now_ms(), message);
+        agent_adapter::store::jsonl::append_message(&file_path, &entry)?;
         Ok(())
     }
 
@@ -246,12 +236,7 @@ impl SessionManager {
         };
 
         compact_entry.entry_type = "compact".to_string();
-        let line = serde_json::to_string(&compact_entry)?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&file_path)?;
-        writeln!(file, "{}", line)?;
+        agent_adapter::store::jsonl::append_compact(&file_path, &compact_entry)?;
         Ok(())
     }
 
@@ -374,46 +359,19 @@ impl SessionManager {
             return Ok(None);
         }
 
-        let file = File::open(&file_path)?;
-        let reader = BufReader::new(file);
-
-        let mut header: Option<SessionHeader> = None;
-        let mut messages: Vec<AgentMessage> = Vec::new();
-
-        for line_res in reader.lines() {
-            let line = match line_res {
-                Ok(l) => l,
-                Err(_) => continue,
-            };
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            if let Ok(entry) = serde_json::from_str::<SessionEntry>(trimmed) {
-                match entry {
-                    SessionEntry::Header(h) => {
-                        header = Some(h);
-                    }
-                    SessionEntry::Message(m) => {
-                        messages.push(m.message);
-                    }
-                    SessionEntry::Notice(_) => {
-                        // Notice 不计入 messages 模型上下文
-                    }
-                    SessionEntry::Compact(c) => {
-                        // 遇到 compact 记录，折叠前面的上下文，生成连续总结消息
-                        let continuation_msg = AgentMessage::User {
-                            content: format!("[系统自动压缩摘要]\n{}", c.summary),
-                            images: None,
-                            timestamp: Some(c.timestamp),
-                        };
-                        messages.clear();
-                        messages.push(continuation_msg);
-                    }
-                }
-            }
+        // 行级读取与折叠语义走适配器的**同一份**实现（R2）。
+        // 原先这里是内联的逐行解析 + compact 折叠，与
+        // `agent_adapter::store::fs_store` 各写一份；W1-T2a 收敛掉。
+        let outcome = agent_adapter::store::jsonl::read_entries(&file_path)?;
+        if outcome.skipped_lines > 0 {
+            tracing::warn!(
+                "会话 {} 有 {} 行无法解析，已跳过（文件：{}）",
+                session_id,
+                outcome.skipped_lines,
+                file_path.display()
+            );
         }
+        let (header, messages) = agent_adapter::store::jsonl::fold_messages(&outcome.entries);
 
         match header {
             Some(h) => Ok(Some((h, messages))),

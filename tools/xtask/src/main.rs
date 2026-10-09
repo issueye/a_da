@@ -1,5 +1,7 @@
 //! xtask: a_da 仓自动化任务工作流（编译、出包、PE 补丁与完整性验证）
 
+mod gates;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -18,6 +20,14 @@ enum Commands {
     Verify,
     /// 校验 TS 归档完整性（不被主干引用、无第二份引擎）
     VerifyArchive,
+    /// 校验产品声明 ↔ 实现一致（toolkit 有模块、字段有生产消费者）
+    VerifySpec,
+    /// 校验跨产品 base 协议一致（base 唯一、base ∪ ext 无交集）
+    Compat,
+    /// 接线结构审计（方法覆盖 / 内置目录单一真源 / 描述符可达 / 端口有生产实现）
+    VerifyWiring,
+    /// 文档时效性审计（主干 markdown 不得把归档布局当现行路径）
+    VerifyDocs,
     /// 生产打包产品单文件可执行二进制
     Ship {
         /// 要打包的产品名称（如 ada-coding, ada-skeleton）
@@ -32,6 +42,15 @@ enum Commands {
         #[arg(long, default_value = "dist")]
         out_dir: String,
     },
+}
+
+/// 打印报告并按违约数决定退出码（0 = 转绿）。
+fn gate(rep: anyhow::Result<gates::Report>) -> anyhow::Result<()> {
+    let violations = rep?.print();
+    if violations > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
@@ -54,6 +73,10 @@ fn main() -> anyhow::Result<()> {
             println!("==> 校验 TS 归档完整性...");
             run_bun_script("tools/verify-archive.ts")?;
         }
+        Commands::VerifySpec => gate(gates::verify_spec())?,
+        Commands::Compat => gate(gates::compat())?,
+        Commands::VerifyWiring => gate(gates::verify_wiring())?,
+        Commands::VerifyDocs => gate(gates::verify_docs())?,
         Commands::Ship { product, gui, out_dir } => {
             ship_product(&product, gui, &out_dir)?;
         }

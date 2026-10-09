@@ -6,10 +6,35 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
+/// `a-da run`：命令行单轮任务执行器（W6-T3）。
+pub mod cli_run;
+
+/// 产品声明（W3-T4）：Tauri 宿主同进程模式按**同一份**产品声明装配真引擎。
+///
+/// 用 `include_str!` 直接引用产品目录的 spec，而不是另写一份——
+/// 两份 spec 必然漂移（这正是 W2-T1「假声明 `patch`」的教训）。
+pub const PRODUCT_SPEC_JSON: &str = include_str!("../../products/ada-coding/agent.spec.json");
+
+/// 按产品声明装配引擎注入包（供 `WsHostServer::bind_with_engine` 使用）。
+///
+/// 失败返回 `Err`：W3-T4 之后没有 legacy 兜底，宿主必须把装配失败当**致命**处理。
+pub fn build_engine_injection(
+    store: &Arc<RwLock<AgentStore>>,
+    workspace: &str,
+) -> Result<agent_core::server::EngineInjection, String> {
+    let ws = if workspace.trim().is_empty() {
+        std::env::current_dir().map_err(|e| format!("取当前目录失败：{e}"))?
+    } else {
+        std::path::PathBuf::from(workspace)
+    };
+    let sessions_root = std::path::Path::new(&agent_core::session::get_app_home()).join("sessions");
+    agent_host::build_engine_injection(store, ws, PRODUCT_SPEC_JSON, sessions_root)
+        .map_err(|e| e.to_string())
+}
+
 /// 桌面客户端启动配置
 #[derive(Debug, Clone, Default)]
-pub struct LauncherConfig {
-    /// 目标工作区路径
+pub struct LauncherConfig {    /// 目标工作区路径
     pub workspace: String,
     /// 直连外部 ada-coding 核心服务 WebSocket 地址 (如 ws://127.0.0.1:4000/rpc)
     pub connect: Option<String>,
@@ -309,7 +334,19 @@ pub fn run(config: LauncherConfig) {
 
                 let resolved_ws = store.read().await.workspace.project.clone();
                 info!("启动 a-da 内嵌同进程核心服务... 工作区: {}", resolved_ws);
-                match WsHostServer::bind(0, token.clone(), store).await {
+
+                // W3-T4：legacy 主循环已删除 → **必须**注入真引擎。
+                // 装配失败就是致命错误：不注入的话每个轮次都会失败，
+                // 与其让界面看到一堆"引擎未注入"，不如在这里明确报出来。
+                let injection = match build_engine_injection(&store, &resolved_ws) {
+                    Ok(i) => i,
+                    Err(e) => {
+                        error!("真引擎装配失败，内嵌核心服务无法启动: {}", e);
+                        return;
+                    }
+                };
+
+                match WsHostServer::bind_with_engine(0, token.clone(), store, Some(injection)).await {
                     Ok(server) => {
                         let actual_port = server.port;
                         info!(

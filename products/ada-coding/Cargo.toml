@@ -14,6 +14,10 @@ path = "src/main.rs"
 agent_core = { workspace = true }
 agent-base = { workspace = true }
 agent-runtime = { workspace = true }
+# W3-T2：宿主装配层（按声明装配真引擎并注入 ws 宿主）
+agent-host = { workspace = true }
+# 产品声明的 	oolkits 要对着工具包真源校验（W2-T2 的端到端断言）
+agent-toolkit = { workspace = true }
 agent-conformance = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }

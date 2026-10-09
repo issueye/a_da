@@ -23,7 +23,6 @@ import {
   HelpCircle,
   Paperclip,
   Bot,
-  RotateCw,
   ArrowLeft,
   History,
   Terminal as TerminalIcon,
@@ -58,7 +57,6 @@ export interface ComposerProps {
   onPromoteQueueItem?: (index: number) => void
   onRemoveQueueItem?: (index: number) => void
   onClearQueue?: () => void
-  onResumeSubagent?: (subagentThreadId: string) => void
   onSwitchThread?: (threadId: string) => void
   onCompact?: () => void
   onOpenChanges?: () => void
@@ -117,7 +115,6 @@ export const Composer: React.FC<ComposerProps> = ({
   onPromoteQueueItem,
   onRemoveQueueItem,
   onClearQueue,
-  onResumeSubagent,
   onSwitchThread,
   onCompact,
   onOpenChanges,
@@ -475,17 +472,11 @@ export const Composer: React.FC<ComposerProps> = ({
                 <Square size={11} className="fill-current" />
                 <span>停止</span>
               </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => onResumeSubagent?.(thread.id)}
-                className="flex items-center space-x-1 px-2.5 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition-colors shadow-xs text-xs font-medium cursor-pointer"
-                title="恢复子智能体执行"
-              >
-                <RotateCw size={11} />
-                <span>恢复执行</span>
-              </button>
-            )}
+            ) : null}
+            {/* W6-T1：原"恢复执行"按钮已删除。
+                它调的 `subagent.resume` 是桩（只回 {ok:true}），且它的
+                `onResumeSubagent` 从来没有任何父组件传入——点了没反应。
+                W4-T6 之后子智能体上下文刻意是临时的，语义上不存在"恢复"。 */}
 
             {thread.parentId && onSwitchThread && (
               <button

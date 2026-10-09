@@ -5,13 +5,12 @@
   "description": "ada-coding 专有协议扩展：工作区管理、配置管理、多模型供应商管理、本地插件与技能、Git 与文件系统操作、检查点回滚。",
   "namespace": "x.coding",
   "methods": [
-    { "name": "workspace.set", "alias": "x.coding.workspace.set", "kind": "command", "since": "1.0", "description": "设置激活工作区" },
+
     { "name": "workspace.add", "alias": "x.coding.workspace.add", "kind": "command", "since": "1.0", "description": "添加工作区" },
     { "name": "workspace.remove", "alias": "x.coding.workspace.remove", "kind": "command", "since": "1.0", "description": "移除工作区" },
     { "name": "workspace.entries", "alias": "x.coding.workspace.entries", "kind": "command", "since": "1.0", "description": "读取工作区条目列表" },
     { "name": "workspace.openPublic", "alias": "x.coding.workspace.openPublic", "kind": "command", "since": "1.0", "description": "公开工作区" },
-    { "name": "workspace.rescan", "alias": "x.coding.workspace.rescan", "kind": "command", "since": "1.0", "description": "重新扫描工作区文件树" },
-    { "name": "config.update", "alias": "x.coding.config.update", "kind": "command", "since": "1.0", "description": "全量更新配置项" },
+
     { "name": "config.get", "alias": "x.coding.config.get", "kind": "command", "since": "1.0", "description": "获取当前完整配置" },
     { "name": "config.presets", "alias": "x.coding.config.presets", "kind": "command", "since": "1.0", "description": "获取模型预设方案" },
     { "name": "config.setProvider", "alias": "x.coding.config.setProvider", "kind": "command", "since": "1.0", "description": "切换激活供应商" },

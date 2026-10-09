@@ -14,6 +14,25 @@ const DEFAULT_LIMIT: usize = 400;
 const MAX_LIST_ENTRIES: usize = 200;
 const MAX_SEARCH_MATCHES: usize = 200;
 
+/// 工具失败的**结构化**原因（W4-T2）。
+///
+/// 为什么需要它：`run_command` 原先让上层靠 `output.contains("取消")` / `contains("超时")`
+/// 猜状态。输出是**给人看的**（措辞随时会改、还要本地化），拿它当机器判据必然漂移——
+/// 换个措辞，`Aborted` 就静默变成 `Error`，界面徽章与调用方判断一起错。
+/// 失败原因必须由**产生它的那层**明确给出。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolFailure {
+    /// 用户/轮次取消
+    Aborted,
+    /// 超时
+    Timeout,
+    /// 进程非零退出
+    NonZeroExit,
+    /// 其它失败（参数错误、IO 失败等）
+    Other,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
     pub ok: bool,
@@ -24,6 +43,9 @@ pub struct ToolResult {
     pub details: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminate: Option<bool>,
+    /// 结构化失败原因（成功时为 `None`）。见 [`ToolFailure`]。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<ToolFailure>,
 }
 
 impl ToolResult {
@@ -34,6 +56,7 @@ impl ToolResult {
             patch: None,
             details: None,
             terminate: None,
+            failure: None,
         }
     }
 
@@ -44,7 +67,25 @@ impl ToolResult {
             patch: None,
             details: None,
             terminate: None,
+            failure: Some(ToolFailure::Other),
         }
+    }
+
+    /// 带**结构化原因**的失败。
+    pub fn failed(kind: ToolFailure, output: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            output: output.into(),
+            patch: None,
+            details: None,
+            terminate: None,
+            failure: Some(kind),
+        }
+    }
+
+    /// 失败原因（成功则 `None`）。上层据此判定状态，**不要解析 `output`**。
+    pub fn failure(&self) -> Option<ToolFailure> {
+        self.failure
     }
 }
 
@@ -130,6 +171,7 @@ pub fn read_file(
             "total": total_lines
         })),
         terminate: None,
+        failure: None,
     }
 }
 
@@ -163,6 +205,7 @@ pub fn write_file(workspace: &Path, path: &str, content: &str) -> ToolResult {
         patch: if patch.is_empty() { None } else { Some(patch) },
         details: None,
         terminate: None,
+        failure: None,
     }
 }
 
@@ -239,6 +282,7 @@ pub fn edit_file(
         patch: if patch.is_empty() { None } else { Some(patch) },
         details: None,
         terminate: None,
+        failure: None,
     }
 }
 

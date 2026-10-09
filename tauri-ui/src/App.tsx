@@ -465,7 +465,6 @@ export function App() {
                 onPromoteQueueItem={(idx) => agentClient.promoteQueueItem(idx, activeThread?.id)}
                 onRemoveQueueItem={(idx) => agentClient.removeFromQueue(idx, activeThread?.id)}
                 onClearQueue={() => agentClient.clearQueue(activeThread?.id)}
-                onResumeSubagent={(subagentThreadId) => agentClient.resumeSubagent(subagentThreadId)}
                 onSwitchThread={(threadId) => agentClient.setActiveThread(threadId)}
                 onCompact={handleCompact}
               />

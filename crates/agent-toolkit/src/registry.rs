@@ -202,13 +202,34 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                 termination: Termination::ContinueTurn,
             },
             ToolDescriptor {
-                name: "read_url_content".to_string(),
-                summary: "抓取并读取外部 URL 内容。".to_string(),
-                schema: json!({ "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"] }),
+                name: "check_task".to_string(),
+                summary: "查询后台任务的状态与输出（含退出码）。".to_string(),
+                schema: json!({
+                    "type": "object",
+                    "properties": { "task_id": { "type": "string", "description": "run_background 返回的任务 id" } },
+                    "required": ["task_id"]
+                }),
                 access: Access::ReadOnly,
                 approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::ParallelSafe,
+                termination: Termination::ContinueTurn,
+            },
+            ToolDescriptor {
+                name: "kill_task".to_string(),
+                summary: "终止后台任务及其整棵子进程树。".to_string(),
+                schema: json!({
+                    "type": "object",
+                    "properties": { "task_id": { "type": "string", "description": "要终止的后台任务 id" } },
+                    "required": ["task_id"]
+                }),
+                // 不碰文件、不跑命令文本，但**确实有副作用**（终结进程树）。
+                // `Access` 只有 ReadOnly / Mutates(文件) / Executes(命令) 三态，
+                // 因此归到 Executes，字段名说明它取任务 id。
+                access: Access::Executes { command_arg: "task_id" },
+                approval: ApprovalPolicy::Named("approval-guard"),
+                rollback: RollbackPolicy::None,
+                execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
             },
             ToolDescriptor {
@@ -240,6 +261,31 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                 }),
                 access: Access::ReadOnly,
                 approval: ApprovalPolicy::Never,
+                rollback: RollbackPolicy::None,
+                execution: Execution::Sequential,
+                termination: Termination::ContinueTurn,
+            },
+            ToolDescriptor {
+                name: "invoke_subagent".to_string(),
+                summary: "把专项任务委派给隔离运行的子智能体，完成后取回结论摘要。".to_string(),
+                schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "subagent_id": {
+                            "type": "string",
+                            "description": "子智能体配置 id（如 general_purpose / researcher / code_reviewer / tester）"
+                        },
+                        "task": { "type": "string", "description": "委派的任务描述" },
+                        "additional_context": { "type": "string", "description": "额外上下文（可选）" }
+                    },
+                    "required": ["subagent_id", "task"]
+                }),
+                // 它不碰文件、不跑命令文本，但**确实有副作用**（会驱动一个能写文件的子智能体）。
+                // `Access` 只有 ReadOnly / Mutates(文件) / Executes(命令) 三态，
+                // 因此按"驱动一段外部执行"归到 Executes，字段名说明它取的是任务文本。
+                // 失败安全（AGENTS.md §2）：绝不能标成 ReadOnly，否则只读档/plan 模式会放行它。
+                access: Access::Executes { command_arg: "task" },
+                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,

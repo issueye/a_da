@@ -6,7 +6,7 @@
     "persona": "你是一个严谨且专业的 AI 编程助手，负责代码编辑、终端指令执行与代码库维护。",
     "locale": "zh-CN"
   },
-  "toolkits": ["core", "fs", "command", "patch"],
+  "toolkits": ["core", "fs", "command", "decision", "git", "project"],
   "capabilities": {
     "images": false,
     "streaming": true,

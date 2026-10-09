@@ -6,6 +6,9 @@ version = 4
 name = "a-da-tauri"
 version = "0.1.0"
 dependencies = [
+ "agent-base",
+ "agent-host",
+ "agent-runtime",
  "agent_core",
  "anyhow",
  "clap",
@@ -26,7 +29,9 @@ version = "0.1.0"
 dependencies = [
  "agent-base",
  "agent-conformance",
+ "agent-host",
  "agent-runtime",
+ "agent-toolkit",
  "agent_core",
  "anyhow",
  "clap",
@@ -43,6 +48,7 @@ version = "0.1.0"
 dependencies = [
  "agent-base",
  "agent-conformance",
+ "agent-host",
  "agent-runtime",
  "agent-toolkit",
  "anyhow",
@@ -64,12 +70,17 @@ name = "agent-adapter"
 version = "0.1.0"
 dependencies = [
  "agent-base",
+ "agent-proto",
+ "agent-toolkit",
  "anyhow",
  "futures-util",
  "reqwest 0.12.28",
+ "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -94,6 +105,22 @@ dependencies = [
  "anyhow",
  "futures-util",
  "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "agent-host"
+version = "0.1.0"
+dependencies = [
+ "agent-adapter",
+ "agent-base",
+ "agent-proto",
+ "agent-runtime",
+ "agent-toolkit",
+ "agent_core",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
@@ -6334,8 +6361,10 @@ checksum = "0637d3a5566a82fa5214bae89087bc8c9fb94cd8e8a3c07feb691bb8d9c632db"
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "agent-toolkit",
  "anyhow",
  "clap",
+ "serde_json",
 ]
 
 [[package]]

@@ -13,6 +13,8 @@ path = "src/main.rs"
 [dependencies]
 agent-base = { workspace = true }
 agent-runtime = { workspace = true }
+# W3-T1：产品不再自己拼端口，交给宿主装配层
+agent-host = { workspace = true }
 agent-toolkit = { workspace = true }
 agent-conformance = { workspace = true }
 anyhow = { workspace = true }

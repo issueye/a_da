@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::domain::{
-    AgentEvent, AgentEventBody, AgentError, AgentMessage, ApprovalPolicy,
+    AgentEvent, AgentEventBody, AgentError, AgentMessage, ApprovalPolicy, FailDirection,
     Termination, ToolCall, ToolCallBlock, ToolReceipt, ToolStatus,
     TurnStopReason,
 };
@@ -24,8 +24,8 @@ use crate::model::{
     StreamDelta, TokenUsage,
 };
 use crate::ports::{
-    ApprovalGate, ApprovalRequest, CancelToken, Clock, CompletionRequest,
-    EventSink, ModelClient, ModelError, PromptSource, Scope, SessionStore,
+    AnsweredBy, ApprovalGate, ApprovalOutcome, ApprovalRequest, CancelToken, Clock,
+    CompletionRequest, EventSink, ModelClient, ModelError, PromptSource, Scope, SessionStore,
     ToolCatalog, ToolContext, ToolError,
 };
 
@@ -73,6 +73,47 @@ impl AgentRuntime {
         let seq = self.next_seq();
         let at_ms = self.clock.now_ms();
         sink.emit(AgentEvent::new(seq, at_ms, thread_id, body));
+    }
+
+    /// 按 `FailDirection` 裁决**没有判定依据**的审批结果（W5-T5 / INV-4）。
+    ///
+    /// | `outcome.by` | 含义 | 处理 |
+    /// |---|---|---|
+    /// | `User` | 有人明确点了批准/拒绝 | **原样采信**（方向不得覆盖人的决定） |
+    /// | `Policy` | 策略给出了确定判定 | **原样采信** |
+    /// | `Timeout` | 等到超时也没人回答 | 按 `direction`：`Closed` → 拒绝，`Open` → 放行 |
+    /// | `Aborted` | 等待期间会话被中止 | 同上 |
+    ///
+    /// 纯函数，便于直接断言（无需构造完整运行时）。
+    pub(crate) fn apply_fail_direction(
+        outcome: ApprovalOutcome,
+        direction: FailDirection,
+    ) -> ApprovalOutcome {
+        match outcome.by {
+            AnsweredBy::User | AnsweredBy::Policy => outcome,
+            AnsweredBy::Timeout | AnsweredBy::Aborted => match direction {
+                FailDirection::Closed => {
+                    if outcome.approved {
+                        // 安全网：闸门声明 Closed 却对"没答案"给了放行 → 引擎翻成拒绝
+                        ApprovalOutcome::denied(
+                            outcome.by,
+                            outcome.reason.clone().unwrap_or_else(|| {
+                                "无判定依据，按失败方向 Closed 拒绝".to_string()
+                            }),
+                        )
+                    } else {
+                        outcome
+                    }
+                }
+                FailDirection::Open => {
+                    if outcome.approved {
+                        outcome
+                    } else {
+                        ApprovalOutcome::allowed(outcome.by)
+                    }
+                }
+            },
+        }
     }
 
     /// 运行一轮 Agent 多轮决策与执行循环。
@@ -134,15 +175,20 @@ impl AgentRuntime {
 
         // 5. 多轮循环驱动
         'turn_loop: loop {
-            step_index += 1;
-
-            // 检查步数预算（INV: 设了预算必须自报，无隐式步数上限）
+            // 步数预算（INV: 设了预算必须自报，无隐式步数上限）。
+            //
+            // ⚠️ 顺序很重要：**先判预算、后自增**。
+            // 原实现是"先自增再判 `step_index > max_steps`"，于是被预算**拒绝的那次尝试**
+            // 也被算进了 `steps_taken`——`maxSteps=1` 会报 `steps_taken=2`，而实际只跑了 1 步。
+            // 这个 off-by-one 由 W3-T5 的 golden 夹具 `budget_exhausted` 首次照出
+            // （既有单测只断言了 `stop_reason`，没断言步数，所以一直没被发现）。
             if let Some(max_steps) = self.policy.max_steps {
-                if step_index > max_steps {
+                if step_index >= max_steps {
                     final_stop_reason = TurnStopReason::BudgetExhausted { limit_steps: max_steps };
                     break 'turn_loop;
                 }
             }
+            step_index += 1;
 
             // 检查取消
             if cancel.is_cancelled() {
@@ -324,15 +370,17 @@ impl AgentRuntime {
                         let desc = tool.descriptor();
                         let is_write = !desc.is_readonly();
 
-                        // 审批检查（M1-T4）：
+                        // 审批检查（M1-T4 + W1-T6）：
+                        // **策略归端口**——引擎不解释档位/危险命令/白名单/Named 策略，
+                        // 只把工具名、声明与参数递过去（AGENTS.md §14）。
+                        // `Never` 是唯一的例外：它连问都不必问，引擎直接短路。
                         let needs_approval = match &desc.approval {
                             ApprovalPolicy::Never => false,
-                            ApprovalPolicy::Always => true,
-                            ApprovalPolicy::DangerScan { patterns } => {
-                                let args_str = &raw_call.args;
-                                patterns.iter().any(|p| args_str.contains(p))
+                            policy => {
+                                self.approval
+                                    .needs_approval(&raw_call.name, policy, &parsed_args)
+                                    .await
                             }
-                            ApprovalPolicy::Named(_) => true,
                         };
 
                         let mut is_denied = false;
@@ -350,11 +398,22 @@ impl AgentRuntime {
                                 tool: raw_call.name.clone(),
                                 args: parsed_args.clone(),
                                 is_write,
-                                mode: "auto".to_string(),
                                 reason: None,
                             };
 
                             let outcome = self.approval.decide(app_req, Some(cancel)).await;
+                            // W5-T5 / INV-4：**无判定依据**时由端口声明的方向裁决。
+                            //
+                            // `User` / `Policy` 是**确定的答案**（有人点了、或策略判了），
+                            // 方向不得覆盖它——否则"用户明确拒绝"会被 fail-open 翻成放行。
+                            // `Timeout` / `Aborted` 是**没拿到答案**，正是方向该起作用的地方。
+                            //
+                            // 引擎是唯一裁决点：这样"声明了 `Open` 的闸门"才不会与自己的声明打架
+                            // （此前每个闸门各自硬编码超时结果，`direction()` 形同虚设）。
+                            let outcome = Self::apply_fail_direction(
+                                outcome,
+                                self.approval.direction(),
+                            );
                             if !outcome.approved {
                                 is_denied = true;
                                 denial_reason = outcome.reason.or_else(|| Some("审批未通过".to_string()));
@@ -487,6 +546,218 @@ mod tests {
             execution: Execution::Sequential,
             termination,
         }
+    }
+
+    // ── W5-T5：`FailDirection` 真的参与裁决（INV-4）──────────────────────────
+
+    /// 确定答案（`User` / `Policy`）**不受方向影响**——否则"用户明确拒绝"会被 fail-open 翻成放行。
+    #[test]
+    fn test_direction_never_overrides_a_definite_answer() {
+        for direction in [FailDirection::Closed, FailDirection::Open] {
+            let user_denied = ApprovalOutcome::denied(AnsweredBy::User, "用户点了拒绝");
+            assert!(
+                !AgentRuntime::apply_fail_direction(user_denied, direction).approved,
+                "用户明确拒绝不得被 {direction:?} 覆盖"
+            );
+
+            let policy_allowed = ApprovalOutcome::allowed(AnsweredBy::Policy);
+            assert!(
+                AgentRuntime::apply_fail_direction(policy_allowed, direction).approved,
+                "策略明确放行不得被 {direction:?} 覆盖"
+            );
+        }
+    }
+
+    /// 无判定依据（`Timeout` / `Aborted`）**由方向裁决**。
+    #[test]
+    fn test_direction_arbitrates_when_there_is_no_answer() {
+        // Closed（默认，安全方向）→ 拒绝
+        let denied = AgentRuntime::apply_fail_direction(
+            ApprovalOutcome::denied(AnsweredBy::Timeout, "等待超时"),
+            FailDirection::Closed,
+        );
+        assert!(!denied.approved);
+        assert_eq!(denied.by, AnsweredBy::Timeout, "来路必须保留，事后要能分辨");
+        assert!(denied.reason.as_deref().unwrap_or("").contains("超时"));
+
+        // Open（显式配置的 fail-open）→ 放行：**这是 direction() 存在的意义**
+        let allowed = AgentRuntime::apply_fail_direction(
+            ApprovalOutcome::denied(AnsweredBy::Timeout, "等待超时"),
+            FailDirection::Open,
+        );
+        assert!(allowed.approved, "声明 Open 的闸门在超时时必须放行");
+
+        // Aborted 同口径
+        assert!(!AgentRuntime::apply_fail_direction(
+            ApprovalOutcome::denied(AnsweredBy::Aborted, "会话中止"),
+            FailDirection::Closed
+        )
+        .approved);
+        assert!(AgentRuntime::apply_fail_direction(
+            ApprovalOutcome::denied(AnsweredBy::Aborted, "会话中止"),
+            FailDirection::Open
+        )
+        .approved);
+    }
+
+    /// **安全网**：闸门声明 `Closed` 却对"没答案"给了放行 → 引擎必须翻成拒绝。
+    ///
+    /// 这条是"声明与行为打架时以声明为准"的兜底——否则一个写错的闸门会静默 fail-open。
+    #[test]
+    fn test_closed_direction_is_a_safety_net_over_a_wrong_gate() {
+        let wrong = ApprovalOutcome::allowed(AnsweredBy::Timeout);
+        let fixed = AgentRuntime::apply_fail_direction(wrong, FailDirection::Closed);
+        assert!(!fixed.approved, "声明 Closed 时不得放行无判定依据的调用");
+        assert_eq!(fixed.by, AnsweredBy::Timeout);
+        assert!(
+            fixed.reason.as_deref().unwrap_or("").contains("Closed"),
+            "理由应说明是方向裁决：{:?}",
+            fixed.reason
+        );
+    }
+
+    /// 端到端：声明 `Open` 的闸门在超时时，工具**真的被执行**（不只是纯函数层面对）。
+    #[tokio::test]
+    async fn test_open_direction_lets_the_tool_run_after_timeout() {
+        let clock = Arc::new(FixedClock::new(1000));
+        let store = Arc::new(InMemorySessionStore::new());
+        let prompt = Arc::new(FixedPrompt::new("system prompt"));
+        let scope = Arc::new(MockScope::new("ws"));
+
+        let tool = Arc::new(MockTool::new(
+            make_test_descriptor("gated_tool", ApprovalPolicy::Always, Termination::ContinueTurn),
+            ToolReceipt::success("工具真的跑了", 0, 1),
+        ));
+        let catalog = Arc::new(InMemoryToolCatalog::with_tools(vec![tool]));
+
+        let model = Arc::new(ScriptedModelClient::new(vec![
+            vec![
+                StreamDelta::ToolCall {
+                    call: ToolCallInfo {
+                        id: "c1".into(),
+                        name: "gated_tool".into(),
+                        args: "{}".into(),
+                    },
+                },
+                StreamDelta::Done { stop_reason: "tool_calls".into() },
+            ],
+            vec![
+                StreamDelta::Text { text: "done".into() },
+                StreamDelta::Done { stop_reason: "stop".into() },
+            ],
+        ]));
+
+        // 闸门：等待超时（没人回答），但声明 fail-open
+        let gate = Arc::new(
+            RecordingApprovalGate::with_outcomes(vec![ApprovalOutcome::denied(
+                AnsweredBy::Timeout,
+                "等待超时",
+            )])
+            .with_direction(FailDirection::Open),
+        );
+
+        let rt = AgentRuntime::new(
+            model,
+            catalog,
+            gate,
+            store,
+            prompt,
+            scope,
+            clock,
+            RunPolicy { max_steps: Some(5), max_parallel_tools: 1, tool_timeout: None },
+        );
+
+        let sink = RecordingSink::new();
+        let req = TurnRequest::new("t_open", mock_provider_config()).with_user_prompt("go");
+        let outcome = rt
+            .run_turn(req, &sink, &NeverCancel)
+            .await
+            .expect("轮次应正常结束");
+
+        assert_eq!(outcome.stop_reason, TurnStopReason::Completed);
+        let executed = sink.snapshot().iter().any(|e| {
+            matches!(
+                &e.body,
+                AgentEventBody::ToolCallFinished { receipt, .. }
+                    if receipt.status == ToolStatus::Success
+            )
+        });
+        assert!(
+            executed,
+            "声明 Open 时超时必须放行并真的执行工具：{:?}",
+            sink.snapshot()
+        );
+    }
+
+    /// 端到端对照：同场景下声明 `Closed`（默认）→ 工具**不被执行**，以拒绝回执回模型。
+    #[tokio::test]
+    async fn test_closed_direction_denies_after_timeout() {
+        let clock = Arc::new(FixedClock::new(1000));
+        let store = Arc::new(InMemorySessionStore::new());
+        let prompt = Arc::new(FixedPrompt::new("system prompt"));
+        let scope = Arc::new(MockScope::new("ws"));
+
+        let tool = Arc::new(MockTool::new(
+            make_test_descriptor("gated_tool", ApprovalPolicy::Always, Termination::ContinueTurn),
+            ToolReceipt::success("工具不该跑", 0, 1),
+        ));
+        let catalog = Arc::new(InMemoryToolCatalog::with_tools(vec![tool]));
+
+        let model = Arc::new(ScriptedModelClient::new(vec![
+            vec![
+                StreamDelta::ToolCall {
+                    call: ToolCallInfo {
+                        id: "c1".into(),
+                        name: "gated_tool".into(),
+                        args: "{}".into(),
+                    },
+                },
+                StreamDelta::Done { stop_reason: "tool_calls".into() },
+            ],
+            vec![
+                StreamDelta::Text { text: "done".into() },
+                StreamDelta::Done { stop_reason: "stop".into() },
+            ],
+        ]));
+
+        let gate = Arc::new(RecordingApprovalGate::with_outcomes(vec![
+            ApprovalOutcome::denied(AnsweredBy::Timeout, "等待超时"),
+        ]));
+        assert_eq!(
+            ApprovalGate::direction(gate.as_ref()),
+            FailDirection::Closed,
+            "默认方向必须是 Closed"
+        );
+
+        let rt = AgentRuntime::new(
+            model,
+            catalog,
+            gate,
+            store,
+            prompt,
+            scope,
+            clock,
+            RunPolicy { max_steps: Some(5), max_parallel_tools: 1, tool_timeout: None },
+        );
+
+        let sink = RecordingSink::new();
+        let req = TurnRequest::new("t_closed", mock_provider_config()).with_user_prompt("go");
+        rt.run_turn(req, &sink, &NeverCancel).await.expect("轮次应正常结束");
+
+        let receipts: Vec<ToolStatus> = sink
+            .snapshot()
+            .iter()
+            .filter_map(|e| match &e.body {
+                AgentEventBody::ToolCallFinished { receipt, .. } => Some(receipt.status.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(receipts.len(), 1, "应恰好一个工具回执：{receipts:?}");
+        assert_eq!(
+            receipts[0],
+            ToolStatus::Denied,
+            "默认 Closed 时超时必须拒绝，而不是执行工具"
+        );
     }
 
     #[tokio::test]
@@ -831,6 +1102,12 @@ mod tests {
         let outcome = runtime.run_turn(req, &sink, &cancel).await.unwrap();
 
         assert_eq!(outcome.stop_reason, TurnStopReason::BudgetExhausted { limit_steps: 1 });
+        // W3-T5 补强：`steps_taken` 必须等于**实际执行**的步数。
+        // 原来这里只断言 stop_reason，于是 off-by-one（报 2 而非 1）长期无人发现。
+        assert_eq!(
+            outcome.steps_taken, 1,
+            "max_steps=1 时只应执行 1 步；被预算拒绝的那次尝试不算执行"
+        );
 
         let turn_finished_count = sink.snapshot().into_iter().filter(|e| matches!(e.body, AgentEventBody::TurnFinished { .. })).count();
         assert_eq!(turn_finished_count, 1);

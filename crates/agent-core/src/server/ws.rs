@@ -20,10 +20,27 @@ pub struct WsHostServer {
 }
 
 impl WsHostServer {
+    /// 绑定并启动宿主（不注入真引擎 → 走 legacy 主循环，与切换前行为一致）。
     pub async fn bind(
         bind_port: u16,
         token: String,
         store: Arc<RwLock<AgentStore>>,
+    ) -> Result<Arc<Self>, anyhow::Error> {
+        Self::bind_with_engine(bind_port, token, store, None).await
+    }
+
+    /// W3-T2：绑定并注入**真引擎**（`AgentRuntime`）。
+    ///
+    /// 注入之后走哪条由 `A_DA_ENGINE` 决定（默认 `legacy`，保证可回滚）；
+    /// 设 `A_DA_ENGINE=runtime` 才真的切到 `AgentRuntime::run_turn`。
+    ///
+    /// `injection` 同时带来引擎审批闸门用的 waiter 表——**必须用它**，
+    /// 否则 UI 的批准落到另一张表上，闸门会静默等到超时（见 [`EngineInjection`]）。
+    pub async fn bind_with_engine(
+        bind_port: u16,
+        token: String,
+        store: Arc<RwLock<AgentStore>>,
+        injection: Option<crate::server::dispatch::EngineInjection>,
     ) -> Result<Arc<Self>, anyhow::Error> {
         let addr = SocketAddr::from(([127, 0, 0, 1], bind_port));
         let listener = TcpListener::bind(addr).await?;
@@ -49,7 +66,11 @@ impl WsHostServer {
         let session_mgr = Arc::new(crate::session::SessionManager::new(None));
         let checkpoint_mgr = Arc::new(crate::checkpoint::CheckpointManager::new(None));
         let subagent_mgr = Arc::new(crate::subagents::SubagentManager::new());
-        let approval_mgr = Arc::new(crate::approval::ApprovalManager::new());
+        // 审批 waiter 表：注入了引擎就用**它的**那张（UI 决策必须落到同一张表）
+        let approval_mgr = match &injection {
+            Some(i) => i.approval_mgr.clone(),
+            None => Arc::new(crate::approval::ApprovalManager::new()),
+        };
         let plugin_mgr = Arc::new(crate::plugins::PluginManager::new());
         let skill_mgr = Arc::new(crate::skills::SkillManager::new());
         let seq = Arc::new(AtomicU64::new(0));
@@ -58,16 +79,20 @@ impl WsHostServer {
             seq.clone(),
             broadcast_tx.clone(),
         );
-        let dispatcher = Arc::new(Dispatcher::new(
-            store.clone(),
-            session_mgr,
-            checkpoint_mgr,
-            subagent_mgr,
-            approval_mgr,
-            plugin_mgr,
-            skill_mgr,
-            Some(broadcaster.clone()),
-        ));
+        let dispatcher = Arc::new(
+            Dispatcher::new(
+                store.clone(),
+                session_mgr,
+                checkpoint_mgr,
+                subagent_mgr,
+                approval_mgr,
+                plugin_mgr,
+                skill_mgr,
+                Some(broadcaster.clone()),
+            )
+            // W3-T2：宿主注入真引擎；`None` 时不注入（保持 legacy）
+            .pipe_engine(injection),
+        );
 
         let server = Arc::new(Self {
             port: actual_port,

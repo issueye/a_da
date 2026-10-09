@@ -45,20 +45,17 @@ export const QUEUE_PROMOTE = 'queue.promote'
 export const QUEUE_REMOVE = 'queue.remove'
 
 // 子智能体调度 (Subagent)
-export const SUBAGENT_RESUME = 'subagent.resume'
 export const SUBAGENT_PROFILE_LIST = 'subagentProfile.list'
 export const SUBAGENT_PROFILE_SET_ENABLED = 'subagentProfile.setEnabled'
 export const SUBAGENT_PROFILE_DELETE = 'subagentProfile.delete'
 
 // 工作区与配置 (Workspace & Config)
-export const WORKSPACE_SET = 'workspace.set'
+// W5-T2：`workspace.set` / `config.update` 已删除（无 dispatch 臂、前端从未调用）
 export const WORKSPACE_ADD = 'workspace.add'
 export const WORKSPACE_REMOVE = 'workspace.remove'
 export const WORKSPACE_ENTRIES = 'workspace.entries'
 export const WORKSPACE_OPEN_PUBLIC = 'workspace.openPublic'
-export const WORKSPACE_RESCAN = 'workspace.rescan'
 
-export const CONFIG_UPDATE = 'config.update'
 export const CONFIG_GET = 'config.get'
 export const CONFIG_PRESETS = 'config.presets'
 export const CONFIG_SET_PROVIDER = 'config.setProvider'

@@ -87,6 +87,21 @@ impl ProductBuilder {
         self
     }
 
+    /// 按产品声明装配工具包（`spec.toolkits` 的**真实消费者**，W2-T1）。
+    ///
+    /// 未知名 / 重名都会返回 `Err`（[`SpecError::Violation`]）——声明与实现不一致时
+    /// 必须在**装配期**炸掉，不许少装几个工具就继续跑（否则就是"声明了没实现"的静默失效）。
+    pub fn with_declared_toolkits(
+        mut self,
+        workspace: impl AsRef<std::path::Path>,
+    ) -> Result<Self, SpecError> {
+        let tools =
+            agent_toolkit::tools_for_toolkits(&self.spec.toolkits, workspace.as_ref())
+                .map_err(SpecError::Violation)?;
+        self.tools.extend(tools);
+        Ok(self)
+    }
+
     /// 校验当前装配是否与产品声明契约双向一致。
     pub fn validate(&self) -> Vec<ContractViolation> {
         let catalog = CompositeToolCatalog::new(self.tools.clone(), None);

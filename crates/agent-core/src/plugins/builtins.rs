@@ -7,7 +7,7 @@ pub struct BuiltinPluginDefinition {
     pub id: &'static str,
     pub name: &'static str,
     pub description: &'static str,
-    pub tools: &'static [(&'static str, &'static str, bool)], // (name, description, is_write)
+    pub tools: &'static [(&'static str, &'static str)], // (name, description)
 }
 
 pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
@@ -16,9 +16,9 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
         name: "Git 变更与协作工具 (git-tools)",
         description: "提供结构化 Git 状态、安全限长 Diff 提取与近期提交历史检索能力，辅助精准掌握版本改动。",
         tools: &[
-            ("git_status", "获取当前 Git 工作区的状态信息，包含当前分支、暂存修改、未暂存修改与未跟踪文件。", false),
-            ("git_diff", "获取工作区或特定文件的 Git Diff 变更内容。", false),
-            ("git_log", "获取近期提交历史列表与简要描述。", false),
+            ("git_status", "获取当前 Git 工作区的状态信息，包含当前分支、暂存修改、未暂存修改与未跟踪文件。"),
+            ("git_diff", "获取工作区或特定文件的 Git Diff 变更内容。"),
+            ("git_log", "获取近期提交历史列表与简要描述。"),
         ],
     },
     BuiltinPluginDefinition {
@@ -26,7 +26,7 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
         name: "代码大纲与结构提取 (code-outline)",
         description: "提取类、接口、函数与结构体骨架签名，快速理解大型代码文件架构。",
         tools: &[
-            ("code_outline", "提取代码文件中的关键类、函数、接口骨架签名及行号索引。", false),
+            ("code_outline", "提取代码文件中的关键类、函数、接口骨架签名及行号索引。"),
         ],
     },
     BuiltinPluginDefinition {
@@ -34,7 +34,7 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
         name: "项目侦测与依赖分析 (project-inspector)",
         description: "自动探查项目技术栈、主入口、构建系统与环境依赖。",
         tools: &[
-            ("project_inspect", "探测当前工作区的技术栈类型、构建工具与关键配置文件路径。", false),
+            ("project_inspect", "探测当前工作区的技术栈类型、构建工具与关键配置文件路径。"),
         ],
     },
     BuiltinPluginDefinition {
@@ -42,7 +42,7 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
         name: "测试运行与结果归因 (test-runner)",
         description: "自动化执行项目单测，解析输出并归因定位失败用例。",
         tools: &[
-            ("run_tests", "自动化运行项目测试用例，解析测试通过率与失败错误栈。", true),
+            ("run_tests", "自动化运行项目测试用例，解析测试通过率与失败错误栈。"),
         ],
     },
     BuiltinPluginDefinition {
@@ -50,8 +50,8 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
         name: "批量文件读写与精准替换 (batch-ops)",
         description: "高效进行多文件同时写入与统一规则批量替换。",
         tools: &[
-            ("batch_replace", "在多个指定文件中按统一规则执行模式搜索与文本批量替换。", true),
-            ("batch_write", "一次性原子写入或更新多个目标代码文件。", true),
+            ("batch_replace", "在多个指定文件中按统一规则执行模式搜索与文本批量替换。"),
+            ("batch_write", "一次性原子写入或更新多个目标代码文件。"),
         ],
     },
     BuiltinPluginDefinition {
@@ -59,8 +59,8 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
         name: "决策评估与准入门禁 (decision)",
         description: "提供结构化概率决策自评与基于 diff/文件/文本的代码变动准入门禁评估能力。",
         tools: &[
-            ("decide", "基于加权规则与线索对二选一、多选或评分问题进行结构化决策判断。", false),
-            ("check_gate", "对工作区 git diff、指定文件或文本内容执行严格准入门禁规则检查。", false),
+            ("decide", "基于加权规则与线索对二选一、多选或评分问题进行结构化决策判断。"),
+            ("check_gate", "对工作区 git diff、指定文件或文本内容执行严格准入门禁规则检查。"),
         ],
     },
     BuiltinPluginDefinition {
@@ -74,7 +74,7 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
         name: "向用户提问 (ask-user)",
         description: "向用户发起单选、多选按钮交互或自由文本输入提问。",
         tools: &[
-            ("ask_user", "在交互界面向用户发起单选选择或补充说明提问并阻塞等待答复。", false),
+            ("ask_user", "在交互界面向用户发起单选选择或补充说明提问并阻塞等待答复。"),
         ],
     },
     BuiltinPluginDefinition {
@@ -95,7 +95,7 @@ pub fn get_builtin_plugin_items(disabled_ids: &std::collections::HashSet<String>
             let tools_decl: Vec<PluginToolDeclaration> = def
                 .tools
                 .iter()
-                .map(|(name, desc, _)| {
+                .map(|(name, desc)| {
                     let param_schema = crate::tools::find_tool_descriptor(name)
                         .map(|d| d.schema.clone())
                         .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
@@ -111,7 +111,7 @@ pub fn get_builtin_plugin_items(disabled_ids: &std::collections::HashSet<String>
             let tools_info: Vec<PluginToolInfo> = def
                 .tools
                 .iter()
-                .map(|(name, desc, _)| {
+                .map(|(name, desc)| {
                     let descriptor_opt = crate::tools::find_tool_descriptor(name);
                     let param_schema = descriptor_opt
                         .map(|d| d.schema.clone())
