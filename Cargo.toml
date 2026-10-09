@@ -11,6 +11,7 @@ members = [
     # 产品（一个产品一个 bin，几乎只写声明）
     "products/ada-coding",
     "products/ada-skeleton",
+    "products/pm-assistant",
     "tools/xtask",
     # 核心与插件运行时（位于 crates/）
     "crates/agent-core",

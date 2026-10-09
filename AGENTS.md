@@ -59,6 +59,7 @@ bun run tauri:dev           # 桌面客户端开发（前端热重载 + 宿主�
 - **`crates/agent-gateway`（S5 新建）** —— a-da 网关，三合一：**AGENT 管理平台**（`registry.rs` 实例注册表 / `supervisor.rs` 生命周期）+ **交互平台**（S6：`delegate.rs` 派活/取消跨网关）+ **桥接平台**（`relay.rs` 路由与透传）。二进制 `a-da-gateway`（打印 `A_DA_GATEWAY_READY {port}`）。**只依赖线协议 `agent-proto`**——不含引擎（INV-1）、不缓存会话状态（INV-8），由 `verify-wiring` check J 守着
 - `crates/ts-engine` 插件运行时（Boa + oxc）；插件契约见 [docs/plugin-sdk/v1.md](docs/plugin-sdk/v1.md)
 - `products/ada-coding` 产品二进制（`--host/--port/--token/--parent-pid/--workspace`）
+- **`products/pm-assistant`（S6 新建）** —— 项目管理助手（PM agent）：**经网关**把目标委派给 coding agent。它的能力几乎全在声明里（`capabilities.delegation = "gateway"` + `gateway.endpoint`）；**不声明 `fs` 写工具包**——角色边界（PM 的价值是拆解与分派，不是改代码）
 - 三个 crate 各有 `{ai,protocol,tools}/mod.rs` 兼容 shim（`pub use` 转发到基座各 crate），调用点不动
 - 端口已接线处：`session::{app_home,set_app_home,get_app_home,get_config_path}`、`state::{clock,set_clock,now_millis}`、`AgentStore::with_home`（单元测试默认 home 在临时目录，不再碰用户真实 `~/.a-da`）
 - `src-tauri` Tauri 宿主（同进程起核心服务）；`tauri-ui` React 前端（`src/client/ws-client.ts` 是协议客户端）

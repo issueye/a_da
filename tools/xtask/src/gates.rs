@@ -64,6 +64,14 @@ fn rust_sources(root: &Path, dirs: &[&str]) -> Vec<PathBuf> {
 /// 截掉文件末尾的测试块（本仓约定：`#[cfg(test)] mod tests` 在文件末尾）。
 ///
 /// 一个文件里出现多处 `#[cfg(test)]` 时返回 `None`——**不猜**，让调用方如实记一条 note。
+/// 取文件的**生产段**（测试之前的代码）。
+///
+/// - 没有 `#[cfg(test)]`：整个文件都是生产段；
+/// - **恰好一个**：取它之前的部分；
+/// - **多个**：返回 `None`——无法机械划分，调用方自行决定是跳过还是保守近似。
+///
+/// ⚠️ 调用方注意：`None` 时**不要** `unwrap_or(&src)`（那会连测试一起扫 → 假阳性），
+/// 需要"至少拿到一部分生产代码"时请用 [`production_prefix_conservative`]。
 fn production_prefix(src: &str) -> Option<&str> {
     let count = src.matches("#[cfg(test)]").count();
     if count == 0 {
@@ -74,6 +82,26 @@ fn production_prefix(src: &str) -> Option<&str> {
     }
     let idx = src.find("#[cfg(test)]").expect("count 已确认大于 0");
     Some(&src[..idx])
+}
+
+/// **保守近似**的生产段：一定全是生产代码，可能漏掉后面的（不会假阳性）。
+///
+/// 用于"找消费者"这类**存在性**判断：漏报可以接受（最多误报"没人读"并促使人工确认），
+/// 假阳性不可接受（会掩盖真的问题）。
+///
+/// 为什么需要它：`agent-rpc/src/server/dispatch.rs` 含多处 `#[cfg(test)]`，
+/// 旧逻辑把它整个跳过，于是 `spec.archetype` 的**真实生产消费者**看不见 →
+/// 门报"声明了却没人读"（S6 加 `gateway` 字段时暴露）。
+fn production_prefix_conservative(src: &str) -> &str {
+    match src.find("#[cfg(test)]") {
+        Some(idx) => &src[..idx],
+        None => src,
+    }
+}
+
+/// 该文件是否含**多处** `#[cfg(test)]`（生产段是保守近似，值得在报告里点名）。
+fn has_multiple_test_modules(src: &str) -> bool {
+    src.matches("#[cfg(test)]").count() > 1
 }
 
 /// 从 `match <header> {` 起做花括号配平，取出整个 match 体（不含最外层花括号）。
@@ -215,7 +243,7 @@ pub fn verify_spec() -> anyhow::Result<Report> {
         }
 
         // (c) 声明字段必须有生产消费者
-        for field in ["identity", "capabilities", "toolkits"] {
+        for (field, _) in SPEC_FIELDS {
             if spec.get(field).is_none() {
                 continue;
             }
@@ -237,12 +265,110 @@ pub fn verify_spec() -> anyhow::Result<Report> {
         rep.notes
             .push(format!("跳过 {f}：含多处 #[cfg(test)]，无法机械划分生产段"));
     }
+    // 对账：AgentSpec 的字段必须全部登记（新字段不得从缝里溜过）
+    check_spec_field_coverage(&root, &mut rep)?;
     if product_count == 0 {
         rep.violations.push("products/ 下没有找到任何 agent.spec.json".to_string());
     } else {
         rep.notes.push(format!("共校验 {product_count} 个产品声明"));
     }
     Ok(rep)
+}
+
+/// `AgentSpec` 里**每一个**顶层字段都必须在这张表里，否则 `verify_spec` 会报红。
+///
+/// 为什么要有这张表而不是内联数组：清单是"必须检查哪些字段"的**唯一口径**，
+/// 而硬编码数组最容易的失败方式是——**新加一个声明字段时忘了登记**，
+/// 于是"声明了却没人读"从门禁的缝里溜过去（S6 加 `gateway` 时差点如此）。
+/// 配套的 `check_spec_field_coverage` 会把 `spec.rs` 的实际字段与这张表对账。
+///
+/// `(字段名, 判定消费者用的符号)`
+const SPEC_FIELDS: &[(&str, &str)] = &[
+    // 必填字段
+    ("id", "spec.id"),
+    ("archetype", "spec.archetype"),
+    ("identity", "IdentitySpec"),
+    // 带 `#[serde(default)]` 的声明字段
+    ("toolkits", ".toolkits"),
+    ("capabilities", "CapabilitySpec"),
+    ("policies", ".policies"),
+    // S6：经网关委派的目标端点
+    ("gateway", "GatewaySpec"),
+];
+
+/// 对账：`AgentSpec` 的顶层字段 ⊆ [`SPEC_FIELDS`]。
+///
+/// 判据是从 `agent-runtime/src/spec.rs` **解析**出 `pub struct AgentSpec` 的字段名，
+/// 而不是"我记得有几个字段"——后者正是会漏的地方。
+fn check_spec_field_coverage(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
+    let src = read(root, "crates/agent-runtime/src/spec.rs")?;
+    let Some(body) = match_region(&src, "pub struct AgentSpec") else {
+        rep.violations
+            .push("解析不出 `pub struct AgentSpec`——审计失效（不会静默通过）".to_string());
+        return Ok(());
+    };
+
+    let declared: BTreeSet<String> = body
+        .lines()
+        .filter_map(|l| {
+            let t = l.trim_start();
+            // 跳过属性、注释、空行与收尾大括号
+            if t.is_empty() || t.starts_with('#') || t.starts_with("//") || t == "}" {
+                return None;
+            }
+            // 去掉可见性前缀（`pub` / `pub(crate)`），否则会把 "pub" 当成字段名
+            let t = t
+                .strip_prefix("pub(crate) ")
+                .or_else(|| t.strip_prefix("pub "))
+                .unwrap_or(t);
+            // 字段必须形如 `name: Type`
+            if !t.contains(':') {
+                return None;
+            }
+            let name: String = t
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if name.is_empty() {
+                None
+            } else {
+                Some(name)
+            }
+        })
+        .collect();
+
+    if declared.is_empty() {
+        rep.violations
+            .push("`AgentSpec` 解析出 0 个字段——审计失效".to_string());
+        return Ok(());
+    }
+
+    let checked: BTreeSet<String> = SPEC_FIELDS.iter().map(|(f, _)| f.to_string()).collect();
+    let missing: Vec<&String> = declared.iter().filter(|f| !checked.contains(*f)).collect();
+    if !missing.is_empty() {
+        rep.violations.push(format!(
+            "`AgentSpec` 有字段不在 `SPEC_FIELDS` 里：{missing:?}——\
+             新加的声明字段必须登记，否则「声明了却没人读」会从门禁的缝里溜过去"
+        ));
+    }
+    for f in &checked {
+        if !declared.contains(f) {
+            rep.violations.push(format!(
+                "`SPEC_FIELDS` 里的 `{f}` 不是 `AgentSpec` 的字段——陈旧登记（拼错或字段已删）"
+            ));
+        }
+    }
+
+    rep.notes.push(format!(
+        "`AgentSpec` 字段对账：{} 个字段全部登记（{}）",
+        declared.len(),
+        SPEC_FIELDS
+            .iter()
+            .map(|(f, _)| *f)
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    Ok(())
 }
 
 /// 找出**生产代码**里读取 spec 某字段的位置。
@@ -255,12 +381,11 @@ fn production_consumers(
     field: &str,
     skipped: &mut BTreeSet<String>,
 ) -> anyhow::Result<Vec<String>> {
-    let needle = match field {
-        "capabilities" => "CapabilitySpec",
-        "identity" => "IdentitySpec",
-        "toolkits" => ".toolkits",
-        other => anyhow::bail!("未知字段 {other}"),
-    };
+    let needle = SPEC_FIELDS
+        .iter()
+        .find(|(f, _)| *f == field)
+        .map(|(_, n)| *n)
+        .ok_or_else(|| anyhow::anyhow!("`{field}` 不在 SPEC_FIELDS 里（检查清单不完整）"))?;
 
     let mut hits = BTreeSet::new();
     for p in rust_sources(root, &["crates", "products", "src-tauri"]) {
@@ -272,10 +397,12 @@ fn production_consumers(
             continue;
         }
         let Ok(src) = fs::read_to_string(&p) else { continue };
-        let Some(prod) = production_prefix(&src) else {
-            skipped.insert(rel_path);
-            continue;
-        };
+        // 保守近似：`None` 时也要拿到一部分生产代码，不能整个跳过
+        // （否则含多处 `#[cfg(test)]` 的文件里，真实消费者会被漏掉）
+        let prod = production_prefix_conservative(&src);
+        if has_multiple_test_modules(&src) {
+            skipped.insert(rel_path.clone());
+        }
         if uses_symbol(prod, needle) {
             hits.insert(rel_path);
         }

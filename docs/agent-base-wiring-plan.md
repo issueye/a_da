@@ -2304,6 +2304,77 @@ if cancel.load(...) { ...返回 Cancelled... }
    但**跨进程委派的客户端**是桥接面的职责——所以实现放 `agent-rpc`。
    边界不是"禁止某库"，而是"**谁负责那件事**"。
 
+### 13.32 S6b PM agent 产品 + 声明驱动的总线装配（2026-10-09，已完成）
+
+**动机（这条最重要）**：S6 做完后，`GatewayAgentBus` **没有任何装配点**——
+`agent-host` 一律装配 `LocalAgentBus`。也就是说它是一段**没人用的实现**，
+正是本仓最忌讳的"看起来装上了"。
+
+#### 交付物
+
+| 位置 | 内容 |
+|---|---|
+| `agent-runtime/src/spec.rs` | `CapabilitySpec.delegation`（`local`/`gateway`）+ `AgentSpec.gateway.endpoint` |
+| `agent-host/src/lib.rs` | **按声明选总线**：`gateway` → `GatewayAgentBus`（深度 1）；`local` → `LocalAgentBus`（深度 0） |
+| `products/pm-assistant/`（新） | PM agent 产品：声明 `delegation = "gateway"`，`toolkits` **不含 `fs` 写工具包** |
+
+#### 三个设计决定
+
+**① 用哪个总线由声明决定，不由运行时探测。**
+它决定"这个实例在委派链上的位置"——那是**装配事实**。运行时探测会让"深度有界"变成运气。
+
+**② 声明了 gateway 却没给端点 → 装配失败，不回退本地。**
+回退会**静默改变行为**：产品说"我要跨节点协作"，实际退化成进程内临时子智能体。
+宁可起不来，也不要"看起来装上了"。（测试 `test_gateway_delegation_without_endpoint_fails_loudly` 钉住。）
+
+**③ PM 不声明 `fs` 写工具包——这是角色边界，不是权限配置。**
+PM 的价值是**拆解、分派、跟进、汇总**。给它文件写权限会让"PM 直接动手改代码"成为可能。
+要改代码就委派给 coding agent。（测试 `test_pm_does_not_declare_file_write_toolkits` 钉住。）
+
+#### 顺带补上一个门禁漏洞：`verify_spec` 的字段清单是硬编码的
+
+原来只检查 `["identity", "capabilities", "toolkits"]`——**新加的声明字段会从缝里溜过去**。
+S6b 加 `gateway` 时正是如此。修法两步：
+
+1. **清单表化**：`SPEC_FIELDS: &[(字段名, 判定消费者用的符号)]`，扩到全部 7 个字段；
+2. **完整性对账** `check_spec_field_coverage`：从 `spec.rs` **解析** `AgentSpec` 的字段，
+   与清单双向比对——**未登记 → 红；陈旧登记 → 红**。
+
+#### 🔴 修门禁时引出的回归（本轮第二个重要记录）
+
+修"消费者找不到"时我把 `production_prefix` 改成"多处 `#[cfg(test)]` 也返回保守近似"，
+结果 **`verify-wiring` 报 `Clock`/`ModelClient`/`ToolCatalog` 三个端口没有生产实现**。
+
+根因：我在改写时**漏掉了 `count == 0 → Some(src)` 分支**——
+于是所有**没有测试**的文件都返回了 `None`，被调用方（check D 的 `else { continue }`）**整个跳过**。
+`clock.rs` 只有 12 行、没有测试 → 被跳过 → 门以为它不存在。
+
+修法：**恢复 `production_prefix` 原语义**（0 个测试 → 整文件；1 个 → 前缀；多个 → `None`），
+另加 `production_prefix_conservative`（永远返回一段生产代码）**只给"找消费者"用**。
+并在文档注释里写明：`None` 时**不要** `unwrap_or(&src)`（那会连测试一起扫 → 假阳性）。
+
+→ 教训：**改一个被多处复用的判据函数，要先看所有调用方对 `None` 的假设**。
+这次的回归不是"新逻辑错"，而是"**旧调用方的约定被新语义破坏**"。
+
+#### 转绿证据
+
+| 证据 | 结果 |
+|---|---|
+| `cargo test --workspace` | **328 → 333 passed / 0 failed**（+5 PM 产品测试）；零编译警告 |
+| 六条门禁 | 全绿（`verify-spec` 现在对账 7 个字段；check D 恢复） |
+| **真产品冒烟** | `cargo run -p pm-assistant` → `委派模式: Gateway → ws://127.0.0.1:52353/rpc`；工具含 `invoke_subagent` |
+| **故障注入 A**：给 `AgentSpec` 加未登记字段 | ✘ `有字段不在 SPEC_FIELDS 里` |
+| **故障注入 B**：`SPEC_FIELDS` 留陈旧登记 | ✘ `陈旧登记（拼错或字段已删）` |
+
+#### S6b 期间的三条记录
+
+1. 🔴 **"实现完了"不等于"接上了"**。S6 的 `GatewayAgentBus` 写得对、测得全，
+   但**没有任何装配点**——直到 S6b 才有产品声明它。判据：**每个新实现都要指出"谁装配它"**，
+   否则就是本仓反复清理的"看起来装上了"。
+2. 🔴 **改共用判据函数要看所有调用方的约定**（见上）。
+3. **门禁的"清单"要能自我对账**。硬编码清单的失败方式是"忘了登记"，
+   而那不是靠"下次记得"能解决的——**必须让清单与事实双向比对**（未登记红、陈旧红）。
+
 
 ## 附录 A：缺口 → 任务反查表
 

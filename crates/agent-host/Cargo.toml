@@ -13,6 +13,8 @@ agent-adapter = { workspace = true }
 agent-toolkit = { workspace = true }
 agent-runtime = { workspace = true }
 agent_core = { workspace = true }
+# S6：网关委派总线的实现住在桥接面（跨进程委派的传输属于桥接面）
+agent-rpc = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

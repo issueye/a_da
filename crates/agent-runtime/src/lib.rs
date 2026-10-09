@@ -11,7 +11,7 @@ pub mod spec;
 
 pub use builder::{ProductBuilder, SpecError};
 pub use catalog::CompositeToolCatalog;
-pub use spec::{AgentSpec, CapabilitySpec, IdentitySpec, PolicySpec};
+pub use spec::{AgentSpec, CapabilitySpec, DelegationMode, GatewaySpec, IdentitySpec, PolicySpec};
 
 #[cfg(test)]
 mod tests {

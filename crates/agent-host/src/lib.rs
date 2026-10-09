@@ -270,24 +270,53 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
     // 的产品不该拿到委派工具——否则"声明说不支持子智能体，模型却看得到这个工具"。
     //
     // S3：工具不再自己跑子智能体，而是经 `AgentBus` 端口派活。
-    // 组合根这里装配的是**本地实现**；将来网关实现（S6）替换这一行，
-    // 而 `InvokeSubagentTool` 与 `agent-core` 都不用改。
+    // S6：**用哪个总线由声明决定**（`capabilities.delegation`）——
+    // 这决定"这个实例在委派链上的位置"，是装配事实，不是运行时探测出来的。
     let subagent_mgr = Arc::new(agent_core::subagents::SubagentManager::new());
-    let agent_bus: Arc<dyn agent_core::agent_bus::AgentBus> =
-        Arc::new(agent_core::subagents::LocalAgentBus::new(
-            workspace.clone(),
-            subagent_mgr.clone(),
-            node_config.clone(),
-            None,
-            // W4-T6：子智能体的工具按**同一份产品声明**装配，而不是另一张手写清单
-            spec.toolkits.clone(),
-        ));
+    let (agent_bus, delegation_depth): (Arc<dyn agent_core::agent_bus::AgentBus>, u32) =
+        match spec.capabilities.delegation {
+            agent_runtime::DelegationMode::Gateway => {
+                // 声明了经网关委派，却没说网关在哪 → **装配失败**，不是"回退到本地"。
+                //
+                // 回退会静默改变行为：产品声明"我要跨节点协作"，实际却退化成进程内临时子智能体。
+                // 宁可起不来，也不要"看起来装上了"。
+                let endpoint = spec
+                    .gateway
+                    .as_ref()
+                    .map(|g| g.endpoint.trim().to_string())
+                    .filter(|e| !e.is_empty())
+                    .ok_or_else(|| {
+                        SpecError::Violation(
+                            "产品声明 capabilities.delegation=\"gateway\"，但缺少 gateway.endpoint——\
+                             无法装配网关总线（不回退到本地：那会静默改变行为）"
+                                .to_string(),
+                        )
+                    })?;
+                tracing::info!("按产品声明装配**网关**委派总线 → {endpoint}");
+                (
+                    Arc::new(agent_rpc::gateway_bus::GatewayAgentBus::new(endpoint, 1)),
+                    // 经网关委派：本节点处在委派链第 1 层
+                    1,
+                )
+            }
+            agent_runtime::DelegationMode::Local => (
+                Arc::new(agent_core::subagents::LocalAgentBus::new(
+                    workspace.clone(),
+                    subagent_mgr.clone(),
+                    node_config.clone(),
+                    None,
+                    // W4-T6：子智能体的工具按**同一份产品声明**装配，而不是另一张手写清单
+                    spec.toolkits.clone(),
+                )),
+                // 进程内委派由 `NEVER_FOR_SUBAGENT` 拦，不使用深度
+                0,
+            ),
+        };
     let mut tools = tools;
     if caps.subagents {
         tools.push(Arc::new(agent_core::subagents::InvokeSubagentTool::new(
             agent_bus.clone(),
-            // S6：委派深度由**装配**给出（本地总线不使用；网关总线把它带进 gateway.delegate）
-            0,
+            delegation_depth,
         )));
     } else {
         tracing::info!("产品声明 capabilities.subagents=false → 不装配 invoke_subagent");
