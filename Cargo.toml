@@ -13,9 +13,7 @@ members = [
     "products/ada-skeleton",
     "products/pm-assistant",
     "tools/xtask",
-    # 核心与插件运行时（位于 crates/）
-    "crates/agent-core",
-    # S4 拆包：agent-core 的节点层与桥接层
+    # S4 拆包：节点层与桥接层
     "crates/agent-node",
     "crates/agent-rpc",
     # S5 网关：AGENT 管理平台 + 桥接面
@@ -74,7 +72,6 @@ agent-toolkit = { path = "crates/agent-toolkit" }
 agent-runtime = { path = "crates/agent-runtime" }
 agent-host = { path = "crates/agent-host" }
 agent-conformance = { path = "crates/agent-conformance" }
-agent_core = { path = "crates/agent-core" }
 agent-node = { path = "crates/agent-node" }
 agent-rpc = { path = "crates/agent-rpc" }
 agent-gateway = { path = "crates/agent-gateway" }

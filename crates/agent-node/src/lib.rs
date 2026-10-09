@@ -29,8 +29,3 @@ pub mod plugins;
 pub mod session;
 pub mod skills;
 pub mod subagents;
-
-// 基座兼容 shim（与 `agent-core` 时代同名同路径，调用点不动）
-pub mod ai;
-pub mod protocol;
-pub mod tools;

@@ -7,7 +7,7 @@
   "scripts": {
     "typecheck": "npm --prefix tauri-ui run typecheck",
     "test": "cargo test --workspace -- --test-threads=1",
-    "test:core": "cargo test -p agent_core -- --test-threads=1",
+    "test:core": "cargo test -p agent-rpc -p agent-node -- --test-threads=1",
     "verify:archive": "bun tools/verify-archive.ts",
     "verify": "cargo run -p xtask -- verify",
     "ship": "cargo run -p xtask -- ship",

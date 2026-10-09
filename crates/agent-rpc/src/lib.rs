@@ -21,8 +21,3 @@ pub mod gateway_bus;
 pub mod runner;
 pub mod server;
 pub mod state;
-
-// 基座兼容 shim（与 `agent-core` 时代同名同路径，调用点不动）
-pub mod ai;
-pub mod protocol;
-pub mod tools;
