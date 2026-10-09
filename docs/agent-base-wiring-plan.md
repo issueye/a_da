@@ -108,6 +108,8 @@ bun run typecheck
 | **P0-7** | 🔴 **节点层依赖 UI 投影**：审批闸门与委派工具直接读 `AgentStore`，而 `AgentStore.config` 的类型是 `agent_proto::ConfigSnapshot`（**线上 DTO**）——节点行为依据"发给界面的 JSON 形状"做决定 | `approval/gate.rs`（`store.config.approval`）、`subagents/tool.rs`（`store.provider`） | **✅ S2 已修**：`NodeConfigSource` 端口 + 桥接层唯一实现；新增 `verify-wiring` check H 防复发 |
 | **P1-18** | **委派语义未抽象**：`invoke_subagent` 直接调用 `run_subagent`（进程内），网关接入时会变成**第二套委派机制** | `subagents/tool.rs` 里内联的派活逻辑（profile 解析 / provider 校验 / 取消转发 / `run_subagent`） | **✅ S3 已修**：`AgentBus` 端口 + `LocalAgentBus`（行为零变化，原有测试未改）；S6 换 `GatewayAgentBus` 实现即可 |
 | **P2-8** | **`agent-core` 是 12,190 行的巨石**：混着节点行为、协议管道、UI 投影、兼容 shim 四类职责；依赖 base+proto+adapter+toolkit+runtime 全部 + `ts_engine` + `reqwest` + `tungstenite`——想用"会话/审批"的人被迫拉进一个 WS 服务器 | 实测耦合矩阵（§13.29） | **✅ S4 已拆**：`agent-node`（5,892 行）+ `agent-rpc`（5,266 行）+ `agent-core` facade（677 行）；新增 `verify-wiring` check I 守方向 |
+| P2-9 | 🔴 **`src-tauri`（UI 壳）在当 agent 的进程 supervisor**：它自己找二进制、spawn、解析 `A_DA_HOST_READY`、记 `{port, token, child_pid}`。职责错位，而且这就是"远程接入"做不到的原因（关掉界面就把 agent 带走了） | `src-tauri/src/lib.rs:239-286`；`get_core_info` | **⏳ S5 已在网关侧重建**（`agent-gateway/src/supervisor.rs`）；**桌面端尚未切换**——切换时必须**删掉 `src-tauri` 那份**，否则就是两份实现 |
+| **P1-19** | **缺"多实例管理平台"**：全仓无实例注册表（`grep AgentRegistry` = 0），没有"有哪些 agent、什么状态"的记录处 | W2 实测 | **✅ S5 已建**：`agent-gateway/src/registry.rs`（`Starting/Ready/Unhealthy/Stopped` + 按工作区派生稳定 id + `redacted()` 剥 token）；check J 守边界 |
 
 ---
 
@@ -2105,6 +2107,118 @@ invoke_subagent (Tool) ──► AgentBus 端口 ──┬─ LocalAgentBus（�
 4. **拆包的收益立刻可见**：`agent-core` 从"什么依赖都拉"的 12k 行巨石，
    变成 677 行转发；`agent-node` 现在**不依赖 `tokio-tungstenite`、不依赖 `reqwest`**，
    可以被网关当作"一个可管理的节点"直接依赖。
+
+### 13.30 S5 建 `a-da-gateway` 管理平台（2026-10-09，已完成）
+
+**新增 `crates/agent-gateway`（5 个文件）+ `a-da-gateway` 二进制**，三合一：
+
+| 平台 | 模块 | 内容 |
+|---|---|---|
+| **AGENT 管理平台** | `registry.rs` | 实例注册表：`{id, product, workspace, endpoint, status, pid, startedAt}`；状态机 `Starting/Ready/Unhealthy/Stopped` |
+| | `supervisor.rs` | 生命周期：找二进制 → spawn → 等 `A_DA_HOST_READY {port}` → **再登记**；`ensure_agent` 复用或拉起 |
+| **桥接平台** | `relay.rs` | 客户端 ↔ 网关 ↔ agent：`gateway.*` 自己答，**其余原样透传** |
+| 交互平台 | — | S6 |
+
+#### 关键设计一：注册表只装"网关自己的事实"
+
+| 事实 | 所有者 |
+|---|---|
+| 进程 / 端口 / 健康状态 | **网关**（`registry.rs`） |
+| 线程 / 消息 / 工具回执 / 会话状态 | **agent 节点**（网关**不得**缓存） |
+
+所以注册表里**没有** `threads` / `messages` 这类字段。这不是"没想到"，是**刻意的**——
+INV-8「一个事实一个所有者」；一旦网关有了会话状态副本，它就会开始漂移。
+
+#### 关键设计二：登记顺序是"先就绪、后登记"
+
+`spawn_agent` 的顺序是「起进程 → 等就绪 → **再登记**」。反过来的话，注册表里会存在
+一个"登记了但连不上"的窗口——那正是**路由打到黑洞**的成因。
+测试 `test_spawn_reports_not_ready_with_stderr_tail` 直接断言"未就绪的实例绝不进注册表"。
+
+#### 关键设计三：会话亲和放在**连接级**，不是帧级
+
+客户端连上来时按 `workspace` 找（或拉起）实例，然后**整条连接绑定**到它。
+帧级路由需要解析每个方法的参数去猜目标——更多状态、更多出错面；
+连接级只需要一次决定。副产品：**同一工作区的多个客户端落到同一个 agent**
+（否则两份状态互相覆盖），不同工作区天然隔离。
+
+#### 关键设计四：透传的"不作为"才是正确行为
+
+`gateway.*` 之外的方法**原样转发**（不改 `id` / `seq` / `call_id`）。
+用**前缀白名单**而不是黑名单：新增协议方法时网关不用改，也不会误吞节点的方法。
+
+#### 新增门禁 check J：网关边界
+
+| 判据 | 内容 |
+|---|---|
+| 依赖 | `agent-gateway/Cargo.toml` 不得出现 `agent-node` / `agent-rpc` / `agent-base` / `agent-adapter` / `agent-toolkit` / `agent-runtime` / `agent_core`（三种写法都抓：内联、无空格、`[dependencies.X]` 段） |
+| 代码 | 生产段不得出现 `agent_base` / `agent_node` / `AgentRuntime` / `ToolCatalog` / `SessionStore` / `ApprovalGate` |
+
+**为什么必须机器守门**：这条边界"看起来"很自然，但**没有任何编译期约束**——
+`agent-node` 是同一个 workspace 里的合法依赖，加一行 Cargo.toml + 一条 `use` 就拿到了一切。
+门的作用是**把"顺手缓存一份线程列表"变成红灯**。
+
+#### 交付物
+
+| 文件 | 内容 |
+|---|---|
+| `registry.rs` | 注册表 + 工作区规范化 + **`redacted()` 剥 token** |
+| `supervisor.rs` | 二进制查找 + spawn + 就绪解析 + 看门狗 + `ensure_agent`（带双检锁） |
+| `relay.rs` | 握手 + 双向透传 + `gateway.{status,listAgents,attach,detach}` |
+| `main.rs` | `a-da-gateway` 二进制，打印 `A_DA_GATEWAY_READY {port}`（与宿主同一约定，便于复用发现逻辑） |
+| `tests/gateway_e2e.rs` | 桩宿主的密封端到端测试（3 条） |
+
+#### 转绿证据
+
+**① 密封端到端（进 `cargo test`，不依赖外部二进制）**：
+
+| 断言 | 证明的事 |
+|---|---|
+| 收到宿主推的种子快照且 payload 未被改动 | **agent → 客户端**转发通了（含连接期事件） |
+| `gateway.status` 由网关回答、响应不含 token | **管理面自己答** |
+| `session.initialize` 由桩宿主回答且方法名未变 | **其余方法原样透传** |
+| `gateway.listAgents` 报 1 个 `ready` | **注册表被真正填充**（路由有落点） |
+| 未知 `gateway.*` → `MethodNotFound` | 不静默 |
+| 二进制帧 → 明确报错 | 不静默丢弃（静默会让客户端干等） |
+
+**② 真 agent 往返（手工验证，记录在案）**：起 `a-da-gateway`，用 .NET `ClientWebSocket` 连上：
+
+```text
+网关就绪: port=33958 (pid 5296)
+① 种子事件 method=evt.state.snapshot seq=0 线程数=23        ← 真 agent 的项目状态
+② gateway.status => pid=5296 product=ada-coding agentCount=1
+③ session.initialize => sessionId=c26063ec-… proto=1.0 product=ada-coding images=False
+④ gateway.listAgents => count=1 status=ready pid=18880
+   endpoint=ws://127.0.0.1:33968/rpc   ← 无 token（含 token? False）
+✔ 网关退出后 2s 内 agent 被父进程看门狗回收（无孤儿进程）
+```
+
+③ `cargo test --workspace`：**305 → 318 passed / 0 failed**（+10 单元 +3 端到端）；六条门禁全绿。
+
+#### 故障注入（四种，全部证明能红）
+
+| 注入 | 结果 |
+|---|---|
+| `Cargo.toml` 内联 `agent-node = { … }` | ✘ `依赖了 agent-node——网关是管理/路由平面` |
+| `Cargo.toml` 段写法 `[dependencies.agent-toolkit]` | ✘ 同上（段写法也被抓） |
+| 源码 `use agent_node::session::SessionManager` | ✘ `引用了 agent_node——网关边界被打破` |
+| 源码引用 `AgentRuntime` | ✘ `引用了 AgentRuntime——网关边界被打破` |
+
+#### S5 期间的四条记录
+
+1. 🔴 **"注入无效"要先分清是门的问题还是注入的问题**。第一次注入 Cargo.toml 时我用了
+   `[package.metadata]` 里的字符串——**它不匹配"依赖位置"的判据**（那个判据是对的：
+   注释/metadata 里提 `agent-node` 是在**说明边界**，不是破坏边界）。改用真正的依赖行才验到。
+   同类：S4 那次注入造出了依赖环、门根本没跑。**判据：注入后先确认门跑了没有。**
+2. **补偿性重复要主动消除**：`supervisor.rs` 与 `src-tauri/src/lib.rs` 现在各有一份
+   spawn + `A_DA_HOST_READY` 解析。本次**保留**了 `src-tauri` 那份（桌面端还没切到网关），
+   但已在 §5 登记为待清事项——**切桌面端时必须删掉它那份**，否则就是"两份实现"。
+3. **端到端测试要有密封版本**。真 agent 往返依赖 `ada-coding` 二进制是否已构建，
+   放进 `cargo test` 会变成"有时红有时绿"的脆弱门。所以：**密封桩宿主测试进 `cargo test`，
+   真往返手工验证**——并且真往返的记录留在本文件里（不是"我跑过了"）。
+4. **PowerShell 会把单元素 JSON 数组解包成对象**。`$resp.result.agents[0]` 报
+   "Cannot index into a null array"——**不是网关的 bug**，是 `ConvertFrom-Json` 的行为。
+   判据：**解析失败时先看原始响应**（`ConvertTo-Json` 出来的是什么），别急着改代码。
 
 
 ## 附录 A：缺口 → 任务反查表

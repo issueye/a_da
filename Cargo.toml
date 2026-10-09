@@ -17,6 +17,8 @@ members = [
     # S4 拆包：agent-core 的节点层与桥接层
     "crates/agent-node",
     "crates/agent-rpc",
+    # S5 网关：AGENT 管理平台 + 桥接面
+    "crates/agent-gateway",
     "crates/ts-engine",
     "src-tauri",
 ]
@@ -74,4 +76,5 @@ agent-conformance = { path = "crates/agent-conformance" }
 agent_core = { path = "crates/agent-core" }
 agent-node = { path = "crates/agent-node" }
 agent-rpc = { path = "crates/agent-rpc" }
+agent-gateway = { path = "crates/agent-gateway" }
 ts_engine = { path = "crates/ts-engine" }

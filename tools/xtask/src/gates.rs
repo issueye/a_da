@@ -403,6 +403,7 @@ pub fn verify_wiring() -> anyhow::Result<Report> {
     check_event_emitters(&root, &mut rep)?;
     check_no_ui_store_in_node_layer(&root, &mut rep)?;
     check_layer_direction(&root, &mut rep)?;
+    check_gateway_boundary(&root, &mut rep)?;
 
     Ok(rep)
 }
@@ -1010,6 +1011,122 @@ fn check_layer_direction(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
     rep.notes.push(format!(
         "分层方向：`{NODE_CRATE}`（{scanned} 个文件）不依赖 `{RPC_CRATE}`、不含协议管道；\
          Cargo.toml 方向 ✔"
+    ));
+    Ok(())
+}
+
+/// 网关 crate（S5）。
+const GATEWAY_CRATE: &str = "crates/agent-gateway";
+
+/// 网关**不得直接依赖**的工作区 crate。
+///
+/// 网关是**管理/路由平面**，不是 agent：它不含引擎（INV-1：单一引擎）、
+/// 不缓存会话状态（INV-8：一个事实一个所有者）。所以它只该依赖**线协议**
+/// （`agent-proto`）——连 `agent-base` 都不需要（那是引擎与领域层）。
+///
+/// 一旦网关能 `use agent_node::…`，它就有了"顺手缓存点会话状态"的能力，
+/// 而那是本仓最想避免的漂移（同一事实两个所有者）。
+const GATEWAY_FORBIDDEN_DEPS: &[&str] = &[
+    "agent-node",
+    "agent-rpc",
+    "agent-base",
+    "agent-adapter",
+    "agent-toolkit",
+    "agent-runtime",
+    "agent_core",
+];
+
+/// 网关源码里不得出现的符号（含 crate 名与"跑 agent"才会用到的类型）。
+const GATEWAY_FORBIDDEN_SYMBOLS: &[&str] = &[
+    "agent_base",
+    "agent_node",
+    "agent_rpc",
+    "agent_adapter",
+    "agent_toolkit",
+    "agent_runtime",
+    "AgentRuntime",
+    "ToolCatalog",
+    "SessionStore",
+    "ApprovalGate",
+];
+
+/// J. 网关边界（S5 新增）：网关是管理/路由平面，不含引擎、不缓存会话状态。
+///
+/// 两条判据：
+/// 1. **依赖**：`crates/agent-gateway/Cargo.toml` 不得出现 [`GATEWAY_FORBIDDEN_DEPS`]；
+/// 2. **代码**：`crates/agent-gateway/src/**` 的生产段不得出现 [`GATEWAY_FORBIDDEN_SYMBOLS`]。
+///
+/// 为什么必须机器守门：这条边界"看起来"很自然，但它**没有任何编译期约束**——
+/// `agent-node` 是同一个 workspace 里的合法依赖，加一行 Cargo.toml + 一条 `use`
+/// 就能让网关拿到节点的一切。等到有人图省事"顺手在网关缓存一份线程列表"时，
+/// 就已经晚了。这条门的价值在于**把"顺手"变成红灯**。
+fn check_gateway_boundary(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
+    // 1. 依赖级
+    let manifest = read(root, &format!("{GATEWAY_CRATE}/Cargo.toml"))?;
+    for line in manifest.lines() {
+        let t = line.trim_start();
+        if t.starts_with('#') {
+            continue;
+        }
+        for dep in GATEWAY_FORBIDDEN_DEPS {
+            // 三种依赖写法都要抓：
+            //   1. 内联：`agent-node = { workspace = true }`
+            //   2. 无空格：`agent-node= { … }`
+            //   3. 段写法：`[dependencies.agent-node]` / `[dev-dependencies.agent-node]`
+            // 只匹配依赖位置（而不是"任何提及"），所以注释与 metadata 里的提及不算——
+            // 那些是在**说明边界**，不是破坏边界。
+            let inline = t.starts_with(&format!("{dep} ")) || t.starts_with(&format!("{dep}="));
+            let section = t
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .split('.')
+                .last()
+                .is_some_and(|last| last.trim() == *dep)
+                && t.starts_with('[');
+            if inline || section {
+                rep.violations.push(format!(
+                    "`{GATEWAY_CRATE}/Cargo.toml` 依赖了 `{dep}`——网关是**管理/路由平面**，\
+                     不含引擎、不缓存会话状态。网关只该依赖 `agent-proto`（线协议）；\
+                     要读节点的事实请走协议，不要走链接"
+                ));
+            }
+        }
+    }
+
+    // 2. 代码级
+    let src = root.join(GATEWAY_CRATE).join("src");
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_rs(&src, &mut files);
+    let mut scanned = 0usize;
+    for p in &files {
+        let Ok(s) = fs::read_to_string(p) else { continue };
+        let prod = production_prefix(&s).unwrap_or(&s);
+        scanned += 1;
+        for (i, line) in prod.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            for sym in GATEWAY_FORBIDDEN_SYMBOLS {
+                if line.contains(sym) {
+                    let rel = p.strip_prefix(root).unwrap_or(p).display().to_string();
+                    rep.violations.push(format!(
+                        "`{rel}:{}` 引用了 `{sym}`——**网关边界被打破**。\
+                         网关不得链接节点/引擎（INV-1）也不得持有会话状态（INV-8）",
+                        i + 1
+                    ));
+                }
+            }
+        }
+    }
+
+    if scanned == 0 {
+        rep.violations.push(format!("`{GATEWAY_CRATE}/src` 一个文件都没扫到——审计失效"));
+    }
+
+    rep.notes.push(format!(
+        "网关边界：`{GATEWAY_CRATE}`（{scanned} 个文件）只依赖线协议；\
+         不含引擎/工具目录/会话存储（禁止依赖 {} 项）",
+        GATEWAY_FORBIDDEN_DEPS.len()
     ));
     Ok(())
 }
