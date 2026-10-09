@@ -11,3 +11,11 @@ tmp
 target/
 agent_core/target/
 
+# 工具/编辑器的本地状态目录（不是项目内容）
+.commandcode/
+
+# tauri-ui 用 npm（见 tauri-ui/package-lock.json）；根 package.json 的 typecheck
+# 走 `npm --prefix tauri-ui`，但用 bun 执行时会顺手在 tauri-ui 下生成一个
+# bun.lock——它与实际包管理器不符，属误产物，不入库。
+tauri-ui/bun.lock
+
