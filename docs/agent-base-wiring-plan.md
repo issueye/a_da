@@ -2280,7 +2280,7 @@ if cancel.load(...) { ...返回 Cancelled... }
 - **缺省（0）即拒绝**，不默认成 1——与 `FailDirection::Closed` 同原则：拿不到依据时不放开；
 - 被拒绝的派活**绝不能已经打到目标**（测试断言目标侧 `sends` 为空）。
 
-**诚实登记的遗留**：被网关派活的节点，其**自身**深度目前无法从网关获知
+**（S6 补完已解决，见 §13.36）** 被网关派活的节点，其**自身**深度目前无法从网关获知
 （需要新增 `thread.create` 参数或 spawn 参数把深度带过去）。
 当前靠"产品声明决定用哪个总线"保证叶子产品不反向委派到网关，所以深度**由构造有界**；
 但"网关委派的目标自己再声明网关委派"这条路还没有机制挡住。已登记为 S6b 待办。
@@ -2485,6 +2485,73 @@ S7a 用同一个回调把 `?workspace=` 与 `?token=` 一起解析了——**桩
 | **多轮端到端** | 两轮派活 → 桩宿主**只被建过 1 次线程**、收到**2 次**任务（顺序正确）、两轮回复分别为「第 1 轮」「第 2 轮」 |
 | 未知线程 | 带 `threadId` 时**绝不**再建新线程（不会静默变成新对话），任务直接发到目标 |
 | 本地总线契约 | `thread_id: Some` → `ok=false`、理由含「一次性」与「gateway」、`details == None`（未进入执行） |
+
+### 13.36 S6 补完：把「深度约束」做成真的（2026-10-09，已完成）
+
+**这是 §13.31 里两次登记的遗留，本轮做掉了。**
+
+#### 原来的洞
+
+网关能强制"一次派活的深度"（`gateway.delegate { depth }` + `MAX_DELEGATION_DEPTH`），
+但它**管不到下一跳**：目标节点 B 自己再发起委派时，携带的深度来自**它的装配声明**
+（`GatewayAgentBus::new(_, 1)`），于是又变成 1。
+
+结果：A→B→C→D… **每一跳都是 1**，上限形同虚设。
+（今天不会触发，因为只有 PM 声明了 gateway 委派、而 PM 不是任何东西的委派目标——
+但**机制上没挡住**，那就不算约束。）
+
+#### 闭环链路
+
+```text
+网关 thread.create { delegationDepth: 1 }
+  → 宿主把深度记在**线程**上（AgentStore.delegation_depths）
+  → DelegationDepthSource 按 thread_id 查出来
+  → 工具算出"我这一跳" = 我的深度 + 1
+  → GatewayAgentBus 带进 gateway.delegate → 网关按上限拒绝
+```
+
+#### 交付物
+
+| 位置 | 内容 |
+|---|---|
+| `agent-node/src/delegation_depth.rs`（新） | 端口 `DelegationDepthSource`（**异步**：实现要读异步锁后的会话态）+ `FixedDelegationDepth` |
+| `agent-rpc/src/state/store.rs` | `AgentStore.delegation_depths: BTreeMap<thread_id, u32>`（**不进快照**） |
+| `agent-rpc/src/server/dispatch.rs` | `thread.create` 读 `delegationDepth` 并记账 |
+| `agent-rpc/src/server/delegation_depth.rs`（新） | `StoreBackedDelegationDepth`（桥接面实现） |
+| `agent-node/src/subagents/tool.rs` | 深度 = `max(装配下限, 线程深度 + 1)` |
+| `agent-gateway/src/delegate.rs` | 建线程时把 `delegationDepth` 发出去 |
+| `agent-host/src/lib.rs` | 有会话态就用它造深度源（`HostOptions` 本来就有 `with_store`，**不用改宿主二进制**） |
+| `tools/xtask/src/gates.rs` | check H 的 `NODE_LAYER_PORTS` 加 `DelegationDepthSource` |
+
+#### 两个设计决定
+
+**① 深度按「线程」记，不按「进程」记。**
+同一个节点进程同时服务多个线程：用户直接连的（深度 0）与被委派的（深度 ≥1）。
+按进程记会把"用户那一轮"也算成被委派的。
+
+**② 端口方法是异步的。**
+实现要读 `AgentStore`（在 tokio `RwLock` 后面）。同步签名会逼实现去加锁阻塞——
+那是把异步的复杂度偷偷塞给实现方。
+
+#### 转绿证据
+
+| 证据 | 结果 |
+|---|---|
+| `cargo test --workspace` | **360 → 365 passed / 0 failed**；零编译警告 |
+| 六条门禁 + `typecheck` | 全绿 / exit 0（check H 现在盯 3 个端口的生产实现） |
+| **逐跳增长**（单元，4 组） | 线程深度 0→第 1 层；1→第 2 层；2→第 3 层；装配下限 5 > 线程深度+1 时取 5 |
+| 无深度源（离线宿主） | 第 1 层（**正确**的默认：没有会话态 = 不是被派活的） |
+| **深度上线路**（端到端） | 两次派活 depth=1 / depth=2 → 桩宿主在 `thread.create` 里**原样收到** `delegationDepth: 1 / 2` |
+| 网关上限 | 深度 0 与 >2 都被拒（§13.31 的用例，仍绿） |
+
+**闭环的三段各有独立用例**：工具算出 n+1（单元）、网关把 n 带上线路（端到端）、
+网关拒绝 >2（单元）。**不靠"拼起来应该对"**。
+
+#### 一条记录
+
+**"机制上没挡住"不等于"约束"**。原来那版深度约束在**今天的产品组合**下不会出问题，
+所以很容易被当成"已经做完了"。判据：**约束要按"最坏配置"验证，而不是按"当前配置"**——
+"今天没人这么配"不是约束，是运气。
 
 #### S6c 的一条记录
 

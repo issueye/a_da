@@ -58,16 +58,36 @@ pub struct InvokeSubagentTool {
     /// 本地总线不使用它（进程内递归由 `NEVER_FOR_SUBAGENT` 拦）；
     /// 网关总线把它带进 `gateway.delegate`，由网关强制上限。
     /// 装配期给值而不是运行时猜——深度是"这个实例在委派链上的位置"，属于装配事实。
+    ///
+    /// S6 补完：它现在只是**下限**。真正决定深度的是 [`DelegationDepthSource`]——
+    /// 网关派活时通过 `thread.create { delegationDepth }` 告诉宿主"这一轮在第几层"，
+    /// 于是"被派活的节点再派活"会正确地变成第 n+1 层（否则每一跳都重置为 1，上限形同虚设）。
     delegation_depth: u32,
+    /// 线程深度来源（S6 补完）。`None` = 没有会话态的宿主（离线/测试）。
+    depth_source: Option<Arc<dyn crate::delegation_depth::DelegationDepthSource>>,
 }
 
 impl InvokeSubagentTool {
     /// 描述符取自注册表——实现了却没声明会**立刻 panic**，而不是造出一个没有描述符的工具。
     pub fn new(bus: Arc<dyn AgentBus>, delegation_depth: u32) -> Self {
+        Self::with_depth_source(bus, delegation_depth, None)
+    }
+
+    /// 带上线程深度来源（组合根用）。
+    pub fn with_depth_source(
+        bus: Arc<dyn AgentBus>,
+        delegation_depth: u32,
+        depth_source: Option<Arc<dyn crate::delegation_depth::DelegationDepthSource>>,
+    ) -> Self {
         let descriptor = crate::tools::find_tool_descriptor("invoke_subagent")
             .expect("`invoke_subagent` 必须在 ToolDescriptor 注册表里（INV-3）")
             .clone();
-        Self { descriptor, bus, delegation_depth }
+        Self {
+            descriptor,
+            bus,
+            delegation_depth,
+            depth_source,
+        }
     }
 }
 
@@ -120,8 +140,17 @@ impl Tool for InvokeSubagentTool {
                     additional_context,
                     // 父会话取消令牌：取消必须**真的**传到 agent 内部（W4-T3）
                     cancel: Some(ctx.cancel),
-                    // 委派深度：跨网关时由网关强制上限（S6）
-                    depth: self.delegation_depth,
+                    // 委派深度（S6 补完）：
+                    // 我这一跳 = max(装配下限, 我这个线程的深度 + 1)。
+                    // "线程深度 + 1" 是关键：被第 1 层派活驱动起来的节点，
+                    // 它发起的委派是第 2 层——否则每一跳都重置为 1，网关的上限形同虚设。
+                    depth: {
+                        let mine = match &self.depth_source {
+                            Some(src) => src.depth_for_thread(ctx.thread_id).await,
+                            None => 0,
+                        };
+                        self.delegation_depth.max(mine.saturating_add(1))
+                    },
                     // 多轮续跑：把上一轮回执里的 `details.threadId` 传回来即可续跑（S6）
                     thread_id: call.args.get("thread_id").and_then(|v| v.as_str()),
                 })
@@ -158,6 +187,7 @@ mod tests {
     use super::*;
     use agent_base::domain::{AgentEvent, DenialKind};
     use agent_base::ports::{CancelToken, EventSink, Scope};
+    use crate::agent_bus::{AgentHandle, DispatchOutcome, DispatchRequest};
     use serde_json::json;
     use std::path::PathBuf;
 
@@ -183,6 +213,31 @@ mod tests {
 
     fn ctx_parts(ws: &std::path::Path) -> (RootScope, NoCancel, NoopSink) {
         (RootScope(ws.to_path_buf()), NoCancel, NoopSink)
+    }
+
+    /// 记录"被派活时携带的深度"的总线替身（S6 补完测试用）。
+    struct RecordingDepthBus {
+        seen: Arc<std::sync::Mutex<Vec<u32>>>,
+    }
+    impl AgentBus for RecordingDepthBus {
+        fn list_agents(&self) -> BoxFuture<'_, Vec<AgentHandle>> {
+            Box::pin(async { Vec::new() })
+        }
+        fn dispatch<'a>(&'a self, req: DispatchRequest<'a>) -> BoxFuture<'a, DispatchOutcome> {
+            self.seen.lock().unwrap().push(req.depth);
+            Box::pin(async {
+                DispatchOutcome {
+                    ok: true,
+                    summary: "ok".into(),
+                    error_message: None,
+                    details: None,
+                }
+            })
+        }
+    }
+
+    fn test_ctx() -> (RootScope, NoCancel, NoopSink) {
+        ctx_parts(&std::env::temp_dir())
     }
 
     /// S3：工具经 `AgentBus` 端口派活。测试替身因此缩成"一个固定值配置端口 + 本地总线"。
@@ -267,5 +322,78 @@ mod tests {
             "错误信息应指出是 provider 配置问题：{}",
             r.output
         );
+    }
+
+    /// **深度必须逐跳增长**（S6 补完的核心断言）。
+    ///
+    /// 被第 1 层派活驱动起来的线程，它发起的委派必须是**第 2 层**。
+    /// 否则每一跳都重置为 1，网关的上限（`MAX_DELEGATION_DEPTH`）形同虚设。
+    #[tokio::test]
+    async fn test_depth_grows_with_the_thread_depth() {
+        use crate::delegation_depth::FixedDelegationDepth;
+
+        for (thread_depth, assembly_floor, expected) in [
+            // 用户直接连的线程（深度 0）→ 我这一跳是第 1 层
+            (0u32, 0u32, 1u32),
+            // 被第 1 层派活驱动 → 我这一跳是第 2 层
+            (1, 0, 2),
+            // 被第 2 层派活驱动 → 第 3 层（超过网关上限，网关会拒）
+            (2, 0, 3),
+            // 装配下限更高时取它（保守的一侧）
+            (1, 5, 5),
+        ] {
+            let seen = Arc::new(std::sync::Mutex::new(Vec::<u32>::new()));
+            let bus = Arc::new(RecordingDepthBus {
+                seen: seen.clone(),
+            });
+            let tool = InvokeSubagentTool::with_depth_source(
+                bus,
+                assembly_floor,
+                Some(Arc::new(FixedDelegationDepth(thread_depth))),
+            );
+            let call = ToolCall {
+                id: "c1".into(),
+                name: "invoke_subagent".into(),
+                args: serde_json::json!({ "subagent_id": "explore", "task": "t" }),
+            };
+            let (scope, cancel, sink) = test_ctx();
+            let ctx = ToolContext {
+                scope: &scope,
+                cancel: &cancel,
+                events: &sink,
+                thread_id: "t-depth",
+            };
+            let _ = tool.execute(&call, &ctx).await;
+            let got = seen.lock().unwrap().clone();
+            assert_eq!(
+                got,
+                vec![expected],
+                "线程深度 {thread_depth} + 装配下限 {assembly_floor} → 期望第 {expected} 层"
+            );
+        }
+    }
+
+    /// 没有深度来源（离线宿主）→ 第 1 层（用户直接连的默认）。
+    #[tokio::test]
+    async fn test_depth_without_source_is_one() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<u32>::new()));
+        let tool = InvokeSubagentTool::new(
+            Arc::new(RecordingDepthBus { seen: seen.clone() }),
+            0,
+        );
+        let call = ToolCall {
+            id: "c1".into(),
+            name: "invoke_subagent".into(),
+            args: serde_json::json!({ "subagent_id": "explore", "task": "t" }),
+        };
+        let (scope, cancel, sink) = test_ctx();
+        let ctx = ToolContext {
+            scope: &scope,
+            cancel: &cancel,
+            events: &sink,
+            thread_id: "t-depth",
+        };
+        let _ = tool.execute(&call, &ctx).await;
+        assert_eq!(seen.lock().unwrap().clone(), vec![1]);
     }
 }

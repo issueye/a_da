@@ -314,10 +314,22 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
         };
     let mut tools = tools;
     if caps.subagents {
-        tools.push(Arc::new(agent_core::subagents::InvokeSubagentTool::new(
-            agent_bus.clone(),
-            delegation_depth,
-        )));
+        // S6 补完：深度来源。有会话态就用它（网关派活会在线程上记深度），
+        // 没有就退化成固定 0 —— 那是**正确**的默认（没有会话态 = 不是被派活的）。
+        // `store` 在这个作用域里已经是 `Arc<RwLock<AgentStore>>`（上面 unwrap_or_else 保证）
+        let depth_source: Arc<dyn agent_core::delegation_depth::DelegationDepthSource> =
+            Arc::new(
+                agent_rpc::server::delegation_depth::StoreBackedDelegationDepth::new(
+                    store.clone(),
+                ),
+            );
+        tools.push(Arc::new(
+            agent_core::subagents::InvokeSubagentTool::with_depth_source(
+                agent_bus.clone(),
+                delegation_depth,
+                Some(depth_source),
+            ),
+        ));
     } else {
         tracing::info!("产品声明 capabilities.subagents=false → 不装配 invoke_subagent");
     }

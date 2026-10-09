@@ -169,7 +169,7 @@ pub async fn delegate(
 
     let result = tokio::time::timeout(
         timeout,
-        run_delegation(instance, task, delegation_id, thread_id, cancel, registry.clone()),
+        run_delegation(instance, task, delegation_id, depth, thread_id, cancel, registry.clone()),
     )
     .await;
 
@@ -185,6 +185,7 @@ async fn run_delegation(
     instance: &AgentInstance,
     task: &str,
     delegation_id: &str,
+    depth: u32,
     resume_thread: Option<String>,
     cancel: Arc<AtomicBool>,
     _registry: Arc<DelegationRegistry>,
@@ -221,11 +222,16 @@ async fn run_delegation(
         info!("派活 {delegation_id} 续跑线程 {tid}");
         thread_id = Some(tid);
     } else {
+        // 建线程时**把深度告诉目标**：目标据此知道"我是被第几层派活驱动起来的"，
+        // 它自己再派活时就会带 n+1（否则每一跳都重置为 1，网关的上限形同虚设）。
         send_frame(
             &mut tx,
             &mut next_id,
             "thread.create",
-            serde_json::json!({ "title": format!("委派 {delegation_id}") }),
+            serde_json::json!({
+                "title": format!("委派 {delegation_id}"),
+                "delegationDepth": depth,
+            }),
         )
         .await?;
     }

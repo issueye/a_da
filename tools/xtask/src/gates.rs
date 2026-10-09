@@ -981,6 +981,8 @@ const NODE_LAYER_PORTS: &[(&str, &str)] = &[
     // (端口名, 端口定义所在文件（相对 crates/agent-node/src）)
     ("NodeConfigSource", "node_config.rs"),
     ("AgentBus", "agent_bus.rs"),
+    // S6 补完：被派活的节点靠它知道自己"在第几层"
+    ("DelegationDepthSource", "delegation_depth.rs"),
 ];
 
 /// H. 节点层不得依赖 UI 投影（S2 新增，S4 扩到整个 crate）。

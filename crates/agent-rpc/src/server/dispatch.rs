@@ -741,8 +741,17 @@ impl Dispatcher {
                     .and_then(|v| v.as_str())
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty());
+                // S6 补完：驱动方（网关）在这里告诉我们"这一轮是第几层委派"。
+                // 不传 = 用户直接连的（深度 0）。
+                let delegation_depth = params
+                    .get("delegationDepth")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32);
                 let mut store = self.store.write().await;
                 let id = store.create_thread(title.clone(), ws_param.clone());
+                if let Some(d) = delegation_depth {
+                    store.delegation_depths.insert(id.clone(), d);
+                }
                 if let Some(m) = mode_param {
                     let parsed_mode = match m.to_lowercase().as_str() {
                         "plan" => AgentMode::Plan,

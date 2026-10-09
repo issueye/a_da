@@ -33,6 +33,8 @@ struct StubLog {
     aborts: Mutex<Vec<String>>,
     /// 收到过几次 `thread.create`（多轮续跑的判据：续跑**不该**再建线程）
     creates: Mutex<Vec<String>>,
+    /// 每次 `thread.create` 里携带的 `delegationDepth`（S6 补完：深度要真的上线路）
+    depths: Mutex<Vec<Option<u64>>>,
     /// 被要求"这一轮跑多久"（模拟真实 agent 的耗时）
     turn_delay_ms: u64,
     /// 是否已经跑完一轮（决定快照里线程是否还在 running）
@@ -84,6 +86,10 @@ async fn stub_agent_host(log: Arc<StubLog>) -> u16 {
                         "thread.create" => {
                             let tid = "t-stub".to_string();
                             log.creates.lock().unwrap().push(tid.clone());
+                            log.depths
+                                .lock()
+                                .unwrap()
+                                .push(req.pointer("/params/delegationDepth").and_then(|v| v.as_u64()));
                             thread_id = Some(tid.clone());
                             let _ = out_tx.send(
                                 serde_json::json!({"jsonrpc":"2.0","id":id,"result":{"id":tid}})
@@ -520,4 +526,41 @@ async fn test_multi_turn_unknown_thread_fails_loudly() {
         "续跑任务必须直接发到目标（不经过 thread.create）"
     );
     let _ = resp;
+}
+
+/// **深度要真的上线路**（S6 补完的闭环最后一环）。
+///
+/// 网关在建线程时必须把"这一轮是第几层"告诉目标——否则被派活的节点
+/// 无从知道自己该以第 n+1 层再派活，上限形同虚设。
+#[tokio::test]
+async fn test_delegation_depth_reaches_the_target_on_the_wire() {
+    let log = Arc::new(StubLog { turn_delay_ms: 20, ..Default::default() });
+    let (_gw, port) = gateway_with_stub(log.clone()).await;
+    let (mut tx, mut rx) = connect(port).await;
+
+    send(
+        &mut tx,
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 61, "method": "gateway.delegate",
+            "params": { "task": "第一层派活", "depth": 1 }
+        }),
+    )
+    .await;
+    let _ = recv_id(&mut rx, 61).await;
+
+    send(
+        &mut tx,
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 62, "method": "gateway.delegate",
+            "params": { "task": "第二层派活", "depth": 2 }
+        }),
+    )
+    .await;
+    let _ = recv_id(&mut rx, 62).await;
+
+    assert_eq!(
+        log.depths.lock().unwrap().clone(),
+        vec![Some(1), Some(2)],
+        "每次建线程都要把 depth 原样带上线路（目标据此算下一跳）"
+    );
 }

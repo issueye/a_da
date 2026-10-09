@@ -33,6 +33,10 @@ pub fn next_id(prefix: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct AgentStore {
     pub threads: Vec<Thread>,
+    /// **按线程**记录"被第几层委派驱动"（S6 补完）。`0`/缺省 = 用户直接连的。
+    ///
+    /// 不进快照：它是**驱动方的记账**，界面不需要它（INV-8：一个事实一个所有者）。
+    pub delegation_depths: std::collections::BTreeMap<String, u32>,
     pub active_id: String,
     pub running_thread_ids: Vec<String>,
     pub waiting_thread_ids: Vec<String>,
@@ -283,6 +287,7 @@ impl AgentStore {
 
         Self {
             threads,
+            delegation_depths: std::collections::BTreeMap::new(),
             active_id: active_id.clone(),
             running_thread_ids: Vec::new(),
             waiting_thread_ids: Vec::new(),

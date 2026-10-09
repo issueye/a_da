@@ -23,6 +23,7 @@
 pub mod agent_bus;
 pub mod approval;
 pub mod checkpoint;
+pub mod delegation_depth;
 pub mod node_config;
 pub mod plugins;
 pub mod session;

@@ -40,6 +40,7 @@ pub use agent_rpc::{ai, protocol, tools};
 pub use agent_runtime as runtime;
 
 // ── 根级再导出（保留 `agent_core::X` 历史路径）────────────────────────────
+pub use agent_node::delegation_depth;
 pub use agent_node::checkpoint::{
     CheckpointEntry, CheckpointFile, CheckpointManager, CheckpointRecord, RevertOutcome,
     RevertRecord,
