@@ -128,6 +128,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-node"
+version = "0.1.0"
+dependencies = [
+ "agent-adapter",
+ "agent-base",
+ "agent-proto",
+ "agent-runtime",
+ "agent-toolkit",
+ "anyhow",
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "ts_engine",
+ "uuid",
+]
+
+[[package]]
 name = "agent-proto"
 version = "0.1.0"
 dependencies = [
@@ -135,6 +154,30 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "agent-rpc"
+version = "0.1.0"
+dependencies = [
+ "agent-adapter",
+ "agent-base",
+ "agent-node",
+ "agent-proto",
+ "agent-runtime",
+ "agent-toolkit",
+ "anyhow",
+ "base64 0.22.1",
+ "futures-util",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-stream",
+ "tokio-tungstenite",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -172,26 +215,13 @@ version = "0.1.0"
 dependencies = [
  "agent-adapter",
  "agent-base",
+ "agent-node",
  "agent-proto",
+ "agent-rpc",
  "agent-runtime",
  "agent-toolkit",
- "anyhow",
- "base64 0.22.1",
- "chrono",
- "clap",
- "futures-util",
- "reqwest 0.12.28",
- "serde",
  "serde_json",
- "sha2",
- "similar",
- "thiserror 2.0.21",
  "tokio",
- "tokio-stream",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
- "ts_engine",
  "uuid",
 ]
 
@@ -806,10 +836,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
- "js-sys",
  "num-traits",
  "serde",
- "wasm-bindgen",
  "windows-link",
 ]
 

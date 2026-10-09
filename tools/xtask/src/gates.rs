@@ -402,6 +402,7 @@ pub fn verify_wiring() -> anyhow::Result<Report> {
     check_frontend_reconnect(&root, &mut rep)?;
     check_event_emitters(&root, &mut rep)?;
     check_no_ui_store_in_node_layer(&root, &mut rep)?;
+    check_layer_direction(&root, &mut rep)?;
 
     Ok(rep)
 }
@@ -413,7 +414,7 @@ fn check_dispatch_arms(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
     let methods_src = read(root, "crates/agent-proto/src/methods.rs")?;
     let consts = parse_proto_consts(&methods_src);
     let all_methods = parse_all_methods(&methods_src);
-    let dispatch_src = read(root, "crates/agent-core/src/server/dispatch.rs")?;
+    let dispatch_src = read(root, "crates/agent-rpc/src/server/dispatch.rs")?;
 
     let Some(region) = match_region(&dispatch_src, "match method") else {
         rep.violations
@@ -461,7 +462,7 @@ fn check_dispatch_arms(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
 /// 行为侧的逐名相等断言在 `agent-core` 的
 /// `test_builtin_catalog_matches_registry_exactly`（那里能真的调 dispatch）。
 fn check_builtin_catalog(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
-    let dispatch_src = read(root, "crates/agent-core/src/server/dispatch.rs")?;
+    let dispatch_src = read(root, "crates/agent-rpc/src/server/dispatch.rs")?;
     let Some(region) = match_region(&dispatch_src, "PLUGIN_BUILTIN_CATALOG =>") else {
         rep.violations.push(
             "dispatch.rs 里找不到 `PLUGIN_BUILTIN_CATALOG =>` 臂，无法审计内置工具目录".to_string(),
@@ -524,7 +525,7 @@ fn check_descriptor_reachability(root: &Path, rep: &mut Report) -> anyhow::Resul
 
     // (2) core 侧 Tool 实现（宿主耦合工具）
     let mut from_core = BTreeSet::new();
-    for path in rust_sources(root, &["crates/agent-core/src"]) {
+    for path in rust_sources(root, &["crates/agent-node/src", "crates/agent-rpc/src", "crates/agent-core/src"]) {
         let Ok(src) = std::fs::read_to_string(&path) else { continue };
         // 只认**真的实现了 Tool** 的文件，避免把名字字面量出现在任意文件里当成"可达"
         if !src.contains("impl Tool for") {
@@ -831,14 +832,13 @@ fn check_event_emitters(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 节点层目录（S2）：这些是**领域行为**所在处，不得依赖 UI 投影 `AgentStore`。
+/// 节点层 crate（S2 引入、S4 升级为**整个 crate**）。
 ///
-/// 为什么用"目录清单"而不是"文件清单"：S4 拆包时这些目录会整体搬进 `agent-node`，
-/// 清单跟着目录走即可；而且新增文件自动纳入检查，不用逐个登记。
-///
-/// 目前只有这两个（S2 范围内实测**仅**这两处有倒置）。后续收敛 `session` /
-/// `checkpoint` / `plugins` / `skills` 时，把目录名加进来即可。
-const NODE_LAYER_DIRS: &[&str] = &["approval", "subagents"];
+/// S2 时这里是一张目录清单（`["approval", "subagents"]`），因为那时还没有 crate 边界。
+/// S4 拆出 `agent-node` 之后，**crate 边界就是清单**——扫整个 `crates/agent-node/src/**`，
+/// 新增模块自动纳入，不用维护清单。
+const NODE_CRATE: &str = "crates/agent-node";
+const RPC_CRATE: &str = "crates/agent-rpc";
 
 /// 节点层端口：**每个都必须在端口文件之外有生产实现**。
 ///
@@ -846,76 +846,80 @@ const NODE_LAYER_DIRS: &[&str] = &["approval", "subagents"];
 /// 「改用端口」这句话就没有落点——那正是本仓反复清理的"看起来装上了"。
 /// 表是显式的（而不是自动扫），因为"哪个 trait 算节点层端口"是设计决策；
 /// 每加一个端口，就要在这一行给出它的**生产实现**。
+///
+/// 端口与实现**可能分处两个 crate**（`NodeConfigSource` 定义在节点、实现在桥接），
+/// 所以查找范围是**两个 crate 的源码**。
 const NODE_LAYER_PORTS: &[(&str, &str)] = &[
-    // (端口名, 端口定义所在文件（相对 crates/agent-core/src）)
+    // (端口名, 端口定义所在文件（相对 crates/agent-node/src）)
     ("NodeConfigSource", "node_config.rs"),
     ("AgentBus", "agent_bus.rs"),
 ];
 
-/// H. 节点层不得依赖 UI 投影（S2 新增）。
+/// H. 节点层不得依赖 UI 投影（S2 新增，S4 扩到整个 crate）。
 ///
-/// 判据：`crates/agent-core/src/{approval,subagents}/**` 的**生产段**里，
-/// 非注释行不得出现 `AgentStore`。
+/// 判据：`crates/agent-node/src/**` 的**生产段**里，非注释行不得出现 `AgentStore`。
 ///
 /// 为什么这条重要：`approval/gate.rs` 决定"要不要问用户"、`subagents/tool.rs` 决定
 /// "子智能体用哪个模型"——都是**领域行为**。它们原先直接读 `AgentStore`（给界面看的投影），
 /// 而 `AgentStore.config` 的类型是 `agent_proto::ConfigSnapshot`（**线上 DTO**）。
 /// 也就是说：**节点行为在依据"准备发给界面的那串 JSON 的形状"做决定**。
-/// 这是拆包（S4）之前必须先断掉的依赖——否则 `agent-node` 的 crate 边界是假的。
 ///
 /// 注释不算依赖（注释里提到 `AgentStore` 是在**解释这段历史**，是有价值的信息）。
 fn check_no_ui_store_in_node_layer(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
-    let src_root = root.join("crates/agent-core/src");
+    let node_src = root.join(NODE_CRATE).join("src");
+    let rpc_src = root.join(RPC_CRATE).join("src");
     let mut scanned = 0usize;
 
-    for dir in NODE_LAYER_DIRS {
-        let mut files: Vec<PathBuf> = Vec::new();
-        collect_rs(&src_root.join(dir), &mut files);
-        for p in &files {
-            let Ok(src) = fs::read_to_string(p) else { continue };
-            let prod = production_prefix(&src).unwrap_or(&src);
-            scanned += 1;
-            for (i, line) in prod.lines().enumerate() {
-                if line.trim_start().starts_with("//") {
-                    continue; // 注释是在解释历史，不是依赖
-                }
-                if line.contains("AgentStore") {
-                    let rel = p.strip_prefix(root).unwrap_or(p).display().to_string();
-                    rep.violations.push(format!(
-                        "节点层 `{dir}/` 的 `{rel}:{}` 引用了 UI 投影 `AgentStore`——分层倒置。\
-                         请改用 `crate::node_config::NodeConfigSource` 端口；\
-                         唯一知情者是 `server::StoreBackedNodeConfig`（桥接层）",
-                        i + 1
-                    ));
-                }
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_rs(&node_src, &mut files);
+    for p in &files {
+        let Ok(src) = fs::read_to_string(p) else { continue };
+        let prod = production_prefix(&src).unwrap_or(&src);
+        scanned += 1;
+        for (i, line) in prod.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue; // 注释是在解释历史，不是依赖
+            }
+            if line.contains("AgentStore") {
+                let rel = p.strip_prefix(root).unwrap_or(p).display().to_string();
+                rep.violations.push(format!(
+                    "节点层 `{rel}:{}` 引用了 UI 投影 `AgentStore`——分层倒置。\
+                     请改用 `crate::node_config::NodeConfigSource` 端口；\
+                     唯一知情者是 `agent-rpc` 的 `server::StoreBackedNodeConfig`",
+                    i + 1
+                ));
             }
         }
     }
 
     if scanned == 0 {
         rep.violations.push(format!(
-            "节点层目录清单 {NODE_LAYER_DIRS:?} 一个文件都没扫到——审计失效（不会静默通过）"
+            "`{NODE_CRATE}/src` 一个文件都没扫到——审计失效（不会静默通过）"
         ));
     }
 
     // 正向断言：每个节点层端口都必须有**生产实现**（否则「改用端口」没有落点）。
     //
-    // 注意：端口与实现可能**同名不同路径**（`src/node_config.rs` vs `src/server/node_config.rs`），
-    // 所以只能按**完整路径**排除端口本身，不能按文件名。
-    let mut core_files: Vec<PathBuf> = Vec::new();
-    collect_rs(&src_root, &mut core_files);
+    // 注意：端口与实现可能**同名不同路径**（`agent-node/src/node_config.rs`
+    // vs `agent-rpc/src/server/node_config.rs`），所以只能按**完整路径**排除端口本身。
+    let mut all_files: Vec<PathBuf> = Vec::new();
+    collect_rs(&node_src, &mut all_files);
+    collect_rs(&rpc_src, &mut all_files);
     let mut ok_ports: Vec<String> = Vec::new();
     for (trait_name, port_rel) in NODE_LAYER_PORTS {
-        let port_file = src_root.join(port_rel);
+        let port_file = node_src.join(port_rel);
         if !port_file.exists() {
             rep.violations.push(format!(
-                "节点层端口 `{trait_name}` 的端口文件 `crates/agent-core/src/{port_rel}` 不存在"
+                "节点层端口 `{trait_name}` 的端口文件 `{NODE_CRATE}/src/{port_rel}` 不存在"
             ));
             continue;
         }
         let needle_a = format!("impl {trait_name} for");
-        let needle_b = format!("impl crate::{} for", port_rel.trim_end_matches(".rs").replace('/', "::"));
-        let found = core_files
+        let needle_b = format!(
+            "impl crate::{} for",
+            port_rel.trim_end_matches(".rs").replace('/', "::")
+        );
+        let found = all_files
             .iter()
             .filter(|p| **p != port_file)
             .filter_map(|p| fs::read_to_string(p).ok())
@@ -933,11 +937,79 @@ fn check_no_ui_store_in_node_layer(root: &Path, rep: &mut Report) -> anyhow::Res
     }
 
     rep.notes.push(format!(
-        "节点层（{}）已断 UI 投影依赖：扫了 {scanned} 个文件，0 处倒置；\
+        "节点层（`{NODE_CRATE}`）已断 UI 投影依赖：扫了 {scanned} 个文件，0 处倒置；\
          端口生产实现 {} 个（{}）",
-        NODE_LAYER_DIRS.join(" / "),
         ok_ports.len(),
         ok_ports.join(", ")
+    ));
+    Ok(())
+}
+
+/// I. 分层方向（S4 新增）：`agent-node` 不得依赖 `agent-rpc`，也不得带协议管道。
+///
+/// 为什么需要**机器守门**：拆包当天靠"我看了耦合矩阵"是对的，但**方向会在后续改动里悄悄反转**——
+/// 有人在节点里 `use agent_rpc::state::AgentStore`，编译器**不会**报错（`agent-rpc` 是合法依赖），
+/// 只有 Cargo.toml 里多一行、代码里多一条 `use`。等到发现时，crate 边界已经名存实亡。
+///
+/// 两条判据：
+/// 1. **crate 级**：`crates/agent-node/Cargo.toml` 不得出现 `agent-rpc`（依赖方向单向）；
+/// 2. **代码级**：`crates/agent-node/src/**` 的生产段不得出现 `agent_rpc` / `agent-rpc`；
+/// 3. **协议管道**：节点不得出现 `tokio_tungstenite`——WS 是桥接层的事（终点是网关）。
+fn check_layer_direction(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
+    // 1. crate 级方向
+    let manifest = read(root, &format!("{NODE_CRATE}/Cargo.toml"))?;
+    for line in manifest.lines() {
+        let t = line.trim_start();
+        if t.starts_with('#') {
+            continue;
+        }
+        if t.contains("agent-rpc") {
+            rep.violations.push(format!(
+                "`{NODE_CRATE}/Cargo.toml` 依赖了 `agent-rpc`——**依赖方向反了**。\
+                 单向约定是 `agent-rpc → agent-node`；节点要读 UI 投影状态，\
+                 请改用端口（`NodeConfigSource` 等），而不是依赖桥接层"
+            ));
+        }
+    }
+
+    // 2/3. 代码级方向 + 协议管道
+    let node_src = root.join(NODE_CRATE).join("src");
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_rs(&node_src, &mut files);
+    let mut scanned = 0usize;
+    for p in &files {
+        let Ok(src) = fs::read_to_string(p) else { continue };
+        let prod = production_prefix(&src).unwrap_or(&src);
+        scanned += 1;
+        for (i, line) in prod.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            let rel = p.strip_prefix(root).unwrap_or(p).display().to_string();
+            if line.contains("agent_rpc") {
+                rep.violations.push(format!(
+                    "`{rel}:{}` 引用了 `agent_rpc`——**依赖方向反了**（单向：agent-rpc → agent-node）",
+                    i + 1
+                ));
+            }
+            if line.contains("tokio_tungstenite") {
+                rep.violations.push(format!(
+                    "`{rel}:{}` 引用了 `tokio_tungstenite`——**节点不含协议管道**。\
+                     WS 是桥接层（`agent-rpc`，终点是网关）的事；\
+                     节点只暴露领域行为，传输形态由宿主决定",
+                    i + 1
+                ));
+            }
+        }
+    }
+
+    if scanned == 0 {
+        rep.violations.push(format!("`{NODE_CRATE}/src` 一个文件都没扫到——审计失效"));
+    }
+
+    rep.notes.push(format!(
+        "分层方向：`{NODE_CRATE}`（{scanned} 个文件）不依赖 `{RPC_CRATE}`、不含协议管道；\
+         Cargo.toml 方向 ✔"
     ));
     Ok(())
 }

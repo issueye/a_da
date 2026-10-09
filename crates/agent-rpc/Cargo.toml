@@ -1,0 +1,31 @@
+[package]
+name = "agent-rpc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "JSON-RPC 桥接面：分发、WS 宿主、UI 投影与快照（过渡形态，终点是并入网关）"
+
+[dependencies]
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tokio-stream = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+base64 = { workspace = true }
+reqwest = { workspace = true }
+
+# 基座分层
+agent-base = { workspace = true }
+agent-proto = { workspace = true }
+agent-adapter = { workspace = true }
+agent-toolkit = { workspace = true }
+agent-runtime = { workspace = true }
+
+# 节点：桥接面只依赖节点，绝不反向
+agent-node = { workspace = true }

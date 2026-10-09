@@ -3,18 +3,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex, RwLock};
 
-use crate::approval::ApprovalManager;
+use agent_node::approval::ApprovalManager;
 use crate::ai::ProviderConfig;
-use crate::checkpoint::CheckpointManager;
-use crate::plugins::PluginManager;
+use agent_node::checkpoint::CheckpointManager;
+use agent_node::plugins::PluginManager;
 use crate::protocol::*;
 use crate::runner::{run_agent_turn, AgentLoopEvent};
 use crate::server::emitter::StateBroadcaster;
 use crate::server::fs_service;
-use crate::session::SessionManager;
-use crate::skills::SkillManager;
+use agent_node::session::SessionManager;
+use agent_node::skills::SkillManager;
 use crate::state::{generate_snapshot, AgentStore};
-use crate::subagents::SubagentManager;
+use agent_node::subagents::SubagentManager;
 
 /// 把 `ToolDescriptor` 投影成界面用的内置工具条目。
 ///
@@ -68,7 +68,7 @@ fn thread_workspace(store: &AgentStore, thread_id: &str) -> String {
 
 /// 持久化落盘应用全局配置（包含多供应商列表与激活供应商）
 fn save_app_config(store: &AgentStore) -> Result<(), String> {
-    let cfg_file = crate::session::get_config_path();
+    let cfg_file = agent_node::session::get_config_path();
     if let Some(parent) = cfg_file.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -271,7 +271,7 @@ pub struct EngineInjection {
 /// 口径：
 /// - `Some(outcome)` → `ok: true` + **恢复/删除/跳过/失效**四份清单（界面可列出"恢复了哪些文件"）；
 /// - `None` → `ok: false` + 原因（该会话没有对应检查点，**什么都没回滚**）。
-fn revert_response(outcome: Option<crate::checkpoint::RevertOutcome>) -> serde_json::Value {
+fn revert_response(outcome: Option<agent_node::checkpoint::RevertOutcome>) -> serde_json::Value {
     match outcome {
         Some(o) => serde_json::json!({
             "ok": true,
@@ -965,7 +965,7 @@ impl Dispatcher {
                 let entries = self.checkpoint_mgr.load(thread_id, false)
                     .map_err(|e| ProtocolError::internal_error(e.to_string()))?
                     .unwrap_or_default();
-                let count = entries.iter().filter(|e| matches!(e, crate::checkpoint::CheckpointEntry::Checkpoint(_))).count();
+                let count = entries.iter().filter(|e| matches!(e, agent_node::checkpoint::CheckpointEntry::Checkpoint(_))).count();
                 Ok(serde_json::json!({ "count": count }))
             }
 
@@ -1068,8 +1068,8 @@ impl Dispatcher {
             }
 
             DEBUG_HOST_INFO => {
-                let home = crate::session::get_app_home();
-                let cfg_file = crate::session::get_config_path();
+                let home = agent_node::session::get_app_home();
+                let cfg_file = agent_node::session::get_config_path();
                 Ok(serde_json::json!({
                     "homeDir": home.to_string_lossy(),
                     "extensionsDir": home.join("extensions").to_string_lossy(),
@@ -1123,7 +1123,7 @@ impl Dispatcher {
             }
 
             CONFIG_GET => {
-                let cfg_file = crate::session::get_config_path();
+                let cfg_file = agent_node::session::get_config_path();
                 let store = self.store.read().await;
 
                 let mut saved = serde_json::json!({
@@ -1624,7 +1624,7 @@ impl Dispatcher {
 
                     let ws = thread.workspace.clone();
 
-                    let compact_entry = crate::session::SessionCompactEntry {
+                    let compact_entry = agent_node::session::SessionCompactEntry {
                         entry_type: "compact".to_string(),
                         id: compact_id,
                         timestamp: now as i64,
@@ -1924,7 +1924,7 @@ impl Dispatcher {
                     handle.abort();
                 }
 
-                crate::approval::global_question_manager().cancel_all();
+                agent_node::approval::global_question_manager().cancel_all();
 
                 // 3. 立即在 store 中清空该会话所有排队消息、闭合流式卡片与未完成工具卡片并置为非运行态
                 let mut store = self.store.write().await;
@@ -2049,18 +2049,18 @@ impl Dispatcher {
                 let mut resolved = self.approval_mgr.resolve_approval(tool_item_id, approved);
 
                 // 容错兜底：若该工具调用为等待用户作答的提问（如 ask_user），联动唤醒提问协调器
-                if !resolved && crate::approval::global_question_manager().has_pending(tool_item_id) {
+                if !resolved && agent_node::approval::global_question_manager().has_pending(tool_item_id) {
                     if approved {
-                        resolved = crate::approval::global_question_manager().resolve_answer(
+                        resolved = agent_node::approval::global_question_manager().resolve_answer(
                             tool_item_id,
-                            crate::approval::QuestionAnswer {
+                            agent_node::approval::QuestionAnswer {
                                 choice: None,
                                 text: None,
                                 answered_by: "user".to_string(),
                             },
                         );
                     } else {
-                        crate::approval::global_question_manager().cancel(tool_item_id);
+                        agent_node::approval::global_question_manager().cancel(tool_item_id);
                         resolved = true;
                     }
                 }
@@ -2109,9 +2109,9 @@ impl Dispatcher {
                     bc.broadcast_immediate().await;
                 }
 
-                let resolved = crate::approval::global_question_manager().resolve_answer(
+                let resolved = agent_node::approval::global_question_manager().resolve_answer(
                     call_id,
-                    crate::approval::QuestionAnswer {
+                    agent_node::approval::QuestionAnswer {
                         choice,
                         text,
                         answered_by: "user".to_string(),
@@ -2176,7 +2176,7 @@ impl Dispatcher {
                     }),
                 ];
 
-                let home = crate::session::get_app_home();
+                let home = agent_node::session::get_app_home();
                 let global_prompts = home.join("prompts");
                 if let Ok(entries) = std::fs::read_dir(&global_prompts) {
                     for entry in entries.flatten() {
@@ -2248,7 +2248,7 @@ impl Dispatcher {
                 let dir = if scope == "workspace" && !ws.is_empty() {
                     PathBuf::from(ws).join(".a-da").join("prompts")
                 } else {
-                    crate::session::get_app_home().join("prompts")
+                    agent_node::session::get_app_home().join("prompts")
                 };
                 let _ = std::fs::create_dir_all(&dir);
                 let file_path = dir.join(format!("{}.md", name));
@@ -2465,7 +2465,7 @@ mod tests {
 
     #[test]
     fn test_revert_response_carries_the_restored_file_list() {
-        let outcome = crate::checkpoint::RevertOutcome {
+        let outcome = agent_node::checkpoint::RevertOutcome {
             restored: vec!["a.rs".to_string(), "b.rs".to_string()],
             deleted: vec!["c.tmp".to_string()],
             skipped: vec!["d.bin".to_string()],
@@ -2726,12 +2726,12 @@ mod tests {
         let store = Arc::new(tokio::sync::RwLock::new(AgentStore::new("E:/codes/default_ws".to_string())));
         let dispatcher = Dispatcher::new(
             store,
-            Arc::new(crate::session::SessionManager::new(Some(std::path::PathBuf::from("E:/codes/default_ws")))),
-            Arc::new(crate::checkpoint::CheckpointManager::new(None)),
-            Arc::new(crate::subagents::SubagentManager::new()),
-            Arc::new(crate::approval::ApprovalManager::new()),
-            Arc::new(crate::plugins::PluginManager::new()),
-            Arc::new(crate::skills::SkillManager::new()),
+            Arc::new(agent_node::session::SessionManager::new(Some(std::path::PathBuf::from("E:/codes/default_ws")))),
+            Arc::new(agent_node::checkpoint::CheckpointManager::new(None)),
+            Arc::new(agent_node::subagents::SubagentManager::new()),
+            Arc::new(agent_node::approval::ApprovalManager::new()),
+            Arc::new(agent_node::plugins::PluginManager::new()),
+            Arc::new(agent_node::skills::SkillManager::new()),
             None,
         );
 
@@ -2774,12 +2774,12 @@ mod tests {
     #[tokio::test]
     async fn test_approval_decide_resolves_pending_question() {
         let store = Arc::new(tokio::sync::RwLock::new(AgentStore::new("E:/codes/default_ws".to_string())));
-        let session_mgr = Arc::new(crate::session::SessionManager::new(Some(std::path::PathBuf::from("E:/codes/default_ws"))));
-        let checkpoint_mgr = Arc::new(crate::checkpoint::CheckpointManager::new(None));
-        let subagent_mgr = Arc::new(crate::subagents::SubagentManager::new());
-        let approval_mgr = Arc::new(crate::approval::ApprovalManager::new());
-        let plugin_mgr = Arc::new(crate::plugins::PluginManager::new());
-        let skill_mgr = Arc::new(crate::skills::SkillManager::new());
+        let session_mgr = Arc::new(agent_node::session::SessionManager::new(Some(std::path::PathBuf::from("E:/codes/default_ws"))));
+        let checkpoint_mgr = Arc::new(agent_node::checkpoint::CheckpointManager::new(None));
+        let subagent_mgr = Arc::new(agent_node::subagents::SubagentManager::new());
+        let approval_mgr = Arc::new(agent_node::approval::ApprovalManager::new());
+        let plugin_mgr = Arc::new(agent_node::plugins::PluginManager::new());
+        let skill_mgr = Arc::new(agent_node::skills::SkillManager::new());
 
         let dispatcher = Dispatcher::new(
             store.clone(),
@@ -2793,8 +2793,8 @@ mod tests {
         );
 
         let call_id = "test_ask_approval_fallback";
-        let rx = crate::approval::global_question_manager().register_waiter(call_id);
-        assert!(crate::approval::global_question_manager().has_pending(call_id));
+        let rx = agent_node::approval::global_question_manager().register_waiter(call_id);
+        assert!(agent_node::approval::global_question_manager().has_pending(call_id));
 
         // 模拟前端调用 approval.decide
         let req = serde_json::json!({
@@ -2807,18 +2807,18 @@ mod tests {
 
         let ans = rx.await.expect("应该唤醒等待者");
         assert_eq!(ans.answered_by, "user");
-        assert!(!crate::approval::global_question_manager().has_pending(call_id));
+        assert!(!agent_node::approval::global_question_manager().has_pending(call_id));
     }
 
     #[tokio::test]
     async fn test_session_initialize_returns_capabilities_and_snapshot_has_seq() {
         let store = Arc::new(tokio::sync::RwLock::new(AgentStore::new("E:/codes/default_ws".to_string())));
-        let session_mgr = Arc::new(crate::session::SessionManager::new(None));
-        let checkpoint_mgr = Arc::new(crate::checkpoint::CheckpointManager::new(None));
-        let subagent_mgr = Arc::new(crate::subagents::SubagentManager::new());
-        let approval_mgr = Arc::new(crate::approval::ApprovalManager::new());
-        let plugin_mgr = Arc::new(crate::plugins::PluginManager::new());
-        let skill_mgr = Arc::new(crate::skills::SkillManager::new());
+        let session_mgr = Arc::new(agent_node::session::SessionManager::new(None));
+        let checkpoint_mgr = Arc::new(agent_node::checkpoint::CheckpointManager::new(None));
+        let subagent_mgr = Arc::new(agent_node::subagents::SubagentManager::new());
+        let approval_mgr = Arc::new(agent_node::approval::ApprovalManager::new());
+        let plugin_mgr = Arc::new(agent_node::plugins::PluginManager::new());
+        let skill_mgr = Arc::new(agent_node::skills::SkillManager::new());
 
         let dispatcher = Dispatcher::new(
             store,

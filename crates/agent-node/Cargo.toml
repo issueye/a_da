@@ -1,0 +1,26 @@
+[package]
+name = "agent-node"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Agent 节点：会话、审批、检查点、委派、插件与技能（无协议管道、无 UI 投影）"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+base64 = { workspace = true }
+
+# 独立的 TS 脚本与转译引擎（插件沙箱）
+ts_engine = { workspace = true }
+
+# 基座分层
+agent-base = { workspace = true }
+agent-proto = { workspace = true }
+agent-adapter = { workspace = true }
+agent-toolkit = { workspace = true }
+agent-runtime = { workspace = true }

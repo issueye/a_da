@@ -2,7 +2,7 @@
 //!
 //! 这是**唯一**知道"节点配置其实存在 `AgentStore` 里"的地方。
 //! 节点层（`approval/gate.rs`、`subagents/tool.rs`）只认
-//! [`crate::node_config::NodeConfigSource`]，不认 `AgentStore`。
+//! [`agent_node::node_config::NodeConfigSource`]，不认 `AgentStore`。
 //!
 //! 放在 `server/`（桥接层）而不是节点层的理由：`AgentStore` 是**给界面看的投影**，
 //! "投影里恰好带着节点要用的字段"是实现细节，只有桥接层该知道。
@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use crate::node_config::NodeConfigSource;
+use agent_node::node_config::NodeConfigSource;
 use crate::state::AgentStore;
 
 /// 从 `AgentStore` 读节点配置（生产实现）。
@@ -56,7 +56,7 @@ impl NodeConfigSource for StoreBackedNodeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node_config::NodeConfigSource;
+    use agent_node::node_config::NodeConfigSource;
 
     fn store_with(mode: agent_proto::ApprovalMode) -> Arc<RwLock<AgentStore>> {
         let mut st = AgentStore::new("E:/node_config_test".to_string());

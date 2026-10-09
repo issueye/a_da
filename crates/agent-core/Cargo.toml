@@ -4,32 +4,23 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+description = "兼容 facade：转发 agent-node 与 agent-rpc，保留历史导入路径"
 
 [dependencies]
 tokio = { workspace = true }
-tokio-tungstenite = { workspace = true }
-tokio-stream = { workspace = true }
-futures-util = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
-clap = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-anyhow = { workspace = true }
-thiserror = { workspace = true }
-similar = { workspace = true }
-uuid = { workspace = true }
-chrono = { workspace = true }
-sha2 = { workspace = true }
-base64 = { workspace = true }
-reqwest = { workspace = true }
 
-# 引入独立的 TS 脚本与转译引擎
-ts_engine = { workspace = true }
-
-# 基座分层（按 docs/agent-base-design.md v0.2 §3）：agent_core 正在收敛为产品装配 + 兼容 facade
 agent-base = { workspace = true }
 agent-proto = { workspace = true }
 agent-adapter = { workspace = true }
 agent-toolkit = { workspace = true }
 agent-runtime = { workspace = true }
+
+# S4 拆包后的两层
+agent-node = { workspace = true }
+agent-rpc = { workspace = true }
+
+[dev-dependencies]
+# facade 原样保留了拆包前的全部测试（这是"切分没改变行为"的强回归信号），
+# 它们用到 uuid 构造线程/会话 id。
+uuid = { workspace = true }

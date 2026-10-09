@@ -59,7 +59,7 @@ impl Default for AgentStore {
 impl AgentStore {
     /// 用进程默认的应用目录端口构造（组合根/生产路径）。
     pub fn new(workspace_path: String) -> Self {
-        Self::with_home(workspace_path, crate::session::app_home())
+        Self::with_home(workspace_path, agent_node::session::app_home())
     }
 
     /// 注入应用目录端口构造（测试与组合根用）。
@@ -221,7 +221,7 @@ impl AgentStore {
             }
         }
 
-        let session_mgr = crate::session::SessionManager::new(None);
+        let session_mgr = agent_node::session::SessionManager::new(None);
         let restored_threads = session_mgr.restore_all_threads();
 
         let (threads, active_id, current_workspace) = if !restored_threads.is_empty() {

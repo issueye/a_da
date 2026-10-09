@@ -63,16 +63,16 @@ impl WsHostServer {
             }
         });
 
-        let session_mgr = Arc::new(crate::session::SessionManager::new(None));
-        let checkpoint_mgr = Arc::new(crate::checkpoint::CheckpointManager::new(None));
-        let subagent_mgr = Arc::new(crate::subagents::SubagentManager::new());
+        let session_mgr = Arc::new(agent_node::session::SessionManager::new(None));
+        let checkpoint_mgr = Arc::new(agent_node::checkpoint::CheckpointManager::new(None));
+        let subagent_mgr = Arc::new(agent_node::subagents::SubagentManager::new());
         // 审批 waiter 表：注入了引擎就用**它的**那张（UI 决策必须落到同一张表）
         let approval_mgr = match &injection {
             Some(i) => i.approval_mgr.clone(),
-            None => Arc::new(crate::approval::ApprovalManager::new()),
+            None => Arc::new(agent_node::approval::ApprovalManager::new()),
         };
-        let plugin_mgr = Arc::new(crate::plugins::PluginManager::new());
-        let skill_mgr = Arc::new(crate::skills::SkillManager::new());
+        let plugin_mgr = Arc::new(agent_node::plugins::PluginManager::new());
+        let skill_mgr = Arc::new(agent_node::skills::SkillManager::new());
         let seq = Arc::new(AtomicU64::new(0));
         let broadcaster = crate::server::emitter::StateBroadcaster::new(
             store.clone(),

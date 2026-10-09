@@ -3,20 +3,23 @@
 给在本仓库工作的 AI 智能体与协作者的注意事项。**本文件会被自动注入系统提示词**，因此只留
 「接手就必须知道的事」；深度约定全文已迁至 **[docs/agent-conventions.md](docs/agent-conventions.md)**。
 
-项目速览：**纯 Rust 微内核**（`crates/agent-core/`：主循环、工具执行、插件沙箱、会话与检查点持久化）+
-**Tauri 桌面宿主**（`src-tauri/`，同进程起 `WsHostServer`）+ **React 前端**（`tauri-ui/`）；
-`crates/ts-engine/` 是独立的 TS 执行引擎，只作插件运行时。
+项目速览：**纯 Rust 微内核**（`crates/agent-base/`：零 IO 的领域层 + 11 个端口 + **唯一**多轮引擎 `run_turn`）
++ **两层拆包**（S4）：`crates/agent-node/`（节点：会话 / 审批 / 检查点 / 委派 / 插件 / 技能）
+与 `crates/agent-rpc/`（桥接面：JSON-RPC 分发 + WS 宿主 + UI 投影），
+`crates/agent-core/` 已收敛为**兼容 facade**（只转发，~680 行）+ **Tauri 桌面宿主**（`src-tauri/`）
++ **React 前端**（`tauri-ui/`）；`crates/ts-engine/` 是独立的 TS 执行引擎，只作插件运行时。
 **TypeScript 时代的实现（Bun + GPUIX 客户端 + TS 侧 agent/宿主）已整体归档到
 [`archive/ts-legacy/`](archive/ts-legacy)**：它不再是参考设计、不参与构建与测试。
 设计与计划的唯一口径是 [docs/agent-base-design.md](docs/agent-base-design.md) 与
 [docs/agent-base-plan.md](docs/agent-base-plan.md)（含"看起来装上了其实没接线"的逐条处置表）。
 **功能缺口清单在 [docs/unfinished-features.md](docs/unfinished-features.md)**：接活前先看一眼，
 别把"已知未做"当成 bug 去修；做完一项顺手划掉。
+**分层与重构的执行记录在 [docs/agent-base-wiring-plan.md](docs/agent-base-wiring-plan.md)**（§13 逐条）。
 
 ## 开发与验证
 
 ```bash
-cargo build --workspace     # 编译基座四 crate + agent_core + ada-coding + ts_engine + tauri 宿主
+cargo build --workspace     # 基座四 crate + agent-node + agent-rpc + agent-core(facade) + 产品 + tauri 宿主
 cargo test --workspace -- --test-threads=1   # 门二（必须串行：有共享全局态的用例）
 bun run typecheck           # 门一：tauri-ui 的 tsc --noEmit
 bun run verify:archive      # 归档门：主干不得引用 archive/、不得有第二份引擎
@@ -28,6 +31,10 @@ bun run tauri:dev           # 桌面客户端开发（前端热重载 + 宿主�
   读 `~/.a-da` 配置，而提问链路仍走全局单例 `approval::question_manager::GLOBAL_QUESTION_MANAGER`
   （`OnceLock`），并行会互相污染（单独跑各自通过）。根因是共享全局态（INV-8）；
   提问端口化（S1a）会去掉这个单例，届时再改回并行。
+- 🔴 **本机 `C:\pagefile.sys` 上限只有 2 GB**：默认并行度下编译/链接大 crate 会
+  `failed to mmap rmeta ... os error 1455（页面文件太小）` 或 `link.exe 1102`。
+  用 `CARGO_BUILD_JOBS=2`（或 `-j 2`，**注意 `-j` 要放在 `--` 之前**）即可。
+  **这是环境限制，不是代码缺陷**——单独编译失败的 crate 能过、重跑也能过。
 - 本机 `cargo` 默认 target 目录编译 `ring` 会报 MSVC `D8050`；加上
   `CARGO_TARGET_DIR=../cargo_target_ada` 复用已有缓存即可（与代码无关）。
 - **Rust 测试不再写用户真实的 `~/.a-da`**：`agent_core::session::app_home()` 在 `cfg(test)` 下指向
@@ -40,20 +47,17 @@ bun run tauri:dev           # 桌面客户端开发（前端热重载 + 宿主�
 
 **目录结构按设计落地中**（`docs/agent-base-design.md` v0.2 §3；已搬批次见 `docs/agent-base-plan.md` §8）：
 
-- `crates/agent-base` 基座内核（零 IO、零产品名词）：`model/`（模型面类型）、`domain/`（消息·工具描述符与回执·事件·错误与失败方向）、`ports/`（8 个端口，**无默认实现**）、`testing/`（FixedClock/RecordingSink/TempAppHome）；`engine/` 待落
+- `crates/agent-base` 基座内核（零 IO、零产品名词）：`model/`（模型面类型）、`domain/`（消息·工具描述符与回执·事件·错误与失败方向）、`ports/`（11 个端口，**无默认实现**）、`engine/`（**唯一**多轮循环 `run_turn`）、`testing/`（FixedClock/RecordingSink/TempAppHome）
 - `crates/agent-proto` 线协议：JSON-RPC 帧、方法常量、线上 DTO、错误码
-- `crates/agent-adapter` 适配器：`model/`（三家协议 SSE + 中止）、`app_home.rs`（**全仓唯一**读 `A_DA_HOME`/`USERPROFILE` 的地方）、`clock.rs`（**全仓唯一**读系统时间的地方）；`store/`、`plugin/`、`scope/` 待搬
-- `crates/agent-toolkit` 工具包：文件读写、路径沙箱、命令执行、文本 diff、决策与门禁判定
-- `crates/agent-core` 核心纯库：主循环、分发、会话状态与插件执行
+- `crates/agent-adapter` 适配器：`model/`（三家协议 SSE + 中止）、`app_home.rs`（**全仓唯一**读 `A_DA_HOME`/`USERPROFILE` 的地方）、`clock.rs`（**全仓唯一**读系统时间的地方）
+- `crates/agent-toolkit` 工具包：文件读写、路径沙箱、命令执行、文本 diff、决策与门禁判定；`registry.rs` 是**工具元数据单一真源**
+- **`crates/agent-node`（S4 拆出，5.9k 行 / 36 文件）** —— 节点：`session` / `approval` / `checkpoint` / `subagents`（含 `agent_bus.rs` 委派总线端口与 `local_bus.rs` 本地实现）/ `plugins` / `skills` / `node_config.rs`（节点配置端口）。**不含协议管道**（不依赖 `tokio-tungstenite`）、**不含 UI 投影**（不依赖 `AgentStore`）
+- **`crates/agent-rpc`（S4 拆出，5.3k 行 / 18 文件）** —— 桥接面：`server/`（`dispatch.rs` 72 个方法的 JSON-RPC 分发、`ws.rs` 宿主、`emitter.rs` 快照合帧、`fs_service.rs`）、`state/`（`AgentStore`，**给界面看的投影**）、`runner/`（引擎调用 + `AgentEvent` → `AgentLoopEvent` 投影）。**依赖方向单向：`agent-rpc → agent-node`**
+- `crates/agent-core` **兼容 facade**（~680 行，只转发上面两者，保留历史导入路径）
 - `crates/ts-engine` 插件运行时（Boa + oxc）；插件契约见 [docs/plugin-sdk/v1.md](docs/plugin-sdk/v1.md)
 - `products/ada-coding` 产品二进制（`--host/--port/--token/--parent-pid/--workspace`）
-- `crates/agent-core/src/{ai,protocol,tools}/mod.rs` 是**兼容 shim**（`pub use` 转发到基座各 crate），调用点不动
+- 三个 crate 各有 `{ai,protocol,tools}/mod.rs` 兼容 shim（`pub use` 转发到基座各 crate），调用点不动
 - 端口已接线处：`session::{app_home,set_app_home,get_app_home,get_config_path}`、`state::{clock,set_clock,now_millis}`、`AgentStore::with_home`（单元测试默认 home 在临时目录，不再碰用户真实 `~/.a-da`）
-- `crates/agent-core/src/{server,state,session,plugins,subagents,skills,approval,checkpoint}` 仍是权威实现，M1 收敛
-- `crates/agent-core/src/runner` 只剩 `engine_bridge.rs`（引擎 ↔ UI 事件投影）与 `ui_events.rs`；
-  另三个文件（`builtin_tools` / `executor` / `prompt`，共 **991 行** legacy 残渣）已于 S1 删除，
-  并有防复活断言 `test_legacy_runner_residue_must_not_come_back` 钉住（见 `runner/mod.rs` 顶部注释）
-- `crates/agent-core/src/server` —— `dispatch.rs`（JSON-RPC 分发，最大文件）、`ws.rs`（宿主）、`emitter.rs`（快照合帧）
 - `src-tauri` Tauri 宿主（同进程起核心服务）；`tauri-ui` React 前端（`src/client/ws-client.ts` 是协议客户端）
 - `archive/ts-legacy` **只读归档**（TS 时代的 src + scripts + app.tsx）
 

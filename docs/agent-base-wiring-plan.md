@@ -107,6 +107,7 @@ bun run typecheck
 | P2-7 | `runner/` 遗留 991 行死代码，被 `pub use` 遮蔽 `dead_code` 检测 | `runner/{builtin_tools,executor,prompt}.rs` = 436+253+302 行 | **✅ S1 已删除** + 防复活断言（`test_legacy_runner_residue_must_not_come_back`） |
 | **P0-7** | 🔴 **节点层依赖 UI 投影**：审批闸门与委派工具直接读 `AgentStore`，而 `AgentStore.config` 的类型是 `agent_proto::ConfigSnapshot`（**线上 DTO**）——节点行为依据"发给界面的 JSON 形状"做决定 | `approval/gate.rs`（`store.config.approval`）、`subagents/tool.rs`（`store.provider`） | **✅ S2 已修**：`NodeConfigSource` 端口 + 桥接层唯一实现；新增 `verify-wiring` check H 防复发 |
 | **P1-18** | **委派语义未抽象**：`invoke_subagent` 直接调用 `run_subagent`（进程内），网关接入时会变成**第二套委派机制** | `subagents/tool.rs` 里内联的派活逻辑（profile 解析 / provider 校验 / 取消转发 / `run_subagent`） | **✅ S3 已修**：`AgentBus` 端口 + `LocalAgentBus`（行为零变化，原有测试未改）；S6 换 `GatewayAgentBus` 实现即可 |
+| **P2-8** | **`agent-core` 是 12,190 行的巨石**：混着节点行为、协议管道、UI 投影、兼容 shim 四类职责；依赖 base+proto+adapter+toolkit+runtime 全部 + `ts_engine` + `reqwest` + `tungstenite`——想用"会话/审批"的人被迫拉进一个 WS 服务器 | 实测耦合矩阵（§13.29） | **✅ S4 已拆**：`agent-node`（5,892 行）+ `agent-rpc`（5,266 行）+ `agent-core` facade（677 行）；新增 `verify-wiring` check I 守方向 |
 
 ---
 
@@ -2025,6 +2026,85 @@ invoke_subagent (Tool) ──► AgentBus 端口 ──┬─ LocalAgentBus（�
    （`list`/`dispatch`/`send`/`status`/`cancel`），实际只定了 2 个：
    另外 3 个在本地实现上**没有诚实的实现**。先把能做到的定下来，
    到 S6 网关带来新语义时再加——**端口加方法比留桩便宜**。
+
+### 13.29 S4 拆包：`agent-node` / `agent-rpc`（2026-10-09，已完成）
+
+**结果**：`agent-core` **12,190 行 → 677 行**（只剩转发），切成两块：
+
+| crate | 内容 | 规模 |
+|---|---|---|
+| **`agent-node`** | `session` / `approval` / `checkpoint` / `subagents` / `plugins` / `skills` / `agent_bus` / `node_config` | **5,892 行 / 36 文件** |
+| **`agent-rpc`** | `server/`（分发 + WS + 快照 + 事件投影 + 宿主侧文件浏览）/ `state/`（`AgentStore`）/ `runner/`（引擎调用 + 事件投影） | **5,266 行 / 18 文件** |
+| `agent-core` | 兼容 facade：`pub use agent_node::*` + `pub use agent_rpc::*`（保留历史路径）+ **原样保留的 746 行测试** | 677 行 |
+
+#### 切分位置**由实测的耦合矩阵决定**，不是按行数平均分
+
+对每个模块统计"生产段里引用了哪些其他模块"，得到：
+
+| 引用方 | 生产依赖 |
+|---|---|
+| `server`（桥接） | session(9) approval(9) state(6) checkpoint(4) skills(2) subagents(2) node_config(2) plugins(2) runner(1) |
+| 节点各模块 | **只在节点内部互引**（对 `server` 的引用只出现在注释里） |
+
+**关键发现**：S2 之后 `state`（`AgentStore`，UI 投影）**只被 `server` 需要**——
+所以它归**桥接层**，节点层因此彻底不含 UI 投影。这与 S2 的原则是同一件事的延伸。
+
+`runner`（830 行）也归桥接：它是"引擎 → `AgentLoopEvent`"的投影，`AgentLoopEvent` 是 **UI 事件词汇表**。
+把它放 rpc 还顺带解决了"节点测试要引用 `StoreBackedNodeConfig` 会形成 dev-dependency 环"的问题。
+
+#### 三条硬边界（已写成门禁）
+
+| 边界 | 判据 | 门 |
+|---|---|---|
+| 节点**不含 UI 投影** | `crates/agent-node/src/**` 生产段非注释行不得出现 `AgentStore` | check H（从"目录清单"升级为**整个 crate**——crate 边界就是清单） |
+| 节点**不含协议管道** | 不得出现 `tokio_tungstenite` | check I（新） |
+| **依赖方向单向** | `agent-node/Cargo.toml` 不得含 `agent-rpc`；节点源码不得出现 `agent_rpc` | check I（新） |
+
+**为什么方向必须机器守门**：拆包当天靠"我看了耦合矩阵"是对的，但**方向会在后续改动里悄悄反转**——
+有人在节点里 `use agent_rpc::state::AgentStore`，编译器**不会**报错（那是合法依赖），
+只有 Cargo.toml 多一行、代码里多一条 `use`。等发现时边界已名存实亡。
+
+#### 拆包暴露的四个问题（都不是拆包引入的，是拆包**照出来**的）
+
+1. 🔴 **S1 的防复活断言查错了地方**。它用 `CARGO_MANIFEST_DIR/src/runner` 定位，
+   而 `runner/` 搬走后那里已经不存在 → 两条断言报红。**断言必须和它守的代码在同一个 crate**。
+2. 🔴 **搬到同文件后断言自引用**。修好 1 之后，断言在 `runner/mod.rs` 里扫 `runner/mod.rs`，
+   而被禁字符串作为字面量就在**同一个文件**里 → **自己把自己判红**。
+   修法与 S1 同类问题的处理一致：**只扫生产段**（`split("#[cfg(test)]").next()`）。
+3. **`verify-archive` 的扫描范围留下盲区**。它只扫 `crates/agent-core/src`——
+   引擎在 `agent-base`、被守代码散到 node/rpc 之后，**只扫 agent-core 等于没扫**。
+   已扩到整个 `crates/`，并把 `subagents/runner.rs` 的路径更新到 `agent-node`。
+4. **门禁里 3 处硬编码旧路径**（`crates/agent-core/src/server/dispatch.rs` ×2、
+   `rust_sources(root, &["crates/agent-core/src"])`）→ 拆包后直接 `os error 3`。
+
+#### 转绿证据
+
+| 证据 | 结果 |
+|---|---|
+| `cargo test --workspace` | **305 → 305 passed / 0 failed**（**数量完全一致** = 切分没改变行为） |
+| `agent-core` 的 746 行测试 | **原样保留、未改一条断言**，全绿 |
+| 六条门禁 | 全绿（含新增 check I；check H 升级为整个 crate，扫 36 个文件 0 处倒置） |
+| **故障注入 A**：`Cargo.toml` 出现 `agent-rpc` | ✘ `依赖方向反了`（并实测：真加依赖会让 workspace 报 `cyclic package dependency`） |
+| **故障注入 B**：节点源码引用 `agent_rpc` | ✘ `依赖方向反了（单向：agent-rpc → agent-node）` |
+| **故障注入 C**：节点引用 `tokio_tungstenite` | ✘ `节点不含协议管道` |
+| **故障注入 D**：归档门扫描范围内加 `for step in` | ✘ `存在按步数迭代的手写循环` |
+
+#### S4 期间的四条记录
+
+1. 🔴 **`C:\pagefile.sys` 上限只有 2 GB**。并行编译大 crate 时
+   `failed to mmap rmeta ... os error 1455（页面文件太小）`、`link.exe 1102` 接连出现。
+   **单独编译失败的那三个 crate 全部通过**，`CARGO_BUILD_JOBS=2` 后全量也通过
+   → **环境限制，不是代码缺陷**。已写进 AGENTS.md。（另：`-j 2` 必须放在 `--` **之前**，
+   否则 cargo 报 `Unrecognized option: 'j'`。）
+2. 🔴 **故障注入本身可能让门跑不起来**。给 `agent-node` 加 `agent-rpc` 依赖的注入
+   **产生了依赖环**，workspace 解析失败 → xtask 根本没构建 → 门没跑到（输出为空）。
+   改用 `[package.metadata.probe]`（cargo 忽略、不成环）才验证了那条分支。
+   → 判据：**注入无效时，先确认"门到底跑没跑"**，别急着怀疑门。
+3. **"断言必须和它守的代码同 crate"是一条硬约束**。S1 把断言放在 `agent-core` 是合理的
+   （代码在那儿）；S4 搬代码时**必须同时搬断言**，否则它守的是一个不再存在的位置。
+4. **拆包的收益立刻可见**：`agent-core` 从"什么依赖都拉"的 12k 行巨石，
+   变成 677 行转发；`agent-node` 现在**不依赖 `tokio-tungstenite`、不依赖 `reqwest`**，
+   可以被网关当作"一个可管理的节点"直接依赖。
 
 
 ## 附录 A：缺口 → 任务反查表

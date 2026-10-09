@@ -181,13 +181,17 @@ console.log(`\nverify-archive：扫描 ${files.length} 个主干文件（跳过 
 // 7. 不存在第二份多轮引擎（W4-T6）
 //
 // 可检测的签名（刻意选"具体且不会误报"的形态）：
-//  (a) `crates/agent-core` 里出现**按步数迭代的手写循环**（`for step in`）——
+//  (a) 主干里出现**按步数迭代的手写循环**（`for step in`）——
 //      那是"自己再写一个引擎"最典型的写法；
 //  (b) 子智能体执行器**不调用** `run_turn`（说明它又绕开了单一引擎）；
 //  (c) 子智能体执行器还在用 legacy 工具分派 `execute_tool_call`。
+//
+// S4 拆包后扫描范围从 `crates/agent-core/src` 扩到**整个 `crates/`**：
+// 引擎的归属地从 agent-core 搬到了 agent-base，被守的代码也散到了
+// agent-node / agent-rpc——只扫 agent-core 会留下盲区（那正是拆包最容易丢的东西）。
 {
   const details: string[] = []
-  const coreFiles = walk(join(ROOT, 'crates/agent-core/src')).filter((p) => p.endsWith('.rs'))
+  const coreFiles = walk(join(ROOT, 'crates')).filter((p) => p.endsWith('.rs'))
 
   for (const p of coreFiles) {
     const text = readFileSync(p, 'utf8')
@@ -196,7 +200,8 @@ console.log(`\nverify-archive：扫描 ${files.length} 个主干文件（跳过 
     }
   }
 
-  const runnerPath = join(ROOT, 'crates/agent-core/src/subagents/runner.rs')
+  // S4：子智能体执行器随 `agent-node` 迁址
+  const runnerPath = join(ROOT, 'crates/agent-node/src/subagents/runner.rs')
   if (existsSync(runnerPath)) {
     const runner = readFileSync(runnerPath, 'utf8')
     if (!runner.includes('run_turn(')) {
@@ -206,7 +211,7 @@ console.log(`\nverify-archive：扫描 ${files.length} 个主干文件（跳过 
       details.push('subagents/runner.rs 仍在使用 legacy 工具分派 execute_tool_call')
     }
   } else {
-    details.push('crates/agent-core/src/subagents/runner.rs 缺失')
+    details.push('crates/agent-node/src/subagents/runner.rs 缺失')
   }
 
   check('主干不存在第二份多轮引擎', details.length === 0, details)
