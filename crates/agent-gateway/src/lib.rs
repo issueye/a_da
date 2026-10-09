@@ -24,11 +24,13 @@
 //! 所以本 crate 只依赖 **`agent-proto`（线协议）**——不依赖 `agent-node`、
 //! `agent-base::engine`、`agent-toolkit`。这条边界由 check J 守着。
 
+pub mod auth;
 pub mod delegate;
 pub mod registry;
 pub mod relay;
 pub mod supervisor;
 
+pub use auth::{AuthConfig, AuthError, AuthOutcome, TokenScope};
 pub use delegate::{delegate, DelegateError, DelegateOutcome, DelegationRegistry, MAX_DELEGATION_DEPTH};
 pub use registry::{AgentInstance, AgentRegistry, AgentStatus, normalize_workspace};
 pub use relay::{Gateway, GATEWAY_METHOD_PREFIX, methods};

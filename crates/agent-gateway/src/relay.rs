@@ -34,6 +34,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
+use crate::auth::{query_param, AuthError, AuthOutcome};
 use crate::delegate::{
     delegate, DelegateError, DelegateOutcome, DelegationRegistry, DEFAULT_DELEGATION_TIMEOUT,
 };
@@ -71,6 +72,8 @@ pub struct Gateway {
     pub default_workspace: String,
     /// 进行中的派活（S6 交互平台）
     pub delegations: Arc<DelegationRegistry>,
+    /// 接入鉴权（S7）。默认 [`crate::auth::AuthConfig::open`]（不要求 token，只该在回环上用）。
+    pub auth: Arc<crate::auth::AuthConfig>,
 }
 
 impl Gateway {
@@ -82,7 +85,30 @@ impl Gateway {
             default_product: default_product.into(),
             default_workspace: default_workspace.into(),
             delegations: Arc::new(DelegationRegistry::new()),
+            auth: Arc::new(crate::auth::AuthConfig::open()),
         }
+    }
+
+    /// 换成带 token 的鉴权配置（S7）。链式，便于组合根一行装好。
+    pub fn with_auth(mut self, auth: crate::auth::AuthConfig) -> Self {
+        self.auth = Arc::new(auth);
+        self
+    }
+
+    /// **发现**（`gateway.info`）：无需 token，**不含任何秘密**。
+    ///
+    /// 刻意不返回 agent 端点与 token——发现通道是**未认证**的，
+    /// 往里放端点等于把内部拓扑送给任何能连上端口的人。
+    pub fn info_result(&self) -> serde_json::Value {
+        serde_json::json!({
+            "protocolVersion": "1.0",
+            "product": self.default_product,
+            "agentCount": self.registry.len(),
+            "authRequired": self.auth.requires_token(),
+            "allowedOrigins": self.auth.allowed_origins(),
+            "capabilities": crate::auth::gateway_capabilities(),
+            "note": "发现响应不含 token 与 agent 端点；拿 token 请走部署侧（配置/配对码）",
+        })
     }
 
     /// **交互平台**：派活。
@@ -176,21 +202,147 @@ pub async fn serve_client(
     stream: TcpStream,
     requested_workspace: Option<String>,
 ) -> Result<(), anyhow::Error> {
-    // 1. 绑定实例（此时才真正拉起 agent）
-    let ws = requested_workspace
+
+    // 1. 握手时就地鉴权 + Origin 策略。
+    //
+    // 为什么在 `accept_hdr_async` 的回调里做而不是握手后：
+    // 回调可以返回 `ErrorResponse`，于是拒绝表现为**一个 HTTP 状态码**
+    // （401/403）——浏览器与 curl 都能直接看到原因，而不是"连上了又莫名其妙断开"。
+    let auth = gateway.auth.clone();
+    // 刻意用 `std::sync::Mutex`：这里的临界区**不含 await**（只是拷两个 Option），
+    // 用异步锁反而要求跨 await 持锁。与 `Gateway` 里那个 tokio 锁不是一回事。
+    let captured: Arc<std::sync::Mutex<(Option<String>, Option<String>)>> =
+        Arc::new(std::sync::Mutex::new((None, None)));
+    let cap = captured.clone();
+
+    let client_ws = tokio_tungstenite::accept_hdr_async(
+        stream,
+        move |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
+              resp: tokio_tungstenite::tungstenite::handshake::server::Response| {
+            let uri = req.uri().to_string();
+            let token = query_param(&uri, "token");
+            let workspace = query_param(&uri, "workspace");
+            let origin = req
+                .headers()
+                .get("origin")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+
+            if let Err(e) = auth.check_origin(origin.as_deref()) {
+                warn!("拒绝接入：{e}");
+                return Err(handshake_error(403, &e.to_string()));
+            }
+            // 坏 token 直接拒（**不退化成 Anonymous**——那是静默降级）
+            if let Err(e) = auth.authorize(token.as_deref()) {
+                warn!("拒绝接入：{e}");
+                return Err(handshake_error(401, &e.to_string()));
+            }
+
+            *cap.lock().expect("captured 锁") = (token, workspace);
+            Ok(resp)
+        },
+    )
+    .await?;
+
+    let (token, uri_workspace) = {
+        let g = captured.lock().expect("captured 锁");
+        g.clone()
+    };
+
+    let outcome = gateway
+        .auth
+        .authorize(token.as_deref())
+        .map_err(|e| anyhow::anyhow!("鉴权失败：{e}"))?;
+
+    // 2. **未认证连接不绑定任何 agent**：它只能发现，不能触达。
+    //
+    // 顺序很要紧：绑定实例会**真的把 agent 进程拉起来**。
+    // 先绑定再鉴权的话，一个不带 token 的连接就能让网关起进程（放大攻击面）。
+    if matches!(outcome, AuthOutcome::Anonymous) {
+        info!("未认证连接接入（只允许 gateway.info 发现）");
+        return serve_anonymous(gateway, client_ws).await;
+    }
+    let AuthOutcome::Scoped(scope) = outcome else {
+        unreachable!("Anonymous 已在上面返回");
+    };
+
+    // 3. 工作区：URL 上的 `?workspace=` 优先，其次调用方给的默认值
+    let ws = uri_workspace
+        .or(requested_workspace)
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| gateway.default_workspace.clone());
+
+    // 4. 作用域检查：token 只能碰自己那几个工作区
+    if !scope.allows(&ws) {
+        return Err(anyhow::anyhow!(
+            "{}",
+            AuthError::WorkspaceNotInScope {
+                workspace: ws.clone()
+            }
+        ));
+    }
+
     let spec = SpawnSpec::new(gateway.default_product.clone(), &ws);
     let instance = ensure_agent(&spec, &gateway.registry, &gateway.spawn_lock, gateway.pid)
         .await
         .map_err(|e| anyhow::anyhow!("绑定 agent 失败：{e}"))?;
-
-    // 2. 与客户端完成 WS 握手（**网关不做 token 校验**：那是上游的事，
-    //    网关自己的鉴权在 S7 随远程接入一起做——现在只跑回环）
-    let client_ws = tokio_tungstenite::accept_async(stream).await?;
     info!("客户端已接入网关，绑定实例 {}", instance.id);
 
     relay(gateway, client_ws, instance).await
+}
+
+/// 造一个握手期的 HTTP 错误响应。
+fn handshake_error(
+    status: u16,
+    msg: &str,
+) -> tokio_tungstenite::tungstenite::handshake::server::ErrorResponse {
+    // 这个版本的 tungstenite 没有 `ErrorResponse::builder`，
+    // `ErrorResponse` 就是 `http::Response<Option<String>>`，直接构造。
+    let mut resp =
+        tokio_tungstenite::tungstenite::handshake::server::ErrorResponse::new(Some(msg.to_string()));
+    *resp.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::from_u16(status)
+        .unwrap_or(tokio_tungstenite::tungstenite::http::StatusCode::BAD_REQUEST);
+    resp
+}
+
+/// 未认证连接：**只答 `gateway.info`**，其余一律拒绝。
+///
+/// 为什么不直接断开：浏览器要能先问"这是不是网关、要不要 token"。
+/// 但发现响应里**不得有任何秘密**（无 token、无 agent 端点）。
+async fn serve_anonymous(
+    gateway: Arc<Gateway>,
+    client_ws: tokio_tungstenite::WebSocketStream<TcpStream>,
+) -> Result<(), anyhow::Error> {
+    let (mut tx, mut rx) = client_ws.split();
+    while let Some(msg) = rx.next().await {
+        let msg = msg?;
+        let Message::Text(text) = msg else { continue };
+        let Ok(req) = serde_json::from_str::<agent_proto::JsonRpcRequest>(&text) else {
+            continue;
+        };
+        let frame = if req.method == "gateway.info" {
+            agent_proto::JsonRpcResponse::<serde_json::Value>::success(
+                req.id,
+                gateway.info_result(),
+            )
+        } else {
+            agent_proto::JsonRpcResponse::<serde_json::Value>::error(
+                req.id,
+                agent_proto::ProtocolError::new(
+                    agent_proto::RpcErrorCode::InvalidRequest.code(),
+                    format!(
+                        "未认证连接只能调用 `gateway.info`（当前：`{}`）；\
+                         请在 URL 上带 `?token=…`",
+                        req.method
+                    ),
+                    None,
+                ),
+            )
+        };
+        tx.send(Message::Text(serde_json::to_string(&frame)?.into()))
+            .await?;
+    }
+    Ok(())
 }
 
 /// 双向透传。
@@ -357,6 +509,7 @@ async fn relay(
             }
 
             let out: Result<serde_json::Value, String> = match method {
+                "info" => Ok(gw.info_result()),
                 "listAgents" => Ok(gw.list_agents_result()),
                 "status" => Ok(gw.status_result()),
                 "attach" => {

@@ -2375,6 +2375,72 @@ S6b 加 `gateway` 时正是如此。修法两步：
 3. **门禁的"清单"要能自我对账**。硬编码清单的失败方式是"忘了登记"，
    而那不是靠"下次记得"能解决的——**必须让清单与事实双向比对**（未登记红、陈旧红）。
 
+### 13.33 S7a WEB 接入面：token / 作用域 / Origin（2026-10-09，已完成）
+
+**动机**：S5/S6 的网关只在回环上跑，`serve_client` 里写着"网关不做 token 校验：那是上游的事"。
+一旦要**远程接入**（浏览器 / 另一台机器），这个假设就不成立：谁能连上端口，
+谁就能驱动所有 agent——包括让 coding agent 改工作区里的文件。
+
+#### 交付物
+
+| 位置 | 内容 |
+|---|---|
+| `agent-gateway/src/auth.rs`（新） | `AuthConfig`（token → 工作区作用域）/ `AuthOutcome` / Origin 策略 / query 解析（含百分号解码）/ `gateway_capabilities` |
+| `agent-gateway/src/relay.rs` | 鉴权挪进 `accept_hdr_async` 回调；`gateway.info` 发现；未认证连接走 `serve_anonymous` |
+| `agent-gateway/src/main.rs` | `--host` / `--token`（可重复）/ `--allow-origin`（可重复）；**非回环无 token → 拒绝启动**；READY 行加 `authRequired` |
+
+#### 四条规则
+
+| 规则 | 理由 |
+|---|---|
+| **非回环地址 + 无 token → 拒绝启动** | 失败安全：不安全配置**起不来**，而不是"起来了但没人发现"。这是"对外可达且无认证"最常见的形态 |
+| 浏览器 `Origin` **默认拒绝**，只放行白名单 | WS 没有 CORS 预检，但 `Origin` 头在握手里有——默认拒绝才安全。`Origin: null`（`file://`）也算"有 Origin" |
+| 未认证连接**只允许 `gateway.info`** | 发现要能用（浏览器得先问"这是不是网关、要不要 token"），但发现**不得泄露秘密**（无 token、无 agent 端点） |
+| **鉴权在握手回调里做** | 回调可返回 `ErrorResponse` → 拒绝表现为**一个 HTTP 状态码**（401/403），浏览器与 curl 都能读到原因，而不是"连上了又莫名其妙断开" |
+
+#### 两个实现细节（都有原因）
+
+**① 未认证路径在绑定 agent 之前就返回。**
+绑定实例会**真的把 agent 进程拉起来**。先绑定再鉴权的话，一个不带 token 的连接就能让网关起进程——放大攻击面。
+（测试断言未认证连接不会让注册表增加。）
+
+**② `Origin: None` 放行。**
+非浏览器客户端（桌面端 Tauri、curl、测试）不发 `Origin`。把它们一并拒掉会让"回环上的桌面端"也用不了，
+而它们本来就不是跨源攻击的载体（浏览器才会自动带上受害者站点的 Origin）。
+所以策略是：**有 Origin 就必须在白名单里；没有 Origin 则不因此拒绝**（token 仍然要）。
+
+#### 顺带删掉一个桩
+
+`main.rs` 的 `extract_workspace()` 一直是个 `return None` 的桩（注释写着"留在 S6 用 `accept_hdr_async` 的回调拿 query"）。
+S7a 用同一个回调把 `?workspace=` 与 `?token=` 一起解析了——**桩没了**，多工作区路由也真的通了。
+
+#### 转绿证据
+
+| 证据 | 结果 |
+|---|---|
+| `cargo test --workspace` | **333 → 350 passed / 0 failed**（+11 鉴权单元 +6 接入端到端）；零编译警告 |
+| 六条门禁 + `typecheck` | 全绿 / exit 0 |
+| 端到端（6 条） | 坏 token → **握手期 401** / 未认证能 `info` 但不能 `listAgents`（且**没多起 agent**）/ 好 token 全能力 / 作用域外工作区被拒 / Origin 默认拒→白名单放行 / 开放模式**旧行为不变** |
+| 真二进制：`--host 0.0.0.0`（无 token） | **exit 1**，信息含"拒绝启动…不是回环地址，但没有任何 --token" |
+| 真二进制：回环无 token | READY `"authRequired":false`（S5/S6 行为不变） |
+| 真二进制：带 token | READY `"authRequired":true` |
+| 真环境（bun WebSocket，模拟浏览器） | 未认证 → `info` 正常 + `listAgents` 被拒（错误信息含"请在 URL 上带 `?token=…`"）；坏 token → 握手期连接错误 |
+
+#### S7a 期间的两条记录
+
+1. **"检查了"不等于"拦住了"**。鉴权最常见的失败是：检查了 token 但仍然把连接绑到了 agent。
+   判据：**断言"未认证请求没有产生副作用"**（这里 = 注册表没有增加），而不只断言"返回了错误"。
+2. **桩要顺手删掉**。`extract_workspace` 那个 `return None` 的桩躺了三个阶段；
+   本次因为要拿 query 而自然做掉了。判据：**碰到桩就当场做掉或明确登记**，别让它继续躺。
+
+#### 尚未做的 S7 部分（**登记，不是已完成**）
+
+- **TLS**：网关目前是明文 WS。浏览器从 `https://` 页面连 `ws://` 会被拦（混合内容），
+  所以对外部署需要 `wss://`。当前口径：TLS 由反向代理终止（网关只跑回环/内网），
+  或后续给网关加 TLS 监听。
+- **配对码**：token 目前由部署侧（命令行/配置）注入。浏览器拿 token 的路径还没做
+  （`gateway.info` 只说"要不要 token"，不给 token）。
+
 
 ## 附录 A：缺口 → 任务反查表
 

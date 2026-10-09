@@ -8,6 +8,20 @@
 //! a-da-gateway --product ada-coding --binary ./ada-coding.exe
 //! ```
 //!
+//! # 远程接入（S7）
+//!
+//! ```bash
+//! # 回环：默认，不需要 token
+//! a-da-gateway --port 0
+//!
+//! # 对外：**必须**给 token（否则拒绝启动），并显式放行浏览器来源
+//! a-da-gateway --host 0.0.0.0 --token "$(openssl rand -hex 16)" \
+//!              --allow-origin https://app.example
+//!
+//! # 多租户：每个 token 限定自己的工作区
+//! a-da-gateway --host 0.0.0.0 --token t1=E:/a --token t2=E:/b
+//! ```
+//!
 //! 就绪后向 stdout 打印一行（与 agent 宿主同一约定）：
 //!
 //! ```text
@@ -19,6 +33,7 @@
 
 use std::sync::Arc;
 
+use agent_gateway::auth::{is_loopback, AuthConfig};
 use agent_gateway::{relay::serve_client, Gateway};
 use tokio::net::TcpListener;
 use tracing::{info, warn};
@@ -43,9 +58,30 @@ async fn main() -> anyhow::Result<()> {
         args.workspace.clone()
     };
 
-    let gateway = Arc::new(Gateway::new(args.product.clone(), workspace.clone()));
+    // 🔴 失败安全：**非回环地址 + 没有 token = 拒绝启动**。
+    //
+    // 为什么是"拒绝启动"而不是"警告后继续"：网关能驱动 agent 改工作区里的文件。
+    // 一个对外可达、无人认证的网关是**真漏洞**，而"启动了但没人发现"是它最常见的形态。
+    // 宁可起不来。
+    if !is_loopback(&args.host) && !args.auth.requires_token() {
+        anyhow::bail!(
+            "拒绝启动：`--host {}` 不是回环地址，但没有任何 `--token`。\n\
+             对外可达且无认证的网关等于把 agent（以及它能改的文件）公开出去。\n\
+             用法：--token <token>（多租户可写 --token <token>=<工作区>）",
+            args.host
+        );
+    }
 
-    let listener = TcpListener::bind(("127.0.0.1", args.port)).await?;
+    let auth_summary = if args.auth.requires_token() {
+        format!("token 鉴权已启用（{} 个令牌）", args.token_count)
+    } else {
+        "开放模式（仅回环；未配置 --token）".to_string()
+    };
+    let gateway = Arc::new(
+        Gateway::new(args.product.clone(), workspace.clone()).with_auth(args.auth.clone()),
+    );
+
+    let listener = TcpListener::bind((args.host.as_str(), args.port)).await?;
     let port = listener.local_addr()?.port();
     let pid = std::process::id();
 
@@ -57,11 +93,17 @@ async fn main() -> anyhow::Result<()> {
             "pid": pid,
             "product": args.product,
             "workspace": workspace,
+            "host": args.host,
+            // 客户端据此知道要不要带 token（**不是**把 token 放进来）
+            "authRequired": args.auth.requires_token(),
         })
     );
     use std::io::Write;
     std::io::stdout().flush()?;
-    info!("a-da 网关就绪，监听 127.0.0.1:{}（pid {}）", port, pid);
+    info!(
+        "a-da 网关就绪，监听 {}:{}（pid {}；{}）",
+        args.host, port, pid, auth_summary
+    );
 
     loop {
         let (stream, peer) = match listener.accept().await {
@@ -74,61 +116,81 @@ async fn main() -> anyhow::Result<()> {
         let gw = gateway.clone();
         let default_ws = workspace.clone();
         tokio::spawn(async move {
-            // S5：请求里带工作区（`?workspace=`）就用它，否则用网关默认值。
+            // S7：`?workspace=` 与 `?token=` 都在**握手里**解析（`serve_client` 内），
+            // 这里只把网关默认工作区作为兜底传进去。
             // 这让"一个网关管多个工作区"在不改协议的前提下可用。
-            let requested = extract_workspace(&stream).unwrap_or(default_ws);
-            if let Err(e) = serve_client(gw, stream, Some(requested)).await {
+            if let Err(e) = serve_client(gw, stream, Some(default_ws)).await {
                 warn!("客户端连接结束（{}）：{e}", peer);
             }
         });
     }
 }
 
-/// 从握手请求里取 `?workspace=`（取不到就返回 `None`）。
-///
-/// 实现说明：这里**先偷看再交给 WS 握手**做不到（`TcpStream` 已被消费），
-/// 所以工作区选择走"网关默认值"这一条路；`?workspace=` 的解析留在 S6
-/// 随"多工作区路由"一起做（届时用 `accept_hdr_async` 的回调拿 query）。
-fn extract_workspace(_stream: &tokio::net::TcpStream) -> Option<String> {
-    None
-}
-
 struct Args {
     port: u16,
+    host: String,
     product: String,
     workspace: String,
+    auth: AuthConfig,
+    /// 配了几个令牌（**只报数量**，不报内容——就绪行可能被写进日志）
+    token_count: usize,
 }
 
 fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
-    let mut args = Args {
-        port: 52353,
-        product: "ada-coding".to_string(),
-        workspace: String::new(),
-    };
+    let mut port = 52353u16;
+    let mut host = "127.0.0.1".to_string();
+    let mut product = "ada-coding".to_string();
+    let mut workspace = String::new();
+    let mut tokens: Vec<String> = Vec::new();
+    let mut origins: Vec<String> = Vec::new();
     let mut it = argv.into_iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--port" => {
                 let v = it.next().ok_or_else(|| anyhow::anyhow!("--port 需要一个值"))?;
-                args.port = v.parse().map_err(|_| anyhow::anyhow!("--port 不是合法端口：{v}"))?;
+                port = v.parse().map_err(|_| anyhow::anyhow!("--port 不是合法端口：{v}"))?;
+            }
+            "--host" => {
+                host = it.next().ok_or_else(|| anyhow::anyhow!("--host 需要一个值"))?;
             }
             "--product" => {
-                args.product = it.next().ok_or_else(|| anyhow::anyhow!("--product 需要一个值"))?;
+                product = it.next().ok_or_else(|| anyhow::anyhow!("--product 需要一个值"))?;
             }
             "--workspace" => {
-                args.workspace = it.next().ok_or_else(|| anyhow::anyhow!("--workspace 需要一个值"))?;
+                workspace = it.next().ok_or_else(|| anyhow::anyhow!("--workspace 需要一个值"))?;
+            }
+            "--token" => {
+                tokens.push(it.next().ok_or_else(|| anyhow::anyhow!("--token 需要一个值"))?);
+            }
+            "--allow-origin" => {
+                origins.push(
+                    it.next()
+                        .ok_or_else(|| anyhow::anyhow!("--allow-origin 需要一个值"))?,
+                );
             }
             "--help" | "-h" => {
                 println!(
                     "a-da-gateway —— AGENT 管理平台 / 交互平台 / 桥接平台\n\n\
                      --port <p>        监听端口（默认 52353；0 = 自动分配）\n\
                      --product <id>    要管理的产品（默认 ada-coding）\n\
-                     --workspace <p>   默认工作区（默认当前目录）\n"
+                     --workspace <p>   默认工作区（默认当前目录）\n\
+                     --host <h>        监听地址（默认 127.0.0.1；非回环**必须**给 --token）\n\
+                     --token <t>       接入令牌；`<t>` 或不限制工作区，`<t>=<ws1>|<ws2>` 限定；可重复\n\
+                     --allow-origin <o>  放行的浏览器来源（可重复；默认**拒绝**任何带 Origin 的请求）\n"
                 );
                 std::process::exit(0);
             }
             other => anyhow::bail!("未知参数：{other}（用 --help 看用法）"),
         }
     }
-    Ok(args)
+    let auth = AuthConfig::from_args(&tokens, &origins).map_err(|e| anyhow::anyhow!(e))?;
+    let token_count = tokens.len();
+    Ok(Args {
+        port,
+        host,
+        product,
+        workspace,
+        auth,
+        token_count,
+    })
 }
