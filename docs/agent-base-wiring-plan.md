@@ -106,6 +106,7 @@ bun run typecheck
 | **P1-17** | 🔴 **子智能体生命周期未上报**：`SubagentStarted` / `SubagentFinished` 定义了却无发射者，`engine_bridge` 把两者映射为 `None` | `crates/agent-base/src/domain/event.rs:32-33`；`engine_bridge.rs:94-95`；进度通道 `SubagentStepUpdate` 在 `InvokeSubagentTool` 里被置 `None`（`subagents/tool.rs:167`） | **S6**（交互平台一并解决：进度/生命周期上报是 agent 间交互的一部分） |
 | P2-7 | `runner/` 遗留 991 行死代码，被 `pub use` 遮蔽 `dead_code` 检测 | `runner/{builtin_tools,executor,prompt}.rs` = 436+253+302 行 | **✅ S1 已删除** + 防复活断言（`test_legacy_runner_residue_must_not_come_back`） |
 | **P0-7** | 🔴 **节点层依赖 UI 投影**：审批闸门与委派工具直接读 `AgentStore`，而 `AgentStore.config` 的类型是 `agent_proto::ConfigSnapshot`（**线上 DTO**）——节点行为依据"发给界面的 JSON 形状"做决定 | `approval/gate.rs`（`store.config.approval`）、`subagents/tool.rs`（`store.provider`） | **✅ S2 已修**：`NodeConfigSource` 端口 + 桥接层唯一实现；新增 `verify-wiring` check H 防复发 |
+| **P1-18** | **委派语义未抽象**：`invoke_subagent` 直接调用 `run_subagent`（进程内），网关接入时会变成**第二套委派机制** | `subagents/tool.rs` 里内联的派活逻辑（profile 解析 / provider 校验 / 取消转发 / `run_subagent`） | **✅ S3 已修**：`AgentBus` 端口 + `LocalAgentBus`（行为零变化，原有测试未改）；S6 换 `GatewayAgentBus` 实现即可 |
 
 ---
 
@@ -1960,6 +1961,70 @@ product: Some(ProductInfo { id: "ada-coding",         // 硬编码产品身份
    是这轮加 P0-6 时才发现的。**缺口编号是跨轮次追加的，凭记忆取号必然撞号**。
    → 处置：改为 **P0-6 / P0-7**；并把"**台账编号不得重复**"加入自检
    （对 `^\| \*?\*?(P[012]-\d+)\*?\*? \|` 去重，重复即报）。
+
+### 13.28 S3 定 `AgentBus` 端口 + 本地实现（2026-10-09，已完成）
+
+**目标**：把"委派"的**语义**从实现里抽出来，让"本地委派"与"经网关委派"成为
+**同一语义的两个实现**——否则网关会变成**第二套委派机制**，而本仓已为"两份实现"付过代价。
+
+```text
+invoke_subagent (Tool) ──► AgentBus 端口 ──┬─ LocalAgentBus（进程内，= 重构前的行为）
+                                           └─ GatewayAgentBus（S6，远端 agent 实例）
+```
+
+#### 端口为什么只有两个方法（`list_agents` + `dispatch`）
+
+因为**今天真实存在的语义只有这些**：发现有哪些 agent、把任务交给其中一个并等它跑完（可取消）。
+本仓的规矩是「实现或删声明」——**不许声明做不到的事**（P0-6 的 `ask_user` 就是"声明了却没接线"的教训）。
+
+以下方法**刻意留到 S6**，因为一次性、临时上下文的本地实现**没有诚实的实现**：
+
+| 方法 | 为什么现在不能定 |
+|---|---|
+| `send(agent_id, msg)`（多轮交互） | 本地子智能体上下文**刻意是临时的**（`EphemeralSessionStore`），跑完就没了；写成 `Unsupported` 桩就是 P0-6 那类问题 |
+| `status(agent_id)`（异步查询） | 本地派活是**同一次 `await` 内**完成的，没有可查询的中间态 |
+| `cancel(dispatch_id)`（按 id 取消） | 本地取消是**按 dispatch 传 cancel 令牌**（`DispatchRequest::cancel`）；按 id 取消需要网关那层的派发注册表 |
+
+到 S6，网关实现会**同时**引入这三件事（远端 agent 可寻址、可多轮、可查询），那时才加方法——
+加方法的同时两个实现都要给出**真实**行为。
+
+#### 交付物
+
+| 新增/改动 | 内容 |
+|---|---|
+| `agent_bus.rs`（新） | 端口 + `AgentHandle` / `DispatchRequest` / `DispatchOutcome`（含 `rejected()` 构造器） |
+| `subagents/local_bus.rs`（新） | `LocalAgentBus`——**整体搬入**原先 `invoke_subagent` 里那段派活代码（含 W4-T3 的取消转发 `select!`），**不是重写** |
+| `subagents/tool.rs` | 从 251 行降到 **~200 行**：只剩参数校验 + 回执映射；不再依赖 `SubagentManager` / `NodeConfigSource` / `CheckpointManager` / `run_subagent` |
+| `agent-host/src/lib.rs` | 组合根构造 `LocalAgentBus`；S6 只需替换这一行 |
+
+**关键设计：`details: Option<Value>` 区分"没跑"与"跑了但失败"。**
+`details == None` = 未进入执行（目标不存在 / 已禁用 / 没有可用模型）→ 工具回
+`ToolReceipt::error(原因)`；`Some(_)` = 执行过 → 带结构化细节。
+这个区分让**回执与重构前逐字节一致**，界面与诊断也能分辨两种失败。
+
+#### 转绿证据（**行为零变化**是这一步的出口判据）
+
+| 证据 | 结果 |
+|---|---|
+| 原有工具测试（`test_missing_args_is_an_error` / `test_unknown_profile_is_an_error_not_a_silent_success` / `test_missing_parent_provider_fails_instead_of_fabricating_one`） | **全绿且未改断言** ← 行为零变化 |
+| `cargo test --workspace` | **301 → 305 passed / 0 failed**（+4 本地总线测试）；零编译警告 |
+| 六条门禁 | 全绿 |
+| 门禁 check H 正向断言**泛化** | 从"硬编码 `NodeConfigSource`"改为 `NODE_LAYER_PORTS` 表，现覆盖 2 个端口（`NodeConfigSource`, `AgentBus`） |
+| **故障注入**：把 `impl AgentBus for LocalAgentBus` 改名 | ✘ `节点层端口 AgentBus 没有任何生产实现——节点层「改用端口」没有落点` |
+
+#### S3 期间的三条记录
+
+1. 🔴 **链接器 OOM 是环境问题，不是代码缺陷**。全量跑时三个 test 二进制并行链接失败
+   （`memory allocation of 2097152 bytes failed` + `link.exe 1102`）。
+   **单独编译三个都通过**，重跑全量也通过 → 判定为瞬时资源竞争。
+   → 判据：**链接期失败先单独复现**，别急着改代码。
+2. **"搬移"要能证明是搬移**。`LocalAgentBus::dispatch` 里的取消转发 `select!` 循环是从
+   `tool.rs` **原样搬过来**的——包括那条解释 W4-T3 的注释。证明方式不是"我看着一样"，
+   而是**原有测试一条没改、全绿**。
+3. **端口方法数要由语义决定，不由"将来可能需要"决定**。我最初设想 5 个方法
+   （`list`/`dispatch`/`send`/`status`/`cancel`），实际只定了 2 个：
+   另外 3 个在本地实现上**没有诚实的实现**。先把能做到的定下来，
+   到 S6 网关带来新语义时再加——**端口加方法比留桩便宜**。
 
 
 ## 附录 A：缺口 → 任务反查表

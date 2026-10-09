@@ -8,6 +8,7 @@ pub mod session;
 pub mod state;
 pub mod tools;
 pub mod subagents;
+pub mod agent_bus;
 pub mod approval;
 pub mod node_config;
 pub mod skills;

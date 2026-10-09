@@ -840,6 +840,18 @@ fn check_event_emitters(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
 /// `checkpoint` / `plugins` / `skills` 时，把目录名加进来即可。
 const NODE_LAYER_DIRS: &[&str] = &["approval", "subagents"];
 
+/// 节点层端口：**每个都必须在端口文件之外有生产实现**。
+///
+/// 为什么要有这张表：抽出端口只是"把接口先落地"，如果没人实现它，
+/// 「改用端口」这句话就没有落点——那正是本仓反复清理的"看起来装上了"。
+/// 表是显式的（而不是自动扫），因为"哪个 trait 算节点层端口"是设计决策；
+/// 每加一个端口，就要在这一行给出它的**生产实现**。
+const NODE_LAYER_PORTS: &[(&str, &str)] = &[
+    // (端口名, 端口定义所在文件（相对 crates/agent-core/src）)
+    ("NodeConfigSource", "node_config.rs"),
+    ("AgentBus", "agent_bus.rs"),
+];
+
 /// H. 节点层不得依赖 UI 投影（S2 新增）。
 ///
 /// 判据：`crates/agent-core/src/{approval,subagents}/**` 的**生产段**里，
@@ -886,33 +898,46 @@ fn check_no_ui_store_in_node_layer(root: &Path, rep: &mut Report) -> anyhow::Res
         ));
     }
 
-    // 正向断言：端口必须有**生产实现**（否则"改用端口"这句话没有落点）
+    // 正向断言：每个节点层端口都必须有**生产实现**（否则「改用端口」没有落点）。
     //
-    // 注意：端口与实现**同名不同路径**（`src/node_config.rs` vs `src/server/node_config.rs`），
+    // 注意：端口与实现可能**同名不同路径**（`src/node_config.rs` vs `src/server/node_config.rs`），
     // 所以只能按**完整路径**排除端口本身，不能按文件名。
-    let port_file = src_root.join("node_config.rs");
     let mut core_files: Vec<PathBuf> = Vec::new();
     collect_rs(&src_root, &mut core_files);
-    let impls: Vec<String> = core_files
-        .iter()
-        .filter(|p| **p != port_file)
-        .filter_map(|p| fs::read_to_string(p).ok())
-        .filter(|src| {
-            let prod = production_prefix(src).unwrap_or(src);
-            prod.contains("impl NodeConfigSource for")
-                || prod.contains("impl crate::node_config::NodeConfigSource for")
-        })
-        .collect();
-    if impls.is_empty() {
-        rep.violations.push(
-            "`NodeConfigSource` 没有任何生产实现——节点层「改用端口」没有落点".to_string(),
-        );
+    let mut ok_ports: Vec<String> = Vec::new();
+    for (trait_name, port_rel) in NODE_LAYER_PORTS {
+        let port_file = src_root.join(port_rel);
+        if !port_file.exists() {
+            rep.violations.push(format!(
+                "节点层端口 `{trait_name}` 的端口文件 `crates/agent-core/src/{port_rel}` 不存在"
+            ));
+            continue;
+        }
+        let needle_a = format!("impl {trait_name} for");
+        let needle_b = format!("impl crate::{} for", port_rel.trim_end_matches(".rs").replace('/', "::"));
+        let found = core_files
+            .iter()
+            .filter(|p| **p != port_file)
+            .filter_map(|p| fs::read_to_string(p).ok())
+            .any(|src| {
+                let prod = production_prefix(&src).unwrap_or(&src);
+                prod.contains(&needle_a) || prod.contains(&needle_b)
+            });
+        if found {
+            ok_ports.push((*trait_name).to_string());
+        } else {
+            rep.violations.push(format!(
+                "节点层端口 `{trait_name}` 没有任何生产实现——节点层「改用端口」没有落点"
+            ));
+        }
     }
 
     rep.notes.push(format!(
-        "节点层（{}）已断 UI 投影依赖：扫了 {scanned} 个文件，0 处倒置；`NodeConfigSource` 生产实现 {} 个",
+        "节点层（{}）已断 UI 投影依赖：扫了 {scanned} 个文件，0 处倒置；\
+         端口生产实现 {} 个（{}）",
         NODE_LAYER_DIRS.join(" / "),
-        impls.len()
+        ok_ports.len(),
+        ok_ports.join(", ")
     ));
     Ok(())
 }

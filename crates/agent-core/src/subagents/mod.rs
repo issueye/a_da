@@ -1,4 +1,5 @@
 pub mod builtins;
+pub mod local_bus;
 pub mod manager;
 pub mod ports;
 pub mod runner;
@@ -6,6 +7,7 @@ pub mod tool;
 pub mod types;
 
 pub use builtins::builtin_subagents;
+pub use local_bus::LocalAgentBus;
 pub use manager::SubagentManager;
 pub use ports::{EphemeralSessionStore, ProfilePrompt, ReadonlyEnforcingGate};
 pub use runner::{

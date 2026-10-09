@@ -268,16 +268,24 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
     //
     // 但它是否出现由**产品声明**决定（INV-10 能力优先）：`capabilities.subagents == false`
     // 的产品不该拿到委派工具——否则"声明说不支持子智能体，模型却看得到这个工具"。
+    //
+    // S3：工具不再自己跑子智能体，而是经 `AgentBus` 端口派活。
+    // 组合根这里装配的是**本地实现**；将来网关实现（S6）替换这一行，
+    // 而 `InvokeSubagentTool` 与 `agent-core` 都不用改。
     let subagent_mgr = Arc::new(agent_core::subagents::SubagentManager::new());
-    let mut tools = tools;
-    if caps.subagents {
-        tools.push(Arc::new(agent_core::subagents::InvokeSubagentTool::new(
+    let agent_bus: Arc<dyn agent_core::agent_bus::AgentBus> =
+        Arc::new(agent_core::subagents::LocalAgentBus::new(
             workspace.clone(),
-            node_config.clone(),
             subagent_mgr.clone(),
+            node_config.clone(),
             None,
             // W4-T6：子智能体的工具按**同一份产品声明**装配，而不是另一张手写清单
             spec.toolkits.clone(),
+        ));
+    let mut tools = tools;
+    if caps.subagents {
+        tools.push(Arc::new(agent_core::subagents::InvokeSubagentTool::new(
+            agent_bus.clone(),
         )));
     } else {
         tracing::info!("产品声明 capabilities.subagents=false → 不装配 invoke_subagent");

@@ -1,81 +1,67 @@
-//! `invoke_subagent` 的一等 `Tool` 实现（W4-T5）。
+//! `invoke_subagent` 的一等 `Tool` 实现（W4-T5；S3 改为 `AgentBus` 端口上的薄适配器）。
+//!
+//! # 它现在做什么
+//!
+//! 只做两件事：**参数校验**（`subagent_id` / `task` 必填）与**回执映射**
+//! （`DispatchOutcome` → `ToolReceipt`）。派活语义——目标是否存在、用哪个模型、
+//! 怎么跑、怎么取消——全在 [`crate::agent_bus::AgentBus`] 的实现里。
+//!
+//! ```text
+//! invoke_subagent (本文件) ──► AgentBus 端口 ──┬─ LocalAgentBus（进程内，今天的行为）
+//!                                             └─ GatewayAgentBus（S6，远端 agent 实例）
+//! ```
+//!
+//! 这样"本地委派"与"经网关委派"是**同一语义的两个实现**，而不是两套机制——
+//! 本仓已经为"两份实现"付过代价（INV-1、`verify-archive` 的第二份引擎断言）。
 //!
 //! # 为什么它不在 `agent-toolkit` 的工具包里
 //!
 //! 工具包工厂是 `(workspace) -> Vec<Arc<dyn Tool>>` 这种**纯函数**形态，
-//! 而子智能体委派天然是**宿主耦合**的：它需要
-//!
-//! - `SubagentManager`（读子智能体配置：内置 4 个 + 用户自定义）；
-//! - **节点配置端口** `NodeConfigSource`（拿父会话的 provider——子智能体要用同一个模型。
-//!   S2 之前这里读的是 `AgentStore`，属分层倒置，已修）；
-//! - `CheckpointManager`（子智能体的写操作要能回滚）。
-//!
-//! 这三样都无法从一个工作区路径构造出来。所以分工是：
+//! 而委派总线天然是**宿主耦合**的（要 `SubagentManager` / 节点配置 / `CheckpointManager`），
+//! 这些都无法从一个工作区路径构造出来。所以分工是：
 //!
 //! | 层 | 职责 |
 //! |---|---|
 //! | `agent-toolkit::registry` | **描述符**（元数据单一真源，INV-3） |
-//! | 本文件（`agent-core`） | **实现**（宿主耦合的那部分） |
-//! | `agent-host` | **装配**（把它 `with_tool` 进 catalog） |
+//! | 本文件（`agent-core`） | **工具适配**（参数校验 + 回执映射） |
+//! | `subagents::local_bus` | **派活实现**（宿主耦合的那部分） |
+//! | `agent-host` | **装配**（构造总线 + 把它 `with_tool` 进 catalog） |
 //!
 //! # 与 legacy 的区别
 //!
 //! legacy 版本在 `parent_config` 缺失时会**编造一个 gemini 配置**（`gemini-2.5-flash`
-//! + 空 api_key）继续跑——那会静默用一个用户没配过的模型。这里改为**直接读父会话的
-//! provider 配置**，读不到就如实失败。
+//! + 空 api_key）继续跑——那会静默用一个用户没配过的模型。
+//! 现在由总线实现**如实拒绝**（`DispatchOutcome::rejected`），`details` 为 `None`
+//! 表示"未进入执行"，与"跑了但失败"可区分。
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt, ToolStatus};
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
 
-use super::types::SubagentProfile;
-use super::{RunSubagentOptions, SubagentManager};
-use crate::checkpoint::CheckpointManager;
-use crate::node_config::NodeConfigSource;
+use crate::agent_bus::{AgentBus, DispatchRequest};
 
 /// 委派给子智能体的工具。
+///
+/// S3：本工具是 `AgentBus` 端口上的**薄适配器**——它只做参数校验与回执映射，
+/// 派活语义（目标是否存在、用哪个模型、怎么跑、怎么取消）全在总线实现里。
+///
+/// 这样"本地委派"与"经网关委派"是**同一语义的两个实现**，而不是两套机制。
 pub struct InvokeSubagentTool {
     descriptor: ToolDescriptor,
-    workspace: PathBuf,
-    /// 节点配置端口（S2）。
-    ///
-    /// 原先直接读 `AgentStore` 拿父会话的 provider——节点层读 UI 投影是分层倒置。
-    /// 现在只认端口，生产实现由组合根注入（`server::StoreBackedNodeConfig`）。
-    config_source: Arc<dyn NodeConfigSource>,
-    subagent_mgr: Arc<SubagentManager>,
-    checkpoint_mgr: Option<Arc<CheckpointManager>>,
-    /// 产品的工具包声明（`spec.toolkits`）：子智能体按**同一处装配**取工具（W4-T6）
-    toolkits: Vec<String>,
+    /// 委派总线（S3）。生产实现 = `subagents::local_bus::LocalAgentBus`；
+    /// 网关实现（S6）会替换它，而本文件**不需要改**。
+    bus: Arc<dyn AgentBus>,
 }
 
 impl InvokeSubagentTool {
     /// 描述符取自注册表——实现了却没声明会**立刻 panic**，而不是造出一个没有描述符的工具。
-    pub fn new(
-        workspace: impl Into<PathBuf>,
-        config_source: Arc<dyn NodeConfigSource>,
-        subagent_mgr: Arc<SubagentManager>,
-        checkpoint_mgr: Option<Arc<CheckpointManager>>,
-        toolkits: Vec<String>,
-    ) -> Self {
+    pub fn new(bus: Arc<dyn AgentBus>) -> Self {
         let descriptor = crate::tools::find_tool_descriptor("invoke_subagent")
             .expect("`invoke_subagent` 必须在 ToolDescriptor 注册表里（INV-3）")
             .clone();
-        Self {
-            descriptor,
-            workspace: workspace.into(),
-            config_source,
-            subagent_mgr,
-            checkpoint_mgr,
-            toolkits,
-        }
-    }
-
-    fn resolve_profile(&self, subagent_id: &str) -> Option<SubagentProfile> {
-        self.subagent_mgr
-            .get_profile(subagent_id, Some(&self.workspace))
+        Self { descriptor, bus }
     }
 }
 
@@ -85,9 +71,6 @@ fn now_ms() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
-
-/// 父会话取消的轮询间隔（W4-T3）。与 `cmd_tools::CANCEL_POLL_INTERVAL` 同口径。
-const CANCEL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
 impl Tool for InvokeSubagentTool {
     fn descriptor(&self) -> &ToolDescriptor {
@@ -99,7 +82,6 @@ impl Tool for InvokeSubagentTool {
         call: &'a ToolCall,
         ctx: &'a ToolContext<'a>,
     ) -> BoxFuture<'a, ToolReceipt> {
-        let _ctx = ctx;
         Box::pin(async move {
             let started_at = now_ms();
 
@@ -117,81 +99,43 @@ impl Tool for InvokeSubagentTool {
                 );
             }
 
-            let Some(profile) = self.resolve_profile(subagent_id) else {
-                return ToolReceipt::error(
-                    format!("找不到指定的子智能体配置: {subagent_id}"),
-                    started_at,
-                    now_ms(),
-                );
-            };
-            if !profile.enabled {
-                return ToolReceipt::error(
-                    format!("子智能体 [{}] 已被禁用", profile.name),
-                    started_at,
-                    now_ms(),
-                );
-            }
-
-            // 父会话的 provider 配置：子智能体用**同一个**模型。
-            // 读不到就如实失败——legacy 会在这里编造一个 gemini 配置继续跑，那更糟。
-            //
-            // S2：经端口读，不直接读 `AgentStore`。
-            let parent_config = self.config_source.provider();
-            if parent_config.base_url.trim().is_empty() {
-                return ToolReceipt::error(
-                    "父会话没有可用的 provider 配置，无法委派子智能体（请先在设置里配置模型）",
-                    started_at,
-                    now_ms(),
-                );
-            }
-
+            // ── S3：派活语义全在 `AgentBus` 实现里，这里只做参数校验与回执映射 ──
             let additional_context = call
                 .args
                 .get("additional_context")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
-            let res = {
-                // W4-T3：父会话的取消必须**真的**传到子智能体。
-                //
-                // `ToolContext.cancel` 是 `&'a dyn CancelToken`（轮询式），不能 move 进
-                // `tokio::spawn`（生命周期不够），所以用 `select!` 在**同一个 future** 里
-                // 轮询转发到 `run_subagent` 的 `abort_rx`——与 W4-T1 修 `run_command`
-                // 假接线用的是同一个手法。
-                let (abort_tx, abort_rx) = tokio::sync::watch::channel(false);
-                let fut = super::run_subagent(RunSubagentOptions {
-                    profile,
-                    task: task.to_string(),
+            let out = self
+                .bus
+                .dispatch(DispatchRequest {
+                    agent_id: subagent_id,
+                    task,
                     additional_context,
-                    workspace: self.workspace.clone(),
-                    parent_config,
-                    checkpoint_mgr: self.checkpoint_mgr.clone(),
-                    abort_rx: Some(abort_rx),
-                    update_tx: None,
-                    toolkits: self.toolkits.clone(),
-                    model: None,
-                });
-                tokio::pin!(fut);
-                loop {
-                    tokio::select! {
-                        r = &mut fut => break r,
-                        _ = tokio::time::sleep(CANCEL_POLL_INTERVAL) => {
-                            if _ctx.cancel.is_cancelled() {
-                                let _ = abort_tx.send(true);
-                            }
-                        }
-                    }
-                }
-            };
+                    // 父会话取消令牌：取消必须**真的**传到 agent 内部（W4-T3）
+                    cancel: Some(ctx.cancel),
+                })
+                .await;
 
             let finished_at = now_ms();
-            let status = if res.ok { ToolStatus::Success } else { ToolStatus::Error };
-            let mut receipt = ToolReceipt::new(status, res.summary.clone(), started_at, finished_at);
+
+            // 未进入执行（目标不存在 / 已禁用 / 没有可用模型）→ 与重构前逐字一致：
+            // `ToolReceipt::error(原因)`，`details` 为 None。
+            let Some(details) = out.details else {
+                return ToolReceipt::error(out.summary, started_at, finished_at);
+            };
+
+            let status = if out.ok {
+                ToolStatus::Success
+            } else {
+                ToolStatus::Error
+            };
+            let mut receipt = ToolReceipt::new(status, out.summary.clone(), started_at, finished_at);
             // 结构化细节：步数/耗时/工具调用数/输出文件，供界面与诊断使用
-            receipt.details = serde_json::to_value(&res).ok();
-            if !res.ok {
-                if let Some(err) = &res.error_message {
-                    receipt.output = format!("{}\n{}", res.summary, err);
+            receipt.details = Some(details);
+            if !out.ok {
+                if let Some(err) = &out.error_message {
+                    receipt.output = format!("{}\n{}", out.summary, err);
                 }
             }
             receipt
@@ -205,6 +149,7 @@ mod tests {
     use agent_base::domain::{AgentEvent, DenialKind};
     use agent_base::ports::{CancelToken, EventSink, Scope};
     use serde_json::json;
+    use std::path::PathBuf;
 
     struct NoopSink;
     impl EventSink for NoopSink {
@@ -230,16 +175,17 @@ mod tests {
         (RootScope(ws.to_path_buf()), NoCancel, NoopSink)
     }
 
-    /// S2：测试替身从"一整个 `AgentStore`"缩小成"一个固定值配置端口"。
+    /// S3：工具经 `AgentBus` 端口派活。测试替身因此缩成"一个固定值配置端口 + 本地总线"。
     fn tool(ws: &std::path::Path, provider: agent_base::model::ProviderConfig) -> InvokeSubagentTool {
         let cfg = crate::node_config::FixedNodeConfig::new(provider, agent_proto::ApprovalMode::Auto);
-        InvokeSubagentTool::new(
+        let bus = crate::subagents::local_bus::LocalAgentBus::new(
             ws,
+            Arc::new(crate::subagents::SubagentManager::new()),
             Arc::new(cfg),
-            Arc::new(SubagentManager::new()),
             None,
             vec!["core".to_string(), "fs".to_string()],
-        )
+        );
+        InvokeSubagentTool::new(Arc::new(bus))
     }
 
     fn default_provider() -> agent_base::model::ProviderConfig {
