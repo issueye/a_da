@@ -210,6 +210,66 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         host_bin: args.host_bin,
     };
 
+#[cfg(windows)]
+struct SingleInstanceMutex {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl SingleInstanceMutex {
+    fn try_acquire() -> Option<Self> {
+        use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Threading::CreateMutexW;
+
+        let name: Vec<u16> = "Local\\com.ada.agent.single_instance_lock\0".encode_utf16().collect();
+        let handle = unsafe { CreateMutexW(std::ptr::null_mut(), 1, name.as_ptr()) };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+            return None;
+        }
+        Some(Self { handle })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for SingleInstanceMutex {
+    fn drop(&mut self) {
+        if !self.handle.is_null() && self.handle != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.handle);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn activate_existing_window() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE,
+    };
+    let title: Vec<u16> = "a_da\0".encode_utf16().collect();
+    let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+    if !hwnd.is_null() {
+        unsafe {
+            ShowWindow(hwnd, SW_RESTORE);
+            SetForegroundWindow(hwnd);
+        }
+    }
+}
+
+    #[cfg(windows)]
+    let _single_instance = match SingleInstanceMutex::try_acquire() {
+        Some(guard) => guard,
+        None => {
+            activate_existing_window();
+            println!("a_da 桌面客户端已在运行中，已激活既有窗口。");
+            return Ok(());
+        }
+    };
+
     ada_tauri::run(launcher_config);
     Ok(())
 }

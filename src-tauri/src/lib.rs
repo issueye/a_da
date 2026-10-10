@@ -475,7 +475,63 @@ pub fn run(config: LauncherConfig) {
 
     let app_res = tauri::Builder::default()
         .manage(core_state)
-        .setup(move |_app| {
+        .setup(move |app| {
+            // 1. 构建主窗口（防御 WebView2 缓存锁、多进程冲突与自愈重试）
+            if let Some(win_cfg) = app.config().app.windows.iter().find(|w| w.label == "main") {
+                let init_res = tauri::WebviewWindowBuilder::from_config(app.handle(), win_cfg)
+                    .map_err(|e| format!("解析主窗口配置失败: {e}"))
+                    .and_then(|b| b.build().map_err(|e| format!("{e}")));
+
+                if let Err(err) = init_res {
+                    warn!("初次创建 WebView2 主窗口失败: {err}，正在尝试自愈清理并重试...");
+
+                    #[cfg(windows)]
+                    {
+                        if let Ok(local_data) = app.path().app_local_data_dir() {
+                            let eb_dir = local_data.join("EBWebView");
+                            if eb_dir.exists() {
+                                let ts = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs();
+                                let corrupt_bak = local_data.join(format!("EBWebView_corrupt_{ts}"));
+                                let _ = std::fs::rename(&eb_dir, &corrupt_bak);
+                            }
+                        }
+                    }
+
+                    // 重试创建
+                    let retry_res = tauri::WebviewWindowBuilder::from_config(app.handle(), win_cfg)
+                        .map_err(|e| format!("重新解析窗口配置失败: {e}"))
+                        .and_then(|b| b.build().map_err(|e| format!("{e}")));
+
+                    if let Err(retry_err) = retry_res {
+                        warn!("重试创建主窗口仍失败: {retry_err}，尝试启用备用隔离数据目录...");
+                        #[cfg(windows)]
+                        {
+                            let ts = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            let fallback_dir = app.path().app_local_data_dir()
+                                .unwrap_or_else(|_| std::env::temp_dir())
+                                .join(format!("EBWebView_isolated_{ts}"));
+                            let _ = std::fs::create_dir_all(&fallback_dir);
+
+                            let fallback_builder = tauri::WebviewWindowBuilder::from_config(app.handle(), win_cfg)
+                                .map_err(|e| format!("{e}"))?
+                                .data_directory(fallback_dir);
+
+                            fallback_builder.build().map_err(|e| format!("备用目录创建窗口失败: {e}"))?;
+                        }
+                        #[cfg(not(windows))]
+                        {
+                            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, retry_err)));
+                        }
+                    }
+                }
+            }
+
             let state_arc = inner_clone.clone();
             let cfg = config.clone();
             let d_cfg = desktop_config.clone();
