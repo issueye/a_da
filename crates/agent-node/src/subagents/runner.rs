@@ -37,15 +37,11 @@ use super::types::{SubagentMode, SubagentProfile, SubagentRunResult, SubagentSte
 use agent_base::model::ProviderConfig;
 use crate::checkpoint::CheckpointManager;
 
-/// 子智能体永远禁止调用的**套娃/递归**工具。
+/// 子智能体永远禁止调用的**套娃/递归与交互**工具。
 ///
-/// W2-T6 清理：这里原先列了 5 个名字，但其中 4 个（`check_subagent`、
-/// `send_subagent_message`、`resume_subagent`、`await_subagents`）在本仓
-/// **没有任何实现**——它们只存在于这张黑名单里，是纯粹的幽灵名字。
-/// 断言"过滤掉了不存在的工具"是空转断言，所以删掉。
-///
-/// 唯一真实的是 `invoke_subagent`（W4-T5 起它已是一等 `Tool` 且在注册表里）。
-pub const NEVER_FOR_SUBAGENT: &[&str] = &["invoke_subagent"];
+/// 1. 递归工具：`invoke_subagent`
+/// 2. 交互提问：`ask_user`（进程内子代理不允许 ask_user，必须在子环境中自主闭环）
+pub const NEVER_FOR_SUBAGENT: &[&str] = &["invoke_subagent", "ask_user"];
 
 /// 尚未进 `ToolDescriptor` 注册表、但**确实存在实现**的 legacy 工具名。
 ///
@@ -121,14 +117,14 @@ pub struct RunSubagentOptions {
 /// 变成"子智能体停摆"，代价远大于丢一条进度。
 struct SubagentProgressSink {
     tx: Option<mpsc::Sender<SubagentStepUpdate>>,
-    max_steps: usize,
+    max_steps: Option<usize>,
     summary: Mutex<String>,
     tool_calls: AtomicUsize,
     steps: AtomicUsize,
 }
 
 impl SubagentProgressSink {
-    fn new(tx: Option<mpsc::Sender<SubagentStepUpdate>>, max_steps: usize) -> Self {
+    fn new(tx: Option<mpsc::Sender<SubagentStepUpdate>>, max_steps: Option<usize>) -> Self {
         Self {
             tx,
             max_steps,
@@ -155,7 +151,7 @@ impl SubagentProgressSink {
         let _ = tx.try_send(SubagentStepUpdate {
             thread_id: None,
             step: self.steps(),
-            max_steps: Some(self.max_steps),
+            max_steps: self.max_steps,
             status: status.to_string(),
             current_action: action,
             tool_call_summary: tool,
@@ -213,7 +209,7 @@ fn build_result(
 /// 子智能体隔离执行器（**走 `AgentRuntime::run_turn`**）。
 pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
     let start_time = Instant::now();
-    let max_steps = options.profile.max_steps.unwrap_or(25);
+    let max_steps = options.profile.max_steps;
 
     if !options.profile.enabled {
         return build_result(
@@ -277,7 +273,7 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
         Arc::new(WorkspaceScope::new(options.workspace.clone())),
         Arc::new(SystemClock),
         RunPolicy {
-            max_steps: Some(max_steps as u32),
+            max_steps: max_steps.map(|s| s as u32),
             max_parallel_tools: 1,
             tool_timeout: Some(Duration::from_secs(120)),
         },
@@ -368,11 +364,13 @@ mod tests {
         assert!(!names.contains(&"run_command".to_string()), "{names:?}");
         // 递归工具永远不给
         assert!(!names.contains(&"invoke_subagent".to_string()), "{names:?}");
+        // 交互提问工具进程内子代理永远不给
+        assert!(!names.contains(&"ask_user".to_string()), "进程内子代理永远不得拿到 ask_user：{names:?}");
         // 白名单之外的不给（researcher 没声明 batch_write）
         assert!(!names.contains(&"batch_write".to_string()), "{names:?}");
     }
 
-    /// 通配白名单的 profile（general_purpose）在读写模式下拿到写工具，但**永远**拿不到递归工具。
+    /// 通配白名单的 profile（general_purpose）在读写模式下拿到写工具，但**永远**拿不到递归工具与提问工具。
     #[test]
     fn test_wildcard_profile_gets_writes_but_never_recursion() {
         let ws = std::path::Path::new("E:/subagent_filter_ws");
@@ -384,18 +382,20 @@ mod tests {
             .find(|p| p.id == "general_purpose")
             .expect("内置 general_purpose");
         assert_eq!(general.mode, SubagentMode::Readwrite);
+        assert_eq!(general.max_steps, None, "内置子代理默认不做步数限制");
 
         let allowed = filter_subagent_tools(&general, &all);
         let names: Vec<String> = allowed.iter().map(|t| t.descriptor().name.clone()).collect();
         assert!(names.contains(&"write_file".to_string()), "{names:?}");
         assert!(!names.contains(&"invoke_subagent".to_string()), "递归必须被黑名单挡住：{names:?}");
+        assert!(!names.contains(&"ask_user".to_string()), "进程内子代理即使通配也不得拿到 ask_user：{names:?}");
     }
 
     /// 进度投影：文本累加成摘要、工具调用计数、一次模型调用算一步。
     #[test]
     fn test_progress_sink_projects_events() {
         let (tx, mut rx) = mpsc::channel::<SubagentStepUpdate>(16);
-        let sink = SubagentProgressSink::new(Some(tx), 5);
+        let sink = SubagentProgressSink::new(Some(tx), Some(5));
 
         sink.emit(AgentEvent::new(1, 0, "sub", AgentEventBody::TextDelta { text: "结论".into() }));
         sink.emit(AgentEvent::new(2, 0, "sub", AgentEventBody::TextDelta { text: "如下".into() }));
@@ -435,7 +435,7 @@ mod tests {
     #[test]
     fn test_progress_sink_never_blocks_on_full_channel() {
         let (tx, _rx) = mpsc::channel::<SubagentStepUpdate>(1);
-        let sink = SubagentProgressSink::new(Some(tx), 3);
+        let sink = SubagentProgressSink::new(Some(tx), Some(3));
         // 远超容量；只要不 panic/不阻塞就算通过
         for i in 0..50 {
             sink.emit(AgentEvent::new(

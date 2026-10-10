@@ -58,6 +58,16 @@ pub mod methods {
     pub const DELEGATE: &str = "gateway.delegate";
     /// **交互平台**：取消进行中的派活（跨网关取消，S6）
     pub const CANCEL_DELEGATION: &str = "gateway.cancelDelegation";
+    /// **文件系统**：列出驱动器与根目录
+    pub const FS_ROOTS: &str = "gateway.fs.roots";
+    /// **文件系统**：浏览目录
+    pub const FS_LIST_DIRECTORY: &str = "gateway.fs.listDirectory";
+    /// **文件系统**：新建目录
+    pub const FS_MAKE_DIRECTORY: &str = "gateway.fs.makeDirectory";
+    /// **工作区管理**：获取最近与活跃工作区
+    pub const WORKSPACES_LIST: &str = "gateway.workspaces.list";
+    /// **工作区管理**：移除工作区
+    pub const WORKSPACES_REMOVE: &str = "gateway.workspaces.remove";
 }
 
 /// 网关的共享状态（一个网关进程一份）。
@@ -75,18 +85,27 @@ pub struct Gateway {
     pub delegations: Arc<DelegationRegistry>,
     /// 接入鉴权（S7）。默认 [`crate::auth::AuthConfig::open`]（不要求 token，只该在回环上用）。
     pub auth: Arc<crate::auth::AuthConfig>,
+    /// 工作区管理（持久化最近工作区列表）
+    pub workspaces: Arc<crate::workspaces::WorkspacesStore>,
 }
 
 impl Gateway {
     pub fn new(default_product: impl Into<String>, default_workspace: impl Into<String>) -> Self {
+        let default_prod_str = default_product.into();
+        let default_ws_str = default_workspace.into();
+        let ws_store = Arc::new(crate::workspaces::WorkspacesStore::new(None));
+        if !default_ws_str.trim().is_empty() {
+            ws_store.record(&default_ws_str, Some(&default_prod_str));
+        }
         Self {
             registry: Arc::new(AgentRegistry::new()),
             spawn_lock: Arc::new(Mutex::new(())),
             pid: std::process::id(),
-            default_product: default_product.into(),
-            default_workspace: default_workspace.into(),
+            default_product: default_prod_str,
+            default_workspace: default_ws_str,
             delegations: Arc::new(DelegationRegistry::new()),
             auth: Arc::new(crate::auth::AuthConfig::open()),
+            workspaces: ws_store,
         }
     }
 
@@ -125,6 +144,8 @@ impl Gateway {
         // `Some(tid)` = 多轮续跑该线程
         thread_id: Option<String>,
         delegation_id: &str,
+        parent_thread_id: Option<String>,
+        subagent_id: Option<String>,
     ) -> Result<DelegateOutcome, DelegateError> {
         if task.trim().is_empty() {
             return Err(DelegateError::NoResult {
@@ -134,10 +155,23 @@ impl Gateway {
 
         // 目标解析：显式 agentId 优先；否则按工作区找（没有就拉起）
         let instance = match agent_id {
-            Some(id) if !id.trim().is_empty() => self
-                .registry
-                .get(id)
-                .ok_or_else(|| DelegateError::Connect(format!("没有这个 agent 实例：{id}")))?,
+            Some(id) if !id.trim().is_empty() => {
+                if let Some(inst) = self.registry.get(id) {
+                    inst
+                } else {
+                    let prod = match id {
+                        "ada-pm" | "pm" | "pm-assistant" => "ada-pm",
+                        _ => "ada-coding",
+                    };
+                    let ws = workspace
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| self.default_workspace.clone());
+                    let spec = SpawnSpec::new(prod, &ws);
+                    ensure_agent(&spec, &self.registry, &self.spawn_lock, self.pid)
+                        .await
+                        .map_err(|e| DelegateError::Connect(e.to_string()))?
+                }
+            }
             _ => {
                 let ws = workspace
                     .map(|s| s.to_string())
@@ -161,6 +195,8 @@ impl Gateway {
             cancel,
             self.delegations.clone(),
             DEFAULT_DELEGATION_TIMEOUT,
+            parent_thread_id,
+            subagent_id,
         )
         .await
     }
@@ -192,11 +228,120 @@ impl Gateway {
         if ws.trim().is_empty() {
             return Err("gateway.attach 需要一个 workspace（网关未配置默认工作区）".to_string());
         }
+        self.workspaces.record(&ws, Some(&self.default_product));
         let spec = SpawnSpec::new(self.default_product.clone(), &ws);
         let inst = ensure_agent(&spec, &self.registry, &self.spawn_lock, self.pid)
             .await
             .map_err(|e| e.to_string())?;
         Ok(inst.redacted())
+    }
+
+    /// 管理面：获取磁盘驱动器与根目录列表
+    pub fn fs_roots_result(&self) -> serde_json::Value {
+        let recent: Vec<String> = self
+            .workspaces
+            .get_data()
+            .workspaces
+            .into_iter()
+            .map(|w| w.workspace)
+            .collect();
+        let roots = crate::fs_service::list_roots(&recent, None);
+        serde_json::to_value(&roots).unwrap_or_else(|_| serde_json::json!([]))
+    }
+
+    /// 管理面：浏览目录树与文件列表
+    pub fn fs_list_directory_result(
+        &self,
+        params: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let path = params
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let directories_only = params
+            .get("directoriesOnly")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let show_hidden = params
+            .get("showHidden")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|l| l as usize);
+
+        let listing = crate::fs_service::list_directory(
+            path,
+            directories_only,
+            show_hidden,
+            limit,
+            None,
+        )?;
+        serde_json::to_value(listing).map_err(|e| e.to_string())
+    }
+
+    /// 管理面：在指定目录下新建文件夹
+    pub fn fs_make_directory_result(
+        &self,
+        params: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let raw_path = params
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let parent_param = params
+            .get("parentPath")
+            .or_else(|| params.get("parent"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let name_param = params
+            .get("folderName")
+            .or_else(|| params.get("name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let (parent, name) = if !parent_param.is_empty() && !name_param.is_empty() {
+            (parent_param.to_string(), name_param.to_string())
+        } else if !raw_path.is_empty() {
+            let p = std::path::Path::new(raw_path);
+            let n = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            let parent_dir = p.parent().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            (parent_dir, n)
+        } else {
+            (parent_param.to_string(), name_param.to_string())
+        };
+
+        let created_path = crate::fs_service::make_directory(&parent, &name, None)?;
+        Ok(serde_json::json!({
+            "path": created_path,
+            "created": true,
+        }))
+    }
+
+    /// 管理面：获取最近工作区列表
+    pub fn workspaces_list_result(&self) -> serde_json::Value {
+        let data = self.workspaces.get_data();
+        serde_json::to_value(data).unwrap_or_else(|_| serde_json::json!({ "workspaces": [] }))
+    }
+
+    /// 管理面：移除最近工作区
+    pub fn workspaces_remove_result(
+        &self,
+        params: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let ws = params
+            .get("workspace")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if ws.is_empty() {
+            return Err("gateway.workspaces.remove 需要 workspace 参数".to_string());
+        }
+        let removed = self.workspaces.remove(ws);
+        Ok(serde_json::json!({
+            "removed": removed,
+            "workspace": ws,
+        }))
     }
 }
 
@@ -296,6 +441,7 @@ pub async fn serve_client(
     }
 
     let target_product = uri_product.unwrap_or_else(|| gateway.default_product.clone());
+    gateway.workspaces.record(&ws, Some(&target_product));
     let spec = SpawnSpec::new(target_product, &ws);
     let instance = ensure_agent(&spec, &gateway.registry, &gateway.spawn_lock, gateway.pid)
         .await
@@ -609,11 +755,31 @@ async fn relay(
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
 
+                let parent_thread_id = params
+                    .get("parentThreadId")
+                    .or_else(|| params.get("parentId"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let subagent_id = params
+                    .get("subagentId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| agent_id.clone());
+
                 let gw_task = gw.clone();
                 let tx_task = client_tx.clone();
                 tokio::spawn(async move {
                     let out = gw_task
-                        .delegate_result(agent_id.as_deref(), workspace.as_deref(), &task, depth, thread_id, &delegation_id)
+                        .delegate_result(
+                            agent_id.as_deref(),
+                            workspace.as_deref(),
+                            &task,
+                            depth,
+                            thread_id,
+                            &delegation_id,
+                            parent_thread_id,
+                            subagent_id,
+                        )
                         .await;
                     let frame = match out {
                         Ok(DelegateOutcome { agent_id, thread_id, summary, details, .. }) => {
@@ -683,6 +849,11 @@ async fn relay(
                     let ws_param = params.get("workspace").and_then(|v| v.as_str());
                     gw.attach_result(ws_param).await
                 }
+                "fs.roots" => Ok(gw.fs_roots_result()),
+                "fs.listDirectory" => gw.fs_list_directory_result(&params),
+                "fs.makeDirectory" => gw.fs_make_directory_result(&params),
+                "workspaces.list" => Ok(gw.workspaces_list_result()),
+                "workspaces.remove" => gw.workspaces_remove_result(&params),
                 "cancelDelegation" => {
                     let did = params
                         .get("delegationId")

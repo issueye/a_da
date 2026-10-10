@@ -72,7 +72,7 @@ export const FilePicker: React.FC<FilePickerProps> = ({
     setCreatingFolder(false)
     setNewFolderName('')
     try {
-      const listing = await agentClient.listDirectory(path, false)
+      const listing = await agentClient.listDirectory(path, false, undefined, mode === 'directory')
       if (listing) {
         setCurrentPath(listing.path)
         setPathInput(listing.path)

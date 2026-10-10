@@ -45,7 +45,7 @@ impl WsHostServer {
         Self::bind_with_engines(bind_port, token, store, injection, None).await
     }
 
-    /// 绑定并同时注入多个真引擎（如 `ada-coding` 主引擎与 `pm-assistant` PM 引擎）。
+    /// 绑定并同时注入多个真引擎（如 `ada-coding` 主引擎与 `ada-pm` PM 引擎）。
     pub async fn bind_with_engines(
         bind_port: u16,
         token: String,

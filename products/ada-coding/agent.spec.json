@@ -15,7 +15,6 @@
     "plugins": true
   },
   "policies": {
-    "maxSteps": 50,
     "parallelTools": 4,
     "toolTimeoutSec": 120
   }

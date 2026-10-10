@@ -1,9 +1,44 @@
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
 use agent_base::domain::{
-    Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
-    ToolReceipt, ToolStatus,
+    Access, AgentEvent, AgentEventBody, ApprovalPolicy, Execution, RollbackPolicy, Termination,
+    ToolCall, ToolDescriptor, ToolReceipt, ToolStatus,
 };
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuestionAnswerPayload {
+    pub choice: Option<String>,
+    pub text: Option<String>,
+    pub answered_by: String,
+}
+
+pub type QuestionWaiterFuture = Pin<Box<dyn Future<Output = Result<QuestionAnswerPayload, String>> + Send>>;
+pub type QuestionRegistrarFn = Arc<dyn Fn(&str) -> QuestionWaiterFuture + Send + Sync>;
+
+static QUESTION_REGISTRAR: std::sync::RwLock<Option<QuestionRegistrarFn>> =
+    std::sync::RwLock::new(None);
+
+/// 注册全局提问等待器工厂（由拥有会话与问答管理器的上层节点注入）。
+pub fn set_question_registrar(registrar: QuestionRegistrarFn) {
+    if let Ok(mut lock) = QUESTION_REGISTRAR.write() {
+        *lock = Some(registrar);
+    }
+}
+
+pub fn clear_question_registrar() {
+    if let Ok(mut lock) = QUESTION_REGISTRAR.write() {
+        *lock = None;
+    }
+}
+
+pub fn get_question_registrar() -> Option<QuestionRegistrarFn> {
+    QUESTION_REGISTRAR.read().ok().and_then(|guard| guard.clone())
+}
 
 /// `ask_user` 工具：在交互界面向用户发起单选选择或补充说明提问并阻塞等待答复。
 pub struct AskUserTool {
@@ -119,15 +154,89 @@ impl Tool for AskUserTool {
                 );
             }
 
-            // 3. 通道检查：无交互通道时报错而非永久挂起（验收门 M2-T2）
-            // 在 ToolContext 中目前只有 scope/cancel/events/thread_id，
-            // 纯基座无外接问答管理器时，明确返回环境不支持交互提问的错误。
-            let finished_at = started_at;
-            ToolReceipt::error(
-                "当前环境未接入交互提问协调器（无事件问答通道），无法向用户提问。请直接基于现有上下文作出合理推断并继续。",
-                started_at,
-                finished_at,
-            )
+            // 3. 通道检查与提问挂起
+            let Some(reg) = get_question_registrar() else {
+                let finished_at = started_at;
+                return ToolReceipt::error(
+                    "当前环境未接入交互提问协调器（无事件问答通道），无法向用户提问。请直接基于现有上下文作出合理推断并继续。",
+                    started_at,
+                    finished_at,
+                );
+            };
+
+            // 注册等待通道
+            let waiter = reg(&call.id);
+
+            // 发射提问事件（通知界面/上层协调者）
+            let choices = call.args.get("choices").cloned().unwrap_or(json!([]));
+            let allow_text = call
+                .args
+                .get("allow_text")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+
+            ctx.events.emit(AgentEvent::new(
+                0,
+                0,
+                ctx.thread_id,
+                AgentEventBody::QuestionAsked {
+                    call_id: call.id.clone(),
+                    question: json!({
+                        "question": question,
+                        "choices": choices,
+                        "allow_text": allow_text,
+                    }),
+                },
+            ));
+
+            // 等待作答或取消
+            let answer = tokio::select! {
+                ans = waiter => ans,
+                _ = async {
+                    while !ctx.cancel.is_cancelled() {
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                } => {
+                    let finished_at = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0);
+                    return ToolReceipt::new(
+                        ToolStatus::Aborted,
+                        "操作在等待提问答复时被中止。",
+                        started_at,
+                        finished_at,
+                    );
+                }
+            };
+
+            let finished_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+
+            match answer {
+                Ok(ans) => {
+                    if ans.answered_by == "aborted" {
+                        return ToolReceipt::new(
+                            ToolStatus::Aborted,
+                            "提问已被取消。",
+                            started_at,
+                            finished_at,
+                        );
+                    }
+                    let summary = match (ans.choice, ans.text) {
+                        (Some(c), Some(t)) => {
+                            format!("答复已记录（来源: {}）：选择 [{c}]，说明：{t}", ans.answered_by)
+                        }
+                        (Some(c), None) => format!("答复已记录（来源: {}）：选择 [{c}]", ans.answered_by),
+                        (None, Some(t)) => format!("答复已记录（来源: {}）：{t}", ans.answered_by),
+                        (None, None) => format!("答复已记录（来源: {}）：已确认", ans.answered_by),
+                    };
+                    ToolReceipt::success(summary, started_at, finished_at)
+                }
+                Err(err) => ToolReceipt::error(format!("提问失败：{err}"), started_at, finished_at),
+            }
         })
     }
 }
@@ -169,6 +278,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ask_user_without_channel_fails_instead_of_hanging() {
+        clear_question_registrar();
         let tool = AskUserTool::new();
         let scope = DummyScope;
         let cancel = ManualCancel::new();
@@ -198,6 +308,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ask_user_empty_or_too_long_question() {
+        clear_question_registrar();
         let tool = AskUserTool::new();
         let scope = DummyScope;
         let cancel = ManualCancel::new();
@@ -228,5 +339,53 @@ mod tests {
         let receipt = tool.execute(&long_call, &ctx).await;
         assert_eq!(receipt.status, ToolStatus::Error);
         assert!(receipt.output.contains("上限 600 字"));
+    }
+
+    #[tokio::test]
+    async fn test_ask_user_with_channel_emits_event_and_receives_answer() {
+        let tool = AskUserTool::new();
+        let scope = DummyScope;
+        let cancel = ManualCancel::new();
+        let events = RecordingSink::new();
+
+        let ctx = ToolContext {
+            scope: &scope,
+            cancel: &cancel,
+            events: &events,
+            thread_id: "t_test_qa",
+        };
+
+        // 注册测试等待器
+        set_question_registrar(Arc::new(|call_id: &str| {
+            assert_eq!(call_id, "call_ask_1");
+            Box::pin(async {
+                Ok(QuestionAnswerPayload {
+                    choice: Some("c1".into()),
+                    text: Some("选用方案 A".into()),
+                    answered_by: "main_agent".into(),
+                })
+            })
+        }));
+
+        let call = ToolCall {
+            id: "call_ask_1".to_string(),
+            name: "ask_user".to_string(),
+            args: json!({
+                "question": "应该选择方案 A 还是方案 B？",
+                "choices": [{"id": "c1", "label": "方案 A"}, {"id": "c2", "label": "方案 B"}],
+                "allow_text": true,
+            }),
+        };
+
+        let receipt = tool.execute(&call, &ctx).await;
+        assert_eq!(receipt.status, ToolStatus::Success);
+        assert!(receipt.output.contains("方案 A"));
+        assert!(receipt.output.contains("main_agent"));
+
+        // 验证 QuestionAsked 事件确实被发射到了事件池中
+        let recorded = events.snapshot();
+        assert!(recorded.iter().any(|e| matches!(&e.body, AgentEventBody::QuestionAsked { call_id, .. } if call_id == "call_ask_1")));
+
+        clear_question_registrar();
     }
 }

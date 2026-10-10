@@ -95,13 +95,8 @@ fn build_pm_engine_injection(
     }
 
     let ws = if workspace.trim().is_empty() {
-        match std::env::current_dir() {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("取当前目录失败：{e}");
-                return None;
-            }
-        }
+        let app_home = agent_node::session::app_home();
+        app_home.dir("workspace")
     } else {
         std::path::PathBuf::from(workspace)
     };
@@ -122,10 +117,37 @@ fn build_pm_engine_injection(
                 ..
             } = hosted;
             info!("已按 PM 产品声明装配真引擎：工具 {tool_count} 个");
+
+            let store_for_pm_factory = store.clone();
+            let gateway_override_owned = gateway_override.map(|s| s.to_string());
+            let factory: agent_rpc::server::dispatch::EngineFactory = Arc::new(move |ws_path: &std::path::Path| -> Option<Arc<agent_base::engine::AgentRuntime>> {
+                let mut spec_dyn = AgentSpec::from_json_str(SPEC_JSON).ok()?;
+                if let Some(endpoint) = &gateway_override_owned {
+                    spec_dyn.gateway = Some(agent_runtime::GatewaySpec {
+                        endpoint: endpoint.clone(),
+                    });
+                }
+                let s_root = std::path::Path::new(&agent_node::session::get_app_home()).join("pm_sessions");
+                let opts = HostOptions::new(ws_path)
+                    .with_store(store_for_pm_factory.clone())
+                    .with_sessions_root(s_root);
+                match run_from_spec(spec_dyn, opts) {
+                    Ok(h) => {
+                        info!("为会话工作区 {} 动态装配 PM 真引擎就绪", ws_path.display());
+                        Some(Arc::new(h.runtime))
+                    }
+                    Err(err) => {
+                        warn!("为工作区 {} 装配 PM 引擎失败: {err}", ws_path.display());
+                        None
+                    }
+                }
+            });
+
             Some(agent_rpc::server::dispatch::EngineInjection {
                 runtime: Arc::new(runtime),
                 approval_mgr: approval,
                 spec: Arc::new(spec),
+                factory: Some(factory),
             })
         }
         Err(e) => {
@@ -182,7 +204,7 @@ async fn main() -> Result<(), anyhow::Error> {
         let hosted = run_from_spec(
             spec,
             HostOptions::new(std::env::current_dir()?)
-                .with_sessions_root(std::env::temp_dir().join("pm-assistant-sessions"))
+                .with_sessions_root(std::env::temp_dir().join("ada-pm-sessions"))
                 .with_model(Arc::new(agent_base::testing::ScriptedModelClient::new(vec![vec![
                     agent_base::model::StreamDelta::Text {
                         text: "我先看一下有哪些可用的 coding agent。".into(),
@@ -218,8 +240,19 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let store = Arc::new(RwLock::new(AgentStore::new(args.workspace.clone())));
 
+    let initial_ws = {
+        let s = store.read().await;
+        if !args.workspace.trim().is_empty() {
+            args.workspace.clone()
+        } else if !s.workspace.project.trim().is_empty() {
+            s.workspace.project.clone()
+        } else {
+            s.public_workspace.clone()
+        }
+    };
+
     // 装配 PM 真引擎
-    let injection = build_pm_engine_injection(&store, &args.workspace, args.gateway.as_deref());
+    let injection = build_pm_engine_injection(&store, &initial_ws, args.gateway.as_deref());
 
     // 启动 WebSocket 服务
     let server = WsHostServer::bind_with_engine(
@@ -237,14 +270,14 @@ async fn main() -> Result<(), anyhow::Error> {
         "port": server.port,
         "token": token,
         "pid": current_pid,
-        "product": "pm-assistant",
+        "product": "ada-pm",
         "protocolVersion": PROTOCOL_VERSION,
     });
 
     println!("A_DA_HOST_READY {}", ready_json);
     std::io::stdout().flush()?;
 
-    info!("pm-assistant 核心就绪，PID: {}, 监听端口: {}", current_pid, server.port);
+    info!("ada-pm 核心就绪，PID: {}, 监听端口: {}", current_pid, server.port);
 
     // 若配置了 --gateway，启动后台协程主动向网关注册自身并保持长连接
     if let Some(gateway_endpoint) = args.gateway {
@@ -252,7 +285,7 @@ async fn main() -> Result<(), anyhow::Error> {
         let auth_token = token.clone();
         let ws_path = args.workspace.clone();
         tokio::spawn(async move {
-            register_to_gateway("pm-assistant", &gateway_endpoint, server_port, &auth_token, &ws_path, current_pid).await;
+            register_to_gateway("ada-pm", &gateway_endpoint, server_port, &auth_token, &ws_path, current_pid).await;
         });
     }
 
@@ -263,7 +296,7 @@ async fn main() -> Result<(), anyhow::Error> {
             Ok(mut sig) => {
                 tokio::select! {
                     Some(_) = sig.recv() => {
-                        info!("收到 Ctrl+C 退出信号，pm-assistant 安全关闭");
+                        info!("收到 Ctrl+C 退出信号，ada-pm 安全关闭");
                     }
                     _ = std::future::pending::<()>() => {}
                 }
@@ -278,7 +311,7 @@ async fn main() -> Result<(), anyhow::Error> {
     #[cfg(not(target_os = "windows"))]
     {
         let _ = tokio::signal::ctrl_c().await;
-        info!("收到退出信号，pm-assistant 安全关闭");
+        info!("收到退出信号，ada-pm 安全关闭");
     }
 
     Ok(())
@@ -393,7 +426,7 @@ mod tests {
 
     fn options() -> HostOptions {
         HostOptions::new(std::env::current_dir().expect("取当前目录失败"))
-            .with_sessions_root(std::env::temp_dir().join("pm-assistant-test-sessions"))
+            .with_sessions_root(std::env::temp_dir().join("ada-pm-test-sessions"))
             .with_model(Arc::new(agent_base::testing::ScriptedModelClient::new(vec![vec![
                 agent_base::model::StreamDelta::Done {
                     stop_reason: "stop".into(),
@@ -405,7 +438,7 @@ mod tests {
     #[test]
     fn test_spec_declares_gateway_delegation() {
         let s = spec();
-        assert_eq!(s.id, "pm-assistant");
+        assert_eq!(s.id, "ada-pm");
         assert_eq!(s.capabilities.delegation, DelegationMode::Gateway);
         assert!(s.capabilities.subagents, "要委派就必须有委派工具");
         assert!(

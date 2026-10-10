@@ -20,6 +20,7 @@ import {
   CheckCircle2,
   Edit2,
   Radio,
+  Activity,
 } from 'lucide-react'
 import type {
   ProviderConfig,
@@ -47,6 +48,7 @@ interface SettingsModalProps {
   effort: Effort
   onClose: () => void
   onSave: (config: ProviderConfig) => void
+  onOpenProcesses?: () => void
 }
 
 const PROTOCOL_OPTIONS: { value: ModelProtocol; label: string; desc: string }[] = [
@@ -62,6 +64,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   effort: initialEffort,
   onClose,
   onSave,
+  onOpenProcesses,
 }) => {
   // 选项卡：供应商 / 运行环境 / 运行模式
   const [activeTab, setActiveTab] = useState<'provider' | 'runtime' | 'launcher'>('provider')
@@ -1529,14 +1532,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {activeTab === 'launcher' && (
             <div className="p-6 space-y-6 overflow-y-auto flex-1">
-              <div>
-                <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 mb-1 flex items-center space-x-2">
-                  <Cpu size={16} className="text-blue-500" />
-                  <span>桌面端运行模式</span>
-                </h3>
-                <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  选择桌面客户端连接后端 Agent 的架构模式。切换后需重启桌面端生效。默认使用 AGENT 直连模式。
-                </p>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 mb-1 flex items-center space-x-2">
+                    <Cpu size={16} className="text-blue-500" />
+                    <span>桌面端运行模式</span>
+                  </h3>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                    选择桌面客户端连接后端 Agent 的架构模式。切换后需重启桌面端生效。默认使用 AGENT 直连模式。
+                  </p>
+                </div>
+                {onOpenProcesses && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose()
+                      onOpenProcesses()
+                    }}
+                    className="flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800/60 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors cursor-pointer"
+                    title="打开进程管理与服务监控面板"
+                  >
+                    <Activity size={13} />
+                    <span>进程管理监控</span>
+                  </button>
+                )}
               </div>
 
               {/* 两个模式单选卡片 */}
@@ -1563,11 +1582,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     )}
                   </div>
                   <p className="text-xs text-zinc-600 dark:text-zinc-400 leading-relaxed mb-3">
-                    桌面端直接连接独立的 Agent 核心进程（主要是 <strong className="text-zinc-800 dark:text-zinc-200">ada-coding</strong> 和 <strong className="text-zinc-800 dark:text-zinc-200">pm-assistant</strong>）。无需额外平台代理，具备最低交互延迟与最轻链路。
+                    桌面端直接连接独立的 Agent 核心进程（主要是 <strong className="text-zinc-800 dark:text-zinc-200">ada-coding</strong> 和 <strong className="text-zinc-800 dark:text-zinc-200">ada-pm</strong>）。无需额外平台代理，具备最低交互延迟与最轻链路。
                   </p>
                   <div className="text-[11px] text-zinc-500 dark:text-zinc-500 bg-zinc-100/70 dark:bg-zinc-800/60 p-2.5 rounded-lg space-y-1">
-                    <div>• 自动探测并拉起本地独立 ada-coding 守护进程</div>
-                    <div>• 支持 CODING 模式与 PM 模式多 Agent 双向分发</div>
+                    <div>• 自动探测并拉起本地独立 ada-coding 核心（集成 Coding 与 ada-pm 双模式）</div>
+                    <div>• 支持单机即开即用、就地多轮对话与本地快速执行</div>
                   </div>
                 </div>
 
@@ -1593,11 +1612,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     )}
                   </div>
                   <p className="text-xs text-zinc-600 dark:text-zinc-400 leading-relaxed mb-3">
-                    桌面端连接到统一的 <strong className="text-zinc-800 dark:text-zinc-200">a-da-gateway</strong> 网关平台。由网关统一管理所有 Agent 实例的注册发现、跨 Agent 任务委派、集群调度与 Web 集中鉴权。
+                    桌面端连接到统一的 <strong className="text-zinc-800 dark:text-zinc-200">ada-gateway</strong> 网关平台。由网关统一管理所有 Agent 实例的注册发现、跨 Agent 任务委派、集群调度与 Web 集中鉴权。
                   </p>
                   <div className="text-[11px] text-zinc-500 dark:text-zinc-500 bg-zinc-100/70 dark:bg-zinc-800/60 p-2.5 rounded-lg space-y-1">
-                    <div>• 自动探测并拉起本地 a-da-gateway 或连接远程网关</div>
-                    <div>• 适合企业集中管理、多 Agent 复杂协作与统一治理</div>
+                    <div>• 自动拉起本地 ada-gateway 网关及后端 Agent（ada-coding / ada-pm）或连接远程网关</div>
+                    <div>• 支持跨 Agent 任务委派协作、多工作区路由调度与远程集中治理</div>
                   </div>
                 </div>
               </div>
@@ -1660,7 +1679,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-                        自定义 a-da-gateway 可执行文件路径（可选）
+                        自定义 ada-gateway 可执行文件路径（可选）
                       </label>
                       <input
                         type="text"
@@ -1669,7 +1688,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           setDesktopConfigState((prev) => ({ ...prev, gateway_bin_path: e.target.value }))
                           setModeModified(true)
                         }}
-                        placeholder="默认自动探测本地 a-da-gateway.exe"
+                        placeholder="默认自动探测本地 ada-gateway.exe"
                         className="w-full text-xs px-3 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg outline-none focus:border-blue-500 text-zinc-800 dark:text-zinc-200"
                       />
                     </div>

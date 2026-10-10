@@ -9,9 +9,9 @@ use tracing::{error, info, warn};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DesktopMode {
-    /// 直连 Agent 模式（主要是 ada-coding 和 pm-assistant）
+    /// 直连 Agent 模式（主要是 ada-coding 和 ada-pm）
     Direct,
-    /// 网关模式（连接 a-da-gateway 平台服务）
+    /// 网关模式（连接 ada-gateway 平台服务）
     Gateway,
 }
 
@@ -36,7 +36,7 @@ pub struct DesktopConfig {
     /// 网关模式下的自定义网关 WebSocket 地址 (如 ws://127.0.0.1:4000/rpc)
     #[serde(default)]
     pub gateway_url: Option<String>,
-    /// 网关模式下的自定义 a-da-gateway 二进制路径
+    /// 网关模式下的自定义 ada-gateway 二进制路径
     #[serde(default)]
     pub gateway_bin_path: Option<String>,
     /// 认证 Token / 配对密钥
@@ -102,6 +102,29 @@ pub struct LauncherConfig {
     pub host_bin: Option<String>,
 }
 
+/// 托管子进程信息条目
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ManagedProcessInfo {
+    pub name: String,
+    pub role: String,
+    pub pid: Option<u32>,
+    pub port: Option<u16>,
+    pub alive: bool,
+    pub status: String, // "running", "stopped", "starting", "error"
+    pub url: Option<String>,
+}
+
+/// 进程管理监控汇总报告
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProcessReport {
+    pub mode: DesktopMode,
+    pub core_alive: bool,
+    pub core_url: String,
+    pub core_port: u16,
+    pub error: Option<String>,
+    pub processes: Vec<ManagedProcessInfo>,
+}
+
 /// 核心服务内部状态
 pub struct CoreServiceInner {
     pub alive: bool,
@@ -111,6 +134,7 @@ pub struct CoreServiceInner {
     pub url: String,
     pub child_pid: Option<u32>,
     pub child_pids: Vec<u32>,
+    pub processes: Vec<ManagedProcessInfo>,
     pub error: Option<String>,
 }
 
@@ -131,6 +155,7 @@ impl CoreServiceState {
                 url: String::new(),
                 child_pid: None,
                 child_pids: Vec::new(),
+                processes: Vec::new(),
                 error: None,
             })),
         }
@@ -340,6 +365,98 @@ fn restart_desktop_app(app: tauri::AppHandle) {
     app.restart();
 }
 
+/// 检查 PID 是否依然存活
+#[cfg(windows)]
+fn is_pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            false
+        } else {
+            let mut exit_code: u32 = 0;
+            let ok = GetExitCodeProcess(handle, &mut exit_code);
+            CloseHandle(handle);
+            ok != 0 && exit_code == 259 // STILL_ACTIVE = 259
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn is_pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+/// 获取当前所有托管进程状态信息
+#[tauri::command]
+async fn get_process_report(
+    state: tauri::State<'_, CoreServiceState>,
+) -> Result<ProcessReport, String> {
+    let guard = state.inner.read().await;
+    let mut procs = guard.processes.clone();
+    for p in &mut procs {
+        if let Some(pid) = p.pid {
+            p.alive = is_pid_alive(pid);
+            p.status = if p.alive {
+                "running".to_string()
+            } else {
+                "stopped".to_string()
+            };
+        }
+    }
+    Ok(ProcessReport {
+        mode: guard.mode,
+        core_alive: guard.alive,
+        core_url: guard.url.clone(),
+        core_port: guard.port,
+        error: guard.error.clone(),
+        processes: procs,
+    })
+}
+
+/// 终止指定的托管子进程
+#[tauri::command]
+fn kill_process(pid: u32) -> Result<(), String> {
+    if pid == 0 {
+        return Err("无效的 PID".to_string());
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+        unsafe {
+            let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if handle.is_null() {
+                return Err(format!("无法打开目标进程句柄 (PID: {})", pid));
+            }
+            let res = TerminateProcess(handle, 1);
+            CloseHandle(handle);
+            if res != 0 {
+                info!("成功终止进程 PID: {}", pid);
+                Ok(())
+            } else {
+                Err(format!("终止进程失败 (PID: {})", pid))
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if unsafe { libc::kill(pid as i32, libc::SIGTERM) } == 0 {
+            info!("成功终止进程 PID: {}", pid);
+            Ok(())
+        } else {
+            Err(format!("终止进程失败 (PID: {})", pid))
+        }
+    }
+}
+
 /// 兼容仅传工作区的启动入口
 pub fn run_with_workspace(workspace: String) {
     run(LauncherConfig {
@@ -381,7 +498,16 @@ pub fn run(config: LauncherConfig) {
                             guard.alive = true;
                             guard.port = port;
                             guard.token = token;
-                            guard.url = external_url;
+                            guard.url = external_url.clone();
+                            guard.processes = vec![ManagedProcessInfo {
+                                name: "ada-coding (外部)".to_string(),
+                                role: "外部 Agent 核心服务".to_string(),
+                                pid: None,
+                                port: Some(port),
+                                alive: true,
+                                status: "running".to_string(),
+                                url: Some(external_url),
+                            }];
                             return;
                         }
 
@@ -399,6 +525,9 @@ pub fn run(config: LauncherConfig) {
                                 .arg("--parent-pid").arg(current_pid.to_string());
                             if !cfg.workspace.is_empty() {
                                 cmd.arg("--workspace").arg(&cfg.workspace);
+                                cmd.current_dir(&cfg.workspace);
+                            } else {
+                                cmd.current_dir(agent_node::session::get_app_home());
                             }
                             cmd.stdout(std::process::Stdio::piped());
                             cmd.stderr(std::process::Stdio::piped());
@@ -444,6 +573,15 @@ pub fn run(config: LauncherConfig) {
                                                 guard.url = format!("ws://127.0.0.1:{}/rpc", actual_port);
                                                 guard.child_pid = Some(child_pid);
                                                 guard.child_pids = vec![child_pid];
+                                                guard.processes = vec![ManagedProcessInfo {
+                                                    name: "ada-coding".to_string(),
+                                                    role: "Coding / PM 核心引擎服务".to_string(),
+                                                    pid: Some(child_pid),
+                                                    port: Some(actual_port),
+                                                    alive: true,
+                                                    status: "running".to_string(),
+                                                    url: Some(format!("ws://127.0.0.1:{}/rpc", actual_port)),
+                                                }];
                                             }
                                             _ => {
                                                 warn!("未在预期时限内收到 ada-coding 就绪信号");
@@ -501,49 +639,44 @@ pub fn run(config: LauncherConfig) {
                             guard.alive = true;
                             guard.port = port;
                             guard.token = token;
-                            guard.url = external_url;
+                            guard.url = external_url.clone();
+                            guard.processes = vec![ManagedProcessInfo {
+                                name: "ada-gateway (外部)".to_string(),
+                                role: "外部接入网关平台".to_string(),
+                                pid: None,
+                                port: Some(port),
+                                alive: true,
+                                status: "running".to_string(),
+                                url: Some(external_url),
+                            }];
                             return;
                         }
 
-                        // 场景 B: 探测并拉起独立 网关 (a-da-gateway)、Coding Agent (ada-coding) 与 PM Agent (pm-assistant)
+                        // 场景 B: 探测并拉起独立网关服务 (ada-gateway)
                         let custom_gw_bin = d_cfg.gateway_bin_path.as_deref();
-                        let gateway_bin = find_binary("a-da-gateway", custom_gw_bin);
-                        let custom_ada_bin = d_cfg.agent_bin_path.as_deref();
-                        let ada_bin = find_binary("ada-coding", custom_ada_bin);
-                        let pm_bin = find_binary("pm-assistant", None);
+                        let gateway_bin = find_binary("ada-gateway", custom_gw_bin)
+                            .or_else(|| find_binary("a-da-gateway", custom_gw_bin));
 
                         if gateway_bin.is_none() {
-                            warn!("未探测到 a-da-gateway 二进制可执行文件！");
+                            warn!("未探测到 ada-gateway 二进制可执行文件！");
                             let mut guard = state_arc.write().await;
-                            guard.error = Some("未找到 a-da-gateway 二进制文件，请确认已编译或在设置中指定网关地址".to_string());
-                            return;
-                        }
-                        if ada_bin.is_none() {
-                            warn!("未探测到 ada-coding 二进制可执行文件！");
-                            let mut guard = state_arc.write().await;
-                            guard.error = Some("未找到 ada-coding 二进制文件，请确认已编译".to_string());
-                            return;
-                        }
-                        if pm_bin.is_none() {
-                            warn!("未探测到 pm-assistant 二进制可执行文件！");
-                            let mut guard = state_arc.write().await;
-                            guard.error = Some("未找到 pm-assistant 二进制文件，请确认已编译".to_string());
+                            guard.error = Some("未找到 ada-gateway 二进制文件，请确认已编译或在设置中指定网关地址".to_string());
                             return;
                         }
 
                         let gateway_bin = gateway_bin.unwrap();
-                        let ada_bin = ada_bin.unwrap();
-                        let pm_bin = pm_bin.unwrap();
-
-                        let current_pid = std::process::id();
                         let token = cfg.token.or(d_cfg.token).unwrap_or_default();
 
-                        // 1. 启动 a-da-gateway 平台服务
+                        // 启动 a-da-gateway 平台服务（由网关自身接管 Agent 实例生命周期）
                         info!("正在拉起网关程序: {}", gateway_bin.display());
                         let mut gw_cmd = tokio::process::Command::new(&gateway_bin);
                         gw_cmd.arg("--port").arg("0");
+                        gw_cmd.arg("--allow-origin").arg("*");
                         if !cfg.workspace.is_empty() {
                             gw_cmd.arg("--workspace").arg(&cfg.workspace);
+                            gw_cmd.current_dir(&cfg.workspace);
+                        } else {
+                            gw_cmd.current_dir(agent_node::session::get_app_home());
                         }
                         if !token.is_empty() {
                             gw_cmd.arg("--token").arg(&token);
@@ -555,135 +688,58 @@ pub fn run(config: LauncherConfig) {
                         let mut gw_child = match gw_cmd.spawn() {
                             Ok(c) => c,
                             Err(e) => {
-                                error!("无法拉起 a-da-gateway 进程: {e}");
+                                error!("无法拉起 ada-gateway 进程: {e}");
                                 let mut guard = state_arc.write().await;
-                                guard.error = Some(format!("启动 a-da-gateway 失败: {e}"));
+                                guard.error = Some(format!("启动 ada-gateway 失败: {e}"));
                                 return;
                             }
                         };
 
                         let gw_pid = gw_child.id().unwrap_or(0);
-                        pipe_child_stderr(gw_child.stderr.take(), "a-da-gateway");
+                        pipe_child_stderr(gw_child.stderr.take(), "ada-gateway");
 
                         let Some(gw_out) = gw_child.stdout.take() else {
-                            error!("a-da-gateway stdout 管道无法读取");
+                            error!("ada-gateway stdout 管道无法读取");
                             let mut guard = state_arc.write().await;
-                            guard.error = Some("a-da-gateway stdout 管道无法读取".to_string());
+                            guard.error = Some("ada-gateway stdout 管道无法读取".to_string());
                             return;
                         };
 
                         let gw_reader = BufReader::new(gw_out).lines();
-                        let gw_port = match wait_for_ready_line(gw_reader, "A_DA_GATEWAY_READY ", std::time::Duration::from_secs(10), "a-da-gateway").await {
+                        let gw_port = match wait_for_ready_line(gw_reader, "A_DA_GATEWAY_READY ", std::time::Duration::from_secs(10), "ada-gateway").await {
                             Some(p) => p,
                             None => {
-                                warn!("未在预期时限内收到 a-da-gateway 就绪信号");
+                                warn!("未在预期时限内收到 ada-gateway 就绪信号");
                                 let mut guard = state_arc.write().await;
-                                guard.error = Some("未在预期时限内收到 a-da-gateway 就绪信号".to_string());
+                                guard.error = Some("未在预期时限内收到 ada-gateway 就绪信号".to_string());
                                 return;
                             }
                         };
 
-                        let gateway_endpoint = format!("ws://127.0.0.1:{}/rpc", gw_port);
-                        info!("成功连接 a-da-gateway 网关服务: {}", gateway_endpoint);
-                        {
-                            let mut guard = state_arc.write().await;
-                            guard.child_pid = Some(gw_pid);
-                            guard.child_pids = vec![gw_pid];
-                        }
-
-                        // 2. 并发拉起 ada-coding（Coding Agent）与 pm-assistant（PM Agent），主动连接网关
-                        let ada_task = {
-                            let ada_bin = ada_bin.clone();
-                            let ws = cfg.workspace.clone();
-                            let gw = gateway_endpoint.clone();
-                            async move {
-                                info!("正在拉起 ada-coding 并连接网关: {}", ada_bin.display());
-                                let ada_token = uuid::Uuid::new_v4().simple().to_string();
-                                let mut ada_cmd = tokio::process::Command::new(&ada_bin);
-                                ada_cmd.arg("--host")
-                                    .arg("--port").arg("0")
-                                    .arg("--token").arg(&ada_token)
-                                    .arg("--parent-pid").arg(current_pid.to_string())
-                                    .arg("--gateway").arg(&gw);
-                                if !ws.is_empty() {
-                                    ada_cmd.arg("--workspace").arg(&ws);
-                                }
-                                ada_cmd.stdout(std::process::Stdio::piped());
-                                ada_cmd.stderr(std::process::Stdio::piped());
-                                hide_child_console_window(&mut ada_cmd);
-
-                                match ada_cmd.spawn() {
-                                    Ok(mut child) => {
-                                        let pid = child.id().unwrap_or(0);
-                                        pipe_child_stderr(child.stderr.take(), "ada-coding");
-                                        if let Some(out) = child.stdout.take() {
-                                            let reader = BufReader::new(out).lines();
-                                            let _ = wait_for_ready_line(reader, "A_DA_HOST_READY ", std::time::Duration::from_secs(12), "ada-coding").await;
-                                        }
-                                        info!("ada-coding 启动并就绪，PID: {}", pid);
-                                        pid
-                                    }
-                                    Err(e) => {
-                                        warn!("启动 ada-coding 失败: {e}");
-                                        0
-                                    }
-                                }
-                            }
+                        let gateway_endpoint = if token.is_empty() {
+                            format!("ws://127.0.0.1:{}/rpc", gw_port)
+                        } else {
+                            format!("ws://127.0.0.1:{}/rpc?token={}", gw_port, token)
                         };
-
-                        let pm_task = {
-                            let pm_bin = pm_bin.clone();
-                            let ws = cfg.workspace.clone();
-                            let gw = gateway_endpoint.clone();
-                            async move {
-                                info!("正在拉起 pm-assistant 并连接网关: {}", pm_bin.display());
-                                let pm_token = uuid::Uuid::new_v4().simple().to_string();
-                                let mut pm_cmd = tokio::process::Command::new(&pm_bin);
-                                pm_cmd.arg("--host")
-                                    .arg("--port").arg("0")
-                                    .arg("--token").arg(&pm_token)
-                                    .arg("--parent-pid").arg(current_pid.to_string())
-                                    .arg("--gateway").arg(&gw);
-                                if !ws.is_empty() {
-                                    pm_cmd.arg("--workspace").arg(&ws);
-                                }
-                                pm_cmd.stdout(std::process::Stdio::piped());
-                                pm_cmd.stderr(std::process::Stdio::piped());
-                                hide_child_console_window(&mut pm_cmd);
-
-                                match pm_cmd.spawn() {
-                                    Ok(mut child) => {
-                                        let pid = child.id().unwrap_or(0);
-                                        pipe_child_stderr(child.stderr.take(), "pm-assistant");
-                                        if let Some(out) = child.stdout.take() {
-                                            let reader = BufReader::new(out).lines();
-                                            let _ = wait_for_ready_line(reader, "A_DA_HOST_READY ", std::time::Duration::from_secs(12), "pm-assistant").await;
-                                        }
-                                        info!("pm-assistant 启动并就绪，PID: {}", pid);
-                                        pid
-                                    }
-                                    Err(e) => {
-                                        warn!("启动 pm-assistant 失败: {e}");
-                                        0
-                                    }
-                                }
-                            }
-                        };
-
-                        let (ada_pid, pm_pid) = tokio::join!(ada_task, pm_task);
-
-                        // 3. 更新核心状态（前端连接网关，网关统一路由）
-                        info!("网关及子 Agent 全部就绪，托管 PID: 网关={}, coding={}, pm={}", gw_pid, ada_pid, pm_pid);
+                        info!("成功连接 ada-gateway 网关服务: {}", gateway_endpoint);
                         let mut guard = state_arc.write().await;
                         guard.alive = true;
                         guard.port = gw_port;
                         guard.token = token.clone();
-                        guard.url = gateway_endpoint;
+                        guard.url = gateway_endpoint.clone();
                         guard.child_pid = Some(gw_pid);
-                        let mut pids = vec![gw_pid];
-                        if ada_pid > 0 { pids.push(ada_pid); }
-                        if pm_pid > 0 { pids.push(pm_pid); }
-                        guard.child_pids = pids;
+                        guard.child_pids = vec![gw_pid];
+                        guard.processes = vec![
+                            ManagedProcessInfo {
+                                name: "ada-gateway".to_string(),
+                                role: "统一网关与路由平台".to_string(),
+                                pid: Some(gw_pid),
+                                port: Some(gw_port),
+                                alive: is_pid_alive(gw_pid),
+                                status: if is_pid_alive(gw_pid) { "running".to_string() } else { "stopped".to_string() },
+                                url: Some(gateway_endpoint),
+                            },
+                        ];
                     }
                 }
             });
@@ -694,7 +750,9 @@ pub fn run(config: LauncherConfig) {
             get_core_info,
             get_desktop_config,
             set_desktop_config,
-            restart_desktop_app
+            restart_desktop_app,
+            get_process_report,
+            kill_process
         ])
         .build(tauri::generate_context!());
 

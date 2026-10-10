@@ -1,5 +1,5 @@
 [package]
-name = "a-da-tauri"
+name = "ada-tauri"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

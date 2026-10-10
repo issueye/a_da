@@ -3,26 +3,30 @@
 version = 4
 
 [[package]]
-name = "a-da-tauri"
+name = "ada-coding"
 version = "0.1.0"
 dependencies = [
+ "agent-base",
+ "agent-conformance",
+ "agent-host",
  "agent-node",
  "agent-proto",
+ "agent-rpc",
+ "agent-runtime",
+ "agent-toolkit",
  "anyhow",
  "clap",
- "serde",
+ "futures-util",
  "serde_json",
- "tauri",
- "tauri-build",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
  "uuid",
- "windows-sys 0.59.0",
 ]
 
 [[package]]
-name = "ada-coding"
+name = "ada-pm"
 version = "0.1.0"
 dependencies = [
  "agent-base",
@@ -59,6 +63,25 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ada-tauri"
+version = "0.1.0"
+dependencies = [
+ "agent-node",
+ "agent-proto",
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3664,29 +3687,6 @@ dependencies = [
  "quick-xml",
  "serde",
  "time",
-]
-
-[[package]]
-name = "pm-assistant"
-version = "0.1.0"
-dependencies = [
- "agent-base",
- "agent-conformance",
- "agent-host",
- "agent-node",
- "agent-proto",
- "agent-rpc",
- "agent-runtime",
- "agent-toolkit",
- "anyhow",
- "clap",
- "futures-util",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]

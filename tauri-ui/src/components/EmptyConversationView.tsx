@@ -110,9 +110,9 @@ export const EmptyConversationView: React.FC<EmptyConversationViewProps> = ({
   onNewThread,
   onCompact,
 }) => {
-  const isPm = mode === 'pm' || thread?.mode === 'pm' || thread?.agentId === 'pm-assistant'
-  const agentName = isPm ? '项目管理助手' : (agentClient.productInfo?.name || 'a_da 智能编码助手')
-  const agentId = isPm ? 'pm-assistant' : (agentClient.productInfo?.id || 'ada-coding')
+  const isPm = mode === 'pm' || thread?.mode === 'pm' || thread?.agentId === 'ada-pm' || thread?.agentId === 'pm-assistant'
+  const agentName = isPm ? 'a_da 项目管理助手' : (agentClient.productInfo?.name || 'a_da 智能编码助手')
+  const agentId = isPm ? 'ada-pm' : (agentClient.productInfo?.id || 'ada-coding')
   const agentPersona = isPm
     ? '把用户的目标拆成可执行任务，委派给 coding agent 去落地，汇总产出与阻塞。不直接改代码，专注拆解、分派、跟进与汇总。'
     : (agentClient.productInfo?.persona || '在工作区内执行代码编写、架构规划与终端命令')
@@ -182,7 +182,7 @@ export const EmptyConversationView: React.FC<EmptyConversationViewProps> = ({
                 ? 'text-white font-semibold'
                 : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
             }`}
-            title="切换至 PM 模式：连接 pm-assistant Agent (目标拆解、任务委派与跟进)"
+            title="切换至 PM 模式：连接 ada-pm Agent (目标拆解、任务委派与跟进)"
           >
             <ListTodo size={13} className={isPm ? 'text-white' : 'text-amber-500'} />
             <span>PM</span>

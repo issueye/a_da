@@ -1,5 +1,5 @@
 [package]
-name = "pm-assistant"
+name = "ada-pm"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 description = "a_da 项目管理助手（PM agent）：把目标拆解后**经网关**委派给 coding agent"
 
 [[bin]]
-name = "pm-assistant"
+name = "ada-pm"
 path = "src/main.rs"
 
 [dependencies]

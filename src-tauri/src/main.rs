@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
     author = "a_da team",
     version,
     about = "a_da 原生桌面客户端 (Tauri GUI 独立客户端)",
-    long_about = "a_da 是一款基于 Rust 与 Tauri 的本地 AI 智能体桌面端。\n支持 AGENT 直连模式（连接 ada-coding / pm-assistant）与网关模式（连接 a-da-gateway）。"
+    long_about = "a_da 是一款基于 Rust 与 Tauri 的本地 AI 智能体桌面端。\n支持 AGENT 直连模式（连接 ada-coding / ada-pm）与网关模式（连接 ada-gateway）。"
 )]
 pub struct CliArgs {
     /// 运行模式：direct（直连 Agent 模式，默认）或 gateway（网关模式）
@@ -188,7 +188,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             CliCommand::Daemon { port, .. } => {
                 println!("a-da 桌面端现已完全独立为纯 GUI 宿主客户端。");
-                println!("提示：若需启动后台守护服务，请直接运行 ada-coding 或 a-da-gateway：");
+                println!("提示：若需启动后台守护服务，请直接运行 ada-coding 或 ada-gateway：");
                 println!("  ada-coding --host --port {}", port);
                 return Ok(());
             }
@@ -197,12 +197,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 解析命令行指定的运行模式覆盖
     let parsed_mode = args.mode.as_deref().and_then(|m| match m.to_lowercase().as_str() {
-        "direct" | "agent" => Some(a_da_tauri::DesktopMode::Direct),
-        "gateway" => Some(a_da_tauri::DesktopMode::Gateway),
+        "direct" | "agent" => Some(ada_tauri::DesktopMode::Direct),
+        "gateway" => Some(ada_tauri::DesktopMode::Gateway),
         _ => None,
     });
 
-    let launcher_config = a_da_tauri::LauncherConfig {
+    let launcher_config = ada_tauri::LauncherConfig {
         workspace: args.workspace,
         mode: parsed_mode,
         connect: args.connect,
@@ -210,7 +210,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         host_bin: args.host_bin,
     };
 
-    a_da_tauri::run(launcher_config);
+    ada_tauri::run(launcher_config);
     Ok(())
 }
 

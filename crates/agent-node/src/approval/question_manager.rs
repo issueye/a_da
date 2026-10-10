@@ -16,8 +16,28 @@ pub struct QuestionManager {
 
 static GLOBAL_QUESTION_MANAGER: OnceLock<QuestionManager> = OnceLock::new();
 
+/// 初始化向 `agent-toolkit` 提问工具挂载等待器
+pub fn init_question_registrar() {
+    agent_toolkit::core::ask_user::set_question_registrar(std::sync::Arc::new(|call_id: &str| {
+        let rx = global_question_manager().register_waiter(call_id);
+        Box::pin(async move {
+            match rx.await {
+                Ok(ans) => Ok(agent_toolkit::core::ask_user::QuestionAnswerPayload {
+                    choice: ans.choice,
+                    text: ans.text,
+                    answered_by: ans.answered_by,
+                }),
+                Err(_) => Err("提问通道已关闭或已被中止".to_string()),
+            }
+        })
+    }));
+}
+
 pub fn global_question_manager() -> &'static QuestionManager {
-    GLOBAL_QUESTION_MANAGER.get_or_init(QuestionManager::new)
+    GLOBAL_QUESTION_MANAGER.get_or_init(|| {
+        init_question_registrar();
+        QuestionManager::new()
+    })
 }
 
 impl QuestionManager {

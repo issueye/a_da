@@ -11,7 +11,7 @@ members = [
     # 产品（一个产品一个 bin，几乎只写声明）
     "products/ada-coding",
     "products/ada-skeleton",
-    "products/pm-assistant",
+    "products/ada-pm",
     "tools/xtask",
     # S4 拆包：节点层与桥接层
     "crates/agent-node",

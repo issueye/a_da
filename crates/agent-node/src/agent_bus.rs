@@ -71,6 +71,10 @@ pub struct DispatchRequest<'a> {
     /// **本地实现必须如实拒绝 `Some`**：进程内子智能体是**一次性**的（跑完即散，
     /// 没有可续的线程）。静默忽略等于"看起来支持多轮"。
     pub thread_id: Option<&'a str>,
+    /// 目标工作区路径（可选，跨工作区委派时指定）
+    pub workspace: Option<&'a str>,
+    /// 父会话线程 ID（可选，用于子智能体会话反向关联）
+    pub parent_thread_id: Option<&'a str>,
 }
 
 /// 派活结果。

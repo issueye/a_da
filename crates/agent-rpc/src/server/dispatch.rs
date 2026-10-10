@@ -243,6 +243,9 @@ async fn fetch_remote_models(
     Ok(models)
 }
 
+/// 动态按工作区装配引擎的工厂函数。
+pub type EngineFactory = Arc<dyn Fn(&std::path::Path) -> Option<Arc<agent_base::engine::AgentRuntime>> + Send + Sync>;
+
 /// W3-T2：宿主注入的**真引擎**及其**必须共用**的单例。
 ///
 /// ⚠️ `approval_mgr` 不是可选项：新引擎的审批闸门（`HostApprovalGate`）把 waiter 注册到
@@ -260,6 +263,28 @@ pub struct EngineInjection {
     /// 硬编码的结果是"声明的能力"与"界面看到的"各说各话——
     /// 这正是本计划要清掉的那类脱钩（P1-7 的同一根因）。
     pub spec: Arc<agent_runtime::AgentSpec>,
+    /// 针对多工作区的动态引擎工厂
+    pub factory: Option<EngineFactory>,
+}
+
+impl EngineInjection {
+    pub fn new(
+        runtime: Arc<agent_base::engine::AgentRuntime>,
+        approval_mgr: Arc<ApprovalManager>,
+        spec: Arc<agent_runtime::AgentSpec>,
+    ) -> Self {
+        Self {
+            runtime,
+            approval_mgr,
+            spec,
+            factory: None,
+        }
+    }
+
+    pub fn with_factory(mut self, factory: EngineFactory) -> Self {
+        self.factory = Some(factory);
+        self
+    }
 }
 
 
@@ -314,14 +339,50 @@ pub struct Dispatcher {
     /// 因为 `agent-host` 依赖 `agent-core`，反向依赖会成环。
     /// 走哪条由 `A_DA_ENGINE` 决定（默认 legacy，见 `runner::engine_bridge`）。
     engine: Option<Arc<agent_base::engine::AgentRuntime>>,
+    /// 针对多工作区的动态编码引擎工厂
+    engine_factory: Option<EngineFactory>,
+    /// 按工作区路径缓存的编码真引擎
+    workspace_engines: Arc<Mutex<HashMap<std::path::PathBuf, Arc<agent_base::engine::AgentRuntime>>>>,
     /// 产品声明（W3-T6）：握手回报的能力位与身份从这里派生。
     ///
     /// `None` = 没注入声明（老调用点/测试）→ 退回 `ServerCapabilities::default()`。
     product_spec: Option<Arc<agent_runtime::AgentSpec>>,
-    /// PM 助手专属真引擎（`pm-assistant`）。
+    /// PM 助手专属真引擎（`ada-pm`）。
     ///
-    /// 会话模式为 `Pm` 或 `agent_id` 为 `pm-assistant` 时调度此引擎。若未注入则回退到主引擎。
+    /// 会话模式为 `Pm` 或 `agent_id` 为 `ada-pm`（或兼容历史 `pm-assistant`）时调度此引擎。若未注入则回退到主引擎。
     pm_engine: Option<Arc<agent_base::engine::AgentRuntime>>,
+    /// 针对多工作区的动态 PM 引擎工厂
+    pm_engine_factory: Option<EngineFactory>,
+    /// 按工作区路径缓存的 PM 真引擎
+    pm_workspace_engines: Arc<Mutex<HashMap<std::path::PathBuf, Arc<agent_base::engine::AgentRuntime>>>>,
+}
+
+/// 辅助函数：根据目标工作区优先从缓存中获取引擎，若缺失且存在工厂则现场装配并写入缓存
+async fn resolve_engine_from_cache(
+    ws_str: &str,
+    cache: &Arc<Mutex<HashMap<std::path::PathBuf, Arc<agent_base::engine::AgentRuntime>>>>,
+    factory: &Option<EngineFactory>,
+    fallback: &Option<Arc<agent_base::engine::AgentRuntime>>,
+) -> Option<Arc<agent_base::engine::AgentRuntime>> {
+    let trimmed = ws_str.trim();
+    if trimmed.is_empty() {
+        return fallback.clone();
+    }
+    let p = std::path::PathBuf::from(trimmed);
+    {
+        let guard = cache.lock().await;
+        if let Some(eng) = guard.get(&p) {
+            return Some(eng.clone());
+        }
+    }
+    if let Some(f) = factory {
+        if let Some(eng) = f(&p) {
+            let mut guard = cache.lock().await;
+            guard.insert(p, eng.clone());
+            return Some(eng);
+        }
+    }
+    fallback.clone()
 }
 
 impl Dispatcher {
@@ -340,53 +401,81 @@ impl Dispatcher {
         provider_config: ProviderConfig,
     ) {
         let target_tid_clone_for_insert = thread_id.clone();
-                let store_clone = Arc::clone(&self.store);
-                let broadcaster_clone = self.broadcaster.clone();
-                let abort_senders_clone = Arc::clone(&self.abort_senders);
-                let running_tasks_clone = Arc::clone(&self.running_tasks);
-                let target_tid_clone = thread_id;
-                // W3-T2：把注入的真引擎（若有）带进 drain 循环
-                let engine_clone = self.engine.clone();
-                let pm_engine_clone = self.pm_engine.clone();
+        let store_clone = Arc::clone(&self.store);
+        let broadcaster_clone = self.broadcaster.clone();
+        let abort_senders_clone = Arc::clone(&self.abort_senders);
+        let running_tasks_clone = Arc::clone(&self.running_tasks);
+        let target_tid_clone = thread_id;
+        // W3-T2：把注入的真引擎（若有）与动态工作区工厂带进 drain 循环
+        let engine_clone = self.engine.clone();
+        let engine_factory_clone = self.engine_factory.clone();
+        let workspace_engines_clone = Arc::clone(&self.workspace_engines);
+        let pm_engine_clone = self.pm_engine.clone();
+        let pm_engine_factory_clone = self.pm_engine_factory.clone();
+        let pm_workspace_engines_clone = Arc::clone(&self.pm_workspace_engines);
 
-                let runner_task = tokio::spawn(async move {
-                    let mut current_prompt: Option<String> = first_prompt;
-                    loop {
-                        let (abort_tx, abort_rx) = watch::channel(false);
-                        abort_senders_clone.lock().await.insert(target_tid_clone.clone(), abort_tx);
+        let runner_task = tokio::spawn(async move {
+            let mut current_prompt: Option<String> = first_prompt;
+            loop {
+                let (abort_tx, abort_rx) = watch::channel(false);
+                abort_senders_clone.lock().await.insert(target_tid_clone.clone(), abort_tx);
 
-                        let (event_tx, mut event_rx) = mpsc::channel::<AgentLoopEvent>(128);
-                        let tid = target_tid_clone.clone();
-                        let prompt = current_prompt.take();
-                        let p_cfg = provider_config.clone();
+                let (event_tx, mut event_rx) = mpsc::channel::<AgentLoopEvent>(128);
+                let tid = target_tid_clone.clone();
+                let prompt = current_prompt.take();
+                let p_cfg = provider_config.clone();
 
-                        // 每轮根据当前会话绑定的 Agent / 模式分发对应引擎：
-                        let (thread_agent_id, thread_mode) = {
-                            let s = store_clone.read().await;
-                            let t = s.threads.iter().find(|t| t.id == tid);
-                            (t.and_then(|t| t.agent_id.clone()), t.and_then(|t| t.mode))
-                        };
-                        let is_pm = thread_agent_id.as_deref() == Some("pm-assistant")
-                            || thread_mode == Some(AgentMode::Pm);
-                        let engine_for_turn = if is_pm {
-                            pm_engine_clone.clone().or_else(|| engine_clone.clone())
-                        } else {
-                            engine_clone.clone()
-                        };
+                // 每轮根据当前会话绑定的 Agent / 模式 / 所属工作区 分发对应引擎：
+                let (thread_agent_id, thread_mode, thread_ws) = {
+                    let s = store_clone.read().await;
+                    let t = s.threads.iter().find(|t| t.id == tid);
+                    let agent_id = t.and_then(|t| t.agent_id.clone());
+                    let mode = t.and_then(|t| t.mode);
+                    let ws = thread_workspace(&s, &tid);
+                    (agent_id, mode, ws)
+                };
+                let is_pm = thread_agent_id.as_deref() == Some("ada-pm")
+                    || thread_agent_id.as_deref() == Some("pm-assistant")
+                    || thread_mode == Some(AgentMode::Pm);
+                let engine_for_turn = if is_pm {
+                    let pm_res = resolve_engine_from_cache(
+                        &thread_ws,
+                        &pm_workspace_engines_clone,
+                        &pm_engine_factory_clone,
+                        &pm_engine_clone,
+                    ).await;
+                    if pm_res.is_some() {
+                        pm_res
+                    } else {
+                        resolve_engine_from_cache(
+                            &thread_ws,
+                            &workspace_engines_clone,
+                            &engine_factory_clone,
+                            &engine_clone,
+                        ).await
+                    }
+                } else {
+                    resolve_engine_from_cache(
+                        &thread_ws,
+                        &workspace_engines_clone,
+                        &engine_factory_clone,
+                        &engine_clone,
+                    ).await
+                };
 
-                        let loop_handle = tokio::spawn(async move {
-                            // W3-T2：统一入口——按是否注入引擎决定执行。
-                            if let Err(e) = run_agent_turn(
-                                engine_for_turn,
-                                &tid,
-                                prompt.as_deref(),
-                                p_cfg,
-                                event_tx,
-                                Some(abort_rx),
-                            ).await {
-                                tracing::warn!("轮次执行失败: {e}");
-                            }
-                        });
+                let loop_handle = tokio::spawn(async move {
+                    // W3-T2：统一入口——按是否注入引擎决定执行。
+                    if let Err(e) = run_agent_turn(
+                        engine_for_turn,
+                        &tid,
+                        prompt.as_deref(),
+                        p_cfg,
+                        event_tx,
+                        Some(abort_rx),
+                    ).await {
+                        tracing::warn!("轮次执行失败: {e}");
+                    }
+                });
 
                         while let Some(event) = event_rx.recv().await {
                             let mut store = store_clone.write().await;
@@ -531,6 +620,25 @@ impl Dispatcher {
         skill_mgr: Arc<SkillManager>,
         broadcaster: Option<Arc<StateBroadcaster>>,
     ) -> Self {
+        let store_bg = store.clone();
+        let session_mgr_bg = session_mgr.clone();
+        let broadcaster_bg = broadcaster.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(1500));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let mut s = store_bg.write().await;
+                let changed = s.sync_threads_from_disk(&session_mgr_bg);
+                drop(s);
+                if changed {
+                    if let Some(ref bc) = broadcaster_bg {
+                        bc.mark_dirty();
+                    }
+                }
+            }
+        });
+
         Self {
             store,
             session_mgr,
@@ -545,8 +653,12 @@ impl Dispatcher {
             abort_senders: Arc::new(Mutex::new(HashMap::new())),
             running_tasks: Arc::new(Mutex::new(HashMap::new())),
             engine: None,
+            engine_factory: None,
+            workspace_engines: Arc::new(Mutex::new(HashMap::new())),
             product_spec: None,
             pm_engine: None,
+            pm_engine_factory: None,
+            pm_workspace_engines: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -558,9 +670,21 @@ impl Dispatcher {
         self
     }
 
+    /// 注入针对多工作区的动态编码引擎工厂
+    pub fn with_engine_factory(mut self, factory: EngineFactory) -> Self {
+        self.engine_factory = Some(factory);
+        self
+    }
+
     /// 注入 PM 助手真引擎。
     pub fn with_pm_engine(mut self, engine: Arc<agent_base::engine::AgentRuntime>) -> Self {
         self.pm_engine = Some(engine);
+        self
+    }
+
+    /// 注入针对多工作区的动态 PM 引擎工厂
+    pub fn with_pm_engine_factory(mut self, factory: EngineFactory) -> Self {
+        self.pm_engine_factory = Some(factory);
         self
     }
 
@@ -576,6 +700,7 @@ impl Dispatcher {
             self.engine = Some(i.runtime);
             // W3-T6：声明一起带进来，握手才能如实回报能力位
             self.product_spec = Some(i.spec);
+            self.engine_factory = i.factory;
         }
         self
     }
@@ -584,6 +709,7 @@ impl Dispatcher {
     pub fn pipe_pm_engine(mut self, injection: Option<EngineInjection>) -> Self {
         if let Some(i) = injection {
             self.pm_engine = Some(i.runtime);
+            self.pm_engine_factory = i.factory;
         }
         self
     }
@@ -673,8 +799,10 @@ impl Dispatcher {
             }
 
             SESSION_SNAPSHOT => {
-                let store = self.store.read().await;
+                let mut store = self.store.write().await;
+                store.sync_threads_from_disk(&self.session_mgr);
                 let snapshot = generate_snapshot(&store);
+                drop(store);
                 Ok(serde_json::to_value(snapshot).map_err(|e| ProtocolError::internal_error(e.to_string()))?)
             }
 
@@ -719,6 +847,9 @@ impl Dispatcher {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
                 let mut store = self.store.write().await;
+                if !store.threads.iter().any(|t| t.id == thread_id) {
+                    store.sync_threads_from_disk(&self.session_mgr);
+                }
                 store.open_tab(thread_id.to_string());
                 drop(store);
 
@@ -749,6 +880,9 @@ impl Dispatcher {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
                 let mut store = self.store.write().await;
+                if !store.threads.iter().any(|t| t.id == thread_id) {
+                    store.sync_threads_from_disk(&self.session_mgr);
+                }
                 if !store.focus_thread(thread_id.to_string()) {
                     return Err(ProtocolError::new(
                         AppErrorCode::NotFound.code(),
@@ -778,7 +912,16 @@ impl Dispatcher {
                 let delegation_depth = params
                     .get("delegationDepth")
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as u32);
+                    .map(|d| d as u32);
+                let is_subagent = params.get("isSubagent").and_then(|v| v.as_bool())
+                    .or_else(|| delegation_depth.map(|d| d > 0));
+                let parent_id = params.get("parentId")
+                    .or_else(|| params.get("parentThreadId"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let subagent_id = params.get("subagentId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 let parsed_mode = mode_param.map(|m| match m.to_lowercase().as_str() {
                     "plan" => AgentMode::Plan,
                     "create" => AgentMode::Create,
@@ -786,7 +929,15 @@ impl Dispatcher {
                     _ => AgentMode::Code,
                 });
                 let mut store = self.store.write().await;
-                let id = store.create_thread_with_agent(title.clone(), ws_param.clone(), parsed_mode, agent_id_param);
+                let id = store.create_thread_with_details(
+                    title.clone(),
+                    ws_param.clone(),
+                    parsed_mode,
+                    agent_id_param,
+                    is_subagent,
+                    parent_id.clone(),
+                    subagent_id.clone(),
+                );
                 if let Some(d) = delegation_depth {
                     store.delegation_depths.insert(id.clone(), d);
                 }
@@ -800,7 +951,13 @@ impl Dispatcher {
                 }
                 drop(store);
 
-                let _ = self.session_mgr.create_session(&id, &ws, title.as_deref(), None, None);
+                let _ = self.session_mgr.create_session(
+                    &id,
+                    &ws,
+                    title.as_deref(),
+                    parent_id.as_deref(),
+                    subagent_id.as_deref(),
+                );
 
                 if let Some(ref bc) = self.broadcaster {
                     bc.broadcast_immediate().await;
@@ -1565,6 +1722,9 @@ impl Dispatcher {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
                 let mut store = self.store.write().await;
+                if !store.threads.iter().any(|t| t.id == thread_id) {
+                    store.sync_threads_from_disk(&self.session_mgr);
+                }
                 store.focus_thread(thread_id.to_string());
                 Ok(serde_json::Value::Null)
             }
@@ -1595,8 +1755,8 @@ impl Dispatcher {
                 if let Some(t) = store.threads.iter_mut().find(|t| t.id == thread_id) {
                     t.mode = Some(mode);
                     if mode == AgentMode::Pm {
-                        t.agent_id = Some("pm-assistant".to_string());
-                    } else if t.agent_id.as_deref() == Some("pm-assistant") {
+                        t.agent_id = Some("ada-pm".to_string());
+                    } else if t.agent_id.as_deref() == Some("ada-pm") || t.agent_id.as_deref() == Some("pm-assistant") {
                         t.agent_id = Some("ada-coding".to_string());
                     }
                 }
@@ -1784,169 +1944,7 @@ impl Dispatcher {
                     bc.broadcast_immediate().await;
                 }
 
-                let store_clone = Arc::clone(&self.store);
-                let broadcaster_clone = self.broadcaster.clone();
-                let abort_senders_clone = Arc::clone(&self.abort_senders);
-                let running_tasks_clone = Arc::clone(&self.running_tasks);
-                let target_tid_clone = target_tid.clone();
-                // W3-T2：把注入的真引擎（若有）带进 drain 循环
-                let engine_clone = self.engine.clone();
-
-                let runner_task = tokio::spawn(async move {
-                    let mut current_prompt: Option<String> = None;
-                    loop {
-                        let (abort_tx, abort_rx) = watch::channel(false);
-                        abort_senders_clone.lock().await.insert(target_tid_clone.clone(), abort_tx);
-
-                        let (event_tx, mut event_rx) = mpsc::channel::<AgentLoopEvent>(128);
-                        let tid = target_tid_clone.clone();
-                        let prompt = current_prompt.take();
-                        let p_cfg = provider_config.clone();
-                        // 每轮取一份引擎克隆：`async move` 会吞掉捕获值，
-                        // 直接在闭包里 `.clone()` 会把外层那份也 move 走（循环第二轮就报错）。
-                        let engine_for_turn = engine_clone.clone();
-
-                        let loop_handle = tokio::spawn(async move {
-                            // W3-T2：统一入口——按 `A_DA_ENGINE` 与是否注入引擎决定走哪条。
-                            if let Err(e) = run_agent_turn(
-                                engine_for_turn,
-                                &tid,
-                                prompt.as_deref(),
-                                p_cfg,
-                                event_tx,
-                                Some(abort_rx),
-                            ).await {
-                                tracing::warn!("轮次执行失败: {e}");
-                            }
-                        });
-
-                        while let Some(event) = event_rx.recv().await {
-                            let mut store = store_clone.write().await;
-                            match event {
-                                AgentLoopEvent::Thinking { text } => {
-                                    store.append_thinking_delta(&target_tid_clone, &text);
-                                    drop(store);
-                                    if let Some(ref bc) = broadcaster_clone {
-                                        bc.mark_dirty();
-                                    }
-                                }
-                                AgentLoopEvent::TextDelta { text } => {
-                                    store.append_assistant_delta(&target_tid_clone, &text);
-                                    drop(store);
-                                    if let Some(ref bc) = broadcaster_clone {
-                                        bc.mark_dirty();
-                                    }
-                                }
-                                AgentLoopEvent::ToolCallStarted { name, id, args } => {
-                                    store.start_tool_call(&target_tid_clone, &id, &name, &args);
-                                    drop(store);
-                                    if let Some(ref bc) = broadcaster_clone {
-                                        bc.broadcast_immediate().await;
-                                    }
-                                }
-                                AgentLoopEvent::ToolCallFinished { name: _, id, ok, output, duration_ms, started_at, finished_at, status: _ } => {
-                                    store.finish_tool_call(&target_tid_clone, &id, ok, output, duration_ms, started_at, finished_at);
-                                    drop(store);
-                                    if let Some(ref bc) = broadcaster_clone {
-                                        bc.broadcast_immediate().await;
-                                    }
-                                }
-                                AgentLoopEvent::ToolAwaitingQuestion { id, question } => {
-                                    store.set_tool_awaiting_question(&target_tid_clone, &id, question);
-                                    drop(store);
-                                    if let Some(ref bc) = broadcaster_clone {
-                                        bc.broadcast_immediate().await;
-                                    }
-                                }
-                                // W3-T3：审批请求 → 工具卡片进入"等待批准"，界面据此渲染批准/拒绝按钮
-                                AgentLoopEvent::ApprovalRequested { id, tool } => {
-                                    store.set_tool_waiting_approval(&target_tid_clone, &id, &tool);
-                                    drop(store);
-                                    if let Some(ref bc) = broadcaster_clone {
-                                        bc.broadcast_immediate().await;
-                                    }
-                                }
-                                AgentLoopEvent::AssistantStats { usage, duration_ms, turn_duration_ms } => {
-                                    store.set_assistant_stats(
-                                        &target_tid_clone,
-                                        usage,
-                                        duration_ms,
-                                        turn_duration_ms,
-                                    );
-                                    drop(store);
-                                    if let Some(ref bc) = broadcaster_clone {
-                                        bc.mark_dirty();
-                                    }
-                                }
-                                AgentLoopEvent::TurnFinished { .. } => {
-                                    drop(store);
-                                    break;
-                                }
-                                AgentLoopEvent::Error { message } => {
-                                    store.append_assistant_delta(&target_tid_clone, &format!("\n\n**请求异常**：{message}"));
-                                    store.push_log("error", format!("Agent 执行异常: {message}"), None);
-                                    drop(store);
-                                    break;
-                                }
-                            }
-                        }
-
-                        let _ = loop_handle.await;
-
-                        // 收尾并闭合本轮卡片状态
-                        {
-                            let mut store = store_clone.write().await;
-                            store.end_thinking(&target_tid_clone);
-                            if let Some(t) = store.get_thread_mut(&target_tid_clone) {
-                                for item in t.items.iter_mut() {
-                                    if let Item::Assistant { streaming, .. } = item {
-                                        *streaming = None;
-                                    }
-                                }
-                                if let Some(Item::Thinking { text, .. }) = t.items.last() {
-                                    if text.trim().is_empty() {
-                                        t.items.pop();
-                                    }
-                                }
-                            }
-                        }
-
-                        {
-                            let store = store_clone.read().await;
-                            if !store.is_thread_running(&target_tid_clone) {
-                                break;
-                            }
-                        }
-
-                        let next_item = {
-                            let mut store = store_clone.write().await;
-                            store.pop_next_queued(&target_tid_clone)
-                        };
-
-                        if let Some(queued) = next_item {
-                            let mut store = store_clone.write().await;
-                            store.add_user_message_with_images(&target_tid_clone, &queued.text, queued.images);
-                            drop(store);
-                            if let Some(ref bc) = broadcaster_clone {
-                                bc.broadcast_immediate().await;
-                            }
-                            current_prompt = Some(queued.text);
-                        } else {
-                            break;
-                        }
-                    }
-
-                    abort_senders_clone.lock().await.remove(&target_tid_clone);
-                    running_tasks_clone.lock().await.remove(&target_tid_clone);
-                    let mut store = store_clone.write().await;
-                    store.finish_turn(&target_tid_clone);
-                    drop(store);
-                    if let Some(ref bc) = broadcaster_clone {
-                        bc.broadcast_immediate().await;
-                    }
-                });
-
-                self.running_tasks.lock().await.insert(target_tid.clone(), runner_task);
+                self.spawn_thread_loop(target_tid.clone(), None, provider_config).await;
 
                 Ok(serde_json::json!({
                     "accepted": true,

@@ -26,12 +26,15 @@
 
 pub mod auth;
 pub mod delegate;
+pub mod fs_service;
 pub mod registry;
 pub mod relay;
 pub mod supervisor;
+pub mod workspaces;
 
 pub use auth::{AuthConfig, AuthError, AuthOutcome, TokenScope};
 pub use delegate::{delegate, DelegateError, DelegateOutcome, DelegationRegistry, MAX_DELEGATION_DEPTH};
 pub use registry::{AgentInstance, AgentRegistry, AgentStatus, normalize_workspace};
 pub use relay::{Gateway, GATEWAY_METHOD_PREFIX, methods};
 pub use supervisor::{ensure_agent, spawn_agent, SpawnError, SpawnSpec};
+pub use workspaces::{WorkspaceEntry, WorkspacesData, WorkspacesStore};

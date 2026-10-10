@@ -178,6 +178,8 @@ impl AgentBus for GatewayAgentBus {
                     // 多轮：带上目标线程则**续跑**（网关不再建新线程），不带则新开一轮
                     "threadId": req.thread_id,
                     "delegationId": delegation_id,
+                    "workspace": req.workspace,
+                    "parentThreadId": req.parent_thread_id,
                 }
             });
             if tx.send(Message::Text(frame.to_string().into())).is_err() {
@@ -238,28 +240,30 @@ impl AgentBus for GatewayAgentBus {
             tokio::pin!(read);
 
             let mut cancel_sent = false;
-            let _out = loop {
-                tokio::select! {
-                    r = &mut read => break r,
-                    _ = tokio::time::sleep(CANCEL_POLL_INTERVAL) => {
-                        // 只发一次：重复发没有意义，而且会让网关侧日志变噪
-                        if !cancel_sent
-                            && req.cancel.map(|c| c.is_cancelled()).unwrap_or(false)
-                        {
-                            let f = serde_json::json!({
-                                "jsonrpc": "2.0",
-                                "id": 2,
-                                "method": "gateway.cancelDelegation",
-                                "params": { "delegationId": delegation_id }
-                            });
-                            let _ = tx.send(Message::Text(f.to_string().into()));
-                            cancel_sent = true;
+            let run_dispatch = async {
+                loop {
+                    tokio::select! {
+                        r = &mut read => return r,
+                        _ = tokio::time::sleep(CANCEL_POLL_INTERVAL) => {
+                            // 只发一次：重复发没有意义，而且会让网关侧日志变噪
+                            if !cancel_sent
+                                && req.cancel.map(|c| c.is_cancelled()).unwrap_or(false)
+                            {
+                                let f = serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": 2,
+                                    "method": "gateway.cancelDelegation",
+                                    "params": { "delegationId": delegation_id }
+                                });
+                                let _ = tx.send(Message::Text(f.to_string().into()));
+                                cancel_sent = true;
+                            }
                         }
                     }
                 }
             };
 
-            let out = match tokio::time::timeout(self.timeout, read).await {
+            let out = match tokio::time::timeout(self.timeout, run_dispatch).await {
                 Ok(v) => v,
                 Err(_) => DispatchOutcome {
                     ok: false,
@@ -293,6 +297,8 @@ mod tests {
                 cancel: None,
                 depth: 1,
                 thread_id: None,
+                workspace: None,
+                parent_thread_id: None,
             })
             .await;
         assert!(!out.ok);

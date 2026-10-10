@@ -848,20 +848,18 @@ impl SessionManager {
         threads_with_mtime.sort_by(|a, b| b.1.cmp(&a.1));
         let mut threads: Vec<Thread> = threads_with_mtime.into_iter().map(|(t, _)| t).collect();
 
-        // 纠偏与自愈：如果子会话缺少 parent_id，从主会话的 invoke_subagent 卡片中寻找
+        // 纠偏与自愈：如果子会话缺少 parent_id，从各级会话的 invoke_subagent 卡片中寻找
         let mut sub_to_parent: HashMap<String, String> = HashMap::new();
         for t in &threads {
-            if t.is_subagent != Some(true) {
-                for it in &t.items {
-                    if let Item::Tool { name, details, output, .. } = it {
-                        if name == "invoke_subagent" {
-                            if let Some(sub_id) = details.as_ref().and_then(|d| d.get("subagent_thread_id")).and_then(|v| v.as_str()) {
-                                sub_to_parent.insert(sub_id.to_string(), t.id.clone());
-                            } else if let Some(out) = output {
-                                for word in out.split_whitespace() {
-                                    if word.starts_with("subagent_") {
-                                        sub_to_parent.insert(word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_').to_string(), t.id.clone());
-                                    }
+            for it in &t.items {
+                if let Item::Tool { name, details, output, .. } = it {
+                    if name == "invoke_subagent" {
+                        if let Some(sub_id) = details.as_ref().and_then(|d| d.get("subagent_thread_id").or_else(|| d.get("threadId"))).and_then(|v| v.as_str()) {
+                            sub_to_parent.insert(sub_id.to_string(), t.id.clone());
+                        } else if let Some(out) = output {
+                            for word in out.split_whitespace() {
+                                if word.starts_with("subagent_") {
+                                    sub_to_parent.insert(word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_').to_string(), t.id.clone());
                                 }
                             }
                         }

@@ -10,7 +10,7 @@ use tracing_subscriber::FmtSubscriber;
 
 /// 产品声明（W3-T2：宿主按它装配真引擎）。
 const SPEC_JSON: &str = include_str!("../agent.spec.json");
-const PM_SPEC_JSON: &str = include_str!("../../pm-assistant/agent.spec.json");
+const PM_SPEC_JSON: &str = include_str!("../../ada-pm/agent.spec.json");
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "a_da 原生 Agent 核心服务 (Rust)", long_about = None)]
@@ -53,13 +53,8 @@ fn build_engine_injection(
     workspace: &str,
 ) -> Option<agent_rpc::server::dispatch::EngineInjection> {
     let ws = if workspace.trim().is_empty() {
-        match std::env::current_dir() {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("取当前目录失败，降级为 legacy 引擎：{e}");
-                return None;
-            }
-        }
+        let app_home = agent_node::session::app_home();
+        app_home.dir("workspace")
     } else {
         std::path::PathBuf::from(workspace)
     };
@@ -83,11 +78,32 @@ fn build_engine_injection(
             let tool_count = hosted.tool_names().len();
             let agent_host::HostedProduct { runtime, approval, spec, .. } = hosted;
             info!("已按产品声明装配真引擎：工具 {tool_count} 个");
+
+            let store_for_factory = store.clone();
+            let factory: agent_rpc::server::dispatch::EngineFactory = Arc::new(move |ws_path: &std::path::Path| -> Option<Arc<agent_base::engine::AgentRuntime>> {
+                let spec_dyn = agent_runtime::AgentSpec::from_json_str(SPEC_JSON).ok()?;
+                let s_root = std::path::Path::new(&agent_node::session::get_app_home()).join("sessions");
+                let opts = agent_host::HostOptions::new(ws_path)
+                    .with_store(store_for_factory.clone())
+                    .with_sessions_root(s_root);
+                match agent_host::run_from_spec(spec_dyn, opts) {
+                    Ok(h) => {
+                        info!("为会话工作区 {} 动态装配编码真引擎就绪", ws_path.display());
+                        Some(Arc::new(h.runtime))
+                    }
+                    Err(err) => {
+                        warn!("为工作区 {} 装配编码引擎失败: {err}", ws_path.display());
+                        None
+                    }
+                }
+            });
+
             Some(agent_rpc::server::dispatch::EngineInjection {
                 runtime: Arc::new(runtime),
                 approval_mgr: approval,
                 // W3-T6：声明一起注入，握手才能如实回报能力位
                 spec: Arc::new(spec),
+                factory: Some(factory),
             })
         }
         Err(e) => {
@@ -101,22 +117,28 @@ fn build_engine_injection(
 fn build_pm_engine_injection(
     store: &Arc<RwLock<AgentStore>>,
     workspace: &str,
+    gateway_override: Option<&str>,
 ) -> Option<agent_rpc::server::dispatch::EngineInjection> {
-    let spec = match agent_runtime::AgentSpec::from_json_str(PM_SPEC_JSON) {
+    let mut spec = match agent_runtime::AgentSpec::from_json_str(PM_SPEC_JSON) {
         Ok(s) => s,
         Err(e) => {
             warn!("解析 PM 规格失败：{e}");
             return None;
         }
     };
+    if let Some(endpoint) = gateway_override {
+        spec.capabilities.delegation = agent_runtime::DelegationMode::Gateway;
+        spec.gateway = Some(agent_runtime::GatewaySpec {
+            endpoint: endpoint.to_string(),
+        });
+    } else {
+        // 直连模式（无外部网关时）：使用本地委派总线，就地拉起子智能体，避免向虚构网关请求导致被拒
+        spec.capabilities.delegation = agent_runtime::DelegationMode::Local;
+    }
+
     let ws = if workspace.trim().is_empty() {
-        match std::env::current_dir() {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("取当前目录失败：{e}");
-                return None;
-            }
-        }
+        let app_home = agent_node::session::app_home();
+        app_home.dir("workspace")
     } else {
         std::path::PathBuf::from(workspace)
     };
@@ -131,10 +153,40 @@ fn build_pm_engine_injection(
             let tool_count = hosted.tool_names().len();
             let agent_host::HostedProduct { runtime, approval, spec, .. } = hosted;
             info!("已按 PM 产品声明装配真引擎：工具 {tool_count} 个");
+
+            let store_for_pm_factory = store.clone();
+            let gateway_override_owned = gateway_override.map(|s| s.to_string());
+            let factory: agent_rpc::server::dispatch::EngineFactory = Arc::new(move |ws_path: &std::path::Path| -> Option<Arc<agent_base::engine::AgentRuntime>> {
+                let mut spec_dyn = agent_runtime::AgentSpec::from_json_str(PM_SPEC_JSON).ok()?;
+                if let Some(endpoint) = &gateway_override_owned {
+                    spec_dyn.capabilities.delegation = agent_runtime::DelegationMode::Gateway;
+                    spec_dyn.gateway = Some(agent_runtime::GatewaySpec {
+                        endpoint: endpoint.clone(),
+                    });
+                } else {
+                    spec_dyn.capabilities.delegation = agent_runtime::DelegationMode::Local;
+                }
+                let s_root = std::path::Path::new(&agent_node::session::get_app_home()).join("sessions");
+                let opts = agent_host::HostOptions::new(ws_path)
+                    .with_store(store_for_pm_factory.clone())
+                    .with_sessions_root(s_root);
+                match agent_host::run_from_spec(spec_dyn, opts) {
+                    Ok(h) => {
+                        info!("为会话工作区 {} 动态装配 PM 真引擎就绪", ws_path.display());
+                        Some(Arc::new(h.runtime))
+                    }
+                    Err(err) => {
+                        warn!("为工作区 {} 装配 PM 引擎失败: {err}", ws_path.display());
+                        None
+                    }
+                }
+            });
+
             Some(agent_rpc::server::dispatch::EngineInjection {
                 runtime: Arc::new(runtime),
                 approval_mgr: approval,
                 spec: Arc::new(spec),
+                factory: Some(factory),
             })
         }
         Err(e) => {
@@ -183,9 +235,20 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let store = Arc::new(RwLock::new(AgentStore::new(args.workspace.clone())));
 
+    let initial_ws = {
+        let s = store.read().await;
+        if !args.workspace.trim().is_empty() {
+            args.workspace.clone()
+        } else if !s.workspace.project.trim().is_empty() {
+            s.workspace.project.clone()
+        } else {
+            s.public_workspace.clone()
+        }
+    };
+
     // W3-T2：按产品声明装配**真引擎**（Coding 与 PM 双引擎）并注入宿主。
-    let injection = build_engine_injection(&store, &args.workspace);
-    let pm_injection = build_pm_engine_injection(&store, &args.workspace);
+    let injection = build_engine_injection(&store, &initial_ws);
+    let pm_injection = build_pm_engine_injection(&store, &initial_ws, args.gateway.as_deref());
 
     // 启动 WebSocket 服务
     let server = WsHostServer::bind_with_engines(args.port, token.clone(), store, injection, pm_injection).await?;

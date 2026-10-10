@@ -1,6 +1,7 @@
 import React, { useRef } from 'react'
-import { Plus, X, MessageSquare, Bot } from 'lucide-react'
+import { Plus, X, MessageSquare, Bot, CheckCircle2, XCircle, Clock, Circle, Loader2 } from 'lucide-react'
 import type { Thread } from '../types'
+import { resolveThreadStatus } from './Sidebar'
 
 export interface TabStripProps {
   threads: Thread[]
@@ -64,6 +65,8 @@ export const TabStrip: React.FC<TabStripProps> = ({
           const running = isThreadRunning(thread.id)
           const isSubagent = Boolean(thread.isSubagent)
           const closable = openTabs.length > 1
+          const isPm = thread.mode === 'pm' || thread.agentId === 'ada-pm' || thread.agentId === 'pm-assistant'
+          const statusInfo = resolveThreadStatus(thread, threadMap, runningThreadIds)
 
           return (
             <div
@@ -78,22 +81,17 @@ export const TabStrip: React.FC<TabStripProps> = ({
             >
               {/* 左侧：图标与标题 */}
               <div className="flex items-center space-x-1.5 min-w-0 flex-1 mr-1">
-                {running ? (
-                  <span className="relative flex h-2 w-2 flex-shrink-0">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-                  </span>
-                ) : isSubagent ? (
+                {isSubagent ? (
                   <Bot
-                    size={13}
+                    size={12.5}
                     className={
                       isSelected
                         ? 'text-purple-600 dark:text-purple-400 flex-shrink-0'
                         : 'text-purple-400 dark:text-purple-500 flex-shrink-0'
                     }
                   />
-                ) : thread.mode === 'pm' || thread.agentId === 'pm-assistant' ? (
-                  <MessageSquare
+                ) : isPm ? (
+                  <Bot
                     size={12}
                     className={
                       isSelected
@@ -112,13 +110,26 @@ export const TabStrip: React.FC<TabStripProps> = ({
                   />
                 )}
 
+                {/* 状态图标 */}
+                {statusInfo.status === 'running' || running ? (
+                  <Loader2 size={11} className="animate-spin text-blue-500 flex-shrink-0" />
+                ) : statusInfo.status === 'failed' ? (
+                  <XCircle size={11} className="text-rose-500 flex-shrink-0" />
+                ) : statusInfo.status === 'completed' ? (
+                  <CheckCircle2 size={11} className="text-emerald-500 dark:text-emerald-400 flex-shrink-0" />
+                ) : statusInfo.status === 'waiting' ? (
+                  <Clock size={11} className="text-amber-500 flex-shrink-0" />
+                ) : (
+                  <Circle size={5} className="text-zinc-300 dark:text-zinc-600 flex-shrink-0" />
+                )}
+
                 <span className="truncate text-xs">
-                  {thread.title || (isSubagent ? '子代理会话' : (thread.mode === 'pm' ? 'PM 会话' : '新对话'))}
+                  {thread.title || (isSubagent ? '子代理会话' : (isPm ? 'ada-pm 会话' : '新建对话'))}
                 </span>
 
-                {(thread.mode === 'pm' || thread.agentId === 'pm-assistant') && !isSubagent && (
+                {isPm && !isSubagent && (
                   <span className="px-1 py-0.2 rounded text-[8px] bg-amber-500/15 text-amber-600 dark:text-amber-400 font-semibold flex-shrink-0 leading-tight">
-                    PM
+                    ada-pm
                   </span>
                 )}
               </div>

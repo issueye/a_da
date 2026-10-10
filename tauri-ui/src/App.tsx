@@ -15,6 +15,7 @@ import { FilePicker } from './components/FilePicker'
 import { DebugPanel } from './components/DebugPanel'
 import { ToastHost, notify } from './components/ToastHost'
 import { ConfirmModal } from './components/ConfirmModal'
+import { ProcessModal } from './components/ProcessModal'
 import { deriveActiveChangeCount } from './utils/derive-changes'
 
 export function App() {
@@ -26,6 +27,7 @@ export function App() {
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [pluginsOpen, setPluginsOpen] = useState(false)
+  const [processOpen, setProcessOpen] = useState(false)
   const [changesOpen, setChangesOpen] = useState(false)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [debugOpen, setDebugOpen] = useState(false)
@@ -100,9 +102,16 @@ export function App() {
   const handleSelectThread = (threadId: string) => {
     setOpenTabIds((prev) => (prev.includes(threadId) ? prev : [...prev, threadId]))
     agentClient.setActiveThread(threadId)
+    const target = snapshot.threads.find((t) => t.id === threadId)
+    if (target?.workspace) {
+      agentClient.setActiveProject(target.workspace)
+    }
   }
 
   const handleCreateThread = (workspace?: string, mode?: AgentMode) => {
+    if (workspace) {
+      agentClient.setActiveProject(workspace)
+    }
     agentClient.createThread(workspace, mode)
   }
 
@@ -334,8 +343,8 @@ export function App() {
         title={activeThread?.title || '新对话'}
         workspace={activeThread?.workspace}
         productName={
-          activeThread?.mode === 'pm' || activeThread?.agentId === 'pm-assistant'
-            ? 'pm-assistant'
+          activeThread?.mode === 'pm' || activeThread?.agentId === 'ada-pm' || activeThread?.agentId === 'pm-assistant'
+            ? 'ada-pm'
             : (agentClient.productInfo?.name || agentClient.productInfo?.id || 'ada-coding')
         }
         mode={snapshot.currentMode}
@@ -345,6 +354,7 @@ export function App() {
         onToggleTheme={() => setIsDark(!isDark)}
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenPlugins={() => setPluginsOpen(true)}
+        onOpenProcesses={() => setProcessOpen(true)}
         onOpenCommandPalette={() => setCommandPaletteOpen(true)}
         onOpenChanges={() => setChangesOpen(true)}
         activeChangeCount={activeChangeCount}
@@ -445,6 +455,7 @@ export function App() {
                 onAnswerQuestion={handleAnswerQuestion}
                 onDecideApproval={handleDecideApproval}
                 onRetry={() => handleRetry(activeThread.id)}
+                onSelectThread={handleSelectThread}
               />
 
               {/* 底部输入框与加号菜单、模式选择、排队队列与遥测底栏 */}
@@ -529,12 +540,19 @@ export function App() {
         effort={snapshot.effort}
         onClose={() => setSettingsOpen(false)}
         onSave={handleSaveSettings}
+        onOpenProcesses={() => setProcessOpen(true)}
       />
 
       {/* 插件中心弹窗 */}
       <PluginsModal
         isOpen={pluginsOpen}
         onClose={() => setPluginsOpen(false)}
+      />
+
+      {/* 进程管理与服务监控弹窗 */}
+      <ProcessModal
+        isOpen={processOpen}
+        onClose={() => setProcessOpen(false)}
       />
 
       {/* 统一操作确认弹窗 (无原生 window.confirm) */}

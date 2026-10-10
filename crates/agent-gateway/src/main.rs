@@ -204,7 +204,7 @@ fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
             }
             "--help" | "-h" => {
                 println!(
-                    "a-da-gateway —— AGENT 管理平台 / 交互平台 / 桥接平台\n\n\
+                    "ada-gateway —— AGENT 管理平台 / 交互平台 / 桥接平台\n\n\
                      --port <p>        监听端口（默认 52353；0 = 自动分配）\n\
                      --product <id>    要管理的产品（默认 ada-coding）\n\
                      --workspace <p>   默认工作区（默认当前目录）\n\

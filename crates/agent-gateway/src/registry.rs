@@ -230,7 +230,7 @@ mod tests {
     fn test_different_products_same_workspace_are_different_instances() {
         let ws = normalize_workspace("E:/codes/x");
         let a = AgentRegistry::id_for_workspace("ada-coding", &ws);
-        let b = AgentRegistry::id_for_workspace("pm-assistant", &ws);
+        let b = AgentRegistry::id_for_workspace("ada-pm", &ws);
         assert_ne!(a, b, "产品是路由维度的一部分");
     }
 

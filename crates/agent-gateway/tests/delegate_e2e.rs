@@ -173,10 +173,13 @@ fn snapshot(running: &[String], threads: &[String], assistant: Option<&str>) -> 
         "method": "evt.state.snapshot",
         "params": {
             "seq": 1,
-            "threads": threads_json,
-            "activeThreadId": "",
-            "runningThreadIds": running,
-            "waitingThreadIds": [],
+            "topic": "evt.state.snapshot",
+            "payload": {
+                "threads": threads_json,
+                "activeThreadId": "",
+                "runningThreadIds": running,
+                "waitingThreadIds": [],
+            }
         }
     })
     .to_string()

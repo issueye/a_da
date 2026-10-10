@@ -6,7 +6,7 @@
 项目速览：**纯 Rust 微内核**（`crates/agent-base/`：零 IO 的领域层 + 11 个端口 + **唯一**多轮引擎 `run_turn`）
 + **两层拆包**（S4）：`crates/agent-node/`（节点：会话 / 审批 / 检查点 / 委派 / 插件 / 技能）
 与 `crates/agent-rpc/`（桥接面：JSON-RPC 分发 + WS 宿主 + UI 投影）
-+ **网关**（S5/S6）：`crates/agent-gateway/`（`a-da-gateway`：AGENT 管理平台 + 交互平台 + 桥接平台）
++ **网关**（S5/S6）：`crates/agent-gateway/`（`ada-gateway`：AGENT 管理平台 + 交互平台 + 桥接平台）
 + **Tauri 桌面宿主**（`src-tauri/`）+ **React 前端**（`tauri-ui/`）；
 `crates/ts-engine/` 是独立的 TS 执行引擎，只作插件运行时。
 **TypeScript 时代的实现（Bun + GPUIX 客户端 + TS 侧 agent/宿主）已整体归档到
@@ -54,10 +54,10 @@ bun run tauri:dev           # 桌面客户端开发（前端热重载 + 宿主�
 - `crates/agent-toolkit` 工具包：文件读写、路径沙箱、命令执行、文本 diff、决策与门禁判定；`registry.rs` 是**工具元数据单一真源**
 - **`crates/agent-node`（S4 拆出，5.9k 行 / 36 文件）** —— 节点：`session` / `approval` / `checkpoint` / `subagents`（含 `agent_bus.rs` 委派总线端口与 `local_bus.rs` 本地实现；端口支持**多轮续跑** `thread_id`，本地总线对它是**如实拒绝**——一次性子智能体没有可续线程）/ `plugins` / `skills` / `node_config.rs`（节点配置端口）/ `delegation_depth.rs`（委派深度端口：被派活的节点靠它知道自己「在第几层」）。**不含协议管道**（不依赖 `tokio-tungstenite`）、**不含 UI 投影**（不依赖 `AgentStore`）。`AgentBus` 的网关实现（`GatewayAgentBus`）在 **`agent-rpc`**——跨进程委派需要 WS 客户端，那属于桥接面，节点只保留端口
 - **`crates/agent-rpc`（S4 拆出，5.3k 行 / 18 文件）** —— 桥接面：`server/`（`dispatch.rs` 72 个方法的 JSON-RPC 分发、`ws.rs` 宿主、`emitter.rs` 快照合帧、`fs_service.rs`）、`state/`（`AgentStore`，**给界面看的投影**）、`runner/`（引擎调用 + `AgentEvent` → `AgentLoopEvent` 投影）。**依赖方向单向：`agent-rpc → agent-node`**
-- **`crates/agent-gateway`（S5 新建）** —— a-da 网关，三合一：**AGENT 管理平台**（`registry.rs` 实例注册表 / `supervisor.rs` 生命周期）+ **交互平台**（S6：`delegate.rs` 派活/**多轮续跑**/取消跨网关）+ **桥接平台**（`relay.rs` 路由与透传）+ **WEB 接入面**（S7：`auth.rs` token/作用域/Origin/**配对码**）。二进制 `a-da-gateway`（打印 `A_DA_GATEWAY_READY {port}`）。**只依赖线协议 `agent-proto`**——不含引擎（INV-1）、不缓存会话状态（INV-8），由 `verify-wiring` check J 守着。🔴 **非回环 `--host` 必须配 `--token`，且必须显式 `--allow-plaintext`**（网关只提供明文 `ws://`，明文上的 token 可嗅探；反代终止 TLS 时由人确认）。两条都**拒绝启动**而不是警告——失败安全
+- **`crates/agent-gateway`（S5 新建）** —— a-da 网关，三合一：**AGENT 管理平台**（`registry.rs` 实例注册表 / `supervisor.rs` 生命周期）+ **交互平台**（S6：`delegate.rs` 派活/**多轮续跑**/取消跨网关）+ **桥接平台**（`relay.rs` 路由与透传）+ **WEB 接入面**（S7：`auth.rs` token/作用域/Origin/**配对码**）。二进制 `ada-gateway`（打印 `A_DA_GATEWAY_READY {port}`）。**只依赖线协议 `agent-proto`**——不含引擎（INV-1）、不缓存会话状态（INV-8），由 `verify-wiring` check J 守着。🔴 **非回环 `--host` 必须配 `--token`，且必须显式 `--allow-plaintext`**（网关只提供明文 `ws://`，明文上的 token 可嗅探；反代终止 TLS 时由人确认）。两条都**拒绝启动**而不是警告——失败安全
 - `crates/ts-engine` 插件运行时（Boa + oxc）；插件契约见 [docs/plugin-sdk/v1.md](docs/plugin-sdk/v1.md)
 - `products/ada-coding` 产品二进制（`--host/--port/--token/--parent-pid/--workspace`）
-- **`products/pm-assistant`（S6 新建）** —— 项目管理助手（PM agent）：**经网关**把目标委派给 coding agent。它的能力几乎全在声明里（`capabilities.delegation = "gateway"` + `gateway.endpoint`）；**不声明 `fs` 写工具包**——角色边界（PM 的价值是拆解与分派，不是改代码）
+- **`products/ada-pm`（S6 新建）** —— 项目管理助手（PM agent）：**经网关**把目标委派给 coding agent。它的能力几乎全在声明里（`capabilities.delegation = "gateway"` + `gateway.endpoint`）；**不声明 `fs` 写工具包**——角色边界（PM 的价值是拆解与分派，不是改代码）
 - 所有内部调用点直连基座（`agent-proto` / `agent-toolkit` / `agent-base` / `agent-adapter`），历史 shim 与 facade 已全量下线
 - 端口已接线处：`session::{app_home,set_app_home,get_app_home,get_config_path}`、`state::{clock,set_clock,now_millis}`、`AgentStore::with_home`（单元测试默认 home 在临时目录，不再碰用户真实 `~/.a-da`）
 - `src-tauri` Tauri 宿主（同进程起核心服务）；`tauri-ui` React 前端（`src/client/ws-client.ts` 是协议客户端）

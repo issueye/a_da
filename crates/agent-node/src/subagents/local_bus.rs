@@ -198,6 +198,8 @@ mod tests {
                 cancel: None,
                 depth: 0,
                 thread_id: None,
+                workspace: None,
+                parent_thread_id: None,
             })
             .await;
 
@@ -226,6 +228,8 @@ mod tests {
                 cancel: None,
                 depth: 0,
                 thread_id: None,
+                workspace: None,
+                parent_thread_id: None,
             })
             .await;
 
@@ -273,6 +277,8 @@ mod tests {
                 cancel: None,
                 depth: 0,
                 thread_id: Some("t-1"),
+                workspace: None,
+                parent_thread_id: None,
             })
             .await;
         assert!(!out.ok, "本地总线必须拒绝续跑");

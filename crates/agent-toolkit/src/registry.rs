@@ -276,6 +276,7 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                             "description": "子智能体配置 id（如 general_purpose / researcher / code_reviewer / tester）"
                         },
                         "task": { "type": "string", "description": "委派的任务描述" },
+                        "workspace": { "type": "string", "description": "目标工作区绝对路径（可选，跨工程委派时指定）" },
                         "additional_context": { "type": "string", "description": "额外上下文（可选）" }
                     },
                     "required": ["subagent_id", "task"]

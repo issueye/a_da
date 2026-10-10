@@ -14,7 +14,6 @@
     "subagents": false
   },
   "policies": {
-    "maxSteps": 10,
     "parallelTools": 1,
     "toolTimeoutSec": 30
   }

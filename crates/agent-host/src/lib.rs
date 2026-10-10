@@ -390,22 +390,45 @@ pub fn build_engine_injection(
 ) -> Result<EngineInjection, HostError> {
     let spec = AgentSpec::from_json_str(spec_json)
         .map_err(|e| HostError::Assembly(format!("产品规格解析失败：{e}")))?;
+    let sessions_root_buf: PathBuf = sessions_root.into();
     let options = HostOptions::new(workspace.as_ref())
         .with_store(store.clone())
-        .with_sessions_root(sessions_root.into());
+        .with_sessions_root(sessions_root_buf.clone());
 
     let HostedProduct { runtime, approval, spec, .. } = run_from_spec(spec, options)?;
+
+    let spec_json_string = spec_json.to_string();
+    let store_for_factory = store.clone();
+    let sessions_root_for_factory = sessions_root_buf;
+    let factory: agent_rpc::server::dispatch::EngineFactory = Arc::new(move |ws_path: &Path| -> Option<Arc<AgentRuntime>> {
+        let spec_dyn = AgentSpec::from_json_str(&spec_json_string).ok()?;
+        let opts = HostOptions::new(ws_path)
+            .with_store(store_for_factory.clone())
+            .with_sessions_root(sessions_root_for_factory.clone());
+        match run_from_spec(spec_dyn, opts) {
+            Ok(h) => Some(Arc::new(h.runtime)),
+            Err(_) => None,
+        }
+    });
+
     Ok(EngineInjection {
         runtime: Arc::new(runtime),
         approval_mgr: approval,
         // W3-T6：声明一起注入，`session.initialize` 才能如实回报能力位与产品身份
         spec: Arc::new(spec),
+        factory: Some(factory),
     })
 }
 
 /// 工作区根目录推导（`--workspace` 未给时的默认值）。
 pub fn default_workspace() -> PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    let app_home = agent_node::session::app_home();
+    let ws = app_home.dir("workspace");
+    if ws.exists() {
+        ws
+    } else {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    }
 }
 
 /// 会话目录名（宿主自检/诊断用）。

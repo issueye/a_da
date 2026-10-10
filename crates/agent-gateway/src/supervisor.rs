@@ -91,6 +91,14 @@ pub fn find_product_binary(product: &str, explicit: Option<&Path>) -> Result<Pat
             dirs.push(dir.to_path_buf());
         }
     }
+    // 环境变量与本地复用缓存路径
+    if let Ok(td) = std::env::var("CARGO_TARGET_DIR") {
+        dirs.push(Path::new(&td).join("debug"));
+        dirs.push(Path::new(&td).join("release"));
+    }
+    dirs.push(PathBuf::from("../cargo_target_ada/debug"));
+    dirs.push(PathBuf::from("../cargo_target_ada/release"));
+
     // 开发形态：网关自己通常跑在 target/debug 下
     if let Ok(cwd) = std::env::current_dir() {
         dirs.push(cwd.join("target/debug"));

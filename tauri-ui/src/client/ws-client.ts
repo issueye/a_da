@@ -196,9 +196,9 @@ export class AgentWebSocketClient {
     const title = thread.title || '无标题会话'
     const dateStr = thread.createdAt ? new Date(thread.createdAt).toLocaleString('zh-CN') : '未知时间'
     const ws = thread.workspace || '默认工作区'
-    const isPm = thread.mode === 'pm' || thread.agentId === 'pm-assistant'
-    const prodName = isPm ? '项目管理助手' : (this.productInfo?.name || 'a_da 编程助手')
-    const agentId = isPm ? 'pm-assistant' : (this.productInfo?.id || 'ada-coding')
+    const isPm = thread.mode === 'pm' || thread.agentId === 'ada-pm' || thread.agentId === 'pm-assistant'
+    const prodName = isPm ? 'a_da 项目管理助手' : (this.productInfo?.name || 'a_da 编程助手')
+    const agentId = isPm ? 'ada-pm' : (this.productInfo?.id || 'ada-coding')
 
     const lines: string[] = [
       `# ${title}`,
@@ -393,7 +393,7 @@ export class AgentWebSocketClient {
           const initRes = await this.request('session.initialize', {
             token: this.token,
             protocolVersion: '1.0',
-            client: { name: 'a-da-tauri', version: '0.1.0', platform: 'tauri' },
+            client: { name: 'ada-tauri', version: '0.1.0', platform: 'tauri' },
           })
           if (gen !== this.connectionGeneration) return
           if (initRes && initRes.product) {
@@ -809,7 +809,7 @@ export class AgentWebSocketClient {
     const activeThread = this.snapshot.threads.find((t) => t.id === this.snapshot.activeThreadId)
     const ws = workspace || activeThread?.workspace || this.snapshot.activeWorkspace
     const m = mode || this.snapshot.currentMode
-    const resolvedAgentId = agentId || (m === 'pm' ? 'pm-assistant' : 'ada-coding')
+    const resolvedAgentId = agentId || (m === 'pm' ? 'ada-pm' : 'ada-coding')
     const res = await this.request<{ threadId: string }>('thread.create', {
       workspace: ws,
       mode: m,
@@ -1083,16 +1083,36 @@ export class AgentWebSocketClient {
 
   // ── 文件系统浏览器与工作区 ──
 
-  public fetchRoots() {
-    return this.request<FsRoot[]>('fs.roots', {})
+  public async fetchRoots(): Promise<FsRoot[]> {
+    try {
+      const res = await this.request<any>('gateway.fs.roots', {})
+      if (Array.isArray(res)) return res
+      if (res && Array.isArray(res.roots)) return res.roots
+      return []
+    } catch {
+      return this.request<FsRoot[]>('fs.roots', {})
+    }
   }
 
-  public listDirectory(path: string, showHidden = false, limit?: number) {
-    return this.request<FsListing>('fs.list', { path, showHidden, limit })
+  public async listDirectory(path: string, showHidden = false, limit?: number, directoriesOnly = false): Promise<FsListing> {
+    try {
+      return await this.request<FsListing>('gateway.fs.listDirectory', {
+        path,
+        directoriesOnly,
+        showHidden,
+        limit,
+      })
+    } catch {
+      return await this.request<FsListing>('fs.list', { path, showHidden, limit })
+    }
   }
 
-  public makeDirectory(path: string) {
-    return this.request<{ path: string }>('fs.mkdir', { path })
+  public async makeDirectory(path: string) {
+    try {
+      return await this.request<{ path: string }>('gateway.fs.makeDirectory', { path })
+    } catch {
+      return await this.request<{ path: string }>('fs.mkdir', { path })
+    }
   }
 
   public readFileBase64(path: string) {
@@ -1106,11 +1126,27 @@ export class AgentWebSocketClient {
   public setActiveProject(workspace: string) {
     this.snapshot.activeWorkspace = workspace
     this.notify()
+    // 若在网关模式下，通知网关 attach/记录 该工作区
+    void this.request('gateway.attach', { workspace }).catch(() => {})
     return this.request('ui.activeProject', { workspace })
+  }
+
+  public async listRecentWorkspaces() {
+    try {
+      return await this.request<{ workspaces: Array<{ workspace: string; name: string; lastAccessedAt: number }>; activeWorkspace?: string }>('gateway.workspaces.list', {})
+    } catch {
+      return { workspaces: [] }
+    }
   }
 
   public async removeWorkspace(workspace: string) {
     if (!workspace) return { ok: false }
+    // 优先通知网关移除
+    try {
+      await this.request('gateway.workspaces.remove', { workspace })
+    } catch {
+      // ignore
+    }
     const res = await this.request<{ message?: string; error?: string }>('workspace.remove', { workspace })
     if (res?.message) {
       if (

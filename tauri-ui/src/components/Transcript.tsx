@@ -12,7 +12,7 @@
  * - 居中空会话欢迎视图（EmptyConversationView）
  */
 
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
 import {
   Terminal,
   FileText,
@@ -42,6 +42,7 @@ import {
   ArrowDown,
   Circle,
   Compass,
+  ExternalLink,
 } from 'lucide-react'
 import type { Item, ToolCallItem, QuestionData, AgentMode } from '../types'
 import { agentClient } from '../client/ws-client'
@@ -57,6 +58,7 @@ interface TranscriptProps {
   onAnswerQuestion: (callId: string, choice?: string, text?: string) => void
   onDecideApproval: (toolItemId: string, approved: boolean) => void
   onRetry?: () => void
+  onSelectThread?: (threadId: string) => void
 }
 
 /** 工具名称映射（对齐产品工具集与内置插件） */
@@ -163,6 +165,12 @@ function toolTarget(name: string, args: any): { target: string; dir: string } {
     const count = Array.isArray(args?.files) ? args.files.length : 0
     return { target: `在 ${count} 个文件中替换`, dir: '' }
   }
+  if (name === 'invoke_subagent') {
+    const role = args?.subagent_id || args?.role || '子智能体'
+    const task = args?.task ? (String(args.task).length > 40 ? String(args.task).slice(0, 40) + '…' : String(args.task)) : ''
+    const ws = args?.workspace ? ` (${String(args.workspace).replace(/\\/g, '/').split('/').pop() || args.workspace})` : ''
+    return { target: `[${role}] ${task}${ws}`, dir: '' }
+  }
 
   const rawPath =
     typeof args === 'string'
@@ -207,6 +215,7 @@ export const Transcript: React.FC<TranscriptProps> = ({
   onAnswerQuestion,
   onDecideApproval,
   onRetry,
+  onSelectThread,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -331,6 +340,7 @@ export const Transcript: React.FC<TranscriptProps> = ({
             onAnswerQuestion={onAnswerQuestion}
             onDecideApproval={onDecideApproval}
             onRetry={onRetry}
+            onSelectThread={onSelectThread}
           />
         ))}
 
@@ -368,7 +378,8 @@ const TranscriptItemRow: React.FC<{
   onAnswerQuestion: (callId: string, choice?: string, text?: string) => void
   onDecideApproval: (toolItemId: string, approved: boolean) => void
   onRetry?: () => void
-}> = ({ item, running, threadId, onAnswerQuestion, onDecideApproval, onRetry }) => {
+  onSelectThread?: (threadId: string) => void
+}> = ({ item, running, threadId, onAnswerQuestion, onDecideApproval, onRetry, onSelectThread }) => {
   // 1. 思考过程块
   if (item.kind === 'thinking') {
     return <ThinkingRow item={item} />
@@ -381,6 +392,8 @@ const TranscriptItemRow: React.FC<{
         item={item}
         onDecideApproval={onDecideApproval}
         onAnswerQuestion={onAnswerQuestion}
+        onSelectThread={onSelectThread}
+        currentThreadId={threadId}
       />
     )
   }
@@ -675,14 +688,17 @@ const ToolCard: React.FC<{
   item: Item
   onDecideApproval: (toolItemId: string, approved: boolean) => void
   onAnswerQuestion: (callId: string, choice?: string, text?: string) => void
-}> = ({ item, onDecideApproval, onAnswerQuestion }) => {
-  const [open, setOpen] = useState(false)
-  const [replyText, setReplyText] = useState('')
+  onSelectThread?: (threadId: string) => void
+  currentThreadId?: string
+}> = ({ item, onDecideApproval, onAnswerQuestion, onSelectThread, currentThreadId }) => {
   const toolName = item.tool || item.name || 'tool'
+  const [open, setOpen] = useState(toolName === 'invoke_subagent' || false)
+  const [showSubagentSteps, setShowSubagentSteps] = useState(false)
+  const [replyText, setReplyText] = useState('')
   const toolStatus = item.state || item.status || 'done'
   const isAwaiting = toolStatus === 'waiting_approval' || toolStatus === 'awaiting'
   const isRunning = toolStatus === 'running'
-  const isError = toolStatus === 'failed' || toolStatus === 'error'
+  const isError = toolStatus === 'failed' || toolStatus === 'error' || Boolean(item.error)
 
   // 解析工具返回的 JSON 结构化数据
   const structuredData = (() => {
@@ -705,6 +721,95 @@ const ToolCard: React.FC<{
 
   const rawQuestion = item.question || (item.details as any)?.question
   const isQuestionTool = toolName === 'ask_user' || Boolean(rawQuestion)
+
+  // 提取子智能体委派相关属性
+  const subagentRole =
+    (item.args as any)?.subagent_id ||
+    (item.args as any)?.role ||
+    (item.details as any)?.subagent_id ||
+    '子智能体'
+  const subagentTask = (item.args as any)?.task || ''
+  const subagentWorkspace =
+    (item.args as any)?.workspace ||
+    (item.details as any)?.workspace ||
+    structuredData?.workspace
+
+  // 解析并匹配对应的子智能体会话 ID
+  const subagentThreadId = (() => {
+    if (toolName !== 'invoke_subagent') return undefined
+    const explicitId =
+      (item.details as any)?.threadId ||
+      (item.details as any)?.subagent_thread_id ||
+      structuredData?.threadId ||
+      structuredData?.subagent_thread_id ||
+      (item.args as any)?.thread_id ||
+      (item.args as any)?.threadId
+    if (explicitId) return explicitId
+
+    // 优先匹配父子关系一致且角色吻合的会话
+    const matchedWithRole = agentClient.snapshot.threads.find(
+      (t) =>
+        t.isSubagent &&
+        ((currentThreadId && t.parentId === currentThreadId) || (item.id && t.parentId === item.id)) &&
+        (subagentRole && (t.subagentId === subagentRole || t.title?.includes(subagentRole)))
+    )
+    if (matchedWithRole) return matchedWithRole.id
+
+    // 其次匹配父子关系一致的子会话
+    const matchedByParent = agentClient.snapshot.threads.find(
+      (t) =>
+        t.isSubagent &&
+        ((currentThreadId && t.parentId === currentThreadId) || (item.id && t.parentId === item.id))
+    )
+    if (matchedByParent) return matchedByParent.id
+
+    // 回落兜底：匹配近期创建的角色匹配子会话（近30分钟内）
+    const approxTime = startedAt || item.createdAt || Date.now()
+    const matchedByRoleRecent = agentClient.snapshot.threads.find(
+      (t) =>
+        t.isSubagent &&
+        (t.subagentId === subagentRole || t.title?.includes(subagentRole)) &&
+        Math.abs((t.createdAt || 0) - approxTime) < 30 * 60 * 1000
+    )
+    return matchedByRoleRecent?.id
+  })()
+
+  // 提取子智能体独立会话实体
+  const subagentThread = subagentThreadId
+    ? agentClient.snapshot.threads.find((t) => t.id === subagentThreadId) || null
+    : null
+
+  // 提取子智能体执行过程中调用的工具明细
+  const subagentToolItems = useMemo(() => {
+    if (!subagentThread) return []
+    return subagentThread.items.filter(
+      (it) => it.kind === 'toolCall' || it.kind === 'tool' || it.role === 'tool' || it.tool || it.callId
+    )
+  }, [subagentThread])
+
+  // 提取子智能体产出的分析汇报文本
+  const subagentReport = useMemo(() => {
+    if (subagentThread) {
+      const lastAssistant = subagentThread.items
+        .slice()
+        .reverse()
+        .find(
+          (it) =>
+            it.kind === 'assistant' ||
+            it.role === 'assistant' ||
+            (it.text && it.kind !== 'thinking' && it.kind !== 'user' && it.kind !== 'toolCall')
+        )
+      if (lastAssistant?.text && lastAssistant.text.trim()) {
+        return lastAssistant.text.trim()
+      }
+    }
+    const raw = item.output || item.result
+    if (typeof raw === 'string' && raw.trim()) return raw.trim()
+    if (structuredData?.summary && typeof structuredData.summary === 'string' && structuredData.summary.trim()) {
+      return structuredData.summary.trim()
+    }
+    return ''
+  }, [subagentThread, item.output, item.result, structuredData])
 
   // 提取归一化问题对象
   const questionData = (() => {
@@ -730,6 +835,15 @@ const ToolCard: React.FC<{
 
   // 状态与色彩映射：采用更加轻淡柔和的微色调
   const statusBadge = (() => {
+    if (toolName === 'invoke_subagent') {
+      if (isRunning) {
+        return { label: '子代理执行中', color: 'text-purple-600 dark:text-purple-400 bg-purple-500/10 border-purple-500/20' }
+      }
+      if (isError) {
+        return { label: '子代理失败', color: 'text-rose-500/90 bg-rose-500/10 border-rose-500/20' }
+      }
+      return { label: '子代理完成', color: 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/20' }
+    }
     if (isAwaiting) {
       if (isQuestionTool) {
         return { label: '待答复', color: 'text-blue-500/90 bg-blue-500/10 border-blue-500/20' }
@@ -750,7 +864,15 @@ const ToolCard: React.FC<{
     return null
   })()
 
-  const hasDetail = Boolean(item.result || item.output || item.error || item.patch || item.args || (isQuestionTool && isAwaiting))
+  const hasDetail = Boolean(
+    item.result ||
+      item.output ||
+      item.error ||
+      item.patch ||
+      item.args ||
+      (isQuestionTool && isAwaiting) ||
+      toolName === 'invoke_subagent'
+  )
 
   return (
     <div className="flex flex-col w-full my-0.5">
@@ -792,6 +914,21 @@ const ToolCard: React.FC<{
 
         {/* 耗时与状态指示：浅灰色 */}
         <div className="flex items-center space-x-1.5 flex-shrink-0">
+          {toolName === 'invoke_subagent' && subagentThreadId && onSelectThread && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onSelectThread(subagentThreadId)
+              }}
+              className="flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] font-medium text-purple-600 dark:text-purple-400 hover:bg-purple-500/15 border border-purple-500/25 transition-colors cursor-pointer"
+              title="切换至子智能体对话"
+            >
+              <span>查看子对话</span>
+              <ExternalLink size={9} />
+            </button>
+          )}
+
           {durationMs ? (
             <span className="text-[9.5px] text-zinc-400/80 dark:text-zinc-500 font-mono">
               {durationMs}ms
@@ -908,7 +1045,185 @@ const ToolCard: React.FC<{
               </div>
             )}
 
-            {/* 2. 命令执行详情 */}
+            {/* 3. 子智能体委派专有详情卡片 */}
+            {toolName === 'invoke_subagent' && (
+              <div className="p-3 bg-purple-50/50 dark:bg-purple-950/20 border-b border-purple-200/50 dark:border-purple-900/30 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <div className="p-1.5 rounded-lg bg-purple-500/15 text-purple-600 dark:text-purple-400">
+                      <Bot size={16} />
+                    </div>
+                    <div>
+                      <div className="flex items-center space-x-1.5 text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                        <span>委派子智能体:</span>
+                        <span className="font-mono text-purple-600 dark:text-purple-400 bg-purple-100/70 dark:bg-purple-900/40 px-1.5 py-0.5 rounded text-[11px]">
+                          {subagentRole}
+                        </span>
+                      </div>
+                      {subagentWorkspace && (
+                        <div className="text-[10px] text-zinc-500 dark:text-zinc-400 flex items-center space-x-1 mt-0.5">
+                          <Folder size={10} className="text-zinc-400" />
+                          <span className="font-mono">{subagentWorkspace}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    {isRunning ? (
+                      <div className="flex items-center space-x-1.5 px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-300 text-[10.5px] font-medium animate-pulse">
+                        <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-ping" />
+                        <span>正在独立执行中...</span>
+                      </div>
+                    ) : isError ? (
+                      <span className="px-2 py-0.5 rounded text-[10.5px] font-medium bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20">
+                        ✕ 执行失败
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded text-[10.5px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                        ✓ 执行完成
+                      </span>
+                    )}
+
+                    {subagentThreadId && onSelectThread && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onSelectThread(subagentThreadId)
+                        }}
+                        className="flex items-center space-x-1 px-2.5 py-1 rounded-md bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium transition-colors shadow-xs hover:shadow cursor-pointer"
+                        title="切换并查看该子智能体的独立对话流"
+                      >
+                        <span>打开子智能体对话</span>
+                        <ExternalLink size={12} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {subagentTask && (
+                  <div className="bg-white/90 dark:bg-zinc-900/90 p-2.5 rounded-lg border border-purple-200/40 dark:border-purple-800/30 text-xs text-zinc-700 dark:text-zinc-300 font-sans leading-relaxed">
+                    <div className="text-[10px] text-purple-600/80 dark:text-purple-400/80 font-mono font-medium mb-1 flex items-center space-x-1">
+                      <Sparkles size={11} />
+                      <span>任务目标与指令</span>
+                    </div>
+                    <div className="whitespace-pre-wrap">{subagentTask}</div>
+                  </div>
+                )}
+
+                {/* 子智能体执行进展与工具调用列表 */}
+                {subagentToolItems.length > 0 && (
+                  <div className="border border-purple-200/50 dark:border-purple-900/40 rounded-lg overflow-hidden bg-white/70 dark:bg-black/25">
+                    <button
+                      type="button"
+                      onClick={() => setShowSubagentSteps(!showSubagentSteps)}
+                      className="w-full flex items-center justify-between px-2.5 py-1.5 text-xs text-zinc-700 dark:text-zinc-300 hover:bg-purple-50/60 dark:hover:bg-purple-950/30 transition-colors cursor-pointer"
+                    >
+                      <div className="flex items-center space-x-1.5">
+                        <span className="text-zinc-400">
+                          {showSubagentSteps ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                        </span>
+                        <span className="font-medium">执行过程与工具调用明细</span>
+                        <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-300 font-mono">
+                          {subagentToolItems.length} 次操作
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-purple-600 dark:text-purple-400">
+                        {showSubagentSteps ? '点击收起' : '展开查看调用步骤'}
+                      </span>
+                    </button>
+                    {showSubagentSteps && (
+                      <div className="p-2 space-y-1 max-h-56 overflow-y-auto border-t border-purple-100 dark:border-purple-900/30 bg-zinc-50/50 dark:bg-black/40">
+                        {subagentToolItems.map((toolIt, idx) => {
+                          const tName = toolIt.tool || toolIt.name || 'tool'
+                          const tTarget = toolTarget(tName, toolIt.args).target
+                          const tDuration = toolIt.durationMs
+                          return (
+                            <div
+                              key={toolIt.id || idx}
+                              className="flex items-center justify-between px-2 py-1 rounded bg-white dark:bg-zinc-900/90 border border-zinc-200/50 dark:border-zinc-800/50 text-[11px] font-mono"
+                            >
+                              <div className="flex items-center space-x-1.5 truncate min-w-0">
+                                <span className="text-zinc-400">{renderToolIcon(tName, 11)}</span>
+                                <span className="text-purple-700 dark:text-purple-300 font-medium">
+                                  {TOOL_LABEL[tName] || tName}
+                                </span>
+                                {tTarget && (
+                                  <span className="text-zinc-500 truncate text-[10.5px]">
+                                    {tTarget}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center space-x-1.5 flex-shrink-0 text-[10px] text-zinc-400">
+                                {tDuration && <span>{tDuration}ms</span>}
+                                <span className="text-emerald-500">✓</span>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 子智能体产出的分析汇报正文（Markdown 渲染） */}
+                {subagentReport ? (
+                  <div className="space-y-1.5 pt-1">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-1.5 text-xs font-semibold text-purple-700 dark:text-purple-300">
+                        <Sparkles size={13} className="text-purple-500" />
+                        <span>子智能体执行总结与汇报</span>
+                      </div>
+                      <div className="flex items-center space-x-1.5">
+                        <CopyButton text={subagentReport} label="复制汇报内容" />
+                        {subagentThreadId && onSelectThread && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              onSelectThread(subagentThreadId)
+                            }}
+                            className="flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] font-medium bg-purple-600 hover:bg-purple-500 text-white transition-colors cursor-pointer shadow-xs"
+                          >
+                            <span>在独立会话中查看完整流</span>
+                            <ExternalLink size={11} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="p-3 bg-white/95 dark:bg-zinc-900/95 rounded-lg border border-purple-200/50 dark:border-purple-800/40 text-xs text-zinc-800 dark:text-zinc-200 select-text overflow-y-auto max-h-[460px] leading-relaxed">
+                      <MarkdownRenderer content={subagentReport} />
+                    </div>
+                  </div>
+                ) : isRunning ? (
+                  <div className="p-3 bg-white/60 dark:bg-zinc-900/50 rounded-lg border border-purple-200/40 dark:border-purple-900/30 flex items-center justify-between text-xs text-purple-700 dark:text-purple-300">
+                    <div className="flex items-center space-x-2">
+                      <span className="w-2 h-2 rounded-full bg-purple-500 animate-ping" />
+                      <span>
+                        {subagentToolItems.length > 0
+                          ? `子智能体已执行 ${subagentToolItems.length} 次工具操作，正在组织分析汇报...`
+                          : '子智能体正在自主探索与分析中...'}
+                      </span>
+                    </div>
+                    {subagentThreadId && onSelectThread && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onSelectThread(subagentThreadId)
+                        }}
+                        className="text-[11px] underline text-purple-600 dark:text-purple-400 hover:text-purple-500 cursor-pointer"
+                      >
+                        实时查看子会话
+                      </button>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            )}
+
+            {/* 4. 命令执行详情 */}
             {toolName === 'run_command' && item.args && (
               <div className="flex items-center justify-between px-2.5 py-1 bg-zinc-100/60 dark:bg-zinc-800/30 border-b border-zinc-200/50 dark:border-zinc-800/40 font-mono text-[10.5px] text-zinc-500 dark:text-zinc-400">
                 <span className="truncate">
@@ -921,7 +1236,7 @@ const ToolCard: React.FC<{
               </div>
             )}
 
-            {/* 3. 参数与输出展示：采用更浅更清爽的字色 */}
+            {/* 5. 参数与输出展示：采用更浅更清爽的字色 */}
             <div className="p-2 space-y-1.5 select-text font-mono text-[11px]">
               {/* 结构化运行信息：执行状态、开始时间、结束时间、耗时 */}
               {(durationMs != null || startedAt != null || finishedAt != null || structuredData) && (
@@ -963,7 +1278,7 @@ const ToolCard: React.FC<{
                 </div>
               )}
 
-              {item.args && toolName !== 'run_command' && (
+              {item.args && toolName !== 'run_command' && toolName !== 'invoke_subagent' && (
                 <div>
                   <span className="text-zinc-400 dark:text-zinc-500 font-sans text-[10px]">输入参数：</span>
                   <pre className="text-zinc-500 dark:text-zinc-400 whitespace-pre-wrap mt-0.5 bg-zinc-100/50 dark:bg-black/20 p-2 rounded border border-zinc-200/40 dark:border-zinc-800/40">
@@ -972,7 +1287,7 @@ const ToolCard: React.FC<{
                 </div>
               )}
 
-              {(item.result || item.output) && (
+              {(item.result || item.output) && toolName !== 'invoke_subagent' && (
                 <div>
                   <div className="flex items-center justify-between">
                     <span className="text-zinc-400 dark:text-zinc-500 font-sans text-[10px]">

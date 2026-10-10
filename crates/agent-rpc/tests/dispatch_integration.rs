@@ -313,7 +313,7 @@ async fn test_dispatcher_mode_switching() {
     assert_eq!(new_thread.agent_id, Some("ada-coding".to_string()));
     assert_eq!(store.read().await.config.mode, AgentMode::Create);
 
-    // 5. 新建 PM 模式会话，验证自动归属到 pm-assistant Agent
+    // 5. 新建 PM 模式会话，验证自动归属到 ada-pm Agent
     let create_pm_res = dispatcher
         .dispatch("thread.create", serde_json::json!({ "mode": "pm", "title": "项目管理测试" }))
         .await
@@ -321,16 +321,16 @@ async fn test_dispatcher_mode_switching() {
     let pm_id = create_pm_res.get("threadId").and_then(|v| v.as_str()).unwrap();
     let pm_thread = store.read().await.threads.iter().find(|t| t.id == pm_id).cloned().unwrap();
     assert_eq!(pm_thread.mode, Some(AgentMode::Pm));
-    assert_eq!(pm_thread.agent_id, Some("pm-assistant".to_string()), "PM 会话必须精准绑定 pm-assistant");
+    assert_eq!(pm_thread.agent_id, Some("ada-pm".to_string()), "PM 会话必须精准绑定 ada-pm");
 
-    // 6. 切换既有会话模式至 PM，验证联动更新 agent_id 为 pm-assistant
+    // 6. 切换既有会话模式至 PM，验证联动更新 agent_id 为 ada-pm
     dispatcher
         .dispatch("thread.setMode", serde_json::json!({ "threadId": new_id, "mode": "pm" }))
         .await
         .expect("切换会话为 pm 失败");
     let switched_thread = store.read().await.threads.iter().find(|t| t.id == new_id).cloned().unwrap();
     assert_eq!(switched_thread.mode, Some(AgentMode::Pm));
-    assert_eq!(switched_thread.agent_id, Some("pm-assistant".to_string()));
+    assert_eq!(switched_thread.agent_id, Some("ada-pm".to_string()));
 
     // 7. 切回 code 模式，联动恢复为 ada-coding
     dispatcher

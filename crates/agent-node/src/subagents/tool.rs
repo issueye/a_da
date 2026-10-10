@@ -98,6 +98,23 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+fn extract_workspace_from_text(text: &str) -> Option<String> {
+    for line in text.lines() {
+        for word in line.split_whitespace() {
+            let clean = word.trim_matches(|c: char| c == '`' || c == '\'' || c == '"' || c == '(' || c == ')' || c == '，' || c == '。' || c == '：' || c == ':');
+            if (clean.len() >= 3 && clean.as_bytes()[1] == b':' && (clean.as_bytes()[2] == b'/' || clean.as_bytes()[2] == b'\\'))
+                || (clean.starts_with('/') && clean.len() > 3 && !clean.starts_with("//"))
+            {
+                let p = std::path::Path::new(clean);
+                if p.is_dir() {
+                    return Some(clean.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 impl Tool for InvokeSubagentTool {
     fn descriptor(&self) -> &ToolDescriptor {
         &self.descriptor
@@ -132,6 +149,18 @@ impl Tool for InvokeSubagentTool {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
+            let explicit_workspace = call
+                .args
+                .get("workspace")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty());
+            let detected_workspace = if explicit_workspace.is_none() {
+                extract_workspace_from_text(task)
+            } else {
+                None
+            };
+            let target_workspace = explicit_workspace.or(detected_workspace.as_deref());
+
             let out = self
                 .bus
                 .dispatch(DispatchRequest {
@@ -153,6 +182,8 @@ impl Tool for InvokeSubagentTool {
                     },
                     // 多轮续跑：把上一轮回执里的 `details.threadId` 传回来即可续跑（S6）
                     thread_id: call.args.get("thread_id").and_then(|v| v.as_str()),
+                    workspace: target_workspace,
+                    parent_thread_id: Some(ctx.thread_id),
                 })
                 .await;
 
@@ -170,6 +201,19 @@ impl Tool for InvokeSubagentTool {
                 ToolStatus::Error
             };
             let mut receipt = ToolReceipt::new(status, out.summary.clone(), started_at, finished_at);
+            let mut details = details;
+            if let Some(obj) = details.as_object_mut() {
+                if let Some(ws) = target_workspace {
+                    obj.entry("workspace").or_insert_with(|| serde_json::json!(ws));
+                }
+                obj.entry("subagent_id").or_insert_with(|| serde_json::json!(subagent_id));
+                obj.entry("parent_thread_id").or_insert_with(|| serde_json::json!(ctx.thread_id));
+                if !obj.contains_key("subagent_thread_id") {
+                    if let Some(tid) = obj.get("threadId").cloned() {
+                        obj.insert("subagent_thread_id".to_string(), tid);
+                    }
+                }
+            }
             // 结构化细节：步数/耗时/工具调用数/输出文件，供界面与诊断使用
             receipt.details = Some(details);
             if !out.ok {

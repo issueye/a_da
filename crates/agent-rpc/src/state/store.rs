@@ -378,6 +378,20 @@ impl AgentStore {
         mode: Option<AgentMode>,
         agent_id: Option<String>,
     ) -> String {
+        self.create_thread_with_details(title, workspace, mode, agent_id, None, None, None)
+    }
+
+    /// 创建带完整子智能体属性的会话
+    pub fn create_thread_with_details(
+        &mut self,
+        title: Option<String>,
+        workspace: Option<String>,
+        mode: Option<AgentMode>,
+        agent_id: Option<String>,
+        is_subagent: Option<bool>,
+        parent_id: Option<String>,
+        subagent_id: Option<String>,
+    ) -> String {
         let id = next_id("thread");
         let ws = workspace
             .map(|w| w.trim().to_string())
@@ -386,11 +400,12 @@ impl AgentStore {
         let m = mode.unwrap_or(self.config.mode);
         let actual_agent_id = agent_id.or_else(|| {
             if m == AgentMode::Pm {
-                Some("pm-assistant".to_string())
+                Some("ada-pm".to_string())
             } else {
                 Some("ada-coding".to_string())
             }
         });
+        let is_sub = is_subagent.unwrap_or(false);
         let thread = Thread {
             id: id.clone(),
             title: title.unwrap_or_else(|| "新会话".to_string()),
@@ -400,14 +415,58 @@ impl AgentStore {
             messages: Vec::new(),
             mode: Some(m),
             agent_id: actual_agent_id,
-            parent_id: None,
-            subagent_id: None,
-            is_subagent: Some(false),
+            parent_id,
+            subagent_id,
+            is_subagent: Some(is_sub),
             plugin_data: None,
         };
         self.threads.insert(0, thread);
-        self.open_tab(id.clone());
+        if !is_sub {
+            self.open_tab(id.clone());
+        }
         id
+    }
+
+    /// 同步并合并来自磁盘持久化存储的会话（支持多 Agent 实例/跨网关创建的子智能体会话动态发现）
+    pub fn sync_threads_from_disk(&mut self, session_mgr: &agent_node::session::SessionManager) -> bool {
+        let disk_threads = session_mgr.restore_all_threads();
+        if disk_threads.is_empty() {
+            return false;
+        }
+        let mut changed = false;
+        for dt in disk_threads {
+            if let Some(existing) = self.threads.iter_mut().find(|t| t.id == dt.id) {
+                // 如果本进程未持有该线程的运行态，合并磁盘更新
+                if !self.running_thread_ids.contains(&dt.id) {
+                    if dt.items.len() != existing.items.len() || dt.messages.len() != existing.messages.len() {
+                        existing.items = dt.items;
+                        existing.messages = dt.messages;
+                        changed = true;
+                    }
+                    if dt.title != "新会话" && (existing.title == "新会话" || existing.title.is_empty()) {
+                        existing.title = dt.title;
+                        changed = true;
+                    }
+                    if dt.is_subagent.is_some() && existing.is_subagent != dt.is_subagent {
+                        existing.is_subagent = dt.is_subagent;
+                        changed = true;
+                    }
+                    if dt.parent_id.is_some() && existing.parent_id != dt.parent_id {
+                        existing.parent_id = dt.parent_id;
+                        changed = true;
+                    }
+                    if dt.subagent_id.is_some() && existing.subagent_id != dt.subagent_id {
+                        existing.subagent_id = dt.subagent_id;
+                        changed = true;
+                    }
+                }
+            } else {
+                // 发现跨进程新创建的会话（如子智能体会话）
+                self.threads.push(dt);
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// 删除会话

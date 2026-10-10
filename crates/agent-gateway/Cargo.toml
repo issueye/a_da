@@ -7,7 +7,7 @@ license.workspace = true
 description = "a-da 网关：AGENT 管理平台 + 桥接面（注册表 / 生命周期 / 路由 / 管理 API）"
 
 [[bin]]
-name = "a-da-gateway"
+name = "ada-gateway"
 path = "src/main.rs"
 
 [dependencies]

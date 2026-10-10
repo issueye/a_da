@@ -304,11 +304,22 @@ impl AuthConfig {
         let Some(o) = origin.map(str::trim).filter(|o| !o.is_empty()) else {
             return Ok(());
         };
-        if self.allow_origins.iter().any(|a| a == o) {
-            Ok(())
-        } else {
-            Err(AuthError::OriginNotAllowed(o.to_string()))
+        // 1. 显式白名单或通配符放行
+        if self.allow_origins.iter().any(|a| a == "*" || a == o) {
+            return Ok(());
         }
+        // 2. 本地回环源或 Tauri 桌面壳内置源放行
+        if o == "tauri://localhost"
+            || o == "http://tauri.localhost"
+            || o == "https://tauri.localhost"
+            || o.starts_with("http://localhost:")
+            || o.starts_with("http://127.0.0.1:")
+            || o.starts_with("https://localhost:")
+            || o.starts_with("https://127.0.0.1:")
+        {
+            return Ok(());
+        }
+        Err(AuthError::OriginNotAllowed(o.to_string()))
     }
 }
 

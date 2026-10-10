@@ -11,6 +11,7 @@ import {
   Circle,
   Command,
   History,
+  Activity,
 } from 'lucide-react'
 import type { AgentMode } from '../types'
 import { agentClient } from '../client/ws-client'
@@ -25,6 +26,7 @@ interface TitleBarProps {
   onToggleTheme: () => void
   onOpenSettings: () => void
   onOpenPlugins: () => void
+  onOpenProcesses?: () => void
   onOpenCommandPalette?: () => void
   onOpenChanges?: () => void
   onReconnect?: () => void
@@ -41,6 +43,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onToggleTheme,
   onOpenSettings,
   onOpenPlugins,
+  onOpenProcesses,
   onOpenCommandPalette,
   onOpenChanges,
   onReconnect,
@@ -75,10 +78,12 @@ export const TitleBar: React.FC<TitleBarProps> = ({
 
   const modeBadge = {
     code: { label: '编码', color: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
-    pm: { label: 'PM管理', color: 'bg-amber-500/20 text-amber-500 border-amber-500/30' },
+    pm: { label: 'ada-pm', color: 'bg-amber-500/20 text-amber-500 border-amber-500/30' },
     plan: { label: '规划', color: 'bg-purple-500/20 text-purple-400 border-purple-500/30' },
     create: { label: '创造', color: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' },
   }[mode] || { label: '编码', color: 'bg-blue-500/20 text-blue-400 border-blue-500/30' }
+
+  const displayProduct = productName === 'pm-assistant' ? 'ada-pm' : (productName || 'ada-coding')
 
   return (
     <header
@@ -93,7 +98,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
           </div>
           <span className="text-sm font-semibold tracking-tight">a_da</span>
           <span className="text-[10px] px-1.5 py-0.2 rounded font-mono font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
-            {productName || 'ada-coding'}
+            {displayProduct}
           </span>
         </div>
 
@@ -123,25 +128,30 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         </span>
       </div>
 
-      {/* 中间：连接状态与运行模式 */}
+      {/* 中间：连接状态与运行模式（点击打开进程管理或重试） */}
       <div
-        className={`flex items-center space-x-1.5 px-2 py-0.5 rounded transition-colors ${
-          !connected ? 'cursor-pointer hover:bg-rose-500/10 pointer-events-auto' : 'pointer-events-none'
-        }`}
-        onClick={!connected ? onReconnect : undefined}
+        className="flex items-center space-x-1.5 px-2.5 py-1 rounded-md transition-all cursor-pointer hover:bg-zinc-200/80 dark:hover:bg-zinc-800 border border-transparent hover:border-zinc-300 dark:hover:border-zinc-700 pointer-events-auto group"
+        onClick={() => {
+          if (onOpenProcesses) {
+            onOpenProcesses()
+          } else if (!connected && onReconnect) {
+            onReconnect()
+          }
+        }}
         title={
           !connected
-            ? '服务连接断开，点击立即重试'
-            : `服务在线 · 当前运行模式：${agentClient.desktopMode === 'gateway' ? '网关模式' : 'AGENT 直连模式'}`
+            ? '服务连接断开，点击查看进程与服务状态'
+            : `服务在线 · 模式：${agentClient.desktopMode === 'gateway' ? '网关模式' : 'AGENT 直连模式'}（点击打开进程管理）`
         }
       >
         <Circle
           size={7}
           className={`${connected ? 'fill-emerald-500 text-emerald-500' : 'fill-rose-500 text-rose-500'} animate-pulse`}
         />
-        <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
-          {connected ? (agentClient.desktopMode === 'gateway' ? '网关在线' : '直连在线') : '未连接 (点击重试)'}
+        <span className="text-[11px] text-zinc-600 dark:text-zinc-300 font-medium">
+          {connected ? (agentClient.desktopMode === 'gateway' ? '网关在线' : '直连在线') : '未连接 (点击查看进程)'}
         </span>
+        <Activity size={12} className="text-zinc-400 group-hover:text-blue-500 transition-colors ml-0.5" />
       </div>
 
       {/* 右侧：按钮群组 */}
@@ -179,6 +189,16 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         >
           <Puzzle size={14} />
         </button>
+
+        {onOpenProcesses && (
+          <button
+            onClick={onOpenProcesses}
+            title="进程管理与服务监控"
+            className="p-1.5 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200/70 dark:hover:bg-zinc-800 rounded transition-colors"
+          >
+            <Activity size={14} />
+          </button>
+        )}
 
         <button
           onClick={onOpenSettings}
