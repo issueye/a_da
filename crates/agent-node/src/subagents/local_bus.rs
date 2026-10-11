@@ -142,6 +142,8 @@ impl AgentBus for LocalAgentBus {
                 toolkits: self.toolkits.clone(),
                 model: None,
                 on_started: self.on_started.clone(),
+                // 父节点登记的窗口上限：子智能体撞顶时提前失败（而不是被 provider 掐断）
+                context_window: self.config_source.context_window(),
             });
             tokio::pin!(fut);
             let res = loop {

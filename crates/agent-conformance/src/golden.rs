@@ -109,6 +109,7 @@ pub fn stop_reason_name(stop: &TurnStopReason) -> String {
         TurnStopReason::Aborted => "aborted",
         TurnStopReason::ModelError => "model_error",
         TurnStopReason::BudgetExhausted { .. } => "budget_exhausted",
+        TurnStopReason::ContextWindowExceeded { .. } => "context_window_exceeded",
         TurnStopReason::Denied => "denied",
     }
     .to_string()

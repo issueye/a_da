@@ -16,6 +16,11 @@ pub struct TurnRequest {
     pub provider_config: ProviderConfig,
     /// 可选的模型调用参数覆盖（温度、思维强度等）
     pub options: Option<ModelChatOptions>,
+    /// 该模型的**上下文窗口上限**（tokens，`None` = 未登记 → 不做治理）。
+    ///
+    /// 由组合根按当前配置注入（可运行时变化），引擎在每轮模型调用前用它做一次
+    /// "上一轮真实用量是否已逼近上限"的判定，撞顶就 `ContextWindowExceeded` 提前失败。
+    pub context_window: Option<u64>,
 }
 
 impl TurnRequest {
@@ -29,6 +34,7 @@ impl TurnRequest {
             images: None,
             provider_config,
             options: None,
+            context_window: None,
         }
     }
 
@@ -44,6 +50,12 @@ impl TurnRequest {
 
     pub fn with_options(mut self, options: ModelChatOptions) -> Self {
         self.options = Some(options);
+        self
+    }
+
+    /// 登记上下文窗口上限（`None` = 不治理）。
+    pub fn with_context_window(mut self, window: Option<u64>) -> Self {
+        self.context_window = window;
         self
     }
 }

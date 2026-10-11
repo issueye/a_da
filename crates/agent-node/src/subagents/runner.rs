@@ -176,6 +176,10 @@ pub struct RunSubagentOptions {
     pub model: Option<Arc<dyn agent_base::ports::ModelClient>>,
     /// 子智能体初始化就绪、独立会话分配完成时的启动回调
     pub on_started: Option<Arc<dyn Fn(&str, &str, &str, &std::path::Path) + Send + Sync>>,
+    /// 父节点登记的**上下文窗口上限**（tokens）：子智能体撞顶时提前失败并如实自报。
+    ///
+    /// 子智能体是上下文爆掉的重灾区（实测一次 445k tokens 被网关掐断，报告只写了一半）。
+    pub context_window: Option<u64>,
 }
 
 /// 把引擎的领域事件投影成子智能体进度（W4-T6）。
@@ -436,7 +440,9 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
         None => WatchedCancel::never(),
     };
 
-    let req = TurnRequest::new(&thread_id, config).with_user_prompt(user_prompt);
+    let req = TurnRequest::new(&thread_id, config)
+        .with_user_prompt(user_prompt)
+        .with_context_window(options.context_window);
 
     let outcome = runtime.run_turn(req, sink.as_ref(), &cancel).await;
 
@@ -459,6 +465,14 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
                 TurnStopReason::BudgetExhausted { limit_steps } => (
                     false,
                     Some(format!("子智能体达到步数上限（{limit_steps} 步），未完成收敛")),
+                ),
+                // 上下文撞顶：如实自报数字，并给出可执行的下一步
+                TurnStopReason::ContextWindowExceeded { prompt_tokens, window } => (
+                    false,
+                    Some(format!(
+                        "子智能体上下文已达窗口上限（{prompt_tokens}/{window} tokens）：\
+                         请把任务拆小、或换更大上下文窗口的模型"
+                    )),
                 ),
                 TurnStopReason::Aborted => (false, Some("子智能体被取消".to_string())),
                 // 引擎报出的原文必须带上——笼统一句"模型调用失败"等于什么都没说
@@ -757,6 +771,7 @@ mod tests {
             task: "跑一条长命令".to_string(),
             additional_context: None,
             workspace: std::env::current_dir().unwrap(),
+            context_window: None,
             parent_config: ProviderConfig {
                 id: "p".into(),
                 name: "p".into(),

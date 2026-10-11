@@ -51,6 +51,24 @@ impl NodeConfigSource for StoreBackedNodeConfig {
             Err(_) => agent_proto::ApprovalMode::Ask,
         }
     }
+
+    /// 上下文窗口上限：读界面配置里的 `contextWindow`（运行时可改，实时读）。
+    ///
+    /// 读不到锁时返回 `None`（**不做治理**）而不是编一个数字——治理本身是"提前失败"的
+    /// 保守动作，但依据必须是真值；没有真值就交回给 provider 自己的错误。
+    fn context_window(&self) -> Option<u64> {
+        match self.store.try_read() {
+            Ok(s) => {
+                let cw = s.config.context_window;
+                if cw > 0 {
+                    Some(cw)
+                } else {
+                    None
+                }
+            }
+            Err(_) => None,
+        }
+    }
 }
 
 #[cfg(test)]

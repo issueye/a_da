@@ -53,6 +53,18 @@ pub trait NodeConfigSource: Send + Sync + 'static {
     /// 消费者：审批闸门。这是**运行时可变**的值——界面改档位后必须立刻生效，
     /// 所以实现要读当前值，不能构造时快照。
     fn approval_mode(&self) -> ApprovalMode;
+
+    /// 当前模型的**上下文窗口上限**（tokens）。
+    ///
+    /// 消费者：引擎的上下文治理——上一轮如实报回的用量逼近上限时**提前失败**，
+    /// 而不是发一个注定被拒的请求（实测 445k tokens 的请求被网关在流式过程中掐断，
+    /// 报告只写了一半，界面只看到笼统的"模型调用失败"）。
+    ///
+    /// 默认实现返回 `None`（未登记 → 不做治理）：这样既有实现不必改动，
+    /// 只有真正知道窗口的桥接层（`StoreBackedNodeConfig`）覆盖它。
+    fn context_window(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// 固定值的测试替身（生产代码请用桥接层的 `StoreBackedNodeConfig`）。

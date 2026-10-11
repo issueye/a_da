@@ -117,6 +117,8 @@ pub fn stop_reason_name(stop: &TurnStopReason) -> String {
         TurnStopReason::Aborted => "aborted",
         TurnStopReason::ModelError => "error",
         TurnStopReason::BudgetExhausted { .. } => "length",
+        // 上下文撞顶同样是"没跑完"：界面按 length 处理（真正的理由在 Failed 事件与回执里）
+        TurnStopReason::ContextWindowExceeded { .. } => "length",
         TurnStopReason::Denied => "denied",
     }
     .to_string()
@@ -195,6 +197,7 @@ pub async fn run_turn_with_engine(
     thread_id: &str,
     user_prompt: Option<&str>,
     provider_config: ProviderConfig,
+    context_window: Option<u64>,
     event_tx: mpsc::Sender<AgentLoopEvent>,
     abort_rx: Option<watch::Receiver<bool>>,
 ) -> anyhow::Result<()> {
@@ -204,7 +207,7 @@ pub async fn run_turn_with_engine(
         None => WatchedCancel::never(),
     };
 
-    let mut req = TurnRequest::new(thread_id, provider_config);
+    let mut req = TurnRequest::new(thread_id, provider_config).with_context_window(context_window);
     if let Some(p) = user_prompt {
         if !p.trim().is_empty() {
             req = req.with_user_prompt(p);
@@ -237,11 +240,21 @@ pub async fn run_agent_turn(
     thread_id: &str,
     user_prompt: Option<&str>,
     provider_config: ProviderConfig,
+    context_window: Option<u64>,
     event_tx: mpsc::Sender<AgentLoopEvent>,
     abort_rx: Option<watch::Receiver<bool>>,
 ) -> anyhow::Result<()> {
     let engine = engine.ok_or(EngineError::EngineNotInjected)?;
-    run_turn_with_engine(engine, thread_id, user_prompt, provider_config, event_tx, abort_rx).await
+    run_turn_with_engine(
+        engine,
+        thread_id,
+        user_prompt,
+        provider_config,
+        context_window,
+        event_tx,
+        abort_rx,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -411,6 +424,7 @@ mod tests {
                 custom_headers: None,
                 proxy_url: None,
             },
+            None,
             tx,
             None,
         )
@@ -473,6 +487,7 @@ mod tests {
                 custom_headers: None,
                 proxy_url: None,
             },
+            None,
             tx,
             None,
         )
@@ -685,6 +700,7 @@ mod tests {
                     custom_headers: None,
                     proxy_url: None,
                 },
+                None,
                 tx,
                 None,
             )

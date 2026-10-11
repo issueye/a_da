@@ -172,6 +172,8 @@ impl AgentRuntime {
 
         let mut step_index = 0u32;
         let final_stop_reason: TurnStopReason;
+        // 上一轮模型**如实报回来**的用量：上下文治理拿它当"下一轮 prompt 会有多大"的依据
+        let mut last_round_usage: Option<TokenUsage> = None;
 
         // 5. 多轮循环驱动
         'turn_loop: loop {
@@ -188,6 +190,33 @@ impl AgentRuntime {
                     break 'turn_loop;
                 }
             }
+
+            // 上下文治理：上一轮真实用量已经逼近窗口上限 → **提前失败**并如实自报。
+            //
+            // 不这么做会发生什么（实测）：445k tokens 的请求被网关在流式过程中掐断，
+            // 报告只写了一半，界面看到的却是笼统的"模型调用失败"，只能靠翻会话文件才查得出。
+            // 判定放在模型调用**之前**，且只看"上一轮如实报回来的数字"，不猜、不估算。
+            if let (Some(window), Some(prev)) = (req.context_window, last_round_usage.as_ref()) {
+                if window > 0 {
+                    let projected = prev.prompt_tokens.saturating_add(prev.completion_tokens);
+                    // 留 5% 余量：下一轮的 prompt 还要加上这一轮的工具输出
+                    let limit = window.saturating_mul(95) / 100;
+                    if projected >= limit {
+                        let message = format!(
+                            "上下文已达窗口上限：上一轮 {projected} tokens / 窗口 {window}（已用 {:>3}%）。\
+                             请压缩本会话（thread.compact）或换更大上下文窗口的模型后重试。",
+                            projected.saturating_mul(100) / window
+                        );
+                        self.emit(sink, &thread_id, AgentEventBody::Failed { message });
+                        final_stop_reason = TurnStopReason::ContextWindowExceeded {
+                            prompt_tokens: projected,
+                            window,
+                        };
+                        break 'turn_loop;
+                    }
+                }
+            }
+
             step_index += 1;
 
             // 检查取消
@@ -320,6 +349,8 @@ impl AgentRuntime {
             let turn_duration_ms = (self.clock.now_ms() - turn_start_ms).max(0) as u64;
 
             let final_step_usage = step_usage.unwrap_or(accumulated_usage);
+            // 记下来给下一轮的上下文治理用（如实数字，不做估算）
+            last_round_usage = Some(final_step_usage.clone());
 
             // 保存 Assistant 消息
             let tool_call_blocks: Vec<ToolCallBlock> = tool_calls
@@ -984,6 +1015,83 @@ mod tests {
         let messages = store.get("t1");
         assert_eq!(messages.len(), 3); // assistant(call) -> tool_result -> assistant(text)
         assert!(matches!(messages[1], AgentMessage::ToolResult { .. }));
+    }
+
+    /// 守门：**上下文撞顶必须提前失败**，而不是发一个注定被拒的请求。
+    ///
+    /// 实测事故：445k tokens 的请求被网关在流式过程中掐断，报告只写了一半，
+    /// 界面只看到笼统的"模型调用失败"。这里用"上一轮如实报回的用量 + 登记的窗口"
+    /// 在模型调用**之前**判定：撞顶就 `ContextWindowExceeded` 收尾，且不再发起第 2 次调用。
+    #[tokio::test]
+    async fn test_context_window_guard_stops_before_over_limit_request() {
+        let clock = Arc::new(FixedClock::new(1000));
+        let store = Arc::new(InMemorySessionStore::new());
+        let prompt = Arc::new(FixedPrompt::new("system prompt"));
+        let scope = Arc::new(MockScope::new("ws"));
+        let catalog = Arc::new(InMemoryToolCatalog::new());
+        let approval = Arc::new(RecordingApprovalGate::new(true));
+
+        let desc = make_test_descriptor("echo", ApprovalPolicy::Never, Termination::ContinueTurn);
+        let tool = Arc::new(MockTool::new(desc, ToolReceipt::success("echoed", 0, 0)));
+        catalog.register(tool);
+
+        let model = Arc::new(ScriptedModelClient::new(vec![
+            vec![
+                StreamDelta::ToolCall {
+                    call: ToolCallInfo {
+                        id: "call_ctx".into(),
+                        name: "echo".into(),
+                        args: "{}".into(),
+                    },
+                },
+                // 上一轮的真实用量：445k（远超 128k 窗口）
+                StreamDelta::Usage {
+                    usage: TokenUsage {
+                        prompt_tokens: 445_080,
+                        completion_tokens: 557,
+                        total_tokens: 445_637,
+                        ..Default::default()
+                    },
+                },
+                StreamDelta::Done { stop_reason: "tool_calls".into() },
+            ],
+            vec![
+                StreamDelta::Text { text: "不该走到这里".into() },
+                StreamDelta::Done { stop_reason: "stop".into() },
+            ],
+        ]));
+
+        let runtime = AgentRuntime::new(model, catalog, approval, store, prompt, scope, clock, RunPolicy::default());
+        let sink = RecordingSink::new();
+        let cancel = NeverCancel;
+        let req = TurnRequest::new("t_ctx", mock_provider_config()).with_context_window(Some(128_000));
+
+        let outcome = runtime.run_turn(req, &sink, &cancel).await.unwrap();
+
+        assert_eq!(
+            outcome.stop_reason,
+            TurnStopReason::ContextWindowExceeded {
+                prompt_tokens: 445_637,
+                window: 128_000
+            },
+            "必须如实自报是上下文撞顶（不是笼统的模型错误）"
+        );
+        assert_eq!(outcome.steps_taken, 1, "只跑了第 1 轮，第 2 轮不该被发起");
+
+        // 事件里要有 Failed（带可读理由），且不得出现第 2 轮的文本
+        let events = sink.snapshot();
+        let failed = events
+            .iter()
+            .find_map(|e| match &e.body {
+                AgentEventBody::Failed { message } => Some(message.clone()),
+                _ => None,
+            })
+            .expect("撞顶必须给出 Failed 事件（界面/日志要能看见理由）");
+        assert!(failed.contains("上下文已达窗口上限"), "{failed}");
+        assert!(
+            !events.iter().any(|e| matches!(&e.body, AgentEventBody::TextDelta { text } if text.contains("不该走到这里"))),
+            "撞顶后不得再发起模型调用"
+        );
     }
 
     #[tokio::test]

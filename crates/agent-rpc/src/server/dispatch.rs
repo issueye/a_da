@@ -427,13 +427,15 @@ impl Dispatcher {
                 let p_cfg = provider_config.clone();
 
                 // 每轮根据当前会话绑定的 Agent / 模式 / 所属工作区 分发对应引擎：
-                let (thread_agent_id, thread_mode, thread_ws) = {
+                let (thread_agent_id, thread_mode, thread_ws, context_window) = {
                     let s = store_clone.read().await;
                     let t = s.threads.iter().find(|t| t.id == tid);
                     let agent_id = t.and_then(|t| t.agent_id.clone());
                     let mode = t.and_then(|t| t.mode);
                     let ws = thread_workspace(&s, &tid);
-                    (agent_id, mode, ws)
+                    // 上下文窗口：界面配置里的真值（运行时可变），交给引擎做撞顶治理
+                    let cw = s.config.context_window;
+                    (agent_id, mode, ws, if cw > 0 { Some(cw) } else { None })
                 };
                 let is_pm = thread_agent_id.as_deref() == Some("ada-pm")
                     || thread_agent_id.as_deref() == Some("pm-assistant")
@@ -471,6 +473,7 @@ impl Dispatcher {
                         &tid,
                         prompt.as_deref(),
                         p_cfg,
+                        context_window,
                         event_tx,
                         Some(abort_rx),
                     ).await {

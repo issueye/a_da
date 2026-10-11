@@ -173,6 +173,33 @@ pub async fn code_outline(workspace: &Path, file_path: &str) -> ToolResult {
     }
 }
 
+/// `git diff` 的**单次输出上限**（字节）。
+///
+/// `git diff` 一次吐整仓改动动辄几百 KB，直接塞进上下文会把模型窗口撑爆——
+/// 实测一次子智能体就是靠反复 `git_diff` 冲到 445k tokens，最后请求被网关掐断、
+/// 报告只写了一半。截断时**明确告诉模型怎么拿全文**，而不是静默丢内容。
+const MAX_DIFF_BYTES: usize = 48 * 1024;
+
+/// 按 UTF-8 字符边界截断，并附上"怎么拿全文"的指引。
+fn truncate_diff_output(mut res: ToolResult) -> ToolResult {
+    if res.output.len() <= MAX_DIFF_BYTES {
+        return res;
+    }
+    let mut cut = MAX_DIFF_BYTES;
+    while cut > 0 && !res.output.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let orig_kb = res.output.len() / 1024;
+    let kept_kb = cut / 1024;
+    let head = res.output[..cut].to_string();
+    res.output = format!(
+        "{head}\n\n……（diff 已截断：原始约 {orig_kb} KB，仅保留前 {kept_kb} KB。\
+         需要全文请用 `git_diff` 指定单个文件，或直接用 `read_file` 读该文件；\
+         整仓 diff 不要一次性读入。）"
+    );
+    res
+}
+
 /// `git status --porcelain=v1 -b`。
 pub async fn git_status(workspace: &Path) -> ToolResult {
     let res = run_command(workspace, "git status --porcelain=v1 -b", None, Some(10), None).await;
@@ -184,12 +211,15 @@ pub async fn git_status(workspace: &Path) -> ToolResult {
 }
 
 /// `git diff`（可限定单个文件）。
+///
+/// 整仓 diff 会被**限幅**（见 [`MAX_DIFF_BYTES`]）：它是把上下文撑爆的头号来源。
 pub async fn git_diff(workspace: &Path, file: Option<&str>) -> ToolResult {
     let cmd = match file {
         Some(f) if !f.trim().is_empty() => format!("git diff -- {}", f.trim()),
         _ => "git diff".to_string(),
     };
-    run_command(workspace, &cmd, None, Some(15), None).await
+    let res = run_command(workspace, &cmd, None, Some(15), None).await;
+    truncate_diff_output(res)
 }
 
 /// `git log -n <limit> --oneline`。
@@ -386,6 +416,32 @@ mod tests {
     async fn test_code_outline_missing_file_is_error_not_panic() {
         let res = code_outline(&ws(), "definitely/not/here.rs").await;
         assert!(!res.ok);
+    }
+
+    /// 守门：整仓 diff 必须**限幅**，且截断时明确告诉模型怎么拿全文。
+    ///
+    /// 实测教训：子智能体靠反复 `git_diff` 把上下文冲到 445k tokens，请求被网关掐断。
+    #[test]
+    fn test_git_diff_output_is_truncated_with_guidance() {
+        let huge = "x".repeat(MAX_DIFF_BYTES + 4096);
+        let res = truncate_diff_output(ToolResult::success(huge));
+        assert!(
+            res.output.len() < MAX_DIFF_BYTES + 1024,
+            "超限的 diff 必须被截断（实际 {} 字节）",
+            res.output.len()
+        );
+        assert!(res.output.contains("diff 已截断"), "{}", &res.output[..120.min(res.output.len())]);
+        assert!(res.output.contains("read_file"), "截断时必须指路怎么拿全文");
+
+        // 没超限的原样返回
+        let small = "small diff".to_string();
+        let res = truncate_diff_output(ToolResult::success(small.clone()));
+        assert_eq!(res.output, small);
+
+        // 多字节字符边界不能切坏（按 char boundary 回退）
+        let cjk = "改".repeat(MAX_DIFF_BYTES); // 每字 3 字节
+        let res = truncate_diff_output(ToolResult::success(cjk));
+        assert!(res.output.contains("diff 已截断"));
     }
 
     /// 守门：**Go 文件必须能提取出声明**，且提取不到时要如实说明工具边界。

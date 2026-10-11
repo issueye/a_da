@@ -16,6 +16,11 @@ pub enum TurnStopReason {
     ModelError,
     /// 显式预算耗尽（不是"悄悄截断"）
     BudgetExhausted { limit_steps: u32 },
+    /// 上下文已达窗口上限：**提前失败**，而不是发一个注定被拒的请求。
+    ///
+    /// 实测教训：445k tokens 的请求被网关在流式过程中掐断，报告只写了一半，
+    /// 界面看到的却是笼统的"模型调用失败"。设了窗口就必须自报"是上下文撞顶了"。
+    ContextWindowExceeded { prompt_tokens: u64, window: u64 },
     /// 被策略拒绝（不是错误）
     Denied,
 }
