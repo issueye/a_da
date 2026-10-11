@@ -1092,6 +1092,15 @@ const ToolCard: React.FC<{
                         <span className="font-mono text-purple-600 dark:text-purple-400 bg-purple-100/70 dark:bg-purple-900/40 px-1.5 py-0.5 rounded text-[11px]">
                           {subagentRole}
                         </span>
+                        {/* 唯一短 id：同 profile 连派多个时，卡片之间靠它区分（title 里也是同一个 id） */}
+                        {subagentThreadId && (
+                          <span
+                            className="font-mono text-[10px] text-zinc-500 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded"
+                            title={`子会话：${subagentThreadId}`}
+                          >
+                            #{subagentThreadId.slice(-6)}
+                          </span>
+                        )}
                       </div>
                       {subagentWorkspace && (
                         <div className="text-[10px] text-zinc-500 dark:text-zinc-400 flex items-center space-x-1 mt-0.5">

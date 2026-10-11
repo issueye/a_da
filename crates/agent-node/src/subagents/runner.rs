@@ -142,6 +142,17 @@ pub fn subagent_tool_pool(
     Ok(pool)
 }
 
+/// 子智能体会话标题：**唯一短 id 必须放在最前面**。
+///
+/// 同一个父会话先后派多个同 profile 的子智能体时，只看任务前缀它们长得一模一样，
+/// 标签页/侧边栏里就成了"只派了一个"（实测三个子会话标题逐字相同）。会话 id 本身是
+/// 唯一的（`thread_<millis>_<6hex>`），把它显式带进标题、且靠前放（界面会截断尾部），
+/// 界面才区分得开。
+pub fn subagent_session_title(thread_id: &str, profile_name: &str, short_task: &str) -> String {
+    let short_id = thread_id.rsplit('_').next().unwrap_or("").to_string();
+    format!("子代理 #{short_id} [{profile_name}]: {short_task}")
+}
+
 pub struct RunSubagentOptions {
     pub profile: SubagentProfile,
     pub task: String,
@@ -374,7 +385,7 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
 
     let short_task: String = options.task.chars().take(24).collect();
     let short_task = short_task.replace(['\r', '\n'], " ");
-    let title = format!("子代理 [{}]: {}", options.profile.name, short_task);
+    let title = subagent_session_title(&thread_id, &options.profile.name, &short_task);
 
     let session_mgr = crate::session::SessionManager::new(None);
     let _ = session_mgr.create_session(
@@ -601,6 +612,20 @@ mod tests {
         let names: Vec<String> = pool.iter().map(|t| t.descriptor().name.clone()).collect();
         assert!(names.contains(&"write_file".to_string()), "{names:?}");
         assert!(names.contains(&"run_command".to_string()), "{names:?}");
+    }
+
+    /// 守门：**子会话标题必须带唯一短 id，且放在最前面**。
+    ///
+    /// 实测事故：同一个父会话先后派了三个同 profile 的子智能体，三个标题逐字相同
+    /// （`子代理 [全能执行专员]: 在工作区 …`），界面上看起来"只派了一个"。
+    #[test]
+    fn test_subagent_title_carries_unique_short_id() {
+        let t1 = subagent_session_title("thread_1791721619138_36fb30", "全能执行专员", "在工作区 E:/x 中创建");
+        let t2 = subagent_session_title("thread_1791721898753_00afd4", "全能执行专员", "在工作区 E:/x 中创建");
+        assert_ne!(t1, t2, "同 profile 连派多个也必须能区分：{t1} / {t2}");
+        assert!(t1.starts_with("子代理 #36fb30"), "短 id 要靠前（界面会截断尾部）：{t1}");
+        assert!(t2.starts_with("子代理 #00afd4"), "{t2}");
+        assert!(t1.contains("全能执行专员"), "{t1}");
     }
 
     /// 通配白名单的 profile（general_purpose）在读写模式下拿到写工具，但**永远**拿不到递归工具与提问工具。

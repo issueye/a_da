@@ -99,17 +99,34 @@ export function App() {
     }
   }, [snapshot.activeThreadId])
 
-  // 自动将派发运行中的子智能体会话加入标签栏，支持用户在顶部标签独立查看
+  // 自动把"正在运行的子智能体会话"加入标签栏，支持用户在顶部标签独立查看。
+  //
+  // 两条来源互为兜底：
+  // 1) `runningThreadIds` —— 网关侧 / 跨进程委派的子会话（由网关拉起的实例）；
+  // 2) 当前会话里**正在运行**的 invoke_subagent 卡片回执里的 threadId —— 进程内子智能体。
+  //    只靠 (1) 会漏：子会话可能还没进 runningThreadIds，卡片就已经在跑了。
   useEffect(() => {
     const runningIds = snapshot.runningThreadIds || []
-    if (runningIds.length === 0) return
+    const boundFromCards: string[] = []
+    for (const it of activeThread?.items || []) {
+      const anyIt = it as any
+      const toolName = anyIt.tool || anyIt.name
+      if (toolName !== 'invoke_subagent') continue
+      const status = anyIt.status || anyIt.state
+      if (status !== 'running') continue
+      const d: any = anyIt.details || {}
+      const bound = d.threadId || d.subagent_thread_id
+      if (typeof bound === 'string' && bound) boundFromCards.push(bound)
+    }
+    const candidates = [...runningIds, ...boundFromCards]
+    if (candidates.length === 0) return
 
     setOpenTabIds((prev) => {
       let changed = false
       const next = [...prev]
       for (const t of snapshot.threads) {
         if (
-          runningIds.includes(t.id) &&
+          candidates.includes(t.id) &&
           !next.includes(t.id) &&
           (t.isSubagent ||
             t.parentId ||
