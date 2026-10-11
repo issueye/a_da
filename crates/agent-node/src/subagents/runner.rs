@@ -18,7 +18,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -89,6 +89,59 @@ pub fn filter_subagent_tools(
         .collect()
 }
 
+/// 子智能体的工具池：产品声明 + 按 **profile 档位**补齐的执行工具。
+///
+/// 两条教训都在这里：
+/// 1. 产品刻意不声明 `fs` 时（PM 就是这种：它自己不写代码），子智能体手上只剩
+///    `code_outline`（行首前缀启发式）与 `git_diff`（只看已修改文件）——实测因此
+///    读不到任何已提交文件，80 次调用把上下文撑到 445k tokens 后失败。**读**必须补。
+/// 2. 只补读又走向另一个极端：PM 委派"写测试并跑 go test"时，子智能体回一句
+///    "环境无法写盘"——因为 `fs` 写工具与 `command` 都来自**产品**声明，而 PM 没声明。
+///
+/// 所以边界改成按 **profile 档位**：
+/// - `Readonly`（调研/评审类）→ 只补只读文件工具，写工具一律不给；
+/// - `Readwrite`（执行类）→ 补完整的 `fs` + `command`，让"写文件、跑测试"真的能做。
+///
+/// 产品的角色边界（PM 自己不写代码）不受影响：这里只影响**被委派的子智能体**，
+/// 而它本来就按 profile 定义职责（另有 `ReadonlyEnforcingGate` 作为运行期第二道防线）。
+pub fn subagent_tool_pool(
+    product_toolkits: &[String],
+    workspace: &std::path::Path,
+    profile_mode: SubagentMode,
+) -> Result<Vec<Arc<dyn Tool>>, String> {
+    let mut pool = agent_toolkit::tools_for_toolkits(product_toolkits, workspace)?;
+    let readwrite = profile_mode == SubagentMode::Readwrite;
+
+    // 产品没声明 `fs` → 按档位补：只读档位只补读工具，执行档位补全套
+    if !product_toolkits.iter().any(|t| t == "fs") {
+        let existing: HashSet<String> =
+            pool.iter().map(|t| t.descriptor().name.clone()).collect();
+        if let Some(fs_tools) = agent_toolkit::tools_for_toolkit("fs", workspace) {
+            pool.extend(
+                fs_tools
+                    .into_iter()
+                    .filter(|t| readwrite || t.descriptor().is_readonly())
+                    .filter(|t| !existing.contains(&t.descriptor().name)),
+            );
+        }
+    }
+
+    // 产品没声明 `command` → 执行档位补上（"跑 go test / go vet" 是它的职责）
+    if readwrite && !product_toolkits.iter().any(|t| t == "command") {
+        let existing: HashSet<String> =
+            pool.iter().map(|t| t.descriptor().name.clone()).collect();
+        if let Some(cmd_tools) = agent_toolkit::tools_for_toolkit("command", workspace) {
+            pool.extend(
+                cmd_tools
+                    .into_iter()
+                    .filter(|t| !existing.contains(&t.descriptor().name)),
+            );
+        }
+    }
+
+    Ok(pool)
+}
+
 pub struct RunSubagentOptions {
     pub profile: SubagentProfile,
     pub task: String,
@@ -98,6 +151,7 @@ pub struct RunSubagentOptions {
     pub checkpoint_mgr: Option<Arc<CheckpointManager>>,
     pub abort_rx: Option<watch::Receiver<bool>>,
     pub update_tx: Option<mpsc::Sender<SubagentStepUpdate>>,
+    pub parent_thread_id: Option<String>,
     /// 产品的工具包声明（`spec.toolkits`）。
     ///
     /// W4-T6：子智能体的工具不再来自 `prompt::builtin_tools()` 那张**手写清单**，
@@ -109,6 +163,8 @@ pub struct RunSubagentOptions {
     /// 生产路径留 `None` → 用真实的 [`NetworkModelClient`]；
     /// 测试注入脚本化模型——**注入点存在不等于生产在用替身**（默认值就是真实实现）。
     pub model: Option<Arc<dyn agent_base::ports::ModelClient>>,
+    /// 子智能体初始化就绪、独立会话分配完成时的启动回调
+    pub on_started: Option<Arc<dyn Fn(&str, &str, &str, &std::path::Path) + Send + Sync>>,
 }
 
 /// 把引擎的领域事件投影成子智能体进度（W4-T6）。
@@ -121,6 +177,19 @@ struct SubagentProgressSink {
     summary: Mutex<String>,
     tool_calls: AtomicUsize,
     steps: AtomicUsize,
+    /// 上一轮模型调用已结束、下一轮的正文还没开始写——此时要先补一个空行分隔。
+    ///
+    /// 引擎每轮都把 `TextDelta` 直接追加进摘要；不补分隔的话，多轮的正文会
+    /// **首尾粘成一片**（`...environment.The outline tool...`），
+    /// 界面上的"子智能体执行总结与汇报"读起来就是一坨连体字。
+    round_separator_pending: AtomicBool,
+    /// 引擎报出的失败原文（`AgentEventBody::Failed`）。
+    ///
+    /// 早先这里被 `_ => {}` 丢掉，回执里只剩一句笼统的"模型调用失败"——
+    /// 于是"为什么失败"只能靠猜（实测那次是流到一半断掉，错误文本全没了）。
+    failure_reason: Mutex<Option<String>>,
+    /// 见过的最大 prompt 用量：子智能体失败的常见根因是上下文被工具输出撑爆。
+    peak_prompt_tokens: AtomicUsize,
 }
 
 impl SubagentProgressSink {
@@ -131,6 +200,20 @@ impl SubagentProgressSink {
             summary: Mutex::new(String::new()),
             tool_calls: AtomicUsize::new(0),
             steps: AtomicUsize::new(0),
+            round_separator_pending: AtomicBool::new(false),
+            failure_reason: Mutex::new(None),
+            peak_prompt_tokens: AtomicUsize::new(0),
+        }
+    }
+
+    fn failure_reason(&self) -> Option<String> {
+        self.failure_reason.lock().expect("子智能体失败原因锁中毒").clone()
+    }
+
+    fn peak_prompt_tokens(&self) -> Option<u64> {
+        match self.peak_prompt_tokens.load(Ordering::Relaxed) {
+            0 => None,
+            n => Some(n as u64),
         }
     }
 
@@ -163,10 +246,14 @@ impl EventSink for SubagentProgressSink {
     fn emit(&self, event: AgentEvent) {
         match &event.body {
             AgentEventBody::TextDelta { text } => {
-                self.summary
-                    .lock()
-                    .expect("子智能体摘要锁中毒")
-                    .push_str(text);
+                let mut summary = self.summary.lock().expect("子智能体摘要锁中毒");
+                // 轮次之间的分隔：让多轮正文在界面上分行，而不是粘成一整段
+                if self.round_separator_pending.swap(false, Ordering::Relaxed)
+                    && !summary.trim().is_empty()
+                {
+                    summary.push_str("\n\n");
+                }
+                summary.push_str(text);
             }
             AgentEventBody::ToolCallStarted { name, .. } => {
                 self.tool_calls.fetch_add(1, Ordering::Relaxed);
@@ -177,9 +264,21 @@ impl EventSink for SubagentProgressSink {
                 );
             }
             // 一次模型调用结束 = 一步
-            AgentEventBody::UsageReported { .. } => {
+            AgentEventBody::UsageReported { usage, .. } => {
                 self.steps.fetch_add(1, Ordering::Relaxed);
+                self.round_separator_pending.store(true, Ordering::Relaxed);
+                if usage.prompt_tokens > 0 {
+                    self.peak_prompt_tokens
+                        .fetch_max(usage.prompt_tokens as usize, Ordering::Relaxed);
+                }
                 self.send("running", Some("思考与规划中...".to_string()), None);
+            }
+            // 失败原文必须留住：这是"为什么失败"的唯一来源
+            AgentEventBody::Failed { message } => {
+                let mut slot = self.failure_reason.lock().expect("子智能体失败原因锁中毒");
+                if slot.is_none() {
+                    *slot = Some(message.clone());
+                }
             }
             _ => {}
         }
@@ -194,6 +293,8 @@ fn build_result(
     tool_calls: usize,
     elapsed: Duration,
     error: Option<String>,
+    thread_id: Option<String>,
+    prompt_tokens: Option<u64>,
 ) -> SubagentRunResult {
     SubagentRunResult {
         ok,
@@ -203,6 +304,8 @@ fn build_result(
         tool_calls_count: tool_calls,
         output_file: None,
         error_message: error,
+        thread_id,
+        prompt_tokens,
     }
 }
 
@@ -219,11 +322,13 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
             0,
             start_time.elapsed(),
             Some("子智能体已被禁用".to_string()),
+            None,
+            None,
         );
     }
 
-    // 1. 工具：按**产品声明**装配（同一处真源）→ 按 profile 裁切
-    let all_tools = match agent_toolkit::tools_for_toolkits(&options.toolkits, &options.workspace) {
+    // 1. 工具：按**产品声明**装配（同一处真源）→ 产品没声明 `fs` 时补只读文件工具 → 按 profile 裁切
+    let all_tools = match subagent_tool_pool(&options.toolkits, &options.workspace, options.profile.mode) {
         Ok(t) => t,
         Err(e) => {
             return build_result(
@@ -233,6 +338,8 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
                 0,
                 start_time.elapsed(),
                 Some(e),
+                None,
+                None,
             )
         }
     };
@@ -257,7 +364,40 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
         "\n\n请针对上述任务要求，自主使用工具调研或处理。完成后直接给出结构化、高信息密度的最终总结与建议。",
     );
 
-    // 4. 装配隔离运行时
+    // 4. 为子智能体生成独立会话 ID 并落盘持久化，支持在界面标签与工作区独立查看
+    let now_millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let rand_suffix = uuid::Uuid::new_v4().simple().to_string();
+    let thread_id = format!("thread_{}_{}", now_millis, &rand_suffix[..6]);
+
+    let short_task: String = options.task.chars().take(24).collect();
+    let short_task = short_task.replace(['\r', '\n'], " ");
+    let title = format!("子代理 [{}]: {}", options.profile.name, short_task);
+
+    let session_mgr = crate::session::SessionManager::new(None);
+    let _ = session_mgr.create_session(
+        &thread_id,
+        &options.workspace.to_string_lossy(),
+        Some(&title),
+        options.parent_thread_id.as_deref(),
+        Some(&options.profile.id),
+    );
+
+    let session_store = EphemeralSessionStore::new()
+        .with_persistence(options.workspace.clone(), session_mgr.clone());
+
+    if let Some(ref cb) = options.on_started {
+        cb(
+            &thread_id,
+            options.parent_thread_id.as_deref().unwrap_or(""),
+            &options.profile.id,
+            &options.workspace,
+        );
+    }
+
+    // 5. 装配隔离运行时
     let sink = Arc::new(SubagentProgressSink::new(options.update_tx.clone(), max_steps));
     let readonly = options.profile.mode == SubagentMode::Readonly;
     let model: Arc<dyn agent_base::ports::ModelClient> = options
@@ -268,7 +408,7 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
         model,
         Arc::new(CompositeToolCatalog::new(authorized, None)),
         Arc::new(ReadonlyEnforcingGate::new(readonly)),
-        Arc::new(EphemeralSessionStore::new()),
+        Arc::new(session_store),
         Arc::new(ProfilePrompt::new(options.profile.system_prompt.clone())),
         Arc::new(WorkspaceScope::new(options.workspace.clone())),
         Arc::new(SystemClock),
@@ -279,14 +419,12 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
         },
     );
 
-    // 5. 取消：父会话的停止键必须真的传进引擎（W4-T3）
+    // 6. 取消：父会话的停止键必须真的传进引擎（W4-T3）
     let cancel = match options.abort_rx.clone() {
         Some(rx) => WatchedCancel::new(rx),
         None => WatchedCancel::never(),
     };
 
-    // 6. 一次性隔离会话
-    let thread_id = format!("subagent_{}", uuid::Uuid::new_v4().simple());
     let req = TurnRequest::new(&thread_id, config).with_user_prompt(user_prompt);
 
     let outcome = runtime.run_turn(req, sink.as_ref(), &cancel).await;
@@ -300,6 +438,8 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
     let steps = sink.steps();
     let tool_calls = sink.tool_calls();
     let elapsed = start_time.elapsed();
+    let failure_reason = sink.failure_reason();
+    let prompt_tokens = sink.peak_prompt_tokens();
 
     match outcome {
         Ok(o) => {
@@ -310,7 +450,14 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
                     Some(format!("子智能体达到步数上限（{limit_steps} 步），未完成收敛")),
                 ),
                 TurnStopReason::Aborted => (false, Some("子智能体被取消".to_string())),
-                TurnStopReason::ModelError => (false, Some("模型调用失败".to_string())),
+                // 引擎报出的原文必须带上——笼统一句"模型调用失败"等于什么都没说
+                TurnStopReason::ModelError => (
+                    false,
+                    Some(match failure_reason.clone() {
+                        Some(detail) => format!("模型调用失败：{detail}"),
+                        None => "模型调用失败".to_string(),
+                    }),
+                ),
                 TurnStopReason::Denied => (false, Some("调用被策略拒绝".to_string())),
             };
             sink.send(
@@ -325,11 +472,25 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
                 tool_calls,
                 elapsed,
                 error,
+                Some(thread_id),
+                prompt_tokens,
             )
         }
         Err(e) => {
             sink.send("failed", Some(format!("执行失败：{e}")), None);
-            build_result(false, summary, steps, tool_calls, elapsed, Some(e.to_string()))
+            build_result(
+                false,
+                summary,
+                steps,
+                tool_calls,
+                elapsed,
+                Some(match failure_reason {
+                    Some(detail) => format!("{e}（{detail}）"),
+                    None => e.to_string(),
+                }),
+                Some(thread_id),
+                prompt_tokens,
+            )
         }
     }
 }
@@ -368,6 +529,78 @@ mod tests {
         assert!(!names.contains(&"ask_user".to_string()), "进程内子代理永远不得拿到 ask_user：{names:?}");
         // 白名单之外的不给（researcher 没声明 batch_write）
         assert!(!names.contains(&"batch_write".to_string()), "{names:?}");
+    }
+
+    /// 守门：产品没声明 `fs`（PM 就是这种）时，子智能体**仍必须拿到只读文件工具**，
+    /// 但绝不能因此获得写能力。
+    ///
+    /// 实测事故：PM 派出去的调研子体手上只有 `code_outline` 与 `git_diff`，
+    /// 读不到任何已提交文件，靠 80 次调用硬猜，把上下文撑到 445k tokens 后模型调用失败。
+    ///
+    /// 另一半是"只补读"矫枉过正：PM 委派"写测试并跑 go test"时子智能体回"环境无法写盘"。
+    /// 所以现在按 **profile 档位**决定补什么：只读档位只补读，执行档位补写 + 命令。
+    #[test]
+    fn test_subagent_pool_follows_profile_mode() {
+        let ws = std::path::Path::new("E:/subagent_pool_ws");
+        let pm_like: Vec<String> = vec![
+            "core".to_string(),
+            "git".to_string(),
+            "project".to_string(),
+            "decision".to_string(),
+        ];
+
+        // 1) 只读档位：能读，绝不拿到写/命令
+        let pool = subagent_tool_pool(&pm_like, ws, SubagentMode::Readonly)
+            .expect("PM 风格工具包必须能装配");
+        let names: Vec<String> = pool.iter().map(|t| t.descriptor().name.clone()).collect();
+        for expect in ["read_file", "list_files", "search_files"] {
+            assert!(names.contains(&expect.to_string()), "子智能体必须能读：缺 {expect}：{names:?}");
+        }
+        for banned in ["write_file", "edit_file", "batch_write", "batch_replace", "run_command"] {
+            assert!(
+                !names.contains(&banned.to_string()),
+                "只读档位不得拿到 {banned}：{names:?}"
+            );
+        }
+
+        // 2) 执行档位：必须真的能写盘、能跑命令（PM 委派"写测试 + go test"就靠它）
+        let pool = subagent_tool_pool(&pm_like, ws, SubagentMode::Readwrite)
+            .expect("PM 风格工具包必须能装配");
+        let names: Vec<String> = pool.iter().map(|t| t.descriptor().name.clone()).collect();
+        for expect in ["read_file", "write_file", "edit_file", "run_command"] {
+            assert!(
+                names.contains(&expect.to_string()),
+                "执行档位必须拿到 {expect}（否则会回「环境无法写盘」）：{names:?}"
+            );
+        }
+
+        // 3) 只读调研 profile 从同一个池子里仍然拿不到写工具（profile 是最后一道闸）
+        let researcher = builtin_subagents()
+            .into_iter()
+            .find(|p| p.id == "researcher")
+            .expect("内置 researcher");
+        let pool = subagent_tool_pool(&pm_like, ws, researcher.mode).expect("装配");
+        let allowed: Vec<String> = filter_subagent_tools(&researcher, &pool)
+            .iter()
+            .map(|t| t.descriptor().name.clone())
+            .collect();
+        assert!(
+            allowed.contains(&"read_file".to_string()),
+            "只读调研子体拿不到 read_file 就没法干活：{allowed:?}"
+        );
+        assert!(
+            !allowed.contains(&"write_file".to_string()),
+            "只读档位不得拿到写工具：{allowed:?}"
+        );
+
+        // 4) 产品自己声明了 `fs` / `command` 时语义不变
+        let coding_like: Vec<String> =
+            vec!["core".to_string(), "fs".to_string(), "command".to_string()];
+        let pool = subagent_tool_pool(&coding_like, ws, SubagentMode::Readwrite)
+            .expect("coding 风格工具包必须能装配");
+        let names: Vec<String> = pool.iter().map(|t| t.descriptor().name.clone()).collect();
+        assert!(names.contains(&"write_file".to_string()), "{names:?}");
+        assert!(names.contains(&"run_command".to_string()), "{names:?}");
     }
 
     /// 通配白名单的 profile（general_purpose）在读写模式下拿到写工具，但**永远**拿不到递归工具与提问工具。
@@ -513,8 +746,10 @@ mod tests {
             checkpoint_mgr: None,
             abort_rx: Some(abort_rx),
             update_tx: Some(update_tx),
+            parent_thread_id: None,
             toolkits: vec!["core".to_string(), "command".to_string()],
             model: Some(model),
+            on_started: None,
         };
 
         let started = Instant::now();
@@ -546,6 +781,82 @@ mod tests {
             !res.summary.contains("不该走到这里"),
             "取消后不该继续跑第二轮：{}",
             res.summary
+        );
+    }
+
+    /// 守门：多轮正文之间**必须有分隔**，不能首尾粘成一整段。
+    ///
+    /// 引擎每轮都把 `TextDelta` 直接追加进摘要；不补分隔的话，界面上的
+    /// "子智能体执行总结与汇报"读起来就是一坨连体字
+    /// （实测原文：`...environment.The outline tool doesn't render...`）。
+    #[test]
+    fn test_summary_separates_rounds_so_text_is_not_glued() {
+        let sink = SubagentProgressSink::new(None, None);
+        let mut seq = 0u64;
+        let mut emit = |body: AgentEventBody| {
+            seq += 1;
+            sink.emit(AgentEvent::new(seq, seq as i64, "t_sub", body));
+        };
+
+        emit(AgentEventBody::TextDelta { text: "第一轮：先看目录。".into() });
+        emit(AgentEventBody::TextDelta { text: "再看模块清单。".into() });
+        emit(AgentEventBody::UsageReported {
+            usage: agent_base::model::TokenUsage::default(),
+            duration_ms: 10,
+        });
+        emit(AgentEventBody::TextDelta { text: "第二轮：读 go.mod。".into() });
+
+        assert_eq!(
+            sink.summary(),
+            "第一轮：先看目录。再看模块清单。\n\n第二轮：读 go.mod。",
+            "同一轮的碎块要连起来，跨轮要另起一段"
+        );
+    }
+
+    /// 守门：引擎报出的失败原文必须留住，并记下**见过的最大上下文用量**。
+    ///
+    /// 早先 `Failed` 被 `_ => {}` 丢掉，回执里只剩笼统一句"模型调用失败"——实测那次
+    /// 是流到一半断掉（报告写到一半），错误文本全没了，"为什么失败"只能靠猜。
+    /// 同时子智能体失败最常见的原因就是上下文被工具输出撑爆（实测 445k tokens），
+    /// 这个数字也必须进回执，界面才不用猜。
+    #[test]
+    fn test_failure_reason_and_peak_context_are_kept() {
+        let sink = SubagentProgressSink::new(None, None);
+        let mut seq = 0u64;
+        let mut emit = |body: AgentEventBody| {
+            seq += 1;
+            sink.emit(AgentEvent::new(seq, seq as i64, "t_sub", body));
+        };
+
+        emit(AgentEventBody::UsageReported {
+            usage: agent_base::model::TokenUsage {
+                prompt_tokens: 445_080,
+                completion_tokens: 557,
+                total_tokens: 445_637,
+                ..Default::default()
+            },
+            duration_ms: 10,
+        });
+        emit(AgentEventBody::UsageReported {
+            usage: agent_base::model::TokenUsage {
+                prompt_tokens: 120_000,
+                ..Default::default()
+            },
+            duration_ms: 10,
+        });
+        emit(AgentEventBody::Failed {
+            message: "error decoding response body".into(),
+        });
+
+        assert_eq!(
+            sink.peak_prompt_tokens(),
+            Some(445_080),
+            "必须记住见过的最大 prompt 用量（上下文撑爆是首要失败根因）"
+        );
+        assert_eq!(
+            sink.failure_reason().as_deref(),
+            Some("error decoding response body"),
+            "引擎报出的失败原文必须留住"
         );
     }
 }

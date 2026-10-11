@@ -281,7 +281,32 @@ impl AgentRuntime {
                 }
             }
 
-            if let Some(_err) = stream_error {
+            if let Some(err) = stream_error {
+                // 流到一半断了（网关掉线 / 超时 / 传输错误）：模型**已经产出的正文不能丢**。
+                //
+                // 早先这里直接 break——半截报告既不落盘、也不进会话，界面上只能看到上一轮的
+                // 某句话，看着就像"莫名其妙地失败"（实测：子智能体把 400 行调研报告写到一半，
+                // 流断了，会话里只剩它上一轮的一句"Let me capture the BI plan docs…"）。
+                // 落盘失败也不能吞掉原始错误：如实上报失败原因优先。
+                if !accumulated_text.trim().is_empty() || !accumulated_thinking.trim().is_empty() {
+                    let now = self.clock.now_ms();
+                    let partial = AgentMessage::Assistant {
+                        content: accumulated_text.clone(),
+                        thinking: if accumulated_thinking.is_empty() {
+                            None
+                        } else {
+                            Some(accumulated_thinking.clone())
+                        },
+                        tool_calls: None,
+                        stop_reason: Some("error".to_string()),
+                        error_message: Some(err.clone()),
+                        timestamp: Some(now),
+                        usage: serde_json::to_value(&accumulated_usage).ok(),
+                        duration_ms: Some((now - step_start_ms).max(0) as u64),
+                        turn_duration_ms: Some((now - turn_start_ms).max(0) as u64),
+                    };
+                    let _ = self.store.append_message(&thread_id, &partial).await;
+                }
                 final_stop_reason = TurnStopReason::ModelError;
                 break 'turn_loop;
             }

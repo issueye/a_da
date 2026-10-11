@@ -586,6 +586,10 @@ const SidebarTreeItem: React.FC<SidebarTreeItemProps> = ({
   )
 }
 
+const DEFAULT_SIDEBAR_WIDTH = 270
+const MIN_SIDEBAR_WIDTH = 180
+const MAX_SIDEBAR_WIDTH = 560
+
 const SidebarComponent: React.FC<SidebarProps> = ({
   threads,
   activeThreadId,
@@ -601,6 +605,76 @@ const SidebarComponent: React.FC<SidebarProps> = ({
 }) => {
   const [collapsed, setCollapsed] = useState(false)
   const [mode, setMode] = useState<AgentMode>(currentMode)
+
+  // 侧边栏宽度支持拖拽缩放与持久化
+  const [width, setWidth] = useState<number>(() => {
+    const saved = localStorage.getItem('a_da_sidebar_width')
+    if (saved) {
+      const parsed = parseInt(saved, 10)
+      if (!isNaN(parsed) && parsed >= MIN_SIDEBAR_WIDTH && parsed <= MAX_SIDEBAR_WIDTH) {
+        return parsed
+      }
+    }
+    return DEFAULT_SIDEBAR_WIDTH
+  })
+  const [isResizing, setIsResizing] = useState(false)
+
+  // 拖动过程中锁定全局光标与禁用文本选取
+  useEffect(() => {
+    if (isResizing) {
+      document.body.style.cursor = 'col-resize'
+      document.body.style.userSelect = 'none'
+    } else {
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    return () => {
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+  }, [isResizing])
+
+  // 处理拖动调整侧边栏宽度
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault()
+    setIsResizing(true)
+
+    const startX = e.clientX
+    const startWidth = width
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const deltaX = moveEvent.clientX - startX
+      const maxAllowed = Math.min(MAX_SIDEBAR_WIDTH, Math.floor(window.innerWidth * 0.6))
+      const nextWidth = Math.min(
+        Math.max(startWidth + deltaX, MIN_SIDEBAR_WIDTH),
+        maxAllowed
+      )
+      setWidth(nextWidth)
+    }
+
+    const handleMouseUp = (upEvent: MouseEvent) => {
+      setIsResizing(false)
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+
+      const finalDeltaX = upEvent.clientX - startX
+      const maxAllowed = Math.min(MAX_SIDEBAR_WIDTH, Math.floor(window.innerWidth * 0.6))
+      const finalWidth = Math.min(
+        Math.max(startWidth + finalDeltaX, MIN_SIDEBAR_WIDTH),
+        maxAllowed
+      )
+      localStorage.setItem('a_da_sidebar_width', String(Math.round(finalWidth)))
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+  }
+
+  // 双击分隔线恢复默认宽度
+  const handleResetWidth = () => {
+    setWidth(DEFAULT_SIDEBAR_WIDTH)
+    localStorage.setItem('a_da_sidebar_width', String(DEFAULT_SIDEBAR_WIDTH))
+  }
 
   useEffect(() => {
     if (currentMode) {
@@ -800,7 +874,10 @@ const SidebarComponent: React.FC<SidebarProps> = ({
   }
 
   return (
-    <aside className="w-70 bg-zinc-50 dark:bg-[#121214] border-r border-zinc-200 dark:border-[#27272a] flex flex-col h-full flex-shrink-0 select-none transition-colors duration-100">
+    <aside
+      style={{ width: `${width}px` }}
+      className="relative bg-zinc-50 dark:bg-[#121214] border-r border-zinc-200 dark:border-[#27272a] flex flex-col h-full flex-shrink-0 select-none transition-colors duration-100"
+    >
       {/* 顶部：新建对话、打开工作区与折叠（紧凑间距） */}
       <div className="p-2 border-b border-zinc-200 dark:border-[#27272a]/60 flex items-center justify-between gap-1">
         <button
@@ -867,7 +944,20 @@ const SidebarComponent: React.FC<SidebarProps> = ({
               <div key={group.key} className="space-y-0.5">
                 {/* 树节点：工作区分组头部（紧凑） */}
                 <div
-                  onClick={() => toggleWorkspace(group.key, group.workspace)}
+                  onClick={() => {
+                    toggleWorkspace(group.key, group.workspace)
+                    // 若当前激活会话不属于此工作区，将视图即时定位到该工作区
+                    const curWsNorm = normalizePathKey(activeWorkspace)
+                    const targetWsNorm = normalizePathKey(group.workspace)
+                    if (curWsNorm !== targetWsNorm) {
+                      agentClient.setActiveProject(group.workspace)
+                      if (group.nodes.length > 0) {
+                        onSelectThread(group.nodes[0].thread.id)
+                      } else {
+                        onCreateThread(group.workspace, mode)
+                      }
+                    }
+                  }}
                   className="group flex items-center justify-between px-1.5 py-0.5 min-h-[24px] rounded text-[11.5px] cursor-pointer hover:bg-zinc-200/50 dark:hover:bg-zinc-800/40 transition-colors"
                   title={group.workspace}
                 >
@@ -896,7 +986,7 @@ const SidebarComponent: React.FC<SidebarProps> = ({
                         agentClient.setActiveProject(group.workspace)
                         onCreateThread(group.workspace, mode)
                       }}
-                      className="opacity-0 group-hover:opacity-100 p-0.5 text-zinc-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded transition-opacity cursor-pointer"
+                      className="p-0.5 text-zinc-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded transition-colors cursor-pointer"
                       title="在此工作区新建对话"
                     >
                       <Plus size={11} />
@@ -925,14 +1015,8 @@ const SidebarComponent: React.FC<SidebarProps> = ({
                 {!isFolded && (
                   <div className="ml-2.5 pl-1.5 border-l border-zinc-200/80 dark:border-zinc-800 space-y-0.5 pt-0.5">
                     {group.nodes.length === 0 ? (
-                      <div
-                        onClick={() => {
-                          agentClient.setActiveProject(group.workspace)
-                          onCreateThread(group.workspace, mode)
-                        }}
-                        className="px-1.5 py-0.5 text-[11px] text-zinc-400 dark:text-zinc-500 hover:text-blue-500 cursor-pointer italic"
-                      >
-                        暂无会话 · 点击新建对话
+                      <div className="px-1.5 py-0.5 text-[10.5px] text-zinc-400 dark:text-zinc-500 italic">
+                        暂无会话记录
                       </div>
                     ) : (
                       group.nodes.map((node) => (
@@ -967,6 +1051,22 @@ const SidebarComponent: React.FC<SidebarProps> = ({
       <div className="p-2 border-t border-zinc-200 dark:border-[#27272a] text-[10px] text-zinc-400 dark:text-zinc-500 flex items-center justify-between">
         <span>{workspaceGroups.length} 工作区 · {threads.length} 会话</span>
         <span className="text-[9px] text-zinc-400 dark:text-zinc-600">Tauri v2</span>
+      </div>
+
+      {/* 拖拽调整侧边栏宽度的分割线手柄 */}
+      <div
+        onMouseDown={handleMouseDown}
+        onDoubleClick={handleResetWidth}
+        className={`absolute top-0 -right-1 w-2 h-full cursor-col-resize z-20 group transition-colors ${
+          isResizing ? 'bg-blue-500/80' : 'hover:bg-blue-500/30'
+        }`}
+        title="拖动调整侧边栏宽度，双击恢复默认宽度"
+      >
+        <div
+          className={`w-[1px] h-full mx-auto ${
+            isResizing ? 'bg-blue-500' : 'group-hover:bg-blue-400'
+          } transition-colors`}
+        />
       </div>
     </aside>
   )

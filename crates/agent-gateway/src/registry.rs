@@ -66,6 +66,12 @@ pub struct AgentInstance {
     pub pid: Option<u32>,
     /// 拉起时间（毫秒）
     pub started_at: i64,
+    /// 这个进程**实际服务**的产品清单（实例自述，如 `["ada-coding", "ada-pm"]`）。
+    ///
+    /// 一个 `ada-coding` 实例同时装着 Coding 与 PM 两套引擎——面板若只看 `product`
+    /// 就会把"正在跑 PM 会话的实例"显示成纯 CODING。老实例不带这个字段 → 空数组。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub products: Vec<String>,
 }
 
 impl AgentInstance {
@@ -87,6 +93,7 @@ impl AgentInstance {
             "status": self.status.as_str(),
             "pid": self.pid,
             "startedAt": self.started_at,
+            "products": self.products,
         })
     }
 }
@@ -205,6 +212,7 @@ mod tests {
             status,
             pid: Some(42),
             started_at: 1,
+            products: vec!["ada-coding".to_string()],
         }
     }
 

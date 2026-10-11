@@ -28,6 +28,8 @@ pub struct LocalAgentBus {
     checkpoint_mgr: Option<Arc<CheckpointManager>>,
     /// 产品的工具包声明：子智能体按**同一处装配**取工具（W4-T6）
     toolkits: Vec<String>,
+    on_started: Option<Arc<dyn Fn(&str, &str, &str, &std::path::Path) + Send + Sync>>,
+    on_finished: Option<Arc<dyn Fn(&str) + Send + Sync>>,
 }
 
 impl LocalAgentBus {
@@ -44,7 +46,19 @@ impl LocalAgentBus {
             config_source,
             checkpoint_mgr,
             toolkits,
+            on_started: None,
+            on_finished: None,
         }
+    }
+
+    pub fn with_callbacks(
+        mut self,
+        on_started: Option<Arc<dyn Fn(&str, &str, &str, &std::path::Path) + Send + Sync>>,
+        on_finished: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    ) -> Self {
+        self.on_started = on_started;
+        self.on_finished = on_finished;
+        self
     }
 }
 
@@ -108,20 +122,26 @@ impl AgentBus for LocalAgentBus {
             // `req.cancel` 是 `&'a dyn CancelToken`（轮询式），不能 move 进
             // `tokio::spawn`（生命周期不够），所以用 `select!` 在**同一个 future** 里
             // 轮询转发到 `run_subagent` 的 `abort_rx`——与 W4-T1 修 `run_command`
-            // 假接线用的是同一个手法。
+            let target_ws = req
+                .workspace
+                .map(PathBuf::from)
+                .unwrap_or_else(|| self.workspace.clone());
+
             let (abort_tx, abort_rx) = tokio::sync::watch::channel(false);
             let fut = super::run_subagent(RunSubagentOptions {
                 profile,
                 task: req.task.to_string(),
                 additional_context: req.additional_context.clone(),
-                workspace: self.workspace.clone(),
+                workspace: target_ws,
                 parent_config,
                 checkpoint_mgr: self.checkpoint_mgr.clone(),
                 abort_rx: Some(abort_rx),
                 // S3 保持与原实现一致：进度通道仍未接（P1-17 登记在案，S6 一并解决）
                 update_tx: None,
+                parent_thread_id: req.parent_thread_id.map(|s| s.to_string()),
                 toolkits: self.toolkits.clone(),
                 model: None,
+                on_started: self.on_started.clone(),
             });
             tokio::pin!(fut);
             let res = loop {
@@ -135,12 +155,26 @@ impl AgentBus for LocalAgentBus {
                 }
             };
 
-            // 4. 如实回执：`details` 与重构前**逐字节一致**（同一个 `SubagentRunResult`）
+            if let Some(ref tid) = res.thread_id {
+                if let Some(ref cb) = self.on_finished {
+                    cb(tid);
+                }
+            }
+
+            // 4. 如实回执：details 带上子智能体持久化会话 threadId，支持在标签与工作区独立查看
+            let mut details_val = serde_json::to_value(&res).ok();
+            if let Some(obj) = details_val.as_mut().and_then(|v| v.as_object_mut()) {
+                if let Some(ref tid) = res.thread_id {
+                    obj.insert("threadId".to_string(), serde_json::json!(tid));
+                    obj.insert("subagent_thread_id".to_string(), serde_json::json!(tid));
+                }
+            }
+
             DispatchOutcome {
                 ok: res.ok,
                 summary: res.summary.clone(),
                 error_message: res.error_message.clone(),
-                details: serde_json::to_value(&res).ok(),
+                details: details_val,
             }
         })
     }

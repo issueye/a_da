@@ -32,6 +32,7 @@ import {
 import type { AgentMode, ProviderConfig, ApprovalMode, Effort, Thread, Item, QuestionData, QueuedItem } from '../types'
 import { agentClient } from '../client/ws-client'
 import { formatDuration, formatTokenShort } from './Transcript'
+import { AskUserPrompt } from './AskUserPrompt'
 import { QueuedMessagesFloatingPanel } from './QueuedMessagesFloatingPanel'
 import { ContextUsagePopover } from './ContextUsagePopover'
 import { computeContextBreakdown } from '../utils/context-breakdown'
@@ -53,7 +54,7 @@ export interface ComposerProps {
   onSetApprovalMode?: (mode: ApprovalMode) => void
   onSetEffort?: (effort: Effort) => void
   onOpenSettings: () => void
-  onAnswerQuestion?: (callId: string, choice?: string, text?: string) => void
+  onAnswerQuestion?: (callId: string, choice?: string, text?: string, choices?: string[]) => void
   onPromoteQueueItem?: (index: number) => void
   onRemoveQueueItem?: (index: number) => void
   onClearQueue?: () => void
@@ -351,12 +352,17 @@ export const Composer: React.FC<ComposerProps> = ({
           options = (q as any).choices.map((c: any) => ({
             value: c.id || c.value,
             label: c.label || c.title || String(c),
+            description: c.description,
           }))
         }
         return {
           ...q,
           callId: q.callId || it.callId || it.id,
           options,
+          // 多选标记：工具发的是 `multi_select`，线协议 DTO 叫 `isMultiSelect`
+          isMultiSelect: Boolean(
+            (q as any).isMultiSelect ?? (q as any).multiSelect ?? (q as any).multi_select
+          ),
         }
       }
       // 如果遇到最新的用户消息则说明提问已翻篇
@@ -601,19 +607,11 @@ export const Composer: React.FC<ComposerProps> = ({
           <div className="text-xs text-zinc-800 dark:text-zinc-200 font-medium">
             {pendingQuestion.question}
           </div>
-          {pendingQuestion.options && pendingQuestion.options.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 pt-0.5">
-              {pendingQuestion.options.map((opt) => (
-                <button
-                  key={opt.value}
-                  onClick={() => onAnswerQuestion(pendingQuestion.callId, opt.value)}
-                  className="px-2 py-1 rounded-lg bg-white dark:bg-amber-900/40 hover:bg-amber-100 dark:hover:bg-amber-800/50 border border-amber-300/80 dark:border-amber-700/50 text-amber-900 dark:text-amber-100 text-xs font-medium transition-colors shadow-xs"
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          )}
+          <AskUserPrompt
+            question={pendingQuestion}
+            onAnswer={onAnswerQuestion}
+            tone="amber"
+          />
         </div>
       )}
 

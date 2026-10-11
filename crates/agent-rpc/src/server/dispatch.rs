@@ -413,6 +413,7 @@ impl Dispatcher {
         let pm_engine_clone = self.pm_engine.clone();
         let pm_engine_factory_clone = self.pm_engine_factory.clone();
         let pm_workspace_engines_clone = Arc::clone(&self.pm_workspace_engines);
+        let session_mgr_clone = self.session_mgr.clone();
 
         let runner_task = tokio::spawn(async move {
             let mut current_prompt: Option<String> = first_prompt;
@@ -496,13 +497,135 @@ impl Dispatcher {
                                 }
                                 AgentLoopEvent::ToolCallStarted { name, id, args } => {
                                     store.start_tool_call(&target_tid_clone, &id, &name, &args);
+                                    let is_subagent = name == "invoke_subagent";
+                                    // 这次派活**之前**该父会话已有的子会话：下面靠它认出
+                                    // "本次调用新建的那一个"。缺了它就只能"任取一个子会话"，
+                                    // 第二次派活会把上一次已结束的子会话重新点亮成运行中。
+                                    let known_children: Vec<String> = store
+                                        .threads
+                                        .iter()
+                                        .filter(|t| {
+                                            t.parent_id.as_deref() == Some(target_tid_clone.as_str())
+                                                && t.is_subagent == Some(true)
+                                        })
+                                        .map(|t| t.id.clone())
+                                        .collect();
                                     drop(store);
                                     if let Some(ref bc) = broadcaster_clone {
                                         bc.broadcast_immediate().await;
                                     }
+
+                                    // 子智能体启动时：后台异步检测落盘会话并及时绑定至工具卡片与 running_thread_ids
+                                    if is_subagent {
+                                        let store_monitor = store_clone.clone();
+                                        let bc_monitor = broadcaster_clone.clone();
+                                        let sess_mgr_monitor = session_mgr_clone.clone();
+                                        let parent_tid_monitor = target_tid_clone.clone();
+                                        let call_id_monitor = id.clone();
+                                        let known_children_monitor = known_children;
+                                        tokio::spawn(async move {
+                                            for _ in 0..60 {
+                                                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                                                let mut st = store_monitor.write().await;
+                                                st.sync_threads_from_disk(&sess_mgr_monitor);
+                                                // 已经被**别的运行中委派卡片**认领过的子会话不再重复认领
+                                                let bound_children: Vec<String> = st
+                                                    .threads
+                                                    .iter()
+                                                    .find(|t| t.id == parent_tid_monitor)
+                                                    .map(|t| {
+                                                        t.items
+                                                            .iter()
+                                                            .filter_map(|it| match it {
+                                                                agent_proto::Item::Tool {
+                                                                    name,
+                                                                    status,
+                                                                    call_id,
+                                                                    details,
+                                                                    ..
+                                                                } if name == "invoke_subagent"
+                                                                    && status == "running"
+                                                                    && call_id != &call_id_monitor =>
+                                                                {
+                                                                    details.as_ref().and_then(|d| {
+                                                                        d.get("threadId")
+                                                                            .or_else(|| d.get("subagent_thread_id"))
+                                                                            .and_then(|v| v.as_str())
+                                                                            .map(|s| s.to_string())
+                                                                    })
+                                                                }
+                                                                _ => None,
+                                                            })
+                                                            .collect()
+                                                    })
+                                                    .unwrap_or_default();
+                                                let found_child = st.pick_new_subagent_child(
+                                                    &parent_tid_monitor,
+                                                    &known_children_monitor,
+                                                    &bound_children,
+                                                );
+
+                                                if let Some(child_id) = found_child {
+                                                    let mut updated = false;
+                                                    if !st.running_thread_ids.contains(&child_id) {
+                                                        st.running_thread_ids.push(child_id.clone());
+                                                        updated = true;
+                                                    }
+                                                    if let Some(parent_t) = st.get_thread_mut(&parent_tid_monitor) {
+                                                        for item in parent_t.items.iter_mut().rev() {
+                                                            if let agent_proto::Item::Tool { call_id, details, status, .. } = item {
+                                                                if call_id == &call_id_monitor && status == "running" {
+                                                                    let mut det = details.take().unwrap_or_else(|| serde_json::json!({}));
+                                                                    if let Some(obj) = det.as_object_mut() {
+                                                                        if !obj.contains_key("threadId") {
+                                                                            obj.insert("threadId".to_string(), serde_json::json!(child_id));
+                                                                            obj.insert("subagent_thread_id".to_string(), serde_json::json!(child_id));
+                                                                            updated = true;
+                                                                        }
+                                                                    }
+                                                                    *details = Some(det);
+                                                                    break;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    drop(st);
+                                                    if updated {
+                                                        if let Some(ref bc) = bc_monitor {
+                                                            bc.broadcast_immediate().await;
+                                                        }
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    }
                                 }
-                                AgentLoopEvent::ToolCallFinished { name: _, id, ok, output, duration_ms, started_at, finished_at, status: _ } => {
-                                    store.finish_tool_call(&target_tid_clone, &id, ok, output, duration_ms, started_at, finished_at);
+                                AgentLoopEvent::ToolCallFinished { name, id, ok, output, duration_ms, started_at, finished_at, status: _, details } => {
+                                    // 本次调用对应的子会话 id：回执里带的就是它（见 `SubagentTool`）
+                                    let finished_child = details.as_ref().and_then(|d| {
+                                        d.get("subagent_thread_id")
+                                            .or_else(|| d.get("threadId"))
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string())
+                                    });
+                                    store.finish_tool_call(&target_tid_clone, &id, ok, output, duration_ms, started_at, finished_at, details);
+                                    if name == "invoke_subagent" {
+                                        store.sync_threads_from_disk(&session_mgr_clone);
+                                        match finished_child {
+                                            // 精确解除：只摘掉**这次**派活那个子会话的运行态。
+                                            // 按"父会话名下所有子会话"一刀切会误伤并行派活的另一个子会话。
+                                            Some(cid) => store.running_thread_ids.retain(|tid| tid != &cid),
+                                            // 回执里没有子会话 id（没进入执行/被拒）→ 退回按父会话清理
+                                            None => {
+                                                let child_ids: Vec<String> = store.threads.iter()
+                                                    .filter(|t| t.parent_id.as_deref() == Some(&target_tid_clone) && t.is_subagent == Some(true))
+                                                    .map(|t| t.id.clone())
+                                                    .collect();
+                                                store.running_thread_ids.retain(|tid| !child_ids.contains(tid));
+                                            }
+                                        }
+                                    }
                                     drop(store);
                                     if let Some(ref bc) = broadcaster_clone {
                                         bc.broadcast_immediate().await;
@@ -933,7 +1056,7 @@ impl Dispatcher {
                     title.clone(),
                     ws_param.clone(),
                     parsed_mode,
-                    agent_id_param,
+                    agent_id_param.clone(),
                     is_subagent,
                     parent_id.clone(),
                     subagent_id.clone(),
@@ -951,12 +1074,15 @@ impl Dispatcher {
                 }
                 drop(store);
 
-                let _ = self.session_mgr.create_session(
+                // 会话身份（产品 / 模式）**必须落盘**：重启后左侧树的 PM 标识靠它还原
+                let _ = self.session_mgr.create_session_bound(
                     &id,
                     &ws,
                     title.as_deref(),
                     parent_id.as_deref(),
                     subagent_id.as_deref(),
+                    agent_id_param.as_deref(),
+                    parsed_mode,
                 );
 
                 if let Some(ref bc) = self.broadcaster {
@@ -1726,6 +1852,12 @@ impl Dispatcher {
                     store.sync_threads_from_disk(&self.session_mgr);
                 }
                 store.focus_thread(thread_id.to_string());
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
                 Ok(serde_json::Value::Null)
             }
 
@@ -1760,7 +1892,21 @@ impl Dispatcher {
                         t.agent_id = Some("ada-coding".to_string());
                     }
                 }
+                // 身份变更同步落盘，否则重启后又变回默认的 ada-coding
+                let persisted_agent = store
+                    .threads
+                    .iter()
+                    .find(|t| t.id == thread_id)
+                    .and_then(|t| t.agent_id.clone());
+                let ws = thread_workspace(&store, &thread_id);
                 drop(store);
+
+                let _ = self.session_mgr.update_session_identity(
+                    &thread_id,
+                    persisted_agent.as_deref(),
+                    Some(mode),
+                    Some(&ws),
+                );
 
                 if let Some(ref bc) = self.broadcaster {
                     bc.broadcast_immediate().await;
@@ -2004,12 +2150,14 @@ impl Dispatcher {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
                 let mut store = self.store.write().await;
+                let mut identity_changed = false;
                 if let Some(t) = store.threads.iter_mut().find(|t| t.id == thread_id) {
                     if let Some(title) = params.get("title").and_then(|v| v.as_str()) {
                         t.title = title.to_string();
                     }
                     if let Some(agent_id) = params.get("agentId").and_then(|v| v.as_str()) {
                         t.agent_id = Some(agent_id.to_string());
+                        identity_changed = true;
                     }
                     if let Some(mode_str) = params.get("mode").and_then(|v| v.as_str()) {
                         let parsed = match mode_str.to_lowercase().as_str() {
@@ -2019,9 +2167,31 @@ impl Dispatcher {
                             _ => AgentMode::Code,
                         };
                         t.mode = Some(parsed);
+                        identity_changed = true;
                     }
                 }
+                // 身份变更同步落盘（重启后左侧树的 PM/CODING 标识靠它还原）
+                let persisted_agent = store
+                    .threads
+                    .iter()
+                    .find(|t| t.id == thread_id)
+                    .and_then(|t| t.agent_id.clone());
+                let persisted_mode = store
+                    .threads
+                    .iter()
+                    .find(|t| t.id == thread_id)
+                    .and_then(|t| t.mode);
+                let ws = thread_workspace(&store, &thread_id);
                 drop(store);
+
+                if identity_changed {
+                    let _ = self.session_mgr.update_session_identity(
+                        &thread_id,
+                        persisted_agent.as_deref(),
+                        persisted_mode,
+                        Some(&ws),
+                    );
+                }
 
                 if let Some(ref bc) = self.broadcaster {
                     bc.broadcast_immediate().await;
@@ -2116,6 +2286,7 @@ impl Dispatcher {
                             tool_item_id,
                             agent_node::approval::QuestionAnswer {
                                 choice: None,
+                                choices: None,
                                 text: None,
                                 answered_by: "user".to_string(),
                             },
@@ -2160,6 +2331,16 @@ impl Dispatcher {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 let choice = params.get("choice").and_then(|v| v.as_str()).map(|s| s.to_string());
+                // 多选：`choices: ["a1","a3"]`（单选路径仍走 `choice`）
+                let choices: Option<Vec<String>> = params
+                    .get("choices")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect::<Vec<String>>()
+                    })
+                    .filter(|list| !list.is_empty());
                 let text = params.get("text").and_then(|v| v.as_str()).map(|s| s.to_string());
 
                 let mut store = self.store.write().await;
@@ -2174,6 +2355,7 @@ impl Dispatcher {
                     call_id,
                     agent_node::approval::QuestionAnswer {
                         choice,
+                        choices,
                         text,
                         answered_by: "user".to_string(),
                     },

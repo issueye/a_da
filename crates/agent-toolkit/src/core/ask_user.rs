@@ -13,6 +13,9 @@ use serde_json::json;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuestionAnswerPayload {
     pub choice: Option<String>,
+    /// 多选答复：用户勾选的选项 id 列表（单选路径留空）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choices: Option<Vec<String>>,
     pub text: Option<String>,
     pub answered_by: String,
 }
@@ -40,7 +43,31 @@ pub fn get_question_registrar() -> Option<QuestionRegistrarFn> {
     QUESTION_REGISTRAR.read().ok().and_then(|guard| guard.clone())
 }
 
-/// `ask_user` 工具：在交互界面向用户发起单选选择或补充说明提问并阻塞等待答复。
+/// 给缺失 `id` 的选项补 `c1, c2…`。
+///
+/// schema 里承诺过"如不填自动生成 c1, c2 等"，但实现从没做过：界面按 **id** 勾选与回传，
+/// 缺 id 的选项点了也没反应（value 是 undefined）。这里补齐，让承诺成真。
+fn normalize_choices(raw: serde_json::Value) -> serde_json::Value {
+    let Some(arr) = raw.as_array() else {
+        return raw;
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    for (idx, c) in arr.iter().enumerate() {
+        let mut obj = c.as_object().cloned().unwrap_or_default();
+        let has_id = obj
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if !has_id {
+            obj.insert("id".to_string(), json!(format!("c{}", idx + 1)));
+        }
+        out.push(serde_json::Value::Object(obj));
+    }
+    json!(out)
+}
+
+/// `ask_user` 工具：在交互界面向用户发起选择（单选/多选）或补充说明提问并阻塞等待答复。
 pub struct AskUserTool {
     descriptor: ToolDescriptor,
 }
@@ -62,7 +89,7 @@ impl AskUserTool {
                 },
                 "choices": {
                     "type": "array",
-                    "description": "提供给用户的单选选项列表（最多 6 项）",
+                    "description": "提供给用户的选项列表（最多 6 项）",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -82,6 +109,10 @@ impl AskUserTool {
                         "required": ["label"]
                     }
                 },
+                "multi_select": {
+                    "type": "boolean",
+                    "description": "是否允许多选：需要用户同时勾选多个选项时设为 true（默认 false，单选点一下即答）"
+                },
                 "allow_text": {
                     "type": "boolean",
                     "description": "是否允许用户输入自定义文本（默认为 true）"
@@ -93,7 +124,7 @@ impl AskUserTool {
         Self {
             descriptor: ToolDescriptor {
                 name: "ask_user".to_string(),
-                summary: "在交互界面向用户发起单选选择或补充说明提问并阻塞等待答复。".to_string(),
+                summary: "在交互界面向用户发起选择（单选/多选）或补充说明提问并阻塞等待答复。".to_string(),
                 schema,
                 access: Access::ReadOnly,
                 approval: ApprovalPolicy::Never,
@@ -168,12 +199,17 @@ impl Tool for AskUserTool {
             let waiter = reg(&call.id);
 
             // 发射提问事件（通知界面/上层协调者）
-            let choices = call.args.get("choices").cloned().unwrap_or(json!([]));
+            let choices = normalize_choices(call.args.get("choices").cloned().unwrap_or(json!([])));
             let allow_text = call
                 .args
                 .get("allow_text")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
+            let multi_select = call
+                .args
+                .get("multi_select")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             ctx.events.emit(AgentEvent::new(
                 0,
@@ -185,6 +221,7 @@ impl Tool for AskUserTool {
                         "question": question,
                         "choices": choices,
                         "allow_text": allow_text,
+                        "multi_select": multi_select,
                     }),
                 },
             ));
@@ -225,7 +262,30 @@ impl Tool for AskUserTool {
                             finished_at,
                         );
                     }
-                    let summary = match (ans.choice, ans.text) {
+                    // 选项 id 还原成 label：模型该看到"选择 [方案 A, 方案 C]"，
+                    // 而不是一串它自己编的 id（它得靠这个继续推理）
+                    let label_of = |id: &str| -> String {
+                        choices
+                            .as_array()
+                            .and_then(|arr| {
+                                arr.iter().find(|c| {
+                                    c.get("id").and_then(|v| v.as_str()) == Some(id)
+                                })
+                            })
+                            .and_then(|c| c.get("label").and_then(|v| v.as_str()))
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| id.to_string())
+                    };
+                    let picked: Option<String> = match ans.choices.clone() {
+                        Some(list) if !list.is_empty() => Some(
+                            list.iter()
+                                .map(|id| label_of(id))
+                                .collect::<Vec<_>>()
+                                .join("、"),
+                        ),
+                        _ => ans.choice.clone().map(|c| label_of(&c)),
+                    };
+                    let summary = match (picked, ans.text) {
                         (Some(c), Some(t)) => {
                             format!("答复已记录（来源: {}）：选择 [{c}]，说明：{t}", ans.answered_by)
                         }
@@ -273,7 +333,68 @@ mod tests {
         assert!(props.get("question").is_some());
         assert!(props.get("choices").is_some());
         assert!(props.get("allow_text").is_some());
+        assert!(props.get("multi_select").is_some(), "多选必须能在 schema 里声明");
         assert_eq!(schema["required"], json!(["question"]));
+    }
+
+    /// 守门：多选答复必须**把选中的多个选项都带回模型**，且用 label 而不是 id。
+    #[tokio::test]
+    async fn test_ask_user_multi_select_returns_all_picked_labels() {
+        let tool = AskUserTool::new();
+        let scope = DummyScope;
+        let cancel = ManualCancel::new();
+        let events = RecordingSink::new();
+        let ctx = ToolContext {
+            scope: &scope,
+            cancel: &cancel,
+            events: &events,
+            thread_id: "t_multi",
+        };
+
+        set_question_registrar(Arc::new(|_call_id: &str| {
+            Box::pin(async {
+                Ok(QuestionAnswerPayload {
+                    choice: None,
+                    choices: Some(vec!["a1".into(), "a3".into()]),
+                    text: Some("另外补一句".into()),
+                    answered_by: "user".into(),
+                })
+            })
+        }));
+
+        let call = ToolCall {
+            id: "call_multi_1".to_string(),
+            name: "ask_user".to_string(),
+            args: json!({
+                "question": "请补充以下约束（可多选）",
+                "multi_select": true,
+                "choices": [
+                    {"id": "a1", "label": "团队规模与资源"},
+                    {"id": "a2", "label": "时间线与发布节奏"},
+                    {"id": "a3", "label": "稳定性 vs 功能"}
+                ]
+            }),
+        };
+
+        let receipt = tool.execute(&call, &ctx).await;
+        assert_eq!(receipt.status, ToolStatus::Success, "{}", receipt.output);
+        assert!(receipt.output.contains("团队规模与资源"), "{}", receipt.output);
+        assert!(receipt.output.contains("稳定性 vs 功能"), "{}", receipt.output);
+        assert!(!receipt.output.contains("时间线与发布节奏"), "没选的不得混进来：{}", receipt.output);
+        assert!(receipt.output.contains("另外补一句"), "{}", receipt.output);
+
+        // 事件里必须带上多选标记，界面才知道要渲染成勾选
+        let recorded = events.snapshot();
+        let asked = recorded
+            .iter()
+            .find_map(|e| match &e.body {
+                AgentEventBody::QuestionAsked { question, .. } => Some(question.clone()),
+                _ => None,
+            })
+            .expect("必须发出 QuestionAsked");
+        assert_eq!(asked["multi_select"], json!(true), "提问事件要带 multi_select");
+
+        clear_question_registrar();
     }
 
     #[tokio::test]
@@ -341,6 +462,62 @@ mod tests {
         assert!(receipt.output.contains("上限 600 字"));
     }
 
+    /// 守门：选项没给 `id` 时必须自动补 `c1, c2…`（schema 承诺过）。
+    ///
+    /// 界面按 **id** 勾选与回传，缺 id 的选项点了没反应（value 是 undefined）——
+    /// 而 schema 一直写着"如不填自动生成 c1, c2 等"，实现却从没做过。
+    #[tokio::test]
+    async fn test_ask_user_generates_missing_choice_ids() {
+        let tool = AskUserTool::new();
+        let scope = DummyScope;
+        let cancel = ManualCancel::new();
+        let events = RecordingSink::new();
+        let ctx = ToolContext {
+            scope: &scope,
+            cancel: &cancel,
+            events: &events,
+            thread_id: "t_auto_id",
+        };
+
+        set_question_registrar(Arc::new(|_call_id: &str| {
+            Box::pin(async {
+                Ok(QuestionAnswerPayload {
+                    choice: Some("c2".into()),
+                    choices: None,
+                    text: None,
+                    answered_by: "user".into(),
+                })
+            })
+        }));
+
+        let call = ToolCall {
+            id: "call_auto_id".to_string(),
+            name: "ask_user".to_string(),
+            // 故意不给 id
+            args: json!({
+                "question": "选一个",
+                "choices": [{"label": "甲"}, {"label": "乙"}]
+            }),
+        };
+
+        let receipt = tool.execute(&call, &ctx).await;
+        assert_eq!(receipt.status, ToolStatus::Success, "{}", receipt.output);
+        assert!(receipt.output.contains("乙"), "id→label 还原要生效：{}", receipt.output);
+
+        let asked = events
+            .snapshot()
+            .into_iter()
+            .find_map(|e| match e.body {
+                AgentEventBody::QuestionAsked { question, .. } => Some(question),
+                _ => None,
+            })
+            .expect("必须发出 QuestionAsked");
+        assert_eq!(asked["choices"][0]["id"], json!("c1"));
+        assert_eq!(asked["choices"][1]["id"], json!("c2"));
+
+        clear_question_registrar();
+    }
+
     #[tokio::test]
     async fn test_ask_user_with_channel_emits_event_and_receives_answer() {
         let tool = AskUserTool::new();
@@ -361,6 +538,7 @@ mod tests {
             Box::pin(async {
                 Ok(QuestionAnswerPayload {
                     choice: Some("c1".into()),
+                    choices: None,
                     text: Some("选用方案 A".into()),
                     answered_by: "main_agent".into(),
                 })

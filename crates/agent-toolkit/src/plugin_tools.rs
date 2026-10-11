@@ -84,6 +84,52 @@ pub async fn project_inspect(workspace: &Path) -> ToolResult {
     ToolResult::success(sections.join("\n\n"))
 }
 
+/// 一行是否是"显著声明"。按行首前缀识别 Rust / TS-JS / Go / Python / Java-C# 的常见写法。
+///
+/// 早先只认 Rust 与 TS 的前缀，Go 的 `func main()` / `type Server struct` 一律匹配不到，
+/// 于是**对 Go 文件谎报"未提取到显著类、函数或接口大纲"**——模型据此以为"文件里没有东西"，
+/// 反复换工具硬探（实测一次子智能体就是这么烧掉 80 次调用、445k tokens 后失败的）。
+fn is_outline_signature(body: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        // Rust
+        "pub fn ",
+        "fn ",
+        "pub struct ",
+        "struct ",
+        "pub enum ",
+        "enum ",
+        "pub trait ",
+        "trait ",
+        "impl ",
+        "pub mod ",
+        "pub type ",
+        "type ",
+        // TS / JS
+        "class ",
+        "export class ",
+        "interface ",
+        "export interface ",
+        "export function ",
+        "export async function ",
+        "export default ",
+        "export const ",
+        "export type ",
+        "function ",
+        "async function ",
+        // Go
+        "func ",
+        // Python
+        "def ",
+        "async def ",
+        // Java / C# / Kotlin
+        "public ",
+        "private ",
+        "protected ",
+        "internal ",
+    ];
+    PREFIXES.iter().any(|p| body.starts_with(p))
+}
+
 /// 提取文件里的类/函数/接口骨架签名与行号。
 ///
 /// ⚠️ `read_file` 的输出每行都带 `"<行号> | "` 前缀，所以匹配前必须**剥掉前缀**。
@@ -108,25 +154,20 @@ pub async fn code_outline(workspace: &Path, file_path: &str) -> ToolResult {
         if body.starts_with("//") || body.starts_with('#') || body.starts_with("/*") {
             continue;
         }
-        if body.starts_with("pub fn ")
-            || body.starts_with("fn ")
-            || body.starts_with("pub struct ")
-            || body.starts_with("struct ")
-            || body.starts_with("pub enum ")
-            || body.starts_with("enum ")
-            || body.starts_with("class ")
-            || body.starts_with("export class ")
-            || body.starts_with("interface ")
-            || body.starts_with("export interface ")
-            || body.starts_with("export function ")
-            || body.starts_with("export const ")
-        {
+        if is_outline_signature(body) {
             outlines.push(format!("L{:03}: {}", line_no + 1, body));
         }
     }
 
     if outlines.is_empty() {
-        ToolResult::success(format!("文件 [{}] 未提取到显著类、函数或接口大纲。", file_path))
+        // 如实交代能力边界：**别让"没提取到"被读成"文件里没有东西"**。
+        // 这是行首前缀启发式匹配，不是语言服务；不认的语言/纯配置/纯文档请直接读原文。
+        ToolResult::success(format!(
+            "文件 [{}] 未匹配到类/函数/接口声明。该工具按行首前缀启发式识别 \
+             Rust / TS-JS / Go / Python / Java-C# 风格的声明，不解析语法、不认其它语言与纯配置/文档文件；\
+             需要正文请改用 read_file 直接读取。",
+            file_path
+        ))
     } else {
         ToolResult::success(format!("## 代码大纲结构: {}\n```\n{}\n```", file_path, outlines.join("\n")))
     }
@@ -345,6 +386,44 @@ mod tests {
     async fn test_code_outline_missing_file_is_error_not_panic() {
         let res = code_outline(&ws(), "definitely/not/here.rs").await;
         assert!(!res.ok);
+    }
+
+    /// 守门：**Go 文件必须能提取出声明**，且提取不到时要如实说明工具边界。
+    ///
+    /// 实测事故：子智能体对 `main.go` 调 `code_outline`，工具回"✓ 成功 + 未提取到显著
+    /// 类、函数或接口大纲"——模型据此以为文件是空的，反复换工具硬探，最后把上下文撑爆。
+    #[tokio::test]
+    async fn test_code_outline_extracts_go_signatures_and_declares_its_limit() {
+        let dir = std::env::temp_dir().join(format!("a_da_outline_go_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(
+            dir.join("main.go"),
+            "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n\n\
+             type Server struct {\n\tPort int\n}\n\nfunc (s *Server) Start() error {\n\treturn nil\n}\n",
+        )
+        .expect("写临时 Go 文件");
+
+        let res = code_outline(&dir, "main.go").await;
+        assert!(res.ok, "{}", res.output);
+        assert!(res.output.contains("func main()"), "Go 函数必须提取到：{}", res.output);
+        assert!(res.output.contains("type Server struct"), "Go 类型必须提取到：{}", res.output);
+        assert!(
+            res.output.contains("func (s *Server) Start()"),
+            "Go 方法必须提取到：{}",
+            res.output
+        );
+
+        // 纯配置/不认的文件：必须明说"工具不认"，而不是让模型以为"文件是空的"
+        std::fs::write(dir.join("config.json"), "{\n  \"a\": 1\n}\n").expect("写临时配置");
+        let res = code_outline(&dir, "config.json").await;
+        assert!(res.ok, "{}", res.output);
+        assert!(
+            res.output.contains("read_file"),
+            "提取不到时要指路 read_file：{}",
+            res.output
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

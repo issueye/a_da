@@ -70,6 +70,7 @@ pub fn project_to_loop_event(event: &AgentEvent) -> Option<AgentLoopEvent> {
                 started_at: Some(receipt.started_at),
                 finished_at: Some(receipt.finished_at),
                 status: Some(tool_status_name(receipt.status)),
+                details: receipt.details.clone(),
             })
         }
         AgentEventBody::QuestionAsked { call_id, question } => {

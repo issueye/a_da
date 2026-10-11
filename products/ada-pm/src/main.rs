@@ -265,6 +265,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let current_pid = std::process::id();
 
     // 打印符合协议 §1.8 规范的标准就绪行至 stdout
+    // （`products` = 如实自述本进程服务的产品，供网关注册表与进程面板使用）
     let ready_json = serde_json::json!({
         "ready": true,
         "port": server.port,
@@ -272,6 +273,7 @@ async fn main() -> Result<(), anyhow::Error> {
         "pid": current_pid,
         "product": "ada-pm",
         "protocolVersion": PROTOCOL_VERSION,
+        "products": ["ada-pm"],
     });
 
     println!("A_DA_HOST_READY {}", ready_json);

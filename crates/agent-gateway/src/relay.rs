@@ -485,6 +485,17 @@ async fn serve_agent_control(
                     let workspace = params.get("workspace").and_then(|v| v.as_str()).unwrap_or("");
                     let endpoint = params.get("endpoint").and_then(|v| v.as_str()).unwrap_or("");
                     let pid = params.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32);
+                    // 自述服务的产品清单（可选）：一个实例可能同时服务 coding 与 pm
+                    let products: Vec<String> = params
+                        .get("products")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect::<Vec<String>>()
+                        })
+                        .filter(|list| !list.is_empty())
+                        .unwrap_or_else(|| vec![product.to_string()]);
                     if product.is_empty() || workspace.is_empty() || endpoint.is_empty() {
                         Err("gateway.register 参数缺失：需要 product, workspace, endpoint".to_string())
                     } else {
@@ -498,6 +509,7 @@ async fn serve_agent_control(
                             status: AgentStatus::Ready,
                             pid,
                             started_at: now_ms(),
+                            products,
                         };
                         let is_new = gateway.registry.register(inst);
                         info!("Agent 成功向网关注册: {} -> {} (pid: {:?})", agent_id, endpoint, pid);
@@ -819,6 +831,17 @@ async fn relay(
                     let workspace = params.get("workspace").and_then(|v| v.as_str()).unwrap_or("");
                     let endpoint = params.get("endpoint").and_then(|v| v.as_str()).unwrap_or("");
                     let pid = params.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32);
+                    // 自述服务的产品清单（可选）
+                    let products: Vec<String> = params
+                        .get("products")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect::<Vec<String>>()
+                        })
+                        .filter(|list| !list.is_empty())
+                        .unwrap_or_else(|| vec![product.to_string()]);
                     if product.is_empty() || workspace.is_empty() || endpoint.is_empty() {
                         Err("gateway.register 参数缺失：需要 product, workspace, endpoint".to_string())
                     } else {
@@ -832,6 +855,7 @@ async fn relay(
                             status: AgentStatus::Ready,
                             pid,
                             started_at: now_ms(),
+                            products,
                         };
                         let is_new = gw.registry.register(inst);
                         info!("Agent 成功向网关注册: {} -> {} (pid: {:?})", id, endpoint, pid);

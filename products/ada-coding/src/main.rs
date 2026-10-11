@@ -255,12 +255,18 @@ async fn main() -> Result<(), anyhow::Error> {
     let current_pid = std::process::id();
 
     // 打印符合协议 §1.8 规范的标准就绪行至 stdout
+    //
+    // `products` 是**如实自述**：这个进程同时装配了 Coding 与 PM 两套引擎
+    // （`build_engine_injection` + `build_pm_engine_injection`），所以它服务两个产品。
+    // 网关把这条事实记进实例注册表，进程管理面板才不会把"正在跑 PM 会话的实例"
+    // 显示成纯 CODING。
     let ready_json = serde_json::json!({
         "ready": true,
         "port": server.port,
         "token": token,
         "pid": current_pid,
         "protocolVersion": PROTOCOL_VERSION,
+        "products": served_products(),
     });
 
     println!("A_DA_HOST_READY {}", ready_json);
@@ -304,6 +310,14 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 
     Ok(())
+}
+
+/// 本进程**实际服务**的产品清单（如实自述，供网关与进程管理面板使用）。
+///
+/// `ada-coding` 实例同时装配 Coding 与 PM 两套引擎，所以服务 `ada-coding` + `ada-pm`。
+/// 这是"一个进程、两套引擎"的架构事实，不该让面板把 PM 会话显示成 CODING。
+fn served_products() -> Vec<&'static str> {
+    vec!["ada-coding", "ada-pm"]
 }
 
 /// 主动连接网关并完成自主注册。
@@ -365,6 +379,7 @@ async fn register_to_gateway(
             "workspace": ws,
             "endpoint": endpoint,
             "pid": pid,
+            "products": served_products(),
         }
     });
 

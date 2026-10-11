@@ -5,34 +5,29 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
-/// 桌面端运行模式：AGENT 直连模式（默认）或 网关模式
+/// 桌面端运行模式。
+///
+/// **只剩网关模式**：直连模式（桌面端自己去拉起 / 连接 `ada-coding`）已下线——
+/// Agent 实例的生命周期、注册发现、跨 Agent 委派统一归网关，桌面端只是它的瘦客户端。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DesktopMode {
-    /// 直连 Agent 模式（主要是 ada-coding 和 ada-pm）
-    Direct,
     /// 网关模式（连接 ada-gateway 平台服务）
     Gateway,
 }
 
 impl Default for DesktopMode {
     fn default() -> Self {
-        DesktopMode::Direct
+        DesktopMode::Gateway
     }
 }
 
 /// 桌面端运行与连接持久化配置
+///
+/// 老配置里的 `mode` / `agentConnectUrl` / `agentBinPath`（直连时代留下的字段）
+/// 会被 serde **忽略**——字段已删，不再有任何"切回直连"的入口。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DesktopConfig {
-    /// 运行模式，默认为 Direct 直连模式
-    #[serde(default)]
-    pub mode: DesktopMode,
-    /// 直连模式下的自定义外部 Agent WebSocket 地址 (如 ws://127.0.0.1:4000/rpc)
-    #[serde(default)]
-    pub agent_connect_url: Option<String>,
-    /// 直连模式下的自定义 ada-coding 二进制路径
-    #[serde(default)]
-    pub agent_bin_path: Option<String>,
     /// 网关模式下的自定义网关 WebSocket 地址 (如 ws://127.0.0.1:4000/rpc)
     #[serde(default)]
     pub gateway_url: Option<String>,
@@ -47,9 +42,6 @@ pub struct DesktopConfig {
 impl Default for DesktopConfig {
     fn default() -> Self {
         Self {
-            mode: DesktopMode::Direct,
-            agent_connect_url: None,
-            agent_bin_path: None,
             gateway_url: None,
             gateway_bin_path: None,
             token: None,
@@ -92,14 +84,12 @@ pub fn save_desktop_config(cfg: &DesktopConfig) -> Result<(), String> {
 pub struct LauncherConfig {
     /// 目标工作区路径
     pub workspace: String,
-    /// 覆盖配置的运行模式
-    pub mode: Option<DesktopMode>,
-    /// 覆盖配置的直连或网关 WebSocket 地址
+    /// 覆盖配置的网关 WebSocket 地址（连接外部网关时用）
     pub connect: Option<String>,
     /// 握手认证令牌
     pub token: Option<String>,
-    /// 自定义二进制程序路径
-    pub host_bin: Option<String>,
+    /// 自定义 ada-gateway 二进制路径（覆盖配置文件里的 `gatewayBinPath`）
+    pub gateway_bin: Option<String>,
 }
 
 /// 托管子进程信息条目
@@ -164,7 +154,7 @@ impl CoreServiceState {
 
 impl Default for CoreServiceState {
     fn default() -> Self {
-        Self::new(DesktopMode::Direct)
+        Self::new(DesktopMode::Gateway)
     }
 }
 
@@ -465,10 +455,10 @@ pub fn run_with_workspace(workspace: String) {
     });
 }
 
-/// 启动 Tauri GUI 桌面应用
+/// 启动 Tauri GUI 桌面应用（**只有网关模式**）
 pub fn run(config: LauncherConfig) {
     let desktop_config = load_desktop_config();
-    let effective_mode = config.mode.unwrap_or(desktop_config.mode);
+    let effective_mode = DesktopMode::Gateway;
 
     let core_state = CoreServiceState::new(effective_mode);
     let inner_clone = core_state.inner.clone();
@@ -538,146 +528,6 @@ pub fn run(config: LauncherConfig) {
 
             tauri::async_runtime::spawn(async move {
                 match effective_mode {
-                    // ==========================================
-                    // 1. AGENT 直连模式 (Direct Mode，默认模式)
-                    // ==========================================
-                    DesktopMode::Direct => {
-                        info!("桌面端启动:【AGENT 直连模式】");
-
-                        // 场景 A: 显式指定外部直连地址
-                        let direct_url = cfg.connect.or(d_cfg.agent_connect_url);
-                        if let Some(external_url) = direct_url {
-                            let port = extract_port_from_url(&external_url).unwrap_or(52353);
-                            let token = cfg.token.or(d_cfg.token).unwrap_or_default();
-                            info!("直连外部 Agent 核心服务: {}", external_url);
-                            let mut guard = state_arc.write().await;
-                            guard.alive = true;
-                            guard.port = port;
-                            guard.token = token;
-                            guard.url = external_url.clone();
-                            guard.processes = vec![ManagedProcessInfo {
-                                name: "ada-coding (外部)".to_string(),
-                                role: "外部 Agent 核心服务".to_string(),
-                                pid: None,
-                                port: Some(port),
-                                alive: true,
-                                status: "running".to_string(),
-                                url: Some(external_url),
-                            }];
-                            return;
-                        }
-
-                        // 场景 B: 探测并拉起独立 ada-coding 核心子进程 (集成 Coding 与 PM 双引擎)
-                        let custom_bin = cfg.host_bin.as_deref().or(d_cfg.agent_bin_path.as_deref());
-                        if let Some(host_bin) = find_binary("ada-coding", custom_bin) {
-                            info!("找到独立 ada-coding 二进制: {}，正在拉起...", host_bin.display());
-                            let current_pid = std::process::id();
-                            let token = cfg.token.or(d_cfg.token).unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
-
-                            let mut cmd = tokio::process::Command::new(&host_bin);
-                            cmd.arg("--host")
-                                .arg("--port").arg("0")
-                                .arg("--token").arg(&token)
-                                .arg("--parent-pid").arg(current_pid.to_string());
-                            if !cfg.workspace.is_empty() {
-                                cmd.arg("--workspace").arg(&cfg.workspace);
-                                cmd.current_dir(&cfg.workspace);
-                            } else {
-                                cmd.current_dir(agent_node::session::get_app_home());
-                            }
-                            cmd.stdout(std::process::Stdio::piped());
-                            cmd.stderr(std::process::Stdio::piped());
-                            hide_child_console_window(&mut cmd);
-
-                            match cmd.spawn() {
-                                Ok(mut child) => {
-                                    let child_pid = child.id().unwrap_or(0);
-                                    info!("ada-coding 子进程已启动，PID: {}", child_pid);
-
-                                    let stdout = child.stdout.take();
-                                    let stderr = child.stderr.take();
-
-                                    let state_clone = state_arc.clone();
-                                    let token_clone = token.clone();
-                                    let mut ready_received = false;
-
-                                    if let Some(out) = stdout {
-                                        let mut reader = BufReader::new(out).lines();
-                                        let wait_ready = async {
-                                            while let Ok(Some(line)) = reader.next_line().await {
-                                                info!("[ada-coding stdout] {}", line);
-                                                if line.starts_with("A_DA_HOST_READY ") {
-                                                    let json_str = line.trim_start_matches("A_DA_HOST_READY ");
-                                                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
-                                                        if let Some(p) = v.get("port").and_then(|x| x.as_u64()) {
-                                                            return Some(p as u16);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            None
-                                        };
-
-                                        match tokio::time::timeout(tokio::time::Duration::from_secs(10), wait_ready).await {
-                                            Ok(Some(actual_port)) => {
-                                                ready_received = true;
-                                                info!("成功连接独立 ada-coding 服务: ws://127.0.0.1:{}/rpc", actual_port);
-                                                let mut guard = state_clone.write().await;
-                                                guard.alive = true;
-                                                guard.port = actual_port;
-                                                guard.token = token_clone;
-                                                guard.url = format!("ws://127.0.0.1:{}/rpc", actual_port);
-                                                guard.child_pid = Some(child_pid);
-                                                guard.child_pids = vec![child_pid];
-                                                guard.processes = vec![ManagedProcessInfo {
-                                                    name: "ada-coding".to_string(),
-                                                    role: "Coding / PM 核心引擎服务".to_string(),
-                                                    pid: Some(child_pid),
-                                                    port: Some(actual_port),
-                                                    alive: true,
-                                                    status: "running".to_string(),
-                                                    url: Some(format!("ws://127.0.0.1:{}/rpc", actual_port)),
-                                                }];
-                                            }
-                                            _ => {
-                                                warn!("未在预期时限内收到 ada-coding 就绪信号");
-                                                let mut guard = state_clone.write().await;
-                                                guard.error = Some("未在预期时限内收到 ada-coding 就绪信号".to_string());
-                                            }
-                                        }
-
-                                        tauri::async_runtime::spawn(async move {
-                                            while let Ok(Some(line)) = reader.next_line().await {
-                                                info!("[ada-coding stdout] {}", line);
-                                            }
-                                        });
-                                    }
-
-                                    if let Some(err) = stderr {
-                                        tauri::async_runtime::spawn(async move {
-                                            let mut reader = BufReader::new(err).lines();
-                                            while let Ok(Some(line)) = reader.next_line().await {
-                                                warn!("[ada-coding stderr] {}", line);
-                                            }
-                                        });
-                                    }
-
-                                    if ready_received {
-                                        return;
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("无法拉起 ada-coding 进程: {e}");
-                                    let mut guard = state_arc.write().await;
-                                    guard.error = Some(format!("启动 ada-coding 失败: {e}"));
-                                }
-                            }
-                        } else {
-                            warn!("未探测到 ada-coding 二进制可执行文件！");
-                            let mut guard = state_arc.write().await;
-                            guard.error = Some("未找到 ada-coding 二进制文件，请确认已编译或在设置中指定路径".to_string());
-                        }
-                    }
 
                     // ==========================================
                     // 2. 网关模式 (Gateway Mode)
@@ -709,7 +559,7 @@ pub fn run(config: LauncherConfig) {
                         }
 
                         // 场景 B: 探测并拉起独立网关服务 (ada-gateway)
-                        let custom_gw_bin = d_cfg.gateway_bin_path.as_deref();
+                        let custom_gw_bin = cfg.gateway_bin.as_deref().or(d_cfg.gateway_bin_path.as_deref());
                         let gateway_bin = find_binary("ada-gateway", custom_gw_bin)
                             .or_else(|| find_binary("a-da-gateway", custom_gw_bin));
 
@@ -876,8 +726,10 @@ mod tests {
     #[test]
     fn test_desktop_config_defaults() {
         let cfg = DesktopConfig::default();
-        assert_eq!(cfg.mode, DesktopMode::Direct);
-        assert!(cfg.agent_connect_url.is_none());
+        // 直连时代的字段（mode / agentConnectUrl / agentBinPath）已删除，
+        // 配置里只剩网关相关项；老配置文件里的这些字段会被 serde 忽略。
         assert!(cfg.gateway_url.is_none());
+        assert!(cfg.gateway_bin_path.is_none());
+        assert!(cfg.token.is_none());
     }
 }

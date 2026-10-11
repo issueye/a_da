@@ -34,6 +34,15 @@ pub struct SessionHeader {
     pub parent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subagent_id: Option<String>,
+    /// 会话绑定的**产品/角色**（`ada-pm` / `ada-coding` / `pm-assistant` …）。
+    ///
+    /// 必须落盘：重启后 `restore_all_threads` 只能靠它还原左侧树的 PM/CODING 标识，
+    /// 否则一律被当成 `ada-coding`（老文件没有这个字段 → `None` → 按缺省处理）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// 会话模式（`code` / `plan` / `create` / `pm`，与 `AgentMode` 的 serde 命名一致）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugin_data: Option<HashMap<String, serde_json::Value>>,
 }

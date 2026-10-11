@@ -271,6 +271,18 @@ pub async fn spawn_agent(
         .and_then(|v| v.as_u64())
         .ok_or_else(|| SpawnError::BadReadyLine(ready_line.clone()))? as u16;
 
+    // 实例自述服务的产品清单（老实例不带这个字段 → 退回"它自己那个产品"）
+    let products: Vec<String> = ready
+        .get("products")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect::<Vec<String>>()
+        })
+        .filter(|list| !list.is_empty())
+        .unwrap_or_else(|| vec![spec.product.clone()]);
+
     let instance = AgentInstance {
         id,
         product: spec.product.clone(),
@@ -279,6 +291,7 @@ pub async fn spawn_agent(
         status: AgentStatus::Ready,
         pid,
         started_at: now_ms(),
+        products,
     };
     registry.register(instance.clone());
 

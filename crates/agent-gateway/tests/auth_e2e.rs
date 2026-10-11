@@ -88,6 +88,7 @@ async fn gateway_with(auth: AuthConfig) -> (Arc<Gateway>, u16) {
         status: agent_gateway::registry::AgentStatus::Ready,
         pid: None,
         started_at: 1,
+        products: vec!["ada-coding".to_string()],
     });
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("绑定");
     let port = listener.local_addr().unwrap().port();

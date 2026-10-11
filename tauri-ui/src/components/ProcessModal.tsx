@@ -22,10 +22,17 @@ export interface ManagedProcessInfo {
   alive: boolean
   status: string
   url?: string | null
+  /**
+   * 这个进程**实际服务**的产品（实例自述）。
+   *
+   * 一个 `ada-coding` 实例同时装着 Coding 与 PM 两套引擎，所以它会写
+   * `["ada-coding","ada-pm"]`——只看 `name` 会把"正在跑 PM 会话的实例"显示成纯 CODING。
+   */
+  products?: string[]
 }
 
 export interface ProcessReport {
-  mode: 'direct' | 'gateway'
+  mode: 'gateway'
   core_alive: boolean
   core_url: string
   core_port: number
@@ -36,10 +43,64 @@ export interface ProcessReport {
 interface ProcessModalProps {
   isOpen: boolean
   onClose: () => void
+  /**
+   * 统一的操作确认弹窗（App 里的 ConfirmModal）。
+   *
+   * 不用 `window.confirm`：那是 WebView 的原生弹窗（标题写着 `tauri.localhost`），
+   * 与应用风格不一致、也无法本地化按钮文案。
+   */
+  onRequestConfirm?: (opts: {
+    title?: string
+    message: string
+    subMessage?: string
+    confirmText?: string
+    variant?: 'danger' | 'warning' | 'primary'
+  }) => Promise<boolean>
 }
 
-export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose }) => {
+/**
+ * 把网关实例注册表的条目映射成进程行。
+ *
+ * 网关模式下 agent 实例是**网关**拉起的，桌面端只记录了自己直接 spawn 的
+ * `ada-gateway`——所以任务管理器里明明跑着 `ada-coding.exe`，面板里却只有网关。
+ * 事实的所有者是网关（`registry.rs`：进程/端口/健康状态归网关），所以这里**问网关要**，
+ * 而不是在桌面端另猜一份。
+ */
+function mapGatewayAgents(res: any): ManagedProcessInfo[] {
+  const agents = Array.isArray(res?.agents) ? res.agents : []
+  return agents.map((a: any) => {
+    const endpoint = typeof a.endpoint === 'string' ? a.endpoint : ''
+    const portMatch = endpoint.match(/:(\d+)\//)
+    const status = String(a.status || '')
+    const statusSuffix =
+      status === 'ready'
+        ? ''
+        : status === 'starting'
+        ? ' · 启动中'
+        : status === 'unhealthy'
+        ? ' · 健康检查失败'
+        : status === 'stopped'
+        ? ' · 已退出'
+        : status
+        ? ` · ${status}`
+        : ''
+    return {
+      name: String(a.product || a.id || 'agent'),
+      role: `网关托管实例 · ${a.workspace || '未标工作区'}${statusSuffix}`,
+      pid: typeof a.pid === 'number' ? a.pid : null,
+      port: portMatch ? Number(portMatch[1]) : null,
+      // 网关的判据：只有 stopped 是"进程已退出"（unhealthy = 进程还在但健康检查失败）
+      alive: status !== 'stopped',
+      status,
+      url: endpoint || null,
+      products: Array.isArray(a.products) ? a.products.map((p: any) => String(p)) : [],
+    }
+  })
+}
+
+export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose, onRequestConfirm }) => {
   const [report, setReport] = useState<ProcessReport | null>(null)
+  const [gatewayAgents, setGatewayAgents] = useState<ManagedProcessInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [terminatingPid, setTerminatingPid] = useState<number | null>(null)
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null)
@@ -53,10 +114,24 @@ export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose }) =
         const { invoke } = await import('@tauri-apps/api/core')
         const data = await invoke<ProcessReport>('get_process_report')
         setReport(data)
+
+        // 网关模式：实例由网关拉起，桌面端不知道它们 —— 直接问网关的实例注册表
+        if (data?.mode === 'gateway') {
+          try {
+            const res = await agentClient.request('gateway.listAgents', {})
+            setGatewayAgents(mapGatewayAgents(res))
+          } catch (err) {
+            // 网关不可达就如实不显示，绝不编造实例
+            console.warn('[ProcessModal] 获取网关实例列表失败:', err)
+            setGatewayAgents([])
+          }
+        } else {
+          setGatewayAgents([])
+        }
       } else {
         // 浏览器开发调试预览兜底
         setReport({
-          mode: agentClient.desktopMode || 'direct',
+          mode: 'gateway',
           core_alive: agentClient.connected,
           core_url: 'ws://127.0.0.1:52353/rpc',
           core_port: 52353,
@@ -73,6 +148,7 @@ export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose }) =
             },
           ],
         })
+        setGatewayAgents([])
       }
     } catch (err: any) {
       console.error('[ProcessModal] 获取进程状态失败:', err)
@@ -91,8 +167,27 @@ export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose }) =
     }
   }, [isOpen, fetchProcesses])
 
+  // 统一确认：优先用应用自己的弹窗；没有注入时才退回原生 confirm（浏览器预览等）
+  const askConfirm = async (opts: {
+    title?: string
+    message: string
+    subMessage?: string
+    confirmText?: string
+    variant?: 'danger' | 'warning' | 'primary'
+  }): Promise<boolean> => {
+    if (onRequestConfirm) return onRequestConfirm(opts)
+    return window.confirm(opts.message)
+  }
+
   const handleKillProcess = async (pid: number, name: string) => {
-    if (!window.confirm(`确定要终止进程 ${name} (PID: ${pid}) 吗？`)) {
+    const ok = await askConfirm({
+      title: '终止进程',
+      message: `确定要终止进程 ${name} (PID: ${pid}) 吗？`,
+      subMessage: '网关托管的实例被终止后，下次需要时网关会按工作区重新拉起它。',
+      confirmText: '终止进程',
+      variant: 'danger',
+    })
+    if (!ok) {
       return
     }
     setTerminatingPid(pid)
@@ -113,7 +208,14 @@ export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose }) =
   }
 
   const handleRestartAll = async () => {
-    if (!window.confirm('确定要重启所有桌面端核心服务并重新加载应用吗？')) {
+    const ok = await askConfirm({
+      title: '重启所有服务',
+      message: '确定要重启所有桌面端核心服务并重新加载应用吗？',
+      subMessage: '当前正在执行的会话会被中断。',
+      confirmText: '重启',
+      variant: 'warning',
+    })
+    if (!ok) {
       return
     }
     try {
@@ -123,6 +225,9 @@ export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose }) =
       setMessage({ text: `重启失败: ${err?.message || String(err)}`, type: 'error' })
     }
   }
+
+  // 桌面端自己托管的进程 + **网关托管的实例**（后者是问网关要来的，见 mapGatewayAgents）
+  const allProcesses: ManagedProcessInfo[] = [...(report?.processes || []), ...gatewayAgents]
 
   if (!isOpen) return null
 
@@ -141,7 +246,7 @@ export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose }) =
                   进程管理与服务监控
                 </h3>
                 <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-zinc-200/70 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300">
-                  {report?.mode === 'gateway' ? '网关模式' : '直连模式'}
+                  {'网关模式'}
                 </span>
               </div>
               <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
@@ -214,10 +319,10 @@ export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose }) =
         {/* 进程列表主体 */}
         <div className="p-6 overflow-y-auto flex-1 space-y-3">
           <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500 mb-2">
-            受管进程实例 ({report?.processes.length || 0})
+            受管进程实例 ({allProcesses.length})
           </div>
 
-          {(!report?.processes || report.processes.length === 0) && (
+          {allProcesses.length === 0 && (
             <div className="p-8 text-center border-2 border-dashed border-zinc-200 dark:border-zinc-800 rounded-xl">
               <Terminal size={32} className="mx-auto text-zinc-300 dark:text-zinc-600 mb-2" />
               <p className="text-xs text-zinc-500 dark:text-zinc-400">
@@ -226,7 +331,7 @@ export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose }) =
             </div>
           )}
 
-          {report?.processes.map((proc, index) => {
+          {allProcesses.map((proc, index) => {
             const isGateway = proc.name.includes('gateway')
             const isPm = proc.name.includes('pm')
             const isCoding = proc.name.includes('coding')
@@ -280,6 +385,25 @@ export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose }) =
                     <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
                       {proc.role}
                     </div>
+
+                    {/* 该进程实际服务的产品：一个 ada-coding 实例同时服务 ada-pm 引擎 */}
+                    {proc.products && proc.products.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1 mt-1.5">
+                        {proc.products.map((p) => (
+                          <span
+                            key={p}
+                            title={`本进程服务的产品：${p}`}
+                            className={`px-1.5 py-0.5 rounded text-[9px] font-medium border ${
+                              p.includes('pm')
+                                ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/25'
+                                : 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/25'
+                            }`}
+                          >
+                            服务 {p}
+                          </span>
+                        ))}
+                      </div>
+                    )}
 
                     <div className="flex flex-wrap items-center gap-2 mt-2 font-mono text-[10px]">
                       {proc.pid ? (

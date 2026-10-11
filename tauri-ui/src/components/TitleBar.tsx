@@ -141,7 +141,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         title={
           !connected
             ? '服务连接断开，点击查看进程与服务状态'
-            : `服务在线 · 模式：${agentClient.desktopMode === 'gateway' ? '网关模式' : 'AGENT 直连模式'}（点击打开进程管理）`
+            : '服务在线 · 模式：网关模式（点击打开进程管理）'
         }
       >
         <Circle
@@ -149,7 +149,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
           className={`${connected ? 'fill-emerald-500 text-emerald-500' : 'fill-rose-500 text-rose-500'} animate-pulse`}
         />
         <span className="text-[11px] text-zinc-600 dark:text-zinc-300 font-medium">
-          {connected ? (agentClient.desktopMode === 'gateway' ? '网关在线' : '直连在线') : '未连接 (点击查看进程)'}
+          {connected ? '网关在线' : '未连接 (点击查看进程)'}
         </span>
         <Activity size={12} className="text-zinc-400 group-hover:text-blue-500 transition-colors ml-0.5" />
       </div>

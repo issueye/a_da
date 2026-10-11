@@ -49,6 +49,44 @@ export function App() {
     onConfirm: () => {},
   })
 
+  const activeThread =
+    snapshot.threads.find((t) => t.id === snapshot.activeThreadId) ||
+    snapshot.threads[0]
+
+  /**
+   * 统一的"请求用户确认"入口（返回 Promise<boolean>）。
+   *
+   * 用应用自己的 `ConfirmModal`，**不用 `window.confirm`**——那是 WebView 的原生弹窗
+   * （标题会写着 `tauri.localhost`），风格不一致、按钮文案也无法本地化。
+   */
+  const confirmResolverRef = React.useRef<((ok: boolean) => void) | null>(null)
+  const askConfirm = (
+    opts: {
+      title?: string
+      message: string
+      subMessage?: string
+      confirmText?: string
+      variant?: 'danger' | 'warning' | 'primary'
+    }
+  ): Promise<boolean> =>
+    new Promise<boolean>((resolve) => {
+      confirmResolverRef.current = resolve
+      setConfirmModal({
+        isOpen: true,
+        title: opts.title,
+        message: opts.message,
+        subMessage: opts.subMessage,
+        confirmText: opts.confirmText,
+        cancelText: '取消',
+        variant: opts.variant,
+        onConfirm: () => {
+          setConfirmModal((prev) => ({ ...prev, isOpen: false }))
+          confirmResolverRef.current?.(true)
+          confirmResolverRef.current = null
+        },
+      })
+    })
+
   // 同步激活会话至打开的标签页列表中
   useEffect(() => {
     if (snapshot.activeThreadId) {
@@ -60,6 +98,32 @@ export function App() {
       })
     }
   }, [snapshot.activeThreadId])
+
+  // 自动将派发运行中的子智能体会话加入标签栏，支持用户在顶部标签独立查看
+  useEffect(() => {
+    const runningIds = snapshot.runningThreadIds || []
+    if (runningIds.length === 0) return
+
+    setOpenTabIds((prev) => {
+      let changed = false
+      const next = [...prev]
+      for (const t of snapshot.threads) {
+        if (
+          runningIds.includes(t.id) &&
+          !next.includes(t.id) &&
+          (t.isSubagent ||
+            t.parentId ||
+            t.title?.includes('子代理') ||
+            t.title?.includes('子智能体') ||
+            (activeThread && t.workspace === activeThread.workspace && t.id !== activeThread.id))
+        ) {
+          next.push(t.id)
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [snapshot.runningThreadIds, snapshot.threads, activeThread])
 
   // 同步暗亮主题至 HTML 根节点与 LocalStorage
   useEffect(() => {
@@ -95,10 +159,6 @@ export function App() {
     }
   }, [])
 
-  const activeThread =
-    snapshot.threads.find((t) => t.id === snapshot.activeThreadId) ||
-    snapshot.threads[0]
-
   const handleSelectThread = (threadId: string) => {
     setOpenTabIds((prev) => (prev.includes(threadId) ? prev : [...prev, threadId]))
     agentClient.setActiveThread(threadId)
@@ -108,11 +168,33 @@ export function App() {
     }
   }
 
-  const handleCreateThread = (workspace?: string, mode?: AgentMode) => {
-    if (workspace) {
-      agentClient.setActiveProject(workspace)
+  const handleCreateThread = async (workspace?: string, mode?: AgentMode) => {
+    const ws = workspace || activeThread?.workspace || snapshot.activeWorkspace
+    if (ws) {
+      agentClient.setActiveProject(ws)
     }
-    agentClient.createThread(workspace, mode)
+
+    // 只有"上一个新会话还没落库"（本地乐观临时会话）时才复用它，避免连点两次建出两个空会话。
+    //
+    // 已经落库的会话**一律不复用**：用户点"新建对话"就是要一个新的对话界面。
+    // 早先这里拿 `activeThread.items.length === 0` 当"空会话"判据并直接 return，
+    // 于是点击经常什么都不发生——而 items 为空并不等于没有消息
+    // （服务端只给"它认为激活/开着/运行中"的会话发 items，见 applySnapshot 的 active 同步）。
+    if (activeThread?.id?.startsWith('thread_tmp_')) {
+      agentClient.setActiveThread(activeThread.id)
+      setOpenTabIds((prev) => (prev.includes(activeThread.id) ? prev : [...prev, activeThread.id]))
+      return
+    }
+
+    try {
+      const res = await agentClient.createThread(ws, mode)
+      if (res?.threadId) {
+        setOpenTabIds((prev) => (prev.includes(res.threadId) ? prev : [...prev, res.threadId]))
+        agentClient.setActiveThread(res.threadId)
+      }
+    } catch (err: any) {
+      notify({ message: err?.message || '创建会话失败', level: 'error' })
+    }
   }
 
   const handleDeleteThread = (threadId: string) => {
@@ -158,8 +240,13 @@ export function App() {
     agentClient.setProvider(config)
   }
 
-  const handleAnswerQuestion = (callId: string, choice?: string, text?: string) => {
-    agentClient.answerQuestion(callId, choice, text)
+  const handleAnswerQuestion = (
+    callId: string,
+    choice?: string,
+    text?: string,
+    choices?: string[]
+  ) => {
+    agentClient.answerQuestion(callId, choice, text, choices)
   }
 
   const handleDecideApproval = (toolItemId: string, approved: boolean) => {
@@ -553,6 +640,7 @@ export function App() {
       <ProcessModal
         isOpen={processOpen}
         onClose={() => setProcessOpen(false)}
+        onRequestConfirm={askConfirm}
       />
 
       {/* 统一操作确认弹窗 (无原生 window.confirm) */}
@@ -565,7 +653,11 @@ export function App() {
         cancelText={confirmModal.cancelText}
         variant={confirmModal.variant}
         onConfirm={confirmModal.onConfirm}
-        onCancel={() => setConfirmModal((prev) => ({ ...prev, isOpen: false }))}
+        onCancel={() => {
+          setConfirmModal((prev) => ({ ...prev, isOpen: false }))
+          confirmResolverRef.current?.(false)
+          confirmResolverRef.current = null
+        }}
       />
 
       {/* 全局轻提示 Toast 宿主 */}

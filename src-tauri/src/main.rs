@@ -10,14 +10,10 @@ use clap::{Parser, Subcommand};
     author = "a_da team",
     version,
     about = "a_da 原生桌面客户端 (Tauri GUI 独立客户端)",
-    long_about = "a_da 是一款基于 Rust 与 Tauri 的本地 AI 智能体桌面端。\n支持 AGENT 直连模式（连接 ada-coding / ada-pm）与网关模式（连接 ada-gateway）。"
+    long_about = "a_da 是一款基于 Rust 与 Tauri 的本地 AI 智能体桌面端。\n**只有网关模式**：桌面端连接 ada-gateway，Agent 实例由网关统一管理（直连模式已下线）。"
 )]
 pub struct CliArgs {
-    /// 运行模式：direct（直连 Agent 模式，默认）或 gateway（网关模式）
-    #[arg(long)]
-    pub mode: Option<String>,
-
-    /// 目标服务 WebSocket 地址（直连 Agent 或网关的 ws:// 地址）
+    /// 目标网关 WebSocket 地址（如 ws://127.0.0.1:4000/rpc）
     #[arg(long)]
     pub connect: Option<String>,
 
@@ -29,9 +25,9 @@ pub struct CliArgs {
     #[arg(long, default_value = "")]
     pub workspace: String,
 
-    /// 自定义 Agent 或网关二进制可执行文件路径
+    /// 自定义 ada-gateway 二进制可执行文件路径
     #[arg(long)]
-    pub host_bin: Option<String>,
+    pub gateway_bin: Option<String>,
 
     #[command(subcommand)]
     pub command: Option<CliCommand>,
@@ -195,19 +191,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 解析命令行指定的运行模式覆盖
-    let parsed_mode = args.mode.as_deref().and_then(|m| match m.to_lowercase().as_str() {
-        "direct" | "agent" => Some(ada_tauri::DesktopMode::Direct),
-        "gateway" => Some(ada_tauri::DesktopMode::Gateway),
-        _ => None,
-    });
-
+    // 桌面端只有网关模式：不再解析任何"运行模式"覆盖
     let launcher_config = ada_tauri::LauncherConfig {
         workspace: args.workspace,
-        mode: parsed_mode,
         connect: args.connect,
         token: args.token,
-        host_bin: args.host_bin,
+        gateway_bin: args.gateway_bin,
     };
 
 #[cfg(windows)]
@@ -281,23 +270,29 @@ mod tests {
     #[test]
     fn test_cli_args_parsing_defaults() {
         let args = CliArgs::try_parse_from(["a-da"]).expect("解析默认参数失败");
-        assert_eq!(args.mode, None);
         assert_eq!(args.token, None);
         assert_eq!(args.workspace, "");
+        assert_eq!(args.gateway_bin, None);
         assert_eq!(args.command, None);
     }
 
+    /// 桌面端只有网关模式：`--mode` 已经不存在，传了必须报错（而不是被静默忽略）。
     #[test]
-    fn test_cli_args_parsing_mode() {
+    fn test_cli_args_has_no_mode_flag() {
         let args = CliArgs::try_parse_from([
             "a-da",
-            "--mode",
-            "gateway",
             "--connect",
             "ws://127.0.0.1:4000/rpc",
+            "--gateway-bin",
+            "E:/x/ada-gateway.exe",
         ])
         .expect("解析网关参数失败");
-        assert_eq!(args.mode.as_deref(), Some("gateway"));
         assert_eq!(args.connect.as_deref(), Some("ws://127.0.0.1:4000/rpc"));
+        assert_eq!(args.gateway_bin.as_deref(), Some("E:/x/ada-gateway.exe"));
+
+        assert!(
+            CliArgs::try_parse_from(["a-da", "--mode", "direct"]).is_err(),
+            "直连模式已下线，--mode 不该再被接受"
+        );
     }
 }

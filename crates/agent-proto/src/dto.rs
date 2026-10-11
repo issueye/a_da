@@ -183,8 +183,20 @@ pub struct AgentQuestion {
     pub choices: Option<Vec<ChoiceOption>>,
     #[serde(rename = "allowText", skip_serializing_if = "Option::is_none")]
     pub allow_text: Option<bool>,
+    /// 是否多选。提问事件里发的是 `multi_select`（与 `allow_text` 同风格），
+    /// 这里两种拼写都收（`alias`），对外仍按驼峰序列化。
+    #[serde(
+        default,
+        rename = "multiSelect",
+        alias = "multi_select",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub multi_select: Option<bool>,
+    /// 状态与提问时刻由**持有方**（AgentStore）填，提问事件本身不带——
+    /// 所以这里必须容忍缺省，否则 `pending_questions` 会因为反序列化失败而永远为空。
+    #[serde(default)]
     pub status: String,
-    #[serde(rename = "askedAt")]
+    #[serde(rename = "askedAt", default)]
     pub asked_at: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub answer: Option<serde_json::Value>,

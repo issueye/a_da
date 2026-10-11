@@ -32,6 +32,7 @@ pub enum AgentLoopEvent {
         started_at: Option<i64>,
         finished_at: Option<i64>,
         status: Option<String>,
+        details: Option<serde_json::Value>,
     },
     ToolAwaitingQuestion { id: String, question: serde_json::Value },
     /// 工具调用**等待用户批准**（W3-T3）。
@@ -82,6 +83,7 @@ mod tests {
                 started_at: None,
                 finished_at: None,
                 status: None,
+                details: None,
             },
             AgentLoopEvent::ToolAwaitingQuestion { id: "i".into(), question: serde_json::json!({}) },
             AgentLoopEvent::ApprovalRequested { id: "i".into(), tool: "t".into() },

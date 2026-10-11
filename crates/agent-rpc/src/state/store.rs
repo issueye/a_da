@@ -435,10 +435,19 @@ impl AgentStore {
         }
         let mut changed = false;
         for dt in disk_threads {
+            // 「运行中就不合并磁盘」这条保护只对**本进程自己流式吐字**的会话成立。
+            // 子智能体会话跑在自己的运行时里（跨网关时甚至是另一个进程），
+            // 本进程从不往它的 item 上追加 delta——它的**唯一真源就是磁盘会话文件**。
+            // 早先把这条保护也套在子会话上，结果是子会话永远停在创建那一刻的空壳：
+            // 界面整轮（本例 4.5 分钟）看不到任何进展，用户只能盯着一张静止的卡片，
+            // 无法判断它是"在干活"还是"卡死了"。
+            let locally_streamed =
+                dt.is_subagent != Some(true) && self.running_thread_ids.contains(&dt.id);
             if let Some(existing) = self.threads.iter_mut().find(|t| t.id == dt.id) {
-                // 如果本进程未持有该线程的运行态，合并磁盘更新
-                if !self.running_thread_ids.contains(&dt.id) {
-                    if dt.items.len() != existing.items.len() || dt.messages.len() != existing.messages.len() {
+                if !locally_streamed {
+                    if items_visibly_differ(&existing.items, &dt.items)
+                        || dt.messages.len() != existing.messages.len()
+                    {
                         existing.items = dt.items;
                         existing.messages = dt.messages;
                         changed = true;
@@ -467,6 +476,31 @@ impl AgentStore {
             }
         }
         changed
+    }
+
+    /// 从 `parent` 名下的子智能体会话里挑出**本次派活新建的那一个**。
+    ///
+    /// - `known`：这次调用**之前**该父会话就已经有的子会话（那些是历史，不是本次的产物）
+    /// - `bound`：已经被**别的运行中委派卡片**绑定过的子会话
+    ///
+    /// 早先这里是「任取一个 `parent_id` 匹配的子会话」，而 store 里子会话是**按发现顺序
+    /// 追加**的，于是第二次派活抓到的往往是**上一次已经结束**的子会话：它被重新标成运行中、
+    /// 新卡片也被绑到旧会话上——界面表现就是"报告都出来了，会话却一直显示在运行"。
+    pub fn pick_new_subagent_child(
+        &self,
+        parent: &str,
+        known: &[String],
+        bound: &[String],
+    ) -> Option<String> {
+        self.threads
+            .iter()
+            .find(|t| {
+                t.parent_id.as_deref() == Some(parent)
+                    && t.is_subagent == Some(true)
+                    && !known.iter().any(|k| k == &t.id)
+                    && !bound.iter().any(|b| b == &t.id)
+            })
+            .map(|t| t.id.clone())
     }
 
     /// 删除会话
@@ -715,6 +749,7 @@ impl AgentStore {
         duration_ms: Option<u64>,
         started_at: Option<i64>,
         finished_at: Option<i64>,
+        details: Option<serde_json::Value>,
     ) {
         if let Some(t) = self.get_thread_mut(thread_id) {
             for item in t.items.iter_mut().rev() {
@@ -725,6 +760,7 @@ impl AgentStore {
                     duration_ms: dur,
                     started_at: st,
                     finished_at: fin,
+                    details: det,
                     ..
                 } = item
                 {
@@ -736,6 +772,17 @@ impl AgentStore {
                             *st = started_at;
                         }
                         *fin = finished_at;
+                        if let Some(new_det) = details {
+                            let mut base = det.take().unwrap_or_else(|| serde_json::json!({}));
+                            if let (Some(b_obj), Some(n_obj)) = (base.as_object_mut(), new_det.as_object()) {
+                                for (k, v) in n_obj {
+                                    b_obj.insert(k.clone(), v.clone());
+                                }
+                                *det = Some(base);
+                            } else {
+                                *det = Some(new_det);
+                            }
+                        }
                         break;
                     }
                 }
@@ -763,7 +810,10 @@ impl AgentStore {
         }
 
         // 同步到 pending_questions 列表中
-        if let Ok(q) = serde_json::from_value::<agent_proto::AgentQuestion>(question_val) {
+        // （状态与提问时刻由**持有方**填：提问事件里没有这两个字段）
+        if let Ok(mut q) = serde_json::from_value::<agent_proto::AgentQuestion>(question_val) {
+            q.status = "awaiting".to_string();
+            q.asked_at = now_millis();
             self.pending_questions.retain(|item| item.call_id != call_id);
             self.pending_questions.push(agent_proto::PendingQuestionEntry {
                 call_id: call_id.to_string(),
@@ -821,7 +871,66 @@ impl AgentStore {
             }
         }
         self.set_thread_running(thread_id, false);
+
+        // 兜底：父会话这一轮已经收尾，它名下的子智能体就不可能还在跑（派活是同步等待的）。
+        // 任何遗漏（绑定错、回执缺 id、进程重启后的残留）都不该让子会话的标签页
+        // 永远停在"正在分析并执行操作…"——那正是用户看到的"报告出来了却不结束"。
+        let children: Vec<String> = self
+            .threads
+            .iter()
+            .filter(|t| {
+                t.parent_id.as_deref() == Some(thread_id) && t.is_subagent == Some(true)
+            })
+            .map(|t| t.id.clone())
+            .collect();
+        self.running_thread_ids.retain(|tid| !children.contains(tid));
     }
+}
+
+/// 一条 item 的**可见指纹**：用来判断磁盘上的会话是否比内存里的更新。
+///
+/// `agent_proto::Item` 没有实现 `PartialEq`，而这里也不需要逐字节相等——
+/// 流式追加只会让文本变长、工具状态只会翻转，所以「id + 文本长度 + 状态 +
+/// 完成时刻」就足以识别出"磁盘上有新内容"。
+fn item_visible_key(it: &Item) -> (String, usize, String, bool, Option<u64>) {
+    match it {
+        Item::User { id, text, .. } => (id.clone(), text.len(), String::new(), false, None),
+        Item::Thinking { id, text, ended_at, .. } => (
+            id.clone(),
+            text.len(),
+            String::new(),
+            ended_at.is_none(),
+            *ended_at,
+        ),
+        Item::Assistant { id, text, streaming, .. } => (
+            id.clone(),
+            text.len(),
+            String::new(),
+            *streaming == Some(true),
+            None,
+        ),
+        Item::Tool { id, status, output, duration_ms, .. } => (
+            id.clone(),
+            output.as_ref().map(|o| o.len()).unwrap_or(0),
+            status.clone(),
+            false,
+            *duration_ms,
+        ),
+        Item::Notice { id, text, .. } => (id.clone(), text.len(), String::new(), false, None),
+        Item::Compact { id, summary, .. } => {
+            (id.clone(), summary.len(), String::new(), false, None)
+        }
+    }
+}
+
+/// 两份 item 列表是否有**可见差异**（见 [`item_visible_key`]）。
+fn items_visibly_differ(a: &[Item], b: &[Item]) -> bool {
+    if a.len() != b.len() {
+        return true;
+    }
+    a.iter()
+        .zip(b.iter())
+        .any(|(x, y)| item_visible_key(x) != item_visible_key(y))
 }
 
 #[cfg(test)]
@@ -907,9 +1016,181 @@ mod tests {
         assert_eq!(details["approval"]["pending"], true);
 
         // 收尾必须覆盖等待态（否则卡片会一直停在"等批准"）
-        store.finish_tool_call(tid, "call_ui_1", true, Some("done".into()), Some(1), Some(0), Some(1));
+        store.finish_tool_call(tid, "call_ui_1", true, Some("done".into()), Some(1), Some(0), Some(1), None);
         let after = status_of(&store);
         assert_ne!(after, "waiting_approval", "工具完成后不得仍停在等待批准：{after}");
+    }
+
+    /// 守门：**运行中的子智能体会话必须继续从磁盘回流内容**。
+    ///
+    /// 子智能体跑在自己的运行时里（跨网关委派时甚至是另一个进程），本进程的 store
+    /// 从不直接往它的 item 上追加 delta——磁盘会话文件是它**唯一**的真源。
+    /// 早先 `sync_threads_from_disk` 用「运行中」一刀切跳过合并，结果子会话整轮
+    /// （实测 4.5 分钟）停在创建那一刻的空壳：父会话的委派卡片与子会话标签页
+    /// **整轮没有任何实时内容**，用户只能盯着一张静止的卡片，无法判断子智能体
+    /// 是在干活还是卡死了。
+    #[test]
+    fn test_running_subagent_thread_still_merges_disk_content() {
+        use agent_base::domain::AgentMessage;
+
+        let sessions_root = std::env::temp_dir()
+            .join(format!("a_da_store_subagent_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&sessions_root);
+        let mgr = agent_node::session::SessionManager::new(Some(sessions_root.clone()));
+        let ws = "E:/codes/go_projects/aluka_cloud";
+        let parent = "thread_parent_1";
+        let child = "thread_child_1";
+
+        let assistant_msg = |text: &str, ts: i64| AgentMessage::Assistant {
+            content: text.to_string(),
+            thinking: None,
+            tool_calls: None,
+            stop_reason: Some("tool_calls".to_string()),
+            error_message: None,
+            timestamp: Some(ts),
+            usage: None,
+            duration_ms: None,
+            turn_duration_ms: None,
+        };
+
+        mgr.create_session(parent, ws, Some("父会话"), None, None).unwrap();
+        mgr.create_session(child, ws, Some("子代理 [general_purpose]"), Some(parent), Some("general_purpose"))
+            .unwrap();
+
+        let mut store = AgentStore::new(ws.to_string());
+        // 1. 子会话刚建好就被发现——此刻它还没有任何内容
+        assert!(store.sync_threads_from_disk(&mgr), "新会话应被发现");
+        assert!(
+            store
+                .threads
+                .iter()
+                .any(|t| t.id == child && t.is_subagent == Some(true)),
+            "带 parentId 的会话必须被认成子智能体会话"
+        );
+
+        // 2. 它正在跑：进入运行态（界面据此把它算作"运行中的子智能体"）
+        store.set_thread_running(child, true);
+
+        // 3. 子智能体在自己的运行时里产出并落盘 → 必须回流到 store
+        mgr.append_message(child, assistant_msg("第一步：枚举 go.mod", 1), Some(ws))
+            .unwrap();
+        assert!(store.sync_threads_from_disk(&mgr), "运行中的子会话有新内容，必须回流");
+        assert_eq!(
+            store.threads.iter().find(|t| t.id == child).map(|t| t.items.len()),
+            Some(1),
+            "运行中的子会话必须拿到磁盘上的新 item，否则界面整轮空白"
+        );
+
+        // 4. 继续产出：内容必须继续增长（这就是界面上的实时进展）
+        mgr.append_message(child, assistant_msg("第二步：读 replace 指令", 2), Some(ws))
+            .unwrap();
+        assert!(store.sync_threads_from_disk(&mgr));
+        assert_eq!(
+            store.threads.iter().find(|t| t.id == child).map(|t| t.items.len()),
+            Some(2),
+            "子会话的 item 必须随磁盘继续增长"
+        );
+
+        // 5. 磁盘没变化时不得每 1.5s 谎报 changed（否则快照被无谓地反复广播）
+        assert!(
+            !store.sync_threads_from_disk(&mgr),
+            "磁盘无变化时不应报告 changed"
+        );
+
+        // 6. 反例保护：本进程**正在流式吐字**的父会话不得被磁盘内容覆盖
+        store.set_thread_running(parent, true);
+        mgr.append_message(
+            parent,
+            AgentMessage::User { content: "磁盘上的内容".to_string(), images: None, timestamp: Some(3) },
+            Some(ws),
+        )
+        .unwrap();
+        let _ = store.sync_threads_from_disk(&mgr);
+        assert_eq!(
+            store.threads.iter().find(|t| t.id == parent).map(|t| t.items.len()),
+            Some(0),
+            "运行中的父会话由本进程自己吐字，不得被磁盘合并覆盖"
+        );
+
+        // 7. 一旦停下，磁盘内容照常回流（保护只针对"运行中"）
+        store.set_thread_running(parent, false);
+        assert!(store.sync_threads_from_disk(&mgr));
+        assert_eq!(
+            store.threads.iter().find(|t| t.id == parent).map(|t| t.items.len()),
+            Some(1)
+        );
+
+        let _ = std::fs::remove_dir_all(&sessions_root);
+    }
+
+    /// 守门：派活时只能认领**本次新建**的子会话。
+    ///
+    /// 用「任取一个 parent 匹配的子会话」的写法，第二次派活会把**上一次已经结束**的子会话
+    /// 重新标成运行中（并把它绑到新卡片上）——界面表现：报告都出来了，子会话却一直
+    /// 显示"正在分析并执行操作…"。实测就是这条：子A 报告完成、父会话随后派出子B，
+    /// 子A 被重新点亮。
+    #[test]
+    fn test_pick_new_subagent_child_never_claims_an_old_one() {
+        use agent_base::domain::AgentMessage;
+
+        let sessions_root = std::env::temp_dir()
+            .join(format!("a_da_store_pick_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&sessions_root);
+        let mgr = agent_node::session::SessionManager::new(Some(sessions_root.clone()));
+        let ws = "E:/codes/go_projects/aluka_cloud";
+        let parent = "thread_p1";
+        let child_a = "thread_c_a";
+        let child_b = "thread_c_b";
+
+        mgr.create_session(parent, ws, Some("父会话"), None, None).unwrap();
+        mgr.create_session(child_a, ws, Some("子代理 A"), Some(parent), Some("researcher")).unwrap();
+        mgr.append_message(
+            child_a,
+            AgentMessage::User { content: "A 的活".to_string(), images: None, timestamp: Some(1) },
+            Some(ws),
+        )
+        .unwrap();
+
+        let mut store = AgentStore::new(ws.to_string());
+        assert!(store.sync_threads_from_disk(&mgr), "父/子会话都应被发现");
+
+        // A 派活当时：已知集合为空 → 认领 A
+        assert_eq!(
+            store.pick_new_subagent_child(parent, &[], &[]).as_deref(),
+            Some(child_a)
+        );
+
+        // A 已经结束、A 的 id 进入"已知"：此时再派活，绝不能又认领 A
+        let known = vec![child_a.to_string()];
+        assert_eq!(
+            store.pick_new_subagent_child(parent, &known, &[]),
+            None,
+            "已知的子会话不是本次派活的产物，不得认领"
+        );
+
+        // 第二次派活新建了 B → 必须认领 B（而不是 A）
+        mgr.create_session(child_b, ws, Some("子代理 B"), Some(parent), Some("researcher")).unwrap();
+        assert!(store.sync_threads_from_disk(&mgr));
+        assert_eq!(
+            store.pick_new_subagent_child(parent, &known, &[]).as_deref(),
+            Some(child_b),
+            "第二次派活必须认领新建的 B"
+        );
+
+        // 已被别的运行中卡片绑定的子会话也不再认领
+        let bound = vec![child_b.to_string()];
+        assert_eq!(store.pick_new_subagent_child(parent, &known, &bound), None);
+
+        // 兜底：父会话收尾时，名下子会话的运行态必须一并解除
+        store.set_thread_running(parent, true);
+        store.set_thread_running(child_b, true);
+        store.finish_turn(parent);
+        assert!(
+            !store.running_thread_ids.iter().any(|t| t == child_b),
+            "父会话收尾后，子会话不得还挂在运行态（否则标签页永远显示'正在执行'）"
+        );
+
+        let _ = std::fs::remove_dir_all(&sessions_root);
     }
 }
 

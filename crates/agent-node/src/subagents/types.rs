@@ -75,6 +75,14 @@ pub struct SubagentRunResult {
     pub output_file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    /// 子智能体跑过的**最大** prompt 用量（末轮上下文规模）。
+    ///
+    /// 子智能体失败最常见的根因就是上下文被工具输出撑爆（实测一次 445k tokens），
+    /// 这个数字必须出现在回执里，界面才不用靠猜。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

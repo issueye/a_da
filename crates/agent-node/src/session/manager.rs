@@ -66,6 +66,20 @@ pub struct SessionManager {
     explicit_dir: Option<PathBuf>,
 }
 
+/// 模式落盘：直接借 `AgentMode` 的 serde 命名（`code`/`plan`/`create`/`pm`），
+/// 避免再手写一份 match 与协议漂移。
+fn mode_to_header(mode: agent_proto::AgentMode) -> String {
+    serde_json::to_value(mode)
+        .ok()
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "code".to_string())
+}
+
+/// 模式读盘：认不出来就当没有（调用方自己兜底），绝不猜。
+fn mode_from_header(raw: &str) -> Option<agent_proto::AgentMode> {
+    serde_json::from_value::<agent_proto::AgentMode>(serde_json::Value::String(raw.to_string())).ok()
+}
+
 impl SessionManager {
     pub fn new(explicit_dir: Option<PathBuf>) -> Self {
         Self { explicit_dir }
@@ -131,6 +145,23 @@ impl SessionManager {
         parent_id: Option<&str>,
         subagent_id: Option<&str>,
     ) -> Result<SessionHeader> {
+        self.create_session_bound(id, workspace, title, parent_id, subagent_id, None, None)
+    }
+
+    /// 与 [`Self::create_session`] 相同，但把**会话身份**（产品 id / 模式）一起写进 header。
+    ///
+    /// 为什么必须落盘：重启后 `restore_all_threads` 只能从 header 还原会话绑定的产品，
+    /// 不写就只能一律当成 `ada-coding`——左侧树里的 PM 标识就是这么丢的。
+    pub fn create_session_bound(
+        &self,
+        id: &str,
+        workspace: &str,
+        title: Option<&str>,
+        parent_id: Option<&str>,
+        subagent_id: Option<&str>,
+        agent_id: Option<&str>,
+        mode: Option<agent_proto::AgentMode>,
+    ) -> Result<SessionHeader> {
         self.ensure_sessions_dir()?;
         let _ = self.remember_workspace(workspace);
 
@@ -159,6 +190,8 @@ impl SessionManager {
             updated_at: now,
             parent_id: parent_id.map(|s| s.to_string()),
             subagent_id: subagent_id.map(|s| s.to_string()),
+            agent_id: agent_id.map(|s| s.to_string()),
+            mode: mode.map(mode_to_header),
             plugin_data: None,
         };
 
@@ -167,6 +200,38 @@ impl SessionManager {
         writeln!(file, "{}", json_line)?;
 
         Ok(header)
+    }
+
+    /// 更新会话身份（产品 id / 模式）——切换模式或换 Agent 时必须同步落盘，
+    /// 否则重启后又变回默认的 `ada-coding`。
+    pub fn update_session_identity(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+        mode: Option<agent_proto::AgentMode>,
+        workspace: Option<&str>,
+    ) -> Result<()> {
+        let file_path = if let Some(ws) = workspace {
+            let path = self.get_session_path(ws, session_id);
+            if !path.exists() {
+                self.create_session(session_id, ws, None, None, None)?;
+            }
+            path
+        } else if let Some(path) = self.find_session_path(session_id) {
+            path
+        } else {
+            return Ok(());
+        };
+
+        self.update_header(&file_path, |header| {
+            if let Some(a) = agent_id {
+                header.agent_id = Some(a.to_string());
+            }
+            if let Some(m) = mode {
+                header.mode = Some(mode_to_header(m));
+            }
+            header.updated_at = now_ms();
+        })
     }
 
     /// 寻找某个会话当前所在的实际文件路径（未指明工作区时跨目录扫描）
@@ -827,6 +892,23 @@ impl SessionManager {
             }
 
             let is_sub = header.parent_id.is_some() || header.subagent_id.is_some();
+            // 会话身份以 header 为准（创建/切换时落的盘）；老文件没有这两个字段才退回缺省，
+            // 否则重启后 PM 会话会被一律当成 ada-coding（左侧树标识就丢了）。
+            let restored_agent = header
+                .agent_id
+                .clone()
+                .or_else(|| Some("ada-coding".to_string()));
+            let restored_mode = header
+                .mode
+                .as_deref()
+                .and_then(mode_from_header)
+                .or_else(|| {
+                    // 老文件兜底：PM 身份至少能从 agent_id 推出来
+                    match restored_agent.as_deref() {
+                        Some("ada-pm") | Some("pm-assistant") => Some(AgentMode::Pm),
+                        _ => Some(AgentMode::Code),
+                    }
+                });
             let thread = Thread {
                 id: header.id,
                 title: header.title.unwrap_or_else(|| "新会话".to_string()),
@@ -834,8 +916,8 @@ impl SessionManager {
                 workspace: final_workspace,
                 items,
                 messages,
-                mode: Some(AgentMode::Code),
-                agent_id: Some("ada-coding".to_string()),
+                mode: restored_mode,
+                agent_id: restored_agent,
                 parent_id: header.parent_id,
                 subagent_id: header.subagent_id,
                 is_subagent: Some(is_sub),
@@ -948,6 +1030,76 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 守门：**会话身份必须落盘**，重启后左侧树的 PM/CODING 标识才不会丢。
+    ///
+    /// 早先 `SessionHeader` 里根本没有 `agentId`/`mode`，`restore_all_threads` 一律
+    /// 写死 `ada-coding` —— 于是 PM 会话重启后全部变成 CODING。
+    #[test]
+    fn test_session_identity_survives_restore() -> Result<()> {
+        let temp_dir = std::env::temp_dir().join(format!("a_da_identity_{}", uuid::Uuid::new_v4()));
+        let manager = SessionManager::new(Some(temp_dir.clone()));
+        let ws = "E:/identity_ws";
+
+        // 1. PM 会话：身份必须进 header
+        let header = manager.create_session_bound(
+            "thread_pm_1",
+            ws,
+            Some("PM 会话"),
+            None,
+            None,
+            Some("ada-pm"),
+            Some(agent_proto::AgentMode::Pm),
+        )?;
+        assert_eq!(header.agent_id.as_deref(), Some("ada-pm"));
+        assert_eq!(header.mode.as_deref(), Some("pm"));
+
+        // 2. 重启（重新构造管理器）后还原
+        let restarted = SessionManager::new(Some(temp_dir.clone()));
+        let threads = restarted.restore_all_threads();
+        let pm = threads
+            .iter()
+            .find(|t| t.id == "thread_pm_1")
+            .expect("PM 会话必须被还原");
+        assert_eq!(
+            pm.agent_id.as_deref(),
+            Some("ada-pm"),
+            "还原后必须仍是 PM，不能变回 ada-coding"
+        );
+        assert_eq!(pm.mode, Some(agent_proto::AgentMode::Pm));
+
+        // 3. 老文件（header 里没有 agentId/mode）仍要能解析，并按缺省处理
+        let legacy_path = manager.get_session_path(ws, "thread_legacy_1");
+        std::fs::write(
+            &legacy_path,
+            "{\"type\":\"session\",\"version\":1,\"id\":\"thread_legacy_1\",\"title\":\"老会话\",\"workspace\":\"E:/identity_ws\",\"createdAt\":1,\"updatedAt\":1}\n",
+        )?;
+        let threads = SessionManager::new(Some(temp_dir.clone())).restore_all_threads();
+        let legacy = threads
+            .iter()
+            .find(|t| t.id == "thread_legacy_1")
+            .expect("老会话必须被还原");
+        assert_eq!(legacy.agent_id.as_deref(), Some("ada-coding"));
+        assert_eq!(legacy.mode, Some(agent_proto::AgentMode::Code));
+
+        // 4. 运行期切换身份也要落盘
+        manager.update_session_identity(
+            "thread_legacy_1",
+            Some("ada-pm"),
+            Some(agent_proto::AgentMode::Pm),
+            Some(ws),
+        )?;
+        let threads = SessionManager::new(Some(temp_dir.clone())).restore_all_threads();
+        let switched = threads
+            .iter()
+            .find(|t| t.id == "thread_legacy_1")
+            .expect("切换后的会话必须被还原");
+        assert_eq!(switched.agent_id.as_deref(), Some("ada-pm"));
+        assert_eq!(switched.mode, Some(agent_proto::AgentMode::Pm));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
 
     #[test]
     fn test_session_lifecycle() -> Result<()> {

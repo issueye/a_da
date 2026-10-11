@@ -287,6 +287,8 @@ mod tests {
                 updated_at: 2,
                 parent_id: None,
                 subagent_id: None,
+                agent_id: None,
+                mode: None,
                 plugin_data: None,
             },
         )

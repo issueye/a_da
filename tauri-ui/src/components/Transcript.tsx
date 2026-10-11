@@ -47,7 +47,9 @@ import {
 import type { Item, ToolCallItem, QuestionData, AgentMode } from '../types'
 import { agentClient } from '../client/ws-client'
 import { MarkdownRenderer } from './MarkdownRenderer'
+import { AskUserPrompt } from './AskUserPrompt'
 import { TodoFloatingPanel } from './TodoFloatingPanel'
+import { notify } from './ToastHost'
 
 interface TranscriptProps {
   threadId?: string
@@ -55,7 +57,7 @@ interface TranscriptProps {
   running: boolean
   activeWorkspace?: string
   currentMode?: AgentMode
-  onAnswerQuestion: (callId: string, choice?: string, text?: string) => void
+  onAnswerQuestion: (callId: string, choice?: string, text?: string, choices?: string[]) => void
   onDecideApproval: (toolItemId: string, approved: boolean) => void
   onRetry?: () => void
   onSelectThread?: (threadId: string) => void
@@ -375,7 +377,7 @@ const TranscriptItemRow: React.FC<{
   item: Item
   running: boolean
   threadId?: string
-  onAnswerQuestion: (callId: string, choice?: string, text?: string) => void
+  onAnswerQuestion: (callId: string, choice?: string, text?: string, choices?: string[]) => void
   onDecideApproval: (toolItemId: string, approved: boolean) => void
   onRetry?: () => void
   onSelectThread?: (threadId: string) => void
@@ -680,6 +682,25 @@ function formatTimeMs(ts?: number): string {
 }
 
 /**
+ * 运行中卡片的**实时计时**。
+ *
+ * 委派出去的子智能体动辄跑几分钟，中间可能长时间没有新内容落盘。没有这个秒表，
+ * 用户看到的就是一张完全静止的卡片——分不清"它在干活"还是"它卡死了"。
+ */
+const LiveElapsed: React.FC<{ since?: number; className?: string }> = ({ since, className }) => {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [])
+  if (!since) return null
+  const secs = Math.max(0, Math.round((now - since) / 1000))
+  const text =
+    secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m${String(secs % 60).padStart(2, '0')}s`
+  return <span className={className}>已运行 {text}</span>
+}
+
+/**
  * 工具调用卡片（ToolCard）
  * 严格对齐 src/ui/Transcript.tsx ToolCard 哲学：
  * 采用浅色系次要字色与弱边框，和正文回复形成明晰的视觉层级区分
@@ -687,12 +708,15 @@ function formatTimeMs(ts?: number): string {
 const ToolCard: React.FC<{
   item: Item
   onDecideApproval: (toolItemId: string, approved: boolean) => void
-  onAnswerQuestion: (callId: string, choice?: string, text?: string) => void
+  onAnswerQuestion: (callId: string, choice?: string, text?: string, choices?: string[]) => void
   onSelectThread?: (threadId: string) => void
   currentThreadId?: string
 }> = ({ item, onDecideApproval, onAnswerQuestion, onSelectThread, currentThreadId }) => {
   const toolName = item.tool || item.name || 'tool'
-  const [open, setOpen] = useState(toolName === 'invoke_subagent' || false)
+  // 默认**收缩**：子智能体卡片内容很长（任务书 + 步骤 + 汇报），展开交给用户点。
+  // 注意等待答复的工具（ask_user / 待批准）由下面的 `(open || isAwaiting)` 自动展开，
+  // 所以收缩默认值不会把"要用户操作的卡片"藏起来。
+  const [open, setOpen] = useState(false)
   const [showSubagentSteps, setShowSubagentSteps] = useState(false)
   const [replyText, setReplyText] = useState('')
   const toolStatus = item.state || item.status || 'done'
@@ -719,6 +743,17 @@ const ToolCard: React.FC<{
   const finishedAt = item.finishedAt ?? structuredData?.finished_at ?? structuredData?.finishedAt
   const resultStatus = structuredData?.status || (item.state || item.status)
 
+  // 子智能体回执里的两个关键诊断字段（`SubagentRunResult` 序列化在 details / result 上）：
+  // - `errorMessage`：为什么失败（模型调用失败：<原文> / 步数上限 / 被取消 …）
+  // - `promptTokens`：它跑过的最大 prompt 用量（上下文撑爆是首要失败根因）
+  const subagentDetails: any = (item.details as any) || structuredData || {}
+  const subagentErrorReason: string =
+    (typeof subagentDetails.errorMessage === 'string' && subagentDetails.errorMessage.trim()) ||
+    (typeof item.error === 'string' && item.error.trim()) ||
+    ''
+  const subagentPromptTokens: number | undefined =
+    typeof subagentDetails.promptTokens === 'number' ? subagentDetails.promptTokens : undefined
+
   const rawQuestion = item.question || (item.details as any)?.question
   const isQuestionTool = toolName === 'ask_user' || Boolean(rawQuestion)
 
@@ -735,8 +770,17 @@ const ToolCard: React.FC<{
     structuredData?.workspace
 
   // 解析并匹配对应的子智能体会话 ID
+  //
+  // 这里的兜底顺序是"点谁都是同一个会话"的老病根：早先有两条过宽的回落——
+  // `!t.parentId`（任何没有父关系的子会话都算）与"同工作区的 coding 会话"（任何会话都算），
+  // 于是一排子智能体卡片点进去可能全是同一个。现在的规则是**父子锚定 + 认领互斥**：
+  // 只认本卡片名下（`parentId === 当前父会话`）且没有被别的卡片认领过的子会话；
+  // 定位不到就如实返回 undefined（调用方给提示），绝不乱跳。
   const subagentThreadId = (() => {
     if (toolName !== 'invoke_subagent') return undefined
+    const threads = agentClient.snapshot.threads || []
+
+    // 1) 回执/监视任务里带了确切 id（最可靠）
     const explicitId =
       (item.details as any)?.threadId ||
       (item.details as any)?.subagent_thread_id ||
@@ -746,33 +790,66 @@ const ToolCard: React.FC<{
       (item.args as any)?.threadId
     if (explicitId) return explicitId
 
-    // 优先匹配父子关系一致且角色吻合的会话
-    const matchedWithRole = agentClient.snapshot.threads.find(
-      (t) =>
-        t.isSubagent &&
-        ((currentThreadId && t.parentId === currentThreadId) || (item.id && t.parentId === item.id)) &&
-        (subagentRole && (t.subagentId === subagentRole || t.title?.includes(subagentRole)))
-    )
-    if (matchedWithRole) return matchedWithRole.id
+    // 2) 已被**别的委派卡片**认领的子会话，本卡片不得再认领
+    const claimed = new Set<string>()
+    const parentThread = threads.find((t) => t.id === currentThreadId)
+    for (const it of parentThread?.items || []) {
+      if (it.id === item.id) continue
+      const d: any = (it as any).details
+      const bound = d?.threadId || d?.subagent_thread_id
+      if (typeof bound === 'string' && bound) claimed.add(bound)
+    }
 
-    // 其次匹配父子关系一致的子会话
-    const matchedByParent = agentClient.snapshot.threads.find(
-      (t) =>
-        t.isSubagent &&
-        ((currentThreadId && t.parentId === currentThreadId) || (item.id && t.parentId === item.id))
-    )
-    if (matchedByParent) return matchedByParent.id
-
-    // 回落兜底：匹配近期创建的角色匹配子会话（近30分钟内）
     const approxTime = startedAt || item.createdAt || Date.now()
-    const matchedByRoleRecent = agentClient.snapshot.threads.find(
+    const isMyChild = (t: any) =>
+      Boolean(t.isSubagent) &&
+      !claimed.has(t.id) &&
+      ((currentThreadId && t.parentId === currentThreadId) ||
+        (item.id && t.parentId === item.id))
+
+    // 时间最接近本卡片开始时刻的那个（同一父会话可能先后派过多个子智能体）
+    const nearestByTime = (list: any[]) =>
+      list
+        .slice()
+        .sort(
+          (a, b) =>
+            Math.abs((a.createdAt || 0) - approxTime) - Math.abs((b.createdAt || 0) - approxTime)
+        )[0]
+
+    // 3) 本卡片名下：角色吻合优先，其次按时间取最近的
+    const sameParent = threads.filter(isMyChild)
+    const roleMatch = sameParent.filter(
+      (t) => subagentRole && (t.subagentId === subagentRole || t.title?.includes(subagentRole))
+    )
+    if (roleMatch.length) return nearestByTime(roleMatch)?.id
+    if (sameParent.length) return nearestByTime(sameParent)?.id
+
+    // 4) 老数据兜底：父关系没落盘，只能靠"角色吻合 + 时间接近"（仍要求是子智能体会话且未被认领）
+    const roleRecent = threads.filter(
       (t) =>
-        t.isSubagent &&
+        Boolean(t.isSubagent) &&
+        !claimed.has(t.id) &&
+        subagentRole &&
         (t.subagentId === subagentRole || t.title?.includes(subagentRole)) &&
         Math.abs((t.createdAt || 0) - approxTime) < 30 * 60 * 1000
     )
-    return matchedByRoleRecent?.id
+    return nearestByTime(roleRecent)?.id
   })()
+
+  // 独立打开或切换至子智能体会话
+  const handleOpenSubagentThread = () => {
+    if (!onSelectThread) return
+    if (subagentThreadId) {
+      onSelectThread(subagentThreadId)
+      return
+    }
+    // 定位不到就**如实说**，绝不"随便挑一个子会话跳过去"——那正是"点谁都是同一个"的来源。
+    // 同时催一次会话列表刷新（子会话可能刚落盘、还没进快照）。
+    if ((agentClient as any).refreshThreads) {
+      ;(agentClient as any).refreshThreads()
+    }
+    notify({ message: '还没定位到该子智能体的独立会话（可能尚未落盘），稍后再试', level: 'info' })
+  }
 
   // 提取子智能体独立会话实体
   const subagentThread = subagentThreadId
@@ -914,15 +991,15 @@ const ToolCard: React.FC<{
 
         {/* 耗时与状态指示：浅灰色 */}
         <div className="flex items-center space-x-1.5 flex-shrink-0">
-          {toolName === 'invoke_subagent' && subagentThreadId && onSelectThread && (
+          {toolName === 'invoke_subagent' && onSelectThread && (
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation()
-                onSelectThread(subagentThreadId)
+                handleOpenSubagentThread()
               }}
               className="flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] font-medium text-purple-600 dark:text-purple-400 hover:bg-purple-500/15 border border-purple-500/25 transition-colors cursor-pointer"
-              title="切换至子智能体对话"
+              title="切换至子智能体独立对话"
             >
               <span>查看子对话</span>
               <ExternalLink size={9} />
@@ -972,52 +1049,8 @@ const ToolCard: React.FC<{
                   {questionData.question}
                 </div>
 
-                {questionData.options && questionData.options.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 pt-0.5">
-                    {questionData.options.map((opt: any) => (
-                      <button
-                        key={opt.value}
-                        onClick={() => onAnswerQuestion(questionData.callId, opt.value)}
-                        className="px-2.5 py-1 rounded-lg bg-white dark:bg-blue-900/40 hover:bg-blue-50 dark:hover:bg-blue-800/50 border border-blue-200 dark:border-blue-700/50 text-blue-700 dark:text-blue-200 text-xs font-medium transition-colors shadow-xs"
-                      >
-                        {opt.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                <div className="flex items-center space-x-1.5 pt-1">
-                  <input
-                    type="text"
-                    value={replyText}
-                    onChange={(e) => setReplyText(e.target.value)}
-                    placeholder="输入自定义答复或说明..."
-                    className="flex-1 bg-white dark:bg-black/30 border border-blue-200 dark:border-blue-900/50 rounded-lg px-2.5 py-1 text-zinc-900 dark:text-zinc-100 text-xs outline-none focus:border-blue-500 shadow-xs"
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && replyText.trim()) {
-                        onAnswerQuestion(questionData.callId, undefined, replyText.trim())
-                        setReplyText('')
-                      }
-                    }}
-                  />
-                  <button
-                    onClick={() => {
-                      if (replyText.trim()) {
-                        onAnswerQuestion(questionData.callId, undefined, replyText.trim())
-                        setReplyText('')
-                      }
-                    }}
-                    className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-medium transition-colors shadow-xs"
-                  >
-                    提交
-                  </button>
-                  <button
-                    onClick={() => onAnswerQuestion(questionData.callId, undefined, '用户确认继续')}
-                    className="px-2.5 py-1 rounded-lg bg-zinc-200/70 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-xs transition-colors"
-                  >
-                    跳过
-                  </button>
-                </div>
+                {/* 作答条：单选点一下即答；多选（题目声明 multi_select 或用户自己切换）勾选后提交 */}
+                <AskUserPrompt question={questionData} onAnswer={onAnswerQuestion} />
               </div>
             )}
 
@@ -1074,6 +1107,7 @@ const ToolCard: React.FC<{
                       <div className="flex items-center space-x-1.5 px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-300 text-[10.5px] font-medium animate-pulse">
                         <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-ping" />
                         <span>正在独立执行中...</span>
+                        <LiveElapsed since={startedAt || item.at} className="font-mono opacity-80" />
                       </div>
                     ) : isError ? (
                       <span className="px-2 py-0.5 rounded text-[10.5px] font-medium bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20">
@@ -1085,18 +1119,19 @@ const ToolCard: React.FC<{
                       </span>
                     )}
 
-                    {subagentThreadId && onSelectThread && (
+                    {onSelectThread && (
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation()
-                          onSelectThread(subagentThreadId)
+                          handleOpenSubagentThread()
                         }}
                         className="flex items-center space-x-1 px-2.5 py-1 rounded-md bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium transition-colors shadow-xs hover:shadow cursor-pointer"
-                        title="切换并查看该子智能体的独立对话流"
+                        title="在顶部标签页中独立打开并查看该子智能体"
                       >
-                        <span>打开子智能体对话</span>
-                        <ExternalLink size={12} />
+                        <Bot size={13} />
+                        <span>在标签独立查看</span>
+                        <ExternalLink size={11} />
                       </button>
                     )}
                   </div>
@@ -1275,6 +1310,31 @@ const ToolCard: React.FC<{
                       <span className="text-blue-600 dark:text-blue-400 font-semibold">{durationMs}ms</span>
                     </span>
                   )}
+                  {subagentPromptTokens != null && (
+                    <span className="flex items-center space-x-1" title="子智能体跑过的最大 prompt 用量（上下文规模）">
+                      <span className="text-zinc-400 dark:text-zinc-500 font-sans">末轮上下文:</span>
+                      <span
+                        className={
+                          subagentPromptTokens >= 200_000
+                            ? 'text-amber-600 dark:text-amber-400 font-semibold'
+                            : 'text-zinc-600 dark:text-zinc-300'
+                        }
+                      >
+                        {formatTokenShort(subagentPromptTokens)}
+                      </span>
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* 失败原因：必须直接写在卡片上，别让人去翻日志猜 */}
+              {isError && subagentErrorReason && (
+                <div className="flex items-start space-x-1.5 p-2 rounded bg-rose-500/10 border border-rose-500/20 text-[11px] text-rose-700 dark:text-rose-300">
+                  <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
+                  <span className="font-sans break-all">
+                    <span className="font-medium">失败原因：</span>
+                    {subagentErrorReason}
+                  </span>
                 </div>
               )}
 
@@ -1516,56 +1576,15 @@ function CopyButton({ text, label = '复制' }: { text: string; label?: string }
 /** 提问卡片组件（QuestionCard） */
 const QuestionCardItem: React.FC<{
   question: QuestionData
-  onAnswer: (callId: string, choice?: string, text?: string) => void
+  onAnswer: (callId: string, choice?: string, text?: string, choices?: string[]) => void
 }> = ({ question, onAnswer }) => {
-  const [customText, setCustomText] = useState('')
-
   return (
     <div className="p-2.5 border border-blue-500/30 bg-blue-50/40 dark:bg-blue-950/20 rounded-xl space-y-2 text-xs w-full shadow-xs">
       <div className="font-semibold text-blue-900 dark:text-blue-200">
         {question.question}
       </div>
 
-      {question.options && question.options.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {question.options.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => onAnswer(question.callId, opt.value)}
-              className="px-2.5 py-1 rounded-lg bg-white dark:bg-blue-600/30 hover:bg-blue-50 dark:hover:bg-blue-600/50 border border-blue-200 dark:border-blue-500/40 text-blue-700 dark:text-blue-100 text-xs font-medium transition-colors shadow-xs"
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      <div className="flex items-center space-x-1.5 pt-0.5">
-        <input
-          type="text"
-          value={customText}
-          onChange={(e) => setCustomText(e.target.value)}
-          placeholder="输入自定义答复..."
-          className="flex-1 bg-white dark:bg-black/40 border border-blue-200 dark:border-blue-500/30 rounded-lg px-2.5 py-1 text-zinc-900 dark:text-zinc-100 text-xs outline-none focus:border-blue-500 shadow-xs"
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && customText.trim()) {
-              onAnswer(question.callId, undefined, customText.trim())
-              setCustomText('')
-            }
-          }}
-        />
-        <button
-          onClick={() => {
-            if (customText.trim()) {
-              onAnswer(question.callId, undefined, customText.trim())
-              setCustomText('')
-            }
-          }}
-          className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-medium transition-colors shadow-sm"
-        >
-          提交
-        </button>
-      </div>
+      <AskUserPrompt question={question} onAnswer={onAnswer} />
     </div>
   )
 }

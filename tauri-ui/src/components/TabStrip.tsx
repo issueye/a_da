@@ -1,4 +1,4 @@
-import React, { useRef } from 'react'
+import React, { useRef, useEffect } from 'react'
 import { Plus, X, MessageSquare, Bot, CheckCircle2, XCircle, Clock, Circle, Loader2 } from 'lucide-react'
 import type { Thread } from '../types'
 import { resolveThreadStatus } from './Sidebar'
@@ -38,6 +38,17 @@ export const TabStrip: React.FC<TabStripProps> = ({
     const t = threadMap.get(id)
     if (t) {
       openTabs.push(t)
+    } else if (id) {
+      openTabs.push({
+        id,
+        title: '子智能体会话...',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        mode: 'code',
+        workspace: '',
+        items: [],
+        isSubagent: true,
+      })
     }
   }
 
@@ -46,6 +57,16 @@ export const TabStrip: React.FC<TabStripProps> = ({
     const active = threadMap.get(activeThreadId)
     if (active) openTabs.push(active)
   }
+
+  // 激活会话变动时，平滑滚动至当前激活的标签页
+  useEffect(() => {
+    if (scrollRef.current && activeThreadId) {
+      const activeEl = scrollRef.current.querySelector<HTMLElement>(`[data-tab-id="${activeThreadId}"]`)
+      if (activeEl) {
+        activeEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
+      }
+    }
+  }, [activeThreadId, openTabs.length])
 
   const isThreadRunning = (threadId: string) => {
     if (runningThreadIds.includes(threadId)) return true
@@ -63,7 +84,13 @@ export const TabStrip: React.FC<TabStripProps> = ({
         {openTabs.map((thread) => {
           const isSelected = thread.id === activeThreadId
           const running = isThreadRunning(thread.id)
-          const isSubagent = Boolean(thread.isSubagent)
+          const isSubagent = Boolean(
+            thread.isSubagent ||
+            thread.parentId ||
+            thread.title?.includes('子代理') ||
+            thread.title?.includes('子智能体') ||
+            (thread.agentId === 'ada-coding' && thread.parentId)
+          )
           const closable = openTabs.length > 1
           const isPm = thread.mode === 'pm' || thread.agentId === 'ada-pm' || thread.agentId === 'pm-assistant'
           const statusInfo = resolveThreadStatus(thread, threadMap, runningThreadIds)
@@ -71,6 +98,7 @@ export const TabStrip: React.FC<TabStripProps> = ({
           return (
             <div
               key={thread.id}
+              data-tab-id={thread.id}
               onClick={() => onSelectTab(thread.id)}
               className={`group flex items-center justify-between h-7 px-2.5 rounded-lg text-xs cursor-pointer transition-all min-w-[120px] max-w-[180px] flex-shrink-0 border ${
                 isSelected
@@ -130,6 +158,12 @@ export const TabStrip: React.FC<TabStripProps> = ({
                 {isPm && !isSubagent && (
                   <span className="px-1 py-0.2 rounded text-[8px] bg-amber-500/15 text-amber-600 dark:text-amber-400 font-semibold flex-shrink-0 leading-tight">
                     ada-pm
+                  </span>
+                )}
+
+                {isSubagent && (
+                  <span className="px-1 py-0.2 rounded text-[8px] bg-purple-500/15 text-purple-600 dark:text-purple-400 font-semibold flex-shrink-0 leading-tight">
+                    子智能体
                   </span>
                 )}
               </div>

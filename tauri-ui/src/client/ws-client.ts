@@ -36,12 +36,11 @@ import { reconnectDelayMs } from './reconnect-policy'
 
 export type Listener = (snapshot: ClientSnapshot) => void
 
-export type DesktopMode = 'direct' | 'gateway'
+/** 桌面端只有网关模式（直连模式已下线） */
+export type DesktopMode = 'gateway'
 
+/** 桌面端连接配置（**只有网关模式**；直连时代的 mode / agentConnectUrl / agentBinPath 已删除） */
 export interface DesktopConfig {
-  mode: DesktopMode
-  agent_connect_url?: string | null
-  agent_bin_path?: string | null
   gateway_url?: string | null
   gateway_bin_path?: string | null
   token?: string | null
@@ -70,7 +69,7 @@ async function resolveCoreConnection(
       const info = await invoke<CoreInfo>('get_core_info')
       if (info && info.alive && (info.port > 0 || Boolean(info.url))) {
         const resolvedUrl = info.url || `ws://127.0.0.1:${info.port}/rpc`
-        console.log(`[AgentWS] 获取到核心服务连接信息: ${resolvedUrl} (mode: ${info.mode || 'direct'})`)
+        console.log(`[AgentWS] 获取到核心服务连接信息: ${resolvedUrl} (mode: ${info.mode || 'gateway'})`)
         return {
           url: resolvedUrl,
           token: info.token || '',
@@ -90,7 +89,7 @@ async function resolveCoreConnection(
   }
 }
 
-/** 获取桌面端运行模式配置 */
+/** 获取桌面端连接配置（网关模式） */
 export async function getDesktopConfig(): Promise<DesktopConfig> {
   try {
     const isTauri = typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__TAURI__)
@@ -101,7 +100,7 @@ export async function getDesktopConfig(): Promise<DesktopConfig> {
   } catch (err) {
     console.warn('[AgentWS] 获取桌面端配置失败:', err)
   }
-  return { mode: 'direct' }
+  return {}
 }
 
 /** 保存桌面端运行模式配置 */
@@ -286,6 +285,11 @@ export class AgentWebSocketClient {
     }
   }
 
+  private creatingThreadPromise: Promise<{ threadId: string } | null> | null = null
+
+  /** 已经回告过服务端的激活会话 id（防止快照高频到达时重复发 `ui.activeThread`）。 */
+  private lastActiveSyncSent: string = ''
+
   public snapshot: ClientSnapshot = {
     activeThreadId: '',
     threads: [],
@@ -306,7 +310,7 @@ export class AgentWebSocketClient {
     activeProviderId: '',
   }
 
-  public desktopMode: DesktopMode = 'direct'
+  public desktopMode: DesktopMode = 'gateway'
 
   constructor(
     private url: string = 'ws://127.0.0.1:52353/rpc',
@@ -514,7 +518,13 @@ export class AgentWebSocketClient {
     const payload = snap.payload || snap
 
     if (Array.isArray(payload.threads)) {
-      const existingMap = new Map(this.snapshot.threads.map((t) => [t.id, t]))
+      // 先摘出本地乐观创建、服务端还不知道的临时会话（`thread_tmp_*`）。
+      // 必须在覆盖 `this.snapshot.threads` **之前**取，否则它们已经不在数组里，
+      // 后面那段"保留临时会话"就成了永远不会命中的死代码——临时会话被服务端快照
+      // 冲掉、`activeThreadId` 却还指着它，界面就会落到别的会话上（看起来"没内容"）。
+      const existingThreads = this.snapshot.threads
+      const pendingTemps = existingThreads.filter((t) => t.id.startsWith('thread_tmp_'))
+      const existingMap = new Map(existingThreads.map((t) => [t.id, t]))
       this.snapshot.threads = payload.threads.map((t: any) => {
         const prev = existingMap.get(t.id)
         const newItemsRaw = Array.isArray(t.items) ? t.items : []
@@ -557,6 +567,13 @@ export class AgentWebSocketClient {
           items,
         }
       })
+
+      // 保留本地正在创建中的乐观临时会话，防止在等待 RPC 期间被服务端推送瞬态覆盖
+      for (const pt of pendingTemps) {
+        if (!this.snapshot.threads.some((t) => t.id === pt.id)) {
+          this.snapshot.threads.unshift(pt)
+        }
+      }
     }
 
     if (Array.isArray(payload.queue)) {
@@ -567,7 +584,8 @@ export class AgentWebSocketClient {
     // 只有在本地尚未设置 activeThreadId，或者当前 activeThreadId 在 threads 中已不存在时，才采用服务端推送的 activeThreadId
     const currentActiveExists =
       this.snapshot.activeThreadId &&
-      this.snapshot.threads.some((t) => t.id === this.snapshot.activeThreadId)
+      (this.snapshot.activeThreadId.startsWith('thread_tmp_') ||
+        this.snapshot.threads.some((t) => t.id === this.snapshot.activeThreadId))
 
     if (!currentActiveExists) {
       if (payload.activeThreadId) {
@@ -577,6 +595,22 @@ export class AgentWebSocketClient {
       } else if (this.snapshot.threads.length > 0) {
         this.snapshot.activeThreadId = this.snapshot.threads[0].id
       }
+    }
+
+    // 客户端激活的会话必须与服务端一致：服务端只给"它认为激活的 / 开着标签的 / 运行中的"
+    // 会话发 `items`。两边一旦不一致，界面就会把**有历史的会话渲染成空会话**
+    // （"新建对话点了没反应"也常常是这个原因——那个判据看的正是 items 长度）。
+    // 这里如实把客户端的激活会话回告服务端一次，不一致就纠正（同一 id 只发一次，避免刷屏）。
+    if (this.snapshot.activeThreadId === payload.activeThreadId) {
+      this.lastActiveSyncSent = ''
+    } else if (
+      this.snapshot.activeThreadId &&
+      !this.snapshot.activeThreadId.startsWith('thread_tmp_') &&
+      payload.activeThreadId &&
+      this.lastActiveSyncSent !== this.snapshot.activeThreadId
+    ) {
+      this.lastActiveSyncSent = this.snapshot.activeThreadId
+      void this.request('ui.activeThread', { threadId: this.snapshot.activeThreadId }).catch(() => {})
     }
 
     if (Array.isArray(payload.runningThreadIds)) {
@@ -718,9 +752,21 @@ export class AgentWebSocketClient {
   // --- 常用便捷业务调用 ---
 
   public async sendPrompt(text: string, images?: string[]) {
+    // 若当前正在异步创建会话，等待创建完毕获取真实 ID
+    if (this.creatingThreadPromise) {
+      try {
+        const created = await this.creatingThreadPromise
+        if (created?.threadId) {
+          this.snapshot.activeThreadId = created.threadId
+        }
+      } catch {
+        // 忽略异常，继续后续流程
+      }
+    }
+
     let targetThreadId = this.snapshot.activeThreadId
-    if (!targetThreadId) {
-      if (this.snapshot.threads.length > 0) {
+    if (!targetThreadId || targetThreadId.startsWith('thread_tmp_')) {
+      if (this.snapshot.threads.length > 0 && !this.snapshot.threads[0].id.startsWith('thread_tmp_')) {
         targetThreadId = this.snapshot.threads[0].id
         this.snapshot.activeThreadId = targetThreadId
       } else {
@@ -810,34 +856,66 @@ export class AgentWebSocketClient {
     const ws = workspace || activeThread?.workspace || this.snapshot.activeWorkspace
     const m = mode || this.snapshot.currentMode
     const resolvedAgentId = agentId || (m === 'pm' ? 'ada-pm' : 'ada-coding')
-    const res = await this.request<{ threadId: string }>('thread.create', {
+
+    // 0ms 乐观创建新会话：让界面在点击的瞬间立即定位到新会话界面，杜绝等待 RPC 过程中的界面停滞
+    const tempId = `thread_tmp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+    const optimisticThread: Thread = {
+      id: tempId,
+      title: m === 'pm' ? '新 PM 项目会话' : '新对话',
+      workspace: ws,
+      mode: m,
+      agentId: resolvedAgentId,
+      items: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+    this.snapshot.threads.unshift(optimisticThread)
+    this.snapshot.activeThreadId = tempId
+    this.snapshot.activeWorkspace = ws
+    this.snapshot.currentMode = m
+    this.snapshot.running = false
+    this.notify()
+
+    const createPromise = this.request<{ threadId: string }>('thread.create', {
       workspace: ws,
       mode: m,
       agentId: resolvedAgentId,
     })
-    if (res?.threadId) {
-      this.snapshot.activeThreadId = res.threadId
-      this.snapshot.activeWorkspace = ws
-      this.snapshot.currentMode = m
-      this.snapshot.running = (this.snapshot.runningThreadIds || []).includes(res.threadId)
-      // 服务端的即时快照可能先于本次响应抵达（id 已在列表中）。
-      // 此时以服务端数据为准，避免同一个会话在本地出现两份、被分到两个工作区组里
-      if (!this.snapshot.threads.some((t) => t.id === res.threadId)) {
-        const newThread: Thread = {
-          id: res.threadId,
-          title: m === 'pm' ? '新 PM 项目会话' : '新对话',
-          workspace: ws,
-          mode: m,
-          agentId: resolvedAgentId,
-          items: [],
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
+    this.creatingThreadPromise = createPromise
+
+    try {
+      const res = await createPromise
+      if (res?.threadId) {
+        // 将临时 ID 平滑替换为服务端真实 ID
+        const targetIdx = this.snapshot.threads.findIndex((t) => t.id === tempId)
+        if (targetIdx >= 0) {
+          this.snapshot.threads[targetIdx].id = res.threadId
+        } else if (!this.snapshot.threads.some((t) => t.id === res.threadId)) {
+          optimisticThread.id = res.threadId
+          this.snapshot.threads.unshift(optimisticThread)
         }
-        this.snapshot.threads.unshift(newThread)
+        if (this.snapshot.activeThreadId === tempId) {
+          this.snapshot.activeThreadId = res.threadId
+        }
+        this.snapshot.activeWorkspace = ws
+        this.snapshot.currentMode = m
+        this.snapshot.running = (this.snapshot.runningThreadIds || []).includes(res.threadId)
+        this.notify()
+      }
+      return res
+    } catch (err) {
+      // 若创建失败，回滚临时会话
+      this.snapshot.threads = this.snapshot.threads.filter((t) => t.id !== tempId)
+      if (this.snapshot.activeThreadId === tempId) {
+        this.snapshot.activeThreadId = this.snapshot.threads[0]?.id || ''
       }
       this.notify()
+      throw err
+    } finally {
+      if (this.creatingThreadPromise === createPromise) {
+        this.creatingThreadPromise = null
+      }
     }
-    return res
   }
 
   public deleteThread(threadId: string) {
@@ -1013,8 +1091,9 @@ export class AgentWebSocketClient {
     return this.request('skill.setEnabled', { id, enabled })
   }
 
-  public answerQuestion(callId: string, choice?: string, text?: string) {
-    return this.request('question.answer', { callId, choice, text })
+  public answerQuestion(callId: string, choice?: string, text?: string, choices?: string[]) {
+    // 多选走 `choices: [...]`；单选仍走 `choice`（后端两条路都收）
+    return this.request('question.answer', { callId, choice, text, choices })
   }
 
   public decideApproval(toolItemId: string, approved: boolean) {

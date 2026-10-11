@@ -5,6 +5,9 @@ use tokio::sync::oneshot;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QuestionAnswer {
     pub choice: Option<String>,
+    /// 多选答复：用户勾选的选项 id 列表（单选路径留空）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choices: Option<Vec<String>>,
     pub text: Option<String>,
     pub answered_by: String, // "user" | "aborted"
 }
@@ -24,6 +27,7 @@ pub fn init_question_registrar() {
             match rx.await {
                 Ok(ans) => Ok(agent_toolkit::core::ask_user::QuestionAnswerPayload {
                     choice: ans.choice,
+                    choices: ans.choices,
                     text: ans.text,
                     answered_by: ans.answered_by,
                 }),
@@ -78,6 +82,7 @@ impl QuestionManager {
         for (_, tx) in map.drain() {
             let _ = tx.send(QuestionAnswer {
                 choice: None,
+                choices: None,
                 text: None,
                 answered_by: "aborted".to_string(),
             });
@@ -90,6 +95,7 @@ impl QuestionManager {
         if let Some(tx) = map.remove(call_id) {
             let _ = tx.send(QuestionAnswer {
                 choice: None,
+                choices: None,
                 text: None,
                 answered_by: "aborted".to_string(),
             });
@@ -113,6 +119,7 @@ mod tests {
             "call_01",
             QuestionAnswer {
                 choice: Some("c1".to_string()),
+                choices: None,
                 text: Some("使用方案 A".to_string()),
                 answered_by: "user".to_string(),
             },

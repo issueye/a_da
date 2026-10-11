@@ -10,6 +10,7 @@
 //! | `ApprovalGate` | [`ReadonlyEnforcingGate`] | 子智能体**没有用户可以问**，所以不能"等批准"；只读档位下的写工具必须**直接拒绝**（失败安全） |
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use agent_base::domain::{AgentError, AgentMessage, ApprovalPolicy, DenialKind, FailDirection};
@@ -17,6 +18,8 @@ use agent_base::ports::{
     ApprovalGate, ApprovalOutcome, ApprovalRequest, AnsweredBy, BoxFuture, CancelToken,
     PromptSource, SessionStore,
 };
+
+use crate::session::SessionManager;
 
 /// 只给出该 profile 的系统提示词（AGENTS.md §3：不继承主线程提示词）。
 pub struct ProfilePrompt {
@@ -35,18 +38,24 @@ impl PromptSource for ProfilePrompt {
     }
 }
 
-/// 一次性委派的临时会话存储（纯内存，进程内隔离）。
-///
-/// 刻意不落盘：子智能体的中间推理与工具输出属**过程数据**，主会话只需要最终摘要
-/// （`SubagentRunResult::summary`）。legacy 也是纯内存，这里保持一致语义。
+/// 子智能体会话存储（纯内存隔离，可附加工作区磁盘持久化以便独立查看）。
 #[derive(Default)]
 pub struct EphemeralSessionStore {
     sessions: Mutex<HashMap<String, Vec<AgentMessage>>>,
+    workspace: Option<PathBuf>,
+    session_mgr: Option<SessionManager>,
 }
 
 impl EphemeralSessionStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 启用工作区磁盘持久化同步，支持前端独立查看子智能体会话
+    pub fn with_persistence(mut self, workspace: PathBuf, session_mgr: SessionManager) -> Self {
+        self.workspace = Some(workspace);
+        self.session_mgr = Some(session_mgr);
+        self
     }
 
     /// 已记录的消息数（诊断/测试）。
@@ -88,6 +97,11 @@ impl SessionStore for EphemeralSessionStore {
                 .entry(thread_id.to_string())
                 .or_default()
                 .push(message.clone());
+
+            if let (Some(mgr), Some(ws)) = (&self.session_mgr, &self.workspace) {
+                let _ = mgr.append_message(thread_id, message.clone(), Some(&ws.to_string_lossy()));
+            }
+
             Ok(())
         })
     }

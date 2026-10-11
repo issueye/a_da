@@ -7,7 +7,9 @@ pub mod types;
 pub use gate::{HostApprovalGate, DEFAULT_APPROVAL_TIMEOUT};
 pub use guard::{extract_command, is_destructive_command, should_ask_approval};
 pub use manager::ApprovalManager;
-pub use question_manager::{global_question_manager, QuestionAnswer, QuestionManager};
+pub use question_manager::{
+    global_question_manager, init_question_registrar, QuestionAnswer, QuestionManager,
+};
 pub use types::ApprovalGuardConfig;
 
 #[cfg(test)]

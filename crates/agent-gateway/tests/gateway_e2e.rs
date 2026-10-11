@@ -89,6 +89,7 @@ async fn gateway_with_stub_agent(workspace: &str) -> (Arc<Gateway>, u16) {
         status: AgentStatus::Ready,
         pid: None,
         started_at: 1,
+        products: vec!["ada-coding".to_string()],
     });
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("网关绑定");
