@@ -73,6 +73,7 @@ interface EmptyConversationViewProps {
   onOpenChanges?: () => void
   onOpenDebug?: () => void
   onNewThread?: () => void
+  waitingThreads?: Array<{ id: string; title: string }>
   onCompact?: () => void
 }
 
@@ -108,6 +109,7 @@ export const EmptyConversationView: React.FC<EmptyConversationViewProps> = ({
   onOpenChanges,
   onOpenDebug,
   onNewThread,
+  waitingThreads,
   onCompact,
 }) => {
   const isPm = mode === 'pm' || thread?.mode === 'pm' || thread?.agentId === 'ada-pm' || thread?.agentId === 'pm-assistant'
@@ -220,6 +222,7 @@ export const EmptyConversationView: React.FC<EmptyConversationViewProps> = ({
             onOpenChanges={onOpenChanges}
             onOpenDebug={onOpenDebug}
             onNewThread={onNewThread}
+          waitingThreads={waitingThreads}
             onCompact={onCompact}
           />
         </div>

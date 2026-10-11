@@ -789,6 +789,8 @@ impl AgentStore {
             }
         }
         self.pending_questions.retain(|item| item.call_id != call_id);
+        // 该工具不再等待 → 若这个会话已经没有别的等待项，就从"等你操作"里摘掉
+        self.refresh_waiting_state(thread_id);
     }
 
     /// 标记工具调用正在等待用户提问答复
@@ -819,6 +821,38 @@ impl AgentStore {
                 call_id: call_id.to_string(),
                 question: q,
             });
+        }
+
+        // 提问同样属于"等你操作"：别的会话里也要能看见
+        self.refresh_waiting_state(thread_id);
+    }
+
+    /// 维护 `waiting_thread_ids`：界面靠它做"**别的会话正在等你操作**"的全局提示。
+    ///
+    /// 这个字段以前只初始化、只进快照，**从来没被填过**——于是某个会话在等批准时，
+    /// 你在别的标签页上什么都看不到（实测：一条 `cargo test` 的审批请求等了 5 分钟超时
+    /// 被自动拒绝，用户完全不知道发生过）。
+    fn refresh_waiting_state(&mut self, thread_id: &str) {
+        let still_waiting = self
+            .threads
+            .iter()
+            .find(|t| t.id == thread_id)
+            .map(|t| {
+                t.items.iter().any(|it| {
+                    matches!(
+                        it,
+                        Item::Tool { status, .. }
+                            if status == "waiting_approval" || status == "awaiting"
+                    )
+                })
+            })
+            .unwrap_or(false);
+        if still_waiting {
+            if !self.waiting_thread_ids.iter().any(|id| id == thread_id) {
+                self.waiting_thread_ids.push(thread_id.to_string());
+            }
+        } else {
+            self.waiting_thread_ids.retain(|id| id != thread_id);
         }
     }
 
@@ -851,6 +885,9 @@ impl AgentStore {
                 }
             }
         }
+
+        // 让"别的会话在等你批准"这件事可见（否则只能在那条会话里看到，极易错过）
+        self.refresh_waiting_state(thread_id);
     }
 
     /// 完成当前轮次
@@ -1019,6 +1056,38 @@ mod tests {
         store.finish_tool_call(tid, "call_ui_1", true, Some("done".into()), Some(1), Some(0), Some(1), None);
         let after = status_of(&store);
         assert_ne!(after, "waiting_approval", "工具完成后不得仍停在等待批准：{after}");
+    }
+
+    /// 守门：`waiting_thread_ids` 必须如实反映"哪个会话在等你操作"。
+    ///
+    /// 这个字段以前只初始化、只进快照，**从来没被填过**——实测一条 `cargo test` 的审批
+    /// 请求静默等了 5 分钟超时被自动拒绝，用户在别的标签页上完全不知道发生过。
+    #[test]
+    fn test_waiting_thread_ids_track_pending_approval_and_question() {
+        let mut store = AgentStore::new("E:/codes/waiting_ws".to_string());
+        let tid = store.create_thread(Some("等待态".to_string()), None);
+        let tid = tid.as_str();
+        let is_waiting = |s: &AgentStore| s.waiting_thread_ids.iter().any(|id| id == tid);
+
+        // 1. 审批等待
+        store.start_tool_call(tid, "call_w1", "run_command", "{}");
+        assert!(!is_waiting(&store), "刚发起还不算等待");
+        store.set_tool_waiting_approval(tid, "call_w1", "run_command");
+        assert!(is_waiting(&store), "等待批准必须能被界面全局看见");
+
+        store.finish_tool_call(tid, "call_w1", true, Some("ok".into()), Some(1), Some(0), Some(1), None);
+        assert!(!is_waiting(&store), "答复/完成后必须摘掉，否则提示会一直挂着");
+
+        // 2. 提问等待同理
+        store.start_tool_call(tid, "call_q1", "ask_user", "{}");
+        store.set_tool_awaiting_question(
+            tid,
+            "call_q1",
+            serde_json::json!({"question": "选哪个？", "choices": []}),
+        );
+        assert!(is_waiting(&store), "等待用户答复同样属于'等你操作'");
+        store.finish_tool_call(tid, "call_q1", true, Some("ok".into()), Some(1), Some(0), Some(1), None);
+        assert!(!is_waiting(&store));
     }
 
     /// 守门：**运行中的子智能体会话必须继续从磁盘回流内容**。

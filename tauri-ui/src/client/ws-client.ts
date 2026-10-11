@@ -621,6 +621,11 @@ export class AgentWebSocketClient {
       this.snapshot.running = false
     }
 
+    // 正在等待用户操作（审批/提问）的会话：以前服务端发了、这里没接，界面因此看不见
+    if (Array.isArray(payload.waitingThreadIds)) {
+      this.snapshot.waitingThreadIds = payload.waitingThreadIds
+    }
+
     if (payload.workspace?.project) {
       this.snapshot.activeWorkspace = payload.workspace.project
     }

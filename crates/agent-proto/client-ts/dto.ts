@@ -192,6 +192,8 @@ export interface ClientSnapshot {
   effort: Effort
   running: boolean
   runningThreadIds: string[]
+  /** 正在等待用户操作（审批 / 提问）的会话——用于"别的会话在等你"的全局提示 */
+  waitingThreadIds?: string[]
   queue: QueuedItem[]
   providers?: ProviderEntry[]
   activeProviderId?: string

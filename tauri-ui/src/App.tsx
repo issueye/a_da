@@ -54,6 +54,20 @@ export function App() {
     snapshot.threads[0]
 
   /**
+   * **别的会话**正在等待用户操作（审批 / 提问）。
+   *
+   * 这些等待原本只在那条会话自己的对话流里可见，你在别的标签页上完全看不到——
+   * 实测一条 `cargo test` 的审批请求就这样静默等了 5 分钟超时被自动拒绝。
+   */
+  const waitingThreadsElsewhere = React.useMemo(() => {
+    const ids = snapshot.waitingThreadIds || []
+    if (ids.length === 0) return []
+    return snapshot.threads
+      .filter((t) => ids.includes(t.id) && t.id !== activeThread?.id)
+      .map((t) => ({ id: t.id, title: t.title || '未命名会话' }))
+  }, [snapshot.waitingThreadIds, snapshot.threads, activeThread?.id])
+
+  /**
    * 统一的"请求用户确认"入口（返回 Promise<boolean>）。
    *
    * 用应用自己的 `ConfirmModal`，**不用 `window.confirm`**——那是 WebView 的原生弹窗
@@ -544,6 +558,7 @@ export function App() {
               onOpenChanges={() => setChangesOpen(true)}
               onOpenDebug={() => setDebugOpen(true)}
               onNewThread={() => handleCreateThread(activeThread?.workspace || snapshot.activeWorkspace)}
+              waitingThreads={waitingThreadsElsewhere}
               onCompact={handleCompact}
             />
           ) : (
@@ -581,6 +596,7 @@ export function App() {
                 onOpenChanges={() => setChangesOpen(true)}
                 onOpenDebug={() => setDebugOpen(true)}
                 onNewThread={() => handleCreateThread(activeThread.workspace || snapshot.activeWorkspace)}
+                waitingThreads={waitingThreadsElsewhere}
                 activeChangeCount={activeChangeCount}
                 onAnswerQuestion={handleAnswerQuestion}
                 onPromoteQueueItem={(idx) => agentClient.promoteQueueItem(idx, activeThread?.id)}

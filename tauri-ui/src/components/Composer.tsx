@@ -14,6 +14,7 @@ import {
   ChevronDown,
   X,
   Shield,
+  ShieldAlert,
   Brain,
   Gauge,
   Database,
@@ -64,6 +65,13 @@ export interface ComposerProps {
   onOpenDebug?: () => void
   onOpenPlugins?: () => void
   onNewThread?: () => void
+  /**
+   * **别的会话**正在等待用户操作（审批 / 提问）。
+   *
+   * 审批与提问原本只在那条会话自己的对话流里可见——你在别的标签页上完全看不到，
+   * 实测一条审批请求就这样静默等了 5 分钟超时被自动拒绝。这里做全局提示。
+   */
+  waitingThreads?: Array<{ id: string; title: string }>
   activeChangeCount?: number
   centered?: boolean
 }
@@ -123,6 +131,7 @@ export const Composer: React.FC<ComposerProps> = ({
   onOpenDebug,
   onOpenPlugins,
   onNewThread,
+  waitingThreads,
   activeChangeCount = 0,
   centered = false,
 }) => {
@@ -590,6 +599,30 @@ export const Composer: React.FC<ComposerProps> = ({
             textareaRef.current?.focus()
           }}
         />
+      )}
+
+      {/* 0. 其它会话正在等你操作（审批 / 提问）——全局提示，避免静默超时 */}
+      {waitingThreads && waitingThreads.length > 0 && (
+        <div className="p-2 bg-rose-50 dark:bg-rose-950/30 border border-rose-300 dark:border-rose-700/50 rounded-xl shadow-lg flex flex-wrap items-center gap-2 animate-in fade-in slide-in-from-bottom-2 duration-150">
+          <span className="flex items-center space-x-1.5 text-xs font-semibold text-rose-800 dark:text-rose-200">
+            <ShieldAlert size={13} />
+            <span>有 {waitingThreads.length} 个会话正在等你批准/答复</span>
+          </span>
+          {waitingThreads.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => onSwitchThread?.(t.id)}
+              title={`前往会话：${t.title}`}
+              className="px-2 py-0.5 rounded-lg bg-white dark:bg-rose-900/40 hover:bg-rose-100 dark:hover:bg-rose-800/60 border border-rose-300/80 dark:border-rose-700/50 text-rose-900 dark:text-rose-100 text-[11px] font-medium transition-colors shadow-xs max-w-[220px] truncate"
+            >
+              {t.title || '未命名会话'}
+            </button>
+          ))}
+          <span className="text-[10px] text-rose-600/80 dark:text-rose-300/80">
+            （超时未答复会按安全方向自动拒绝）
+          </span>
+        </div>
       )}
 
       {/* 1. 待回答提问浮动置顶面板（对齐原版 PendingQuestionsFloatingPanel） */}

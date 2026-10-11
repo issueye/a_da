@@ -15,23 +15,61 @@ import type { Item, TodoStep } from '../types'
 export function parseTodosFromItem(item: Item): TodoStep[] | null {
   if (item.name !== 'todo' && item.tool !== 'todo') return null
 
-  // 1. 从 args.todos 直接读取
-  if (Array.isArray(item.args?.todos)) {
-    return item.args.todos as TodoStep[]
+  // `todo` 工具的真实参数是 `{action:"set"|"get"|"update", items:[{id,title,done}]}`，
+  // 而这里早先只认 `args.todos` / `output.todos` —— 于是**永远解析不到**，悬浮面板
+  // 一次都没出现过（实测：卡片显示"任务规划"，右上角却什么都没有）。
+  const normalize = (raw: any): TodoStep[] | null => {
+    if (!Array.isArray(raw) || raw.length === 0) return null
+    return raw.map((t: any) => {
+      const status: TodoStep['status'] =
+        t?.status === 'completed' || t?.status === 'in_progress' || t?.status === 'pending'
+          ? t.status
+          : t?.done === true
+          ? 'completed'
+          : 'pending'
+      return {
+        id: typeof t?.id === 'string' ? t.id : undefined,
+        title: String(t?.title ?? t?.text ?? ''),
+        status,
+      }
+    })
   }
 
-  // 2. 从 output JSON 反序列化读取
-  if (item.output) {
+  // 1. 参数对象里的 items / todos（模型直传）
+  const args: any = item.args
+  if (args && typeof args === 'object') {
+    const fromItems = normalize(args.items)
+    if (fromItems) return fromItems
+    const fromTodos = normalize(args.todos)
+    if (fromTodos) return fromTodos
+  }
+  // 参数可能是 JSON 字符串（历史数据 / 某些序列化路径）
+  if (typeof args === 'string' && args.trim().startsWith('{')) {
     try {
-      const parsed = JSON.parse(item.output)
-      if (Array.isArray(parsed?.todos)) return parsed.todos
+      const parsed = JSON.parse(args)
+      const fromItems = normalize(parsed?.items)
+      if (fromItems) return fromItems
+      const fromTodos = normalize(parsed?.todos)
+      if (fromTodos) return fromTodos
     } catch {}
   }
 
-  // 3. 从 result 中读取
-  if (item.result && typeof item.result === 'object') {
-    const res = item.result as any
-    if (Array.isArray(res?.todos)) return res.todos
+  // 2. 输出/回执里的 items / todos
+  if (typeof item.output === 'string' && item.output.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(item.output)
+      const fromItems = normalize(parsed?.items)
+      if (fromItems) return fromItems
+      const fromTodos = normalize(parsed?.todos)
+      if (fromTodos) return fromTodos
+    } catch {}
+  }
+  const res: any = item.result
+  if (res && typeof res === 'object') {
+    const fromItems = normalize(res.items)
+    if (fromItems) return fromItems
+    const fromTodos = normalize(res.todos)
+    if (fromTodos) return fromTodos
   }
 
   return null
@@ -63,15 +101,28 @@ export function getLatestTodoItem(items: Item[]): {
       }
     }
 
-    // 处理内部内嵌的多工具调用
+    // 处理内部内嵌的多工具调用（同样认 `items` —— `todo` 工具的真实参数名）
     if (Array.isArray(it.toolCalls)) {
       for (const call of it.toolCalls) {
-        if (call.name === 'todo' && Array.isArray((call.params as any)?.todos)) {
-          return {
-            item: it,
-            todos: (call.params as any).todos as TodoStep[],
-            notes: (call.params as any)?.notes,
-          }
+        if (call.name !== 'todo') continue
+        const params: any = call.params || (call as any).arguments
+        const raw = Array.isArray(params?.items)
+          ? params.items
+          : Array.isArray(params?.todos)
+          ? params.todos
+          : null
+        if (raw) {
+          const todos = raw.map((t: any) => ({
+            id: typeof t?.id === 'string' ? t.id : undefined,
+            title: String(t?.title ?? t?.text ?? ''),
+            status:
+              t?.status === 'completed' || t?.status === 'in_progress' || t?.status === 'pending'
+                ? t.status
+                : t?.done === true
+                ? 'completed'
+                : 'pending',
+          })) as TodoStep[]
+          return { item: it, todos, notes: params?.notes }
         }
       }
     }

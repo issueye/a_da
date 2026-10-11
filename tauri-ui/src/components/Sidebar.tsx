@@ -82,20 +82,11 @@ export function resolveThreadStatus(
   allThreadMap: Map<string, Thread>,
   runningThreadIds: string[]
 ): { status: ThreadStatus; label: string } {
-  // 1. 全局运行集合判定
-  if (runningThreadIds.includes(thread.id)) {
-    return { status: 'running', label: '执行中' }
-  }
-
-  // 2. 检查会话内部 items 状态
   const items = thread.items || []
-  const hasRunningItem = items.some(
-    (it) => it.status === 'running' || it.state === 'running'
-  )
-  if (hasRunningItem) {
-    return { status: 'running', label: '执行中' }
-  }
 
+  // 1. **等待用户操作优先于"执行中"**：审批/提问等待时，轮次仍在跑（runningThreadIds 里
+  //    也有它），早先把 running 判在前面，于是标签页一直显示"执行中"——用户根本不知道
+  //    有东西在等他（实测一条审批请求就这样静默等了 5 分钟超时被拒）。
   const hasAwaitingItem = items.some(
     (it) =>
       it.status === 'waiting_approval' ||
@@ -105,6 +96,19 @@ export function resolveThreadStatus(
   )
   if (hasAwaitingItem) {
     return { status: 'waiting', label: '等待审批' }
+  }
+
+  // 2. 全局运行集合判定
+  if (runningThreadIds.includes(thread.id)) {
+    return { status: 'running', label: '执行中' }
+  }
+
+  // 3. 会话内部 items 的运行态
+  const hasRunningItem = items.some(
+    (it) => it.status === 'running' || it.state === 'running'
+  )
+  if (hasRunningItem) {
+    return { status: 'running', label: '执行中' }
   }
 
   // 3. 子智能体：关联检查父会话中的对应委派卡片状态
