@@ -24,7 +24,12 @@ use crate::approval::manager::ApprovalManager;
 use crate::node_config::NodeConfigSource;
 
 /// 默认审批等待上限：超时按**拒绝**处理（fail-closed）。
-pub const DEFAULT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
+/// 审批等待上限。
+///
+/// 30 分钟：等待期间界面会**全局提示**"有会话在等你批准/答复"（输入框上方的提示条 +
+/// 标签页"等待审批"徽标），所以人离开一会儿也来得及。超过上限按**失败安全**方向拒绝
+/// （不是放行）——这条底线不变。
+pub const DEFAULT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(1800);
 
 /// 取消轮询间隔。
 ///

@@ -80,6 +80,33 @@ fn mode_from_header(raw: &str) -> Option<agent_proto::AgentMode> {
     serde_json::from_value::<agent_proto::AgentMode>(serde_json::Value::String(raw.to_string())).ok()
 }
 
+/// 子会话标题的**唯一短 id 回填**（老数据自愈）。
+///
+/// 新派发的子会话标题形如 `子代理 #36fb30 [全能执行专员]: <任务>`；更早的没有 `#<短id>`，
+/// 同 profile 连派多个时标题逐字相同，界面上分不出来。这里在**读盘时**补一次并写回 header
+/// （幂等：标题里已含该 id 就原样返回，不再写盘）。用户自己改过名（不以「子代理」开头）的不动。
+fn backfill_subagent_title<F>(raw_title: &str, thread_id: &str, file_path: &Path, write: F) -> String
+where
+    F: FnOnce(&Path, &str) -> Result<()>,
+{
+    let trimmed = raw_title.trim();
+    if !trimmed.starts_with("子代理") {
+        return raw_title.to_string();
+    }
+    let short_id = thread_id.rsplit('_').next().unwrap_or("");
+    if short_id.is_empty() || trimmed.contains(&format!("#{short_id}")) {
+        return raw_title.to_string();
+    }
+    let rest = trimmed.trim_start_matches("子代理").trim_start();
+    let new_title = format!("子代理 #{short_id} {rest}");
+    // 写盘失败也不能影响还原：标题退回原样即可
+    if write(file_path, &new_title).is_ok() {
+        new_title
+    } else {
+        raw_title.to_string()
+    }
+}
+
 impl SessionManager {
     pub fn new(explicit_dir: Option<PathBuf>) -> Self {
         Self { explicit_dir }
@@ -909,9 +936,23 @@ impl SessionManager {
                         _ => Some(AgentMode::Code),
                     }
                 });
+            // 自愈式回填：老的子会话标题没有唯一短 id（同 profile 连派多个时完全一样，
+            // 标签页/侧边栏里分不出谁是谁）。这里按新格式补一次，之后标题里已含 id 就不再动。
+            let raw_title = header.title.clone().unwrap_or_else(|| "新会话".to_string());
+            let title = if is_sub {
+                backfill_subagent_title(&raw_title, &header.id, &file_path, |path, new_title| {
+                    self.update_header(path, |h| {
+                        h.title = Some(new_title.to_string());
+                        h.updated_at = now_ms();
+                    })
+                })
+            } else {
+                raw_title
+            };
+
             let thread = Thread {
                 id: header.id,
-                title: header.title.unwrap_or_else(|| "新会话".to_string()),
+                title,
                 created_at: header.created_at as u64,
                 workspace: final_workspace,
                 items,
@@ -1030,6 +1071,80 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 端到端：老格式子会话在**读盘时**就被补上短 id，并且**写回磁盘**、且只写一次。
+    #[test]
+    fn test_restore_backfills_old_subagent_title_on_disk() -> Result<()> {
+        let temp_dir = std::env::temp_dir().join(format!("a_da_title_backfill_{}", uuid::Uuid::new_v4()));
+        let manager = SessionManager::new(Some(temp_dir.clone()));
+        let ws = "E:/backfill_ws";
+        let child = "thread_1791721619138_36fb30";
+
+        manager.create_session("thread_parent_x", ws, Some("父会话"), None, None)?;
+        manager.create_session(
+            child,
+            ws,
+            Some("子代理 [全能执行专员]: 在工作区 E:/x 中创建"),
+            Some("thread_parent_x"),
+            Some("general_purpose"),
+        )?;
+
+        let threads = SessionManager::new(Some(temp_dir.clone())).restore_all_threads();
+        let t = threads.iter().find(|t| t.id == child).expect("子会话必须被还原");
+        assert_eq!(
+            t.title,
+            "子代理 #36fb30 [全能执行专员]: 在工作区 E:/x 中创建",
+            "还原出来的标题必须带唯一短 id"
+        );
+
+        let path = manager.get_session_path(ws, child);
+        let first = std::fs::read_to_string(&path)?;
+        assert!(first.contains("#36fb30"), "回填必须写回磁盘（否则重启又变回一样）：{first}");
+
+        let _ = SessionManager::new(Some(temp_dir.clone())).restore_all_threads();
+        let second = std::fs::read_to_string(&path)?;
+        assert_eq!(first, second, "回填必须幂等：第二次读盘不得再改写文件");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
+
+    /// 守门：老子会话标题的**唯一短 id 回填**必须幂等，且不动用户改过的名字。
+    #[test]
+    fn test_backfill_subagent_title_is_idempotent() {
+        let path = Path::new("E:/x/thread_1_abcdef.jsonl");
+        let mut writes: Vec<String> = Vec::new();
+
+        // 1. 老格式 → 补上短 id（与新建时的格式一致）
+        let out = backfill_subagent_title("子代理 [全能执行专员]: 在工作区 E:/x 中创建", "thread_1791721619138_36fb30", path, |_, t| {
+            writes.push(t.to_string());
+            Ok(())
+        });
+        assert_eq!(out, "子代理 #36fb30 [全能执行专员]: 在工作区 E:/x 中创建");
+        assert_eq!(writes.len(), 1, "老标题要写回一次");
+
+        // 2. 幂等：已含短 id 的标题不再写盘
+        let out = backfill_subagent_title(&out, "thread_1791721619138_36fb30", path, |_, t| {
+            writes.push(t.to_string());
+            Ok(())
+        });
+        assert!(out.starts_with("子代理 #36fb30"), "{out}");
+        assert_eq!(writes.len(), 1, "已经带 id 的标题不得反复改写");
+
+        // 3. 用户自己改过名（不以「子代理」开头）的不动
+        let out = backfill_subagent_title("我的调研助手", "thread_1791721619138_36fb30", path, |_, t| {
+            writes.push(t.to_string());
+            Ok(())
+        });
+        assert_eq!(out, "我的调研助手");
+        assert_eq!(writes.len(), 1);
+
+        // 4. 写盘失败 → 标题退回原样（不影响还原）
+        let out = backfill_subagent_title("子代理 [X]: 任务", "thread_1_abcdef", path, |_, _| {
+            Err(anyhow::anyhow!("disk full"))
+        });
+        assert_eq!(out, "子代理 [X]: 任务");
+    }
 
     /// 守门：**会话身份必须落盘**，重启后左侧树的 PM/CODING 标识才不会丢。
     ///
