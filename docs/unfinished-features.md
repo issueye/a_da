@@ -160,6 +160,42 @@
 
 ---
 
+## 五、契约字段的界面消费者审计（2026-10-11）
+
+方法：把 `crates/agent-proto/client-ts/dto.ts`（界面契约）里 171 个字段逐个在
+`tauri-ui/src/**` 里查标识符。**28 个字段界面从不读**，逐个定性如下——
+**不是都该修**，但每一条都要有归属（接线 / 明确留给别的客户端 / 删声明）。
+
+### 已接线（本轮修掉）
+
+- `FsListing.truncated` / `FsListing.omitted`：后端早就"如实报告截断"（`fs_service.rs`
+  的 `MAX_ENTRIES`），但 `FilePicker` 从不显示 → 用户看到一个少了一半的目录却毫无提示。
+  已在文件列表顶部显示"已截断显示（省略 N 项）"。
+
+### 真缺口（建议排期）
+
+| 字段 | 归属 | 说明 |
+|---|---|---|
+| `ServerCapabilities.resync` / `ServerEventsCapability.snapshotSeq` / `ClientSnapshot.seq` | 缺口检测 | 服务端发了单调 `seq` 与"支持重同步"能力位，**界面完全没用**：INV-6 的"缺口即重同步"在客户端尚未实现（当前靠全量快照兜住，所以不痛，但契约是空的） |
+| `LoadedPlugin.diagnostics` / `PluginItem.diagnostics` / `PluginListResponse.diagnostics` | 插件诊断 | 插件加载/能力问题**在界面上完全看不见**，只能查 `getLoadedPlugins()` |
+| `LoadedPlugin.blockedTools` / `ResolvedPluginCapabilitiesDto.invalid` / `.overrides` | 插件诊断 | "哪些工具被挡住了、哪些声明无效、哪些被覆盖"界面不显示（与 §三.3 同族） |
+| `PluginListResponse.secrets` | 插件密钥 | 密钥状态（是否已设置）界面不显示 |
+| `WorkspaceSnapshot.scanning` | 工作区扫描 | 扫描中状态界面不提示 |
+| `SubagentProfile.allowedTools` | 子智能体 | 选子智能体时看不到它的工具白名单（只有 `systemPrompt` 的间接体现） |
+| `PluginToolInfo.isWrite` / `.parameters` | 插件工具 | 插件工具卡不标"写工具"，也不展示参数 schema |
+| `FsEntry.mtime` | 文件选择器 | 只有大小没有修改时间 |
+
+### 明确留给别的客户端（不是缺口）
+
+`UiSnapshot.{sidebarOpen, paletteOpen, searchOpen, pendingDraft}`：这些是**界面状态回显**，
+桌面端自己持有状态、只写不读；保留是给 CLI / Web / 未来多端接入用的。
+`ProductInfo.archetype`、`InitializeResult.sessionId`、`PluginManifest.author`、
+`LoadedPlugin.declarative`、`PluginItem.isPackage` / `.sizeBytes`、
+`ServerEventsCapability.granularity`、`ServerCapabilities.rollback`、`ServerCapabilities.hooks`
+（后者见 §一.9「钩子点位 = 0」，**属已知缺口**）：信息性字段，界面暂时不需要。
+
+---
+
 ## 相关文档
 
 | 文档 | 用途 |

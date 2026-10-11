@@ -43,6 +43,8 @@ export const FilePicker: React.FC<FilePickerProps> = ({
   const [selectedPaths, setSelectedPaths] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** 当前目录被后端截断时的信息（`fs.list` 如实上报，界面必须显示） */
+  const [truncation, setTruncation] = useState<{ omitted: number } | null>(null)
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
   const [pathInput, setPathInput] = useState('')
@@ -94,6 +96,13 @@ export const FilePicker: React.FC<FilePickerProps> = ({
         setDirs(dirList)
         setFiles(fileList)
         setSelectedPaths([])
+        // 目录项过多时后端会**截断**并如实报告（`truncated` / `omitted`）。
+        // 这里必须显示出来：否则用户看到的是一个"少了一半"的目录却毫无提示。
+        setTruncation(
+          listing.truncated
+            ? { omitted: listing.omitted || 0 }
+            : null
+        )
       }
     } catch (err: any) {
       setError(`无法打开路径 ${path}: ${err.message}`)
@@ -314,7 +323,16 @@ export const FilePicker: React.FC<FilePickerProps> = ({
                   )
                 }
 
-                return filteredFiles.map((file) => {
+                return (
+                  <>
+                    {truncation && (
+                      <div className="mb-1.5 px-3 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-300/70 dark:border-amber-800/50 text-[11px] text-amber-800 dark:text-amber-200">
+                        目录项过多，已截断显示
+                        {truncation.omitted > 0 ? `（省略 ${truncation.omitted} 项）` : ''}
+                        ：可先进入子目录或直接手输路径。
+                      </div>
+                    )}
+                    {filteredFiles.map((file) => {
                   const isSelected = selectedPaths.includes(file.path)
                   const isImg = isImageFile(file.name)
                   return (
@@ -351,7 +369,9 @@ export const FilePicker: React.FC<FilePickerProps> = ({
                       </span>
                     </div>
                   )
-                })
+                    })}
+                  </>
+                )
               })()}
             </div>
           )}

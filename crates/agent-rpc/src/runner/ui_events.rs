@@ -42,6 +42,10 @@ pub enum AgentLoopEvent {
     ApprovalRequested { id: String, tool: String },
     /// 一次大模型调用结束后的真实用量与耗时（界面遥测条与单条回复徽章的数据源）
     AssistantStats { usage: Option<agent_base::model::TokenUsage>, duration_ms: u64, turn_duration_ms: u64 },
+    /// 本轮因**上下文撞顶**而收尾（引擎的 `TurnStopReason::ContextWindowExceeded`）。
+    ///
+    /// 调度层据此**自动压缩并续跑**，而不是把"请手动压缩"丢给用户。
+    ContextWindowExceeded { prompt_tokens: u64, window: u64 },
     TurnFinished { stop_reason: String },
     Error { message: String },
 }
@@ -65,6 +69,7 @@ mod tests {
                 AgentLoopEvent::ToolAwaitingQuestion { .. } => "question",
                 AgentLoopEvent::ApprovalRequested { .. } => "approval",
                 AgentLoopEvent::AssistantStats { .. } => "stats",
+                AgentLoopEvent::ContextWindowExceeded { .. } => "context.window.exceeded",
                 AgentLoopEvent::TurnFinished { .. } => "turn.finished",
                 AgentLoopEvent::Error { .. } => "error",
             }
@@ -88,6 +93,7 @@ mod tests {
             AgentLoopEvent::ToolAwaitingQuestion { id: "i".into(), question: serde_json::json!({}) },
             AgentLoopEvent::ApprovalRequested { id: "i".into(), tool: "t".into() },
             AgentLoopEvent::AssistantStats { usage: None, duration_ms: 1, turn_duration_ms: 2 },
+            AgentLoopEvent::ContextWindowExceeded { prompt_tokens: 445_637, window: 128_000 },
             AgentLoopEvent::TurnFinished { stop_reason: "stop".into() },
             AgentLoopEvent::Error { message: "m".into() },
         ];
@@ -97,6 +103,6 @@ mod tests {
         let mut unique = kinds.clone();
         unique.dedup();
         assert_eq!(unique.len(), all.len(), "同一种类出现多次：{kinds:?}");
-        assert_eq!(unique.len(), 9, "界面事件共 9 种：{unique:?}");
+        assert_eq!(unique.len(), 10, "界面事件共 10 种：{unique:?}");
     }
 }

@@ -15,6 +15,8 @@ use agent_node::session::SessionManager;
 use agent_node::skills::SkillManager;
 use crate::state::{generate_snapshot, AgentStore};
 use agent_node::subagents::SubagentManager;
+use agent_adapter::model::client::NetworkModelClient;
+use tracing::warn;
 
 /// 把 `ToolDescriptor` 投影成界面用的内置工具条目。
 ///
@@ -385,6 +387,201 @@ async fn resolve_engine_from_cache(
     fallback.clone()
 }
 
+/// 把将被丢弃的历史渲染成给"压缩器"看的纯文本（带角色前缀，工具输出取前 400 字）。
+fn render_transcript_for_summary(items: &[Item]) -> String {
+    let mut out = String::new();
+    for it in items {
+        match it {
+            Item::User { text, .. } => out.push_str(&format!("【用户】{}\n", text.trim())),
+            Item::Assistant { text, .. } if !text.trim().is_empty() => {
+                out.push_str(&format!("【助手】{}\n", text.trim()))
+            }
+            Item::Thinking { text, .. } if !text.trim().is_empty() => {
+                out.push_str(&format!("【思考】{}\n", text.trim()))
+            }
+            Item::Tool { name, status, output, .. } => {
+                let brief: String = output
+                    .as_deref()
+                    .unwrap_or("")
+                    .chars()
+                    .take(400)
+                    .collect();
+                out.push_str(&format!("【工具 {name} / {status}】{brief}\n"));
+            }
+            Item::Compact { summary, .. } => out.push_str(&format!("【已有摘要】{summary}\n")),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// 让模型把"将被丢弃的历史"压成**真实的结构化摘要**。
+///
+/// 早先的 `thread.compact` 只写一句"已对前序 N 轮对话…进行了结构化压缩与归纳"——
+/// 那是**假装总结过**：内容被丢掉，摘要却什么都没说。这里真的调用一次模型。
+/// 失败返回 `None`，由调用方用**如实说明**的兜底文案（绝不假装）。
+async fn summarize_for_compaction(provider: &ProviderConfig, transcript: &str) -> Option<String> {
+    use agent_base::model::{ChatCompletionMessage, ModelChatOptions, StreamDelta};
+    use agent_base::ports::{CompletionRequest, ModelClient};
+
+    let prompt = format!(
+        "请把下面这段会话记录压缩成**结构化摘要**，供后续接着干活使用：\n\
+         1. 用户的目标与约束；2. 已完成的关键动作与结论；3. 涉及的文件/路径/命令；\
+         4. 未完成的待办与已知阻塞。\n\n\
+         要求：只保留可复用的信息，不要复述过程；不超过 600 字；用 Markdown 要点列出。\n\n\
+         ---- 会话记录 ----\n{transcript}"
+    );
+    let req = CompletionRequest {
+        config: provider.clone(),
+        messages: vec![ChatCompletionMessage {
+            role: "user".to_string(),
+            content: Some(prompt),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+        }],
+        options: ModelChatOptions {
+            tools: None,
+            system_prompt: Some("你是会话压缩器：只输出摘要，不输出解释或寒暄。".to_string()),
+            temperature: Some(0.2),
+            effort: None,
+            max_retries: Some(1),
+        },
+    };
+
+    let mut rx = match NetworkModelClient::new().stream(req, None).await {
+        Ok(rx) => rx,
+        Err(e) => {
+            warn!("上下文压缩：模型调用失败（{e:?}），改用如实说明的兜底摘要");
+            return None;
+        }
+    };
+    let mut text = String::new();
+    while let Some(delta) = rx.recv().await {
+        match delta {
+            StreamDelta::Text { text: t } => text.push_str(&t),
+            StreamDelta::Error { error } => {
+                warn!("上下文压缩：流式读取失败（{error}），改用如实说明的兜底摘要");
+                return None;
+            }
+            StreamDelta::Done { .. } => break,
+            _ => {}
+        }
+    }
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+/// **就地压缩**指定会话：前序历史换成一张 compact 卡片 + 一条落盘的 compact 条目。
+///
+/// 手动 `thread.compact` 与自动压缩（上下文撞顶）共用这一份实现。
+/// 返回摘要文本；`None` = 历史太短、无需压缩（**如实返回**，不编一个成功的假象）。
+pub(crate) async fn compact_thread_now(
+    store: &Arc<RwLock<AgentStore>>,
+    session_mgr: &SessionManager,
+    thread_id: &str,
+) -> Option<String> {
+    compact_thread_with_summary(store, session_mgr, thread_id, None).await
+}
+
+/// 压缩主流程。`preset_summary` 是**测试注入点**（跳过真实模型调用）；
+/// 生产路径一律传 `None` → 真的调模型生成摘要。
+pub(crate) async fn compact_thread_with_summary(
+    store: &Arc<RwLock<AgentStore>>,
+    session_mgr: &SessionManager,
+    thread_id: &str,
+    preset_summary: Option<String>,
+) -> Option<String> {
+    // 1. 取要压缩的历史 + 真实的上下文规模
+    let (provider, transcript, to_summarize, pre_tokens, ws) = {
+        let s = store.read().await;
+        let t = s.threads.iter().find(|t| t.id == thread_id)?;
+        let total = t.items.len();
+        if total < 3 {
+            return None;
+        }
+        let preserve = total.saturating_sub(4).max(1);
+        let drop_n = total - preserve;
+        if drop_n == 0 {
+            return None;
+        }
+        let transcript = render_transcript_for_summary(&t.items[..drop_n]);
+        // 真实规模优先用"最近一次模型调用如实报回的 prompt_tokens"；拿不到才按字符估
+        let pre = t
+            .items
+            .iter()
+            .rev()
+            .find_map(|it| match it {
+                Item::Assistant { usage: Some(u), .. } => Some(u.prompt_tokens),
+                _ => None,
+            })
+            .unwrap_or_else(|| (transcript.chars().count() / 4) as u64);
+        (
+            s.provider.clone(),
+            transcript,
+            drop_n,
+            pre,
+            t.workspace.clone(),
+        )
+    };
+
+    // 2. 真实摘要（失败则如实说明兜底）；测试可注入预设摘要以跳过模型调用
+    let summary = match preset_summary {
+        Some(s) => s,
+        None => match summarize_for_compaction(&provider, &transcript).await {
+            Some(s) => s,
+            None => format!(
+                "（压缩：未能生成模型摘要，已丢弃前序 {to_summarize} 项历史。\
+                 如需保留细节，请把关键结论重新告知。）"
+            ),
+        },
+    };
+
+    // 3. 写 compact 卡片（界面）+ 落盘 compact 条目（引擎恢复时据此折叠上下文）
+    let compact_id = crate::state::next_id("compact");
+    let now = crate::state::now_millis();
+    let post_tokens = (summary.chars().count() / 4) as u64;
+    {
+        let mut s = store.write().await;
+        if let Some(t) = s.get_thread_mut(thread_id) {
+            let preserve = t.items.len().saturating_sub(4).max(1);
+            let preserved = t.items.split_off(preserve);
+            t.items = vec![Item::Compact {
+                id: compact_id.clone(),
+                at: now,
+                summary: summary.clone(),
+                pre_tokens,
+                post_tokens,
+                saved_tokens: pre_tokens.saturating_sub(post_tokens),
+                turns_summarized: to_summarize as u64,
+            }];
+            t.items.extend(preserved);
+        }
+    }
+
+    let _ = session_mgr.append_compact_entry(
+        thread_id,
+        agent_node::session::SessionCompactEntry {
+            entry_type: "compact".to_string(),
+            id: compact_id,
+            timestamp: now as i64,
+            summary: summary.clone(),
+            pre_tokens,
+            post_tokens,
+            saved_tokens: pre_tokens.saturating_sub(post_tokens),
+            turns_summarized: to_summarize,
+            custom_instructions: None,
+        },
+        if ws.is_empty() { None } else { Some(&ws) },
+    );
+
+    Some(summary)
+}
+
 impl Dispatcher {
     /// 会话执行泵（**唯一实现**，W6-T4）：跑轮次 → 事件写进 store → 广播 → 消费排队指令。
     ///
@@ -417,6 +614,8 @@ impl Dispatcher {
 
         let runner_task = tokio::spawn(async move {
             let mut current_prompt: Option<String> = first_prompt;
+            // 本次执行链里已经自动压缩过几次（防"压了还撞顶"无限循环）
+            let mut auto_compact_rounds = 0u32;
             loop {
                 let (abort_tx, abort_rx) = watch::channel(false);
                 abort_senders_clone.lock().await.insert(target_tid_clone.clone(), abort_tx);
@@ -425,6 +624,8 @@ impl Dispatcher {
                 let tid = target_tid_clone.clone();
                 let prompt = current_prompt.take();
                 let p_cfg = provider_config.clone();
+                // 本轮是否是"撞顶停的"（引擎通过专门事件告知，见下面的事件臂）
+                let mut context_exceeded: Option<(u64, u64)> = None;
 
                 // 每轮根据当前会话绑定的 Agent / 模式 / 所属工作区 分发对应引擎：
                 let (thread_agent_id, thread_mode, thread_ws, context_window) = {
@@ -665,6 +866,17 @@ impl Dispatcher {
                                     drop(store);
                                     break;
                                 }
+                                // 上下文撞顶：记下来，收尾后**自动压缩并续跑**（见下面的分支）
+                                AgentLoopEvent::ContextWindowExceeded { prompt_tokens, window } => {
+                                    store.push_log(
+                                        "warn",
+                                        format!("上下文撞顶（{prompt_tokens}/{window} tokens）：将自动压缩后继续"),
+                                        None,
+                                    );
+                                    drop(store);
+                                    context_exceeded = Some((prompt_tokens, window));
+                                    break;
+                                }
                                 AgentLoopEvent::Error { message } => {
                                     store.append_assistant_delta(&target_tid_clone, &format!("\n\n**请求异常**：{message}"));
                                     store.push_log("error", format!("Agent 执行异常: {message}"), None);
@@ -700,6 +912,40 @@ impl Dispatcher {
                             if !store.is_thread_running(&target_tid_clone) {
                                 break;
                             }
+                        }
+
+                        // 上下文撞顶 → **自动压缩并续跑**（而不是丢给用户一句"请手动压缩"）。
+                        // 压过一次仍然撞顶就如实收尾，绝不无限压。
+                        if let Some((pt, win)) = context_exceeded.take() {
+                            if auto_compact_rounds >= 1 {
+                                let mut store = store_clone.write().await;
+                                store.append_assistant_delta(
+                                    &target_tid_clone,
+                                    &format!(
+                                        "\n\n**上下文已达窗口上限**（{pt}/{win} tokens），压缩后仍然超限。\
+                                         请把任务拆小，或换更大上下文窗口的模型。"
+                                    ),
+                                );
+                                drop(store);
+                                if let Some(ref bc) = broadcaster_clone {
+                                    bc.broadcast_immediate().await;
+                                }
+                                break;
+                            }
+                            auto_compact_rounds += 1;
+                            tracing::info!("上下文撞顶（{pt}/{win} tokens），自动压缩后继续");
+                            let summary =
+                                compact_thread_now(&store_clone, &session_mgr_clone, &target_tid_clone).await;
+                            if let Some(ref bc) = broadcaster_clone {
+                                bc.broadcast_immediate().await;
+                            }
+                            current_prompt = Some(match summary {
+                                Some(s) => format!(
+                                    "【上下文已自动压缩】以下是压缩后的历史摘要，请基于它继续完成原任务：\n\n{s}"
+                                ),
+                                None => "【上下文已自动压缩】请基于压缩后的上下文继续完成原任务。".to_string(),
+                            });
+                            continue;
                         }
 
                         // 检查会话队列中是否还有待执行的排队指令
@@ -1942,70 +2188,27 @@ impl Dispatcher {
                 let thread_id = params
                     .get("threadId")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
+                    .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?
+                    .to_string();
 
-                let mut store = self.store.write().await;
-                let thread_opt = store.threads.iter_mut().find(|t| t.id == thread_id);
-                if let Some(thread) = thread_opt {
-                    if thread.items.len() < 3 {
-                        return Ok(serde_json::json!({
-                            "success": false,
-                            "reason": "当前会话历史较短（少于 2 轮），暂无需压缩的历史消息。"
-                        }));
-                    }
-
-                    let total_items = thread.items.len();
-                    let preserve_count = total_items.saturating_sub(4).max(1);
-                    let to_summarize = total_items - preserve_count;
-
-                    let summary = format!("已对前序 {} 轮对话及工具操作进行了结构化上下文压缩与归纳。", to_summarize);
-                    let compact_id = crate::state::next_id("compact");
-                    let now = crate::state::now_millis();
-
-                    let compact_item = Item::Compact {
-                        id: compact_id.clone(),
-                        at: now,
-                        summary: summary.clone(),
-                        pre_tokens: (to_summarize * 450) as u64,
-                        post_tokens: 180,
-                        saved_tokens: ((to_summarize * 450).saturating_sub(180)) as u64,
-                        turns_summarized: to_summarize as u64,
-                    };
-
-                    let preserved_items = thread.items.split_off(to_summarize);
-                    thread.items = vec![compact_item];
-                    thread.items.extend(preserved_items);
-
-                    let ws = thread.workspace.clone();
-
-                    let compact_entry = agent_node::session::SessionCompactEntry {
-                        entry_type: "compact".to_string(),
-                        id: compact_id,
-                        timestamp: now as i64,
-                        summary,
-                        pre_tokens: (to_summarize * 450) as u64,
-                        post_tokens: 180,
-                        saved_tokens: ((to_summarize * 450).saturating_sub(180)) as u64,
-                        turns_summarized: to_summarize,
-                        custom_instructions: None,
-                    };
-
-                    let _ = self.session_mgr.append_compact_entry(
-                        thread_id,
-                        compact_entry,
-                        if ws.is_empty() { None } else { Some(&ws) },
-                    );
-                }
-                drop(store);
+                // 手动压缩与自动压缩走**同一份实现**（含真实的模型摘要）
+                let summary = compact_thread_now(&self.store, &self.session_mgr, &thread_id).await;
 
                 if let Some(ref bc) = self.broadcaster {
                     bc.broadcast_immediate().await;
                 }
 
-                Ok(serde_json::json!({
-                    "success": true,
-                    "reason": "上下文压缩已完成"
-                }))
+                Ok(match summary {
+                    Some(s) => serde_json::json!({
+                        "success": true,
+                        "reason": "上下文压缩已完成",
+                        "summary": s,
+                    }),
+                    None => serde_json::json!({
+                        "success": false,
+                        "reason": "当前会话历史较短（少于 2 轮），暂无需压缩的历史消息。"
+                    }),
+                })
             }
 
             THREAD_EDIT_AND_RESEND => {
@@ -2706,6 +2909,92 @@ impl Dispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 守门：压缩必须**真的落盘 compact 条目**、留下最近几项、并用**真实**的上下文规模记账。
+    ///
+    /// 早先 `thread.compact` 只写一句"已对前序 N 轮…进行了结构化压缩与归纳"——假装总结过，
+    /// 而且 pre/post tokens 是按"每项 450 tokens"编的。现在摘要由模型生成（测试注入），
+    /// 规模取"最近一次模型调用如实报回的 prompt_tokens"。
+    #[tokio::test]
+    async fn test_compact_writes_entry_and_keeps_recent_items() {
+        let dir = std::env::temp_dir().join(format!("a_da_compact_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&dir);
+        let session_mgr = SessionManager::new(Some(dir.clone()));
+        let ws = "E:/codes/compact_ws";
+
+        let store = Arc::new(RwLock::new(AgentStore::new(ws.to_string())));
+        let tid = {
+            let mut s = store.write().await;
+            let id = s.create_thread(Some("压缩测试".to_string()), None);
+            // 造 6 项历史，最后一项带**真实用量**（445k 是实测那次撞顶的规模）
+            s.add_user_message(&id, "任务：把项目跑起来");
+            for i in 0..4 {
+                s.start_tool_call(&id, &format!("call_{i}"), "read_file", "{}");
+                s.finish_tool_call(&id, &format!("call_{i}"), true, Some(format!("输出 {i}")), Some(1), Some(0), Some(1), None);
+            }
+            s.append_assistant_delta(&id, "最后一段回复");
+            s.set_assistant_stats(
+                &id,
+                Some(agent_base::model::TokenUsage {
+                    prompt_tokens: 445_080,
+                    completion_tokens: 557,
+                    total_tokens: 445_637,
+                    ..Default::default()
+                }),
+                10,
+                20,
+            );
+            let _ = session_mgr.create_session(&id, ws, Some("压缩测试"), None, None);
+            id
+        };
+
+        let summary = compact_thread_with_summary(&store, &session_mgr, &tid, Some("## 摘要\n- 目标：跑起来".to_string()))
+            .await
+            .expect("历史足够，必须压缩成功");
+        assert!(summary.contains("摘要"));
+
+        {
+            let s = store.read().await;
+            let t = s.threads.iter().find(|t| t.id == tid).expect("会话还在");
+            assert!(matches!(t.items.first(), Some(Item::Compact { .. })), "首项必须是压缩卡片");
+            let compact = match t.items.first() {
+                Some(Item::Compact { pre_tokens, turns_summarized, .. }) => (*pre_tokens, *turns_summarized),
+                _ => unreachable!(),
+            };
+            assert_eq!(compact.0, 445_080, "pre_tokens 必须取真实用量，不是编的 450/项");
+            assert!(compact.1 > 0, "必须如实记录压缩了几项");
+            assert!(t.items.len() < 7, "压缩后项数必须变少：{}", t.items.len());
+        }
+
+        // 落盘：最后一行必须是 compact 条目（引擎恢复上下文时靠它折叠）
+        let path = session_mgr.get_session_path(ws, &tid);
+        let content = std::fs::read_to_string(&path).expect("会话文件应存在");
+        let last = content.lines().last().unwrap_or("");
+        assert!(last.contains("\"type\":\"compact\""), "必须落盘 compact 条目：{last}");
+        assert!(last.contains("摘要"), "落盘的条目里要带真实摘要：{last}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 历史太短 → **如实返回 None**（调用方据此回"无需压缩"），不假装压缩成功。
+    #[tokio::test]
+    async fn test_compact_returns_none_for_short_history() {
+        let dir = std::env::temp_dir().join(format!("a_da_compact_short_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&dir);
+        let session_mgr = SessionManager::new(Some(dir.clone()));
+        let store = Arc::new(RwLock::new(AgentStore::new("E:/codes/short_ws".to_string())));
+        let tid = {
+            let mut s = store.write().await;
+            let id = s.create_thread(Some("短会话".to_string()), None);
+            s.add_user_message(&id, "你好");
+            id
+        };
+        assert!(
+            compact_thread_with_summary(&store, &session_mgr, &tid, Some("x".into())).await.is_none(),
+            "历史太短必须如实返回 None"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     // ── W6-T4：回滚回执必须带真实文件清单 ────────────────────────────────────
 

@@ -222,7 +222,15 @@ pub async fn run_turn_with_engine(
     }
 
     match outcome {
-        Ok(_) => Ok(()),
+        Ok(o) => {
+            // 上下文撞顶：投影成**专门的事件**，调度层据此自动压缩并续跑
+            if let TurnStopReason::ContextWindowExceeded { prompt_tokens, window } = o.stop_reason {
+                let _ = bridge
+                    .tx
+                    .try_send(AgentLoopEvent::ContextWindowExceeded { prompt_tokens, window });
+            }
+            Ok(())
+        }
         Err(e) => {
             // 引擎错误也要变成 UI 可见的事件，而不是静默消失
             let _ = bridge.tx.try_send(AgentLoopEvent::Error { message: e.to_string() });
@@ -501,6 +509,7 @@ mod tests {
                 AgentLoopEvent::Thinking { .. } => "thinking",
                 AgentLoopEvent::TurnFinished { .. } => "finished",
                 AgentLoopEvent::AssistantStats { .. } => "stats",
+                AgentLoopEvent::ContextWindowExceeded { .. } => "context.window.exceeded",
                 AgentLoopEvent::ToolCallStarted { .. } => "tool_start",
                 AgentLoopEvent::ToolCallFinished { .. } => "tool_finish",
                 AgentLoopEvent::ToolAwaitingQuestion { .. } => "question",

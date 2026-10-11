@@ -202,12 +202,9 @@ impl AgentRuntime {
                     // 留 5% 余量：下一轮的 prompt 还要加上这一轮的工具输出
                     let limit = window.saturating_mul(95) / 100;
                     if projected >= limit {
-                        let message = format!(
-                            "上下文已达窗口上限：上一轮 {projected} tokens / 窗口 {window}（已用 {:>3}%）。\
-                             请压缩本会话（thread.compact）或换更大上下文窗口的模型后重试。",
-                            projected.saturating_mul(100) / window
-                        );
-                        self.emit(sink, &thread_id, AgentEventBody::Failed { message });
+                        // 只**如实收尾**，不额外发 `Failed`：撞顶由 `TurnStopReason` 承载，
+                        // 桥接层会把它投影成专门的事件交给调度层做"自动压缩后续跑"。
+                        // （早先发一条笼统的 Failed，界面只看到"模型调用失败"，查不出真因。）
                         final_stop_reason = TurnStopReason::ContextWindowExceeded {
                             prompt_tokens: projected,
                             window,
@@ -1078,16 +1075,12 @@ mod tests {
         );
         assert_eq!(outcome.steps_taken, 1, "只跑了第 1 轮，第 2 轮不该被发起");
 
-        // 事件里要有 Failed（带可读理由），且不得出现第 2 轮的文本
+        // 撞顶由**停止原因**承载（不再额外发 Failed：那是"笼统一句模型调用失败"的老毛病）
         let events = sink.snapshot();
-        let failed = events
-            .iter()
-            .find_map(|e| match &e.body {
-                AgentEventBody::Failed { message } => Some(message.clone()),
-                _ => None,
-            })
-            .expect("撞顶必须给出 Failed 事件（界面/日志要能看见理由）");
-        assert!(failed.contains("上下文已达窗口上限"), "{failed}");
+        assert!(
+            !events.iter().any(|e| matches!(&e.body, AgentEventBody::Failed { .. })),
+            "撞顶不该再发 Failed——理由由 TurnStopReason 承载，调度层据此自动压缩续跑"
+        );
         assert!(
             !events.iter().any(|e| matches!(&e.body, AgentEventBody::TextDelta { text } if text.contains("不该走到这里"))),
             "撞顶后不得再发起模型调用"
