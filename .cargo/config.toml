@@ -1,0 +1,6 @@
+[build]
+target-dir = "../cargo_target_ada"
+jobs = 2
+
+[alias]
+xtask = "run --package xtask --"

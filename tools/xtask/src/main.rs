@@ -4,7 +4,8 @@ mod gates;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -17,7 +18,15 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// 执行全仓单测与协议/合规检验
-    Verify,
+    Verify {
+        /// 快速模式：仅执行静态架构校验（spec、wiring、compat、docs、archive），跳过耗时的全仓单测
+        #[arg(long, default_value_t = false)]
+        fast: bool,
+
+        /// 单测最长等待时间（秒，防止死锁卡死），默认 600 秒
+        #[arg(long, default_value_t = 600)]
+        timeout_secs: u64,
+    },
     /// 校验 TS 归档完整性（不被主干引用、无第二份引擎）
     VerifyArchive,
     /// 校验产品声明 ↔ 实现一致（toolkit 有模块、字段有生产消费者）
@@ -30,7 +39,7 @@ enum Commands {
     VerifyDocs,
     /// 生产打包产品单文件可执行二进制
     Ship {
-        /// 要打包的产品名称（如 ada-coding, ada-skeleton）
+        /// 要打包的产品名称（如 ada-coding, ada-gateway, ada-tauri 或 all）
         #[arg(long, default_value = "ada-coding")]
         product: String,
 
@@ -53,21 +62,93 @@ fn gate(rep: anyhow::Result<gates::Report>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 执行子命令，具备环境注入、实时流式输出与超时看门狗，彻底避免无声无限等待
+fn run_command_supervised(mut cmd: Command, desc: &str, timeout: Duration) -> anyhow::Result<()> {
+    // 1. 自动注入编译缓存目录与并发度限制（若环境变量未显式提供）
+    if std::env::var("CARGO_TARGET_DIR").is_err() {
+        cmd.env("CARGO_TARGET_DIR", "../cargo_target_ada");
+    }
+    if std::env::var("CARGO_BUILD_JOBS").is_err() {
+        cmd.env("CARGO_BUILD_JOBS", "2");
+    }
+
+    // 2. 保证流式直通终端，消除黑盒假死感
+    cmd.stdin(Stdio::inherit());
+    cmd.stdout(Stdio::inherit());
+    cmd.stderr(Stdio::inherit());
+
+    println!("\x1b[36m==> [{desc}] 开始执行 (超时上限: {}s)...\x1b[0m", timeout.as_secs());
+    let start = Instant::now();
+
+    let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("启动子进程失败 [{desc}]: {e}"))?;
+
+    // 3. 超时看门狗轮询，防止子进程死锁或无限挂起
+    let poll_interval = Duration::from_millis(200);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let elapsed = start.elapsed();
+                if status.success() {
+                    println!("\x1b[32m✔ [{desc}] 执行成功 (耗时 {:.1}s)\x1b[0m\n", elapsed.as_secs_f32());
+                    return Ok(());
+                } else {
+                    anyhow::bail!("任务 [{desc}] 失败，退出码: {:?}", status.code());
+                }
+            }
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    anyhow::bail!("任务 [{desc}] 执行超时（超过 {}s 未退出），已强制终止", timeout.as_secs());
+                }
+                std::thread::sleep(poll_interval);
+            }
+            Err(e) => {
+                let _ = child.kill();
+                anyhow::bail!("监控子进程异常 [{desc}]: {e}");
+            }
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Verify => {
-            println!("==> 运行 cargo test 验证协议与合规性...");
-            let status = Command::new("cargo")
-                .args(["test", "--workspace", "--", "--test-threads=1"])
-                .status()?;
-            if !status.success() {
-                anyhow::bail!("cargo test 失败");
-            }
-            println!("==> 运行 TS 归档校验...");
+        Commands::Verify { fast, timeout_secs } => {
+            let total_start = Instant::now();
+            println!("\x1b[1;35m=================================================================\x1b[0m");
+            println!("\x1b[1;35m              a_da 全仓综合检验 (Verify Pipeline)                 \x1b[0m");
+            println!("\x1b[1;35m=================================================================\x1b[0m\n");
+
+            // 阶段 1: 静态高速架构审计 (秒级完成，fail-fast)
+            println!("\x1b[33m[阶段 1/6]\x1b[0m 校验产品声明 (verify-spec)...");
+            gate(gates::verify_spec())?;
+
+            println!("\x1b[33m[阶段 2/6]\x1b[0m 校验接线与单源描述符 (verify-wiring)...");
+            gate(gates::verify_wiring())?;
+
+            println!("\x1b[33m[阶段 3/6]\x1b[0m 校验跨产品协议一致性 (compat)...");
+            gate(gates::compat())?;
+
+            println!("\x1b[33m[阶段 4/6]\x1b[0m 校验文档时效性 (verify-docs)...");
+            gate(gates::verify_docs())?;
+
+            println!("\x1b[33m[阶段 5/6]\x1b[0m 校验 TS 归档完整性 (verify-archive)...");
             run_bun_script("tools/verify-archive.ts")?;
-            println!("\x1b[32m✔ 全仓 Verify 通过！\x1b[0m");
+
+            // 阶段 2: 全仓单元测试
+            if fast {
+                println!("\x1b[33m[阶段 6/6]\x1b[0m \x1b[90m已启用 --fast，跳过全量单测 (cargo test)\x1b[0m\n");
+            } else {
+                println!("\x1b[33m[阶段 6/6]\x1b[0m 运行全仓 Rust 单元测试 (串行 --test-threads=1)...");
+                let mut cmd = Command::new("cargo");
+                cmd.args(["test", "--workspace", "-j", "2", "--", "--test-threads=1"]);
+                run_command_supervised(cmd, "cargo test --workspace", Duration::from_secs(timeout_secs))?;
+            }
+
+            println!("\x1b[1;32m=================================================================\x1b[0m");
+            println!("\x1b[1;32m       🎉 全仓 Verify 检验全绿通过！ (总耗时 {:.1}s)            \x1b[0m", total_start.elapsed().as_secs_f32());
+            println!("\x1b[1;32m=================================================================\x1b[0m\n");
         }
         Commands::VerifyArchive => {
             println!("==> 校验 TS 归档完整性...");
@@ -86,32 +167,65 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn run_bun_script(script: &str) -> anyhow::Result<()> {
-    let status = Command::new("bun").arg(script).status()?;
-    if !status.success() {
-        anyhow::bail!("脚本 {} 执行失败", script);
-    }
-    Ok(())
+    let cmd = if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.args(["/C", "bun", script]);
+        c
+    } else {
+        let mut c = Command::new("bun");
+        c.arg(script);
+        c
+    };
+    run_command_supervised(cmd, script, Duration::from_secs(60))
 }
 
 fn ship_product(product: &str, gui: bool, out_dir: &str) -> anyhow::Result<()> {
+    if product == "all" {
+        for p in &["ada-coding", "ada-gateway", "ada-tauri"] {
+            ship_product(p, gui, out_dir)?;
+        }
+        return Ok(());
+    }
+
+    let (pkg, bin) = match product {
+        "ada-gateway" => ("agent-gateway", Some("ada-gateway")),
+        _ => (product, None),
+    };
+
     println!("\x1b[1;36m=================================================================\x1b[0m");
     println!("\x1b[1;36m           a_da 生产出包流水线 (Ship: {})                        \x1b[0m", product);
     println!("\x1b[1;36m=================================================================\x1b[0m\n");
 
+    // 出包 ada-tauri 时，防御性检查并确保前端产物就绪
+    if product == "ada-tauri" {
+        let frontend_dist = Path::new("tauri-ui").join("dist");
+        if !frontend_dist.exists() || !frontend_dist.join("index.html").exists() {
+            println!("\x1b[33m[前置检查]\x1b[0m 未检测到前端构建产物 tauri-ui/dist/index.html，自动构建中...");
+            let npm_cmd = if cfg!(windows) {
+                let mut c = Command::new("cmd");
+                c.args(["/C", "npm", "--prefix", "tauri-ui", "run", "build"]);
+                c
+            } else {
+                let mut c = Command::new("npm");
+                c.args(["--prefix", "tauri-ui", "run", "build"]);
+                c
+            };
+            run_command_supervised(npm_cmd, "npm run build (tauri-ui)", Duration::from_secs(180))?;
+        }
+    }
+
     // 1. 编译 release 二进制
-    println!("\x1b[33m[步骤 1/3]\x1b[0m 正在使用 Cargo 编译 release 二进制 (-p {})...", product);
+    println!("\x1b[33m[步骤 1/3]\x1b[0m 正在使用 Cargo 编译 release 二进制 (-p {})...", pkg);
     let mut cmd = Command::new("cargo");
-    cmd.args(["build", "--release", "-p", product]);
-
-    // 继承环境变量中的 CARGO_TARGET_DIR
-    if let Ok(td) = std::env::var("CARGO_TARGET_DIR") {
-        cmd.env("CARGO_TARGET_DIR", td);
+    cmd.args(["build", "--release", "-p", pkg]);
+    if let Some(b) = bin {
+        cmd.args(["--bin", b]);
     }
+    // 控制编译并发为 2，防止 Windows 页面文件上限 2GB 触发 os error 1455
+    cmd.args(["-j", "2"]);
 
-    let status = cmd.status()?;
-    if !status.success() {
-        anyhow::bail!("编译产品 {} 失败", product);
-    }
+    // 单个产品 release 编译设置 900 秒看门狗超时
+    run_command_supervised(cmd, &format!("cargo build --release -p {pkg}"), Duration::from_secs(900))?;
 
     // 2. 查找产物并复制到 dist 目录
     println!("\x1b[33m[步骤 2/3]\x1b[0m 正在收集编译产物并复制至目标目录 ({})...", out_dir);
@@ -122,8 +236,8 @@ fn ship_product(product: &str, gui: bool, out_dir: &str) -> anyhow::Result<()> {
 
     let candidate_dirs = vec![
         std::env::var("CARGO_TARGET_DIR").map(PathBuf::from).ok(),
-        Some(PathBuf::from("target")),
         Some(PathBuf::from("../cargo_target_ada")),
+        Some(PathBuf::from("target")),
     ];
 
     let mut found_src: Option<PathBuf> = None;
