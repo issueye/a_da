@@ -655,6 +655,7 @@ export function App() {
         config={snapshot.providerConfig}
         approvalMode={snapshot.approvalMode}
         effort={snapshot.effort}
+        retryCount={snapshot.retryCount}
         onClose={() => setSettingsOpen(false)}
         onSave={handleSaveSettings}
         onOpenProcesses={() => setProcessOpen(true)}

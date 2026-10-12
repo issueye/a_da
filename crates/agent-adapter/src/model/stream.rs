@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use futures_util::StreamExt;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER};
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
 
@@ -83,6 +83,8 @@ async fn send_http_request_with_retry(
                     return Ok(SendOutcome::Success(res));
                 }
 
+                // 429 的上游常常会带 `Retry-After`：能读就按它退避，别拿固定指数退避硬撞
+                let retry_after_ms = parse_retry_after_ms(res.headers());
                 let err_text = res.text().await.unwrap_or_default();
                 let is_retryable = status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
 
@@ -91,6 +93,7 @@ async fn send_http_request_with_retry(
                     let backoff_ms = 500u64 * (1 << (attempt - 1));
                     #[cfg(test)]
                     let backoff_ms = 10u64 * (1 << (attempt - 1));
+                    let backoff_ms = retry_after_ms.map_or(backoff_ms, |ra| ra.max(backoff_ms));
                     tracing::warn!(
                         "{} API 返回 HTTP {}，第 {}/{} 次重试，退避 {}ms: {}",
                         provider_name, status, attempt, max_retries, backoff_ms, err_text
@@ -104,7 +107,15 @@ async fn send_http_request_with_retry(
                     }
                 }
 
-                anyhow::bail!("{} API 错误 (HTTP {}): {}", provider_name, status, err_text);
+                // 失败信息要**说清重试过几次**：界面上的错误卡片直接照搬它，
+                // 用户据此知道"不是没重试，是重试完确实不行了"（重试次数可在设置里调）。
+                anyhow::bail!(
+                    "{} API 错误 (HTTP {}){}: {}",
+                    provider_name,
+                    status,
+                    retry_exhausted_suffix(attempt, max_retries),
+                    err_text
+                );
             }
             Err(e) => {
                 if attempt <= max_retries {
@@ -125,10 +136,35 @@ async fn send_http_request_with_retry(
                     }
                 }
 
-                anyhow::bail!("发起 {} 请求失败: {}", provider_name, e);
+                anyhow::bail!(
+                    "发起 {} 请求失败{}: {}",
+                    provider_name,
+                    retry_exhausted_suffix(attempt, max_retries),
+                    e
+                );
             }
         }
     }
+}
+
+/// 退避耗尽后的说明后缀（`max_retries == 0` 时如实说"未重试"）。
+fn retry_exhausted_suffix(attempts_made: usize, max_retries: usize) -> String {
+    if max_retries == 0 {
+        "（未重试）".to_string()
+    } else {
+        format!("（已重试 {} 次仍失败）", attempts_made - 1)
+    }
+}
+
+/// 解析 429/503 响应里的 `Retry-After`（只认秒数形式；HTTP-date 形式忽略）。
+fn parse_retry_after_ms(headers: &HeaderMap) -> Option<u64> {
+    let raw = headers.get(RETRY_AFTER)?.to_str().ok()?;
+    let secs: f64 = raw.trim().parse().ok()?;
+    if !secs.is_finite() || secs < 0.0 {
+        return None;
+    }
+    // 上限 30s：上游说 1 小时也不能把界面吊在那儿
+    Some(((secs * 1000.0) as u64).min(30_000))
 }
 
 async fn run_stream(
@@ -1071,7 +1107,112 @@ mod tests {
         let err = res.unwrap_err().to_string();
         assert!(err.contains("HTTP 500"));
         assert!(err.contains("server error detail"));
+        // 失败信息必须说清"重试过几次"——界面错误卡片直接展示它，用户才知道是重试耗尽
+        assert!(
+            err.contains("已重试 2 次仍失败"),
+            "退避耗尽后应说明重试次数，实际：{err}"
+        );
         assert_eq!(request_count.load(Ordering::SeqCst), 3);
+    }
+
+    /// 429 带 `Retry-After` 时按它退避（并设上限），同时仍然重试到配置的次数。
+    #[tokio::test]
+    async fn test_429_honours_retry_after_header() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server_url = format!("http://127.0.0.1:{}/v1/chat/completions", port);
+
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let count_clone = request_count.clone();
+
+        tokio::spawn(async move {
+            loop {
+                if let Ok((mut socket, _)) = listener.accept().await {
+                    count_clone.fetch_add(1, Ordering::SeqCst);
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let body = r#"{"error":{"message":"Too Many Requests"}}"#;
+                    let response = format!(
+                        "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                }
+            }
+        });
+
+        let client = reqwest::Client::new();
+        let (tx, _rx) = mpsc::channel(16);
+        let mut abort_rx = None;
+
+        let res = send_http_request_with_retry(
+            &client,
+            &server_url,
+            HeaderMap::new(),
+            serde_json::json!({}),
+            "TestProvider",
+            1,
+            &mut abort_rx,
+            &tx,
+        )
+        .await;
+
+        assert!(res.is_err());
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains("HTTP 429"), "实际：{err}");
+        assert!(err.contains("已重试 1 次仍失败"), "实际：{err}");
+        assert_eq!(request_count.load(Ordering::SeqCst), 2, "重试 1 次 → 共 2 次请求");
+    }
+
+    /// 重试次数为 0 时**一次都不重试**，错误信息如实说"未重试"。
+    #[tokio::test]
+    async fn test_zero_retries_fails_immediately() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server_url = format!("http://127.0.0.1:{}/v1/chat/completions", port);
+
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let count_clone = request_count.clone();
+
+        tokio::spawn(async move {
+            loop {
+                if let Ok((mut socket, _)) = listener.accept().await {
+                    count_clone.fetch_add(1, Ordering::SeqCst);
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let body = "boom";
+                    let response = format!(
+                        "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                }
+            }
+        });
+
+        let client = reqwest::Client::new();
+        let (tx, _rx) = mpsc::channel(16);
+        let mut abort_rx = None;
+
+        let res = send_http_request_with_retry(
+            &client,
+            &server_url,
+            HeaderMap::new(),
+            serde_json::json!({}),
+            "TestProvider",
+            0,
+            &mut abort_rx,
+            &tx,
+        )
+        .await;
+
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("（未重试）"));
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

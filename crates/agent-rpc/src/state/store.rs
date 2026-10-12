@@ -51,6 +51,12 @@ pub struct AgentStore {
     pub public_workspace: String,
     pub appearance: String,
     pub ui: UiSnapshot,
+    /// 本实例的 `config.json` 落盘位置（构造时从注入的 [`AppHome`] 取）。
+    ///
+    /// 🔴 存下来而不是每次去问全局 `agent_node::session::get_config_path()`：
+    /// 测试/嵌入式宿主注入了自己的应用目录，写盘却跑到用户真实的 `~/.a-da` 去，
+    /// 既污染用户配置又让"设置真的落盘了吗"无法断言。
+    pub config_path: std::path::PathBuf,
 }
 
 
@@ -96,6 +102,7 @@ impl AgentStore {
             approval: ApprovalMode::Auto,
             effort: Effort::Max,
             mode: AgentMode::Code,
+            retry_count: agent_base::model::DEFAULT_MODEL_RETRY_COUNT as u32,
         };
         let mut appearance_str = "dark".to_string();
 
@@ -155,6 +162,11 @@ impl AgentStore {
                             "low" => Effort::Low,
                             _ => Effort::Max,
                         };
+                    }
+                    // 模型请求重试次数（设置项）；缺失/越界一律回落到合法区间
+                    if let Some(rc) = val.get("retryCount").and_then(|v| v.as_u64()) {
+                        config_snapshot.retry_count =
+                            agent_base::model::normalize_model_retry_count(rc as usize) as u32;
                     }
                     if let Some(md) = val.get("mode").and_then(|v| v.as_str()) {
                         config_snapshot.mode = match md.to_lowercase().as_str() {
@@ -320,6 +332,7 @@ impl AgentStore {
                 sidebar_open: true,
                 search_open: false,
             },
+            config_path: cfg_file.clone(),
         }
     }
 
@@ -983,7 +996,8 @@ mod tests {
             "baseUrl": "http://ai.20301024.xyz:36302/v1",
             "apiKey": "sk-test-key",
             "contextWindow": 65536,
-            "appearance": "light"
+            "appearance": "light",
+            "retryCount": 8
         }).to_string()).unwrap();
 
         // 注入式应用目录：不再依赖 `std::env::set_var`（端口化后那种做法已失效）
@@ -995,6 +1009,37 @@ mod tests {
         assert_eq!(store.provider.api_key, "sk-test-key");
         assert_eq!(store.config.context_window, 65536);
         assert_eq!(store.appearance, "light");
+        // 请求重试次数（设置项）：配置文件里写了 8 就得读成 8，而不是永远默认 5
+        assert_eq!(store.config.retry_count, 8, "配置里的 retryCount 必须生效");
+        // 落盘路径跟着注入的应用目录走——绝不写到用户真实的 ~/.a-da
+        assert_eq!(store.config_path, cfg_path);
+
+        let _ = std::fs::remove_dir_all(temp_home);
+    }
+
+    /// 老配置文件没有 `retryCount` → 回落到默认值（**不是 0**：0 意味着一次都不重试）。
+    #[test]
+    fn test_retry_count_defaults_when_absent_and_clamps_when_absurd() {
+        let temp_home = std::env::temp_dir().join(format!("a_da_retry_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_home);
+        let cfg_path = temp_home.join("config.json");
+
+        std::fs::write(&cfg_path, serde_json::json!({ "model": "m" }).to_string()).unwrap();
+        let home = agent_base::testing::TempAppHome::at(&temp_home).with_config_file(&cfg_path);
+        let store = AgentStore::with_home("".to_string(), &home);
+        assert_eq!(
+            store.config.retry_count,
+            agent_base::model::DEFAULT_MODEL_RETRY_COUNT as u32,
+            "缺失 retryCount 时必须回落到默认值"
+        );
+
+        std::fs::write(&cfg_path, serde_json::json!({ "retryCount": 9999 }).to_string()).unwrap();
+        let store2 = AgentStore::with_home("".to_string(), &home);
+        assert_eq!(
+            store2.config.retry_count,
+            agent_base::model::MAX_MODEL_RETRY_COUNT as u32,
+            "越界的 retryCount 必须夹到上限"
+        );
 
         let _ = std::fs::remove_dir_all(temp_home);
     }

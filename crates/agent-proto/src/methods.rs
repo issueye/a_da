@@ -43,6 +43,8 @@ pub const CONFIG_SET_PROVIDER: &str = "config.setProvider";
 pub const CONFIG_CHECK_PROVIDER: &str = "config.checkProvider";
 pub const CONFIG_SET_APPROVAL: &str = "config.setApproval";
 pub const CONFIG_SET_EFFORT: &str = "config.setEffort";
+/// 设置"模型请求重试次数"（默认 5；重试耗尽即断开本轮对话）
+pub const CONFIG_SET_RETRY_COUNT: &str = "config.setRetryCount";
 
 // 供应商与多协议模型管理
 pub const PROVIDER_LIST: &str = "provider.list";
@@ -147,6 +149,7 @@ pub const ALL_METHODS: &[&str] = &[
     CONFIG_CHECK_PROVIDER,
     CONFIG_SET_APPROVAL,
     CONFIG_SET_EFFORT,
+    CONFIG_SET_RETRY_COUNT,
     PROVIDER_LIST,
     PROVIDER_SAVE,
     PROVIDER_DELETE,
@@ -207,7 +210,8 @@ mod tests {
         }
         // W5-T2：`workspace.set` / `config.update` 删除后 76 → 74；
         // W6-T1/T2：`subagent.resume` / `workspace.rescan` 删除后 74 → 72
-        assert_eq!(ALL_METHODS.len(), 72);
+        // W7：新增 `config.setRetryCount`（模型请求重试次数）后 72 → 73
+        assert_eq!(ALL_METHODS.len(), 73);
 
         let mut event_set = HashSet::new();
         for &e in ALL_EVENTS {

@@ -232,8 +232,12 @@ impl AgentRuntime {
                 system_prompt: None,
                 temperature: Some(0.2),
                 effort: None,
-                max_retries: Some(3),
+                max_retries: Some(crate::model::DEFAULT_MODEL_RETRY_COUNT),
             });
+            // 重试次数由组合根按用户设置注入；**只覆盖这一项**，不碰温度等其它默认值
+            if let Some(retries) = req.max_retries {
+                options.max_retries = Some(retries);
+            }
             if !model_tools.is_empty() {
                 options.tools = Some(model_tools.clone());
             }
@@ -1237,5 +1241,73 @@ mod tests {
 
         let turn_finished_count = sink.snapshot().into_iter().filter(|e| matches!(e.body, AgentEventBody::TurnFinished { .. })).count();
         assert_eq!(turn_finished_count, 1);
+    }
+
+    /// **设置项 → 引擎 → 适配器**的契约：`TurnRequest::with_max_retries` 必须原样出现在
+    /// 模型请求的 `options.max_retries` 里（界面上的"请求重试次数"就是靠这条路生效的）。
+    ///
+    /// 不写这条就会出现"设置项存下来了、界面也显示 5，但真的发请求时还是写死的 3"——
+    /// 正是本仓反复出现的"看起来装上了其实没接线"。
+    #[tokio::test]
+    async fn test_max_retries_reaches_the_model_request() {
+        let model = Arc::new(ScriptedModelClient::new(vec![vec![
+            StreamDelta::Text { text: "ok".into() },
+            StreamDelta::Done { stop_reason: "stop".into() },
+        ]]));
+        let runtime = AgentRuntime::new(
+            model.clone(),
+            Arc::new(InMemoryToolCatalog::new()),
+            Arc::new(RecordingApprovalGate::new(true)),
+            Arc::new(InMemorySessionStore::new()),
+            Arc::new(FixedPrompt::new("system prompt")),
+            Arc::new(MockScope::new("ws")),
+            Arc::new(FixedClock::new(1000)),
+            RunPolicy { max_steps: Some(1), max_parallel_tools: 1, tool_timeout: None },
+        );
+
+        // 1) 显式设置 7 次 → 必须原样送达
+        let sink = RecordingSink::new();
+        let req = TurnRequest::new("t_retry_setting", mock_provider_config())
+            .with_user_prompt("go")
+            .with_max_retries(Some(7));
+        runtime.run_turn(req, &sink, &NeverCancel).await.unwrap();
+
+        let seen = model.requests();
+        assert_eq!(seen.len(), 1, "一轮只该有一次模型请求");
+        assert_eq!(
+            seen[0].options.max_retries,
+            Some(7),
+            "界面设置的重试次数必须原样送到适配器"
+        );
+
+        // 2) 不设置 → 落到默认值（既不是 0，也不是早先写死的 3）
+        let model2 = Arc::new(ScriptedModelClient::new(vec![vec![
+            StreamDelta::Text { text: "ok".into() },
+            StreamDelta::Done { stop_reason: "stop".into() },
+        ]]));
+        let runtime2 = AgentRuntime::new(
+            model2.clone(),
+            Arc::new(InMemoryToolCatalog::new()),
+            Arc::new(RecordingApprovalGate::new(true)),
+            Arc::new(InMemorySessionStore::new()),
+            Arc::new(FixedPrompt::new("system prompt")),
+            Arc::new(MockScope::new("ws")),
+            Arc::new(FixedClock::new(1000)),
+            RunPolicy { max_steps: Some(1), max_parallel_tools: 1, tool_timeout: None },
+        );
+        let sink2 = RecordingSink::new();
+        runtime2
+            .run_turn(
+                TurnRequest::new("t_retry_default", mock_provider_config()).with_user_prompt("go"),
+                &sink2,
+                &NeverCancel,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            model2.requests()[0].options.max_retries,
+            Some(crate::model::DEFAULT_MODEL_RETRY_COUNT),
+            "未设置时应当用默认重试次数"
+        );
     }
 }

@@ -46,6 +46,8 @@ interface SettingsModalProps {
   config: ProviderConfig
   approvalMode: ApprovalMode
   effort: Effort
+  /** 模型请求重试次数（默认 5；重试耗尽即断开本轮对话） */
+  retryCount: number
   onClose: () => void
   onSave: (config: ProviderConfig) => void
   onOpenProcesses?: () => void
@@ -62,6 +64,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   config,
   approvalMode: initialApprovalMode,
   effort: initialEffort,
+  retryCount: initialRetryCount,
   onClose,
   onSave,
   onOpenProcesses,
@@ -113,6 +116,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [configFilePath, setConfigFilePath] = useState<string>('')
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>(initialApprovalMode)
   const [effort, setEffort] = useState<Effort>(initialEffort)
+  /** 请求重试次数：默认 5，0 = 不重试；上限 20（与后端 normalize 一致） */
+  const [retryCount, setRetryCount] = useState<number>(
+    Number.isFinite(initialRetryCount) ? initialRetryCount : 5
+  )
 
   // 操作反馈
   const [testing, setTesting] = useState(false)
@@ -627,6 +634,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
       await agentClient.setApprovalMode(approvalMode)
       await agentClient.setEffort(effort)
+      await agentClient.setRetryCount(retryCount)
 
       setSavedSuccess(true)
       setTimeout(() => {
@@ -1515,6 +1523,47 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     )
                   })}
                 </div>
+              </div>
+
+              {/* 请求重试次数：模型请求失败后的自动重试上限；用完即断开本轮对话 */}
+              <div className="space-y-2">
+                <label className="flex items-center space-x-1.5 text-zinc-800 dark:text-zinc-200 font-medium">
+                  <RefreshCw size={14} className="text-emerald-500 dark:text-emerald-400" />
+                  <span>请求重试次数 (默认 5)</span>
+                </label>
+                <div className="flex items-center space-x-3">
+                  <input
+                    type="number"
+                    min={0}
+                    max={20}
+                    step={1}
+                    value={retryCount}
+                    onChange={(e) => {
+                      const raw = Number(e.target.value)
+                      setRetryCount(Number.isFinite(raw) ? Math.max(0, Math.min(20, Math.floor(raw))) : 0)
+                    }}
+                    className="w-24 px-3 py-2 text-xs rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-[#121214] text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-emerald-500"
+                  />
+                  <input
+                    type="range"
+                    min={0}
+                    max={20}
+                    step={1}
+                    value={retryCount}
+                    onChange={(e) => setRetryCount(Number(e.target.value))}
+                    className="flex-1 accent-emerald-500"
+                  />
+                  <span className="text-xs text-zinc-500 dark:text-zinc-400 w-16 text-right">
+                    {retryCount === 0 ? '不重试' : `${retryCount} 次`}
+                  </span>
+                </div>
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
+                  模型请求失败（限流 429 / 服务端 5xx / 网络中断）时按指数退避自动重试；
+                  <strong className="text-zinc-700 dark:text-zinc-300">
+                    重试次数用完仍失败即断开本次对话
+                  </strong>
+                  ，排队中的指令会原样保留等你手动重试（0 = 一次都不重试）。
+                </p>
               </div>
 
               {/* 本地配置文件路径提示 */}

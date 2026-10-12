@@ -21,6 +21,11 @@ pub struct TurnRequest {
     /// 由组合根按当前配置注入（可运行时变化），引擎在每轮模型调用前用它做一次
     /// "上一轮真实用量是否已逼近上限"的判定，撞顶就 `ContextWindowExceeded` 提前失败。
     pub context_window: Option<u64>,
+    /// 模型请求**重试次数**（首次失败后最多再试几次；`None` = 用 [`DEFAULT_MODEL_RETRY_COUNT`]）。
+    ///
+    /// 单独占一个字段而不是塞进 `options`：`options` 一旦被调用方填了就会**整份替换**
+    /// 引擎默认值（温度等），只为了改重试次数而覆盖掉其它默认项是坑。
+    pub max_retries: Option<usize>,
 }
 
 impl TurnRequest {
@@ -35,6 +40,7 @@ impl TurnRequest {
             provider_config,
             options: None,
             context_window: None,
+            max_retries: None,
         }
     }
 
@@ -56,6 +62,12 @@ impl TurnRequest {
     /// 登记上下文窗口上限（`None` = 不治理）。
     pub fn with_context_window(mut self, window: Option<u64>) -> Self {
         self.context_window = window;
+        self
+    }
+
+    /// 登记模型请求重试次数（`None` = 用默认值）。
+    pub fn with_max_retries(mut self, retries: Option<usize>) -> Self {
+        self.max_retries = retries;
         self
     }
 }

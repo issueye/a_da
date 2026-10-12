@@ -16,17 +16,38 @@ pub struct SkillsState {
     pub enabled_state: HashMap<String, bool>,
 }
 
+/// 技能管理器。
+///
+/// 🔴 带 `home` 的理由同 [`crate::plugins::PluginManager`]：早先纯 unit struct 直接读
+/// `get_app_home()`，跑单测就会改写用户真实的 `~/.a-da/skills_state.json`。
 #[derive(Debug, Clone, Default)]
-pub struct SkillManager;
+pub struct SkillManager {
+    /// `None` = 进程默认应用目录（生产）；`Some` = 注入目录（测试 / 嵌入式宿主）。
+    home: Option<PathBuf>,
+}
 
 impl SkillManager {
     pub fn new() -> Self {
-        Self
+        Self { home: None }
+    }
+
+    /// 注入应用目录（测试 / 嵌入式宿主用；生产路径走 [`SkillManager::new`]）。
+    pub fn with_home(home: impl Into<PathBuf>) -> Self {
+        Self {
+            home: Some(home.into()),
+        }
+    }
+
+    fn app_home(&self) -> PathBuf {
+        match &self.home {
+            Some(h) => h.clone(),
+            None => get_app_home(),
+        }
     }
 
     /// 技能状态文件路径：~/.a-da/skills_state.json
     pub fn state_file_path(&self) -> PathBuf {
-        get_app_home().join("skills_state.json")
+        self.app_home().join("skills_state.json")
     }
 
     /// 读取持久化启停状态
@@ -174,7 +195,7 @@ impl SkillManager {
         }
 
         // 2. 用户全局技能目录：~/.a-da/skills 与 ~/.agents/skills
-        let app_home = get_app_home();
+        let app_home = self.app_home();
         roots.push((app_home.join("skills"), "global"));
         if let Some(parent) = app_home.parent() {
             roots.push((parent.join(".agents").join("skills"), "global"));
@@ -253,7 +274,7 @@ impl SkillManager {
         let dir = if scope == "workspace" && workspace.map(|s| !s.trim().is_empty()).unwrap_or(false) {
             PathBuf::from(workspace.unwrap()).join(".ada").join("skills").join(name)
         } else {
-            get_app_home().join("skills").join(name)
+            self.app_home().join("skills").join(name)
         };
 
         fs::create_dir_all(&dir)?;

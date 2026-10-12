@@ -366,7 +366,7 @@ pub struct WorkspaceSnapshot {
 }
 
 /// 配置信息
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigSnapshot {
     pub model: String,
     #[serde(rename = "contextWindow")]
@@ -378,6 +378,32 @@ pub struct ConfigSnapshot {
     pub approval: ApprovalMode,
     pub effort: Effort,
     pub mode: AgentMode,
+    /// 模型请求**重试次数**（首次失败后最多再试几次；默认见
+    /// [`agent_base::model::DEFAULT_MODEL_RETRY_COUNT`]）。
+    ///
+    /// 重试耗尽即断开本轮对话（不再消费排队指令），由界面提示用户手动重试。
+    /// 老配置文件没有这个字段时按默认值回填（`serde(default)`），不是 0。
+    #[serde(rename = "retryCount", default = "default_retry_count")]
+    pub retry_count: u32,
+}
+
+fn default_retry_count() -> u32 {
+    agent_base::model::DEFAULT_MODEL_RETRY_COUNT as u32
+}
+
+impl Default for ConfigSnapshot {
+    fn default() -> Self {
+        Self {
+            model: String::new(),
+            context_window: 0,
+            max_output_tokens: None,
+            supports_images: false,
+            approval: ApprovalMode::default(),
+            effort: Effort::default(),
+            mode: AgentMode::default(),
+            retry_count: default_retry_count(),
+        }
+    }
 }
 
 /// UI 外壳镜像

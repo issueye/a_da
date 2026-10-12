@@ -62,6 +62,8 @@ export const CONFIG_SET_PROVIDER = 'config.setProvider'
 export const CONFIG_CHECK_PROVIDER = 'config.checkProvider'
 export const CONFIG_SET_APPROVAL = 'config.setApproval'
 export const CONFIG_SET_EFFORT = 'config.setEffort'
+/** 设置"模型请求重试次数"（默认 5；重试耗尽即断开本轮对话） */
+export const CONFIG_SET_RETRY_COUNT = 'config.setRetryCount'
 
 // 模型供应商管理 (Provider)
 export const PROVIDER_LIST = 'provider.list'

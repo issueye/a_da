@@ -160,6 +160,20 @@ pub struct ChatCompletionMessage {
     pub reasoning_content: Option<String>,
 }
 
+/// 模型请求**默认重试次数**（首次失败后最多再试几次）。
+///
+/// 桌面端的"请求重试次数"设置项默认就是它；重试耗尽即断开本轮对话，
+/// 由界面提示用户手动重试（不再无声地一直重试下去）。
+pub const DEFAULT_MODEL_RETRY_COUNT: usize = 5;
+
+/// 重试次数**上限**：配置文件/协议里塞个天文数字进来也不能把界面吊死。
+pub const MAX_MODEL_RETRY_COUNT: usize = 20;
+
+/// 归一化重试次数到 `0..=MAX_MODEL_RETRY_COUNT`（0 = 不重试，如实允许）。
+pub fn normalize_model_retry_count(retries: usize) -> usize {
+    retries.min(MAX_MODEL_RETRY_COUNT)
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ModelChatOptions {
     pub tools: Option<Vec<ChatCompletionTool>>,
@@ -167,6 +181,14 @@ pub struct ModelChatOptions {
     pub temperature: Option<f32>,
     pub effort: Option<String>,
     pub max_retries: Option<usize>,
+}
+
+impl ModelChatOptions {
+    /// 设定重试次数（`None` = 用适配器/引擎的默认值）。
+    pub fn with_max_retries(mut self, retries: Option<usize>) -> Self {
+        self.max_retries = retries;
+        self
+    }
 }
 
 #[cfg(test)]

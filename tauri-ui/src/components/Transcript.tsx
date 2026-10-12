@@ -1489,6 +1489,12 @@ const AssistantRow: React.FC<{
               <span className="font-mono text-[11.5px] break-all leading-relaxed">
                 {errorDetail}
               </span>
+              {/* 自动重试已用尽：补一句"去哪儿改"，断开的结论本身由宿主写在正文里 */}
+              {(errorDetail.includes('已重试') || errorDetail.includes('未重试')) && (
+                <div className="mt-1.5 font-sans text-[11px] text-red-600/90 dark:text-red-400/90">
+                  可到「设置 → 运行环境 → 请求重试次数」调大次数后，再点右侧「请求重试」。
+                </div>
+              )}
             </div>
           </div>
 

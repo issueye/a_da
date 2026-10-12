@@ -234,12 +234,15 @@ impl EventSink for DirectEventSink {
 }
 
 /// 用真引擎跑一轮，并把领域事件送入通道。
+///
+/// `max_retries` = 模型请求重试次数（设置项「请求重试次数」，默认 5）。
 pub async fn run_turn_with_engine(
     engine: Arc<AgentRuntime>,
     thread_id: &str,
     user_prompt: Option<&str>,
     provider_config: ProviderConfig,
     context_window: Option<u64>,
+    max_retries: Option<usize>,
     event_tx: mpsc::Sender<AgentEvent>,
     abort_rx: Option<watch::Receiver<bool>>,
 ) -> anyhow::Result<()> {
@@ -249,7 +252,9 @@ pub async fn run_turn_with_engine(
         None => WatchedCancel::never(),
     };
 
-    let mut req = TurnRequest::new(thread_id, provider_config).with_context_window(context_window);
+    let mut req = TurnRequest::new(thread_id, provider_config)
+        .with_context_window(context_window)
+        .with_max_retries(max_retries);
     if let Some(p) = user_prompt {
         if !p.trim().is_empty() {
             req = req.with_user_prompt(p);
@@ -292,6 +297,7 @@ pub async fn run_agent_turn(
     user_prompt: Option<&str>,
     provider_config: ProviderConfig,
     context_window: Option<u64>,
+    max_retries: Option<usize>,
     event_tx: mpsc::Sender<AgentEvent>,
     abort_rx: Option<watch::Receiver<bool>>,
 ) -> anyhow::Result<()> {
@@ -302,6 +308,7 @@ pub async fn run_agent_turn(
         user_prompt,
         provider_config,
         context_window,
+        max_retries,
         event_tx,
         abort_rx,
     )
@@ -476,6 +483,7 @@ mod tests {
                 proxy_url: None,
             },
             None,
+            None,
             tx,
             None,
         )
@@ -539,6 +547,7 @@ mod tests {
                 proxy_url: None,
             },
             None,
+            Some(7),
             tx,
             None,
         )
@@ -742,6 +751,7 @@ mod tests {
                     proxy_url: None,
                 },
                 None,
+                Some(5),
                 tx,
                 None,
             )

@@ -46,11 +46,30 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1 -Shell tauri       # 同一
 - 本机 `cargo` 默认 target 目录编译 `ring` 会报 MSVC `D8050`；加上
   `CARGO_TARGET_DIR=../cargo_target_ada` 复用已有缓存即可（与代码无关）。
 - **工具链环境**：现行版本为 **Rust 1.99.0 / Cargo 1.99.0 / Rustup 1.29.1**（MSVC）。
-- **Rust 测试不再写用户真实的 `~/.a-da`**：`agent_node::session::app_home()` 在 `cfg(test)` 下指向
-  `temp/a_da_agent_core_test_home_<pid>`（端口化后的默认值）。要自己控制目录就用
-  `AgentStore::with_home(workspace, &TempAppHome::at(dir))` 注入，**不要用 `std::env::set_var`**
-  （端口是 `OnceLock`，初始化后改环境变量无效——已有用例栽在这上面）。
+- **应用目录端口在 `cfg(test)` 下指向临时目录**（`agent_node::session::app_home()` →
+  `temp/a_da_agent_core_test_home_<pid>`），**但那只覆盖 crate 自身的单测**：
+  集成测试（`crates/*/tests/`）里依赖是按**非 test** 编译的，端口仍指真实 `~/.a-da`。
+  所以集成测试必须显式注入（见下一条三条铁律），**不要用 `std::env::set_var`**。
 - **别跑 `bun test`**：TS 测试已随归档冻结，`bunfig.toml` 已把 `archive/**` 排除在 test 发现之外（跑只会得到 "No tests found"）；门是 `cargo test`。
+- 🔴 **测试绝不能写用户真实的 `~/.a-da`**。2026-10-12 真事故：跑一次 `cargo test -p agent-rpc`，
+  用户配置里的激活供应商被改成了测试数据（`anthropic-claude`）、顶层 baseUrl/apiKey/model 一起被改。
+  铁律三条：
+  ① 应用目录端口是 `OnceLock`——**只要有一个用例先构造过 `AgentStore::new`，同进程后续的
+  `std::env::set_var("A_DA_HOME")` 就完全无效**。集成测试一律用
+  `AgentStore::with_home(ws, &TempAppHome::at(dir))`（见 `tests/dispatch_integration.rs::store_for_test`）。
+  ② `PluginManager` / `SkillManager` 会写 `config.json` / `skills_state.json`，测试里必须
+  `PluginManager::with_home(dir)` / `SkillManager::with_home(dir)`（生产路径 `new()` 不变）。
+  ③ `save_app_config` 取 **store 自己的 `config_path`**，不再问全局 `get_config_path()`。
+  跑完门二顺手比对 `~/.a-da/config.json` 的哈希没变。
+- **模型请求重试次数**（设置项，默认 5，范围 `0..=20`）这条链要一起改才生效：
+  `ConfigSnapshot.retryCount`（wire/`client-ts`）↔ `~/.a-da/config.json` 的 `retryCount` ↔
+  `config.setRetryCount`（`spec/proto/ada-coding.ext.json` 也要登记）↔ 每轮
+  `TurnRequest::with_max_retries` → `ModelChatOptions.max_retries` → 适配器指数退避
+  （429 认 `Retry-After`，上限 30s）。**重试耗尽即断开本轮对话**：不再消费排队指令，
+  失败文本由 `persist_failure_message` **落盘**——只放内存里会被 1.5s 后的
+  `sync_threads_from_disk` 整份覆盖，界面上的错误卡片会"闪一下就没"。
+  实机回归：`pwsh -NoProfile -File tools/verify-retry-and-disconnect.ps1`
+  （起真产品、走真 JSON-RPC、改用户配置前先备份后还原）。
 - 🔴 **Tauri 宿主出包必须带 `custom-protocol` feature**：tauri 的 `build.rs` 判据是
   `dev = !custom_protocol`——**不带它时连 release 构建都算 dev**，运行时会去加载 `build.devUrl`
   （http://localhost:1420）而不是内嵌的前端产物，交付出去的免安装包就是"一扇空白窗"。

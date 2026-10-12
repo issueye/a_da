@@ -263,6 +263,7 @@ export class AgentWebSocketClient {
     },
     approvalMode: 'auto',
     effort: 'medium',
+    retryCount: 5,
     running: false,
     runningThreadIds: [],
     queue: [],
@@ -595,6 +596,9 @@ export class AgentWebSocketClient {
       if (payload.config.mode) this.snapshot.currentMode = payload.config.mode
       if (payload.config.approval) this.snapshot.approvalMode = payload.config.approval
       if (payload.config.effort) this.snapshot.effort = payload.config.effort
+      if (typeof payload.config.retryCount === 'number') {
+        this.snapshot.retryCount = payload.config.retryCount
+      }
       if (payload.config.model) {
         this.snapshot.providerConfig = {
           ...this.snapshot.providerConfig,
@@ -1006,6 +1010,19 @@ export class AgentWebSocketClient {
     this.snapshot.effort = effort
     this.notify()
     return this.request('config.setEffort', { effort })
+  }
+
+  /**
+   * 设置「请求重试次数」（模型请求失败后的重试次数，默认 5）。
+   *
+   * 重试在适配器里按指数退避执行；次数用完即**断开本轮对话**（不再消费排队指令），
+   * 错误卡片会说明"已重试 N 次仍失败"，由用户决定改设置还是手动重试。
+   */
+  public setRetryCount(retries: number) {
+    const normalized = Math.max(0, Math.min(20, Math.floor(retries)))
+    this.snapshot.retryCount = normalized
+    this.notify()
+    return this.request<{ retryCount: number }>('config.setRetryCount', { retries: normalized })
   }
 
   // ── 插件与扩展 RPC 接口 ──

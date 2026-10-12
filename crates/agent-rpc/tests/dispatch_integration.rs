@@ -12,9 +12,37 @@ use agent_rpc::server::dispatch::Dispatcher;
 use agent_rpc::server::fs_service;
 use agent_rpc::state::{generate_snapshot, AgentStore};
 
+/// 造一个**注入式应用目录**的 store —— 集成测试绝不碰用户真实的 `~/.a-da`。
+///
+/// 🔴 为什么不能写 `AgentStore::new(..)` + `std::env::set_var("A_DA_HOME", ..)`：
+/// 应用目录端口是 `OnceLock`，同一测试进程里只要**任何一个**用例先构造过 `AgentStore::new`，
+/// 端口就已经钉死在真实用户目录上，后面的 `set_var` 完全无效（`port 是 OnceLock，初始化后
+/// 改环境变量无效`——正是 AGENTS 里记着的那条）。于是 `provider.save` / `provider.delete`
+/// 这些会落盘的 dispatch 动作直接**覆盖用户真实的 `~/.a-da/config.json`**。
+/// 2026-10-12 真事故：跑一次 `cargo test -p agent-rpc`，用户配置里的激活供应商被改成了
+/// 测试用例里的 anthropic-claude，顶层 baseUrl/apiKey/model 一起被改。
+fn store_for_test(workspace: &str) -> AgentStore {
+    let dir = std::env::temp_dir().join(format!("a_da_it_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&dir);
+    AgentStore::with_home(
+        workspace.to_string(),
+        &agent_base::testing::TempAppHome::at(&dir),
+    )
+}
+
+/// 造一个一次性的临时应用目录（给 plugin/skill 管理器用）。
+///
+/// 同样是为了**不碰用户真实的 `~/.a-da`**：`PluginManager`/`SkillManager` 会往
+/// `config.json` / `skills_state.json` 里写东西。
+fn test_home_dir() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("a_da_it_home_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 #[test]
 fn test_protocol_snapshot_serialization() {
-    let store = AgentStore::new("E:/codes/rust_projects/a_da".to_string());
+    let store = store_for_test("E:/codes/rust_projects/a_da");
     let snapshot = generate_snapshot(&store);
     let json = serde_json::to_string(&snapshot).expect("序列化快照失败");
     assert!(json.contains("activeThreadId"));
@@ -31,7 +59,7 @@ fn test_fs_roots() {
 
 #[test]
 fn test_thread_lifecycle() {
-    let mut store = AgentStore::new("E:/test".to_string());
+    let mut store = store_for_test("E:/test");
     let t1 = store.create_thread(Some("我的测试会话".to_string()), None);
     assert_eq!(store.active_id, t1);
     assert!(store.threads.iter().any(|t| t.id == t1));
@@ -92,15 +120,15 @@ async fn test_stats_prompt_chars_are_measured_not_fabricated() {
         RunPolicy::default(),
     ));
 
-    let store = Arc::new(RwLock::new(AgentStore::new("E:/test".to_string())));
+    let store = Arc::new(RwLock::new(store_for_test("E:/test")));
     let dispatcher = Dispatcher::new(
         store,
         Arc::new(SessionManager::new(Some(std::env::temp_dir().join("a_da_test_home")))),
         Arc::new(CheckpointManager::new(Some(std::env::temp_dir().join("a_da_test_home")))),
         Arc::new(SubagentManager::new()),
         Arc::new(ApprovalManager::new()),
-        Arc::new(PluginManager::new()),
-        Arc::new(SkillManager::new()),
+        Arc::new(PluginManager::with_home(test_home_dir())),
+        Arc::new(SkillManager::with_home(test_home_dir())),
         None,
     )
     .with_engine(rt);
@@ -131,15 +159,15 @@ async fn test_stats_prompt_chars_are_measured_not_fabricated() {
 /// 未装配引擎时**必须报错**，而不是退回编造的数字。
 #[tokio::test]
 async fn test_stats_prompt_chars_without_engine_is_an_error() {
-    let store = Arc::new(RwLock::new(AgentStore::new("E:/test".to_string())));
+    let store = Arc::new(RwLock::new(store_for_test("E:/test")));
     let dispatcher = Dispatcher::new(
         store,
         Arc::new(SessionManager::new(Some(std::env::temp_dir().join("a_da_test_home")))),
         Arc::new(CheckpointManager::new(Some(std::env::temp_dir().join("a_da_test_home")))),
         Arc::new(SubagentManager::new()),
         Arc::new(ApprovalManager::new()),
-        Arc::new(PluginManager::new()),
-        Arc::new(SkillManager::new()),
+        Arc::new(PluginManager::with_home(test_home_dir())),
+        Arc::new(SkillManager::with_home(test_home_dir())),
         None,
     );
 
@@ -154,13 +182,13 @@ async fn test_stats_prompt_chars_without_engine_is_an_error() {
 
 #[tokio::test]
 async fn test_dispatcher_extension_methods() {
-    let store = Arc::new(RwLock::new(AgentStore::new("E:/test".to_string())));
+    let store = Arc::new(RwLock::new(store_for_test("E:/test")));
     let session_mgr = Arc::new(SessionManager::new(Some(std::env::temp_dir().join("a_da_test_home"))));
     let checkpoint_mgr = Arc::new(CheckpointManager::new(Some(std::env::temp_dir().join("a_da_test_home"))));
     let subagent_mgr = Arc::new(SubagentManager::new());
     let approval_mgr = Arc::new(ApprovalManager::new());
-    let plugin_mgr = Arc::new(PluginManager::new());
-    let skill_mgr = Arc::new(SkillManager::new());
+    let plugin_mgr = Arc::new(PluginManager::with_home(test_home_dir()));
+    let skill_mgr = Arc::new(SkillManager::with_home(test_home_dir()));
     let dispatcher = Dispatcher::new(
         store.clone(),
         session_mgr,
@@ -256,14 +284,14 @@ async fn test_dispatcher_extension_methods() {
 
 #[tokio::test]
 async fn test_dispatcher_mode_switching() {
-    let store = Arc::new(RwLock::new(AgentStore::new("E:/test".to_string())));
+    let store = Arc::new(RwLock::new(store_for_test("E:/test")));
     let test_dir = std::env::temp_dir().join(format!("a_da_test_{}", uuid::Uuid::new_v4()));
     let session_mgr = Arc::new(SessionManager::new(Some(test_dir.clone())));
     let checkpoint_mgr = Arc::new(CheckpointManager::new(Some(test_dir.clone())));
     let subagent_mgr = Arc::new(SubagentManager::new());
     let approval_mgr = Arc::new(ApprovalManager::new());
-    let plugin_mgr = Arc::new(PluginManager::new());
-    let skill_mgr = Arc::new(SkillManager::new());
+    let plugin_mgr = Arc::new(PluginManager::with_home(test_home_dir()));
+    let skill_mgr = Arc::new(SkillManager::with_home(test_home_dir()));
     let dispatcher = Dispatcher::new(
         store.clone(),
         session_mgr,
@@ -352,15 +380,15 @@ async fn test_dispatcher_mode_switching() {
 
 #[tokio::test]
 async fn test_plugin_and_skill_lifecycle() {
-    let store = Arc::new(RwLock::new(AgentStore::new("E:/codes/rust_projects/a_da".to_string())));
+    let store = Arc::new(RwLock::new(store_for_test("E:/codes/rust_projects/a_da")));
     let test_dir = std::env::temp_dir().join(format!("a_da_test_{}", uuid::Uuid::new_v4()));
     let _ = std::fs::create_dir_all(&test_dir);
     let session_mgr = Arc::new(SessionManager::new(Some(test_dir.clone())));
     let checkpoint_mgr = Arc::new(CheckpointManager::new(Some(test_dir.clone())));
     let subagent_mgr = Arc::new(SubagentManager::new());
     let approval_mgr = Arc::new(ApprovalManager::new());
-    let plugin_mgr = Arc::new(PluginManager::new());
-    let skill_mgr = Arc::new(SkillManager::new());
+    let plugin_mgr = Arc::new(PluginManager::with_home(test_home_dir()));
+    let skill_mgr = Arc::new(SkillManager::with_home(test_home_dir()));
     let dispatcher = Dispatcher::new(
         store.clone(),
         session_mgr,
@@ -431,7 +459,7 @@ async fn test_plugin_and_skill_lifecycle() {
 
 #[tokio::test]
 async fn test_thread_create_binds_requested_workspace() {
-    let store = Arc::new(RwLock::new(AgentStore::new("E:/codes/default_ws".to_string())));
+    let store = Arc::new(RwLock::new(store_for_test("E:/codes/default_ws")));
     let test_dir = std::env::temp_dir().join(format!("a_da_ws_bind_{}", uuid::Uuid::new_v4()));
     let session_mgr = Arc::new(SessionManager::new(Some(test_dir.clone())));
     let checkpoint_mgr = Arc::new(CheckpointManager::new(Some(test_dir.clone())));
@@ -441,8 +469,8 @@ async fn test_thread_create_binds_requested_workspace() {
         checkpoint_mgr,
         Arc::new(SubagentManager::new()),
         Arc::new(ApprovalManager::new()),
-        Arc::new(PluginManager::new()),
-        Arc::new(SkillManager::new()),
+        Arc::new(PluginManager::with_home(test_home_dir())),
+        Arc::new(SkillManager::with_home(test_home_dir())),
         None,
     );
 
@@ -499,17 +527,16 @@ async fn test_thread_create_binds_requested_workspace() {
 async fn test_dispatcher_provider_management() {
     let test_dir = std::env::temp_dir().join(format!("a_da_test_{}", uuid::Uuid::new_v4()));
     let _ = std::fs::create_dir_all(&test_dir);
-    unsafe {
-        std::env::set_var("A_DA_HOME", &test_dir);
-    }
 
-    let store = Arc::new(RwLock::new(AgentStore::new("E:/test".to_string())));
+    // 🔴 用注入式应用目录：provider.save/delete 会**落盘**，绝不能让它们写到
+    // 用户真实的 `~/.a-da/config.json`（`set_var("A_DA_HOME")` 在 OnceLock 之后无效）
+    let store = Arc::new(RwLock::new(store_for_test("E:/test")));
     let session_mgr = Arc::new(SessionManager::new(Some(test_dir.clone())));
     let checkpoint_mgr = Arc::new(CheckpointManager::new(Some(test_dir.clone())));
     let subagent_mgr = Arc::new(SubagentManager::new());
     let approval_mgr = Arc::new(ApprovalManager::new());
-    let plugin_mgr = Arc::new(PluginManager::new());
-    let skill_mgr = Arc::new(SkillManager::new());
+    let plugin_mgr = Arc::new(PluginManager::with_home(test_home_dir()));
+    let skill_mgr = Arc::new(SkillManager::with_home(test_home_dir()));
     let dispatcher = Dispatcher::new(
         store.clone(),
         session_mgr,
@@ -612,7 +639,7 @@ async fn test_dispatcher_provider_management() {
 
 #[tokio::test]
 async fn test_conversation_queue_lifecycle() {
-    let store = Arc::new(RwLock::new(AgentStore::new("E:/codes/rust_projects/a_da".to_string())));
+    let store = Arc::new(RwLock::new(store_for_test("E:/codes/rust_projects/a_da")));
     let test_dir = std::env::temp_dir().join(format!("a_da_queue_test_{}", uuid::Uuid::new_v4()));
     let _ = std::fs::create_dir_all(&test_dir);
     let session_mgr = Arc::new(SessionManager::new(Some(test_dir.clone())));
@@ -623,8 +650,8 @@ async fn test_conversation_queue_lifecycle() {
         checkpoint_mgr,
         Arc::new(SubagentManager::new()),
         Arc::new(ApprovalManager::new()),
-        Arc::new(PluginManager::new()),
-        Arc::new(SkillManager::new()),
+        Arc::new(PluginManager::with_home(test_home_dir())),
+        Arc::new(SkillManager::with_home(test_home_dir())),
         None,
     );
 
@@ -699,6 +726,82 @@ async fn test_conversation_queue_lifecycle() {
         assert_eq!(s.queue.len(), 0);
         assert!(!s.is_thread_running(&tid));
     }
+
+    let _ = std::fs::remove_dir_all(&test_dir);
+}
+
+/// 设置项「请求重试次数」的端到端契约：**改得了、夹得住、真的落盘**。
+///
+/// 用注入式应用目录（`AgentStore::with_home`）而不是 `set_var("A_DA_HOME")`：
+/// 端口是 `OnceLock`，初始化之后再改环境变量无效，而且会写进用户真实的 `~/.a-da`。
+#[tokio::test]
+async fn test_config_set_retry_count_is_clamped_and_persisted() {
+    use agent_base::testing::TempAppHome;
+
+    let test_dir = std::env::temp_dir().join(format!("a_da_retry_cfg_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&test_dir);
+    let cfg_path = test_dir.join("config.json");
+    let home = TempAppHome::at(&test_dir).with_config_file(&cfg_path);
+
+    let store = Arc::new(RwLock::new(AgentStore::with_home("E:/test".to_string(), &home)));
+    let dispatcher = Dispatcher::new(
+        store.clone(),
+        Arc::new(SessionManager::new(Some(test_dir.clone()))),
+        Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::with_home(test_home_dir())),
+        Arc::new(SkillManager::with_home(test_home_dir())),
+        None,
+    );
+
+    // 1. 默认值：没配过就是 5（绝不是 0——0 意味着一次都不重试）
+    assert_eq!(
+        store.read().await.config.retry_count,
+        agent_base::model::DEFAULT_MODEL_RETRY_COUNT as u32
+    );
+
+    // 2. 设置 7 次
+    let res = dispatcher
+        .dispatch("config.setRetryCount", serde_json::json!({ "retries": 7 }))
+        .await
+        .expect("config.setRetryCount 必须可分发");
+    assert_eq!(res.get("retryCount").and_then(|v| v.as_u64()), Some(7));
+    assert_eq!(store.read().await.config.retry_count, 7, "内存态必须立即生效");
+
+    // 3. 真的落盘（配置文件里能读到 7）
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg_path).expect("配置必须已落盘")).unwrap();
+    assert_eq!(
+        written.get("retryCount").and_then(|v| v.as_u64()),
+        Some(7),
+        "重试次数必须落盘：重启后设置不能丢"
+    );
+
+    // 4. 越界值夹到上限；缺参数按非法参数处理（不能静默当成 0）
+    let clamped = dispatcher
+        .dispatch("config.setRetryCount", serde_json::json!({ "retries": 9999 }))
+        .await
+        .unwrap();
+    assert_eq!(
+        clamped.get("retryCount").and_then(|v| v.as_u64()),
+        Some(agent_base::model::MAX_MODEL_RETRY_COUNT as u64)
+    );
+    assert!(
+        dispatcher
+            .dispatch("config.setRetryCount", serde_json::json!({}))
+            .await
+            .is_err(),
+        "缺少 retries 参数必须报错，不能静默当成 0"
+    );
+
+    // 5. 0 是合法值（明确表示不重试），不能被当成"没设置"
+    let zero = dispatcher
+        .dispatch("config.setRetryCount", serde_json::json!({ "retries": 0 }))
+        .await
+        .unwrap();
+    assert_eq!(zero.get("retryCount").and_then(|v| v.as_u64()), Some(0));
+    assert_eq!(store.read().await.config.retry_count, 0);
 
     let _ = std::fs::remove_dir_all(&test_dir);
 }

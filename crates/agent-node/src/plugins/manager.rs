@@ -12,17 +12,55 @@ use super::types::{
 };
 use crate::session::{get_app_home, get_config_path};
 
-pub struct PluginManager;
+/// 插件管理器。
+///
+/// 🔴 为什么带一个 `home`：早先它是纯 unit struct，内部直接 `get_config_path()` /
+/// `get_app_home()`。于是**跑一次插件相关单测就会改写用户真实的 `~/.a-da/config.json`**
+/// （同一进程里 `set_var("A_DA_HOME")` 对 `OnceLock` 化的端口无效，测试注入不进去）。
+/// 现在测试/嵌入式宿主用 [`PluginManager::with_home`] 注入自己的应用目录，生产路径不变。
+pub struct PluginManager {
+    /// `None` = 进程默认应用目录（生产）；`Some` = 注入目录（测试 / 嵌入式宿主）。
+    home: Option<PathBuf>,
+}
+
+impl Default for PluginManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl PluginManager {
     pub fn new() -> Self {
-        Self
+        Self { home: None }
+    }
+
+    /// 注入应用目录（测试 / 嵌入式宿主用；生产路径走 [`PluginManager::new`]）。
+    pub fn with_home(home: impl Into<PathBuf>) -> Self {
+        Self {
+            home: Some(home.into()),
+        }
+    }
+
+    /// `config.json` 落点
+    fn config_path(&self) -> PathBuf {
+        match &self.home {
+            Some(h) => h.join("config.json"),
+            None => get_config_path(),
+        }
+    }
+
+    /// 应用目录根
+    fn app_home(&self) -> PathBuf {
+        match &self.home {
+            Some(h) => h.clone(),
+            None => get_app_home(),
+        }
     }
 
     /// 获取配置中已禁用的插件集合
     pub fn load_disabled_plugins(&self) -> HashSet<String> {
         let mut disabled = HashSet::new();
-        let cfg_file = get_config_path();
+        let cfg_file = self.config_path();
         if cfg_file.exists() {
             if let Ok(content) = fs::read_to_string(&cfg_file) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -41,7 +79,7 @@ impl PluginManager {
 
     /// 切换插件启停状态并持久化至 ~/.a-da/config.json
     pub fn toggle_plugin(&self, plugin_id: &str, enabled: bool) -> Result<()> {
-        let cfg_file = get_config_path();
+        let cfg_file = self.config_path();
         if let Some(parent) = cfg_file.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -80,7 +118,7 @@ impl PluginManager {
     /// 读取插件能力开关
     pub fn get_capabilities(&self, _workspace: Option<&str>) -> ResolvedPluginCapabilitiesDto {
         let mut caps = PluginCapabilities::default();
-        let cfg_file = get_config_path();
+        let cfg_file = self.config_path();
         if cfg_file.exists() {
             if let Ok(content) = fs::read_to_string(&cfg_file) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -123,7 +161,7 @@ impl PluginManager {
 
     /// 保存插件能力设置
     pub fn save_capabilities(&self, patch: &serde_json::Value) -> Result<()> {
-        let cfg_file = get_config_path();
+        let cfg_file = self.config_path();
         if let Some(parent) = cfg_file.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -152,7 +190,7 @@ impl PluginManager {
 
     /// 保存插件特定配置
     pub fn save_config(&self, plugin_id: &str, values: &serde_json::Value) -> Result<()> {
-        let cfg_file = get_config_path();
+        let cfg_file = self.config_path();
         if let Some(parent) = cfg_file.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -186,7 +224,7 @@ impl PluginManager {
 
     /// 读取全部插件配置
     pub fn read_configs(&self) -> serde_json::Value {
-        let cfg_file = get_config_path();
+        let cfg_file = self.config_path();
         if cfg_file.exists() {
             if let Ok(content) = fs::read_to_string(&cfg_file) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -201,7 +239,7 @@ impl PluginManager {
 
     /// 保存插件密钥
     pub fn save_secret(&self, plugin_id: &str, key: &str, value: &str) -> Result<()> {
-        let secrets_dir = get_app_home().join("secrets");
+        let secrets_dir = self.app_home().join("secrets");
         fs::create_dir_all(&secrets_dir)?;
         let file_path = secrets_dir.join(format!("{}_{}", plugin_id, key));
         if value.trim().is_empty() {
@@ -214,7 +252,7 @@ impl PluginManager {
 
     /// 读取插件密钥是否存在
     pub fn check_secret(&self, plugin_id: &str, key: &str) -> bool {
-        let file_path = get_app_home().join("secrets").join(format!("{}_{}", plugin_id, key));
+        let file_path = self.app_home().join("secrets").join(format!("{}_{}", plugin_id, key));
         if file_path.exists() {
             if let Ok(content) = fs::read_to_string(&file_path) {
                 return !content.trim().is_empty();
@@ -249,7 +287,7 @@ impl PluginManager {
         }
 
         // 全局扩展目录：~/.a-da/extensions 与 ~/.a-da/plugins
-        let app_home = get_app_home();
+        let app_home = self.app_home();
         scan_dirs.push((app_home.join("extensions"), "global"));
         scan_dirs.push((app_home.join("plugins"), "global"));
 
@@ -437,7 +475,7 @@ impl PluginManager {
         let dir = if scope == "workspace" && workspace.map(|s| !s.trim().is_empty()).unwrap_or(false) {
             PathBuf::from(workspace.unwrap()).join(".ada").join("extensions")
         } else {
-            get_app_home().join("extensions")
+            self.app_home().join("extensions")
         };
 
         fs::create_dir_all(&dir)?;

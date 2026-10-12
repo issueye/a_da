@@ -70,8 +70,11 @@ fn thread_workspace(store: &AgentStore, thread_id: &str) -> String {
 }
 
 /// 持久化落盘应用全局配置（包含多供应商列表与激活供应商）
+///
+/// 路径取自 store 自己（构造时注入的应用目录），**不是**全局 `get_config_path()`：
+/// 测试/嵌入式宿主注入自己的 home 时，写盘必须跟着走，否则会污染用户真实的 `~/.a-da`。
 fn save_app_config(store: &AgentStore) -> Result<(), String> {
-    let cfg_file = agent_node::session::get_config_path();
+    let cfg_file = store.config_path.clone();
     if let Some(parent) = cfg_file.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -101,6 +104,8 @@ fn save_app_config(store: &AgentStore) -> Result<(), String> {
             obj.remove("maxOutputTokens");
         }
         obj.insert("supportsImages".to_string(), serde_json::json!(store.config.supports_images));
+        // 模型请求重试次数（设置项，默认 5；重试耗尽即断开对话）
+        obj.insert("retryCount".to_string(), serde_json::json!(store.config.retry_count));
         if let Some(ref ch) = store.provider.custom_headers {
             obj.insert("customHeaders".to_string(), serde_json::json!(ch));
         } else {
@@ -119,6 +124,39 @@ fn save_app_config(store: &AgentStore) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// 把一次「模型请求失败」如实写进会话文件。
+///
+/// 🔴 **必须落盘**：这条错误若只活在内存里，1.5 秒后 `sync_threads_from_disk` 会发现
+/// 磁盘版本与内存不同（磁盘上没有这次失败），于是把整份 `items` 覆盖回去——
+/// 界面上的错误卡片「闪一下就没了」，用户只看到自己的提问孤零零挂在那儿。
+/// 落盘走的是与引擎写"部分正文"同一条 jsonl 实现（`SessionManager::append_message`），
+/// 所以刷新/重启后这条失败记录还在。
+fn persist_failure_message(
+    session_mgr: &agent_node::session::SessionManager,
+    thread_id: &str,
+    content: &str,
+    error: &str,
+) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let message = agent_base::domain::AgentMessage::Assistant {
+        content: content.to_string(),
+        thinking: None,
+        tool_calls: None,
+        stop_reason: Some("error".to_string()),
+        error_message: Some(error.to_string()),
+        timestamp: Some(now),
+        usage: None,
+        duration_ms: None,
+        turn_duration_ms: None,
+    };
+    if let Err(e) = session_mgr.append_message(thread_id, message, None) {
+        tracing::warn!("失败信息落盘失败（界面仍会显示，但下次同步就会丢）: {e}");
+    }
 }
 
 /// 远程探测通用 /models 接口以获取可用模型列表
@@ -630,9 +668,11 @@ impl Dispatcher {
                 let p_cfg = provider_config.clone();
                 // 本轮是否是"撞顶停的"（引擎通过专门事件告知，见下面的事件臂）
                 let mut context_exceeded: Option<(u64, u64)> = None;
+                // 本轮是否是"模型请求失败停的"（重试已耗尽）→ 断开对话，不再消费排队指令
+                let mut hard_failure: Option<String> = None;
 
                 // 每轮根据当前会话绑定的 Agent / 模式 / 所属工作区 分发对应引擎：
-                let (thread_agent_id, thread_mode, thread_ws, context_window) = {
+                let (thread_agent_id, thread_mode, thread_ws, context_window, retry_count) = {
                     let s = store_clone.read().await;
                     let t = s.threads.iter().find(|t| t.id == tid);
                     let agent_id = t.and_then(|t| t.agent_id.clone());
@@ -640,7 +680,11 @@ impl Dispatcher {
                     let ws = thread_workspace(&s, &tid);
                     // 上下文窗口：界面配置里的真值（运行时可变），交给引擎做撞顶治理
                     let cw = s.config.context_window;
-                    (agent_id, mode, ws, if cw > 0 { Some(cw) } else { None })
+                    // 请求重试次数：同样取界面配置的真值（设置项「请求重试次数」，默认 5）
+                    let retries = agent_base::model::normalize_model_retry_count(
+                        s.config.retry_count as usize,
+                    );
+                    (agent_id, mode, ws, if cw > 0 { Some(cw) } else { None }, retries)
                 };
                 let is_pm = thread_agent_id.as_deref() == Some("ada-pm")
                     || thread_agent_id.as_deref() == Some("pm-assistant")
@@ -679,6 +723,7 @@ impl Dispatcher {
                         prompt.as_deref(),
                         p_cfg,
                         context_window,
+                        Some(retry_count),
                         event_tx,
                         Some(abort_rx),
                     ).await {
@@ -893,9 +938,26 @@ impl Dispatcher {
                                     break;
                                 }
                                 AgentEventBody::Failed { message } => {
-                                    store.append_assistant_delta(&target_tid_clone, &format!("\n\n**请求异常**：{message}"));
+                                    // 「已断开」这句由**宿主**写进会话正文，而不是只做界面提示：
+                                    // 任何客户端（桌面 / Web / CLI）都该看到"这轮到此为止"，
+                                    // 而不是各端各自猜。
+                                    let error_text = format!(
+                                        "\n\n**请求异常**：{message}\n\n\
+                                         > 重试已耗尽，本次对话已断开；排队中的指令仍保留。"
+                                    );
+                                    store.append_assistant_delta(&target_tid_clone, &error_text);
                                     store.push_log("error", format!("Agent 执行异常: {message}"), None);
                                     drop(store);
+                                    // 落盘，否则 1.5s 后的磁盘同步会把这张错误卡片抹掉
+                                    persist_failure_message(
+                                        &session_mgr_clone,
+                                        &target_tid_clone,
+                                        &error_text,
+                                        &message,
+                                    );
+                                    // 模型请求的重试次数已在适配器里用完（次数由设置项决定）
+                                    // → 记下来，收尾时**断开本轮对话**而不是接着跑排队指令
+                                    hard_failure = Some(message);
                                     break;
                                 }
                                 AgentEventBody::TurnStarted => {
@@ -938,6 +1000,23 @@ impl Dispatcher {
                             if !store.is_thread_running(&target_tid_clone) {
                                 break;
                             }
+                        }
+
+                        // 模型请求失败（重试次数已耗尽）→ **断开本次对话**：
+                        // 排队指令原样留在队列里，等用户改配置/网络后手动重试，
+                        // 而不是拿注定失败的请求把队列一条条撞完。
+                        if let Some(msg) = hard_failure.take() {
+                            let mut store = store_clone.write().await;
+                            store.push_log(
+                                "error",
+                                format!("模型请求失败（重试已耗尽），本次对话已断开: {msg}"),
+                                None,
+                            );
+                            drop(store);
+                            if let Some(ref bc) = broadcaster_clone {
+                                bc.broadcast_immediate().await;
+                            }
+                            break;
                         }
 
                         // 上下文撞顶 → **自动压缩并续跑**（而不是丢给用户一句"请手动压缩"）。
@@ -2076,6 +2155,30 @@ impl Dispatcher {
                 }
 
                 Ok(serde_json::Value::Null)
+            }
+
+            CONFIG_SET_RETRY_COUNT => {
+                // 模型请求重试次数（默认 5）。**必须落盘**：用户改完重启还得在。
+                let retries = params
+                    .get("retries")
+                    .or_else(|| params.get("retryCount"))
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| ProtocolError::invalid_params("缺少 retries 参数（0-20 的整数）"))?;
+
+                let mut store = self.store.write().await;
+                store.config.retry_count =
+                    agent_base::model::normalize_model_retry_count(retries as usize) as u32;
+                let saved = store.config.retry_count;
+                if let Err(e) = save_app_config(&store) {
+                    tracing::warn!("保存重试次数失败: {e}");
+                }
+                drop(store);
+
+                if let Some(ref bc) = self.broadcaster {
+                    bc.broadcast_immediate().await;
+                }
+
+                Ok(serde_json::json!({ "retryCount": saved }))
             }
 
             FS_ROOTS => {

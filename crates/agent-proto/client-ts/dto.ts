@@ -164,6 +164,8 @@ export interface ConfigSnapshot {
   approval: ApprovalMode
   effort: Effort
   mode: AgentMode
+  /** 模型请求重试次数（默认 5；重试耗尽即断开本轮对话） */
+  retryCount: number
 }
 
 export interface UiSnapshot {
@@ -190,6 +192,8 @@ export interface ClientSnapshot {
   providerConfig: ProviderConfig
   approvalMode: ApprovalMode
   effort: Effort
+  /** 模型请求重试次数（默认 5；重试耗尽即断开本轮对话） */
+  retryCount: number
   running: boolean
   runningThreadIds: string[]
   /** 正在等待用户操作（审批 / 提问）的会话——用于"别的会话在等你"的全局提示 */

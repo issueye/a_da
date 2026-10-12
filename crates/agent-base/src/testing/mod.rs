@@ -424,6 +424,11 @@ impl ToolCatalog for InMemoryToolCatalog {
 pub struct ScriptedModelClient {
     capabilities: ModelCapabilities,
     rounds: Mutex<Vec<Vec<StreamDelta>>>,
+    /// 收到的完整请求（按顺序）。
+    ///
+    /// 让"界面设置 → 组合根 → 引擎 → 适配器"这条链**可断言**：
+    /// 例如重试次数设置成 7，这里就必须看到 `options.max_retries == Some(7)`。
+    requests: Mutex<Vec<CompletionRequest>>,
 }
 
 impl ScriptedModelClient {
@@ -436,7 +441,13 @@ impl ScriptedModelClient {
                 thinking: true,
             },
             rounds: Mutex::new(rounds),
+            requests: Mutex::new(Vec::new()),
         }
+    }
+
+    /// 已收到的模型请求快照（契约测试用）。
+    pub fn requests(&self) -> Vec<CompletionRequest> {
+        self.requests.lock().expect("lock").clone()
     }
 }
 
@@ -447,12 +458,14 @@ impl ModelClient for ScriptedModelClient {
 
     fn stream<'a>(
         &'a self,
-        _req: CompletionRequest,
+        req: CompletionRequest,
         cancel: Option<&'a dyn CancelToken>,
     ) -> BoxFuture<'a, Result<DeltaStream, ModelError>> {
         if cancel.map_or(false, |c| c.is_cancelled()) {
             return Box::pin(async move { Err(ModelError::Cancelled) });
         }
+
+        self.requests.lock().expect("lock").push(req);
 
         let mut rounds = self.rounds.lock().expect("lock");
         let deltas = if !rounds.is_empty() {
