@@ -7,7 +7,7 @@
 + **两层拆包**（S4）：`crates/agent-node/`（节点：会话 / 审批 / 检查点 / 委派 / 插件 / 技能）
 与 `crates/agent-rpc/`（桥接面：JSON-RPC 分发 + WS 宿主 + UI 投影）
 + **网关**（S5/S6）：`crates/agent-gateway/`（`ada-gateway`：AGENT 管理平台 + 交互平台 + 桥接平台）
-+ **Tauri 桌面宿主**（`src-tauri/`）+ **React 前端**（`tauri-ui/`）；
++ **桌面客户端宿主**：现行采用 **Electron 桌面壳**（`electron/`：彻底根除 Windows WebView2 权限污染与目录锁死问题，支持 `bun run electron:dev` 与 `bun run electron:pack`）并兼容保留 **Tauri 桌面宿主**（`src-tauri/`：**壳子三职责**——唤醒/监督 `ada-gateway`、窗口控制（最小化/最大化/关闭/拖拽）、进程与配置管理，全部在 `src-tauri/src/lib.rs`）+ **React 前端**（`tauri-ui/`：通过 `src/client/desktop-bridge.ts` 跨宿主环境自适应）；
 `crates/ts-engine/` 是独立的 TS 执行引擎，只作插件运行时。
 **TypeScript 时代的实现（Bun + GPUIX 客户端 + TS 侧 agent/宿主）已整体归档到
 [`archive/ts-legacy/`](archive/ts-legacy)**：它不再是参考设计、不参与构建与测试。
@@ -26,7 +26,12 @@ bun run typecheck                             # 门一：tauri-ui 的 tsc --noEm
 bun run verify:archive                        # 归档门：主干不得引用 archive/、不得有第二份引擎
 cargo xtask verify-wiring                     # 接线门：方法覆盖 / 描述符单源 / 端口实现 / 依赖方向
 cargo xtask verify-spec                       # 声明门：产品/预设 spec 校验
-bun run tauri:dev                             # 桌面客户端开发（前端热重载 + 宿主）
+bun run electron:dev                          # Electron 桌面端开发（现行方案：前端热重载 + 网关监督）
+bun run electron:pack                         # 打包 Electron 免安装版 (dist/electron/win-unpacked)
+bun run tauri:dev                             # Tauri 桌面端开发（前端热重载 + 网关监督）
+bun run tauri:build                           # Tauri 桌面端出包（生产形态：内嵌前端产物）
+pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面壳验收（默认 Electron 交付形态）
+pwsh -NoProfile -File tools/verify-desktop-shell.ps1 -Shell tauri       # 同一个验收脚本跑 Tauri 壳
 ```
 
 - **`typecheck` 与 `cargo test` 是两个独立的门，两个都要过**，别只跑一个。
@@ -46,6 +51,39 @@ bun run tauri:dev                             # 桌面客户端开发（前端�
   `AgentStore::with_home(workspace, &TempAppHome::at(dir))` 注入，**不要用 `std::env::set_var`**
   （端口是 `OnceLock`，初始化后改环境变量无效——已有用例栽在这上面）。
 - **别跑 `bun test`**：TS 测试已随归档冻结，`bunfig.toml` 已把 `archive/**` 排除在 test 发现之外（跑只会得到 "No tests found"）；门是 `cargo test`。
+- 🔴 **Tauri 宿主出包必须带 `custom-protocol` feature**：tauri 的 `build.rs` 判据是
+  `dev = !custom_protocol`——**不带它时连 release 构建都算 dev**，运行时会去加载 `build.devUrl`
+  （http://localhost:1420）而不是内嵌的前端产物，交付出去的免安装包就是"一扇空白窗"。
+  `bun run tauri:build` 与 `cargo xtask ship --product ada-tauri` 都会自动带上它；
+  手搓 `cargo build --release -p ada-tauri` 时别忘了 `--features custom-protocol`。
+- **Tauri 窗口控制走宿主自定义命令**（`window_minimize` / `window_maximize` / `window_close` /
+  `window_is_maximized`，见 `src-tauri/src/lib.rs`）：应用命令不经过 webview 的 capability/ACL
+  授权面，不会因为漏配一条 `core:window:allow-*` 就整体失效（capabilities 里仍补齐权限，
+  供前端回退到 `@tauri-apps/api/window`）。最大化状态由宿主广播 `window:maximize-change` 事件，
+  前端据此切换按钮图标。**别在前端再写一套 `onDoubleClick`**：标题栏双击是宿主 drag-region
+  的原生行为，两边都处理会连按两次、看起来像没反应。
+- 🔴 **Electron 宿主里 `__dirname` 不可信**：`bun run electron:build:main`（`bun build --target node
+  --format cjs`）会把 `__dirname` **硬编码成构建机的源码目录**。用
+  `path.join(__dirname, 'preload.cjs')` 当 preload 路径 → preload 静默加载失败 →
+  `window.electronAPI` undefined → **界面拿不到网关端口（显示"未连接"）、窗口按钮全部空操作**，
+  这就是"Electron 版功能缺失"的根因形态。资源路径一律走 `resolveAppPath()`
+  （`app.getAppPath()` 优先 + 候选清单 + 真实存在性检查），并且失败要**大声报**
+  （`dialog.showErrorBox` + launcher.log），不要静默降级。
+- 🔴 **无边框窗口的标题栏必须压在所有应用模态层之上**：应用内弹窗统一是 `fixed inset-0 z-50`，
+  标题栏若没有更高层级（现为 `relative z-[100]`），任何弹窗打开时最小化/最大化/关闭**点不动**、
+  窗口也拖不动——第二个"无法最小化/关闭窗口"的形态。`tools/verify-desktop-shell.ps1`
+  专门守着这条（弹窗开着时点最大化仍须生效）。
+- **渲染进程日志要能进 launcher.log**：Electron ≥32 的 `console-message` 签名是
+  `(event, details)`（旧的是 `(event, level, message, line, sourceId)`）。按旧签名写就只剩
+  undefined，界面里的错再也查不到；`preload-error` / `render-process-gone` / `did-fail-load`
+  一并转发。打包后的 exe 没有控制台，**应用日志是唯一证据**（§17）。
+- **桌面壳的行为要按"点一下"验收**：`pwsh -NoProfile -File tools/verify-desktop-shell.ps1`
+  （默认 Electron 交付形态；`-Shell tauri` 跑 Tauri 壳）。真鼠标点窗口按钮 + 读 `launcher.log`
+  断言"拉起网关 → 界面接入 → 窗口控制 → 状态同步 → 退出清理"。脚本注释里记了必踩的坑：
+  窗口句柄要按标题找（`MainWindowHandle` 会挑到隐藏/辅助窗口）、按钮定位要按「与背景色的差异」
+  而不是亮度（暗色主题下整条标题栏都算"暗"）、每次点击前重新量窗口矩形（最大化会改坐标）、
+  截图前必须把窗口顶到前台（否则截到/点到的是盖住它的窗口）。
+  另：脚本会清除 `ELECTRON_RUN_AS_NODE`——被污染时 Electron 会以"纯 Node"跑 main.cjs 当场崩掉。
 
 ## 代码结构
 
@@ -68,9 +106,9 @@ bun run tauri:dev                             # 桌面客户端开发（前端�
   `agentId=ada-pm`/`pm-assistant` 的会话在**读盘时自动归一并写回**（幂等）。
   模式预设同样受 `verify-spec` 门禁约束（`products/<产品>/modes/*.agent.spec.json` 也在扫描范围内）。
 - 所有内部调用点直连基座（`agent-proto` / `agent-toolkit` / `agent-base` / `agent-adapter`），历史 shim 与 facade 已全量下线
-- 端口已接线处：`session::{app_home,set_app_home,get_app_home,get_config_path}`、`state::{clock,set_clock,now_millis}`、`AgentStore::with_home`（单元测试默认 home 在临时目录，不再碰用户真实 `~/.a-da`）
-- `src-tauri` Tauri 桌面宿主（同进程起核心服务或拉起网关）；`tauri-ui` React 前端（`src/client/ws-client.ts` 是协议客户端）
-- `dist/` **发布交付套件**：包含 `ada-tauri.exe`、`ada-gateway.exe`、`ada-coding.exe`，网关模式下桌面端与各子进程版本强协同，必须**同步出包**。Windows 下 WebView2 数据目录如遇管理员权限污染（os error 5），具备自愈退避机制（隔离重定向至 `%TEMP%`）
+- `electron/` **Electron 桌面宿主**（现行方案）：主进程监督 `ada-gateway` 生命周期、单实例锁、无边框原生控制与 IPC 桥接；`dist-electron/` 为构建中间产物
+- `src-tauri` **Tauri 桌面宿主**：`src/lib.rs` 承担壳子三职责（探测/拉起/监督 `ada-gateway`、窗口控制命令、进程与配置管理），`tauri.conf.json` 的 `devUrl` 只在 dev 生效（生产靠 `custom-protocol`）；`tauri-ui` React 前端（通过 `src/client/desktop-bridge.ts` 跨宿主自适应）
+- `dist/` **发布交付套件**：包含 `ada-gateway.exe`、`ada-coding.exe`、`ada-tauri.exe` 以及 `dist/electron/win-unpacked/`（Electron 完整绿色便携包，内置 Chromium 运行时与 `resources/bin/` 关联二进制，彻底规避 WebView2 权限污染）
 - `archive/ts-legacy` **只读归档**（TS 时代的 src + scripts + app.tsx）
 
 ## 核心红线与防踩坑规矩

@@ -12,34 +12,18 @@ import {
   Radio,
   ExternalLink,
 } from 'lucide-react'
-import { agentClient, restartDesktopApp } from '../client/ws-client'
+import { agentClient } from '../client/ws-client'
+import {
+  getProcessReport,
+  killProcess,
+  restartDesktopApp,
+  restartGateway,
+  isDesktop,
+  type ProcessReport,
+  type ManagedProcessInfo,
+} from '../client/desktop-bridge'
 
-export interface ManagedProcessInfo {
-  name: string
-  role: string
-  pid?: number | null
-  port?: number | null
-  alive: boolean
-  status: string
-  url?: string | null
-  /**
-   * 这个进程**实际服务**的产品（实例自述）。
-   *
-   * PM 已从"第二个产品"降级为 `ada-coding` 的**模式预设**，所以正常情况下这里是
-   * `["ada-coding"]` 一个产品；老实例可能自述 `["ada-coding","ada-pm"]`（那会儿 PM 还是产品），
-   * 面板按原样显示即可——"这条会话是不是 PM"由会话的 `mode` 表达。
-   */
-  products?: string[]
-}
-
-export interface ProcessReport {
-  mode: 'gateway'
-  core_alive: boolean
-  core_url: string
-  core_port: number
-  error?: string | null
-  processes: ManagedProcessInfo[]
-}
+export type { ManagedProcessInfo, ProcessReport }
 
 interface ProcessModalProps {
   isOpen: boolean
@@ -106,28 +90,29 @@ export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose, onR
   const [terminatingPid, setTerminatingPid] = useState<number | null>(null)
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null)
 
-  const isTauri = typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__TAURI__)
+  const hasDesktopHost = isDesktop()
 
   const fetchProcesses = useCallback(async () => {
     setLoading(true)
     try {
-      if (isTauri) {
-        const { invoke } = await import('@tauri-apps/api/core')
-        const data = await invoke<ProcessReport>('get_process_report')
-        setReport(data)
+      if (hasDesktopHost) {
+        const data = await getProcessReport()
+        if (data) {
+          setReport(data)
 
-        // 网关模式：实例由网关拉起，桌面端不知道它们 —— 直接问网关的实例注册表
-        if (data?.mode === 'gateway') {
-          try {
-            const res = await agentClient.request('gateway.listAgents', {})
-            setGatewayAgents(mapGatewayAgents(res))
-          } catch (err) {
-            // 网关不可达就如实不显示，绝不编造实例
-            console.warn('[ProcessModal] 获取网关实例列表失败:', err)
+          // 网关模式：实例由网关拉起，桌面端不知道它们 —— 直接问网关的实例注册表
+          if (data.mode === 'gateway') {
+            try {
+              const res = await agentClient.request('gateway.listAgents', {})
+              setGatewayAgents(mapGatewayAgents(res))
+            } catch (err) {
+              // 网关不可达就如实不显示，绝不编造实例
+              console.warn('[ProcessModal] 获取网关实例列表失败:', err)
+              setGatewayAgents([])
+            }
+          } else {
             setGatewayAgents([])
           }
-        } else {
-          setGatewayAgents([])
         }
       } else {
         // 浏览器开发调试预览兜底
@@ -157,7 +142,7 @@ export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose, onR
     } finally {
       setLoading(false)
     }
-  }, [isTauri])
+  }, [hasDesktopHost])
 
   useEffect(() => {
     if (isOpen) {
@@ -193,9 +178,8 @@ export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose, onR
     }
     setTerminatingPid(pid)
     try {
-      if (isTauri) {
-        const { invoke } = await import('@tauri-apps/api/core')
-        await invoke('kill_process', { pid })
+      if (hasDesktopHost) {
+        await killProcess(pid)
         setMessage({ text: `已成功终止进程 ${name} (PID: ${pid})`, type: 'success' })
       } else {
         setMessage({ text: `浏览器模拟模式：已请求终止 PID ${pid}`, type: 'info' })
@@ -224,6 +208,35 @@ export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose, onR
       await restartDesktopApp()
     } catch (err: any) {
       setMessage({ text: `重启失败: ${err?.message || String(err)}`, type: 'error' })
+    }
+  }
+
+  /**
+   * 只重新唤醒网关：网关进程意外死掉、或改了网关配置之后，
+   * 不必重启整个桌面端（会话/界面状态都还在）。
+   */
+  const handleRestartGateway = async () => {
+    const ok = await askConfirm({
+      title: '重新唤醒网关',
+      message: '确定要重新拉起 ada-gateway 吗？',
+      subMessage: '当前桌面端托管的网关进程会被终止，并按原参数重新拉起；网关托管的 agent 实例会随之重启。',
+      confirmText: '重新唤醒',
+      variant: 'warning',
+    })
+    if (!ok) {
+      return
+    }
+    try {
+      setMessage({ text: '正在重新唤醒网关...', type: 'info' })
+      await restartGateway()
+      // 网关重启后端口会变，重新握手一次
+      setTimeout(() => {
+        agentClient.reconnectImmediately()
+        fetchProcesses()
+      }, 1200)
+      setMessage({ text: '已请求重新唤醒网关', type: 'success' })
+    } catch (err: any) {
+      setMessage({ text: `重新唤醒网关失败: ${err?.message || String(err)}`, type: 'error' })
     }
   }
 
@@ -458,10 +471,20 @@ export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose, onR
         {/* 底部功能栏 */}
         <div className="px-6 py-4 border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-[#151518]/70 flex items-center justify-between">
           <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
-            遇到连接故障或状态异常时，可一键重启所有服务
+            遇到连接故障或状态异常时，可单独重新唤醒网关，或一键重启所有服务
           </div>
 
           <div className="flex items-center space-x-2.5">
+            {isDesktop() && (
+              <button
+                onClick={handleRestartGateway}
+                className="flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition-colors cursor-pointer shadow-xs"
+                title="终止当前托管的网关进程并按原参数重新拉起"
+              >
+                <Radio size={13} />
+                <span>重新唤醒网关</span>
+              </button>
+            )}
             <button
               onClick={handleRestartAll}
               className="flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors cursor-pointer shadow-xs"

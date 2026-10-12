@@ -3,7 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>a_da Agent</title>
+    <!-- 窗口标题：Electron 跟随 document.title（任务栏 / Alt-Tab 显示的就是它），
+         Tauri 用 tauri.conf.json 里的 title。两处都保持 `a_da`，别让两个宿主显示不同的名字 -->
+    <title>a_da</title>
     <style>
       /* 基础重置与无边框拖拽区域适配 */
       * {

@@ -23,9 +23,27 @@ html.light, :root.light {
   color-scheme: light;
 }
 
-/* Tauri 窗口拖拽区域（标题栏使用） */
-[data-tauri-drag-region] {
+/* 窗口拖拽区域（标题栏使用，兼容 Electron 与 Tauri） */
+[data-tauri-drag-region]:not([data-tauri-drag-region="false"]),
+[data-app-drag-region]:not([data-app-drag-region="false"]) {
+  -webkit-app-region: drag;
   app-region: drag;
+}
+
+[data-tauri-drag-region="false"],
+[data-tauri-drag-region="false"] *,
+[data-app-drag-region="false"],
+[data-app-drag-region="false"] *,
+button,
+button *,
+input,
+input *,
+textarea,
+select,
+a,
+a * {
+  -webkit-app-region: no-drag !important;
+  app-region: no-drag !important;
 }
 
 /* 自定义纤细滚动条 */

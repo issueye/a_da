@@ -1,0 +1,42 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "com.ada.agent.desktop",
+  "productName": "a_da",
+  "copyright": "Copyright © 2026 a_da team",
+  "directories": {
+    "output": "dist/electron",
+    "buildResources": "assets"
+  },
+  "files": [
+    "dist-electron/**/*",
+    "tauri-ui/dist/**/*",
+    "assets/**/*",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "dist",
+      "to": "bin",
+      "filter": [
+        "ada-gateway.exe",
+        "ada-coding.exe"
+      ]
+    }
+  ],
+  "win": {
+    "target": [
+      {
+        "target": "dir",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "assets/logo.ico"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "a_da"
+  }
+}

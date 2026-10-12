@@ -36,24 +36,19 @@ import { reconnectDelayMs } from './reconnect-policy'
 
 export type Listener = (snapshot: ClientSnapshot) => void
 
-/** 桌面端只有网关模式（直连模式已下线） */
-export type DesktopMode = 'gateway'
+import {
+  getCoreInfo,
+  getDesktopConfig,
+  setDesktopConfig,
+  restartDesktopApp,
+  getDesktopPlatform,
+  type DesktopMode,
+  type DesktopConfig,
+  type CoreInfo,
+} from './desktop-bridge'
 
-/** 桌面端连接配置（**只有网关模式**；直连时代的 mode / agentConnectUrl / agentBinPath 已删除） */
-export interface DesktopConfig {
-  gateway_url?: string | null
-  gateway_bin_path?: string | null
-  token?: string | null
-}
-
-export interface CoreInfo {
-  alive: boolean
-  mode?: DesktopMode
-  port: number
-  token: string
-  url: string
-  error?: string | null
-}
+export type { DesktopMode, DesktopConfig, CoreInfo }
+export { getDesktopConfig, setDesktopConfig, restartDesktopApp }
 
 /**
  * 探测并获取本地核心服务的连接配置
@@ -63,61 +58,25 @@ async function resolveCoreConnection(
   defaultToken = ''
 ): Promise<{ url: string; token: string; mode?: DesktopMode }> {
   try {
-    const isTauri = typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__TAURI__)
-    if (isTauri) {
-      const { invoke } = await import('@tauri-apps/api/core')
-      const info = await invoke<CoreInfo>('get_core_info')
-      if (info && info.alive && (info.port > 0 || Boolean(info.url))) {
-        const resolvedUrl = info.url || `ws://127.0.0.1:${info.port}/rpc`
-        console.log(`[AgentWS] 获取到核心服务连接信息: ${resolvedUrl} (mode: ${info.mode || 'gateway'})`)
-        return {
-          url: resolvedUrl,
-          token: info.token || '',
-          mode: info.mode,
-        }
-      }
-      if (info?.error) {
-        console.warn('[AgentWS] 核心服务启动返回错误:', info.error)
+    const info = await getCoreInfo()
+    if (info && info.alive && (info.port > 0 || Boolean(info.url))) {
+      const resolvedUrl = info.url || `ws://127.0.0.1:${info.port}/rpc`
+      console.log(`[AgentWS] 获取到核心服务连接信息: ${resolvedUrl} (mode: ${info.mode || 'gateway'})`)
+      return {
+        url: resolvedUrl,
+        token: info.token || '',
+        mode: info.mode,
       }
     }
+    if (info?.error) {
+      console.warn('[AgentWS] 核心服务启动返回错误:', info.error)
+    }
   } catch (err) {
-    console.warn('[AgentWS] 获取 Tauri 核心服务信息失败，回退到默认端口:', err)
+    console.warn('[AgentWS] 获取桌面端核心服务信息失败，回退到默认端口:', err)
   }
   return {
     url: defaultUrl,
     token: defaultToken,
-  }
-}
-
-/** 获取桌面端连接配置（网关模式） */
-export async function getDesktopConfig(): Promise<DesktopConfig> {
-  try {
-    const isTauri = typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__TAURI__)
-    if (isTauri) {
-      const { invoke } = await import('@tauri-apps/api/core')
-      return await invoke<DesktopConfig>('get_desktop_config')
-    }
-  } catch (err) {
-    console.warn('[AgentWS] 获取桌面端配置失败:', err)
-  }
-  return {}
-}
-
-/** 保存桌面端运行模式配置 */
-export async function setDesktopConfig(config: DesktopConfig): Promise<void> {
-  const isTauri = typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__TAURI__)
-  if (isTauri) {
-    const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('set_desktop_config', { config })
-  }
-}
-
-/** 重启桌面端应用程序 */
-export async function restartDesktopApp(): Promise<void> {
-  const isTauri = typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__TAURI__)
-  if (isTauri) {
-    const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('restart_desktop_app')
   }
 }
 
@@ -395,10 +354,11 @@ export class AgentWebSocketClient {
         this._connected = true
         this.reconnectAttempts = 0 // 连上了 → 退避计数清零
         try {
+          const platform = getDesktopPlatform()
           const initRes = await this.request('session.initialize', {
             token: this.token,
             protocolVersion: '1.0',
-            client: { name: 'ada-tauri', version: '0.1.0', platform: 'tauri' },
+            client: { name: `ada-${platform}`, version: '0.1.0', platform },
           })
           if (gen !== this.connectionGeneration) return
           if (initRes && initRes.product) {

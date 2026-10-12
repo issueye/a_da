@@ -431,6 +431,7 @@ export function App() {
         else if (filePickerOpen) setFilePickerOpen(false)
         else if (settingsOpen) setSettingsOpen(false)
         else if (pluginsOpen) setPluginsOpen(false)
+        else if (processOpen) setProcessOpen(false)
         else if (activeThread?.id && (snapshot.runningThreadIds || []).includes(activeThread.id)) {
           handleAbort(activeThread.id)
         }

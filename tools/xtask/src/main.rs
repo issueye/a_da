@@ -181,9 +181,61 @@ fn run_bun_script(script: &str) -> anyhow::Result<()> {
 
 fn ship_product(product: &str, gui: bool, out_dir: &str) -> anyhow::Result<()> {
     if product == "all" {
-        for p in &["ada-coding", "ada-gateway", "ada-tauri"] {
+        for p in &["ada-coding", "ada-gateway", "ada-electron", "ada-tauri"] {
             ship_product(p, gui, out_dir)?;
         }
+        return Ok(());
+    }
+
+    if product == "ada-electron" {
+        println!("\x1b[1;36m=================================================================\x1b[0m");
+        println!("\x1b[1;36m           a_da 生产出包流水线 (Ship: ada-electron)              \x1b[0m");
+        println!("\x1b[1;36m=================================================================\x1b[0m\n");
+
+        println!("\x1b[33m[步骤 1/2]\x1b[0m 检查并构建前端静态产物...");
+        let frontend_dist = Path::new("tauri-ui").join("dist");
+        if !frontend_dist.exists() || !frontend_dist.join("index.html").exists() {
+            let npm_cmd = if cfg!(windows) {
+                let mut c = Command::new("cmd");
+                c.args(["/C", "npm", "--prefix", "tauri-ui", "run", "build"]);
+                c
+            } else {
+                let mut c = Command::new("npm");
+                c.args(["--prefix", "tauri-ui", "run", "build"]);
+                c
+            };
+            run_command_supervised(npm_cmd, "npm run build (tauri-ui)", Duration::from_secs(180))?;
+        }
+
+        println!("\x1b[33m[步骤 2/2]\x1b[0m 执行 Electron 构建并打包目录 (electron:pack)...");
+        let pack_cmd = if cfg!(windows) {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "bun", "run", "electron:pack"]);
+            c
+        } else {
+            let mut c = Command::new("bun");
+            c.args(["run", "electron:pack"]);
+            c
+        };
+        run_command_supervised(pack_cmd, "bun run electron:pack", Duration::from_secs(300))?;
+
+        #[cfg(windows)]
+        {
+            let win_unpacked = Path::new("dist/electron/win-unpacked");
+            if win_unpacked.exists() {
+                println!("\x1b[33m[权限自愈]\x1b[0m 注入 Medium 完整性级别与沙箱访问权限...");
+                let _ = Command::new("icacls")
+                    .args([win_unpacked.to_str().unwrap(), "/setintegritylevel", "(CI)(OI)M", "/T"])
+                    .status();
+                let _ = Command::new("icacls")
+                    .args([win_unpacked.to_str().unwrap(), "/grant", "*S-1-15-2-2:(OI)(CI)(RX)", "/T"])
+                    .status();
+            }
+        }
+
+        println!("\n\x1b[1;32m=================================================================\x1b[0m");
+        println!("\x1b[1;32m       🎉 产品 ada-electron 交付完成！ (dist/electron/win-unpacked) \x1b[0m");
+        println!("\x1b[1;32m=================================================================\x1b[0m\n");
         return Ok(());
     }
 
@@ -221,11 +273,22 @@ fn ship_product(product: &str, gui: bool, out_dir: &str) -> anyhow::Result<()> {
     if let Some(b) = bin {
         cmd.args(["--bin", b]);
     }
+    // 🔴 Tauri 宿主必须显式打开 `custom-protocol`：tauri 的 build.rs 判据是
+    // `dev = !custom_protocol`，不带这个 feature 时**release 构建也会去加载 devUrl**
+    // （开发服务器的 http://localhost:1420），交付出去的免安装包就是"一扇空白窗"。
+    // 只有宿主 crate 声明了这个 feature（见 src-tauri/Cargo.toml），别的产品不能传。
+    if product == "ada-tauri" {
+        cmd.args(["--features", "custom-protocol"]);
+    }
     // 控制编译并发为 2，防止 Windows 页面文件上限 2GB 触发 os error 1455
     cmd.args(["-j", "2"]);
 
     // 单个产品 release 编译设置 900 秒看门狗超时
-    run_command_supervised(cmd, &format!("cargo build --release -p {pkg}"), Duration::from_secs(900))?;
+    run_command_supervised(
+        cmd,
+        &format!("cargo build --release -p {pkg}"),
+        Duration::from_secs(900),
+    )?;
 
     // 2. 查找产物并复制到 dist 目录
     println!("\x1b[33m[步骤 2/3]\x1b[0m 正在收集编译产物并复制至目标目录 ({})...", out_dir);

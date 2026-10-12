@@ -12,9 +12,17 @@ import {
   Command,
   History,
   Activity,
+  Copy,
 } from 'lucide-react'
 import type { AgentMode } from '../types'
 import { agentClient } from '../client/ws-client'
+import {
+  windowMinimize,
+  windowMaximize,
+  windowClose,
+  isWindowMaximized,
+  onWindowMaximizeChange,
+} from '../client/desktop-bridge'
 
 interface TitleBarProps {
   title: string
@@ -49,32 +57,26 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onReconnect,
   activeChangeCount = 0,
 }) => {
-  const handleMinimize = async () => {
-    try {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window')
-      getCurrentWindow().minimize()
-    } catch {
-      console.log('Minimize window (browser mode)')
-    }
-  }
+  const [isMax, setIsMax] = React.useState(false)
 
-  const handleMaximize = async () => {
-    try {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window')
-      getCurrentWindow().toggleMaximize()
-    } catch {
-      console.log('Maximize window (browser mode)')
+  React.useEffect(() => {
+    isWindowMaximized().then(setIsMax)
+    const unsubscribe = onWindowMaximizeChange(setIsMax)
+    return () => {
+      unsubscribe()
     }
-  }
+  }, [])
 
-  const handleClose = async () => {
-    try {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window')
-      getCurrentWindow().close()
-    } catch {
-      console.log('Close window (browser mode)')
-    }
+  // 每次动作后回读状态：宿主事件是主通道，这里兜一手，保证按钮图标不漂移
+  const syncMaxState = React.useCallback(() => {
+    isWindowMaximized().then(setIsMax)
+  }, [])
+
+  const handleMinimize = () => windowMinimize()
+  const handleMaximize = () => {
+    windowMaximize().then(syncMaxState)
   }
+  const handleClose = () => windowClose()
 
   const modeBadge = {
     code: { label: '编码', color: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
@@ -88,8 +90,14 @@ export const TitleBar: React.FC<TitleBarProps> = ({
 
   return (
     <header
-      data-tauri-drag-region
-      className="h-10 border-b border-zinc-200 dark:border-[#27272a] bg-zinc-50/95 dark:bg-[#18181b]/95 backdrop-blur flex items-center justify-between px-3 text-xs select-none z-50 flex-shrink-0 transition-colors"
+      // `deep`：标题栏**整块**都可拖拽；双击空白处由宿主原生切换最大化/还原
+      // （Tauri 注入的 drag region 脚本负责，前端不再自己 onDoubleClick——
+      //  两边都处理会连按两次，等于什么都没发生）。
+      data-tauri-drag-region="deep"
+      // 🔴 无边框窗口的标题栏是**窗口 chrome**，必须永远压在所有应用模态层之上
+      // （应用里的弹窗统一是 `fixed inset-0 z-50`）。少了这一层，任何弹窗打开时
+      // 它都会被盖住：最小化/最大化/关闭点不动、窗口也拖不动——正是"无法最小化/关闭窗口"。
+      className="relative z-[100] h-10 border-b border-zinc-200 dark:border-[#27272a] bg-zinc-50/95 dark:bg-[#18181b]/95 backdrop-blur flex items-center justify-between px-3 text-xs select-none flex-shrink-0 transition-colors"
     >
       {/* 左侧：Logo与标题 */}
       <div className="flex items-center space-x-2.5 pointer-events-none">
@@ -131,6 +139,8 @@ export const TitleBar: React.FC<TitleBarProps> = ({
 
       {/* 中间：连接状态与运行模式（点击打开进程管理或重试） */}
       <div
+        // 标题栏是 deep 拖拽区，这里必须显式退出拖拽，否则 mousedown 被拖拽吃掉、点不动
+        data-tauri-drag-region="false"
         className="flex items-center space-x-1.5 px-2.5 py-1 rounded-md transition-all cursor-pointer hover:bg-zinc-200/80 dark:hover:bg-zinc-800 border border-transparent hover:border-zinc-300 dark:hover:border-zinc-700 pointer-events-auto group"
         onClick={() => {
           if (onOpenProcesses) {
@@ -230,9 +240,9 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         <button
           onClick={handleMaximize}
           className="p-1.5 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200/70 dark:hover:bg-zinc-800 rounded transition-colors"
-          title="最大化"
+          title={isMax ? '向下还原' : '最大化'}
         >
-          <Square size={12} />
+          {isMax ? <Copy size={12} className="rotate-180" /> : <Square size={12} />}
         </button>
         <button
           onClick={handleClose}

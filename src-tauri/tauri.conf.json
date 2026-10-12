@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.ada.agent",
   "build": {
-    "frontendDist": "../tauri-ui/dist"
+    "frontendDist": "../tauri-ui/dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm --prefix tauri-ui run dev",
+    "beforeBuildCommand": "npm --prefix tauri-ui run build"
   },
   "app": {
     "windows": [

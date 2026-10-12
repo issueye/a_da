@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import type { Thread, AgentMode } from '../types'
 import { agentClient } from '../client/ws-client'
+import { getDesktopPlatform } from '../client/desktop-bridge'
 import { notify } from './ToastHost'
 // 会话状态判定是**纯函数**，放在 utils 里（无 React / 无 tauri 依赖）：
 // 侧边栏与标签页共用同一份，且可以拿真实快照直接跑脚本验证（见文件头注释）。
@@ -937,7 +938,9 @@ const SidebarComponent: React.FC<SidebarProps> = ({
       {/* 底部统计栏（紧凑） */}
       <div className="p-2 border-t border-zinc-200 dark:border-[#27272a] text-[10px] text-zinc-400 dark:text-zinc-500 flex items-center justify-between">
         <span>{workspaceGroups.length} 工作区 · {threads.length} 会话</span>
-        <span className="text-[9px] text-zinc-400 dark:text-zinc-600">Tauri v2</span>
+        <span className="text-[9px] text-zinc-400 dark:text-zinc-600">
+          {getDesktopPlatform() === 'electron' ? 'Electron' : getDesktopPlatform() === 'tauri' ? 'Tauri v2' : 'Web'}
+        </span>
       </div>
 
       {/* 拖拽调整侧边栏宽度的分割线手柄 */}
