@@ -45,7 +45,10 @@ impl WsHostServer {
         Self::bind_with_engines(bind_port, token, store, injection, None).await
     }
 
-    /// 绑定并同时注入多个真引擎（如 `ada-coding` 主引擎与 `ada-pm` PM 引擎）。
+    /// 绑定并同时注入多个真引擎（`ada-coding` 主引擎 + 它的 **PM 模式预设**引擎）。
+    ///
+    /// 两个引擎同属一个产品（PM 不是第二个产品，见 `products/ada-coding/modes/`）：
+    /// 会话按 `mode` 选引擎，`agent_id` 恒为 `ada-coding`。
     pub async fn bind_with_engines(
         bind_port: u16,
         token: String,

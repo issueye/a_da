@@ -57,7 +57,13 @@ bun run tauri:dev           # 桌面客户端开发（前端热重载 + 宿主�
 - **`crates/agent-gateway`（S5 新建）** —— a-da 网关，三合一：**AGENT 管理平台**（`registry.rs` 实例注册表 / `supervisor.rs` 生命周期）+ **交互平台**（S6：`delegate.rs` 派活/**多轮续跑**/取消跨网关）+ **桥接平台**（`relay.rs` 路由与透传）+ **WEB 接入面**（S7：`auth.rs` token/作用域/Origin/**配对码**）。二进制 `ada-gateway`（打印 `A_DA_GATEWAY_READY {port}`）。**只依赖线协议 `agent-proto`**——不含引擎（INV-1）、不缓存会话状态（INV-8），由 `verify-wiring` check J 守着。🔴 **非回环 `--host` 必须配 `--token`，且必须显式 `--allow-plaintext`**（网关只提供明文 `ws://`，明文上的 token 可嗅探；反代终止 TLS 时由人确认）。两条都**拒绝启动**而不是警告——失败安全
 - `crates/ts-engine` 插件运行时（Boa + oxc）；插件契约见 [docs/plugin-sdk/v1.md](docs/plugin-sdk/v1.md)
 - `products/ada-coding` 产品二进制（`--host/--port/--token/--parent-pid/--workspace`）
-- **`products/ada-pm`（S6 新建）** —— 项目管理助手（PM agent）：**经网关**把目标委派给 coding agent。它的能力几乎全在声明里（`capabilities.delegation = "gateway"` + `gateway.endpoint`）；**不声明 `fs` 写工具包**——角色边界（PM 的价值是拆解与分派，不是改代码）
+- **PM 不是第二个产品**（2026-10-11 降级）：它是 `products/ada-coding` 的**模式预设**
+  （`products/ada-coding/modes/pm.agent.spec.json`）——同一个二进制、同一处装配函数
+  （`build_injection`），只是喂了另一份声明：persona（拆解/分派/汇总）+ 不含 `fs`/`command`
+  的工具包（角色边界：PM 不亲自改代码）+ 委派配置（有网关走网关，否则进程内本地委派）。
+  会话是 coding 还是 pm 由 **`mode`** 表达，`agent_id` 恒为 `ada-coding`；老盘上
+  `agentId=ada-pm`/`pm-assistant` 的会话在**读盘时自动归一并写回**（幂等）。
+  模式预设同样受 `verify-spec` 门禁约束（`products/<产品>/modes/*.agent.spec.json` 也在扫描范围内）。
 - 所有内部调用点直连基座（`agent-proto` / `agent-toolkit` / `agent-base` / `agent-adapter`），历史 shim 与 facade 已全量下线
 - 端口已接线处：`session::{app_home,set_app_home,get_app_home,get_config_path}`、`state::{clock,set_clock,now_millis}`、`AgentStore::with_home`（单元测试默认 home 在临时目录，不再碰用户真实 `~/.a-da`）
 - `src-tauri` Tauri 宿主（同进程起核心服务）；`tauri-ui` React 前端（`src/client/ws-client.ts` 是协议客户端）

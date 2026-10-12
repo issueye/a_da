@@ -921,21 +921,36 @@ impl SessionManager {
             let is_sub = header.parent_id.is_some() || header.subagent_id.is_some();
             // 会话身份以 header 为准（创建/切换时落的盘）；老文件没有这两个字段才退回缺省，
             // 否则重启后 PM 会话会被一律当成 ada-coding（左侧树标识就丢了）。
-            let restored_agent = header
-                .agent_id
-                .clone()
-                .or_else(|| Some("ada-coding".to_string()));
+            //
+            // **PM 降级为模式后的归一**：历史上 PM 是一个独立产品，`agent_id` 会写成
+            // `ada-pm`/`pm-assistant`。现在 `agent_id` 恒为本机唯一产品 `ada-coding`，
+            // PM 由 `mode` 表达——所以这里把老身份**读时归一并写回**（幂等，只改一次）。
+            let raw_agent = header.agent_id.clone();
+            let legacy_pm_agent = matches!(raw_agent.as_deref(), Some("ada-pm") | Some("pm-assistant"));
+            let restored_agent = Some(if legacy_pm_agent {
+                "ada-coding".to_string()
+            } else {
+                raw_agent.clone().unwrap_or_else(|| "ada-coding".to_string())
+            });
             let restored_mode = header
                 .mode
                 .as_deref()
                 .and_then(mode_from_header)
                 .or_else(|| {
                     // 老文件兜底：PM 身份至少能从 agent_id 推出来
-                    match restored_agent.as_deref() {
+                    match raw_agent.as_deref() {
                         Some("ada-pm") | Some("pm-assistant") => Some(AgentMode::Pm),
                         _ => Some(AgentMode::Code),
                     }
                 });
+            // 归一写回：让磁盘上的老会话也只剩"一个产品 + 一个模式"这一个真源
+            if legacy_pm_agent {
+                let _ = self.update_header(&file_path, |h| {
+                    h.agent_id = Some("ada-coding".to_string());
+                    h.mode = Some(mode_to_header(restored_mode.unwrap_or(AgentMode::Pm)));
+                    h.updated_at = now_ms();
+                });
+            }
             // 自愈式回填：老的子会话标题没有唯一短 id（同 profile 连派多个时完全一样，
             // 标签页/侧边栏里分不出谁是谁）。这里按新格式补一次，之后标题里已含 id 就不再动。
             let raw_title = header.title.clone().unwrap_or_else(|| "新会话".to_string());
@@ -1156,17 +1171,17 @@ mod tests {
         let manager = SessionManager::new(Some(temp_dir.clone()));
         let ws = "E:/identity_ws";
 
-        // 1. PM 会话：身份必须进 header
+        // 1. PM 会话：**产品恒为 ada-coding**，PM 由 mode 表达
         let header = manager.create_session_bound(
             "thread_pm_1",
             ws,
             Some("PM 会话"),
             None,
             None,
-            Some("ada-pm"),
+            Some("ada-coding"),
             Some(agent_proto::AgentMode::Pm),
         )?;
-        assert_eq!(header.agent_id.as_deref(), Some("ada-pm"));
+        assert_eq!(header.agent_id.as_deref(), Some("ada-coding"));
         assert_eq!(header.mode.as_deref(), Some("pm"));
 
         // 2. 重启（重新构造管理器）后还原
@@ -1176,12 +1191,12 @@ mod tests {
             .iter()
             .find(|t| t.id == "thread_pm_1")
             .expect("PM 会话必须被还原");
+        assert_eq!(pm.agent_id.as_deref(), Some("ada-coding"));
         assert_eq!(
-            pm.agent_id.as_deref(),
-            Some("ada-pm"),
-            "还原后必须仍是 PM，不能变回 ada-coding"
+            pm.mode,
+            Some(agent_proto::AgentMode::Pm),
+            "PM 必须靠**模式**活下来（产品只有一个）"
         );
-        assert_eq!(pm.mode, Some(agent_proto::AgentMode::Pm));
 
         // 3. 老文件（header 里没有 agentId/mode）仍要能解析，并按缺省处理
         let legacy_path = manager.get_session_path(ws, "thread_legacy_1");
@@ -1197,10 +1212,10 @@ mod tests {
         assert_eq!(legacy.agent_id.as_deref(), Some("ada-coding"));
         assert_eq!(legacy.mode, Some(agent_proto::AgentMode::Code));
 
-        // 4. 运行期切换身份也要落盘
+        // 4. 运行期切换模式也要落盘（PM 模式不改产品身份）
         manager.update_session_identity(
             "thread_legacy_1",
-            Some("ada-pm"),
+            Some("ada-coding"),
             Some(agent_proto::AgentMode::Pm),
             Some(ws),
         )?;
@@ -1209,8 +1224,32 @@ mod tests {
             .iter()
             .find(|t| t.id == "thread_legacy_1")
             .expect("切换后的会话必须被还原");
-        assert_eq!(switched.agent_id.as_deref(), Some("ada-pm"));
+        assert_eq!(switched.agent_id.as_deref(), Some("ada-coding"));
         assert_eq!(switched.mode, Some(agent_proto::AgentMode::Pm));
+
+        // 5. **历史遗留身份自愈**：老盘上写成 `ada-pm` 的会话，读盘时归一为
+        //    `ada-coding` + `mode=pm`，并且**写回磁盘**（幂等，只改一次）
+        let old_pm_path = manager.get_session_path(ws, "thread_old_pm");
+        std::fs::write(
+            &old_pm_path,
+            "{\"type\":\"session\",\"version\":1,\"id\":\"thread_old_pm\",\"title\":\"老 PM 会话\",\"workspace\":\"E:/identity_ws\",\"createdAt\":1,\"updatedAt\":1,\"agentId\":\"ada-pm\",\"mode\":\"pm\"}\n",
+        )?;
+        let threads = SessionManager::new(Some(temp_dir.clone())).restore_all_threads();
+        let old_pm = threads
+            .iter()
+            .find(|t| t.id == "thread_old_pm")
+            .expect("老 PM 会话必须被还原");
+        assert_eq!(
+            old_pm.agent_id.as_deref(),
+            Some("ada-coding"),
+            "PM 已降级为模式：产品身份必须归一"
+        );
+        assert_eq!(old_pm.mode, Some(agent_proto::AgentMode::Pm));
+        let rewritten = std::fs::read_to_string(&old_pm_path)?;
+        assert!(
+            rewritten.contains("\"agentId\":\"ada-coding\""),
+            "归一必须写回磁盘（否则每次重启都要再猜一遍）：{rewritten}"
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
         Ok(())

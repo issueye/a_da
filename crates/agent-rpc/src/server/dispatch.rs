@@ -349,13 +349,15 @@ pub struct Dispatcher {
     ///
     /// `None` = 没注入声明（老调用点/测试）→ 退回 `ServerCapabilities::default()`。
     product_spec: Option<Arc<agent_runtime::AgentSpec>>,
-    /// PM 助手专属真引擎（`ada-pm`）。
+    /// PM 模式专属真引擎（`ada-coding` 的 **PM 模式预设**）。
     ///
-    /// 会话模式为 `Pm` 或 `agent_id` 为 `ada-pm`（或兼容历史 `pm-assistant`）时调度此引擎。若未注入则回退到主引擎。
+    /// 会话模式为 `Pm`（或历史遗留的 `agent_id = ada-pm`/`pm-assistant`）时调度此引擎；
+    /// 未注入则回退到主引擎。**PM 不是第二个产品**——同一个二进制、同一处装配函数，
+    /// 只是喂了另一份声明（persona + 不含 `fs`/`command` 的工具包 + 委派配置）。
     pm_engine: Option<Arc<agent_base::engine::AgentRuntime>>,
-    /// 针对多工作区的动态 PM 引擎工厂
+    /// 针对多工作区的动态 PM 模式引擎工厂
     pm_engine_factory: Option<EngineFactory>,
-    /// 按工作区路径缓存的 PM 真引擎
+    /// 按工作区路径缓存的 PM 模式真引擎
     pm_workspace_engines: Arc<Mutex<HashMap<std::path::PathBuf, Arc<agent_base::engine::AgentRuntime>>>>,
 }
 
@@ -1077,7 +1079,11 @@ impl Dispatcher {
         self
     }
 
-    /// 管道式注入 PM 助手引擎注入包。
+    /// 管道式注入 **PM 模式**引擎（`ada-coding` 的 PM 模式预设，不是第二个产品）。
+    ///
+    /// 注意**只取 runtime 与 factory，不碰 `product_spec`**：握手回报的产品身份
+    /// 必须始终是主引擎（`ada-coding`）那份声明——PM 只是同一产品的一个模式，
+    /// 若让预设的 `id`（`ada-coding-pm`）漏进 `productInfo`，界面就会把它当成产品 id 用。
     pub fn pipe_pm_engine(mut self, injection: Option<EngineInjection>) -> Self {
         if let Some(i) = injection {
             self.pm_engine = Some(i.runtime);
@@ -2135,9 +2141,16 @@ impl Dispatcher {
                 let thread_id = params.get("threadId").and_then(|v| v.as_str()).unwrap_or(&store.active_id).to_string();
                 if let Some(t) = store.threads.iter_mut().find(|t| t.id == thread_id) {
                     t.mode = Some(mode);
-                    if mode == AgentMode::Pm {
-                        t.agent_id = Some("ada-pm".to_string());
-                    } else if t.agent_id.as_deref() == Some("ada-pm") || t.agent_id.as_deref() == Some("pm-assistant") {
+                    // **PM 是模式，不是产品**：切到 PM 模式不再改 `agent_id`。
+                    //
+                    // 早先这里写 `agent_id = "ada-pm"`，于是"身份"有了两个真源
+                    // （产品 id 与模式），并且要靠落盘/还原把它们对齐——本次会话里
+                    // 徽标丢失、进程面板歧义、老会话认不出来，全是这笔账。
+                    // 现在 `agent_id` 恒为本机唯一产品 `ada-coding`，PM 由 `mode` 表达；
+                    // 历史上写成 `ada-pm`/`pm-assistant` 的会话在**读盘时**自动归一。
+                    if t.agent_id.as_deref() == Some("ada-pm")
+                        || t.agent_id.as_deref() == Some("pm-assistant")
+                    {
                         t.agent_id = Some("ada-coding".to_string());
                     }
                 }

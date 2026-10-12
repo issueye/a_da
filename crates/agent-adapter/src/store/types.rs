@@ -34,7 +34,9 @@ pub struct SessionHeader {
     pub parent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subagent_id: Option<String>,
-    /// 会话绑定的**产品/角色**（`ada-pm` / `ada-coding` / `pm-assistant` …）。
+    /// 会话绑定的**产品**（如 `ada-coding`；`ada-pm` 是历史遗留值，读盘时会被归一）。
+    ///
+    /// 注意：**模式**（coding / pm）在 `mode` 字段里，不要用它表达"哪个产品"。
     ///
     /// 必须落盘：重启后 `restore_all_threads` 只能靠它还原左侧树的 PM/CODING 标识，
     /// 否则一律被当成 `ada-coding`（老文件没有这个字段 → `None` → 按缺省处理）。

@@ -26,29 +26,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ada-pm"
-version = "0.1.0"
-dependencies = [
- "agent-base",
- "agent-conformance",
- "agent-host",
- "agent-node",
- "agent-proto",
- "agent-rpc",
- "agent-runtime",
- "agent-toolkit",
- "anyhow",
- "clap",
- "futures-util",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "ada-skeleton"
 version = "0.1.0"
 dependencies = [

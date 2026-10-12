@@ -66,10 +66,12 @@ pub struct AgentInstance {
     pub pid: Option<u32>,
     /// 拉起时间（毫秒）
     pub started_at: i64,
-    /// 这个进程**实际服务**的产品清单（实例自述，如 `["ada-coding", "ada-pm"]`）。
+    /// 这个进程**实际服务**的产品清单（实例自述，如 `["ada-coding"]`）。
     ///
-    /// 一个 `ada-coding` 实例同时装着 Coding 与 PM 两套引擎——面板若只看 `product`
-    /// 就会把"正在跑 PM 会话的实例"显示成纯 CODING。老实例不带这个字段 → 空数组。
+    /// PM 曾是一个独立产品（那时这里是 `["ada-coding", "ada-pm"]`），现已降级为
+    /// `ada-coding` 的**模式预设**——所以正常情况下只有一个产品。
+    /// "这条会话是不是 PM"由会话的 `mode` 表达，不该再从产品清单里猜。
+    /// 老实例不带这个字段 → 空数组。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub products: Vec<String>,
 }

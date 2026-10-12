@@ -159,10 +159,10 @@ impl Gateway {
                 if let Some(inst) = self.registry.get(id) {
                     inst
                 } else {
-                    let prod = match id {
-                        "ada-pm" | "pm" | "pm-assistant" => "ada-pm",
-                        _ => "ada-coding",
-                    };
+                    // **只有一个产品**：PM 已降级为 `ada-coding` 的模式预设，
+                    // 所以历史 id（`ada-pm` / `pm` / `pm-assistant`）也一律拉起
+                    // 同一个产品——"这条会话是 PM 模式"由会话的 mode 表达，不再由产品表达。
+                    let prod = "ada-coding";
                     let ws = workspace
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| self.default_workspace.clone());

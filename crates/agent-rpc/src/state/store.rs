@@ -398,13 +398,12 @@ impl AgentStore {
             .filter(|w| !w.is_empty())
             .unwrap_or_else(|| self.workspace.project.clone());
         let m = mode.unwrap_or(self.config.mode);
-        let actual_agent_id = agent_id.or_else(|| {
-            if m == AgentMode::Pm {
-                Some("ada-pm".to_string())
-            } else {
-                Some("ada-coding".to_string())
-            }
-        });
+        // **PM 是模式，不是产品**：产品身份恒为本机唯一产品 `ada-coding`。
+        //
+        // 早先这里按模式把 `agent_id` 写成 `ada-pm`——于是"这条会话是不是 PM"有了两个
+        // 真源（产品 id 与 mode），落盘/还原/徽标/进程面板全要跟着对齐，本次会话里
+        // 反复出问题的就是这笔账。现在只认 `mode`。
+        let actual_agent_id = agent_id.or_else(|| Some("ada-coding".to_string()));
         let is_sub = is_subagent.unwrap_or(false);
         let thread = Thread {
             id: id.clone(),

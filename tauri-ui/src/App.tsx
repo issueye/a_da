@@ -460,11 +460,7 @@ export function App() {
       <TitleBar
         title={activeThread?.title || '新对话'}
         workspace={activeThread?.workspace}
-        productName={
-          activeThread?.mode === 'pm' || activeThread?.agentId === 'ada-pm' || activeThread?.agentId === 'pm-assistant'
-            ? 'ada-pm'
-            : (agentClient.productInfo?.name || agentClient.productInfo?.id || 'ada-coding')
-        }
+        productName={agentClient.productInfo?.name || agentClient.productInfo?.id || 'ada-coding'}
         mode={snapshot.currentMode}
         connected={connected}
         isDark={isDark}

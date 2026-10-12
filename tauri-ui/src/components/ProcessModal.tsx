@@ -25,8 +25,9 @@ export interface ManagedProcessInfo {
   /**
    * 这个进程**实际服务**的产品（实例自述）。
    *
-   * 一个 `ada-coding` 实例同时装着 Coding 与 PM 两套引擎，所以它会写
-   * `["ada-coding","ada-pm"]`——只看 `name` 会把"正在跑 PM 会话的实例"显示成纯 CODING。
+   * PM 已从"第二个产品"降级为 `ada-coding` 的**模式预设**，所以正常情况下这里是
+   * `["ada-coding"]` 一个产品；老实例可能自述 `["ada-coding","ada-pm"]`（那会儿 PM 还是产品），
+   * 面板按原样显示即可——"这条会话是不是 PM"由会话的 `mode` 表达。
    */
   products?: string[]
 }
@@ -386,7 +387,7 @@ export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose, onR
                       {proc.role}
                     </div>
 
-                    {/* 该进程实际服务的产品：一个 ada-coding 实例同时服务 ada-pm 引擎 */}
+                    {/* 该进程实际服务的产品（PM 是模式，不再出现在产品清单里） */}
                     {proc.products && proc.products.length > 0 && (
                       <div className="flex flex-wrap items-center gap-1 mt-1.5">
                         {proc.products.map((p) => (

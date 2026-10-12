@@ -197,7 +197,8 @@ export class AgentWebSocketClient {
     const ws = thread.workspace || '默认工作区'
     const isPm = thread.mode === 'pm' || thread.agentId === 'ada-pm' || thread.agentId === 'pm-assistant'
     const prodName = isPm ? 'a_da 项目管理助手' : (this.productInfo?.name || 'a_da 编程助手')
-    const agentId = isPm ? 'ada-pm' : (this.productInfo?.id || 'ada-coding')
+    // PM 是**模式**：产品身份恒为 ada-coding（历史 `ada-pm` 写法只用于识别老会话）
+    const agentId = this.productInfo?.id || 'ada-coding'
 
     const lines: string[] = [
       `# ${title}`,
@@ -860,7 +861,8 @@ export class AgentWebSocketClient {
     const activeThread = this.snapshot.threads.find((t) => t.id === this.snapshot.activeThreadId)
     const ws = workspace || activeThread?.workspace || this.snapshot.activeWorkspace
     const m = mode || this.snapshot.currentMode
-    const resolvedAgentId = agentId || (m === 'pm' ? 'ada-pm' : 'ada-coding')
+    // 产品只有一个；模式由 mode 表达（早先这里按模式把 agentId 写成 ada-pm，正是双身份的账）
+    const resolvedAgentId = agentId || 'ada-coding'
 
     // 0ms 乐观创建新会话：让界面在点击的瞬间立即定位到新会话界面，杜绝等待 RPC 过程中的界面停滞
     const tempId = `thread_tmp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`

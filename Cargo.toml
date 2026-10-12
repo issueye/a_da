@@ -9,9 +9,10 @@ members = [
     "crates/agent-host",
     "crates/agent-conformance",
     # 产品（一个产品一个 bin，几乎只写声明）
+    # ⚠️ PM **不是**第二个产品：它是 ada-coding 的**模式预设**
+    # （`products/ada-coding/modes/pm.agent.spec.json`）。一个二进制、两种模式。
     "products/ada-coding",
     "products/ada-skeleton",
-    "products/ada-pm",
     "tools/xtask",
     # S4 拆包：节点层与桥接层
     "crates/agent-node",

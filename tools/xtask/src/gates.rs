@@ -194,6 +194,7 @@ pub fn verify_spec() -> anyhow::Result<Report> {
         .collect();
 
     let mut product_count = 0usize;
+    let mut preset_count = 0usize;
     let mut skipped: BTreeSet<String> = BTreeSet::new();
     for entry in fs::read_dir(&products_dir)?.flatten() {
         let dir = entry.path();
@@ -206,57 +207,38 @@ pub fn verify_spec() -> anyhow::Result<Report> {
         }
         product_count += 1;
         let name = entry.file_name().to_string_lossy().to_string();
-        let raw = fs::read_to_string(&spec_path)?;
+        check_one_spec(
+            &root,
+            &mut rep,
+            &format!("products/{name}"),
+            &spec_path,
+            &available,
+            true,
+            &mut skipped,
+        )?;
 
-        let spec: serde_json::Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(e) => {
-                rep.violations.push(format!("products/{name}/agent.spec.json 解析失败: {e}"));
-                continue;
-            }
-        };
-
-        // (a) 声明的 toolkit 必须有对应模块
-        let declared: Vec<String> = spec
-            .get("toolkits")
-            .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
-            .unwrap_or_default();
-        if declared.is_empty() {
-            rep.violations.push(format!("products/{name}: 未声明任何 toolkit"));
-        }
-        for tk in &declared {
-            if !agent_toolkit::is_known_toolkit(tk) {
-                rep.violations.push(format!(
-                    "products/{name}: 声明了 toolkit `{tk}`，但 agent-toolkit 没有这个工具包（已知：{}）",
-                    agent_toolkit::TOOLKIT_NAMES.join(", ")
-                ));
-            }
-        }
-        // (b) 反向：有实现但没声明
-        for a in &available {
-            if !declared.contains(a) {
-                rep.notes.push(format!(
-                    "products/{name}: agent-toolkit 提供 `{a}` 工具包，但 spec 未声明"
-                ));
-            }
-        }
-
-        // (c) 声明字段必须有生产消费者
-        for (field, _) in SPEC_FIELDS {
-            if spec.get(field).is_none() {
-                continue;
-            }
-            let consumers = production_consumers(&root, field, &mut skipped)?;
-            if consumers.is_empty() {
-                rep.violations.push(format!(
-                    "products/{name}: 声明了 `{field}`，但没有任何生产代码读取它"
-                ));
-            } else {
-                rep.notes.push(format!(
-                    "products/{name}: `{field}` 的生产消费者 → {}",
-                    consumers.join(", ")
-                ));
+        // **模式预设**（`products/<product>/modes/*.agent.spec.json`）走同一套检查。
+        //
+        // PM 已从"第二个产品"降级为 `ada-coding` 的模式预设；如果这里不扫，
+        // 预设里的 toolkit 声明就脱离了"声明 → 真源"的机械校验（那正是本闸存在的理由）。
+        let modes_dir = dir.join("modes");
+        if modes_dir.is_dir() {
+            for m in fs::read_dir(&modes_dir)?.flatten() {
+                let path = m.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                preset_count += 1;
+                let mname = m.file_name().to_string_lossy().to_string();
+                check_one_spec(
+                    &root,
+                    &mut rep,
+                    &format!("products/{name}/modes/{mname}"),
+                    &path,
+                    &available,
+                    false,
+                    &mut skipped,
+                )?;
             }
         }
     }
@@ -270,9 +252,81 @@ pub fn verify_spec() -> anyhow::Result<Report> {
     if product_count == 0 {
         rep.violations.push("products/ 下没有找到任何 agent.spec.json".to_string());
     } else {
-        rep.notes.push(format!("共校验 {product_count} 个产品声明"));
+        rep.notes.push(format!(
+            "共校验 {product_count} 个产品声明、{preset_count} 个模式预设"
+        ));
     }
     Ok(rep)
+}
+
+/// 单个声明（产品或**模式预设**）的机械检查：toolkit 存在性 + 字段生产消费者。
+///
+/// `reverse_notes`：是否报告"有实现但没声明"的提示。产品声明要报（那是缺口信号）；
+/// **模式预设刻意只声明子集**（PM 不声明 `fs`/`command` 就是它的角色边界），报出来只是噪音。
+fn check_one_spec(
+    root: &std::path::Path,
+    rep: &mut Report,
+    label: &str,
+    spec_path: &std::path::Path,
+    available: &BTreeSet<String>,
+    reverse_notes: bool,
+    skipped: &mut BTreeSet<String>,
+) -> anyhow::Result<()> {
+    let raw = fs::read_to_string(spec_path)?;
+
+    let spec: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            rep.violations.push(format!("{label} 解析失败: {e}"));
+            return Ok(());
+        }
+    };
+
+    // (a) 声明的 toolkit 必须有对应模块
+    let declared: Vec<String> = spec
+        .get("toolkits")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    if declared.is_empty() {
+        rep.violations.push(format!("{label}: 未声明任何 toolkit"));
+    }
+    for tk in &declared {
+        if !agent_toolkit::is_known_toolkit(tk) {
+            rep.violations.push(format!(
+                "{label}: 声明了 toolkit `{tk}`，但 agent-toolkit 没有这个工具包（已知：{}）",
+                agent_toolkit::TOOLKIT_NAMES.join(", ")
+            ));
+        }
+    }
+    // (b) 反向：有实现但没声明（只对产品声明报，模式预设刻意是子集）
+    if reverse_notes {
+        for a in available {
+            if !declared.contains(a) {
+                rep.notes.push(format!(
+                    "{label}: agent-toolkit 提供 `{a}` 工具包，但 spec 未声明"
+                ));
+            }
+        }
+    }
+
+    // (c) 声明字段必须有生产消费者
+    for (field, _) in SPEC_FIELDS {
+        if spec.get(field).is_none() {
+            continue;
+        }
+        let consumers = production_consumers(root, field, skipped)?;
+        if consumers.is_empty() {
+            rep.violations
+                .push(format!("{label}: 声明了 `{field}`，但没有任何生产代码读取它"));
+        } else {
+            rep.notes.push(format!(
+                "{label}: `{field}` 的生产消费者 → {}",
+                consumers.join(", ")
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// `AgentSpec` 里**每一个**顶层字段都必须在这张表里，否则 `verify_spec` 会报红。

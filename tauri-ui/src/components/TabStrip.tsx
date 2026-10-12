@@ -92,6 +92,7 @@ export const TabStrip: React.FC<TabStripProps> = ({
             (thread.agentId === 'ada-coding' && thread.parentId)
           )
           const closable = openTabs.length > 1
+          // PM 是**模式**（同一 ada-coding 实例的模式预设）；agentId 兼容老会话
           const isPm = thread.mode === 'pm' || thread.agentId === 'ada-pm' || thread.agentId === 'pm-assistant'
           const statusInfo = resolveThreadStatus(thread, threadMap, runningThreadIds)
 
@@ -152,12 +153,15 @@ export const TabStrip: React.FC<TabStripProps> = ({
                 )}
 
                 <span className="truncate text-xs">
-                  {thread.title || (isSubagent ? '子代理会话' : (isPm ? 'ada-pm 会话' : '新建对话'))}
+                  {thread.title || (isSubagent ? '子代理会话' : (isPm ? 'PM 会话' : '新建对话'))}
                 </span>
 
                 {isPm && !isSubagent && (
-                  <span className="px-1 py-0.2 rounded text-[8px] bg-amber-500/15 text-amber-600 dark:text-amber-400 font-semibold flex-shrink-0 leading-tight">
-                    ada-pm
+                  <span
+                    className="px-1 py-0.2 rounded text-[8px] bg-amber-500/15 text-amber-600 dark:text-amber-400 font-semibold flex-shrink-0 leading-tight"
+                    title="PM 模式（规划与委派）"
+                  >
+                    PM
                   </span>
                 )}
 

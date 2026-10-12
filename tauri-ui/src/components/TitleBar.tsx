@@ -78,12 +78,13 @@ export const TitleBar: React.FC<TitleBarProps> = ({
 
   const modeBadge = {
     code: { label: '编码', color: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
-    pm: { label: 'ada-pm', color: 'bg-amber-500/20 text-amber-500 border-amber-500/30' },
+    pm: { label: 'PM', color: 'bg-amber-500/20 text-amber-500 border-amber-500/30' },
     plan: { label: '规划', color: 'bg-purple-500/20 text-purple-400 border-purple-500/30' },
     create: { label: '创造', color: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' },
   }[mode] || { label: '编码', color: 'bg-blue-500/20 text-blue-400 border-blue-500/30' }
 
-  const displayProduct = productName === 'pm-assistant' ? 'ada-pm' : (productName || 'ada-coding')
+  // 产品只有一个（ada-coding）；PM 由 `mode` 表达，不再改产品名
+  const displayProduct = productName || 'ada-coding'
 
   return (
     <header

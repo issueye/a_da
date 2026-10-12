@@ -266,6 +266,8 @@ const SidebarTreeItem: React.FC<SidebarTreeItemProps> = ({
   const isActive = thread.id === activeThreadId
   const hasChildren = children.length > 0
 
+  // PM 是**模式**（同一 ada-coding 实例的模式预设），不是第二个产品。
+  // 仍兼容历史会话的 `agentId` 写法（读盘时会被归一，但界面不必依赖它）。
   const isRootPm =
     rootThread.mode === 'pm' ||
     rootThread.agentId === 'ada-pm' ||
@@ -283,7 +285,7 @@ const SidebarTreeItem: React.FC<SidebarTreeItemProps> = ({
   const defaultTitle =
     level === 1
       ? isRootPm
-        ? 'ada-pm 对话'
+        ? 'PM 对话'
         : '新对话'
       : level === 2
       ? '子进程子代理'
@@ -483,16 +485,16 @@ const SidebarTreeItem: React.FC<SidebarTreeItemProps> = ({
               isRootPm ? (
                 <span
                   className="px-1 py-0 rounded text-[8.5px] bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800/50 font-semibold flex-shrink-0 leading-tight"
-                  title="已连接: ada-pm (项目管理助手)"
+                  title="PM 模式（规划与委派）——同一个 ada-coding 实例的模式预设"
                 >
-                  ada-pm
+                  PM
                 </span>
               ) : (
                 <span
                   className="px-1 py-0 rounded text-[8.5px] bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border border-blue-200/50 dark:border-blue-800/40 font-mono font-medium flex-shrink-0 leading-tight"
-                  title="已连接: ada-coding (编程助手)"
+                  title="CODING 模式（编码与执行）——产品 ada-coding"
                 >
-                  ada-coding
+                  CODING
                 </span>
               )
             ) : level === 2 ? (

@@ -1568,7 +1568,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   桌面端连接到统一的 <strong className="text-zinc-800 dark:text-zinc-200">ada-gateway</strong> 网关平台。由网关统一管理所有 Agent 实例的注册发现、跨 Agent 任务委派、集群调度与 Web 集中鉴权。
                 </p>
                 <div className="text-[11px] text-zinc-500 dark:text-zinc-500 bg-zinc-100/70 dark:bg-zinc-800/60 p-2.5 rounded-lg space-y-1">
-                  <div>• 自动拉起本地 ada-gateway 网关及后端 Agent（ada-coding / ada-pm）或连接远程网关</div>
+                  <div>• 自动拉起本地 ada-gateway 网关及后端 Agent（ada-coding：含 coding / PM 两种模式）或连接远程网关</div>
                   <div>• 支持跨 Agent 任务委派协作、多工作区路由调度与远程集中治理</div>
                 </div>
               </div>

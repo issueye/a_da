@@ -10,7 +10,19 @@ use tracing_subscriber::FmtSubscriber;
 
 /// 产品声明（W3-T2：宿主按它装配真引擎）。
 const SPEC_JSON: &str = include_str!("../agent.spec.json");
-const PM_SPEC_JSON: &str = include_str!("../../ada-pm/agent.spec.json");
+/// **PM 模式预设**（不是第二个产品）。
+///
+/// PM 曾经是一个独立产品（`products/ada-pm`：另起一个二进制 + 一份重复的装配函数）。
+/// 实测代价全在"两个产品"这件事本身：身份落盘/还原、徽标丢失、进程面板歧义、
+/// 子智能体工具池按产品裁切两次返工——而它真正独有的能力（跨进程 gateway 委派）
+/// 在真实使用里几乎没被走到。
+///
+/// 现在它只是一个**模式预设**：同一份 `AgentSpec` 形状、同一处装配函数、
+/// 同一个二进制；差异只剩声明本身（persona / 不含 `fs`+`command` 的工具包 / 委派配置）。
+const PM_MODE_SPEC_JSON: &str = include_str!("../modes/pm.agent.spec.json");
+
+/// 模式预设的展示名（日志与错误信息用；**不是产品 id**）。
+const PM_MODE_LABEL: &str = "PM 模式预设（ada-coding-pm）";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "a_da 原生 Agent 核心服务 (Rust)", long_about = None)]
@@ -40,7 +52,7 @@ struct CliArgs {
     gateway: Option<String>,
 }
 
-/// 按产品声明装配真引擎；任何失败都**如实降级**为 legacy（返回 `None`）。
+/// 按声明装配真引擎（**唯一实现**，Coding 与 PM 模式共用）；任何失败都如实降级为 legacy。
 ///
 /// 注意三件事都是刻意的：
 /// 1. **复用宿主的 `store`**：引擎的审批闸门要读 `config.approval`，各造一份会出现
@@ -48,23 +60,47 @@ struct CliArgs {
 /// 2. **会话落盘到 app home**（不是工作区），与 legacy 路径一致；
 /// 3. 返回的 `approval_mgr` 会被 ws 宿主用于构造 `Dispatcher`——**必须是同一个实例**，
 ///    否则 UI 的批准送不到闸门。
-fn build_engine_injection(
+///
+/// `spec_json` 决定"装哪一套"：产品声明（coding）或**模式预设**（pm）。
+/// 早先这里是两份几乎逐行相同的拷贝（`build_engine_injection` /
+/// `build_pm_engine_injection`）——一处改动要同步两遍，正是"第二个产品"的税。
+fn build_injection(
+    spec_json: &'static str,
+    label: &'static str,
     store: &Arc<RwLock<AgentStore>>,
     workspace: &str,
+    gateway_override: Option<&str>,
+    apply_delegation: bool,
 ) -> Option<agent_rpc::server::dispatch::EngineInjection> {
+    let mut spec = match agent_runtime::AgentSpec::from_json_str(spec_json) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("{label} 规格解析失败，降级为 legacy 引擎：{e}");
+            return None;
+        }
+    };
+
+    // 委派目标按**启动参数**覆盖（只有 PM 模式预设需要这层覆盖：
+    // 有网关就用网关委派，没有就退化成进程内本地委派，避免向虚构网关请求被拒）。
+    if apply_delegation {
+        match gateway_override {
+            Some(endpoint) => {
+                spec.capabilities.delegation = agent_runtime::DelegationMode::Gateway;
+                spec.gateway = Some(agent_runtime::GatewaySpec {
+                    endpoint: endpoint.to_string(),
+                });
+            }
+            None => {
+                spec.capabilities.delegation = agent_runtime::DelegationMode::Local;
+            }
+        }
+    }
+
     let ws = if workspace.trim().is_empty() {
         let app_home = agent_node::session::app_home();
         app_home.dir("workspace")
     } else {
         std::path::PathBuf::from(workspace)
-    };
-
-    let spec = match agent_runtime::AgentSpec::from_json_str(SPEC_JSON) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!("产品规格解析失败，降级为 legacy 引擎：{e}");
-            return None;
-        }
     };
 
     let sessions_root =
@@ -77,22 +113,36 @@ fn build_engine_injection(
         Ok(hosted) => {
             let tool_count = hosted.tool_names().len();
             let agent_host::HostedProduct { runtime, approval, spec, .. } = hosted;
-            info!("已按产品声明装配真引擎：工具 {tool_count} 个");
+            info!("已按 {label} 装配真引擎：工具 {tool_count} 个");
 
             let store_for_factory = store.clone();
+            let gateway_override_owned = gateway_override.map(|s| s.to_string());
             let factory: agent_rpc::server::dispatch::EngineFactory = Arc::new(move |ws_path: &std::path::Path| -> Option<Arc<agent_base::engine::AgentRuntime>> {
-                let spec_dyn = agent_runtime::AgentSpec::from_json_str(SPEC_JSON).ok()?;
+                let mut spec_dyn = agent_runtime::AgentSpec::from_json_str(spec_json).ok()?;
+                if apply_delegation {
+                    match &gateway_override_owned {
+                        Some(endpoint) => {
+                            spec_dyn.capabilities.delegation = agent_runtime::DelegationMode::Gateway;
+                            spec_dyn.gateway = Some(agent_runtime::GatewaySpec {
+                                endpoint: endpoint.clone(),
+                            });
+                        }
+                        None => {
+                            spec_dyn.capabilities.delegation = agent_runtime::DelegationMode::Local;
+                        }
+                    }
+                }
                 let s_root = std::path::Path::new(&agent_node::session::get_app_home()).join("sessions");
                 let opts = agent_host::HostOptions::new(ws_path)
                     .with_store(store_for_factory.clone())
                     .with_sessions_root(s_root);
                 match agent_host::run_from_spec(spec_dyn, opts) {
                     Ok(h) => {
-                        info!("为会话工作区 {} 动态装配编码真引擎就绪", ws_path.display());
+                        info!("为会话工作区 {} 动态装配 {label} 真引擎就绪", ws_path.display());
                         Some(Arc::new(h.runtime))
                     }
                     Err(err) => {
-                        warn!("为工作区 {} 装配编码引擎失败: {err}", ws_path.display());
+                        warn!("为工作区 {} 装配 {label} 引擎失败: {err}", ws_path.display());
                         None
                     }
                 }
@@ -107,90 +157,7 @@ fn build_engine_injection(
             })
         }
         Err(e) => {
-            warn!("真引擎装配失败：{e}");
-            None
-        }
-    }
-}
-
-/// 按 PM 产品声明装配真引擎；失败返回 None。
-fn build_pm_engine_injection(
-    store: &Arc<RwLock<AgentStore>>,
-    workspace: &str,
-    gateway_override: Option<&str>,
-) -> Option<agent_rpc::server::dispatch::EngineInjection> {
-    let mut spec = match agent_runtime::AgentSpec::from_json_str(PM_SPEC_JSON) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!("解析 PM 规格失败：{e}");
-            return None;
-        }
-    };
-    if let Some(endpoint) = gateway_override {
-        spec.capabilities.delegation = agent_runtime::DelegationMode::Gateway;
-        spec.gateway = Some(agent_runtime::GatewaySpec {
-            endpoint: endpoint.to_string(),
-        });
-    } else {
-        // 直连模式（无外部网关时）：使用本地委派总线，就地拉起子智能体，避免向虚构网关请求导致被拒
-        spec.capabilities.delegation = agent_runtime::DelegationMode::Local;
-    }
-
-    let ws = if workspace.trim().is_empty() {
-        let app_home = agent_node::session::app_home();
-        app_home.dir("workspace")
-    } else {
-        std::path::PathBuf::from(workspace)
-    };
-    let sessions_root =
-        std::path::Path::new(&agent_node::session::get_app_home()).join("sessions");
-    let options = agent_host::HostOptions::new(ws)
-        .with_store(store.clone())
-        .with_sessions_root(sessions_root);
-
-    match agent_host::run_from_spec(spec, options) {
-        Ok(hosted) => {
-            let tool_count = hosted.tool_names().len();
-            let agent_host::HostedProduct { runtime, approval, spec, .. } = hosted;
-            info!("已按 PM 产品声明装配真引擎：工具 {tool_count} 个");
-
-            let store_for_pm_factory = store.clone();
-            let gateway_override_owned = gateway_override.map(|s| s.to_string());
-            let factory: agent_rpc::server::dispatch::EngineFactory = Arc::new(move |ws_path: &std::path::Path| -> Option<Arc<agent_base::engine::AgentRuntime>> {
-                let mut spec_dyn = agent_runtime::AgentSpec::from_json_str(PM_SPEC_JSON).ok()?;
-                if let Some(endpoint) = &gateway_override_owned {
-                    spec_dyn.capabilities.delegation = agent_runtime::DelegationMode::Gateway;
-                    spec_dyn.gateway = Some(agent_runtime::GatewaySpec {
-                        endpoint: endpoint.clone(),
-                    });
-                } else {
-                    spec_dyn.capabilities.delegation = agent_runtime::DelegationMode::Local;
-                }
-                let s_root = std::path::Path::new(&agent_node::session::get_app_home()).join("sessions");
-                let opts = agent_host::HostOptions::new(ws_path)
-                    .with_store(store_for_pm_factory.clone())
-                    .with_sessions_root(s_root);
-                match agent_host::run_from_spec(spec_dyn, opts) {
-                    Ok(h) => {
-                        info!("为会话工作区 {} 动态装配 PM 真引擎就绪", ws_path.display());
-                        Some(Arc::new(h.runtime))
-                    }
-                    Err(err) => {
-                        warn!("为工作区 {} 装配 PM 引擎失败: {err}", ws_path.display());
-                        None
-                    }
-                }
-            });
-
-            Some(agent_rpc::server::dispatch::EngineInjection {
-                runtime: Arc::new(runtime),
-                approval_mgr: approval,
-                spec: Arc::new(spec),
-                factory: Some(factory),
-            })
-        }
-        Err(e) => {
-            warn!("PM 真引擎装配未完成：{e}");
+            warn!("{label} 真引擎装配失败：{e}");
             None
         }
     }
@@ -246,9 +213,23 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     };
 
-    // W3-T2：按产品声明装配**真引擎**（Coding 与 PM 双引擎）并注入宿主。
-    let injection = build_engine_injection(&store, &initial_ws);
-    let pm_injection = build_pm_engine_injection(&store, &initial_ws, args.gateway.as_deref());
+    // W3-T2：按声明装配**真引擎**（coding 产品 + PM 模式预设），共用同一处装配函数。
+    let injection = build_injection(
+        SPEC_JSON,
+        "ada-coding 产品声明",
+        &store,
+        &initial_ws,
+        args.gateway.as_deref(),
+        false,
+    );
+    let pm_injection = build_injection(
+        PM_MODE_SPEC_JSON,
+        PM_MODE_LABEL,
+        &store,
+        &initial_ws,
+        args.gateway.as_deref(),
+        true,
+    );
 
     // 启动 WebSocket 服务
     let server = WsHostServer::bind_with_engines(args.port, token.clone(), store, injection, pm_injection).await?;
@@ -256,10 +237,9 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // 打印符合协议 §1.8 规范的标准就绪行至 stdout
     //
-    // `products` 是**如实自述**：这个进程同时装配了 Coding 与 PM 两套引擎
-    // （`build_engine_injection` + `build_pm_engine_injection`），所以它服务两个产品。
-    // 网关把这条事实记进实例注册表，进程管理面板才不会把"正在跑 PM 会话的实例"
-    // 显示成纯 CODING。
+    // `products` 是**如实自述**：这个进程装配了 coding 产品 + **PM 模式预设**。
+    // PM 不是第二个产品（早先是，见 `PM_MODE_SPEC_JSON` 的注释），所以这里只自述
+    // `ada-coding` 一个产品；"这条会话在跑 PM"由**会话模式**表达，不再靠产品 id。
     let ready_json = serde_json::json!({
         "ready": true,
         "port": server.port,
@@ -314,10 +294,11 @@ async fn main() -> Result<(), anyhow::Error> {
 
 /// 本进程**实际服务**的产品清单（如实自述，供网关与进程管理面板使用）。
 ///
-/// `ada-coding` 实例同时装配 Coding 与 PM 两套引擎，所以服务 `ada-coding` + `ada-pm`。
-/// 这是"一个进程、两套引擎"的架构事实，不该让面板把 PM 会话显示成 CODING。
+/// **只有一个产品**：PM 已经降级为 ada-coding 的模式预设（同一二进制、同一装配函数），
+/// 不再是一个产品。会话是 coding 还是 pm 由 `mode` 表达——面板不再需要靠产品清单
+/// 去猜"这条会话是不是 PM"。
 fn served_products() -> Vec<&'static str> {
-    vec!["ada-coding", "ada-pm"]
+    vec!["ada-coding"]
 }
 
 /// 主动连接网关并完成自主注册。
@@ -408,6 +389,7 @@ async fn register_to_gateway(
 #[cfg(test)]
 mod tests {
     const SPEC_JSON: &str = include_str!("../agent.spec.json");
+    const PM_MODE_SPEC_JSON: &str = include_str!("../modes/pm.agent.spec.json");
 
     #[test]
     fn test_ada_coding_spec_is_valid() {
@@ -416,6 +398,46 @@ mod tests {
         assert_eq!(spec.archetype, "coding");
         assert!(spec.capabilities.rollback);
         assert!(spec.capabilities.plugins);
+    }
+
+    /// 守门：**PM 是模式预设，不是第二个产品**。
+    ///
+    /// 这条钉住三件事：
+    /// 1. 预设与产品走**同一个** `AgentSpec` 形状（同一处装配函数吃得下）；
+    /// 2. 预设 id **不是**产品 id（`ada-coding-pm`，避免"又一个产品"的错觉）；
+    /// 3. 角色边界仍在声明里：**不含** `fs` 与 `command`（PM 不亲自改代码/跑命令）。
+    #[test]
+    fn test_pm_is_a_mode_preset_not_a_product() {
+        let preset = agent_runtime::AgentSpec::from_json_str(PM_MODE_SPEC_JSON)
+            .expect("PM 模式预设必须能按同一 AgentSpec 解析");
+
+        assert_eq!(preset.id, "ada-coding-pm", "预设 id 必须与产品 id 区分开");
+        assert_ne!(preset.id, "ada-coding");
+        assert!(
+            !preset.toolkits.iter().any(|t| t == "fs" || t == "command"),
+            "PM 预设不得声明写/命令工具包（角色边界）：{:?}",
+            preset.toolkits
+        );
+        assert!(
+            preset.capabilities.subagents,
+            "PM 的价值就是拆解与分派 → 必须声明子智能体"
+        );
+
+        // 声明 → 工具包真源：预设声明的每个工具包都必须能真的装配出来
+        let tools = agent_toolkit::tools_for_toolkits(&preset.toolkits, std::path::Path::new("."))
+            .expect("PM 预设声明的工具包必须都能装配");
+        assert!(!tools.is_empty());
+        let names: Vec<String> = tools.iter().map(|t| t.descriptor().name.clone()).collect();
+        assert!(
+            !names.iter().any(|n| n == "write_file" || n == "run_command"),
+            "PM 自己的手不能写盘/跑命令：{names:?}"
+        );
+    }
+
+    /// 守门：本进程自述的产品清单里**只有 ada-coding**（PM 不再是产品）。
+    #[test]
+    fn test_served_products_lists_only_the_product() {
+        assert_eq!(super::served_products(), vec!["ada-coding"]);
     }
 
     /// W2-T2 守门：产品**声明的工具包**必须能真的装配出工具，且与注册表逐名对齐。
