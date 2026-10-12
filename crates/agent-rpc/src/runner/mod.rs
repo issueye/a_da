@@ -38,7 +38,8 @@ pub mod engine_bridge;
 pub mod ui_events;
 
 pub use engine_bridge::{
-    project_to_loop_event, run_agent_turn, run_turn_with_engine, EngineError, LoopEventBridge,
+    project_to_loop_event, run_agent_turn, run_turn_with_engine, DirectEventSink, EngineError,
+    LoopEventBridge,
 };
 pub use ui_events::AgentLoopEvent;
 

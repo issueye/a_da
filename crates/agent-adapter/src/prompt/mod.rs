@@ -6,6 +6,6 @@
 pub mod coding;
 
 pub use coding::{
-    compose_system_prompt, compose_system_prompt_with_identity, CodingPromptSource,
-    ProductIdentity,
+    compose_system_prompt, compose_system_prompt_full, compose_system_prompt_with_identity,
+    CodingPromptSource, ProductIdentity, SkillPrompt, SkillResolver,
 };

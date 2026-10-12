@@ -7,8 +7,9 @@ use agent_node::approval::ApprovalManager;
 use agent_base::model::ProviderConfig;
 use agent_node::checkpoint::CheckpointManager;
 use agent_node::plugins::PluginManager;
+use agent_base::domain::{AgentEvent, AgentEventBody, TurnStopReason};
 use agent_proto::*;
-use crate::runner::{run_agent_turn, AgentLoopEvent};
+use crate::runner::run_agent_turn;
 use crate::server::emitter::StateBroadcaster;
 use crate::server::fs_service;
 use agent_node::session::SessionManager;
@@ -622,7 +623,8 @@ impl Dispatcher {
                 let (abort_tx, abort_rx) = watch::channel(false);
                 abort_senders_clone.lock().await.insert(target_tid_clone.clone(), abort_tx);
 
-                let (event_tx, mut event_rx) = mpsc::channel::<AgentLoopEvent>(128);
+                let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(128);
+                let turn_started = std::time::Instant::now();
                 let tid = target_tid_clone.clone();
                 let prompt = current_prompt.take();
                 let p_cfg = provider_config.clone();
@@ -686,23 +688,24 @@ impl Dispatcher {
 
                         while let Some(event) = event_rx.recv().await {
                             let mut store = store_clone.write().await;
-                            match event {
-                                AgentLoopEvent::Thinking { text } => {
+                            match event.body {
+                                AgentEventBody::ThinkingDelta { text } => {
                                     store.append_thinking_delta(&target_tid_clone, &text);
                                     drop(store);
                                     if let Some(ref bc) = broadcaster_clone {
                                         bc.mark_dirty();
                                     }
                                 }
-                                AgentLoopEvent::TextDelta { text } => {
+                                AgentEventBody::TextDelta { text } => {
                                     store.append_assistant_delta(&target_tid_clone, &text);
                                     drop(store);
                                     if let Some(ref bc) = broadcaster_clone {
                                         bc.mark_dirty();
                                     }
                                 }
-                                AgentLoopEvent::ToolCallStarted { name, id, args } => {
-                                    store.start_tool_call(&target_tid_clone, &id, &name, &args);
+                                AgentEventBody::ToolCallStarted { call_id, name, args } => {
+                                    let args_str = args.to_string();
+                                    store.start_tool_call(&target_tid_clone, &call_id, &name, &args_str);
                                     let is_subagent = name == "invoke_subagent";
                                     // 这次派活**之前**该父会话已有的子会话：下面靠它认出
                                     // "本次调用新建的那一个"。缺了它就只能"任取一个子会话"，
@@ -727,7 +730,7 @@ impl Dispatcher {
                                         let bc_monitor = broadcaster_clone.clone();
                                         let sess_mgr_monitor = session_mgr_clone.clone();
                                         let parent_tid_monitor = target_tid_clone.clone();
-                                        let call_id_monitor = id.clone();
+                                        let call_id_monitor = call_id.clone();
                                         let known_children_monitor = known_children;
                                         tokio::spawn(async move {
                                             for _ in 0..60 {
@@ -807,15 +810,24 @@ impl Dispatcher {
                                         });
                                     }
                                 }
-                                AgentLoopEvent::ToolCallFinished { name, id, ok, output, duration_ms, started_at, finished_at, status: _, details } => {
+                                AgentEventBody::ToolCallFinished { call_id, name, receipt } => {
                                     // 本次调用对应的子会话 id：回执里带的就是它（见 `SubagentTool`）
-                                    let finished_child = details.as_ref().and_then(|d| {
+                                    let finished_child = receipt.details.as_ref().and_then(|d| {
                                         d.get("subagent_thread_id")
                                             .or_else(|| d.get("threadId"))
                                             .and_then(|v| v.as_str())
                                             .map(|s| s.to_string())
                                     });
-                                    store.finish_tool_call(&target_tid_clone, &id, ok, output, duration_ms, started_at, finished_at, details);
+                                    store.finish_tool_call(
+                                        &target_tid_clone,
+                                        &call_id,
+                                        receipt.ok(),
+                                        Some(receipt.output.clone()),
+                                        Some(receipt.duration_ms()),
+                                        Some(receipt.started_at),
+                                        Some(receipt.finished_at),
+                                        receipt.details.clone(),
+                                    );
                                     if name == "invoke_subagent" {
                                         store.sync_threads_from_disk(&session_mgr_clone);
                                         match finished_child {
@@ -837,25 +849,26 @@ impl Dispatcher {
                                         bc.broadcast_immediate().await;
                                     }
                                 }
-                                AgentLoopEvent::ToolAwaitingQuestion { id, question } => {
-                                    store.set_tool_awaiting_question(&target_tid_clone, &id, question);
+                                AgentEventBody::QuestionAsked { call_id, question } => {
+                                    store.set_tool_awaiting_question(&target_tid_clone, &call_id, question);
                                     drop(store);
                                     if let Some(ref bc) = broadcaster_clone {
                                         bc.broadcast_immediate().await;
                                     }
                                 }
                                 // W3-T3：审批请求 → 工具卡片进入"等待批准"，界面据此渲染批准/拒绝按钮
-                                AgentLoopEvent::ApprovalRequested { id, tool } => {
-                                    store.set_tool_waiting_approval(&target_tid_clone, &id, &tool);
+                                AgentEventBody::ApprovalRequested { call_id, tool } => {
+                                    store.set_tool_waiting_approval(&target_tid_clone, &call_id, &tool);
                                     drop(store);
                                     if let Some(ref bc) = broadcaster_clone {
                                         bc.broadcast_immediate().await;
                                     }
                                 }
-                                AgentLoopEvent::AssistantStats { usage, duration_ms, turn_duration_ms } => {
+                                AgentEventBody::UsageReported { usage, duration_ms } => {
+                                    let turn_duration_ms = turn_started.elapsed().as_millis() as u64;
                                     store.set_assistant_stats(
                                         &target_tid_clone,
-                                        usage,
+                                        Some(usage),
                                         duration_ms,
                                         turn_duration_ms,
                                     );
@@ -864,26 +877,37 @@ impl Dispatcher {
                                         bc.mark_dirty();
                                     }
                                 }
-                                AgentLoopEvent::TurnFinished { .. } => {
+                                AgentEventBody::TurnFinished { stop } => {
+                                    // 上下文撞顶：记下来，收尾后**自动压缩并续跑**（见下面的分支）
+                                    if let TurnStopReason::ContextWindowExceeded { prompt_tokens, window } = stop {
+                                        store.push_log(
+                                            "warn",
+                                            format!("上下文撞顶（{prompt_tokens}/{window} tokens）：将自动压缩后继续"),
+                                            None,
+                                        );
+                                        drop(store);
+                                        context_exceeded = Some((prompt_tokens, window));
+                                        break;
+                                    }
                                     drop(store);
                                     break;
                                 }
-                                // 上下文撞顶：记下来，收尾后**自动压缩并续跑**（见下面的分支）
-                                AgentLoopEvent::ContextWindowExceeded { prompt_tokens, window } => {
-                                    store.push_log(
-                                        "warn",
-                                        format!("上下文撞顶（{prompt_tokens}/{window} tokens）：将自动压缩后继续"),
-                                        None,
-                                    );
-                                    drop(store);
-                                    context_exceeded = Some((prompt_tokens, window));
-                                    break;
-                                }
-                                AgentLoopEvent::Error { message } => {
+                                AgentEventBody::Failed { message } => {
                                     store.append_assistant_delta(&target_tid_clone, &format!("\n\n**请求异常**：{message}"));
                                     store.push_log("error", format!("Agent 执行异常: {message}"), None);
                                     drop(store);
                                     break;
+                                }
+                                AgentEventBody::TurnStarted => {
+                                    drop(store);
+                                }
+                                AgentEventBody::SubagentStarted { thread_id, subagent } => {
+                                    tracing::debug!(child_thread_id = %thread_id, subagent = %subagent, "子智能体已启动");
+                                    drop(store);
+                                }
+                                AgentEventBody::SubagentFinished { thread_id, ok, summary } => {
+                                    tracing::debug!(child_thread_id = %thread_id, ok = ok, summary = %summary, "子智能体已结束");
+                                    drop(store);
                                 }
                             }
                         }

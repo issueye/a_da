@@ -1,11 +1,7 @@
 use std::path::PathBuf;
 
-use agent_base::domain::{
-    Access, ApprovalPolicy, Execution, PathSelector, RollbackPolicy, Termination, ToolCall,
-    ToolDescriptor, ToolReceipt, ToolStatus,
-};
+use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt, ToolStatus};
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
-use serde_json::json;
 
 use crate::fs_tools::{edit_file, EditPair};
 
@@ -17,50 +13,12 @@ pub struct EditFileTool {
 
 impl EditFileTool {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "要编辑的目标文件相对路径"
-                },
-                "old_string": {
-                    "type": "string",
-                    "description": "被替换的原始内容块（单块替换模式）"
-                },
-                "new_string": {
-                    "type": "string",
-                    "description": "替换后的新内容块（单块替换模式）"
-                },
-                "edits": {
-                    "type": "array",
-                    "description": "多处批量替换列表（批量模式）",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "old_string": { "type": "string" },
-                            "new_string": { "type": "string" }
-                        },
-                        "required": ["old_string", "new_string"]
-                    }
-                }
-            },
-            "required": ["path"]
-        });
+        let descriptor = crate::registry::find_tool_descriptor("edit_file")
+            .expect("`edit_file` 必须在 ToolDescriptor 注册表里（INV-3）")
+            .clone();
 
         Self {
-            descriptor: ToolDescriptor {
-                name: "edit_file".to_string(),
-                summary: "通过严格文本匹配替换文件中的指定片段，支持单块与多块替换。".to_string(),
-                schema,
-                access: Access::Mutates {
-                    paths: PathSelector::Single("path"),
-                },
-                approval: ApprovalPolicy::Named("approval-guard"),
-                rollback: RollbackPolicy::SingleTarget,
-                execution: Execution::Sequential,
-                termination: Termination::ContinueTurn,
-            },
+            descriptor,
             workspace: workspace.into(),
         }
     }

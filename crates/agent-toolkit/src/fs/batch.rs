@@ -1,11 +1,7 @@
 use std::path::PathBuf;
 
-use agent_base::domain::{
-    Access, ApprovalPolicy, Execution, PathSelector, RollbackPolicy, Termination, ToolCall,
-    ToolDescriptor, ToolReceipt, ToolStatus,
-};
+use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt, ToolStatus};
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
-use serde_json::json;
 
 use crate::fs_tools::{edit_file, write_file};
 
@@ -17,38 +13,12 @@ pub struct BatchWriteTool {
 
 impl BatchWriteTool {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "files": {
-                    "type": "array",
-                    "description": "待写入的文件列表",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "path": { "type": "string", "description": "相对路径" },
-                            "content": { "type": "string", "description": "文本内容" }
-                        },
-                        "required": ["path", "content"]
-                    }
-                }
-            },
-            "required": ["files"]
-        });
+        let descriptor = crate::registry::find_tool_descriptor("batch_write")
+            .expect("`batch_write` 必须在 ToolDescriptor 注册表里（INV-3）")
+            .clone();
 
         Self {
-            descriptor: ToolDescriptor {
-                name: "batch_write".to_string(),
-                summary: "在工作区内批量写入多个文件。".to_string(),
-                schema,
-                access: Access::Mutates {
-                    paths: PathSelector::Batch("files"),
-                },
-                approval: ApprovalPolicy::Named("approval-guard"),
-                rollback: RollbackPolicy::PerTargetInBatch,
-                execution: Execution::Sequential,
-                termination: Termination::ContinueTurn,
-            },
+            descriptor,
             workspace: workspace.into(),
         }
     }
@@ -128,33 +98,12 @@ pub struct BatchReplaceTool {
 
 impl BatchReplaceTool {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "files": {
-                    "type": "array",
-                    "description": "待替换的目标文件路径列表",
-                    "items": { "type": "string" }
-                },
-                "old_string": { "type": "string", "description": "被替换的原字符串" },
-                "new_string": { "type": "string", "description": "替换后的新字符串" }
-            },
-            "required": ["files", "old_string", "new_string"]
-        });
+        let descriptor = crate::registry::find_tool_descriptor("batch_replace")
+            .expect("`batch_replace` 必须在 ToolDescriptor 注册表里（INV-3）")
+            .clone();
 
         Self {
-            descriptor: ToolDescriptor {
-                name: "batch_replace".to_string(),
-                summary: "在多个目标文件中批量进行严格字符串替换。".to_string(),
-                schema,
-                access: Access::Mutates {
-                    paths: PathSelector::Batch("files"),
-                },
-                approval: ApprovalPolicy::Named("approval-guard"),
-                rollback: RollbackPolicy::PerTargetInBatch,
-                execution: Execution::Sequential,
-                termination: Termination::ContinueTurn,
-            },
+            descriptor,
             workspace: workspace.into(),
         }
     }

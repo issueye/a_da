@@ -1,9 +1,5 @@
-use agent_base::domain::{
-    Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
-    ToolReceipt,
-};
+use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt};
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
-use serde_json::json;
 
 /// `todo` 工具：管理与记录任务清单。
 pub struct TodoTool {
@@ -18,42 +14,11 @@ impl Default for TodoTool {
 
 impl TodoTool {
     pub fn new() -> Self {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["get", "set", "update"],
-                    "description": "操作类型：get (获取待办), set (重置待办), update (更新项)"
-                },
-                "items": {
-                    "type": "array",
-                    "description": "待办项列表",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "string" },
-                            "title": { "type": "string" },
-                            "done": { "type": "boolean" }
-                        },
-                        "required": ["title"]
-                    }
-                }
-            }
-        });
+        let descriptor = crate::registry::find_tool_descriptor("todo")
+            .expect("todo descriptor must be registered in agent-toolkit registry")
+            .clone();
 
-        Self {
-            descriptor: ToolDescriptor {
-                name: "todo".to_string(),
-                summary: "记录或查看当前会话的待办任务与进度清单。".to_string(),
-                schema,
-                access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
-                rollback: RollbackPolicy::None,
-                execution: Execution::Sequential,
-                termination: Termination::ContinueTurn,
-            },
-        }
+        Self { descriptor }
     }
 }
 

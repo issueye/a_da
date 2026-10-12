@@ -1,9 +1,5 @@
-use agent_base::domain::{
-    Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
-    ToolReceipt,
-};
+use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt};
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
-use serde_json::json;
 
 /// `finish` 工具：主动声明本回合工作完成，附带总结。
 /// 关键属性：`termination: Termination::EndTurn`，触发基座引擎提早结束本轮。
@@ -19,29 +15,11 @@ impl Default for FinishTool {
 
 impl FinishTool {
     pub fn new() -> Self {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "summary": {
-                    "type": "string",
-                    "description": "本轮已完成的工作总结与最终结果"
-                }
-            },
-            "required": ["summary"]
-        });
+        let descriptor = crate::registry::find_tool_descriptor("finish")
+            .expect("finish descriptor must be registered in agent-toolkit registry")
+            .clone();
 
-        Self {
-            descriptor: ToolDescriptor {
-                name: "finish".to_string(),
-                summary: "声明已完成所有任务并结束当前回合。".to_string(),
-                schema,
-                access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
-                rollback: RollbackPolicy::None,
-                execution: Execution::Sequential,
-                termination: Termination::EndTurn,
-            },
-        }
+        Self { descriptor }
     }
 }
 
@@ -76,6 +54,7 @@ impl Tool for FinishTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_base::domain::Termination;
 
     #[test]
     fn test_finish_tool_has_end_turn_termination() {

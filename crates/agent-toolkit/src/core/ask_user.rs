@@ -3,8 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use agent_base::domain::{
-    Access, AgentEvent, AgentEventBody, ApprovalPolicy, Execution, RollbackPolicy, Termination,
-    ToolCall, ToolDescriptor, ToolReceipt, ToolStatus,
+    AgentEvent, AgentEventBody, ToolCall, ToolDescriptor, ToolReceipt, ToolStatus,
 };
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
 use serde::{Deserialize, Serialize};
@@ -80,59 +79,11 @@ impl Default for AskUserTool {
 
 impl AskUserTool {
     pub fn new() -> Self {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "question": {
-                    "type": "string",
-                    "description": "向用户提出的问题（限制 600 字以内，简明扼要）"
-                },
-                "choices": {
-                    "type": "array",
-                    "description": "提供给用户的选项列表（最多 6 项）",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": {
-                                "type": "string",
-                                "description": "选项标识 ID（如不填自动生成 c1, c2 等）"
-                            },
-                            "label": {
-                                "type": "string",
-                                "description": "显示给用户的选项文案"
-                            },
-                            "description": {
-                                "type": "string",
-                                "description": "选项说明或辅助解释"
-                            }
-                        },
-                        "required": ["label"]
-                    }
-                },
-                "multi_select": {
-                    "type": "boolean",
-                    "description": "是否允许多选：需要用户同时勾选多个选项时设为 true（默认 false，单选点一下即答）"
-                },
-                "allow_text": {
-                    "type": "boolean",
-                    "description": "是否允许用户输入自定义文本（默认为 true）"
-                }
-            },
-            "required": ["question"]
-        });
+        let descriptor = crate::registry::find_tool_descriptor("ask_user")
+            .expect("ask_user descriptor must be registered in agent-toolkit registry")
+            .clone();
 
-        Self {
-            descriptor: ToolDescriptor {
-                name: "ask_user".to_string(),
-                summary: "在交互界面向用户发起选择（单选/多选）或补充说明提问并阻塞等待答复。".to_string(),
-                schema,
-                access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
-                rollback: RollbackPolicy::None,
-                execution: Execution::Sequential,
-                termination: Termination::ContinueTurn,
-            },
-        }
+        Self { descriptor }
     }
 }
 

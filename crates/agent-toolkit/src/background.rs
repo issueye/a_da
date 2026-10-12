@@ -23,12 +23,8 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use agent_base::domain::{
-    Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
-    ToolReceipt,
-};
+use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt};
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
-use serde_json::json;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
@@ -222,20 +218,6 @@ where
     }
 }
 
-fn descriptor(name: &str, summary: &str, schema: serde_json::Value, access: Access) -> ToolDescriptor {
-    ToolDescriptor {
-        name: name.to_string(),
-        summary: summary.to_string(),
-        schema,
-        access,
-        // 后台命令与终止进程都属于"要受审批约束"的动作；策略归 approval-guard
-        approval: ApprovalPolicy::Named("approval-guard"),
-        rollback: RollbackPolicy::None,
-        execution: Execution::Sequential,
-        termination: Termination::ContinueTurn,
-    }
-}
-
 fn started() -> i64 {
     now_ms()
 }
@@ -249,22 +231,10 @@ pub struct RunBackgroundTool {
 
 impl RunBackgroundTool {
     pub fn new(tasks: Arc<BackgroundTasks>) -> Self {
-        Self {
-            tasks,
-            descriptor: descriptor(
-                "run_background",
-                "后台启动长运行命令（dev server、watcher 等），立即返回任务 id。用 check_task 看输出、kill_task 终止。",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "command": { "type": "string", "description": "要后台执行的命令行指令" },
-                        "cwd": { "type": "string", "description": "子目录路径（相对工作区根目录，可选）" }
-                    },
-                    "required": ["command"]
-                }),
-                Access::Executes { command_arg: "command" },
-            ),
-        }
+        let descriptor = crate::registry::find_tool_descriptor("run_background")
+            .expect("run_background descriptor must be registered in agent-toolkit registry")
+            .clone();
+        Self { tasks, descriptor }
     }
 }
 
@@ -303,21 +273,10 @@ pub struct CheckTaskTool {
 
 impl CheckTaskTool {
     pub fn new(tasks: Arc<BackgroundTasks>) -> Self {
-        Self {
-            tasks,
-            descriptor: descriptor(
-                "check_task",
-                "查询后台任务的状态与输出（含退出码）。",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "task_id": { "type": "string", "description": "run_background 返回的任务 id" }
-                    },
-                    "required": ["task_id"]
-                }),
-                Access::ReadOnly,
-            ),
-        }
+        let descriptor = crate::registry::find_tool_descriptor("check_task")
+            .expect("check_task descriptor must be registered in agent-toolkit registry")
+            .clone();
+        Self { tasks, descriptor }
     }
 }
 
@@ -350,24 +309,10 @@ pub struct KillTaskTool {
 
 impl KillTaskTool {
     pub fn new(tasks: Arc<BackgroundTasks>) -> Self {
-        Self {
-            tasks,
-            // `kill_task` 不碰文件、也不跑命令文本，但它**确实有副作用**（终结进程树）。
-            // `Access` 目前只有 ReadOnly / Mutates(文件) / Executes(命令) 三态，
-            // 因此按"终结一个进程"归到 Executes，字段名说明它取的是任务 id 而不是命令。
-            descriptor: descriptor(
-                "kill_task",
-                "终止后台任务及其整棵子进程树。",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "task_id": { "type": "string", "description": "要终止的后台任务 id" }
-                    },
-                    "required": ["task_id"]
-                }),
-                Access::Executes { command_arg: "task_id" },
-            ),
-        }
+        let descriptor = crate::registry::find_tool_descriptor("kill_task")
+            .expect("kill_task descriptor must be registered in agent-toolkit registry")
+            .clone();
+        Self { tasks, descriptor }
     }
 }
 
@@ -404,6 +349,7 @@ pub fn background_tools(workspace: &Path) -> Vec<Arc<dyn Tool>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use agent_base::domain::ToolStatus;
     use agent_base::ports::{CancelToken, EventSink, Scope};
     use std::path::PathBuf;

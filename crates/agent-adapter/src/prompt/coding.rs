@@ -87,6 +87,35 @@ fn language_line_for(identity: Option<&ProductIdentity>) -> String {
 /// 组合编码助手的系统提示词。
 ///
 /// `extensions` 是"已启用的扩展工具"列表 `(name, description)`；
+/// 注入提示词的技能项（名称、描述、适用场景、正文规范）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillPrompt {
+    pub name: String,
+    pub description: String,
+    pub when_to_use: Option<String>,
+    pub content: String,
+}
+
+impl SkillPrompt {
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            when_to_use: None,
+            content: content.into(),
+        }
+    }
+
+    pub fn with_when_to_use(mut self, when: impl Into<String>) -> Self {
+        self.when_to_use = Some(when.into());
+        self
+    }
+}
+
 /// 为空时不追加扩展段落——这与搬运前的行为一致。
 pub fn compose_system_prompt(workspace: &str, extensions: &[(String, String)]) -> String {
     compose_system_prompt_with_identity(workspace, extensions, None)
@@ -100,6 +129,16 @@ pub fn compose_system_prompt_with_identity(
     workspace: &str,
     extensions: &[(String, String)],
     identity: Option<&ProductIdentity>,
+) -> String {
+    compose_system_prompt_full(workspace, extensions, identity, &[])
+}
+
+/// 完整系统提示词拼接函数：包含工作区、身份、扩展工具与已启用技能规范。
+pub fn compose_system_prompt_full(
+    workspace: &str,
+    extensions: &[(String, String)],
+    identity: Option<&ProductIdentity>,
+    skills: &[SkillPrompt],
 ) -> String {
     let mut prompt = format!(
         "{}\n\
@@ -122,15 +161,51 @@ pub fn compose_system_prompt_with_identity(
         prompt.push_str("当用户询问你的能力或需要相关操作时，你具备上述扩展工具所赋予的能力（如联网搜索等）。");
     }
 
+    if !skills.is_empty() {
+        prompt.push_str("\n\n## 当前已启用的专业技能与工作指引\n\n");
+        prompt.push_str("当面临对应场景或用户请求时，请遵循以下已启用的技能规范：\n");
+        for skill in skills {
+            prompt.push_str(&format!("\n### 技能: {}\n", skill.name));
+            if let Some(ref when) = skill.when_to_use {
+                if !when.trim().is_empty() {
+                    prompt.push_str(&format!("- **适用场景**: {}\n", when.trim()));
+                }
+            } else if !skill.description.trim().is_empty() {
+                prompt.push_str(&format!("- **描述**: {}\n", skill.description.trim()));
+            }
+            prompt.push_str("- **指引规范**:\n");
+            prompt.push_str(skill.content.trim());
+            prompt.push_str("\n");
+        }
+    }
+
     prompt
 }
 
+use std::sync::Arc;
+
+pub type SkillResolver = Arc<dyn Fn() -> Vec<SkillPrompt> + Send + Sync>;
+
 /// 编码助手的人格源（`PromptSource` 端口的真实实现）。
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct CodingPromptSource {
     workspace: String,
     extensions: Vec<(String, String)>,
     identity: Option<ProductIdentity>,
+    skills: Vec<SkillPrompt>,
+    skill_resolver: Option<SkillResolver>,
+}
+
+impl std::fmt::Debug for CodingPromptSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodingPromptSource")
+            .field("workspace", &self.workspace)
+            .field("extensions", &self.extensions)
+            .field("identity", &self.identity)
+            .field("skills", &self.skills)
+            .field("has_skill_resolver", &self.skill_resolver.is_some())
+            .finish()
+    }
 }
 
 impl CodingPromptSource {
@@ -139,6 +214,8 @@ impl CodingPromptSource {
             workspace: workspace.into(),
             extensions: Vec::new(),
             identity: None,
+            skills: Vec::new(),
+            skill_resolver: None,
         }
     }
 
@@ -153,11 +230,28 @@ impl CodingPromptSource {
         self.identity = Some(identity);
         self
     }
+
+    /// 注入静态技能列表。
+    pub fn with_skills(mut self, skills: Vec<SkillPrompt>) -> Self {
+        self.skills = skills;
+        self
+    }
+
+    /// 注入动态技能提供器（每次取提示词时实时求值，及时反映用户启停）。
+    pub fn with_skill_resolver(mut self, resolver: SkillResolver) -> Self {
+        self.skill_resolver = Some(resolver);
+        self
+    }
 }
 
 impl PromptSource for CodingPromptSource {
     fn system_prompt(&self) -> String {
-        compose_system_prompt_with_identity(&self.workspace, &self.extensions, self.identity.as_ref())
+        let skills = if let Some(ref resolver) = self.skill_resolver {
+            resolver()
+        } else {
+            self.skills.clone()
+        };
+        compose_system_prompt_full(&self.workspace, &self.extensions, self.identity.as_ref(), &skills)
     }
 }
 
@@ -271,5 +365,39 @@ mod tests {
         let src = CodingPromptSource::new("/tmp/ws")
             .with_identity(ProductIdentity::new("产品甲", "人格甲", "zh-CN"));
         assert!(src.system_prompt().contains("产品甲"));
+    }
+
+    #[test]
+    fn test_skills_reach_the_system_prompt() {
+        let skill = SkillPrompt::new("vibe-coding", "极速编码规范", "# Vibe Coding 规范内容")
+            .with_when_to_use("快速构建 MVP 原型时使用");
+        let src = CodingPromptSource::new("/tmp/ws").with_skills(vec![skill]);
+        let prompt = src.system_prompt();
+
+        assert!(prompt.contains("## 当前已启用的专业技能与工作指引"));
+        assert!(prompt.contains("### 技能: vibe-coding"));
+        assert!(prompt.contains("- **适用场景**: 快速构建 MVP 原型时使用"));
+        assert!(prompt.contains("# Vibe Coding 规范内容"));
+    }
+
+    #[test]
+    fn test_skill_resolver_dynamically_evaluates() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let flag = Arc::new(AtomicBool::new(false));
+        let flag_clone = flag.clone();
+
+        let resolver = Arc::new(move || {
+            if flag_clone.load(Ordering::SeqCst) {
+                vec![SkillPrompt::new("dyn-skill", "动态描述", "动态内容")]
+            } else {
+                Vec::new()
+            }
+        });
+
+        let src = CodingPromptSource::new("/tmp/ws").with_skill_resolver(resolver);
+        assert!(!src.system_prompt().contains("dyn-skill"), "未启用时不应包含");
+
+        flag.store(true, Ordering::SeqCst);
+        assert!(src.system_prompt().contains("dyn-skill"), "启用后下次取提示词必须立刻包含");
     }
 }

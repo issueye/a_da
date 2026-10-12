@@ -1,23 +1,17 @@
-//! 界面事件集（原 `agent_loop.rs`）。
+//! 界面事件集（原 `agent_loop.rs`，已收敛）。
 //!
-//! # 为什么这个文件还在，而 `run_agent_loop` 没了
+//! # 统一事件流演进
 //!
-//! W3-T4 删掉了 legacy 主循环 `run_agent_loop`——仓库里现在只有 `agent-base` 一份
-//! 多轮循环（`AgentRuntime::run_turn`，INV-1）。
-//!
-//! 但 `dispatch.rs` 里那套"投影到 `AgentStore` → 推给界面"的代码消费的是
-//! [`AgentLoopEvent`]，而这套投影是几千行里最不该动的地方。所以事件类型**保留**，
-//! 由 [`super::engine_bridge::LoopEventBridge`] 从领域事件（`AgentEvent`）投影出来：
+//! 调度层 `dispatch.rs` 与引擎统一入口 `run_agent_turn` 现已全面收敛至直接消费微内核领域事件
+//! [`agent_base::domain::AgentEvent`] 与 [`agent_base::domain::AgentEventBody`]：
 //!
 //! ```text
-//! AgentRuntime::run_turn ──emit──▶ AgentEvent ──LoopEventBridge──▶ AgentLoopEvent ──▶ AgentStore ──▶ 界面
+//! AgentRuntime::run_turn ──emit──▶ AgentEvent ──DirectEventSink──▶ dispatch.rs ──▶ AgentStore ──▶ 界面
 //! ```
 //!
-//! 也就是说：这个枚举现在是**纯投影层类型**，不再有"另一个引擎"的含义。
-//! 它的名字里的 "Loop" 是历史遗留（`AgentLoopEvent` 已被前端 DTO 与多处代码引用，
-//! 改名会带来跨层改动而无行为收益）。
+//! 本文件中的 [`AgentLoopEvent`] 仅保留用于历史投影用例兼容与差集断言。
 
-/// 引擎产出、供界面消费的事件（由领域事件投影而来）。
+/// 历史过渡期界面事件集（已收敛至领域事件 `AgentEvent`）。
 #[derive(Debug, Clone)]
 pub enum AgentLoopEvent {
     Thinking { text: String },

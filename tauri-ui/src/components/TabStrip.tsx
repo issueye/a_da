@@ -1,7 +1,7 @@
 import React, { useRef, useEffect } from 'react'
 import { Plus, X, MessageSquare, Bot, CheckCircle2, XCircle, Clock, Circle, Loader2 } from 'lucide-react'
 import type { Thread } from '../types'
-import { resolveThreadStatus } from './Sidebar'
+import { resolveThreadStatus } from '../utils/thread-status'
 
 export interface TabStripProps {
   threads: Thread[]

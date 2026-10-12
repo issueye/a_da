@@ -1,11 +1,7 @@
 use std::path::PathBuf;
 
-use agent_base::domain::{
-    Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
-    ToolReceipt, ToolStatus,
-};
+use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt, ToolStatus};
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
-use serde_json::json;
 
 use crate::fs_tools::search_files;
 
@@ -17,48 +13,12 @@ pub struct SearchFilesTool {
 
 impl SearchFilesTool {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "搜索文本或正则表达式模式"
-                },
-                "glob": {
-                    "type": "string",
-                    "description": "文件通配符模式（例如 **/*.rs，可选）"
-                },
-                "path": {
-                    "type": "string",
-                    "description": "限制搜索的子目录相对路径（可选）"
-                },
-                "literal": {
-                    "type": "boolean",
-                    "description": "是否进行纯字面量匹配（默认 false）"
-                },
-                "case_sensitive": {
-                    "type": "boolean",
-                    "description": "是否区分大小写（默认 false）"
-                },
-                "context": {
-                    "type": "integer",
-                    "description": "匹配行前后的上下文行数（默认 0）"
-                }
-            },
-            "required": ["pattern"]
-        });
+        let descriptor = crate::registry::find_tool_descriptor("search_files")
+            .expect("`search_files` 必须在 ToolDescriptor 注册表里（INV-3）")
+            .clone();
 
         Self {
-            descriptor: ToolDescriptor {
-                name: "search_files".to_string(),
-                summary: "在工作区文件内搜索匹配的字符串或正则表达式内容。".to_string(),
-                schema,
-                access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
-                rollback: RollbackPolicy::None,
-                execution: Execution::ParallelSafe,
-                termination: Termination::ContinueTurn,
-            },
+            descriptor,
             workspace: workspace.into(),
         }
     }

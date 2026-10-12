@@ -1,11 +1,7 @@
 use std::path::PathBuf;
 
-use agent_base::domain::{
-    Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
-    ToolReceipt, ToolStatus,
-};
+use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt, ToolStatus};
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
-use serde_json::json;
 
 use crate::cmd_tools::run_command;
 use crate::fs_tools::ToolFailure;
@@ -18,38 +14,12 @@ pub struct RunCommandTool {
 
 impl RunCommandTool {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "要执行的命令行指令字符串"
-                },
-                "cwd": {
-                    "type": "string",
-                    "description": "子目录路径（相对工作区根目录，可选）"
-                },
-                "timeout": {
-                    "type": "integer",
-                    "description": "命令超时等待时间（秒，默认 30）"
-                }
-            },
-            "required": ["command"]
-        });
+        let descriptor = crate::registry::find_tool_descriptor("run_command")
+            .expect("run_command descriptor must be registered in agent-toolkit registry")
+            .clone();
 
         Self {
-            descriptor: ToolDescriptor {
-                name: "run_command".to_string(),
-                summary: "在系统底层 shell 中执行指定命令行，并捕获标准输出、错误与退出状态。".to_string(),
-                schema,
-                access: Access::Executes {
-                    command_arg: "command",
-                },
-                approval: ApprovalPolicy::Named("approval-guard"),
-                rollback: RollbackPolicy::None,
-                execution: Execution::Sequential,
-                termination: Termination::ContinueTurn,
-            },
+            descriptor,
             workspace: workspace.into(),
         }
     }
@@ -128,6 +98,7 @@ impl Tool for RunCommandTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use agent_base::domain::AgentEvent;
     use agent_base::ports::{CancelToken, EventSink, Scope};
     use std::path::PathBuf;

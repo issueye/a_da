@@ -3,10 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use agent_base::domain::{
-    Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
-    ToolReceipt, ToolStatus,
-};
+use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt, ToolStatus};
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
 use serde::Deserialize;
 use crate::decision::engine::{DecisionEngine, HeuristicDecisionEngine};
@@ -42,46 +39,9 @@ impl CheckGateTool {
     }
 
     pub fn with_engine(workspace: impl Into<PathBuf>, engine: Arc<dyn DecisionEngine>) -> Self {
-        let descriptor = ToolDescriptor {
-            name: "check_gate".to_string(),
-            summary: "对当前工作区改动、指定文件或文本依据验收标准执行门禁判定（fail-close 安全默认）".to_string(),
-            schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "criteria": {
-                        "type": "string",
-                        "description": "具体的验收标准，如「所有新增函数必须包含单元测试」"
-                    },
-                    "source": {
-                        "type": "string",
-                        "enum": ["diff", "file", "text"],
-                        "description": "门禁材料来源，默认为 diff（当前 git 未提交改动）"
-                    },
-                    "file": {
-                        "type": "string",
-                        "description": "当 source=file 时必填，工作区内的相对文件路径"
-                    },
-                    "text": {
-                        "type": "string",
-                        "description": "当 source=text 时必填，直接输入的文本材料"
-                    },
-                    "threshold": {
-                        "type": "number",
-                        "description": "通过概率阈值（默认 0.65）"
-                    },
-                    "fail_open": {
-                        "type": "boolean",
-                        "description": "评估出错时是否默认放行，默认为 false（即 fail-close 默认拦截）"
-                    }
-                },
-                "required": ["criteria"]
-            }),
-            access: Access::ReadOnly,
-            approval: ApprovalPolicy::Never,
-            rollback: RollbackPolicy::None,
-            execution: Execution::Sequential,
-            termination: Termination::ContinueTurn,
-        };
+        let descriptor = crate::registry::find_tool_descriptor("check_gate")
+            .expect("check_gate descriptor must be registered in agent-toolkit registry")
+            .clone();
 
         Self {
             descriptor,

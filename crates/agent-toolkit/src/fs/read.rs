@@ -1,11 +1,7 @@
 use std::path::PathBuf;
 
-use agent_base::domain::{
-    Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
-    ToolReceipt, ToolStatus,
-};
+use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt, ToolStatus};
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
-use serde_json::json;
 
 use crate::fs_tools::read_file;
 
@@ -17,36 +13,12 @@ pub struct ReadFileTool {
 
 impl ReadFileTool {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "要读取的文件相对路径"
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "起始行号（从 1 开始，可选）"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "最大读取行数（可选）"
-                }
-            },
-            "required": ["path"]
-        });
+        let descriptor = crate::registry::find_tool_descriptor("read_file")
+            .expect("`read_file` 必须在 ToolDescriptor 注册表里（INV-3）")
+            .clone();
 
         Self {
-            descriptor: ToolDescriptor {
-                name: "read_file".to_string(),
-                summary: "安全读取工作区指定文件的全部或部分行内容。".to_string(),
-                schema,
-                access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
-                rollback: RollbackPolicy::None,
-                execution: Execution::ParallelSafe,
-                termination: Termination::ContinueTurn,
-            },
+            descriptor,
             workspace: workspace.into(),
         }
     }

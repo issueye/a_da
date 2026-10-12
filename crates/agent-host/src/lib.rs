@@ -87,6 +87,8 @@ pub struct HostOptions {
     /// `store.config.approval` 才知道当前档位。各造一个 store 会让"界面上是只读档、
     /// 引擎却按默认档跑"。
     pub store: Option<Arc<RwLock<AgentStore>>>,
+    /// 技能管理器实例（若不注入则装配默认实例）。
+    pub skill_mgr: Option<Arc<agent_node::skills::SkillManager>>,
 }
 
 impl HostOptions {
@@ -98,12 +100,18 @@ impl HostOptions {
             model: None,
             broadcast_tx: None,
             store: None,
+            skill_mgr: None,
         }
     }
 
     /// 复用宿主已有的会话态（推荐：让引擎与 UI 看同一份配置）。
     pub fn with_store(mut self, store: Arc<RwLock<AgentStore>>) -> Self {
         self.store = Some(store);
+        self
+    }
+
+    pub fn with_skill_manager(mut self, mgr: Arc<agent_node::skills::SkillManager>) -> Self {
+        self.skill_mgr = Some(mgr);
         self
     }
 
@@ -250,10 +258,34 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
         sessions_root,
         workspace.to_string_lossy().to_string(),
     ));
+
+    let skill_mgr = options.skill_mgr.clone().unwrap_or_else(|| {
+        Arc::new(agent_node::skills::SkillManager::new())
+    });
+    let ws_str = workspace.to_string_lossy().to_string();
+    let skill_resolver: agent_adapter::prompt::SkillResolver = {
+        let sm = skill_mgr.clone();
+        let ws = ws_str.clone();
+        Arc::new(move || {
+            sm.scan_skills(Some(&ws))
+                .into_iter()
+                .filter(|s| s.enabled)
+                .map(|s| {
+                    let mut p = agent_adapter::prompt::SkillPrompt::new(s.name, s.description, s.body);
+                    if let Some(w) = s.when_to_use {
+                        p = p.with_when_to_use(w);
+                    }
+                    p
+                })
+                .collect()
+        })
+    };
+
     let prompt: Arc<dyn agent_base::ports::PromptSource> = Arc::new(
-        CodingPromptSource::new(workspace.to_string_lossy().to_string())
+        CodingPromptSource::new(ws_str)
             .with_identity(ProductIdentity::new(name.clone(), persona.clone(), locale.clone()))
-            .with_extensions(options.prompt_extensions.clone()),
+            .with_extensions(options.prompt_extensions.clone())
+            .with_skill_resolver(skill_resolver),
     );
     let clock: Arc<dyn agent_base::ports::Clock> = Arc::new(SystemClock);
     let model: Arc<dyn ModelClient> = options
@@ -678,6 +710,30 @@ mod tests {
             .run_turn("t_images_ok", provider_config())
             .await
             .expect("无图片应正常执行");
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn test_assembly_injects_enabled_skills_into_prompt() {
+        let ws = tmp_ws("skills_in_prompt");
+        let spec = AgentSpec::from_json_str(SKELETON_SPEC).expect("spec 语法合法");
+        let hosted = run_from_spec(spec, HostOptions::new(&ws).with_model(scripted()))
+            .expect("装配必须成功");
+
+        let prompt = hosted.runtime.prompt.system_prompt();
+        assert!(
+            prompt.contains("## 当前已启用的专业技能与工作指引"),
+            "装配完成后提示词必须包含技能章节"
+        );
+        assert!(
+            prompt.contains("### 技能: vibe-coding"),
+            "提示词必须包含默认启用的内置技能"
+        );
+        assert!(
+            prompt.contains("Vibe Coding 极速敏捷开发规范"),
+            "提示词必须包含内置技能正文规范"
+        );
 
         let _ = std::fs::remove_dir_all(&ws);
     }

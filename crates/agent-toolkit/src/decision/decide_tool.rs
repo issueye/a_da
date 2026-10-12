@@ -2,10 +2,7 @@
 
 use std::sync::Arc;
 use std::time::Instant;
-use agent_base::domain::{
-    Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
-    ToolReceipt, ToolStatus,
-};
+use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt, ToolStatus};
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
 use crate::decision::engine::{DecisionEngine, HeuristicDecisionEngine};
 use crate::decision::types::{DecisionRequest, DecisionResponse};
@@ -22,42 +19,9 @@ impl DecideTool {
     }
 
     pub fn with_engine(engine: Arc<dyn DecisionEngine>) -> Self {
-        let descriptor = ToolDescriptor {
-            name: "decide".to_string(),
-            summary: "对给定材料进行结构化判断，支持 choice（多选一）、noul（是否概率）与 score（档位评分）三种类型".to_string(),
-            schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "state": {
-                        "description": "被判断的材料（文本或结构化对象），必须自包含",
-                        "type": ["string", "object"]
-                    },
-                    "questions": {
-                        "type": "object",
-                        "description": "问题映射：id -> 问题定义。包含 type（choice/noul/score）、instructions 与可选的 criteria",
-                        "additionalProperties": {
-                            "type": "object",
-                            "properties": {
-                                "type": { "type": "string", "enum": ["choice", "noul", "score"] },
-                                "instructions": { "type": "string" },
-                                "criteria": { "description": "choice 为对象，score 为数组，noul 无需传递" }
-                            },
-                            "required": ["type", "instructions"]
-                        }
-                    },
-                    "threshold": {
-                        "type": "number",
-                        "description": "覆盖默认判定阈值（默认 0.65）"
-                    }
-                },
-                "required": ["state", "questions"]
-            }),
-            access: Access::ReadOnly,
-            approval: ApprovalPolicy::Never,
-            rollback: RollbackPolicy::None,
-            execution: Execution::Sequential,
-            termination: Termination::ContinueTurn,
-        };
+        let descriptor = crate::registry::find_tool_descriptor("decide")
+            .expect("decide descriptor must be registered in agent-toolkit registry")
+            .clone();
 
         Self { descriptor, engine }
     }

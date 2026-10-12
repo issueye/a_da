@@ -20,14 +20,15 @@ import {
 import type { Thread, AgentMode } from '../types'
 import { agentClient } from '../client/ws-client'
 import { notify } from './ToastHost'
+// 会话状态判定是**纯函数**，放在 utils 里（无 React / 无 tauri 依赖）：
+// 侧边栏与标签页共用同一份，且可以拿真实快照直接跑脚本验证（见文件头注释）。
+import { resolveThreadStatus } from '../utils/thread-status'
 
 export interface TreeNode {
   thread: Thread
   level: number
   children: TreeNode[]
 }
-
-export type ThreadStatus = 'running' | 'waiting' | 'failed' | 'completed' | 'idle'
 
 interface SidebarProps {
   threads: Thread[]
@@ -74,126 +75,6 @@ function parseSubagentTitle(rawTitle?: string): { role?: string; cleanTitle: str
     }
   }
   return { cleanTitle: title }
-}
-
-/** 解析并计算会话（包括子智能体）的当前执行状态 */
-export function resolveThreadStatus(
-  thread: Thread,
-  allThreadMap: Map<string, Thread>,
-  runningThreadIds: string[]
-): { status: ThreadStatus; label: string } {
-  const items = thread.items || []
-
-  // 1. **等待用户操作优先于"执行中"**：审批/提问等待时，轮次仍在跑（runningThreadIds 里
-  //    也有它），早先把 running 判在前面，于是标签页一直显示"执行中"——用户根本不知道
-  //    有东西在等他（实测一条审批请求就这样静默等了 5 分钟超时被拒）。
-  const hasAwaitingItem = items.some(
-    (it) =>
-      it.status === 'waiting_approval' ||
-      it.status === 'awaiting' ||
-      it.state === 'waiting_approval' ||
-      it.state === 'awaiting'
-  )
-  if (hasAwaitingItem) {
-    return { status: 'waiting', label: '等待审批' }
-  }
-
-  // 2. 全局运行集合判定
-  if (runningThreadIds.includes(thread.id)) {
-    return { status: 'running', label: '执行中' }
-  }
-
-  // 3. 会话内部 items 的运行态
-  const hasRunningItem = items.some(
-    (it) => it.status === 'running' || it.state === 'running'
-  )
-  if (hasRunningItem) {
-    return { status: 'running', label: '执行中' }
-  }
-
-  // 3. 子智能体：关联检查父会话中的对应委派卡片状态
-  if (thread.parentId && allThreadMap.has(thread.parentId)) {
-    const parent = allThreadMap.get(thread.parentId)!
-    const parentItems = parent.items || []
-
-    const delegationItem = parentItems.find((it) => {
-      const name = it.name || it.tool
-      if (name !== 'invoke_subagent') return false
-
-      const details = it.details || {}
-      const args = (it.args as any) || {}
-      const subId =
-        details.subagent_thread_id ||
-        details.threadId ||
-        details.thread_id ||
-        args.thread_id ||
-        args.threadId
-      if (subId && subId === thread.id) return true
-
-      const role = args.subagent_id || args.role || details.subagent_id
-      if (role && (thread.subagentId === role || thread.title?.includes(role))) {
-        const itemTime = it.startedAt || it.createdAt || 0
-        const threadTime = thread.createdAt || 0
-        if (Math.abs(itemTime - threadTime) < 30 * 60 * 1000) {
-          return true
-        }
-      }
-      return false
-    })
-
-    if (delegationItem) {
-      const toolStatus = (delegationItem.status || delegationItem.state) as string | undefined
-      if (toolStatus === 'running') {
-        return { status: 'running', label: '执行中' }
-      }
-      if (toolStatus === 'waiting_approval' || toolStatus === 'awaiting') {
-        return { status: 'waiting', label: '等待审批' }
-      }
-      if (
-        toolStatus === 'failed' ||
-        toolStatus === 'error' ||
-        Boolean(delegationItem.error) ||
-        (delegationItem.result as any)?.ok === false
-      ) {
-        return { status: 'failed', label: '执行失败' }
-      }
-      if (
-        toolStatus === 'done' ||
-        toolStatus === 'success' ||
-        (delegationItem.result as any)?.ok === true
-      ) {
-        return { status: 'completed', label: '执行完成' }
-      }
-    }
-  }
-
-  // 4. 检查自身 items 的终态
-  if (items.length > 0) {
-    const lastItem = items[items.length - 1]
-    const lastStatus = lastItem.status || lastItem.state
-    const hasFatalError =
-      lastStatus === 'failed' ||
-      lastStatus === 'error' ||
-      lastStatus === 'denied' ||
-      Boolean(lastItem.error)
-
-    if (hasFatalError) {
-      return { status: 'failed', label: '执行失败' }
-    }
-
-    const recentToolError = items.slice(-3).some((it) => {
-      const s = it.status || it.state
-      return s === 'failed' || s === 'error' || Boolean(it.error)
-    })
-    if (recentToolError && lastItem.role !== 'assistant') {
-      return { status: 'failed', label: '执行失败' }
-    }
-
-    return { status: 'completed', label: '执行完成' }
-  }
-
-  // 5. 空会话
-  return { status: 'idle', label: '就绪' }
 }
 
 /** 递归搜索过滤树节点 */

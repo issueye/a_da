@@ -139,4 +139,51 @@ mod tests {
         };
         assert!(err.contains("重复提供"), "错误信息要说明原因：{err}");
     }
+
+    /// 守门测试：通过工具包装配的所有工具实例，其描述符必须与 registry.rs 中的单一真源完全一致（INV-3）。
+    #[test]
+    fn test_all_instantiated_tools_match_registry_descriptors_exactly() {
+        let names: Vec<String> = TOOLKIT_NAMES.iter().map(|s| s.to_string()).collect();
+        let tools = tools_for_toolkits(&names, ws()).expect("全部工具包必须能装配");
+        assert!(!tools.is_empty(), "装配出的工具集不能为空");
+
+        for tool in &tools {
+            let desc = tool.descriptor();
+            let registered = crate::registry::find_tool_descriptor(&desc.name)
+                .unwrap_or_else(|| panic!("工具 `{}` 实例化的描述符未在 registry.rs 注册", desc.name));
+
+            assert_eq!(
+                desc.name, registered.name,
+                "工具 `{}` name 不匹配", desc.name
+            );
+            assert_eq!(
+                desc.summary, registered.summary,
+                "工具 `{}` summary 不匹配", desc.name
+            );
+            assert_eq!(
+                desc.schema, registered.schema,
+                "工具 `{}` schema 不匹配", desc.name
+            );
+            assert_eq!(
+                desc.access, registered.access,
+                "工具 `{}` access 语义不匹配", desc.name
+            );
+            assert_eq!(
+                desc.approval, registered.approval,
+                "工具 `{}` approval 策略不匹配", desc.name
+            );
+            assert_eq!(
+                desc.rollback, registered.rollback,
+                "工具 `{}` rollback 策略不匹配", desc.name
+            );
+            assert_eq!(
+                desc.execution, registered.execution,
+                "工具 `{}` execution 模式不匹配", desc.name
+            );
+            assert_eq!(
+                desc.termination, registered.termination,
+                "工具 `{}` termination 语义不匹配", desc.name
+            );
+        }
+    }
 }

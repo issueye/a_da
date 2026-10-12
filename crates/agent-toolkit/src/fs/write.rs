@@ -1,11 +1,7 @@
 use std::path::PathBuf;
 
-use agent_base::domain::{
-    Access, ApprovalPolicy, Execution, PathSelector, RollbackPolicy, Termination, ToolCall,
-    ToolDescriptor, ToolReceipt, ToolStatus,
-};
+use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt, ToolStatus};
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
-use serde_json::json;
 
 use crate::fs_tools::write_file;
 
@@ -17,34 +13,12 @@ pub struct WriteFileTool {
 
 impl WriteFileTool {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "要写入的目标文件相对路径"
-                },
-                "content": {
-                    "type": "string",
-                    "description": "要写入的完整文本内容"
-                }
-            },
-            "required": ["path", "content"]
-        });
+        let descriptor = crate::registry::find_tool_descriptor("write_file")
+            .expect("`write_file` 必须在 ToolDescriptor 注册表里（INV-3）")
+            .clone();
 
         Self {
-            descriptor: ToolDescriptor {
-                name: "write_file".to_string(),
-                summary: "在工作区内全量覆写指定文件，若文件不存在则自动创建。".to_string(),
-                schema,
-                access: Access::Mutates {
-                    paths: PathSelector::Single("path"),
-                },
-                approval: ApprovalPolicy::Named("approval-guard"),
-                rollback: RollbackPolicy::SingleTarget,
-                execution: Execution::Sequential,
-                termination: Termination::ContinueTurn,
-            },
+            descriptor,
             workspace: workspace.into(),
         }
     }

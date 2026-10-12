@@ -191,17 +191,59 @@ impl EventSink for LoopEventBridge {
     }
 }
 
-/// 用真引擎跑一轮，并把事件桥接回界面事件通道。
+/// 直接通道事件出口（保持 INV-6 的 seq 递增审计）。
+pub struct DirectEventSink {
+    tx: mpsc::Sender<AgentEvent>,
+    last_seq: AtomicU64,
+    seq_violations: Mutex<Vec<String>>,
+}
+
+impl DirectEventSink {
+    pub fn new(tx: mpsc::Sender<AgentEvent>) -> Self {
+        Self {
+            tx,
+            last_seq: AtomicU64::new(0),
+            seq_violations: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn seq_violations(&self) -> Vec<String> {
+        self.seq_violations.lock().expect("违约账本锁中毒").clone()
+    }
+}
+
+impl EventSink for DirectEventSink {
+    fn emit(&self, event: AgentEvent) {
+        let prev = self.last_seq.load(Ordering::Relaxed);
+        if event.seq <= prev {
+            self.seq_violations
+                .lock()
+                .expect("违约账本锁中毒")
+                .push(format!(
+                    "事件 seq 未严格递增：thread={} prev={} current={} kind={}",
+                    event.thread_id,
+                    prev,
+                    event.seq,
+                    event.body.kind()
+                ));
+        } else {
+            self.last_seq.store(event.seq, Ordering::Relaxed);
+        }
+        let _ = self.tx.try_send(event);
+    }
+}
+
+/// 用真引擎跑一轮，并把领域事件送入通道。
 pub async fn run_turn_with_engine(
     engine: Arc<AgentRuntime>,
     thread_id: &str,
     user_prompt: Option<&str>,
     provider_config: ProviderConfig,
     context_window: Option<u64>,
-    event_tx: mpsc::Sender<AgentLoopEvent>,
+    event_tx: mpsc::Sender<AgentEvent>,
     abort_rx: Option<watch::Receiver<bool>>,
 ) -> anyhow::Result<()> {
-    let bridge = LoopEventBridge::new(event_tx);
+    let sink = DirectEventSink::new(event_tx);
     let cancel = match abort_rx {
         Some(rx) => WatchedCancel::new(rx),
         None => WatchedCancel::never(),
@@ -214,26 +256,27 @@ pub async fn run_turn_with_engine(
         }
     }
 
-    let outcome = engine.run_turn(req, &bridge, &cancel).await;
+    let outcome = engine.run_turn(req, &sink, &cancel).await;
 
     // seq 违约不吞：如实打日志（INV-6 的诊断口径）
-    for v in bridge.seq_violations() {
+    for v in sink.seq_violations() {
         warn!("{}", v);
     }
 
     match outcome {
-        Ok(o) => {
-            // 上下文撞顶：投影成**专门的事件**，调度层据此自动压缩并续跑
-            if let TurnStopReason::ContextWindowExceeded { prompt_tokens, window } = o.stop_reason {
-                let _ = bridge
-                    .tx
-                    .try_send(AgentLoopEvent::ContextWindowExceeded { prompt_tokens, window });
-            }
-            Ok(())
-        }
+        Ok(_) => Ok(()),
         Err(e) => {
-            // 引擎错误也要变成 UI 可见的事件，而不是静默消失
-            let _ = bridge.tx.try_send(AgentLoopEvent::Error { message: e.to_string() });
+            // 引擎错误也要变成通道可见的事件，而不是静默消失
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            let _ = sink.tx.try_send(AgentEvent::new(
+                0,
+                now,
+                thread_id,
+                AgentEventBody::Failed { message: e.to_string() },
+            ));
             Err(anyhow::anyhow!("引擎执行失败：{e}"))
         }
     }
@@ -249,7 +292,7 @@ pub async fn run_agent_turn(
     user_prompt: Option<&str>,
     provider_config: ProviderConfig,
     context_window: Option<u64>,
-    event_tx: mpsc::Sender<AgentLoopEvent>,
+    event_tx: mpsc::Sender<AgentEvent>,
     abort_rx: Option<watch::Receiver<bool>>,
 ) -> anyhow::Result<()> {
     let engine = engine.ok_or(EngineError::EngineNotInjected)?;
@@ -416,7 +459,7 @@ mod tests {
     /// 界面就会永远停在"运行中"而没有任何报错——比直接失败难查得多。
     #[tokio::test]
     async fn test_missing_engine_is_a_hard_error() {
-        let (tx, _rx) = mpsc::channel::<AgentLoopEvent>(8);
+        let (tx, _rx) = mpsc::channel::<AgentEvent>(8);
         let err = run_agent_turn(
             None,
             "t_no_engine",
@@ -446,7 +489,7 @@ mod tests {
         );
     }
 
-    /// W3-T4 出口判据：**真引擎实跑一轮**，领域事件被桥成界面事件。
+    /// W3-T4 出口判据：**真引擎实跑一轮**，领域事件直接进入通道。
     ///
     /// （W3-T2 时期这条测试用 `run_agent_turn_with(EngineChoice::Runtime, ...)`；
     /// 开关删除后直接走唯一路径 `run_turn_with_engine`。）
@@ -479,7 +522,7 @@ mod tests {
                 .expect("装配真引擎"),
         );
 
-        let (tx, mut rx) = mpsc::channel::<AgentLoopEvent>(64);
+        let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
         run_turn_with_engine(
             runtime,
             "t_switch",
@@ -504,21 +547,10 @@ mod tests {
 
         let mut kinds = Vec::new();
         while let Ok(ev) = rx.try_recv() {
-            kinds.push(match ev {
-                AgentLoopEvent::TextDelta { .. } => "text",
-                AgentLoopEvent::Thinking { .. } => "thinking",
-                AgentLoopEvent::TurnFinished { .. } => "finished",
-                AgentLoopEvent::AssistantStats { .. } => "stats",
-                AgentLoopEvent::ContextWindowExceeded { .. } => "context.window.exceeded",
-                AgentLoopEvent::ToolCallStarted { .. } => "tool_start",
-                AgentLoopEvent::ToolCallFinished { .. } => "tool_finish",
-                AgentLoopEvent::ToolAwaitingQuestion { .. } => "question",
-                AgentLoopEvent::ApprovalRequested { .. } => "approval",
-                AgentLoopEvent::Error { .. } => "error",
-            });
+            kinds.push(ev.body.kind().to_string());
         }
-        assert!(kinds.contains(&"text"), "脚本化模型的文本必须桥过来：{kinds:?}");
-        assert!(kinds.contains(&"finished"), "收尾事件必须桥过来：{kinds:?}");
+        assert!(kinds.iter().any(|k| k == "text.delta"), "脚本化模型的文本必须进入事件流：{kinds:?}");
+        assert!(kinds.iter().any(|k| k == "turn.finished"), "收尾事件必须进入事件流：{kinds:?}");
     }
 
     /// W3-T3 守门：投影表必须**覆盖全部 12 种领域事件**，且每种只出现一次。
@@ -691,7 +723,7 @@ mod tests {
                 .expect("装配真引擎"),
         );
 
-        let (tx, mut rx) = mpsc::channel::<AgentLoopEvent>(64);
+        let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
 
         let handle = tokio::spawn(async move {
             run_turn_with_engine(
@@ -716,13 +748,16 @@ mod tests {
             .await
         });
 
-        // 1. 审批请求必须到达界面通道
+        // 1. 审批请求必须到达通道
         let call_id = tokio::time::timeout(Duration::from_secs(3), async {
             loop {
                 match rx.recv().await {
-                    Some(AgentLoopEvent::ApprovalRequested { id, tool }) => {
+                    Some(AgentEvent {
+                        body: AgentEventBody::ApprovalRequested { call_id, tool },
+                        ..
+                    }) => {
                         assert_eq!(tool, "gated_tool", "审批事件必须带工具名");
-                        return id;
+                        return call_id;
                     }
                     Some(_) => continue,
                     None => panic!("事件通道关闭，但从未收到审批请求（P1-14 症状）"),
@@ -730,7 +765,7 @@ mod tests {
             }
         })
         .await
-        .expect("审批请求必须到达界面通道——这正是 P1-14 要修的");
+        .expect("审批请求必须到达通道——这正是 P1-14 要修的");
 
         // 2. 界面点"批准"（等价于 `approval.decide` 落到同一个 manager 上）
         assert!(
@@ -748,14 +783,34 @@ mod tests {
         let mut saw_finished = false;
         let mut saw_tool_finish = false;
         while let Ok(ev) = rx.try_recv() {
-            match ev {
-                AgentLoopEvent::TurnFinished { .. } => saw_finished = true,
-                AgentLoopEvent::ToolCallFinished { .. } => saw_tool_finish = true,
+            match ev.body {
+                AgentEventBody::TurnFinished { .. } => saw_finished = true,
+                AgentEventBody::ToolCallFinished { .. } => saw_tool_finish = true,
                 _ => {}
             }
         }
         assert!(saw_tool_finish, "批准后工具应真的执行完");
         assert!(saw_finished, "批准后应正常收尾");
+    }
+
+    #[tokio::test]
+    async fn test_direct_sink_forwards_events_and_reports_seq_violations() {
+        let (tx, mut rx) = mpsc::channel::<AgentEvent>(16);
+        let sink = DirectEventSink::new(tx);
+
+        sink.emit(ev(1, AgentEventBody::TextDelta { text: "a".into() }));
+        sink.emit(ev(2, AgentEventBody::TextDelta { text: "b".into() }));
+        // seq 违约：重复 2
+        sink.emit(ev(2, AgentEventBody::TextDelta { text: "c".into() }));
+
+        assert_eq!(sink.seq_violations().len(), 1, "重复 seq 必须被记账");
+
+        let first = rx.recv().await.expect("第 1 条");
+        assert_eq!(first.seq, 1);
+        let second = rx.recv().await.expect("第 2 条");
+        assert_eq!(second.seq, 2);
+        let third = rx.recv().await.expect("第 3 条");
+        assert_eq!(third.seq, 2);
     }
 
     fn switch_spec() -> agent_runtime::AgentSpec {

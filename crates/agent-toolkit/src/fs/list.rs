@@ -1,11 +1,7 @@
 use std::path::PathBuf;
 
-use agent_base::domain::{
-    Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
-    ToolReceipt, ToolStatus,
-};
+use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt, ToolStatus};
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
-use serde_json::json;
 
 use crate::fs_tools::list_files;
 
@@ -17,31 +13,12 @@ pub struct ListFilesTool {
 
 impl ListFilesTool {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "要列出的目录相对路径（默认为工作区根目录）"
-                },
-                "depth": {
-                    "type": "integer",
-                    "description": "遍历最大深度（默认 3 层）"
-                }
-            }
-        });
+        let descriptor = crate::registry::find_tool_descriptor("list_files")
+            .expect("`list_files` 必须在 ToolDescriptor 注册表里（INV-3）")
+            .clone();
 
         Self {
-            descriptor: ToolDescriptor {
-                name: "list_files".to_string(),
-                summary: "按层级列出工作区目录树中的文件与文件夹结构。".to_string(),
-                schema,
-                access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
-                rollback: RollbackPolicy::None,
-                execution: Execution::ParallelSafe,
-                termination: Termination::ContinueTurn,
-            },
+            descriptor,
             workspace: workspace.into(),
         }
     }
