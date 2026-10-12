@@ -219,7 +219,32 @@ async fn test_token_scope_blocks_other_workspace() {
     let auth = AuthConfig::from_args(&[format!("t1={mine_s}")], &[]).unwrap();
     let (gw, port) = gateway_with(auth).await;
 
-    // 自己的作用域：通过（会尝试拉起 agent，失败也不影响"作用域检查通过"这个结论）
+    // 先给 `mine` 预登记一个**桩实例**：本测试验的是**作用域判定**，不需要真产品。
+    //
+    // 不预登记的后果（实测踩到）：网关会为 `mine` 真的拉起一个 `ada-coding` 子进程，
+    // 而网关刻意不回收它（`supervisor.rs` 把句柄交给守护协程只 `wait()`，孤儿靠子进程的
+    // 父进程看门狗兜底）。`#[tokio::test]` 的运行时收尾会等进程管道 reader 结束——子进程活着
+    // 管道就开着，于是**测试体 1.4 秒跑完、之后一直卡住**（实测卡 40+ 分钟；手动杀掉子进程
+    // 后立刻通过）。桩实例让 `ensure_agent` 直接复用，从根上不拉真进程。
+    let stub_endpoint = gw
+        .registry
+        .list()
+        .first()
+        .map(|i| i.endpoint.clone())
+        .unwrap_or_default();
+    let mine_norm = agent_gateway::normalize_workspace(&mine_s);
+    gw.registry.register(agent_gateway::registry::AgentInstance {
+        id: agent_gateway::AgentRegistry::id_for_workspace("ada-coding", &mine_norm),
+        product: "ada-coding".to_string(),
+        workspace: mine_norm.to_string_lossy().to_string(),
+        endpoint: stub_endpoint,
+        status: agent_gateway::registry::AgentStatus::Ready,
+        pid: None,
+        started_at: 1,
+        products: vec!["ada-coding".to_string()],
+    });
+
+    // 自己的作用域：通过
     let mine_q = format!("?token=t1&workspace={}", urlencode(&mine_s));
     let _ = connect(port, &mine_q, None).await;
 
