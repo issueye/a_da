@@ -485,7 +485,10 @@ pub fn run(config: LauncherConfig) {
                                     .unwrap_or_default()
                                     .as_secs();
                                 let corrupt_bak = local_data.join(format!("EBWebView_corrupt_{ts}"));
-                                let _ = std::fs::rename(&eb_dir, &corrupt_bak);
+                                if let Err(rename_err) = std::fs::rename(&eb_dir, &corrupt_bak) {
+                                    warn!("重命名旧 EBWebView 目录失败 ({rename_err})，尝试直接清理...");
+                                    let _ = std::fs::remove_dir_all(&eb_dir);
+                                }
                             }
                         }
                     }
@@ -503,16 +506,19 @@ pub fn run(config: LauncherConfig) {
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
                                 .as_secs();
-                            let fallback_dir = app.path().app_local_data_dir()
-                                .unwrap_or_else(|_| std::env::temp_dir())
-                                .join(format!("EBWebView_isolated_{ts}"));
+                            // 防御：若 local_data 目录本身有权限污染（如被管理员提权创建），
+                            // 备用目录必须退避至系统临时目录，确保属于当前普通用户、拥有完全读写控制权限。
+                            let fallback_dir = std::env::temp_dir()
+                                .join(format!("a_da_webview_isolated_{ts}"));
                             let _ = std::fs::create_dir_all(&fallback_dir);
 
                             let fallback_builder = tauri::WebviewWindowBuilder::from_config(app.handle(), win_cfg)
                                 .map_err(|e| format!("{e}"))?
                                 .data_directory(fallback_dir);
 
-                            fallback_builder.build().map_err(|e| format!("备用目录创建窗口失败: {e}"))?;
+                            fallback_builder.build().map_err(|e| {
+                                format!("创建主窗口失败 (初次: {err}; 重试: {retry_err}; 备用隔离目录: {e})")
+                            })?;
                         }
                         #[cfg(not(windows))]
                         {
