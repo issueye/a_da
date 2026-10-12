@@ -17,6 +17,15 @@ agent_core/target/
 
 tauri-ui/bun.lock
 
+# 根目录的包管理器锁文件：本地生成物，不入库。
+# 仓库**真正跟踪**的锁文件只有三个：`Cargo.lock`、`src-tauri/Cargo.lock`、
+# `tauri-ui/package-lock.json`（前端依赖锁在 tauri-ui 里）。
+# 下面两条**锚定根目录**，不要写成不带 `/` 的 `package-lock.json`——那会把
+# tauri-ui 那份一起忽略掉。
+/bun.lock
+/bun.lockb
+/package-lock.json
+
 # 用户本地配置临时目录
 .a-da/
 
