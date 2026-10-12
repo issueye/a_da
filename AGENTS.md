@@ -20,11 +20,13 @@
 ## 开发与验证
 
 ```bash
-cargo build --workspace     # 基座四 crate + agent-node + agent-rpc + 产品 + tauri 宿主
-cargo test --workspace -- --test-threads=1   # 门二（必须串行：有共享全局态的用例）
-bun run typecheck           # 门一：tauri-ui 的 tsc --noEmit
-bun run verify:archive      # 归档门：主干不得引用 archive/、不得有第二份引擎
-bun run tauri:dev           # 桌面客户端开发（前端热重载 + 宿主）
+cargo build --workspace                       # 基座四 crate + agent-node + agent-rpc + 产品 + tauri 宿主
+cargo test --workspace -- --test-threads=1     # 门二（必须串行：有共享全局态的用例）
+bun run typecheck                             # 门一：tauri-ui 的 tsc --noEmit
+bun run verify:archive                        # 归档门：主干不得引用 archive/、不得有第二份引擎
+cargo xtask verify-wiring                     # 接线门：方法覆盖 / 描述符单源 / 端口实现 / 依赖方向
+cargo xtask verify-spec                       # 声明门：产品/预设 spec 校验
+bun run tauri:dev                             # 桌面客户端开发（前端热重载 + 宿主）
 ```
 
 - **`typecheck` 与 `cargo test` 是两个独立的门，两个都要过**，别只跑一个。
@@ -38,6 +40,7 @@ bun run tauri:dev           # 桌面客户端开发（前端热重载 + 宿主�
   **这是环境限制，不是代码缺陷**——单独编译失败的 crate 能过、重跑也能过。
 - 本机 `cargo` 默认 target 目录编译 `ring` 会报 MSVC `D8050`；加上
   `CARGO_TARGET_DIR=../cargo_target_ada` 复用已有缓存即可（与代码无关）。
+- **工具链环境**：现行版本为 **Rust 1.99.0 / Cargo 1.99.0 / Rustup 1.29.1**（MSVC）。
 - **Rust 测试不再写用户真实的 `~/.a-da`**：`agent_node::session::app_home()` 在 `cfg(test)` 下指向
   `temp/a_da_agent_core_test_home_<pid>`（端口化后的默认值）。要自己控制目录就用
   `AgentStore::with_home(workspace, &TempAppHome::at(dir))` 注入，**不要用 `std::env::set_var`**
@@ -51,9 +54,9 @@ bun run tauri:dev           # 桌面客户端开发（前端热重载 + 宿主�
 - `crates/agent-base` 基座内核（零 IO、零产品名词）：`model/`（模型面类型）、`domain/`（消息·工具描述符与回执·事件·错误与失败方向）、`ports/`（11 个端口，**无默认实现**）、`engine/`（**唯一**多轮循环 `run_turn`）、`testing/`（FixedClock/RecordingSink/TempAppHome）
 - `crates/agent-proto` 线协议：JSON-RPC 帧、方法常量、线上 DTO、错误码
 - `crates/agent-adapter` 适配器：`model/`（三家协议 SSE + 中止）、`app_home.rs`（**全仓唯一**读 `A_DA_HOME`/`USERPROFILE` 的地方）、`clock.rs`（**全仓唯一**读系统时间的地方）
-- `crates/agent-toolkit` 工具包：文件读写、路径沙箱、命令执行、文本 diff、决策与门禁判定；`registry.rs` 是**工具元数据单一真源**
-- **`crates/agent-node`（S4 拆出，5.9k 行 / 36 文件）** —— 节点：`session` / `approval` / `checkpoint` / `subagents`（含 `agent_bus.rs` 委派总线端口与 `local_bus.rs` 本地实现；端口支持**多轮续跑** `thread_id`，本地总线对它是**如实拒绝**——一次性子智能体没有可续线程）/ `plugins` / `skills` / `node_config.rs`（节点配置端口）/ `delegation_depth.rs`（委派深度端口：被派活的节点靠它知道自己「在第几层」）。**不含协议管道**（不依赖 `tokio-tungstenite`）、**不含 UI 投影**（不依赖 `AgentStore`）。`AgentBus` 的网关实现（`GatewayAgentBus`）在 **`agent-rpc`**——跨进程委派需要 WS 客户端，那属于桥接面，节点只保留端口
-- **`crates/agent-rpc`（S4 拆出，5.3k 行 / 18 文件）** —— 桥接面：`server/`（`dispatch.rs` 72 个方法的 JSON-RPC 分发、`ws.rs` 宿主、`emitter.rs` 快照合帧、`fs_service.rs`）、`state/`（`AgentStore`，**给界面看的投影**）、`runner/`（引擎调用 + `AgentEvent` → `AgentLoopEvent` 投影）。**依赖方向单向：`agent-rpc → agent-node`**
+- `crates/agent-toolkit` 工具包：文件读写、路径沙箱、命令执行、文本 diff、决策与门禁判定；`registry.rs` 是**工具元数据与描述符单一真源**
+- **`crates/agent-node`（S4 拆出，5.9k 行 / 34 文件）** —— 节点：`session` / `approval` / `checkpoint` / `subagents`（含 `agent_bus.rs` 委派总线端口与 `local_bus.rs` 本地实现；端口支持**多轮续跑** `thread_id`，本地总线对它是**如实拒绝**——一次性子智能体没有可续线程）/ `plugins` / `skills` / `node_config.rs`（节点配置端口）/ `delegation_depth.rs`（委派深度端口：被派活的节点靠它知道自己「在第几层」）。**不含协议管道**（不依赖 `tokio-tungstenite`）、**不含 UI 投影**（不依赖 `AgentStore`）。`AgentBus` 的网关实现（`GatewayAgentBus`）在 **`agent-rpc`**——跨进程委派需要 WS 客户端，那属于桥接面，节点只保留端口
+- **`crates/agent-rpc`（S4 拆出，5.3k 行 / 18 文件）** —— 桥接面：`server/`（`dispatch.rs` 72 个方法的 JSON-RPC 分发、`ws.rs` 宿主、`emitter.rs` 快照合帧、`fs_service.rs`）、`state/`（`AgentStore`，**给界面看的投影**）、`runner/`（引擎调用 + 基座一等事件 `AgentEventBody` 直连投影至 UI store，废除中间桥接 `AgentLoopEvent`）。**依赖方向单向：`agent-rpc → agent-node`**
 - **`crates/agent-gateway`（S5 新建）** —— a-da 网关，三合一：**AGENT 管理平台**（`registry.rs` 实例注册表 / `supervisor.rs` 生命周期）+ **交互平台**（S6：`delegate.rs` 派活/**多轮续跑**/取消跨网关）+ **桥接平台**（`relay.rs` 路由与透传）+ **WEB 接入面**（S7：`auth.rs` token/作用域/Origin/**配对码**）。二进制 `ada-gateway`（打印 `A_DA_GATEWAY_READY {port}`）。**只依赖线协议 `agent-proto`**——不含引擎（INV-1）、不缓存会话状态（INV-8），由 `verify-wiring` check J 守着。🔴 **非回环 `--host` 必须配 `--token`，且必须显式 `--allow-plaintext`**（网关只提供明文 `ws://`，明文上的 token 可嗅探；反代终止 TLS 时由人确认）。两条都**拒绝启动**而不是警告——失败安全
 - `crates/ts-engine` 插件运行时（Boa + oxc）；插件契约见 [docs/plugin-sdk/v1.md](docs/plugin-sdk/v1.md)
 - `products/ada-coding` 产品二进制（`--host/--port/--token/--parent-pid/--workspace`）
@@ -66,19 +69,22 @@ bun run tauri:dev           # 桌面客户端开发（前端热重载 + 宿主�
   模式预设同样受 `verify-spec` 门禁约束（`products/<产品>/modes/*.agent.spec.json` 也在扫描范围内）。
 - 所有内部调用点直连基座（`agent-proto` / `agent-toolkit` / `agent-base` / `agent-adapter`），历史 shim 与 facade 已全量下线
 - 端口已接线处：`session::{app_home,set_app_home,get_app_home,get_config_path}`、`state::{clock,set_clock,now_millis}`、`AgentStore::with_home`（单元测试默认 home 在临时目录，不再碰用户真实 `~/.a-da`）
-- `src-tauri` Tauri 宿主（同进程起核心服务）；`tauri-ui` React 前端（`src/client/ws-client.ts` 是协议客户端）
+- `src-tauri` Tauri 桌面宿主（同进程起核心服务或拉起网关）；`tauri-ui` React 前端（`src/client/ws-client.ts` 是协议客户端）
+- `dist/` **发布交付套件**：包含 `ada-tauri.exe`、`ada-gateway.exe`、`ada-coding.exe`，网关模式下桌面端与各子进程版本强协同，必须**同步出包**。Windows 下 WebView2 数据目录如遇管理员权限污染（os error 5），具备自愈退避机制（隔离重定向至 `%TEMP%`）
 - `archive/ts-legacy` **只读归档**（TS 时代的 src + scripts + app.tsx）
 
-## 三条会立刻绊倒你的规矩
+## 核心红线与防踩坑规矩
 
 - **不许引用归档**：主干任何代码/配置都不得 import 或指向 `archive/ts-legacy/**`——那会把"两份实现"的漂移重新引进来；`bun run verify:archive` 会红。
 - **改 Rust 核心前先看 [docs/agent-base-plan.md](docs/agent-base-plan.md) §1.3**：审批闸门、取消贯穿、`terminate`、插件 `enabled`、空壳工具等**目前多数是"看起来装上了、其实没接线"**，那里逐条写明了处置口径（补实现 / 删声明）。
-- **工具元数据已收敛为 `ToolDescriptor` 单一真源**（W2-T2 完成）：读写性（`is_write`）、审批要求、
-  检查点回滚策略（`rollback`）、终止语义都在 `crates/agent-toolkit/src/registry.rs`；
-  `is_write_tool` / `is_readonly_tool` 由它派生，`PLUGIN_BUILTIN_CATALOG` 也由它派生
-  （`cargo xtask verify-wiring` 的 check B/C 盯着"派生"这件事）。
+- **工具描述符与元数据单一真源**（W2-T2 + 单源化收敛）：读写性（`is_write`）、审批要求、
+  检查点回滚策略（`rollback`）、终止语义，以及全部 24 个内置工具的标准描述符与参数 Schema，
+  均收敛于 `crates/agent-toolkit/src/registry.rs`；具体实现统一调用 `descriptor()` 构造，严禁内联手写；
+  `test_builtins_descriptor_equality` 契约测试（INV-3）机械守门。
   历史上那五处手写名单（`lib.rs` 读写判定、`approval/types.rs` 命令工具、`executor.rs` 检查点、
   子智能体白名单、插件自述 `is_write`）**只剩插件自述一处**，且已改为按描述符校验。
+- **事件流单一真源**：引擎多轮循环向外发射基座一等事件 `AgentEventBody`（12 个变体），
+  `agent-rpc` 桥接层直接订阅并投影到 UI，严禁在桥接层私造二等中间事件流（历史 `AgentLoopEvent` 已废除）。
 
 ## § 索引（`AGENTS.md §N` 一律指下表第 N 条，正文见 docs/agent-conventions.md）
 
