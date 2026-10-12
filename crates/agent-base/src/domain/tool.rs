@@ -129,6 +129,13 @@ impl ToolReceipt {
         Self::new(ToolStatus::Aborted, output, started_at, finished_at)
     }
 
+    /// 因**运行策略超时**而中止（工具没能自己收尾，引擎放弃等待）。
+    ///
+    /// 与工具自己报的 `error` 区分开：这条意味着"不是工具说失败了，是它根本没回来"。
+    pub fn timeout(output: impl Into<String>, started_at: i64, finished_at: i64) -> Self {
+        Self::new(ToolStatus::Timeout, output, started_at, finished_at)
+    }
+
     /// 耗时由起止时间派生——**不存在**"duration 字段没填"这种状态。
     pub fn duration_ms(&self) -> u64 {
         (self.finished_at - self.started_at).max(0) as u64

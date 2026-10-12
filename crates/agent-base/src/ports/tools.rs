@@ -28,6 +28,19 @@ pub trait Tool: Send + Sync {
 
     /// 执行一次调用。**返回 [`ToolReceipt`] 而不是字符串**（INV-5）。
     fn execute<'a>(&'a self, call: &'a ToolCall, ctx: &'a ToolContext<'a>) -> BoxFuture<'a, ToolReceipt>;
+
+    /// 这个工具是否会**合法地**长时间运行 / 阻塞等待外部输入？
+    ///
+    /// 引擎的策略超时（[`crate::engine::RunPolicy::tool_timeout`]）对 `true` 的工具**不生效**：
+    /// 审批、提问要等用户（上限 30 分钟），派活要等子智能体跑完，命令执行自带超时
+    /// （最长 10 分钟）——拿策略超时（120 秒）去掐它们，只会把"正常的长任务/等用户点一下"
+    /// 变成一次假失败。
+    ///
+    /// 默认 `false` = 受策略超时约束。**哪些工具该是 `true` 由注册表钉死**
+    /// （`agent_toolkit::registry::LONG_RUNNING_TOOLS` + 契约测试），这里只是各自的声明口。
+    fn long_running(&self) -> bool {
+        false
+    }
 }
 
 /// 工具消费侧：注册表要保证**每一个工具在每一侧都被正确分类**。

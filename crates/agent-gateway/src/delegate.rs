@@ -676,6 +676,7 @@ mod tests {
             pid: None,
             started_at: 0,
             products: vec!["ada-coding".to_string()],
+            last_active_ms: 1,
         };
         let err = f
             .block_on(delegate(&inst, "t", "d1", 0, None, Arc::new(AtomicBool::new(false)), reg, Duration::from_millis(10), None, None))
@@ -696,6 +697,7 @@ mod tests {
             pid: None,
             started_at: 0,
             products: vec!["ada-coding".to_string()],
+            last_active_ms: 1,
         };
         let err = f
             .block_on(delegate(&inst, "t", "d1", MAX_DELEGATION_DEPTH + 1, None, Arc::new(AtomicBool::new(false)), reg, Duration::from_millis(10), None, None))

@@ -722,7 +722,11 @@ const ToolCard: React.FC<{
   const toolStatus = item.state || item.status || 'done'
   const isAwaiting = toolStatus === 'waiting_approval' || toolStatus === 'awaiting'
   const isRunning = toolStatus === 'running'
-  const isError = toolStatus === 'failed' || toolStatus === 'error' || Boolean(item.error)
+  // `timeout` = 引擎不再等这个工具（策略超时切断）——必须当失败渲染，
+  // 否则界面上会显示"执行完成"，而实际上工具根本没跑完。
+  const isTimedOut = toolStatus === 'timeout'
+  const isError =
+    toolStatus === 'failed' || toolStatus === 'error' || isTimedOut || Boolean(item.error)
 
   // 解析工具返回的 JSON 结构化数据
   const structuredData = (() => {

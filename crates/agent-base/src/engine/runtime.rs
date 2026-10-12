@@ -510,7 +510,38 @@ impl AgentRuntime {
                                 thread_id: &thread_id,
                             };
 
-                            let receipt = tool.execute(&tool_call, &ctx).await;
+                            let exec_started = self.clock.now_ms();
+                            // 🔴 策略超时（`RunPolicy::tool_timeout`，产品声明里是 `toolTimeoutSec`）。
+                            //
+                            // 没有这一段，一个卡住的工具会把整轮**永远挂住**：界面上是
+                            // "工具卡片卡着 → 智能体停止"，用户完全看不出发生了什么。
+                            // 超时不杀工具内部的东西（那是各工具自己的事），而是**引擎不再等**
+                            // ——如实回一条 `Timeout` 回执，让模型换路子，整轮继续。
+                            //
+                            // `long_running()` 的工具（等用户/派活/命令执行）不受它约束：
+                            // 拿 120 秒去掐"等审批"和"跑长命令"只会制造假失败。
+                            let receipt = match self.policy.tool_timeout {
+                                Some(limit) if !tool.long_running() => {
+                                    match tokio::time::timeout(limit, tool.execute(&tool_call, &ctx)).await {
+                                        Ok(r) => r,
+                                        Err(_) => {
+                                            let now = self.clock.now_ms();
+                                            ToolReceipt::timeout(
+                                                format!(
+                                                    "工具 `{}` 超过 {} 秒没有返回，已停止等待。\
+                                                     不要原样重试同一调用：缩小范围、改成分步/后台执行，\
+                                                     或换一个工具。",
+                                                    raw_call.name,
+                                                    limit.as_secs()
+                                                ),
+                                                exec_started,
+                                                now,
+                                            )
+                                        }
+                                    }
+                                }
+                                _ => tool.execute(&tool_call, &ctx).await,
+                            };
 
                             self.emit(sink, &thread_id, AgentEventBody::ToolCallFinished {
                                 call_id: raw_call.id.clone(),
@@ -571,7 +602,8 @@ impl AgentRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Access, Execution, RollbackPolicy, ToolDescriptor};
+    use crate::domain::{Access, Execution, RollbackPolicy, ToolCall, ToolDescriptor};
+use crate::ports::{Tool, ToolContext};
     use crate::model::{ProviderConfig, ToolCallInfo};
     use crate::testing::*;
 
@@ -1243,8 +1275,7 @@ mod tests {
         assert_eq!(turn_finished_count, 1);
     }
 
-    /// **设置项 → 引擎 → 适配器**的契约：`TurnRequest::with_max_retries` 必须原样出现在
-    /// 模型请求的 `options.max_retries` 里（界面上的"请求重试次数"就是靠这条路生效的）。
+    /// **设置项 → 引擎 → 适配器**的契约：`TurnRequest::with_max_retries` 必须原样出现在    /// 模型请求的 `options.max_retries` 里（界面上的"请求重试次数"就是靠这条路生效的）。
     ///
     /// 不写这条就会出现"设置项存下来了、界面也显示 5，但真的发请求时还是写死的 3"——
     /// 正是本仓反复出现的"看起来装上了其实没接线"。
@@ -1308,6 +1339,149 @@ mod tests {
             model2.requests()[0].options.max_retries,
             Some(crate::model::DEFAULT_MODEL_RETRY_COUNT),
             "未设置时应当用默认重试次数"
+        );
+    }
+
+    /// 一个**永远不返回**的工具，必须被策略超时（`RunPolicy::tool_timeout`）切断，
+    /// 而不是把整轮永远挂住——这正是"工具卡住 → 智能体停止"那条症状的兜底。
+    struct HangingTool {
+        descriptor: ToolDescriptor,
+    }
+
+    impl Tool for HangingTool {
+        fn descriptor(&self) -> &ToolDescriptor {
+            &self.descriptor
+        }
+        fn execute<'a>(
+            &'a self,
+            _call: &'a ToolCall,
+            _ctx: &'a ToolContext<'a>,
+        ) -> crate::ports::BoxFuture<'a, ToolReceipt> {
+            Box::pin(async {
+                // 永不返回：没有引擎侧超时就等于整轮死等
+                std::future::pending::<()>().await;
+                unreachable!()
+            })
+        }
+    }
+
+    /// 声明"我合法地长时间运行"的工具必须**不受**策略超时约束。
+    struct LongRunningHangingTool {
+        descriptor: ToolDescriptor,
+    }
+
+    impl Tool for LongRunningHangingTool {
+        fn descriptor(&self) -> &ToolDescriptor {
+            &self.descriptor
+        }
+        fn long_running(&self) -> bool {
+            true
+        }
+        fn execute<'a>(
+            &'a self,
+            _call: &'a ToolCall,
+            _ctx: &'a ToolContext<'a>,
+        ) -> crate::ports::BoxFuture<'a, ToolReceipt> {
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                ToolReceipt::success("慢但合法", 0, 1)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tool_timeout_cuts_a_hanging_tool_and_turn_continues() {
+        let clock = Arc::new(FixedClock::new(1000));
+        let store = Arc::new(InMemorySessionStore::new());
+        let prompt = Arc::new(FixedPrompt::new("system prompt"));
+        let scope = Arc::new(MockScope::new("ws"));
+
+        let hang = Arc::new(HangingTool {
+            descriptor: make_test_descriptor(
+                "hang_tool",
+                ApprovalPolicy::Never,
+                Termination::ContinueTurn,
+            ),
+        });
+        // 一个"合法的慢工具"：同样耗时，但声明豁免 → 不该被超时掐掉
+        let slow = Arc::new(LongRunningHangingTool {
+            descriptor: make_test_descriptor(
+                "slow_tool",
+                ApprovalPolicy::Never,
+                Termination::ContinueTurn,
+            ),
+        });
+        let catalog = Arc::new(InMemoryToolCatalog::with_tools(vec![hang, slow]));
+        let model = Arc::new(ScriptedModelClient::new(vec![
+            vec![
+                StreamDelta::ToolCall {
+                    call: ToolCallInfo { id: "c1".into(), name: "hang_tool".into(), args: "{}".into() },
+                },
+                StreamDelta::ToolCall {
+                    call: ToolCallInfo { id: "c2".into(), name: "slow_tool".into(), args: "{}".into() },
+                },
+                StreamDelta::Done { stop_reason: "tool_calls".into() },
+            ],
+            vec![
+                StreamDelta::Text { text: "done".into() },
+                StreamDelta::Done { stop_reason: "stop".into() },
+            ],
+        ]));
+
+        let rt = AgentRuntime::new(
+            model,
+            catalog,
+            Arc::new(RecordingApprovalGate::new(true)),
+            store,
+            prompt,
+            scope,
+            clock,
+            RunPolicy {
+                max_steps: Some(3),
+                max_parallel_tools: 1,
+                tool_timeout: Some(std::time::Duration::from_millis(120)),
+            },
+        );
+
+        let sink = RecordingSink::new();
+        let started = std::time::Instant::now();
+        let outcome = rt
+            .run_turn(
+                TurnRequest::new("t_tool_timeout", mock_provider_config()).with_user_prompt("go"),
+                &sink,
+                &NeverCancel,
+            )
+            .await
+            .expect("超时必须被兜住，整轮照常收尾");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "挂住的工具必须被超时切断（实际用了 {elapsed:?}）"
+        );
+        assert_eq!(outcome.stop_reason, TurnStopReason::Completed, "超时后整轮应继续跑完");
+
+        let receipts: Vec<ToolReceipt> = sink
+            .snapshot()
+            .into_iter()
+            .filter_map(|e| match e.body {
+                AgentEventBody::ToolCallFinished { receipt, .. } => Some(receipt),
+                _ => None,
+            })
+            .collect();
+        let hang_receipt = receipts
+            .iter()
+            .find(|r| r.output.contains("超过"))
+            .expect("挂住的工具必须留下一条超时回执（否则界面只有一张永远转圈的卡片）");
+        assert_eq!(hang_receipt.status, ToolStatus::Timeout);
+        assert!(
+            hang_receipt.output.contains("hang_tool"),
+            "超时回执要说清是哪个工具：{}",
+            hang_receipt.output
+        );
+        assert!(
+            receipts.iter().any(|r| r.status == ToolStatus::Success && r.output.contains("慢但合法")),
+            "声明 long_running 的慢工具不该被策略超时掐掉"
         );
     }
 }

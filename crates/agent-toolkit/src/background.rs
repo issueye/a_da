@@ -117,6 +117,8 @@ impl BackgroundTasks {
         cmd.args(&shell_args)
             .current_dir(run_cwd)
             .env("A_DA_AGENT", "1")
+            // 同 `run_command`：空设备而不是继承 stdin——否则等输入的后台命令会永远挂着
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         #[cfg(windows)]

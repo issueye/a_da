@@ -34,6 +34,7 @@
 use std::sync::Arc;
 
 use agent_gateway::auth::{is_loopback, AuthConfig};
+use agent_gateway::supervisor::ReapPolicy;
 use agent_gateway::{relay::serve_client, Gateway};
 use tokio::net::TcpListener;
 use tracing::{info, warn};
@@ -108,6 +109,10 @@ async fn main() -> anyhow::Result<()> {
     let gateway = Arc::new(
         Gateway::new(args.product.clone(), workspace.clone()).with_auth(args.auth),
     );
+    // 组合根显式记一次默认工作区（构造 `Gateway` 本身不再有落盘副作用，见 `Gateway::new` 注释）
+    if !workspace.trim().is_empty() {
+        gateway.workspaces.record(&workspace, Some(&args.product));
+    }
 
     let listener = TcpListener::bind((args.host.as_str(), args.port)).await?;
     let port = listener.local_addr()?.port();
@@ -132,6 +137,42 @@ async fn main() -> anyhow::Result<()> {
         "a-da 网关就绪，监听 {}:{}（pid {}；{}）",
         args.host, port, pid, auth_summary
     );
+
+    // 实例回收：没有它，访问过 N 个工作区就常驻 N 个 ada-coding 进程。
+    // 策略可用环境变量微调（默认：空闲 15 分钟回收、最多 6 个实例、每分钟扫一次）
+    let policy = ReapPolicy {
+        idle_after: std::time::Duration::from_secs(
+            std::env::var("A_DA_GATEWAY_IDLE_REAP_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(15 * 60),
+        ),
+        max_live: std::env::var("A_DA_GATEWAY_MAX_LIVE_AGENTS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(6),
+        interval: std::time::Duration::from_secs(
+            std::env::var("A_DA_GATEWAY_REAP_INTERVAL_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(60),
+        ),
+        ..ReapPolicy::default()
+    };
+    gateway.spawn_reaper(policy);
+    info!(
+        "实例回收策略：空闲 {:?} 回收、同时在跑上限 {}、每 {:?} 扫一次",
+        policy.idle_after, policy.max_live, policy.interval
+    );
+    // 网关收到 Ctrl-C / 终止信号时，把自己拉起的 agent 一并收掉（不留孤儿进程）
+    let gateway_for_shutdown = gateway.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            let n = gateway_for_shutdown.registry.shutdown_all();
+            info!("网关收到退出信号，已请求关停 {n} 个 agent 实例");
+            std::process::exit(0);
+        }
+    });
 
     loop {
         let (stream, peer) = match listener.accept().await {

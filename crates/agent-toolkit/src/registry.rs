@@ -6,6 +6,32 @@ use agent_base::domain::{
 };
 use serde_json::json;
 
+/// **合法地长时间运行 / 阻塞等待外部输入**的内置工具（真源）。
+///
+/// 引擎的策略超时（产品声明 `policies.toolTimeoutSec`，ada-coding 是 120 秒）对**不在此列**
+/// 的工具生效；在列的这几个要么在等用户（审批/提问，上限 30 分钟）、要么在等子智能体跑完、
+/// 要么自带超时（命令执行最长 10 分钟）——拿 120 秒去掐它们只会制造假失败。
+///
+/// 这份名单是**唯一真源**：每个工具的 `Tool::long_running()` 必须与它一致，
+/// `test_long_running_set_matches_tool_declarations` 机械守门（漂移就红）。
+pub const LONG_RUNNING_TOOLS: &[&str] = &[
+    // 等用户点"批准/拒绝"（工具名是 `check_gate`，实现文件叫 gate_tool.rs）
+    "check_gate",
+    // 等用户回答问题
+    "ask_user",
+    // 等子智能体跑完（分钟级）
+    "invoke_subagent",
+    // 命令执行自带超时（默认 120s、上限 600s），不该被策略超时二次截断
+    "run_command",
+    // 决策插件的判定等待（TS 插件执行，最长按插件自己的超时）
+    "decide",
+];
+
+/// 是否属于上面那份豁免名单。
+pub fn is_long_running(name: &str) -> bool {
+    LONG_RUNNING_TOOLS.contains(&name)
+}
+
 /// 获取所有已知内置工具的基准 ToolDescriptor 清单（真源）
 pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
     static DESCRIPTORS: OnceLock<Vec<ToolDescriptor>> = OnceLock::new();
@@ -589,5 +615,38 @@ mod tests {
         // 失败安全：未知工具一律视为写工具（AGENTS.md §2）
         assert!(!is_readonly_tool("some_unknown_tool"));
         assert!(is_write_tool("some_unknown_tool"));
+    }
+
+    /// 契约：**豁免名单是唯一真源**——每个工具自述的 `long_running()` 必须与
+    /// [`LONG_RUNNING_TOOLS`] 一致。改了名单不改实现（或反过来）都会在这里红。
+    ///
+    /// 为什么必须有这条：引擎的策略超时（120 秒）拿"等用户点批准"和"跑长命令"没办法，
+    /// 名单漏一个就会把它们掐成假失败；名单多一个则会让真正会挂的工具失去兜底。
+    #[test]
+    fn test_long_running_set_matches_tool_declarations() {
+        let ws = std::env::temp_dir();
+        let names: Vec<String> = crate::toolkits::TOOLKIT_NAMES.iter().map(|s| s.to_string()).collect();
+        let tools = crate::toolkits::tools_for_toolkits(&names, &ws).expect("工具包应可装配");
+        assert!(!tools.is_empty(), "至少要能装配出内置工具");
+
+        let mut provided: HashSet<String> = HashSet::new();
+        for t in &tools {
+            let n = t.descriptor().name.clone();
+            assert_eq!(
+                t.long_running(),
+                is_long_running(&n),
+                "工具 `{n}` 的 long_running() 与 registry::LONG_RUNNING_TOOLS 不一致"
+            );
+            provided.insert(n);
+        }
+
+        // 豁免名单里的名字必须**要么**由工具包提供、**要么**是别的 crate 提供的已登记项
+        // （`invoke_subagent` 在 agent-node，按依赖方向不能被 agent-toolkit 实例化）
+        for name in LONG_RUNNING_TOOLS {
+            assert!(
+                provided.contains(*name) || *name == "invoke_subagent",
+                "豁免名单里的 `{name}` 既没有实现、也不在已知的跨 crate 项里"
+            );
+        }
     }
 }

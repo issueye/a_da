@@ -31,6 +31,8 @@ pub const READY_PREFIX: &str = "A_DA_HOST_READY ";
 pub enum SpawnError {
     /// 找不到产品二进制
     BinaryNotFound { tried: Vec<String> },
+    /// 工作区目录不存在（拒绝为一个空气目录起进程）
+    WorkspaceMissing { workspace: String },
     /// 进程起不来
     Spawn(std::io::Error),
     /// 进程起来了但没在时限内给出就绪行
@@ -46,6 +48,10 @@ impl std::fmt::Display for SpawnError {
                 f,
                 "找不到产品二进制；已尝试：{}",
                 tried.join(", ")
+            ),
+            Self::WorkspaceMissing { workspace } => write!(
+                f,
+                "工作区目录不存在：{workspace}（拒绝为一个空气目录拉起 agent——那只会白占一个进程）"
             ),
             Self::Spawn(e) => write!(f, "拉起进程失败：{e}"),
             Self::NotReady { waited, stderr_tail } => write!(
@@ -292,6 +298,7 @@ pub async fn spawn_agent(
         pid,
         started_at: now_ms(),
         products,
+        last_active_ms: now_ms(),
     };
     registry.register(instance.clone());
 
@@ -303,7 +310,10 @@ pub async fn spawn_agent(
 ///
 /// 并发安全：调用方（网关的连接处理）会为每个客户端调用它，
 /// 所以"查 + 起"必须是原子的——否则两个客户端同时连会拉起两个实例，
-/// 同一工作区出现两份状态互相覆盖。这里用一把异步锁把整段串起来。
+/// 同一工作区出现两份状态互相覆盖（而且进程数翻倍）。这里用一把异步锁把整段串起来。
+///
+/// **复用**（同一工作区已有可路由实例）时只 `touch` 一下活跃时间：一个工作区下的
+/// 多个会话/多个客户端共用**同一个进程**，这是"进程数可控"的前提。
 pub async fn ensure_agent(
     spec: &SpawnSpec,
     registry: &Arc<AgentRegistry>,
@@ -313,6 +323,7 @@ pub async fn ensure_agent(
     let workspace = normalize_workspace(&spec.workspace.to_string_lossy());
     if let Some(existing) = registry.find_by_workspace(&spec.product, &workspace) {
         if existing.status.is_routable() {
+            registry.touch(&existing.id);
             return Ok(existing);
         }
     }
@@ -322,21 +333,104 @@ pub async fn ensure_agent(
     // 双检：等锁期间可能已经有人起好了
     if let Some(existing) = registry.find_by_workspace(&spec.product, &workspace) {
         if existing.status.is_routable() {
+            registry.touch(&existing.id);
             return Ok(existing);
         }
     }
 
+    // 🔴 工作区必须真实存在：为一个不存在的目录（测试残留、已删的项目、离线盘符）
+    // 拉起 agent，只会白占一个进程，而且它的文件工具全都会失败。
+    if !workspace.is_dir() {
+        return Err(SpawnError::WorkspaceMissing {
+            workspace: workspace.to_string_lossy().to_string(),
+        });
+    }
+
     let spawned = spawn_agent(spec, registry, gateway_pid).await?;
-    // 子进程句柄交给守护协程，drop 掉会让进程成孤儿
     let SpawnedAgent { instance, mut child, .. } = spawned;
     let id = instance.id.clone();
+
+    // 守护协程：子进程句柄归它。两条路径——
+    //   · 进程自己退出 → 标 Stopped（由后台清理摘掉）
+    //   · 收到"请求关停"（空闲回收 / 超上限驱逐 / 网关退出）→ kill 掉并摘出注册表
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    registry.attach_shutdown(&id, shutdown_tx);
     let reg = registry.clone();
     tokio::spawn(async move {
-        let status = child.wait().await;
-        warn!("agent 实例 {} 已退出：{:?}", id, status);
-        reg.set_status(&id, AgentStatus::Stopped);
+        tokio::select! {
+            status = child.wait() => {
+                warn!("agent 实例 {} 已退出：{:?}", id, status);
+                reg.set_status(&id, AgentStatus::Stopped);
+            }
+            changed = shutdown_rx.changed() => {
+                if changed.is_ok() && *shutdown_rx.borrow() {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    info!("网关已回收 agent 实例 {}（空闲/被驱逐/退出清理）", id);
+                    reg.remove(&id);
+                }
+            }
+        }
     });
     Ok(instance)
+}
+
+/// 网关的实例回收策略。
+///
+/// 目的只有一个：**进程数可控**。没有回收时，只要访问过 N 个工作区，
+/// 就会一直挂着 N 个 `ada-coding` 进程（每个都是几十 MB 常驻）。
+#[derive(Debug, Clone, Copy)]
+pub struct ReapPolicy {
+    /// 空闲多久就回收（默认 15 分钟没有任何帧流量）
+    pub idle_after: Duration,
+    /// 同时在跑的实例上限（超过就按 LRU 驱逐）
+    pub max_live: usize,
+    /// 驱逐时至少空闲多久（别掐掉正在干活的那条）
+    pub min_idle_before_evict: Duration,
+    /// 扫描间隔
+    pub interval: Duration,
+}
+
+impl Default for ReapPolicy {
+    fn default() -> Self {
+        Self {
+            idle_after: Duration::from_secs(15 * 60),
+            max_live: 6,
+            min_idle_before_evict: Duration::from_secs(60),
+            interval: Duration::from_secs(60),
+        }
+    }
+}
+
+/// 按策略扫一遍：清理已退出条目 → 回收空闲实例 → 超上限按 LRU 驱逐。
+///
+/// 返回 `(清理的死条目, 回收的空闲实例, 驱逐的超限实例)`，便于日志与测试断言。
+pub fn reap_once(registry: &AgentRegistry, policy: &ReapPolicy) -> (usize, usize, usize) {
+    let pruned = registry.prune_stopped();
+    let now = now_ms();
+    let idle_ms = policy.idle_after.as_millis() as i64;
+
+    let mut reaped = 0;
+    for id in registry.idle_since(now, idle_ms) {
+        if registry.request_shutdown(&id) {
+            info!("回收空闲 agent 实例 {id}（空闲超过 {:?}）", policy.idle_after);
+            reaped += 1;
+        }
+    }
+
+    let min_idle = policy.min_idle_before_evict.as_millis() as i64;
+    let mut evicted = 0;
+    for id in registry.lru_over_capacity(now, policy.max_live, min_idle) {
+        if registry.request_shutdown(&id) {
+            info!(
+                "驱逐 agent 实例 {id}（在跑实例超过上限 {}）",
+                policy.max_live
+            );
+            evicted += 1;
+        }
+    }
+
+    (pruned, reaped, evicted)
 }
 
 pub fn now_ms() -> i64 {
@@ -362,10 +456,73 @@ fn hide_child_console_window(_cmd: &mut Command) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::AgentInstance;
+
+    /// 回收策略的三个出口：清理死条目 / 回收空闲 / 超上限驱逐。
+    ///
+    /// 这条钉住"进程数可控"：空闲久的一定被回收，刚动过的一律不动，
+    /// 没超上限时不做任何驱逐。
+    #[tokio::test]
+    async fn test_reap_once_prunes_idle_and_caps() {
+        let reg = AgentRegistry::new();
+        let now = now_ms();
+        let mk = |id: &str, last: i64, status: AgentStatus| AgentInstance {
+            id: id.to_string(),
+            product: "ada-coding".to_string(),
+            workspace: format!("E:/{id}"),
+            endpoint: format!("ws://127.0.0.1:1/rpc?token={id}"),
+            status,
+            pid: None,
+            started_at: last,
+            products: vec!["ada-coding".to_string()],
+            last_active_ms: last,
+        };
+
+        reg.register(mk("old", now - 3_600_000, AgentStatus::Ready));
+        reg.register(mk("recent", now - 5_000, AgentStatus::Ready));
+        reg.register(mk("dead", now - 1000, AgentStatus::Stopped));
+        // 注意：receiver 必须**活到断言之后**——`watch::Sender::send` 在没有接收端时会失败，
+        // 而生产环境里接收端就是守卫协程（它一直在）。
+        let mut _keep_rx = Vec::new();
+        for id in ["old", "recent"] {
+            let (tx, rx) = tokio::sync::watch::channel(false);
+            reg.attach_shutdown(id, tx);
+            _keep_rx.push(rx);
+        }
+
+        // 空闲阈值 1 分钟 → 只有 old（闲了 1 小时）被回收；上限 3 → 不驱逐
+        let policy = ReapPolicy {
+            idle_after: Duration::from_secs(60),
+            max_live: 3,
+            min_idle_before_evict: Duration::from_secs(30),
+            interval: Duration::from_secs(60),
+        };
+        let (pruned, reaped, evicted) = reap_once(&reg, &policy);
+        assert_eq!(pruned, 1, "死条目必须被清理（否则进程列表一直挂着死进程）");
+        assert_eq!(reaped, 1, "只有空闲超阈值的 old 被回收（刚动过的不许动）");
+        assert_eq!(evicted, 0, "没超上限就不驱逐");
+
+        // 另一组：三条都闲了 30s 以上，上限 1 → 驱逐最久没流量的两条
+        let reg2 = AgentRegistry::new();
+        for (id, idle_ms) in [("a", 40_000), ("b", 35_000), ("c", 30_000)] {
+            reg2.register(mk(id, now - idle_ms, AgentStatus::Ready));
+            let (tx, rx) = tokio::sync::watch::channel(false);
+            reg2.attach_shutdown(id, tx);
+            _keep_rx.push(rx);
+        }
+        let policy2 = ReapPolicy {
+            idle_after: Duration::from_secs(3600), // 这一轮不测空闲回收
+            max_live: 1,
+            min_idle_before_evict: Duration::from_secs(10),
+            interval: Duration::from_secs(60),
+        };
+        let (_p, _r, evicted2) = reap_once(&reg2, &policy2);
+        assert_eq!(evicted2, 2, "超上限时按 LRU 驱逐到只剩 max_live 条");
+        assert!(reg2.get("c").is_some(), "最活跃的那条必须留下");
+    }
 
     #[test]
-    fn test_binary_not_found_lists_what_was_tried() {
-        let err = find_product_binary("definitely-not-a-real-binary-xyz", None)
+    fn test_binary_not_found_lists_what_was_tried() {        let err = find_product_binary("definitely-not-a-real-binary-xyz", None)
             .expect_err("不该找到");
         match err {
             SpawnError::BinaryNotFound { tried } => {

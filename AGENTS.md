@@ -61,6 +61,32 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1 -Shell tauri       # 同一
   `PluginManager::with_home(dir)` / `SkillManager::with_home(dir)`（生产路径 `new()` 不变）。
   ③ `save_app_config` 取 **store 自己的 `config_path`**，不再问全局 `get_config_path()`。
   跑完门二顺手比对 `~/.a-da/config.json` 的哈希没变。
+- **网关的实例模型是"一工作区一进程"**（`AgentRegistry::id_for_workspace`）：同一工作区的
+  **多个会话/多个客户端共用同一个 `ada-coding`**，这是"进程数可控"的前提。
+  三条硬约束：
+  ① 身份键走 `workspace_key()`：统一分隔符、折叠 `.`/`..`、Windows 下折叠大小写——
+     `E:\x` / `E:/x/` / `e:/X` 是同一个目录，**写法差异不许起出第二个进程**；
+  ② **实例回收**（`supervisor::ReapPolicy` + `Gateway::spawn_reaper`）：空闲 15 分钟回收、
+     同时在跑上限 6（LRU 驱逐）、每分钟扫一次，环境变量
+     `A_DA_GATEWAY_IDLE_REAP_SECS` / `A_DA_GATEWAY_MAX_LIVE_AGENTS` /
+     `A_DA_GATEWAY_REAP_INTERVAL_SECS` 可调；没有它，访问过 N 个工作区就常驻 N 个进程；
+  ③ **有客户端连着就不回收**（`AgentRegistry::connections` + `relay` 的 ConnGuard）：
+     用户可能正对着一条长回答发呆十几分钟，掐掉就是"莫名其妙掉线"。
+  另外：工作区目录不存在时 `ensure_agent` **拒绝拉起**（为一个空气目录起进程只会白占一个）。
+- **工具超时是真的会生效的**（`RunPolicy::tool_timeout` ← 产品声明 `policies.toolTimeoutSec`）：
+  引擎对**非** `Tool::long_running()` 的工具加超时，超时给一条 `ToolStatus::Timeout` 回执
+  （回执里说清是哪个工具、让模型换路子），整轮**继续**而不是永远挂住。
+  哪些工具豁免由 `agent_toolkit::registry::LONG_RUNNING_TOOLS` 单一真源声明
+  （等审批 / 等提问 / 派活 / 命令执行 / 决策插件），契约测试
+  `test_long_running_set_matches_tool_declarations` 守着名单与实现一致。
+  🔴 **子进程的 stdin 一律 `Stdio::null()`**（`cmd_tools::run_command` 与 `background`）：
+  继承 stdin 时，一条等输入的命令（npm 确认、git 凭据、忘了 `--yes` 的安装器）会**卡满整个超时**，
+  界面上的表现正是"工具卡片卡住 → 智能体停止 → 过一会儿才继续"。给空设备它会立刻 EOF 退出。
+- **别让 `Gateway::new` 有落盘副作用**：它以前在构造时就往工作区存储里记默认工作区，
+  而 `WorkspacesStore::new(None)` 指用户真实的 `~/.a-da/gateway_workspaces.json`——
+  于是**任何构造 Gateway 的测试都会写用户的真实工作区列表**（历史事故：用户列表里出现
+  一堆 `a_da_gw_e2e_*`）。现在构造期不落盘，生产在组合根显式记一次，测试注入
+  `Gateway::with_workspaces(临时存储)`。
 - **模型请求重试次数**（设置项，默认 5，范围 `0..=20`）这条链要一起改才生效：
   `ConfigSnapshot.retryCount`（wire/`client-ts`）↔ `~/.a-da/config.json` 的 `retryCount` ↔
   `config.setRetryCount`（`spec/proto/ada-coding.ext.json` 也要登记）↔ 每轮

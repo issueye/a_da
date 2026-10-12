@@ -77,7 +77,17 @@ async fn stub_agent_host() -> u16 {
 /// 起一个网关，并把某个工作区**预先登记**成指向桩宿主（`Ready` → `ensure_agent` 会复用）。
 async fn gateway_with_stub_agent(workspace: &str) -> (Arc<Gateway>, u16) {
     let stub_port = stub_agent_host().await;
-    let gateway = Arc::new(Gateway::new("ada-coding", workspace));
+    // 🔴 工作区存储必须注入临时文件：默认路径是用户真实的
+    // `~/.a-da/gateway_workspaces.json`，不注入就会把测试用的临时工作区
+    // **记进用户的真实工作区列表**（历史事故：用户列表里出现一堆 a_da_gw_e2e_*）。
+    let gateway = Arc::new(
+        Gateway::new("ada-coding", workspace).with_workspaces(Arc::new(
+            agent_gateway::WorkspacesStore::new(Some(
+                std::env::temp_dir()
+                    .join(format!("a_da_gw_ws_{}.json", uuid::Uuid::new_v4().simple())),
+            )),
+        )),
+    );
 
     let ws_norm = agent_gateway::normalize_workspace(workspace);
     let id = agent_gateway::AgentRegistry::id_for_workspace("ada-coding", &ws_norm);
@@ -90,6 +100,7 @@ async fn gateway_with_stub_agent(workspace: &str) -> (Arc<Gateway>, u16) {
         pid: None,
         started_at: 1,
         products: vec!["ada-coding".to_string()],
+        last_active_ms: 1,
     });
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("网关绑定");

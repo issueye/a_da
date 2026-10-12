@@ -120,6 +120,11 @@ impl Tool for InvokeSubagentTool {
         &self.descriptor
     }
 
+    /// 合法地长时间运行 / 等待外部输入：不受引擎策略超时约束（见 registry::LONG_RUNNING_TOOLS）。
+    fn long_running(&self) -> bool {
+        true
+    }
+
     fn execute<'a>(
         &'a self,
         call: &'a ToolCall,

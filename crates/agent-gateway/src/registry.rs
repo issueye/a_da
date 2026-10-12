@@ -74,6 +74,11 @@ pub struct AgentInstance {
     /// 老实例不带这个字段 → 空数组。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub products: Vec<String>,
+    /// 最后一次**有流量**的时刻（毫秒；网关自己记账，见 [`AgentRegistry::touch`]）。
+    ///
+    /// 空闲回收（`reap_idle`）与超上限驱逐（LRU）都靠它。0 = 未知（外部注册的老实例）。
+    #[serde(rename = "lastActiveMs", default)]
+    pub last_active_ms: i64,
 }
 
 impl AgentInstance {
@@ -95,6 +100,7 @@ impl AgentInstance {
             "status": self.status.as_str(),
             "pid": self.pid,
             "startedAt": self.started_at,
+            "lastActiveMs": self.last_active_ms,
             "products": self.products,
         })
     }
@@ -107,6 +113,17 @@ impl AgentInstance {
 #[derive(Debug, Default)]
 pub struct AgentRegistry {
     inner: RwLock<BTreeMap<String, AgentInstance>>,
+    /// 每条实例的**请求关停**开关（内部记账，不序列化、不对外暴露）。
+    ///
+    /// 空闲回收 / 超上限驱逐 / 网关退出都要能"让那个进程停下来"，
+    /// 而子进程句柄握在 `supervisor` 的守护协程手里——所以这里只留一个开关，
+    /// 守护协程 `select!` 到它就 kill 子进程并把自己从注册表摘掉。
+    shutdowns: RwLock<BTreeMap<String, tokio::sync::watch::Sender<bool>>>,
+    /// 每条实例当前的**活跃客户端连接数**（内部记账，不序列化）。
+    ///
+    /// 🔴 有客户端挂着就**不许回收**：用户可能正对着一条长回答发呆（十几分钟没有帧），
+    /// 这时候把 agent 掐掉，界面会莫名其妙掉线重连。所以回收判据是"没人连着 **且** 空闲够久"。
+    connections: RwLock<BTreeMap<String, usize>>,
 }
 
 impl AgentRegistry {
@@ -114,14 +131,29 @@ impl AgentRegistry {
         Self::default()
     }
 
+    /// **实例身份键**：同一物理工作区的不同写法必须落到同一个实例。
+    ///
+    /// 为什么不能直接拿字符串去哈希：客户端与配置里的路径写法五花八门——
+    /// `E:\codes\x` / `E:/codes/x/` / `e:/Codes/X` / `E:/codes/a/../x` 说的是同一个目录，
+    /// 哈希不同就会**给同一个工作区起出好几个 `ada-coding` 进程**（这正是"进程数失控"的成因）。
+    /// 所以：统一分隔符 → 折叠 `.`/`..` 段 → 去掉尾分隔符 → Windows 下再折叠大小写。
+    /// 只用于**算 id**，展示用的 `workspace` 仍保留首次见到的写法。
+    pub fn workspace_key(workspace: &Path) -> String {
+        let mut s = workspace.to_string_lossy().replace('\\', "/");
+        s = collapse_dot_segments(&s);
+        if cfg!(windows) {
+            s = s.to_lowercase();
+        }
+        s
+    }
+
     /// 按工作区派生实例 id（同一工作区 → 同一 id → 复用实例）。
     ///
     /// 为什么按工作区而不是按客户端：网关的职责是"按工作区/产品路由"，
-    /// 同一工作区的多个客户端应当落到**同一个** agent（否则两份状态互相覆盖）。
+    /// 同一工作区的多个客户端（以及同一工作区下的多个会话）应当落到**同一个** agent
+    /// ——否则两份状态互相覆盖，而且一个工作区会堆出好几个进程。
     pub fn id_for_workspace(product: &str, workspace: &Path) -> String {
-        let ws = workspace.to_string_lossy().replace('\\', "/");
-        let ws = ws.trim_end_matches('/');
-        format!("{product}::{}", short_hash(ws))
+        format!("{product}::{}", short_hash(&Self::workspace_key(workspace)))
     }
 
     /// 登记一个实例。返回 `true` 表示是**新登记**，`false` 表示覆盖了已有条目。
@@ -164,8 +196,197 @@ impl AgentRegistry {
     }
 
     /// 移除实例（进程退出后回收）。
+    ///
+    /// 三张表**逐个加锁、绝不同时持有两把写锁**（内部表 / 关停开关 / 连接计数）：
+    /// 同时持锁会跟别的路径形成相反的加锁顺序而死锁。
     pub fn remove(&self, id: &str) -> Option<AgentInstance> {
-        self.inner.write().expect("注册表锁被毒化").remove(id)
+        let removed = self.inner.write().expect("注册表锁被毒化").remove(id);
+        self.shutdowns.write().expect("注册表锁被毒化").remove(id);
+        self.connections.write().expect("注册表锁被毒化").remove(id);
+        removed
+    }
+
+    /// 记一次客户端接入（`relay` 绑定实例时调用）。
+    pub fn conn_inc(&self, id: &str) {
+        *self
+            .connections
+            .write()
+            .expect("注册表锁被毒化")
+            .entry(id.to_string())
+            .or_insert(0) += 1;
+    }
+
+    /// 记一次客户端断开（`relay` 结束时调用；用 guard 保证异常路径也会减）。
+    pub fn conn_dec(&self, id: &str) {
+        let mut guard = self.connections.write().expect("注册表锁被毒化");
+        if let Some(n) = guard.get_mut(id) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                guard.remove(id);
+            }
+        }
+    }
+
+    /// 当前挂着几个客户端连接。
+    pub fn active_connections(&self, id: &str) -> usize {
+        self.connections
+            .read()
+            .expect("注册表锁被毒化")
+            .get(id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// 记一次"这条实例还有流量"（路由转发时调用）。
+    ///
+    /// 空闲回收与 LRU 驱逐都读它：**只要还在转发帧就不算空闲**，
+    /// 长跑的一轮对话因此不会被回收掉。
+    pub fn touch(&self, id: &str) -> bool {
+        let now = now_ms();
+        let mut map = self.inner.write().expect("注册表锁被毒化");
+        match map.get_mut(id) {
+            Some(inst) => {
+                inst.last_active_ms = now;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 给实例挂上"请求关停"开关（`supervisor` 拉起后调用）。
+    pub fn attach_shutdown(&self, id: &str, tx: tokio::sync::watch::Sender<bool>) {
+        self.shutdowns
+            .write()
+            .expect("注册表锁被毒化")
+            .insert(id.to_string(), tx);
+    }
+
+    /// 请求关停某条实例：守护协程会 kill 子进程并把它从注册表摘掉。
+    ///
+    /// 返回 `false` = 这条实例没有受管进程（外部自注册的实例），调用方应改用别的方式。
+    pub fn request_shutdown(&self, id: &str) -> bool {
+        let guard = self.shutdowns.read().expect("注册表锁被毒化");
+        match guard.get(id) {
+            Some(tx) => tx.send(true).is_ok(),
+            None => false,
+        }
+    }
+
+    /// 摘掉**已退出**的条目（`Stopped`），避免进程列表里一直挂着死进程。
+    ///
+    /// 返回清掉几条。
+    pub fn prune_stopped(&self) -> usize {
+        let dead: Vec<String> = {
+            let mut map = self.inner.write().expect("注册表锁被毒化");
+            let dead: Vec<String> = map
+                .values()
+                .filter(|i| i.status == AgentStatus::Stopped)
+                .map(|i| i.id.clone())
+                .collect();
+            for id in &dead {
+                map.remove(id);
+            }
+            dead
+        };
+        if dead.is_empty() {
+            return 0;
+        }
+        // 三张表逐个加锁，绝不同时持有两把写锁（否则与别的路径形成相反加锁顺序而死锁）
+        {
+            let mut guard = self.shutdowns.write().expect("注册表锁被毒化");
+            for id in &dead {
+                guard.remove(id);
+            }
+        }
+        {
+            let mut guard = self.connections.write().expect("注册表锁被毒化");
+            for id in &dead {
+                guard.remove(id);
+            }
+        }
+        dead.len()
+    }
+
+    /// 空闲超过 `idle_ms` 的实例 id（按最久没动过排序）。
+    ///
+    /// 判据是"**没人连着** 且 空闲够久"：`last_active_ms == 0`（外部注册、网关没记过流量）
+    /// 视为从 `started_at` 起算；有活跃客户端连接的实例一律不算空闲
+    /// （用户可能正对着一条长回答发呆十几分钟，这时候把 agent 掐掉会莫名其妙掉线）。
+    pub fn idle_since(&self, now: i64, idle_ms: i64) -> Vec<String> {
+        let candidates: Vec<(i64, String)> = {
+            let guard = self.inner.read().expect("注册表锁被毒化");
+            guard
+                .values()
+                .filter(|i| i.status.is_routable())
+                .map(|i| {
+                    let last = if i.last_active_ms > 0 { i.last_active_ms } else { i.started_at };
+                    (last, i.id.clone())
+                })
+                .collect()
+        };
+        let mut out: Vec<(i64, String)> = candidates
+            .into_iter()
+            .filter(|(last, id)| now - last >= idle_ms && self.active_connections(id) == 0)
+            .collect();
+        out.sort();
+        out.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// 超出 `max_live` 时需要驱逐的实例（**最久没流量的先走**）。
+    ///
+    /// 只驱逐"确实闲下来"的（`now - last >= min_idle_before_evict` 且没有客户端连着）：
+    /// 正在跑的那条不能被掐掉，哪怕它让总数短暂超限。
+    pub fn lru_over_capacity(
+        &self,
+        now: i64,
+        max_live: usize,
+        min_idle_before_evict: i64,
+    ) -> Vec<String> {
+        let live: Vec<(i64, String)> = {
+            let guard = self.inner.read().expect("注册表锁被毒化");
+            guard
+                .values()
+                .filter(|i| i.status.is_routable())
+                .map(|i| {
+                    let last = if i.last_active_ms > 0 { i.last_active_ms } else { i.started_at };
+                    (last, i.id.clone())
+                })
+                .collect()
+        };
+        if live.len() <= max_live {
+            return Vec::new();
+        }
+        let mut sorted = live;
+        // 最久没动过的排前面
+        sorted.sort();
+        let victims = sorted.len() - max_live;
+        sorted
+            .into_iter()
+            .filter(|(last, id)| {
+                now - last >= min_idle_before_evict && self.active_connections(id) == 0
+            })
+            .take(victims)
+            .map(|(_, id)| id)
+            .collect()
+    }
+
+    /// 请求关停**全部**受管实例（网关退出时用；外部自注册的实例不动）。
+    pub fn shutdown_all(&self) -> usize {
+        let ids: Vec<String> = self
+            .inner
+            .read()
+            .expect("注册表锁被毒化")
+            .values()
+            .filter(|i| i.status.is_routable())
+            .map(|i| i.id.clone())
+            .collect();
+        let mut n = 0;
+        for id in ids {
+            if self.request_shutdown(&id) {
+                n += 1;
+            }
+        }
+        n
     }
 
     pub fn len(&self) -> usize {
@@ -193,6 +414,51 @@ fn short_hash(s: &str) -> String {
     format!("{h:016x}")
 }
 
+/// 文本层面折叠 `.` / `..` 段（不查文件系统，所以对"还不存在的目录"同样有效）。
+///
+/// 保留开头的 `/` 或 `X:/` 前缀；`..` 在无可折叠段时原样保留（宁可保守，不乱吃路径）。
+fn collapse_dot_segments(path: &str) -> String {
+    let (prefix, rest) = if path.len() >= 3 && path.as_bytes()[1] == b':' {
+        (&path[..2], &path[2..]) // 盘符前缀 "C:"
+    } else if path.starts_with('/') {
+        ("", path)
+    } else {
+        ("", path)
+    };
+    let absolute = rest.starts_with('/');
+    let mut stack: Vec<&str> = Vec::new();
+    for seg in rest.split('/') {
+        match seg {
+            "" | "." => continue,
+            ".." => {
+                // 只有在能安全回退时才回退（绝对路径退到根就停住）
+                if stack.last().map(|s| *s != "..").unwrap_or(false) {
+                    stack.pop();
+                } else if !absolute {
+                    stack.push("..");
+                }
+            }
+            other => stack.push(other),
+        }
+    }
+    let joined = stack.join("/");
+    let lead = if absolute { "/" } else { "" };
+    let out = format!("{prefix}{lead}{joined}");
+    // 盘符根（"C:" + "/"）与全空都给个稳定形态
+    if out.is_empty() {
+        ".".to_string()
+    } else {
+        out
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// 工作区规范化（去掉尾部分隔符，统一 `/`），让"同一工作区的不同写法"落到同一实例。
 pub fn normalize_workspace(raw: &str) -> PathBuf {
     let p = PathBuf::from(raw);
@@ -215,6 +481,14 @@ mod tests {
             pid: Some(42),
             started_at: 1,
             products: vec!["ada-coding".to_string()],
+            last_active_ms: 1,
+        }
+    }
+
+    fn inst_at(id: &str, ws: &str, last_active_ms: i64) -> AgentInstance {
+        AgentInstance {
+            last_active_ms,
+            ..inst(id, ws, AgentStatus::Ready)
         }
     }
 
@@ -234,6 +508,135 @@ mod tests {
         assert_eq!(a, b, "同一工作区的不同写法必须派生同一个 id（否则实例会重复拉起）");
         let c = AgentRegistry::id_for_workspace("ada-coding", &normalize_workspace("E:/codes/y"));
         assert_ne!(a, c, "不同工作区必须是不同 id");
+    }
+
+    /// 🔴 路径写法差异必须收敛到同一个 id，否则**同一个工作区会被起出好几个进程**：
+    /// 大小写、`.`/`..`、重复分隔符、尾分隔符在 Windows 上都是同一个目录。
+    #[test]
+    fn test_workspace_key_collapses_path_spellings() {
+        let base = AgentRegistry::id_for_workspace("ada-coding", &normalize_workspace("E:/codes/x"));
+        for variant in [
+            "E:/codes/x",
+            "E:/codes/x/",
+            "E:\\codes\\x",
+            "E:/codes//x",
+            "E:/codes/./x",
+            "E:/codes/other/../x",
+        ] {
+            assert_eq!(
+                AgentRegistry::id_for_workspace("ada-coding", &normalize_workspace(variant)),
+                base,
+                "写法 {variant} 应落到同一实例"
+            );
+        }
+        if cfg!(windows) {
+            assert_eq!(
+                AgentRegistry::id_for_workspace("ada-coding", &normalize_workspace("e:/CODEs/X")),
+                base,
+                "Windows 路径大小写不敏感：同一个目录不能起两个进程"
+            );
+        }
+    }
+
+    /// 空闲回收 / 超限驱逐的判据：只有"确实闲下来"的才回收，正在跑的不许掐。
+    #[test]
+    fn test_idle_and_lru_selection() {
+        let reg = AgentRegistry::new();
+        reg.register(inst_at("old", "E:/old", 1_000));
+        reg.register(inst_at("mid", "E:/mid", 5_000));
+        reg.register(inst_at("hot", "E:/hot", 10_000));
+
+        let idle = reg.idle_since(10_000, 6_000);
+        assert_eq!(idle, vec!["old".to_string()], "只该回收超过空闲阈值的");
+
+        // 上限 2（在跑 3 条）→ 驱逐 1 条：最久没动过的先走；"刚刚还在动"的不许驱逐
+        assert_eq!(reg.lru_over_capacity(10_000, 2, 100), vec!["old".to_string()]);
+        // 上限 1 → 驱逐 2 条；min_idle=0 时刚动过的也可驱逐
+        assert_eq!(
+            reg.lru_over_capacity(10_000, 1, 0),
+            vec!["old".to_string(), "mid".to_string()]
+        );
+        // 上限 2 但只允许驱逐"闲够 1 秒的"：只有 old 符合 → 只驱逐 1 条（宁可短暂超限，也不掐正在跑的）
+        assert_eq!(reg.lru_over_capacity(10_000, 1, 6_000), vec!["old".to_string()]);
+        assert!(reg.lru_over_capacity(10_000, 3, 0).is_empty(), "没超上限就不动");
+    }
+
+    #[test]
+    fn test_touch_keeps_instance_off_the_reap_list() {
+        let reg = AgentRegistry::new();
+        reg.register(inst_at("a", "E:/a", 1_000));
+        assert_eq!(reg.idle_since(now_ms(), 60_000), vec!["a".to_string()]);
+        assert!(reg.touch("a"), "touch 命中已登记的实例");
+        assert!(
+            reg.idle_since(now_ms(), 60_000).is_empty(),
+            "刚有流量就不该被回收"
+        );
+        assert!(!reg.touch("ghost"), "不存在的实例不静默创建");
+    }
+
+    /// 🔴 **有客户端连着就不许回收**：用户可能正对着一条长回答发呆十几分钟，
+    /// 这时候把 agent 掐掉，界面会莫名其妙掉线重连。
+    #[test]
+    fn test_active_connection_blocks_reaping() {
+        let reg = AgentRegistry::new();
+        reg.register(inst_at("attached", "E:/a", 1_000));
+        reg.register(inst_at("idle", "E:/b", 1_000));
+
+        reg.conn_inc("attached");
+        assert_eq!(reg.active_connections("attached"), 1);
+        assert_eq!(
+            reg.idle_since(now_ms(), 1),
+            vec!["idle".to_string()],
+            "挂客户端的实例不算空闲（哪怕它很久没有帧）"
+        );
+        assert_eq!(
+            reg.lru_over_capacity(now_ms(), 1, 0),
+            vec!["idle".to_string()],
+            "超上限驱逐也只能动没连接的那条"
+        );
+
+        reg.conn_dec("attached");
+        assert_eq!(reg.active_connections("attached"), 0);
+        assert_eq!(reg.idle_since(now_ms(), 1).len(), 2, "断开后两条都可回收");
+    }
+
+    /// 连接计数用 guard 语义：重复减不会变成负数（异常路径重复 drop 也不炸）。
+    #[test]
+    fn test_connection_count_never_underflows() {
+        let reg = AgentRegistry::new();
+        reg.register(inst_at("a", "E:/a", 1_000));
+        reg.conn_inc("a");
+        reg.conn_inc("a");
+        assert_eq!(reg.active_connections("a"), 2);
+        reg.conn_dec("a");
+        reg.conn_dec("a");
+        reg.conn_dec("a");
+        assert_eq!(reg.active_connections("a"), 0, "多减一次不能变成负数/残留");
+    }
+
+    #[test]
+    fn test_prune_stopped_removes_dead_rows() {
+        let reg = AgentRegistry::new();
+        reg.register(inst("live", "E:/a", AgentStatus::Ready));
+        reg.register(inst("dead", "E:/b", AgentStatus::Stopped));
+        assert_eq!(reg.prune_stopped(), 1);
+        assert_eq!(reg.len(), 1);
+        assert!(reg.get("dead").is_none());
+    }
+
+    /// 受管实例能被"请求关停"（回收/驱逐走这条路）；外部自注册的实例没有开关。
+    #[tokio::test]
+    async fn test_request_shutdown_only_for_managed_instances() {
+        let reg = AgentRegistry::new();
+        reg.register(inst("managed", "E:/a", AgentStatus::Ready));
+        let (tx, mut rx) = tokio::sync::watch::channel(false);
+        reg.attach_shutdown("managed", tx);
+
+        assert!(reg.request_shutdown("managed"), "受管实例应能请求关停");
+        rx.changed().await.expect("应收到关停信号");
+        assert!(*rx.borrow(), "信号值必须是 true");
+
+        assert!(!reg.request_shutdown("external"), "没有受管进程的实例返回 false");
     }
 
     #[test]

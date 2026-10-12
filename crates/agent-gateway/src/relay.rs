@@ -93,10 +93,11 @@ impl Gateway {
     pub fn new(default_product: impl Into<String>, default_workspace: impl Into<String>) -> Self {
         let default_prod_str = default_product.into();
         let default_ws_str = default_workspace.into();
+        // 🔴 构造期**不**往工作区存储里记东西：`WorkspacesStore::new(None)` 指用户真实的
+        // `~/.a-da/gateway_workspaces.json`，在这里落一次盘就等于"谁 new 一个 Gateway 谁写用户文件"
+        // ——测试注入临时存储也来不及（构造时已经写过了）。生产路径由组合根显式记一次
+        // （见 `agent-gateway/src/main.rs`），测试则注入自己的存储。
         let ws_store = Arc::new(crate::workspaces::WorkspacesStore::new(None));
-        if !default_ws_str.trim().is_empty() {
-            ws_store.record(&default_ws_str, Some(&default_prod_str));
-        }
         Self {
             registry: Arc::new(AgentRegistry::new()),
             spawn_lock: Arc::new(Mutex::new(())),
@@ -113,6 +114,38 @@ impl Gateway {
     pub fn with_auth(mut self, auth: crate::auth::AuthConfig) -> Self {
         self.auth = Arc::new(auth);
         self
+    }
+
+    /// 换成指定的工作区存储（**测试必须传**，否则会写用户真实的
+    /// `~/.a-da/gateway_workspaces.json`——历史上 e2e 测试就是这么把一堆
+    /// 临时目录记进用户工作区列表的）。
+    pub fn with_workspaces(mut self, store: Arc<crate::workspaces::WorkspacesStore>) -> Self {
+        self.workspaces = store;
+        self
+    }
+
+    /// 起一个后台**回收协程**：定时清理已退出条目、回收空闲实例、超上限按 LRU 驱逐。
+    ///
+    /// 没有它，访问过多少个工作区就会常驻多少个 `ada-coding` 进程。
+    pub fn spawn_reaper(self: &Arc<Self>, policy: crate::supervisor::ReapPolicy) -> tokio::task::JoinHandle<()> {
+        let gateway = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(policy.interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                let (pruned, reaped, evicted) = crate::supervisor::reap_once(&gateway.registry, &policy);
+                if pruned + reaped + evicted > 0 {
+                    info!(
+                        "实例回收：清理死条目 {}、回收空闲 {}、超限驱逐 {}（当前受管 {}）",
+                        pruned,
+                        reaped,
+                        evicted,
+                        gateway.registry.len()
+                    );
+                }
+            }
+        })
     }
 
     /// **发现**（`gateway.info`）：无需 token，**不含任何秘密**。
@@ -510,6 +543,7 @@ async fn serve_agent_control(
                             pid,
                             started_at: now_ms(),
                             products,
+                            last_active_ms: now_ms(),
                         };
                         let is_new = gateway.registry.register(inst);
                         info!("Agent 成功向网关注册: {} -> {} (pid: {:?})", agent_id, endpoint, pid);
@@ -643,6 +677,24 @@ async fn relay(
     client_ws: tokio_tungstenite::WebSocketStream<TcpStream>,
     instance: AgentInstance,
 ) -> Result<(), anyhow::Error> {
+    // 🔴 记账：这条实例现在挂着几个客户端。有连接就不许回收
+    // （用户可能正对着一条长回答发呆，掐掉会莫名其妙掉线）。
+    // 用 guard 保证**任何**返回路径（含 `?` 提前返回与 panic 展开）都会减回来。
+    gateway.registry.conn_inc(&instance.id);
+    struct ConnGuard {
+        registry: Arc<AgentRegistry>,
+        id: String,
+    }
+    impl Drop for ConnGuard {
+        fn drop(&mut self) {
+            self.registry.conn_dec(&self.id);
+        }
+    }
+    let _conn_guard = ConnGuard {
+        registry: gateway.registry.clone(),
+        id: instance.id.clone(),
+    };
+
     // 连到 agent 实例
     let req = instance.endpoint.clone().into_client_request()?;
     let (agent_ws, _resp) = tokio_tungstenite::connect_async(req).await?;
@@ -662,12 +714,16 @@ async fn relay(
         }
     });
 
-    // agent → 客户端：**原样转发**（含连上后 agent 自己推的 seq=0 种子快照）
+    // agent → 客户端：**原样转发**（含连上后 agent 自己推的 seq=0 种子快照）。
+    // 同时 `touch`：只要 agent 还在吐帧（长跑的一轮对话），这条实例就不算空闲。
     let tx_for_agent = client_tx.clone();
+    let reg_for_agent = gateway.registry.clone();
+    let id_for_agent = instance.id.clone();
     let agent_to_client = tokio::spawn(async move {
         while let Some(msg) = agent_rx.next().await {
             match msg {
                 Ok(m) => {
+                    reg_for_agent.touch(&id_for_agent);
                     let is_close = m.is_close();
                     if tx_for_agent.send(m).is_err() {
                         break;
@@ -697,6 +753,9 @@ async fn relay(
         if msg.is_close() {
             break;
         }
+
+        // 客户端还有话说 → 这条实例是活跃的（空闲回收据此判据）
+        gateway.registry.touch(&instance.id);
 
         let Message::Text(text) = msg else {
             // 二进制帧：协议只有文本帧，如实拒绝而不是静默丢弃
@@ -856,6 +915,7 @@ async fn relay(
                             pid,
                             started_at: now_ms(),
                             products,
+                            last_active_ms: now_ms(),
                         };
                         let is_new = gw.registry.register(inst);
                         info!("Agent 成功向网关注册: {} -> {} (pid: {:?})", id, endpoint, pid);

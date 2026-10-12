@@ -77,7 +77,13 @@ async fn gateway_with(auth: AuthConfig) -> (Arc<Gateway>, u16) {
     let ws = std::env::temp_dir().join("a_da_gw_auth_ws");
     let stub_port = stub_agent_host().await;
     let gateway = Arc::new(
-        Gateway::new("ada-coding", ws.to_string_lossy()).with_auth(auth),
+        Gateway::new("ada-coding", ws.to_string_lossy())
+            .with_auth(auth)
+            // 🔴 工作区存储注入临时文件：默认写用户真实的 `~/.a-da/gateway_workspaces.json`
+            .with_workspaces(Arc::new(agent_gateway::WorkspacesStore::new(Some(
+                std::env::temp_dir()
+                    .join(format!("a_da_gw_ws_{}.json", uuid::Uuid::new_v4().simple())),
+            )))),
     );
     let ws_norm = agent_gateway::normalize_workspace(&ws.to_string_lossy());
     gateway.registry.register(agent_gateway::registry::AgentInstance {
@@ -89,6 +95,7 @@ async fn gateway_with(auth: AuthConfig) -> (Arc<Gateway>, u16) {
         pid: None,
         started_at: 1,
         products: vec!["ada-coding".to_string()],
+        last_active_ms: 1,
     });
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("绑定");
     let port = listener.local_addr().unwrap().port();
@@ -242,6 +249,7 @@ async fn test_token_scope_blocks_other_workspace() {
         pid: None,
         started_at: 1,
         products: vec!["ada-coding".to_string()],
+        last_active_ms: 1,
     });
 
     // 自己的作用域：通过

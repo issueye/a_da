@@ -82,6 +82,13 @@ pub async fn run_command(
     cmd.args(&shell_args)
         .current_dir(run_cwd)
         .env("A_DA_AGENT", "1")
+        // 🔴 stdin 必须是空设备，**不能**继承。
+        //
+        // 继承 stdin 时，一条会等输入的命令（`npm` 的确认、`git` 要凭据、REPL、
+        // 忘了带 `--yes` 的安装器）会**一直卡着不动**，直到本函数的超时（默认 120s）才被杀：
+        // 界面上就是"工具卡片卡住 → 智能体停止 → 过一会儿才继续"。
+        // 给空设备后，这类命令会立刻读到 EOF 并自己退出（如实报错），而不是静默挂 2 分钟。
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -248,5 +255,28 @@ mod tests {
         let result = run_command(&ws, "echo ok", None, Some(10), None).await;
         assert!(result.ok);
         assert_eq!(result.failure(), None);
+    }
+
+    /// 🔴 回归：**绝不能把 stdin 继承给子进程**。
+    ///
+    /// 继承时，一条等输入的命令会卡满整个超时（默认 120 秒），界面上的表现就是
+    /// "工具卡片卡住 → 智能体停止 → 过一会儿才继续"。空设备让它立刻 EOF 退出。
+    #[tokio::test]
+    async fn test_command_does_not_hang_on_stdin() {
+        let ws = std::env::current_dir().unwrap();
+        // `set /p` 读一行输入：继承 stdin 时会一直等；空设备下立刻拿到 EOF
+        let cmd = if cfg!(windows) { "set /p x=prompt" } else { "read x" };
+        let started = std::time::Instant::now();
+        let result = run_command(&ws, cmd, None, Some(120), None).await;
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "等输入的命令必须立刻结束（实际用了 {elapsed:?}）——超时不是它的正常出口"
+        );
+        assert!(
+            result.failure() != Some(ToolFailure::Timeout),
+            "不该靠超时兜底：{}",
+            result.output
+        );
     }
 }

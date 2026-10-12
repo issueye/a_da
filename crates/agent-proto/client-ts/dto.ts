@@ -99,7 +99,7 @@ export interface Item {
   args?: any
   details?: any
   state?: 'running' | 'done' | 'failed' | 'waiting_approval' | 'awaiting'
-  status?: 'running' | 'done' | 'failed' | 'waiting_approval' | 'awaiting' | 'error' | 'denied'
+  status?: 'running' | 'done' | 'failed' | 'waiting_approval' | 'awaiting' | 'error' | 'denied' | 'timeout'
   result?: unknown
   output?: string
   patch?: string

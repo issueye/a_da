@@ -190,6 +190,8 @@ export function resolveThreadStatus(
       lastStatus === 'failed' ||
       lastStatus === 'error' ||
       lastStatus === 'denied' ||
+      // `timeout`：引擎的策略超时切断（工具根本没返回）——不能算"执行完成"
+      lastStatus === 'timeout' ||
       Boolean(lastItem.error)
 
     if (hasFatalError) {
@@ -198,7 +200,7 @@ export function resolveThreadStatus(
 
     const recentToolError = items.slice(-3).some((it) => {
       const s = it.status || it.state
-      return s === 'failed' || s === 'error' || Boolean(it.error)
+      return s === 'failed' || s === 'error' || s === 'timeout' || Boolean(it.error)
     })
     if (recentToolError && lastItem.role !== 'assistant') {
       return { status: 'failed', label: '执行失败' }
