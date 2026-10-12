@@ -450,7 +450,17 @@ export class AgentWebSocketClient {
       this.applySnapshot(snap)
     } else if (method === 'evt.thread.updated') {
       if (params.threads) this.snapshot.threads = params.threads
-      if (params.activeThreadId) this.snapshot.activeThreadId = params.activeThreadId
+      // 服务端这条事件带的是**它认为**的激活会话，可能滞后于用户刚做的选择：
+      // 点"新建对话"后它常把旧的激活会话原样发回来，早先这里无条件覆盖，于是新建的页签
+      // 永远拿不到焦点（界面停在旧会话上）。本地已有一个仍然有效的激活会话时不覆盖。
+      const localActive = this.snapshot.activeThreadId
+      const localActiveValid =
+        localActive &&
+        (localActive.startsWith('thread_tmp_') ||
+          this.snapshot.threads.some((t) => t.id === localActive))
+      if (params.activeThreadId && !localActiveValid) {
+        this.snapshot.activeThreadId = params.activeThreadId
+      }
       this.notify()
     } else if (method === 'evt.thread.item') {
       const { threadId, item } = params
@@ -478,6 +488,10 @@ export class AgentWebSocketClient {
   public applySnapshot(snap: any) {
     if (!snap) return
     const payload = snap.payload || snap
+
+    // 替换前的本地线程集合：服务端快照会滞后（本地刚建的会话这一帧不一定带上），
+    // 判定"本地激活会话是否还有效"时要把它们算进来，否则会被误判为已失效。
+    const localThreadIds = new Set(this.snapshot.threads.map((t) => t.id))
 
     if (Array.isArray(payload.threads)) {
       // 先摘出本地乐观创建、服务端还不知道的临时会话（`thread_tmp_*`）。
@@ -544,10 +558,15 @@ export class AgentWebSocketClient {
 
     // 保护客户端正在查看的会话：
     // 只有在本地尚未设置 activeThreadId，或者当前 activeThreadId 在 threads 中已不存在时，才采用服务端推送的 activeThreadId
+    //
+    // 🔴 判据要把"替换前的本地线程集合"也算进来：快照整体替换 `threads` 之后，本地刚创建、
+    // 这一帧还没被带上的会话就"消失了"，只看替换后的集合会把用户的激活选择误判为失效，
+    // 从而抹回服务端的旧激活会话（新建的页签因此拿不到焦点）。
     const currentActiveExists =
       this.snapshot.activeThreadId &&
       (this.snapshot.activeThreadId.startsWith('thread_tmp_') ||
-        this.snapshot.threads.some((t) => t.id === this.snapshot.activeThreadId))
+        this.snapshot.threads.some((t) => t.id === this.snapshot.activeThreadId) ||
+        localThreadIds.has(this.snapshot.activeThreadId))
 
     if (!currentActiveExists) {
       if (payload.activeThreadId) {

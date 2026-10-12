@@ -101,17 +101,27 @@ export function App() {
       })
     })
 
-  // 同步激活会话至打开的标签页列表中
+  // 同步激活会话至打开的标签页列表中。
+  //
+  // 🔴 只收"确实在 `threads` 里的"会话：乐观创建期的 `thread_tmp_*` 只是创建过程的句柄，
+  // 服务端返回真 id 时会被**原地改名**（`ws-client.createThread`），留在标签栏里就成了永远
+  // 悬空的 id——`TabStrip` 找不到它，只能画成一个凭空出现的"子智能体"页签。
+  // 这里顺手把已经不在 `threads` 里的临时 id 清掉；它仍是当前激活会话（创建中）时保留。
   useEffect(() => {
-    if (snapshot.activeThreadId) {
-      setOpenTabIds((prev) => {
-        if (!prev.includes(snapshot.activeThreadId)) {
-          return [...prev, snapshot.activeThreadId]
-        }
-        return prev
-      })
-    }
-  }, [snapshot.activeThreadId])
+    setOpenTabIds((prev) => {
+      const known = new Set(snapshot.threads.map((t) => t.id))
+      const active = snapshot.activeThreadId
+      let next = prev.filter(
+        (id) => !id.startsWith('thread_tmp_') || id === active || known.has(id)
+      )
+      if (active && known.has(active) && !next.includes(active)) {
+        next = [...next, active]
+      }
+      const changed =
+        next.length !== prev.length || next.some((id, i) => id !== prev[i])
+      return changed ? next : prev
+    })
+  }, [snapshot.activeThreadId, snapshot.threads])
 
   // 自动把"正在运行的子智能体会话"加入标签栏，支持用户在顶部标签独立查看。
   //

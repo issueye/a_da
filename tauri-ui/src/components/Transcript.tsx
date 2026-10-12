@@ -785,6 +785,9 @@ const ToolCard: React.FC<{
     const threads = agentClient.snapshot.threads || []
 
     // 1) 回执/监视任务里带了确切 id（最可靠）
+    //
+    // 🔴 但必须校验它确实是一条**存在**的会话：卡片回执里的 id 可能已经失效（子会话已回收），
+    // 直接拿去开页签就会在标签栏里留下一个指向不存在会话的"无效子智能体"页签。
     const explicitId =
       (item.details as any)?.threadId ||
       (item.details as any)?.subagent_thread_id ||
@@ -792,7 +795,7 @@ const ToolCard: React.FC<{
       structuredData?.subagent_thread_id ||
       (item.args as any)?.thread_id ||
       (item.args as any)?.threadId
-    if (explicitId) return explicitId
+    if (explicitId && threads.some((t) => t.id === explicitId)) return explicitId
 
     // 2) 已被**别的委派卡片**认领的子会话，本卡片不得再认领
     const claimed = new Set<string>()

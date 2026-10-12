@@ -30,7 +30,7 @@ export const TabStrip: React.FC<TabStripProps> = ({
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  // 根据 openTabIds 提取对应的 Thread 对象（若有不存在的 id 则兜底过滤）
+  // 根据 openTabIds 提取对应的 Thread 对象（取不到的 id 直接跳过，见下方说明）
   const threadMap = new Map(threads.map((t) => [t.id, t]))
   const openTabs: Thread[] = []
 
@@ -38,18 +38,14 @@ export const TabStrip: React.FC<TabStripProps> = ({
     const t = threadMap.get(id)
     if (t) {
       openTabs.push(t)
-    } else if (id) {
-      openTabs.push({
-        id,
-        title: '子智能体会话...',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        mode: 'code',
-        workspace: '',
-        items: [],
-        isSubagent: true,
-      })
     }
+    // 🔴 取不到会话对象就**不画页签**。
+    //
+    // 早先这里会兜底造一个 `title:'子智能体会话...'`、`isSubagent:true` 的假页签，于是任何
+    // "在 `threads` 里找不到的 id"都会在界面上凭空长成一个"子智能体"页签——实测到的来源有：
+    // 乐观创建期被原地改名的 `thread_tmp_*`、点开子卡片时带过来的失效 id、以及会话消失后
+    // 残留的 id。子会话本来就是 `threads` 的一员（侧边栏父子树、`resolveThreadStatus` 都靠它），
+    // 真的在的话这里必然取得到；取不到就是没有东西可显示，不该编。
   }
 
   // 如果 openTabs 为空但 activeThreadId 存在，至少显示当前激活的会话

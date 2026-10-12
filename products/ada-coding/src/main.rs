@@ -71,6 +71,7 @@ fn build_injection(
     workspace: &str,
     gateway_override: Option<&str>,
     apply_delegation: bool,
+    approval_mgr: &Arc<agent_node::approval::ApprovalManager>,
 ) -> Option<agent_rpc::server::dispatch::EngineInjection> {
     let mut spec = match agent_runtime::AgentSpec::from_json_str(spec_json) {
         Ok(s) => s,
@@ -107,7 +108,10 @@ fn build_injection(
         std::path::Path::new(&agent_node::session::get_app_home()).join("sessions");
     let options = agent_host::HostOptions::new(ws)
         .with_store(store.clone())
-        .with_sessions_root(sessions_root);
+        .with_sessions_root(sessions_root)
+        // 审批 waiter 表**全进程共用一张**：ws 宿主会把它交给 `Dispatcher`，
+        // UI 的 `approval.decide` 才找得到闸门注册的等待者。
+        .with_approval_manager(approval_mgr.clone());
 
     match agent_host::run_from_spec(spec, options) {
         Ok(hosted) => {
@@ -116,6 +120,9 @@ fn build_injection(
             info!("已按 {label} 装配真引擎：工具 {tool_count} 个");
 
             let store_for_factory = store.clone();
+            // 🔴 动态装配的引擎也必须复用**同一张** waiter 表：只搬走 `h.runtime` 而让它
+            // 自建一份表，UI 的批准就永远送不到这个引擎的闸门（点了批准一直卡到超时）。
+            let approval_for_factory = approval_mgr.clone();
             let gateway_override_owned = gateway_override.map(|s| s.to_string());
             let factory: agent_rpc::server::dispatch::EngineFactory = Arc::new(move |ws_path: &std::path::Path| -> Option<Arc<agent_base::engine::AgentRuntime>> {
                 let mut spec_dyn = agent_runtime::AgentSpec::from_json_str(spec_json).ok()?;
@@ -135,7 +142,8 @@ fn build_injection(
                 let s_root = std::path::Path::new(&agent_node::session::get_app_home()).join("sessions");
                 let opts = agent_host::HostOptions::new(ws_path)
                     .with_store(store_for_factory.clone())
-                    .with_sessions_root(s_root);
+                    .with_sessions_root(s_root)
+                    .with_approval_manager(approval_for_factory.clone());
                 match agent_host::run_from_spec(spec_dyn, opts) {
                     Ok(h) => {
                         info!("为会话工作区 {} 动态装配 {label} 真引擎就绪", ws_path.display());
@@ -214,6 +222,12 @@ async fn main() -> Result<(), anyhow::Error> {
     };
 
     // W3-T2：按声明装配**真引擎**（coding 产品 + PM 模式预设），共用同一处装配函数。
+    //
+    // 审批 waiter 表**一个进程一张**：coding / PM / 之后按工作区动态装配的引擎全部共用它。
+    // ws 宿主会把它交给 `Dispatcher`，UI 的 `approval.decide` 才落得到闸门注册的那张表上
+    // （各装配一份就变成"界面能弹审批卡、点批准却永远卡住"，见 `HostOptions::approval_mgr`）。
+    let approval_mgr = Arc::new(agent_node::approval::ApprovalManager::new());
+
     let injection = build_injection(
         SPEC_JSON,
         "ada-coding 产品声明",
@@ -221,6 +235,7 @@ async fn main() -> Result<(), anyhow::Error> {
         &initial_ws,
         args.gateway.as_deref(),
         false,
+        &approval_mgr,
     );
     let pm_injection = build_injection(
         PM_MODE_SPEC_JSON,
@@ -229,6 +244,7 @@ async fn main() -> Result<(), anyhow::Error> {
         &initial_ws,
         args.gateway.as_deref(),
         true,
+        &approval_mgr,
     );
 
     // 启动 WebSocket 服务

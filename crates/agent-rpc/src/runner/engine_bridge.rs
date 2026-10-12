@@ -21,7 +21,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use agent_base::domain::{AgentEvent, AgentEventBody, TurnStopReason};
 use agent_base::engine::{AgentRuntime, TurnRequest};
@@ -198,6 +198,26 @@ pub struct DirectEventSink {
     seq_violations: Mutex<Vec<String>>,
 }
 
+/// **关键事件**：这些事件被丢掉，界面就会"不知道有人在等你/这一轮已经结束"，
+/// 表现为静默卡死（用户看不到审批卡、也等不到收尾）。
+///
+/// 增量类事件（`TextDelta`/`ThinkingDelta`）丢一条无所谓——下一帧会补上；
+/// 关键事件是**状态跃迁**，丢一次就永久对不上。
+fn is_critical_event(body: &AgentEventBody) -> bool {
+    matches!(
+        body,
+        AgentEventBody::ApprovalRequested { .. }
+            | AgentEventBody::QuestionAsked { .. }
+            | AgentEventBody::ToolCallFinished { .. }
+            | AgentEventBody::TurnFinished { .. }
+            | AgentEventBody::Failed { .. }
+    )
+}
+
+/// 关键事件在通道满时的退避重试：最多等约 1 秒（100 × 10ms）。
+const CRITICAL_SEND_RETRIES: usize = 100;
+const CRITICAL_SEND_BACKOFF: Duration = Duration::from_millis(10);
+
 impl DirectEventSink {
     pub fn new(tx: mpsc::Sender<AgentEvent>) -> Self {
         Self {
@@ -228,6 +248,29 @@ impl EventSink for DirectEventSink {
                 ));
         } else {
             self.last_seq.store(event.seq, Ordering::Relaxed);
+        }
+        // 🔴 关键事件**绝不静默丢弃**：通道满时做**有界**退避重试（上限约 1 秒）。
+        //
+        // 丢一条增量只是少刷一帧文字；丢一次 `ApprovalRequested` / `TurnFinished`，
+        // 界面就永远不知道"有人在等你"或"这轮已经结束"——那是静默卡死，用户没有任何线索。
+        if is_critical_event(&event.body) {
+            let mut pending = event;
+            for _ in 0..CRITICAL_SEND_RETRIES {
+                match self.tx.try_send(pending) {
+                    Ok(()) => return,
+                    Err(mpsc::error::TrySendError::Full(back)) => {
+                        pending = back;
+                        std::thread::sleep(CRITICAL_SEND_BACKOFF);
+                    }
+                    // 接收端已关闭（本轮已收摊）——没有消费者了，重试没有意义
+                    Err(mpsc::error::TrySendError::Closed(_)) => return,
+                }
+            }
+            warn!(
+                "关键事件在通道持续拥塞下仍未送达（kind={}）：界面可能看不到这次状态跃迁",
+                pending.body.kind()
+            );
+            return;
         }
         let _ = self.tx.try_send(event);
     }

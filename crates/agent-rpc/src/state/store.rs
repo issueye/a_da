@@ -730,25 +730,56 @@ impl AgentStore {
                 }
             }
 
-            t.items.push(Item::Tool {
-                id: next_id("item_tool"),
-                at: now_millis(),
-                call_id: call_id.to_string(),
-                name: name.to_string(),
-                args: serde_json::from_str(raw_args).unwrap_or(serde_json::Value::Null),
-                raw_args: raw_args.to_string(),
-                status: "running".to_string(),
-                output: None,
-                patch: None,
-                details: None,
-                thread_id: Some(thread_id.to_string()),
-                checkpoint_id: None,
-                reverted: None,
-                duration_ms: None,
-                started_at: Some(now_millis() as i64),
-                finished_at: None,
-            });
+            // 🔴 审批阶段可能已经补过一张 `waiting_approval` 占位卡（引擎在 `ToolCallStarted`
+            // **之前**就发 `ApprovalRequested`，见 `set_tool_waiting_approval`）。这里必须
+            // **复用同一张**，不能再 push：同一 call_id 出现两张卡时，`finish_tool_call`
+            // 只会命中最后一张，先出现的那张会永远停在"等待批准"上。
+            let existing = t.items.iter().rposition(
+                |it| matches!(it, Item::Tool { call_id: cid, .. } if cid.as_str() == call_id),
+            );
+            if let Some(idx) = existing {
+                if let Item::Tool {
+                    name: n,
+                    args,
+                    raw_args: ra,
+                    status,
+                    started_at,
+                    ..
+                } = &mut t.items[idx]
+                {
+                    *n = name.to_string();
+                    *args = serde_json::from_str(raw_args).unwrap_or(serde_json::Value::Null);
+                    *ra = raw_args.to_string();
+                    *status = "running".to_string();
+                    if started_at.is_none() {
+                        *started_at = Some(now_millis() as i64);
+                    }
+                }
+            } else {
+                t.items.push(Item::Tool {
+                    id: next_id("item_tool"),
+                    at: now_millis(),
+                    call_id: call_id.to_string(),
+                    name: name.to_string(),
+                    args: serde_json::from_str(raw_args).unwrap_or(serde_json::Value::Null),
+                    raw_args: raw_args.to_string(),
+                    status: "running".to_string(),
+                    output: None,
+                    patch: None,
+                    details: None,
+                    thread_id: Some(thread_id.to_string()),
+                    checkpoint_id: None,
+                    reverted: None,
+                    duration_ms: None,
+                    started_at: Some(now_millis() as i64),
+                    finished_at: None,
+                });
+            }
         }
+
+        // 审批通过、工具开始执行 → "正在等你批准"不再是事实，必须重算：
+        // 否则"有会话在等你操作"的全局提示会一直挂在界面上（这条状态由卡片状态派生）。
+        self.refresh_waiting_state(thread_id);
     }
 
     /// 记录工具调用完成
@@ -879,22 +910,52 @@ impl AgentStore {
     /// 这个是"等用户批准/拒绝这次工具调用"；界面对两者的处理相同（同一组按钮），
     /// 但状态字符串不同，便于区分与诊断。
     pub fn set_tool_waiting_approval(&mut self, thread_id: &str, call_id: &str, tool: &str) {
+        let approval_detail = serde_json::json!({ "tool": tool, "pending": true });
         if let Some(t) = self.get_thread_mut(thread_id) {
+            let mut found = false;
             for item in t.items.iter_mut().rev() {
                 if let Item::Tool { call_id: cid, status, details, .. } = item {
                     if cid == call_id {
                         *status = "waiting_approval".to_string();
                         let mut det = details.take().unwrap_or_else(|| serde_json::json!({}));
                         if let Some(obj) = det.as_object_mut() {
-                            obj.insert(
-                                "approval".to_string(),
-                                serde_json::json!({ "tool": tool, "pending": true }),
-                            );
+                            obj.insert("approval".to_string(), approval_detail.clone());
+                        } else {
+                            det = serde_json::json!({ "approval": approval_detail.clone() });
                         }
                         *details = Some(det);
+                        found = true;
                         break;
                     }
                 }
+            }
+
+            // 🔴 找不到卡片就**补一张**。
+            //
+            // 引擎发 `ApprovalRequested` 是在 `ToolCallStarted`（唯一的建卡点，且在审批
+            // **通过之后**）之前，所以正常路径下这里**必然找不到**已存在的卡片。早先只
+            // "改已存在的卡片"，于是审批事件静默 no-op：界面既没有审批卡片、`waiting_thread_ids`
+            // 也为空——用户根本无从批准，只能干等审批超时（30 分钟）被自动拒绝。
+            // 卡片的 `call_id` 与后续 `ToolCallStarted` 一致，届时由 `start_tool_call` 复用。
+            if !found {
+                t.items.push(Item::Tool {
+                    id: next_id("item_tool"),
+                    at: now_millis(),
+                    call_id: call_id.to_string(),
+                    name: tool.to_string(),
+                    args: serde_json::Value::Null,
+                    raw_args: String::new(),
+                    status: "waiting_approval".to_string(),
+                    output: None,
+                    patch: None,
+                    details: Some(serde_json::json!({ "approval": approval_detail })),
+                    thread_id: Some(thread_id.to_string()),
+                    checkpoint_id: None,
+                    reverted: None,
+                    duration_ms: None,
+                    started_at: None,
+                    finished_at: None,
+                });
             }
         }
 
@@ -1132,6 +1193,84 @@ mod tests {
         assert!(is_waiting(&store), "等待用户答复同样属于'等你操作'");
         store.finish_tool_call(tid, "call_q1", true, Some("ok".into()), Some(1), Some(0), Some(1), None);
         assert!(!is_waiting(&store));
+    }
+
+    /// 守门：审批事件到达时工具卡片**还不存在**，也必须把卡片补出来。
+    ///
+    /// 引擎的真实顺序是：`ApprovalRequested` → 等用户 →（通过后）`ToolCallStarted`。
+    /// 也就是说建卡点（`start_tool_call`）**在审批之后**，`set_tool_waiting_approval`
+    /// 必然找不到已存在的卡片。早先它只"改已存在的卡片"，于是静默 no-op：
+    /// 界面没有审批卡、`waiting_thread_ids` 为空，用户无从批准，只能干等 30 分钟超时被拒。
+    /// （实测：一条含 `Format-Table` 的只读列目录命令就这样把整轮卡死。）
+    #[test]
+    fn test_approval_creates_the_tool_card_when_it_does_not_exist_yet() {
+        let mut store = AgentStore::new("E:/codes/approval_card_ws".to_string());
+        let tid = store.create_thread(Some("审批补卡".to_string()), None);
+        let tid = tid.as_str();
+
+        // 取某 call_id 的卡片快照：(状态, 工具名, details)
+        fn cards(
+            store: &AgentStore,
+            tid: &str,
+            call_id: &str,
+        ) -> Vec<(String, String, serde_json::Value)> {
+            store
+                .threads
+                .iter()
+                .find(|t| t.id == tid)
+                .map(|t| {
+                    t.items
+                        .iter()
+                        .filter_map(|it| match it {
+                            Item::Tool { call_id: cid, status, name, details, .. }
+                                if cid == call_id =>
+                            {
+                                Some((
+                                    status.clone(),
+                                    name.clone(),
+                                    details.clone().unwrap_or(serde_json::Value::Null),
+                                ))
+                            }
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+
+        // 审批先到：此时**没有任何**工具卡片
+        store.set_tool_waiting_approval(tid, "call_a1", "run_command");
+
+        let waiting = cards(&store, tid, "call_a1");
+        assert_eq!(waiting.len(), 1, "必须补出一张卡，而不是静默 no-op");
+        assert_eq!(waiting[0].0, "waiting_approval");
+        assert_eq!(waiting[0].1, "run_command");
+        assert_eq!(
+            waiting[0].2["approval"]["pending"],
+            serde_json::Value::Bool(true),
+            "卡片要带上'待批准'标记，界面据此渲染批准/拒绝按钮"
+        );
+        assert!(
+            store.waiting_thread_ids.iter().any(|id| id == tid),
+            "补出来的卡片也必须让'有会话在等你操作'可见"
+        );
+
+        // 审批通过后 `ToolCallStarted` 到达：**复用**这张卡，不得出现同 call_id 的两张
+        store.start_tool_call(tid, "call_a1", "run_command", r#"{"command":"ls"}"#);
+        let running = cards(&store, tid, "call_a1");
+        assert_eq!(running.len(), 1, "同一个 call_id 只能有一张卡，否则完成事件只会闭合最后一张");
+        assert_eq!(
+            (running[0].0.as_str(), running[0].1.as_str()),
+            ("running", "run_command")
+        );
+        assert!(
+            !store.waiting_thread_ids.iter().any(|id| id == tid),
+            "开始执行后不再是'等待中'"
+        );
+
+        // 收尾仍然能命中这张卡
+        store.finish_tool_call(tid, "call_a1", true, Some("ok".into()), Some(3), Some(0), Some(3), None);
+        assert_eq!(cards(&store, tid, "call_a1")[0].0, "done");
     }
 
     /// 守门：**运行中的子智能体会话必须继续从磁盘回流内容**。

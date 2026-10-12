@@ -805,3 +805,214 @@ async fn test_config_set_retry_count_is_clamped_and_persisted() {
 
     let _ = std::fs::remove_dir_all(&test_dir);
 }
+
+/// 端到端守门：**审批请求必须真的能弹到界面上，并被界面放行**。
+///
+/// 引擎的事件顺序是 `ApprovalRequested` →（等用户）→ `ToolCallStarted`（建卡，且在审批
+/// 通过**之后**）。早先 `store.set_tool_waiting_approval` 只改"已存在的卡片"，于是审批
+/// 事件静默 no-op：界面既没有审批卡、`waiting_thread_ids` 也为空——用户无从批准，只能干等
+/// 审批超时（默认 30 分钟）被自动拒绝。实测踩到：一条含 `Format-Table` 的**只读**列目录
+/// 命令被危险命令子串匹配误判为高危，整轮就此卡死。
+///
+/// 这条测试跑的是**真链路**：脚本模型 → `AgentRuntime::run_turn` → 事件桥 → dispatch 事件
+/// 循环 → `AgentStore`；然后走与前端完全相同的 `approval.decide` 把闸门放行，并断言本轮
+/// 继续跑完。闸门接的是**本 dispatcher 的** `ApprovalManager`（生产同构）。
+#[tokio::test]
+async fn test_approval_request_reaches_store_and_decide_resumes_the_turn() {
+    use agent_base::domain::{
+        Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolDescriptor, ToolReceipt,
+    };
+    use agent_base::engine::{AgentRuntime, RunPolicy};
+    use agent_base::model::{StreamDelta, ToolCallInfo};
+    use agent_base::ports::ToolCatalog;
+    use agent_base::testing::{
+        FixedClock, FixedPrompt, InMemorySessionStore, InMemoryToolCatalog, MockScope, MockTool,
+        ScriptedModelClient,
+    };
+    use agent_node::approval::HostApprovalGate;
+    use agent_node::node_config::FixedNodeConfig;
+    use agent_proto::ApprovalMode;
+
+    const CALL_ID: &str = "call_approval_e2e";
+
+    let approval_mgr = Arc::new(ApprovalManager::new());
+    // `Ask` 档位：一律要问，稳定触发审批（不依赖危险命令匹配）
+    let gate = Arc::new(HostApprovalGate::new(
+        Arc::new(FixedNodeConfig::new(
+            agent_base::model::ProviderConfig::default(),
+            ApprovalMode::Ask,
+        )),
+        approval_mgr.clone(),
+    ));
+
+    let tool = Arc::new(MockTool::new(
+        ToolDescriptor {
+            name: "read_file".to_string(),
+            summary: "读取文件".to_string(),
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": { "path": { "type": "string" } }
+            }),
+            access: Access::ReadOnly,
+            approval: ApprovalPolicy::Named("approval-guard"),
+            rollback: RollbackPolicy::None,
+            execution: Execution::Sequential,
+            termination: Termination::ContinueTurn,
+        },
+        ToolReceipt::success("文件内容", 0, 1),
+    ));
+    let catalog: Arc<dyn ToolCatalog> = Arc::new(InMemoryToolCatalog::with_tools(vec![tool]));
+
+    let model = Arc::new(ScriptedModelClient::new(vec![
+        // 第 1 轮：模型要求调用工具（必须先过审批）
+        vec![
+            StreamDelta::ToolCall {
+                call: ToolCallInfo {
+                    id: CALL_ID.to_string(),
+                    name: "read_file".to_string(),
+                    args: r#"{"path":"README.md"}"#.to_string(),
+                },
+            },
+            StreamDelta::Done { stop_reason: "tool_calls".to_string() },
+        ],
+        // 第 2 轮：拿到工具结果后自然收尾
+        vec![
+            StreamDelta::Text { text: "读完了".to_string() },
+            StreamDelta::Done { stop_reason: "stop".to_string() },
+        ],
+    ]));
+
+    let rt = Arc::new(AgentRuntime::new(
+        model,
+        catalog,
+        gate,
+        Arc::new(InMemorySessionStore::new()),
+        Arc::new(FixedPrompt::new("测试系统提示词")),
+        Arc::new(MockScope::new("s")),
+        Arc::new(FixedClock::new(1000)),
+        RunPolicy::default(),
+    ));
+
+    let store = Arc::new(RwLock::new(store_for_test("E:/codes/approval_e2e_ws")));
+    let test_dir = std::env::temp_dir().join(format!("a_da_appr_test_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&test_dir);
+    let dispatcher = Dispatcher::new(
+        store.clone(),
+        Arc::new(SessionManager::new(Some(test_dir.clone()))),
+        Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
+        Arc::new(SubagentManager::new()),
+        approval_mgr.clone(),
+        Arc::new(PluginManager::with_home(test_home_dir())),
+        Arc::new(SkillManager::with_home(test_home_dir())),
+        None,
+    )
+    .with_engine(rt);
+
+    let created = dispatcher
+        .dispatch("thread.create", serde_json::json!({ "title": "审批端到端" }))
+        .await
+        .unwrap();
+    let tid = created
+        .get("threadId")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .to_string();
+
+    dispatcher
+        .dispatch(
+            "thread.send",
+            serde_json::json!({ "threadId": tid, "text": "读一下 README" }),
+        )
+        .await
+        .unwrap();
+
+    // 取该会话下 CALL_ID 对应卡片的状态（界面渲染的依据就是这个状态）
+    let card_status = |store: &Arc<RwLock<AgentStore>>, tid: &str| {
+        let store = store.clone();
+        let tid = tid.to_string();
+        async move {
+            let s = store.read().await;
+            s.threads
+                .iter()
+                .find(|t| t.id == tid)
+                .and_then(|t| {
+                    t.items.iter().find_map(|it| match it {
+                        Item::Tool { call_id, status, .. } if call_id == CALL_ID => {
+                            Some(status.clone())
+                        }
+                        _ => None,
+                    })
+                })
+        }
+    };
+
+    // 1) 审批请求必须落到 store：卡片进入 `waiting_approval`，且"有会话在等你"可见。
+    //    这两件事缺任何一件，界面就弹不出审批卡（正是本次修的病）。
+    let mut saw_waiting = false;
+    let mut saw_visible = false;
+    for _ in 0..300 {
+        saw_waiting = card_status(&store, &tid).await.as_deref() == Some("waiting_approval");
+        saw_visible = store
+            .read()
+            .await
+            .waiting_thread_ids
+            .iter()
+            .any(|id| id == &tid);
+        if saw_waiting && saw_visible {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        saw_waiting,
+        "审批到达时工具卡片必须被补出来并进入 waiting_approval（否则界面没有批准按钮）"
+    );
+    assert!(
+        saw_visible,
+        "审批等待必须让 waiting_thread_ids 可见（否则别的标签页上完全看不出来）"
+    );
+
+    // 2) 界面上点"批准" → 与前端同一条 RPC
+    let decided = dispatcher
+        .dispatch(
+            "approval.decide",
+            serde_json::json!({ "toolItemId": CALL_ID, "approved": true }),
+        )
+        .await
+        .expect("approval.decide 必须可分发");
+    assert_eq!(
+        decided.get("resolved").and_then(|v| v.as_bool()),
+        Some(true),
+        "必须命中引擎注册的等待通道（命中不了就说明闸门与 manager 没接上）"
+    );
+
+    // 3) 放行后本轮必须继续跑完：卡片收尾、等待态摘除、会话不再运行
+    let mut done = false;
+    for _ in 0..300 {
+        done = card_status(&store, &tid).await.as_deref() == Some("done");
+        if done {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(done, "批准后工具必须真的执行并收尾（卡片应为 done）");
+    let s = store.read().await;
+    assert!(
+        !s.waiting_thread_ids.iter().any(|id| id == &tid),
+        "开始执行/收尾后不得仍挂着'等待审批'"
+    );
+    assert!(
+        s.threads
+            .iter()
+            .find(|t| t.id == tid)
+            .map(|t| {
+                t.items.iter().any(|it| {
+                    matches!(it, Item::Assistant { text, .. } if text.contains("读完了"))
+                })
+            })
+            .unwrap_or(false),
+        "闸门放行后本轮应继续到底（第 2 轮模型的收尾文本要落进会话）"
+    );
+
+    let _ = std::fs::remove_dir_all(&test_dir);
+}

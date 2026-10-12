@@ -661,7 +661,9 @@ impl Dispatcher {
                 let (abort_tx, abort_rx) = watch::channel(false);
                 abort_senders_clone.lock().await.insert(target_tid_clone.clone(), abort_tx);
 
-                let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(128);
+                // 容量给足：模型流式时 `TextDelta` 事件密集，通道小会让关键事件（审批/收尾）
+                // 更容易撞上"满"而被丢。关键事件另有不可丢的退避重试（见 DirectEventSink）。
+                let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(1024);
                 let turn_started = std::time::Instant::now();
                 let tid = target_tid_clone.clone();
                 let prompt = current_prompt.take();

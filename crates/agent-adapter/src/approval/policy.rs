@@ -68,16 +68,69 @@ pub fn is_command_tool(tool_name: &str, config: &ApprovalGuardConfig) -> bool {
     }
 }
 
-/// 检查是否包含破坏性危险命令。
-pub fn is_destructive_command(cmd: &str, confirm_list: &[String]) -> bool {
-    let lower = cmd.to_lowercase();
-    for pattern in confirm_list {
-        let pat_lower = pattern.to_lowercase();
-        if lower.contains(&pat_lower) {
-            return true;
-        }
+/// 把命令行切成"词"：按空白与常见 shell 分隔符切。
+///
+/// 🔴 为什么要分词（而不是整串子串匹配）：命令里的**连字符必须留在词内**，
+/// 这样 `Format-Table` 是一个词、不会等于 `format`；引号与 `|`/`;`/`&` 等分隔符
+/// 则要从词里剔掉，避免 `"rm"` / `x|rm` 这类形式漏判。
+fn tokenize(cmd: &str) -> Vec<String> {
+    cmd.to_lowercase()
+        .split(|c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    ';' | '|' | '&' | '(' | ')' | '"' | '\'' | ',' | '=' | '<' | '>' | '`'
+                )
+        })
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// 一个命令行词是否等于危险模式词。
+///
+/// 额外容忍路径与可执行后缀：`C:\tools\rm.exe` 仍应被 `rm` 命中。
+fn token_matches(token: &str, pat: &str) -> bool {
+    if token == pat {
+        return true;
     }
-    false
+    let base = token.rsplit(['/', '\\']).next().unwrap_or(token);
+    base == pat
+        || base
+            .strip_suffix(".exe")
+            .or_else(|| base.strip_suffix(".cmd"))
+            .or_else(|| base.strip_suffix(".bat"))
+            .or_else(|| base.strip_suffix(".ps1"))
+            .is_some_and(|stem| stem == pat)
+}
+
+/// 检查是否包含破坏性危险命令。
+///
+/// 🔴 判定是**按词**的：把模式也切成词，要求命令行里存在**连续的一段词**与之逐词相等。
+///
+/// 早先用的是 `cmd.to_lowercase().contains(pattern)`——**子串**匹配，于是清单里的
+/// `"format"` 会被 PowerShell 的 `Format-Table` 命中，一条纯只读的列目录命令被当成
+/// "高危"强制弹审批（实测把整轮卡死在审批闸门 30 分钟）；`"rm "` / `"del "` 同理，
+/// 会命中任何恰好含这几个字符的文本（例如 `...-Recurse` 之后的 `--del-file`）。
+pub fn is_destructive_command(cmd: &str, confirm_list: &[String]) -> bool {
+    let tokens = tokenize(cmd);
+    if tokens.is_empty() {
+        return false;
+    }
+    confirm_list.iter().any(|pattern| {
+        let pat_tokens = tokenize(pattern);
+        if pat_tokens.is_empty() {
+            return false;
+        }
+        tokens
+            .windows(pat_tokens.len())
+            .any(|window| {
+                window
+                    .iter()
+                    .zip(&pat_tokens)
+                    .all(|(token, pat)| token_matches(token, pat))
+            })
+    })
 }
 
 /// 审批策略决策判定核心（严格对齐 TS 端 approval-guard 规范）。
@@ -220,5 +273,47 @@ mod tests {
         );
         assert_eq!(extract_command(&json!({ "cmd": "ls" })).as_deref(), Some("ls"));
         assert_eq!(extract_command(&json!({ "path": "a.rs" })), None);
+    }
+
+    /// 守门：危险判定必须**按词**，不能拿子串去比。
+    ///
+    /// 实测踩过：PowerShell 的表格输出命令 `Format-Table` 含子串 `format`，
+    /// 于是一条 `Get-ChildItem ... | Format-Table` 的**纯只读**列目录命令被判定为
+    /// 高危、强制弹审批，整轮卡死在审批闸门里（30 分钟超时后被自动拒绝）。
+    #[test]
+    fn test_destructive_scan_matches_tokens_not_substrings() {
+        let list = ApprovalGuardConfig::default().confirm_commands;
+
+        // 只读列表命令里的 Format-Table 不得被当成 `format`
+        assert!(
+            !is_destructive_command(
+                "powershell -NoProfile -Command \"Get-ChildItem -Path crates -Recurse \
+                 -Filter *.rs | Sort-Object L -Descending | Format-Table -AutoSize\"",
+                &list
+            ),
+            "Format-Table 不是 format 命令"
+        );
+        // 其它"含危险词片段但不构成危险命令"的写法
+        assert!(!is_destructive_command("cargo test --test reset_all", &list));
+        assert!(!is_destructive_command("echo reformat", &list));
+
+        // 保守侧（**刻意保留**）：危险词以完整词形出现就仍然问。
+        // 宁可多问一次（用户点一下就好），也不放过藏在引号/包装器里的真危险命令。
+        assert!(is_destructive_command("git log --grep 'rm -rf'", &list));
+        assert!(is_destructive_command("powershell -Command \"rm -r x\"", &list));
+
+        // 真危险命令仍必须命中（含两个词的 `git push` 与带路径/后缀的形式）
+        assert!(is_destructive_command("rm -rf /tmp/x", &list));
+        assert!(is_destructive_command("del build\\out.exe", &list));
+        assert!(is_destructive_command("git push --force", &list));
+        assert!(is_destructive_command("git reset --hard HEAD~1", &list));
+        assert!(is_destructive_command("format D: /q", &list));
+        assert!(is_destructive_command("taskkill /F /IM node.exe", &list));
+        assert!(
+            is_destructive_command("C:\\tools\\rmdir.exe /s /q out", &list),
+            "带路径与 .exe 后缀的可执行名仍要认出来"
+        );
+        // 分隔符/引号不应挡住判定
+        assert!(is_destructive_command("cd /tmp && rm -rf x", &list));
     }
 }

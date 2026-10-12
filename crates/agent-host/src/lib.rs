@@ -89,6 +89,14 @@ pub struct HostOptions {
     pub store: Option<Arc<RwLock<AgentStore>>>,
     /// 技能管理器实例（若不注入则装配默认实例）。
     pub skill_mgr: Option<Arc<agent_node::skills::SkillManager>>,
+    /// 审批 waiter 表（若不注入则自建一个）。
+    ///
+    /// 🔴 **同一进程里所有引擎必须共用同一个实例**：`Dispatcher.approval_mgr` 是 UI 的
+    /// `approval.decide` 落到的那张表，而闸门（[`HostApprovalGate`]）把 waiter 注册到
+    /// 自己那份表上。各装配一次就多一张表，UI 的批准就永远送不到闸门——表现为
+    /// "审批卡弹出来了、点了批准却一直卡住"，直到 30 分钟超时被自动拒绝。
+    /// **按工作区动态装配**（`EngineFactory`）时尤其容易漏：那次装配同样必须复用这张表。
+    pub approval_mgr: Option<Arc<ApprovalManager>>,
 }
 
 impl HostOptions {
@@ -101,7 +109,14 @@ impl HostOptions {
             broadcast_tx: None,
             store: None,
             skill_mgr: None,
+            approval_mgr: None,
         }
+    }
+
+    /// 复用宿主已有的审批 waiter 表（跨引擎共享，见字段注释）。
+    pub fn with_approval_manager(mut self, mgr: Arc<ApprovalManager>) -> Self {
+        self.approval_mgr = Some(mgr);
+        self
     }
 
     /// 复用宿主已有的会话态（推荐：让引擎与 UI 看同一份配置）。
@@ -230,7 +245,13 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
         .unwrap_or_else(|| Arc::new(RwLock::new(AgentStore::new(
             workspace.to_string_lossy().to_string(),
         ))));
-    let approval = Arc::new(ApprovalManager::new());
+    // 复用宿主注入的 waiter 表：**同一进程里所有引擎（含按工作区动态装配的那些）
+    // 必须把 waiter 注册到同一张表**，否则 UI 的 `approval.decide` 找不到闸门的等待者
+    // （见 `HostOptions::approval_mgr`）。
+    let approval = options
+        .approval_mgr
+        .clone()
+        .unwrap_or_else(|| Arc::new(ApprovalManager::new()));
 
     // 事件出口：有 ws 传输层就广播，没有就走离线形态（只记账，不产生无人消费的通道）
     let events = Arc::new(match &options.broadcast_tx {
@@ -510,10 +531,47 @@ mod tests {
         ]]))
     }
 
+    /// 守门：**注入的审批 waiter 表必须被复用**，装配过程不得换一张新的。
+    ///
+    /// 同一进程里会有多个引擎：coding、PM 模式预设、以及**按工作区动态装配**的那些
+    /// （`EngineFactory` 每次都用 `run_from_spec` 现装一个）。而 UI 的 `approval.decide`
+    /// 只认 `Dispatcher` 手里那一张表——各装配一份新表，就会变成"审批卡弹出来了、
+    /// 点批准却永远卡住"，一直卡到 30 分钟超时被自动拒绝。
+    #[tokio::test]
+    async fn test_injected_approval_manager_is_reused() {
+        let ws = tmp_ws("approval_share");
+        let shared = Arc::new(ApprovalManager::new());
+
+        // 启动期那次装配
+        let hosted = run_from_spec(
+            AgentSpec::from_json_str(SKELETON_SPEC).expect("spec 合法"),
+            HostOptions::new(&ws)
+                .with_model(scripted())
+                .with_approval_manager(shared.clone()),
+        )
+        .expect("装配必须成功");
+        assert!(
+            Arc::ptr_eq(&hosted.approval, &shared),
+            "装配必须复用注入的 waiter 表；换一张新的，UI 的批准就送不到闸门"
+        );
+
+        // 模拟"按工作区动态装配"那一次（同一个进程、另一份 spec 实例）
+        let dynamic = run_from_spec(
+            AgentSpec::from_json_str(SKELETON_SPEC).expect("spec 合法"),
+            HostOptions::new(&ws)
+                .with_model(scripted())
+                .with_approval_manager(shared.clone()),
+        )
+        .expect("动态装配必须成功");
+        assert!(
+            Arc::ptr_eq(&dynamic.approval, &shared),
+            "动态装配的引擎也必须挂到**同一张** waiter 表上"
+        );
+    }
+
     /// W3-T1 出口判据：**从 spec 到 AgentRuntime 的全链路**。
     #[tokio::test]
-    async fn test_run_from_spec_builds_runtime_end_to_end() {
-        let ws = tmp_ws("e2e");
+    async fn test_run_from_spec_builds_runtime_end_to_end() {        let ws = tmp_ws("e2e");
         let spec = AgentSpec::from_json_str(SKELETON_SPEC).expect("spec 合法");
 
         let hosted = run_from_spec(
