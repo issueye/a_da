@@ -564,6 +564,7 @@ export class AgentWebSocketClient {
    * - 再把 `upserted` 按 `(threadId, itemId)` 合并、按 `removed` 摘掉（否则会留幽灵卡片）。
    */
   private applyPatch(p: any) {
+    this.noteApprovalFrame('patch')
     if (!p) return
     if (typeof p.baseSeq === 'number' && p.baseSeq !== this.lastSnapshotSeq) {
       this.resyncFullSnapshot()
@@ -638,6 +639,17 @@ export class AgentWebSocketClient {
     this.notify()
   }
 
+  /// 批准后的**第一帧**到达时收口第④段（③→④＝帧处理与渲染的可见延迟）。
+  private noteApprovalFrame(kind: string) {
+    if (!this.approvalT0 || !this.approvalT3) return
+    const t0 = this.approvalT0
+    const t3 = this.approvalT3
+    this.approvalT0 = 0
+    this.approvalT3 = 0
+    const t4 = performance.now()
+    console.log(`[批准] ④` + kind + ` 帧应用 t=` + (t4 - t0).toFixed(1) + `ms（③→④ ` + (t4 - t3).toFixed(1) + `ms）`)
+  }
+
   /** 增量帧丢了（seq 不连续）时的自愈：要一次全量快照，而不是拿本地状态继续拼。 */
   private resyncFullSnapshot() {
     void this.request('session.snapshot', {})
@@ -650,6 +662,7 @@ export class AgentWebSocketClient {
   }
 
   public applySnapshot(snap: any) {
+    this.noteApprovalFrame('snapshot')
     if (!snap) return
     const payload = snap.payload || snap
     if (typeof payload.seq === 'number') this.lastSnapshotSeq = payload.seq
@@ -1269,8 +1282,25 @@ export class AgentWebSocketClient {
     return this.request('question.answer', { callId, choice, text, choices })
   }
 
+  /// 批准/拒绝的**四段耗时**诊断（只写日志，不改行为）。
+  ///
+  /// 用户实测"点批准要等 2–4 秒"，而内存（387MB）、帧大小（8KB/帧）、工作区进程数都已正常，
+  /// 只剩三段可能：①→② 渲染主线程排队 / ②→③ 链路与后端 / ③→④ 帧处理与渲染。
+  /// 日志会经 Electron 主进程写进 `~/.a-da/launcher.log`，grep `[批准]` 即得四段数字。
+  private approvalT0 = 0
+  private approvalT3 = 0
+
   public decideApproval(toolItemId: string, approved: boolean) {
-    return this.request('approval.decide', { toolItemId, approved })
+    const t0 = performance.now()
+    this.approvalT0 = t0
+    this.approvalT3 = 0
+    console.log(`[批准] ①点击 toolItemId=${toolItemId} approved=${approved} t=0ms`)
+    console.log(`[批准] ②发出 approval.decide t=${(performance.now() - t0).toFixed(1)}ms`)
+    return this.request('approval.decide', { toolItemId, approved }).then((r) => {
+      this.approvalT3 = performance.now()
+      console.log(`[批准] ③收到回执 t=${(this.approvalT3 - t0).toFixed(1)}ms（②→③ ${(this.approvalT3 - t0).toFixed(1)}ms 含链路+后端）`)
+      return r
+    })
   }
 
   // ── 上下文压缩与优化 ──
