@@ -55,8 +55,12 @@ export const AskUserPrompt: React.FC<{
 
   const canSubmit = multi ? selected.length > 0 || Boolean(trimmed) : Boolean(trimmed)
 
-  const chipBase =
-    'px-2.5 py-1 rounded-lg text-xs font-medium transition-colors shadow-xs border flex items-center space-x-1'
+  // 选项按钮是**两行块**（id+文案 / 说明），多选开关仍是单行小 chip——
+  // 两者的对齐方式不同，所以把"外观"与"布局"拆开写，避免同一个 class 里
+  // `items-start` 与 `items-center` 打架（Tailwind 的胜负看规则顺序，不看书写顺序）。
+  const chipLook = 'px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors shadow-xs border text-left'
+  const chipOption = `${chipLook} flex items-start space-x-1.5 min-w-[190px] max-w-[460px]`
+  const chipToggle = `${chipLook} flex items-center space-x-1`
   const chipIdle =
     tone === 'amber'
       ? 'bg-white dark:bg-amber-900/40 hover:bg-amber-100 dark:hover:bg-amber-800/50 border-amber-300/80 dark:border-amber-700/50 text-amber-900 dark:text-amber-100'
@@ -69,7 +73,7 @@ export const AskUserPrompt: React.FC<{
   return (
     <div className="space-y-2">
       {hasOptions && (
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex flex-wrap items-start gap-1.5">
           {options.map((opt: any) => {
             const active = multi && selected.includes(opt.value)
             return (
@@ -78,11 +82,11 @@ export const AskUserPrompt: React.FC<{
                 type="button"
                 title={opt.description || opt.label}
                 onClick={() => (multi ? toggle(opt.value) : onAnswer(question.callId, opt.value))}
-                className={`${chipBase} ${active ? chipActive : chipIdle}`}
+                className={`${chipOption} ${active ? chipActive : chipIdle}`}
               >
                 {multi && (
                   <span
-                    className={`w-3 h-3 rounded-[4px] border flex items-center justify-center ${
+                    className={`mt-[2px] w-3 h-3 shrink-0 rounded-[4px] border flex items-center justify-center ${
                       active ? 'border-white/80 bg-white/20' : 'border-current opacity-50'
                     }`}
                   >
@@ -93,14 +97,27 @@ export const AskUserPrompt: React.FC<{
                     用户要能一眼对上"我在选哪一条"，也能照着 id 在输入框里回话。 */}
                 {opt.id && (
                   <span
-                    className={`font-mono text-[10px] leading-none px-1 py-0.5 rounded ${
+                    className={`shrink-0 font-mono text-[10px] leading-none px-1 py-0.5 rounded ${
                       active ? 'bg-white/20 text-white' : 'bg-black/10 dark:bg-white/15 opacity-80'
                     }`}
                   >
                     {opt.id}
                   </span>
                 )}
-                <span>{opt.label}</span>
+                {/* 文案一行、说明折在下面：说明里通常写着"代价/风险"，是选哪条的关键依据，
+                    藏在 hover tooltip 里等于没给。 */}
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="break-words">{opt.label}</span>
+                  {opt.description && (
+                    <span
+                      className={`mt-0.5 text-[10px] font-normal leading-snug whitespace-normal break-words ${
+                        active ? 'text-white/85' : 'opacity-70'
+                      }`}
+                    >
+                      {opt.description}
+                    </span>
+                  )}
+                </span>
               </button>
             )
           })}
@@ -113,7 +130,7 @@ export const AskUserPrompt: React.FC<{
               setSelected([])
             }}
             title={multi ? '切回单选（点一下即答）' : '切换为多选（可勾选多个选项后一起提交）'}
-            className={`${chipBase} ${
+            className={`${chipToggle} ${
               multi
                 ? 'bg-zinc-800 dark:bg-zinc-700 text-white border-zinc-700 dark:border-zinc-600'
                 : 'bg-transparent border-dashed border-zinc-300 dark:border-zinc-600 text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'
