@@ -112,6 +112,8 @@ pub const QUEUE_REMOVE: &str = "queue.remove";
 
 // 服务端推送事件主题常量
 pub const EVT_STATE_SNAPSHOT: &str = "evt.state.snapshot";
+/// **增量状态帧**：只带变过的 item（客户端在 session.initialize 里声明 state.patch 才收）
+pub const EVT_STATE_PATCH: &str = "evt.state.patch";
 pub const EVT_MESSAGE_DELTA: &str = "evt.message.delta";
 pub const EVT_CARD_UPDATED: &str = "evt.card.updated";
 

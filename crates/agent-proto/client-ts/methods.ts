@@ -112,5 +112,7 @@ export const STATS_PROMPT_CHARS = 'stats.promptChars'
 
 // 服务端推送事件主题 (Events)
 export const EVT_STATE_SNAPSHOT = 'evt.state.snapshot'
+// 增量状态帧：只带变过的 item（客户端在 session.initialize 里声明 state.patch 才收）
+export const EVT_STATE_PATCH = 'evt.state.patch'
 export const EVT_MESSAGE_DELTA = 'evt.message.delta'
 export const EVT_CARD_UPDATED = 'evt.card.updated'

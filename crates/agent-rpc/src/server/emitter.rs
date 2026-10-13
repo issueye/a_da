@@ -26,6 +26,12 @@ pub struct StateBroadcaster {
     /// **默认关闭**：没声明的连接继续收全量快照——这是『宿主先落地、客户端后跟上』
     /// 的安全绳，也是出问题时的回滚路径。
     patch_enabled: Arc<AtomicBool>,
+    /// 上次**发出去**的 seq（增量帧的 `baseSeq`，客户端据此判断有没有缺帧）。
+    last_sent_seq: Arc<AtomicU64>,
+    /// 已发给这条连接的 item 版本：`(threadId,itemId) → 指纹`。
+    ///
+    /// 增量帧的全部意义就在这张表：指纹没变就不推（见 `crate::state::patch::diff_items`）。
+    versions: Arc<std::sync::Mutex<std::collections::BTreeMap<crate::state::patch::ItemKey, u64>>>,
 }
 
 /// 合帧的基础间隔（60FPS 打字机）
@@ -58,6 +64,8 @@ impl StateBroadcaster {
             dirty: Arc::new(AtomicBool::new(false)),
             last_frame_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             patch_enabled: Arc::new(AtomicBool::new(false)),
+            last_sent_seq: Arc::new(AtomicU64::new(0)),
+            versions: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
         });
 
         let b = broadcaster.clone();
@@ -92,23 +100,80 @@ impl StateBroadcaster {
         self.dirty.store(true, Ordering::Relaxed);
     }
 
-    /// 立即强制广播一次当前最新快照（跳过节流窗口，用于重要事件或轮次结束）
+    /// 立即强制广播一次（跳过节流窗口，用于重要事件或轮次结束）。
+    ///
+    /// 两条路：
+    /// - 客户端声明了 `state.patch` → 发**增量帧** `evt.state.patch`（只带变过的 item）；
+    /// - 否则 → 发**全量快照** `evt.state.snapshot`（首帧、自愈、重连、老客户端都走这条）。
     pub async fn broadcast_immediate(&self) {
         self.dirty.store(false, Ordering::Relaxed);
         let current_seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
-        let store = self.store.read().await;
-        let snapshot = generate_snapshot_with_seq(&store, current_seq);
-        let event = SnapshotEvent {
-            seq: current_seq,
-            topic: EVT_STATE_SNAPSHOT.to_string(),
-            payload: snapshot,
+        let snapshot = {
+            let store = self.store.read().await;
+            generate_snapshot_with_seq(&store, current_seq)
         };
-        let frame = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": EVT_STATE_SNAPSHOT,
-            "params": event
-        });
-        if let Ok(json_str) = serde_json::to_string(&frame) {
+        let base_seq = self.last_sent_seq.swap(current_seq, Ordering::Relaxed);
+
+        let payload = if self.patch_enabled() {
+            // 本帧要投影的全部 item（只数带 items 的会话）
+            let current: Vec<(String, agent_proto::Item)> = snapshot
+                .threads
+                .iter()
+                .filter(|t| !t.items.is_empty())
+                .flat_map(|t| t.items.iter().map(move |it| (t.id.clone(), it.clone())))
+                .collect();
+
+            let delta = {
+                let mut versions = self.versions.lock().expect("版本表锁被毒化");
+                let d = crate::state::patch::diff_items(&versions, &current);
+                crate::state::patch::advance_versions(&mut versions, &current);
+                d
+            };
+
+            // `meta` 与快照**同形**，只是各会话不带 items——客户端 applyPatch 正是这么消费的：
+            // 先用 meta 覆盖线程元数据与小字段，再按 upserted/removed 合并 item。
+            let mut meta = serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null);
+            if let Some(threads) = meta.get_mut("threads").and_then(|t| t.as_array_mut()) {
+                for t in threads.iter_mut() {
+                    if let Some(obj) = t.as_object_mut() {
+                        obj.insert("items".to_string(), serde_json::json!([]));
+                    }
+                }
+            }
+
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": EVT_STATE_PATCH,
+                "params": {
+                    "seq": current_seq,
+                    "baseSeq": base_seq,
+                    "meta": meta,
+                    "upserted": delta
+                        .upserted
+                        .iter()
+                        .map(|(tid, it)| serde_json::json!({ "threadId": tid, "item": it }))
+                        .collect::<Vec<_>>(),
+                    "removed": delta
+                        .removed
+                        .iter()
+                        .map(|(tid, iid)| serde_json::json!({ "threadId": tid, "itemId": iid }))
+                        .collect::<Vec<_>>(),
+                }
+            })
+        } else {
+            let event = SnapshotEvent {
+                seq: current_seq,
+                topic: EVT_STATE_SNAPSHOT.to_string(),
+                payload: snapshot,
+            };
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": EVT_STATE_SNAPSHOT,
+                "params": event
+            })
+        };
+
+        if let Ok(json_str) = serde_json::to_string(&payload) {
             // 记下这一帧多大：下一帧的间隔据此自适应（见 `next_frame_interval`）
             self.last_frame_bytes.store(json_str.len(), Ordering::Relaxed);
             let _ = self.broadcast_tx.send(json_str);
@@ -214,6 +279,80 @@ mod tests {
             next_frame_interval(last),
             FRAME_INTERVAL_BIG,
             "大帧之后必须切到慢档"
+        );
+    }
+
+    /// 🔴 增量帧的验收断言（docs/state-patch-plan.md）：**没变过的 item 不许出现在 `upserted`**。
+    ///
+    /// 这是整个增量方案省字节的地方：一条长会话 822 个 item、全量帧 1.85 MB，
+    /// 而稳态下一帧只有"正在流式的那一个 item + 小 meta"——从 MB 级降到几十 KB。
+    #[tokio::test]
+    async fn test_patch_mode_sends_only_changed_items() {
+        let store = Arc::new(RwLock::new(AgentStore::new("E:/test_patch_mode".to_string())));
+        let seq = Arc::new(AtomicU64::new(0));
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let broadcaster = StateBroadcaster::new(store.clone(), seq, tx);
+
+        let mut tid = String::new();
+        {
+            let mut s = store.write().await;
+            tid = s.create_thread(Some("增量".to_string()), None);
+            s.start_tool_call(&tid, "call_x", "run_command", "{}");
+            s.finish_tool_call(
+                &tid,
+                "call_x",
+                true,
+                Some("输出".to_string()),
+                Some(1),
+                Some(0),
+                Some(1),
+                None,
+            );
+        }
+        // 断言只看**本用例这条线程**：`AgentStore::new` 会把用户已有的会话一起读进来
+        // （本机实测有合成出来的 800 item 长会话），拿全局计数断言会随环境漂移。
+        let mine = |v: &serde_json::Value| -> usize {
+            v["params"]["upserted"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter(|u| u["threadId"].as_str() == Some(tid.as_str()))
+                        .count()
+                })
+                .unwrap_or(0)
+        };
+
+        // 1. 没声明能力 → 全量快照（老客户端/首帧路径不受影响）
+        broadcaster.broadcast_immediate().await;
+        let full = rx.recv().await.expect("应收到一帧");
+        assert!(full.contains("evt.state.snapshot"), "未开增量应发全量快照");
+
+        // 2. 声明能力后第一帧：版本表是空的，等价于把现有 item 全推一次
+        broadcaster.enable_patch_mode();
+        broadcaster.broadcast_immediate().await;
+        let first: serde_json::Value =
+            serde_json::from_str(&rx.recv().await.expect("应收到增量帧")).expect("增量帧应是 JSON");
+        assert_eq!(
+            first["method"].as_str(),
+            Some("evt.state.patch"),
+            "开了增量应发 evt.state.patch"
+        );
+        assert_eq!(mine(&first), 1, "首帧应把本条线程的 item 推一次");
+
+        // 3. 状态没变 → 本条线程的 upserted 必须为空（这就是省下来的字节）
+        broadcaster.broadcast_immediate().await;
+        let steady: serde_json::Value =
+            serde_json::from_str(&rx.recv().await.expect("应收到稳态帧")).expect("稳态帧应是 JSON");
+        assert_eq!(
+            mine(&steady),
+            0,
+            "没变过的 item 不许出现在 upserted（别的线程有变化不算）"
+        );
+        // `baseSeq` 必须等于上一帧的 seq，客户端据此判断有没有缺帧
+        assert_eq!(
+            steady["params"]["baseSeq"].as_u64(),
+            steady["params"]["seq"].as_u64().map(|s| s - 1),
+            "baseSeq 必须是上一帧的 seq"
         );
     }
 }
