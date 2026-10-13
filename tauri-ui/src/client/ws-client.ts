@@ -569,9 +569,40 @@ export class AgentWebSocketClient {
       this.resyncFullSnapshot()
       return
     }
-    const meta = p.meta || {}
-    this.applySnapshot({ ...meta, threads: Array.isArray(meta.threads) ? meta.threads : [] })
 
+    // 🔴 **patch 只做增删改，绝不做覆盖**。
+    //
+    // 早先这里为了省事复用了 `applySnapshot(meta)`——而 `meta` 里各会话的 `items` 是**空数组**
+    // （宿主刻意不带 items，正是为了省字节）。结果每来一帧增量，本地已有的卡片就被清空一次、
+    // 再靠 upserted 一条条补回来：界面反复重建、未变更的卡片整帧丢失。
+    // 用户实测就是"点批准/发消息响应非常慢"——这一条是那次止损的根因。
+    const meta: any = p.meta || {}
+    const { threads: metaThreads, ...metaRest } = meta
+
+    // 1. 小字段（queue/running/log/config/ui/workspace/providers…）整体覆盖：它们本来就小且是权威值
+    Object.assign(this.snapshot, metaRest)
+
+    // 2. 线程**元数据**就地更新：已有线程保留自己的 items；新线程补空 items 等着被 upsert 填
+    if (Array.isArray(metaThreads)) {
+      const byId = new Map<string, any>(this.snapshot.threads.map((t: any) => [t.id, t]))
+      const next: any[] = []
+      for (const mt of metaThreads) {
+        const cur = byId.get(mt.id)
+        if (cur) {
+          Object.assign(cur, mt, { items: Array.isArray(cur.items) ? cur.items : [] })
+          next.push(cur)
+        } else {
+          next.push({ ...mt, items: [] })
+        }
+      }
+      // 本地乐观创建、服务端还不知道的临时会话不能被这一帧冲掉
+      for (const t of this.snapshot.threads) {
+        if (t?.id?.startsWith('thread_tmp_') && !next.some((x: any) => x.id === t.id)) next.push(t)
+      }
+      this.snapshot.threads = next
+    }
+
+    // 3. 增删改 item（这是增量帧唯一携带的"大内容"）
     const upserted = Array.isArray(p.upserted) ? p.upserted : []
     for (const u of upserted) {
       if (!u?.item) continue
@@ -592,7 +623,18 @@ export class AgentWebSocketClient {
       }
     }
 
-    if (typeof p.seq === 'number') this.lastSnapshotSeq = p.seq
+    // 4. 激活会话：本地那个仍然有效时不被服务端的滞后值覆盖（与 applySnapshot 同一口径）
+    const localActive = this.snapshot.activeThreadId
+    const localActiveValid =
+      localActive && this.snapshot.threads.some((t: any) => t.id === localActive)
+    if (!localActiveValid && meta.activeThreadId) {
+      this.snapshot.activeThreadId = meta.activeThreadId
+    }
+
+    if (typeof p.seq === 'number') {
+      this.lastSnapshotSeq = p.seq
+      ;(this.snapshot as any).seq = p.seq
+    }
     this.notify()
   }
 
