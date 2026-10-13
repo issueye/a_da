@@ -95,6 +95,16 @@ impl StateBroadcaster {
         self.patch_enabled.load(Ordering::Relaxed)
     }
 
+    /// 当前**已发出的状态版本**（最后一帧的 `seq`）。
+    ///
+    /// 每一份**全量快照**——首帧种子、`session.snapshot` 的响应——都必须带上它。
+    /// 客户端把快照的 `seq` 记为 `lastSnapshotSeq`，而下一帧增量帧的 `baseSeq` 正是这个值；
+    /// 写死成常量就会让两者的比对永远失败，客户端的"缺帧自愈"变成每帧一次的请求/响应死循环
+    /// （实测 376 次/秒，渲染进程满核、内存持续上涨）。
+    pub fn last_sent_seq(&self) -> u64 {
+        self.last_sent_seq.load(Ordering::Relaxed)
+    }
+
     /// 标记状态有更新，等待合帧窗口统一推流
     pub fn mark_dirty(&self) {
         self.dirty.store(true, Ordering::Relaxed);

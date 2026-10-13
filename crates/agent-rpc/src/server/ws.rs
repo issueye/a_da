@@ -1,6 +1,6 @@
 use agent_proto::*;
 use crate::server::dispatch::Dispatcher;
-use crate::state::{generate_snapshot, AgentStore};
+use crate::state::{generate_snapshot_with_seq, AgentStore};
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicU64;
@@ -184,12 +184,18 @@ impl WsHostServer {
             senders.push(tx.clone());
         }
 
-        // 推送首帧种子快照 (seq = 0，对齐协议 §1.3)
+        // 推送首帧种子快照。
+        //
+        // seq 取**当前已发出的状态版本**，不能写死 0：客户端会把它记为 `lastSnapshotSeq`，
+        // 而下一帧增量帧的 `baseSeq` 正是这个值。写死 0 时只有"首个连接且还没有任何帧"
+        // 才对得上，第二个连接（或任何已经推过帧之后连进来的客户端）永远对不上，
+        // 客户端的"缺帧自愈"就会每帧触发一次，变成请求/响应死循环。
         {
             let store = self.store.read().await;
-            let snapshot = generate_snapshot(&store);
+            let seed_seq = self.broadcaster.last_sent_seq();
+            let snapshot = generate_snapshot_with_seq(&store, seed_seq);
             let seed_event = SnapshotEvent {
-                seq: 0,
+                seq: seed_seq,
                 topic: EVT_STATE_SNAPSHOT.to_string(),
                 payload: snapshot,
             };

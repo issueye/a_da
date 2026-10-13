@@ -14,7 +14,7 @@ use crate::server::emitter::StateBroadcaster;
 use crate::server::fs_service;
 use agent_node::session::SessionManager;
 use agent_node::skills::SkillManager;
-use crate::state::{generate_snapshot, AgentStore};
+use crate::state::{generate_snapshot_with_seq, AgentStore};
 use agent_node::subagents::SubagentManager;
 use agent_adapter::model::client::NetworkModelClient;
 use tracing::warn;
@@ -1348,7 +1348,16 @@ impl Dispatcher {
             SESSION_SNAPSHOT => {
                 let mut store = self.store.write().await;
                 store.sync_threads_from_disk(&self.session_mgr);
-                let snapshot = generate_snapshot(&store);
+                // 响应必须带**当前已发出的状态版本**（不能写死 0）。
+                // 客户端把它的 `seq` 记为 `lastSnapshotSeq`，下一帧增量帧的 `baseSeq` 就是它；
+                // 写死 0 时比对永远失败 → 客户端每帧都判"缺帧"并发起自愈请求 → 死循环
+                // （实测 376 次/秒，渲染进程满核、内存持续上涨）。
+                let seq = self
+                    .broadcaster
+                    .as_ref()
+                    .map(|b| b.last_sent_seq())
+                    .unwrap_or(0);
+                let snapshot = generate_snapshot_with_seq(&store, seq);
                 drop(store);
                 Ok(serde_json::to_value(snapshot).map_err(|e| ProtocolError::internal_error(e.to_string()))?)
             }
