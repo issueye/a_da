@@ -421,7 +421,10 @@ export class AgentWebSocketClient {
             protocolVersion: '1.0',
             // 声明增量帧能力：宿主收到才会把后续帧切成 `evt.state.patch`
             // （不声明就继续收全量快照——服务端以此作安全绳/回滚路径）
-            client: { name: `ada-${platform}`, version: '0.1.0', platform, capabilities: ['state.patch'] },
+            // ⚠️ 增量帧暂时关闭（用户实测：开启后点批准/发消息明显变慢）。宿主侧 diff_items/evt.state.patch
+            // 已落地并有测试，但客户端合并未过实机验收——不声明能力即回到全量快照的已知正常行为。
+            // 重新启用前必须先用合成负载量帧大小与 JS 堆（见 docs/state-patch-plan.md 验收清单）。
+            client: { name: `ada-${platform}`, version: '0.1.0', platform },
           })
           if (gen !== this.connectionGeneration) return
           if (initRes && initRes.product) {
