@@ -216,6 +216,9 @@ export class AgentWebSocketClient {
     return lines.join('\n')
   }
 
+  /// 最后**应用**过的快照 seq（增量帧的 baseSeq 要跟它对齐；不连续就自愈要全量）
+  private lastSnapshotSeq = -1
+
   public debugLogs: DebugEntry[] = []
   private debugListeners = new Set<(logs: DebugEntry[]) => void>()
   private debugNotifyTimer: ReturnType<typeof setTimeout> | null = null
@@ -416,7 +419,9 @@ export class AgentWebSocketClient {
           const initRes = await this.request('session.initialize', {
             token: this.token,
             protocolVersion: '1.0',
-            client: { name: `ada-${platform}`, version: '0.1.0', platform },
+            // 声明增量帧能力：宿主收到才会把后续帧切成 `evt.state.patch`
+            // （不声明就继续收全量快照——服务端以此作安全绳/回滚路径）
+            client: { name: `ada-${platform}`, version: '0.1.0', platform, capabilities: ['state.patch'] },
           })
           if (gen !== this.connectionGeneration) return
           if (initRes && initRes.product) {
@@ -502,7 +507,9 @@ export class AgentWebSocketClient {
   }
 
   private handleEvent(method: string, params: any) {
-    if (method === 'evt.state.snapshot' || method === 'evt.snapshot') {
+    if (method === 'evt.state.patch') {
+      this.applyPatch(params?.payload || params)
+    } else if (method === 'evt.state.snapshot' || method === 'evt.snapshot') {
       const snap = params?.payload || params
       this.applySnapshot(snap)
     } else if (method === 'evt.thread.updated') {
@@ -542,9 +549,65 @@ export class AgentWebSocketClient {
     }
   }
 
+  /**
+   * 增量帧（`evt.state.patch`）：宿主**只推变过的 item**（见 `crates/agent-rpc/src/state/patch.rs`）。
+   *
+   * 为什么要有：一条长会话 822 个 item、全量帧实测 1.85 MB（合成负载 3.7 MB），
+   * 16ms 一帧就是每秒几十 MB 的序列化 + IPC + 解析。增量把稳态每帧压到几十 KB。
+   *
+   * 合并规则：
+   * - `baseSeq` 与本地最后应用的 seq 不连续 → **本地状态可能缺帧**，不猜，直接要一次全量自愈；
+   * - 先用 `meta`（与快照同形，只是各会话不带 items）覆盖线程元数据与全部小字段；
+   * - 再把 `upserted` 按 `(threadId, itemId)` 合并、按 `removed` 摘掉（否则会留幽灵卡片）。
+   */
+  private applyPatch(p: any) {
+    if (!p) return
+    if (typeof p.baseSeq === 'number' && p.baseSeq !== this.lastSnapshotSeq) {
+      this.resyncFullSnapshot()
+      return
+    }
+    const meta = p.meta || {}
+    this.applySnapshot({ ...meta, threads: Array.isArray(meta.threads) ? meta.threads : [] })
+
+    const upserted = Array.isArray(p.upserted) ? p.upserted : []
+    for (const u of upserted) {
+      if (!u?.item) continue
+      const th = this.snapshot.threads.find((t: any) => t.id === u.threadId)
+      if (!th) continue
+      if (!Array.isArray(th.items)) th.items = []
+      const norm = this.normalizeItem(u.item)
+      const idx = th.items.findIndex((x: any) => x.id === norm.id)
+      if (idx >= 0) th.items[idx] = norm
+      else th.items.push(norm)
+    }
+
+    const removed = Array.isArray(p.removed) ? p.removed : []
+    for (const r of removed) {
+      const th = this.snapshot.threads.find((t: any) => t.id === r?.threadId)
+      if (th && Array.isArray(th.items)) {
+        th.items = th.items.filter((x: any) => x.id !== r.itemId)
+      }
+    }
+
+    if (typeof p.seq === 'number') this.lastSnapshotSeq = p.seq
+    this.notify()
+  }
+
+  /** 增量帧丢了（seq 不连续）时的自愈：要一次全量快照，而不是拿本地状态继续拼。 */
+  private resyncFullSnapshot() {
+    void this.request('session.snapshot', {})
+      .then((snap) => {
+        if (snap) this.applySnapshot(snap)
+      })
+      .catch(() => {
+        /* 自愈失败就维持现状，下一次重连还会走全量快照 */
+      })
+  }
+
   public applySnapshot(snap: any) {
     if (!snap) return
     const payload = snap.payload || snap
+    if (typeof payload.seq === 'number') this.lastSnapshotSeq = payload.seq
 
     // 替换前的本地线程集合：服务端快照会滞后（本地刚建的会话这一帧不一定带上），
     // 判定"本地激活会话是否还有效"时要把它们算进来，否则会被误判为已失效。
