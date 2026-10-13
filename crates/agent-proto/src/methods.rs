@@ -23,6 +23,8 @@ pub const THREAD_FOCUS: &str = "thread.focus";
 pub const THREAD_CREATE: &str = "thread.create";
 pub const THREAD_DELETE: &str = "thread.delete";
 pub const THREAD_SEND: &str = "thread.send";
+/// **长会话分页**：按窗口取一段 item（界面只渲染窗口，更早的按需拉）
+pub const THREAD_ITEMS_PAGE: &str = "thread.items.page";
 pub const THREAD_ABORT: &str = "thread.abort";
 pub const THREAD_UPDATE: &str = "thread.update";
 
@@ -132,6 +134,7 @@ pub const ALL_METHODS: &[&str] = &[
     THREAD_SEND,
     THREAD_ABORT,
     THREAD_UPDATE,
+    THREAD_ITEMS_PAGE,
     THREAD_COMPACT,
     THREAD_SET_MODE,
     THREAD_SET_WORKSPACE,
@@ -211,7 +214,7 @@ mod tests {
         // W5-T2：`workspace.set` / `config.update` 删除后 76 → 74；
         // W6-T1/T2：`subagent.resume` / `workspace.rescan` 删除后 74 → 72
         // W7：新增 `config.setRetryCount`（模型请求重试次数）后 72 → 73
-        assert_eq!(ALL_METHODS.len(), 73);
+        assert_eq!(ALL_METHODS.len(), 74);
 
         let mut event_set = HashSet::new();
         for &e in ALL_EVENTS {

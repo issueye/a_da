@@ -6,8 +6,7 @@
   "namespace": "x.coding",
   "methods": [
 
-    { "name": "workspace.add", "alias": "x.coding.workspace.add", "kind": "command", "since": "1.0", "description": "添加工作区" },
-    { "name": "workspace.remove", "alias": "x.coding.workspace.remove", "kind": "command", "since": "1.0", "description": "移除工作区" },
+    { "name": "workspace.add", "alias": "x.coding.workspace.add", "kind": "command", "since": "1.0", "description": "添加工作区" },    { "name": "workspace.remove", "alias": "x.coding.workspace.remove", "kind": "command", "since": "1.0", "description": "移除工作区" },
     { "name": "workspace.entries", "alias": "x.coding.workspace.entries", "kind": "command", "since": "1.0", "description": "读取工作区条目列表" },
     { "name": "workspace.openPublic", "alias": "x.coding.workspace.openPublic", "kind": "command", "since": "1.0", "description": "公开工作区" },
 
@@ -18,6 +17,7 @@
     { "name": "config.setApproval", "alias": "x.coding.config.setApproval", "kind": "command", "since": "1.0", "description": "设置全局审批策略" },
     { "name": "config.setEffort", "alias": "x.coding.config.setEffort", "kind": "command", "since": "1.0", "description": "设置深度思考档位" },
     { "name": "config.setRetryCount", "alias": "x.coding.config.setRetryCount", "kind": "command", "since": "1.0", "description": "设置模型请求重试次数（默认 5；重试耗尽即断开本轮对话）" },
+    { "name": "thread.items.page", "alias": "x.coding.thread.items.page", "kind": "command", "since": "1.0", "description": "长会话分页：按窗口取一段 item（界面只渲染窗口，更早的按需拉）" },
     { "name": "provider.list", "alias": "x.coding.provider.list", "kind": "command", "since": "1.0", "description": "获取供应商列表" },
     { "name": "provider.save", "alias": "x.coding.provider.save", "kind": "command", "since": "1.0", "description": "保存供应商配置" },
     { "name": "provider.delete", "alias": "x.coding.provider.delete", "kind": "command", "since": "1.0", "description": "删除供应商" },

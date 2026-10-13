@@ -1290,6 +1290,49 @@ impl Dispatcher {
                 Ok(serde_json::to_value(snapshot).map_err(|e| ProtocolError::internal_error(e.to_string()))?)
             }
 
+            // **长会话按需分页**：界面只渲染窗口内的 item（见 `TRANSCRIPT_WINDOW`），
+            // 更早的按需拉。返回 `from/to/total`，界面据此显示"还有 N 条更早的内容"。
+            //
+            // 为什么不直接靠全量快照：一条长会话 822 个 item、单帧 1.85 MB（合成负载 3.7 MB），
+            // 16ms 一帧就是每秒几十 MB 的序列化 + IPC + 前端解析——增量与分页都是为了这一点。
+            // 分页同样套用快照那套字段限幅（`shrink_item_for_snapshot`），免得单条超大输出把一页撑爆。
+            THREAD_ITEMS_PAGE => {
+                let thread_id = params
+                    .get("threadId")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?
+                    .to_string();
+                let from = params.get("from").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let count = params
+                    .get("count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(60)
+                    .clamp(1, 500) as usize;
+
+                let store = self.store.read().await;
+                let thread = store
+                    .threads
+                    .iter()
+                    .find(|t| t.id == thread_id)
+                    .ok_or_else(|| ProtocolError::invalid_params(format!("会话不存在：{thread_id}")))?;
+                let total = thread.items.len();
+                // `from` 超界不报错：如实回一个空窗口，界面按 `total` 自行纠正
+                let from = from.min(total);
+                let to = (from + count).min(total);
+                let items: Vec<Item> = thread.items[from..to]
+                    .iter()
+                    .cloned()
+                    .map(crate::state::snapshot::shrink_item_for_snapshot)
+                    .collect();
+                Ok(serde_json::json!({
+                    "threadId": thread_id,
+                    "items": items,
+                    "from": from,
+                    "to": to,
+                    "total": total,
+                }))
+            }
+
             UI_SET_SHELL => {
                 let mut store = self.store.write().await;
                 if let Some(patch) = params.get("patch").and_then(|p| p.as_object()) {

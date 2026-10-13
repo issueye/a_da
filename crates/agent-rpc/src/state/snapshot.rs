@@ -28,7 +28,7 @@ fn capped(text: &str, field: &str) -> Option<String> {
 }
 
 /// 投影用的 item 瘦身：只截**可能极大**的字段（工具输出 / diff / 参数原文）。
-fn shrink_item_for_snapshot(mut item: Item) -> Item {
+pub(crate) fn shrink_item_for_snapshot(mut item: Item) -> Item {
     if let Item::Tool { output, patch, raw_args, .. } = &mut item {
         if let Some(o) = output.as_deref().and_then(|s| capped(s, "output")) {
             *output = Some(o);
