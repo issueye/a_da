@@ -80,10 +80,12 @@ pub fn project_to_loop_event(event: &AgentEvent) -> Option<AgentLoopEvent> {
             })
         }
         // W3-T3：审批请求必须有界面通道，否则处于"询问档"时工具会静默等满超时（P1-14）
-        AgentEventBody::ApprovalRequested { call_id, tool } => {
+        AgentEventBody::ApprovalRequested { call_id, tool, args } => {
             Some(AgentLoopEvent::ApprovalRequested {
                 id: call_id.clone(),
                 tool: tool.clone(),
+                // 参数原文照搬：审批卡要摆出"要批准什么"，不能只剩一个工具名
+                args: args.clone(),
             })
         }
         AgentEventBody::TurnFinished { stop } => Some(AgentLoopEvent::TurnFinished {
@@ -631,7 +633,11 @@ mod tests {
                 true,
             ),
             (
-                AgentEventBody::ApprovalRequested { call_id: "c".into(), tool: "n".into() },
+                AgentEventBody::ApprovalRequested {
+                    call_id: "c".into(),
+                    tool: "n".into(),
+                    args: serde_json::json!({ "command": "rm -rf build" }),
+                },
                 true,
             ),
             (
@@ -748,7 +754,9 @@ mod tests {
                     call: ToolCallInfo {
                         id: "call_gate".into(),
                         name: "gated_tool".into(),
-                        args: "{}".into(),
+                        // 用**真实形状**的参数（不是 `{}`）：审批事件必须把它带到界面，
+                        // 否则界面上只有工具名，用户没法判断该不该批准。
+                        args: r#"{"command":"rm -rf build"}"#.into(),
                     },
                 },
                 StreamDelta::Done { stop_reason: "tool_calls".into() },
@@ -806,10 +814,17 @@ mod tests {
             loop {
                 match rx.recv().await {
                     Some(AgentEvent {
-                        body: AgentEventBody::ApprovalRequested { call_id, tool },
+                        body: AgentEventBody::ApprovalRequested { call_id, tool, args },
                         ..
                     }) => {
                         assert_eq!(tool, "gated_tool", "审批事件必须带工具名");
+                        // 🔴 只带工具名的审批请求等于没有确认闸门：用户看不到要批准什么。
+                        // 这条断言就是钉住"审批卡能显示命令原文"。
+                        assert_eq!(
+                            args.get("command").and_then(|v| v.as_str()),
+                            Some("rm -rf build"),
+                            "审批事件必须带上参数原文（界面要显示待批准的命令），实际：{args}"
+                        );
                         return call_id;
                     }
                     Some(_) => continue,

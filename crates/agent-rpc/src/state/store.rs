@@ -909,14 +909,30 @@ impl AgentStore {
     /// 与 [`Self::set_tool_awaiting_question`] 的区别：那个是"等用户回答提问"（`ask_user`），
     /// 这个是"等用户批准/拒绝这次工具调用"；界面对两者的处理相同（同一组按钮），
     /// 但状态字符串不同，便于区分与诊断。
-    pub fn set_tool_waiting_approval(&mut self, thread_id: &str, call_id: &str, tool: &str) {
-        let approval_detail = serde_json::json!({ "tool": tool, "pending": true });
+    pub fn set_tool_waiting_approval(
+        &mut self,
+        thread_id: &str,
+        call_id: &str,
+        tool: &str,
+        args: &serde_json::Value,
+    ) {
+        // 🔴 审批卡必须带上"待批准的内容"：危险命令的原文、要覆写的文件路径。
+        // 只给工具名的话，用户只能对着"这次调用会修改工作区，是否执行？"点批准——
+        // 那道二次确认就形同虚设。
+        let approval_detail = serde_json::json!({ "tool": tool, "pending": true, "args": args });
         if let Some(t) = self.get_thread_mut(thread_id) {
             let mut found = false;
             for item in t.items.iter_mut().rev() {
-                if let Item::Tool { call_id: cid, status, details, .. } = item {
+                if let Item::Tool { call_id: cid, status, details, args: card_args, raw_args, .. } = item {
                     if cid == call_id {
                         *status = "waiting_approval".to_string();
+                        // 卡片通常还没建（审批在建卡之前）；先有卡的路径要**以审批事件带的参数为准**
+                        // ——它和 `ToolCallStarted` 同源，但只有它一定带着"用户要看的那份内容"。
+                        // 早先只补 `Null`，于是"卡片存在但是 `{}`"会再次变成"看不到命令"。
+                        if has_content(args) {
+                            *card_args = args.clone();
+                            *raw_args = args.to_string();
+                        }
                         let mut det = details.take().unwrap_or_else(|| serde_json::json!({}));
                         if let Some(obj) = det.as_object_mut() {
                             obj.insert("approval".to_string(), approval_detail.clone());
@@ -943,8 +959,9 @@ impl AgentStore {
                     at: now_millis(),
                     call_id: call_id.to_string(),
                     name: tool.to_string(),
-                    args: serde_json::Value::Null,
-                    raw_args: String::new(),
+                    // 参数如实落卡：界面据此把"要批准的命令"摆出来
+                    args: args.clone(),
+                    raw_args: args.to_string(),
                     status: "waiting_approval".to_string(),
                     output: None,
                     patch: None,
@@ -994,6 +1011,17 @@ impl AgentStore {
             .map(|t| t.id.clone())
             .collect();
         self.running_thread_ids.retain(|tid| !children.contains(tid));
+    }
+}
+
+/// 参数是否"有内容"（`{}` / `null` / `""` 都算没有——界面拿它什么也显示不出来）。
+fn has_content(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Null => false,
+        serde_json::Value::Object(m) => !m.is_empty(),
+        serde_json::Value::String(s) => !s.trim().is_empty(),
+        serde_json::Value::Array(a) => !a.is_empty(),
+        _ => true,
     }
 }
 
@@ -1135,7 +1163,12 @@ mod tests {
         };
         assert_eq!(status_of(&store), "running");
 
-        store.set_tool_waiting_approval(tid, "call_ui_1", "gated_tool");
+        store.set_tool_waiting_approval(
+            tid,
+            "call_ui_1",
+            "gated_tool",
+            &serde_json::json!({ "command": "cargo publish" }),
+        );
         assert_eq!(
             status_of(&store),
             "waiting_approval",
@@ -1156,6 +1189,24 @@ mod tests {
             .expect("工具项应有 details");
         assert_eq!(details["approval"]["tool"], "gated_tool");
         assert_eq!(details["approval"]["pending"], true);
+        // 🔴 待批准的内容必须能被界面拿到（否则"二次确认"只是让人闭眼点批准）
+        let card_args = store
+            .threads
+            .iter()
+            .find(|t| t.id == tid)
+            .and_then(|t| {
+                t.items.iter().find_map(|i| match i {
+                    Item::Tool { call_id, args, .. } if call_id == "call_ui_1" => Some(args.clone()),
+                    _ => None,
+                })
+            })
+            .expect("工具项应有 args");
+        assert_eq!(
+            card_args.get("command").and_then(|v| v.as_str()),
+            Some("cargo publish"),
+            "审批卡必须带上参数原文，实际：{card_args}"
+        );
+        assert_eq!(details["approval"]["args"]["command"], "cargo publish");
 
         // 收尾必须覆盖等待态（否则卡片会一直停在"等批准"）
         store.finish_tool_call(tid, "call_ui_1", true, Some("done".into()), Some(1), Some(0), Some(1), None);
@@ -1177,7 +1228,12 @@ mod tests {
         // 1. 审批等待
         store.start_tool_call(tid, "call_w1", "run_command", "{}");
         assert!(!is_waiting(&store), "刚发起还不算等待");
-        store.set_tool_waiting_approval(tid, "call_w1", "run_command");
+        store.set_tool_waiting_approval(
+            tid,
+            "call_w1",
+            "run_command",
+            &serde_json::json!({ "command": "cargo test" }),
+        );
         assert!(is_waiting(&store), "等待批准必须能被界面全局看见");
 
         store.finish_tool_call(tid, "call_w1", true, Some("ok".into()), Some(1), Some(0), Some(1), None);
@@ -1239,7 +1295,12 @@ mod tests {
         }
 
         // 审批先到：此时**没有任何**工具卡片
-        store.set_tool_waiting_approval(tid, "call_a1", "run_command");
+        store.set_tool_waiting_approval(
+            tid,
+            "call_a1",
+            "run_command",
+            &serde_json::json!({ "command": "Remove-Item -Recurse build" }),
+        );
 
         let waiting = cards(&store, tid, "call_a1");
         assert_eq!(waiting.len(), 1, "必须补出一张卡，而不是静默 no-op");
@@ -1249,6 +1310,25 @@ mod tests {
             waiting[0].2["approval"]["pending"],
             serde_json::Value::Bool(true),
             "卡片要带上'待批准'标记，界面据此渲染批准/拒绝按钮"
+        );
+        // 🔴 补出来的审批卡必须**带着命令原文**：这是"知情确认"的全部依据。
+        // 曾经它是 `args: Null`，界面只能显示"这次调用会修改工作区，是否执行？"——
+        // 用户根本不知道自己要批准的是 `Remove-Item -Recurse`。
+        let waiting_args = store
+            .threads
+            .iter()
+            .find(|t| t.id == tid)
+            .and_then(|t| {
+                t.items.iter().find_map(|i| match i {
+                    Item::Tool { call_id, args, .. } if call_id == "call_a1" => Some(args.clone()),
+                    _ => None,
+                })
+            })
+            .expect("审批卡应有 args");
+        assert_eq!(
+            waiting_args.get("command").and_then(|v| v.as_str()),
+            Some("Remove-Item -Recurse build"),
+            "审批卡必须显示待批准的命令原文，实际：{waiting_args}"
         );
         assert!(
             store.waiting_thread_ids.iter().any(|id| id == tid),

@@ -904,8 +904,9 @@ impl Dispatcher {
                                     }
                                 }
                                 // W3-T3：审批请求 → 工具卡片进入"等待批准"，界面据此渲染批准/拒绝按钮
-                                AgentEventBody::ApprovalRequested { call_id, tool } => {
-                                    store.set_tool_waiting_approval(&target_tid_clone, &call_id, &tool);
+                                // 并把**待批准的命令原文**摆出来（args 是本事件自带的一等数据）
+                                AgentEventBody::ApprovalRequested { call_id, tool, args } => {
+                                    store.set_tool_waiting_approval(&target_tid_clone, &call_id, &tool, &args);
                                     drop(store);
                                     if let Some(ref bc) = broadcaster_clone {
                                         bc.broadcast_immediate().await;

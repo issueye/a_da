@@ -87,6 +87,12 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1 -Shell tauri       # 同一
   于是**任何构造 Gateway 的测试都会写用户的真实工作区列表**（历史事故：用户列表里出现
   一堆 `a_da_gw_e2e_*`）。现在构造期不落盘，生产在组合根显式记一次，测试注入
   `Gateway::with_workspaces(临时存储)`。
+- **审批事件必须带 `args`**（`AgentEventBody::ApprovalRequested { call_id, tool, args }`）：
+  审批卡要回答的是"我到底在批准什么"——危险命令原文、要覆写的文件路径。
+  引擎在建卡之前就发这个事件（顺序是 `ApprovalRequested` → 等用户 → `ToolCallStarted`），
+  所以审批卡**拿不到** `ToolCallStarted` 的 args，只能自己带；`store.set_tool_waiting_approval`
+  会把参数落进卡片（`args`/`raw_args`/`details.approval.args`），界面据此渲染待批准内容。
+  只给工具名 = 让用户闭眼点"批准"，那道二次确认闸门形同虚设。
 - **模型请求重试次数**（设置项，默认 5，范围 `0..=20`）这条链要一起改才生效：
   `ConfigSnapshot.retryCount`（wire/`client-ts`）↔ `~/.a-da/config.json` 的 `retryCount` ↔
   `config.setRetryCount`（`spec/proto/ada-coding.ext.json` 也要登记）↔ 每轮

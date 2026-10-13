@@ -33,7 +33,9 @@ pub enum AgentLoopEvent {
     ///
     /// 界面按 `status == "waiting_approval"` 渲染"批准/拒绝"按钮并回发 `approval.decide`，
     /// 最终唤醒引擎的审批闸门。真引擎的 `ApprovalRequested` 领域事件投影到这里。
-    ApprovalRequested { id: String, tool: String },
+    ///
+    /// `args` **必须带**：审批卡要显示"要批准的是什么"（危险命令原文 / 目标文件路径）。
+    ApprovalRequested { id: String, tool: String, args: serde_json::Value },
     /// 一次大模型调用结束后的真实用量与耗时（界面遥测条与单条回复徽章的数据源）
     AssistantStats { usage: Option<agent_base::model::TokenUsage>, duration_ms: u64, turn_duration_ms: u64 },
     /// 本轮因**上下文撞顶**而收尾（引擎的 `TurnStopReason::ContextWindowExceeded`）。
@@ -85,7 +87,11 @@ mod tests {
                 details: None,
             },
             AgentLoopEvent::ToolAwaitingQuestion { id: "i".into(), question: serde_json::json!({}) },
-            AgentLoopEvent::ApprovalRequested { id: "i".into(), tool: "t".into() },
+            AgentLoopEvent::ApprovalRequested {
+                id: "i".into(),
+                tool: "t".into(),
+                args: serde_json::json!({ "command": "cargo test" }),
+            },
             AgentLoopEvent::AssistantStats { usage: None, duration_ms: 1, turn_duration_ms: 2 },
             AgentLoopEvent::ContextWindowExceeded { prompt_tokens: 445_637, window: 128_000 },
             AgentLoopEvent::TurnFinished { stop_reason: "stop".into() },

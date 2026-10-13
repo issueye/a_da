@@ -77,6 +77,8 @@ pub fn event_probe_stream(thread_id: &str) -> Vec<AgentEvent> {
         next(AgentEventBody::ApprovalRequested {
             call_id: "call_2".into(),
             tool: "write_file".into(),
+            // 合规样例必须带参数：审批卡靠它显示"要批准什么"
+            args: serde_json::json!({ "path": "src/lib.rs", "content": "…" }),
         }),
         next(AgentEventBody::QuestionAsked {
             call_id: "call_3".into(),

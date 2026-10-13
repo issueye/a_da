@@ -917,6 +917,29 @@ const ToolCard: React.FC<{
   const target = parsedTarget.target
   const dir = parsedTarget.dir
 
+  /// 审批条上"要批准什么"的一行预览（危险命令原文 / 目标路径 / 参数原文）。
+  ///
+  /// 宿主在 `ApprovalRequested` 事件里带上了 args，卡片建出来就带着它；
+  /// 万一某条老路径没带，退回到目标名/工具名，**绝不能什么都不显示**——
+  /// 那就又回到"只能闭眼点批准"。
+  const approvalPreview = (() => {
+    if (!isAwaiting || isQuestionTool) return ''
+    const a: any = item.args
+    const cmd =
+      typeof a === 'string'
+        ? a
+        : (typeof a?.command === 'string' && a.command) ||
+          (typeof a?.cmd === 'string' && a.cmd) ||
+          ''
+    if (cmd) return `$ ${cmd}`
+    if (target && target !== toolName) return `${toolName} → ${dir ? `${dir}${target}` : target}`
+    if (a && typeof a === 'object') {
+      const json = JSON.stringify(a, null, 2)
+      return json === '{}' ? '' : json.slice(0, 600)
+    }
+    return typeof a === 'string' ? a.slice(0, 600) : ''
+  })()
+
   // 状态与色彩映射：采用更加轻淡柔和的微色调
   const statusBadge = (() => {
     if (toolName === 'invoke_subagent') {
@@ -1063,25 +1086,35 @@ const ToolCard: React.FC<{
 
             {/* 2. 真正的写工作区审批授权操作条（非提问工具且处于 awaiting 时展示） */}
             {isAwaiting && !isQuestionTool && (
-              <div className="flex items-center justify-between p-2.5 bg-amber-500/10 border-b border-amber-500/20 text-xs">
-                <div className="flex items-center space-x-2 text-amber-700 dark:text-amber-300 font-medium">
-                  <ShieldAlert size={13} />
-                  <span>这次调用会修改工作区，是否执行？</span>
+              <div className="flex flex-col gap-2 p-2.5 bg-amber-500/10 border-b border-amber-500/20 text-xs">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2 text-amber-700 dark:text-amber-300 font-medium">
+                    <ShieldAlert size={13} />
+                    <span>这次调用会修改工作区，是否执行？</span>
+                  </div>
+                  <div className="flex items-center space-x-1.5">
+                    <button
+                      onClick={() => onDecideApproval(item.callId || item.id, false)}
+                      className="px-2.5 py-0.5 rounded bg-zinc-200/80 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 text-xs transition-colors"
+                    >
+                      拒绝
+                    </button>
+                    <button
+                      onClick={() => onDecideApproval(item.callId || item.id, true)}
+                      className="px-2.5 py-0.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors shadow-xs"
+                    >
+                      批准
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center space-x-1.5">
-                  <button
-                    onClick={() => onDecideApproval(item.callId || item.id, false)}
-                    className="px-2.5 py-0.5 rounded bg-zinc-200/80 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 text-xs transition-colors"
-                  >
-                    拒绝
-                  </button>
-                  <button
-                    onClick={() => onDecideApproval(item.callId || item.id, true)}
-                    className="px-2.5 py-0.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors shadow-xs"
-                  >
-                    批准
-                  </button>
-                </div>
+                {/* 🔴 批准前必须能看清"批的是什么"：危险命令的原文 / 要动的目标。
+                    宿主把参数原文随审批事件一起送来了（ApprovalRequested.args），
+                    这里只负责摆出来——看不到命令的"二次确认"等于让人闭眼点批准。 */}
+                {approvalPreview && (
+                  <pre className="m-0 px-2 py-1.5 rounded bg-amber-950/10 dark:bg-black/30 border border-amber-500/20 text-[11px] font-mono whitespace-pre-wrap break-all text-amber-900 dark:text-amber-200">
+                    {approvalPreview}
+                  </pre>
+                )}
               </div>
             )}
 

@@ -444,9 +444,12 @@ impl AgentRuntime {
                         let mut denial_reason = None;
 
                         if needs_approval {
+                            // 审批事件**带上参数原文**：界面要能把"要批准的命令"完整摆出来，
+                            // 否则用户只能对着一个工具名点"批准"（等于没有确认闸门）。
                             self.emit(sink, &thread_id, AgentEventBody::ApprovalRequested {
                                 call_id: raw_call.id.clone(),
                                 tool: raw_call.name.clone(),
+                                args: parsed_args.clone(),
                             });
 
                             let app_req = ApprovalRequest {
