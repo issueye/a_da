@@ -1030,7 +1030,7 @@ fn has_content(v: &serde_json::Value) -> bool {
 /// `agent_proto::Item` 没有实现 `PartialEq`，而这里也不需要逐字节相等——
 /// 流式追加只会让文本变长、工具状态只会翻转，所以「id + 文本长度 + 状态 +
 /// 完成时刻」就足以识别出"磁盘上有新内容"。
-fn item_visible_key(it: &Item) -> (String, usize, String, bool, Option<u64>) {
+pub(crate) fn item_visible_key(it: &Item) -> (String, usize, String, bool, Option<u64>) {
     match it {
         Item::User { id, text, .. } => (id.clone(), text.len(), String::new(), false, None),
         Item::Thinking { id, text, ended_at, .. } => (

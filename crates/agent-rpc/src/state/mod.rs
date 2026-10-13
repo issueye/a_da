@@ -1,4 +1,5 @@
 pub mod snapshot;
+pub mod patch;
 pub mod store;
 
 pub use snapshot::{generate_snapshot, generate_snapshot_with_seq};
