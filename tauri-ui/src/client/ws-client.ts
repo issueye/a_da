@@ -5,6 +5,10 @@
  * 在非 Tauri 环境下无缝回落至默认端口。
  */
 
+// 调试日志**单条 payload** 上限（字节）：环形缓冲只限条数，条数有界不等于内存有界
+// （vt.state.snapshot 一帧实测 1.8 MB，300 条就是 ~540 MB 常驻）。
+const DEBUG_PAYLOAD_LIMIT = 4096
+
 import type {
   ClientSnapshot,
   AgentMode,
@@ -214,10 +218,58 @@ export class AgentWebSocketClient {
 
   public debugLogs: DebugEntry[] = []
   private debugListeners = new Set<(logs: DebugEntry[]) => void>()
+  private debugNotifyTimer: ReturnType<typeof setTimeout> | null = null
+
+  /// 调试日志单条 payload 的上限（字节）。
+  ///
+  /// 🔴 **条数有界 ≠ 内存有界**：环形缓冲只留 300 条，但每条都把整个事件 payload 挂上，
+  /// 而 `evt.state.snapshot` 一帧实测 1.8 MB（一条长会话 822 个 item）——
+  /// 300 × 1.8 MB ≈ **540 MB 常驻**，而且每帧还复制一次、通知界面重渲染。
+  /// 所以这里在**收口处**统一限幅：大 payload 只留摘要。
+  /// 把事件 payload 压成"能看的摘要"，超限就只留预览与真实体积。
+  private capDebugPayload(method: string, payload: any): any {
+    if (payload === undefined || payload === null) return payload
+
+    // 1. 全量快照：**永不**入缓冲，只留规模摘要（这是最大的那一类）
+    if (method.includes('snapshot')) {
+      const p = payload?.payload || payload
+      const threads = Array.isArray(p?.threads) ? p.threads : []
+      const items = threads.reduce(
+        (n: number, t: any) => n + (Array.isArray(t?.items) ? t.items.length : 0),
+        0
+      )
+      return { 摘要: `全量快照 seq=${p?.seq ?? '?'}`, 线程数: threads.length, item数: items }
+    }
+
+    // 2. 线程列表事件：同样只留条数
+    if (method === 'evt.thread.updated') {
+      return { 摘要: '线程列表更新', 线程数: Array.isArray(payload?.threads) ? payload.threads.length : 0 }
+    }
+
+    // 3. 流式增量：只留长度，不留正文
+    if (method.includes('delta')) {
+      const text = typeof payload === 'string' ? payload : payload?.text
+      return { 摘要: `${method} 增量`, 文本长度: typeof text === 'string' ? text.length : undefined }
+    }
+
+    // 4. 其它事件：小就原样留，大就截断（附真实体积，别让人以为日志本身就这么点）
+    let json = ''
+    try {
+      json = JSON.stringify(payload)
+    } catch {
+      return { 摘要: '(payload 无法序列化)' }
+    }
+    if (json.length <= DEBUG_PAYLOAD_LIMIT) return payload
+    return {
+      摘要: `payload 过大已截断（原始 ${Math.round(json.length / 1024)} KB）`,
+      预览: json.slice(0, 600),
+    }
+  }
 
   public recordDebug(entry: Omit<DebugEntry, 'id' | 'at'>) {
     const item: DebugEntry = {
       ...entry,
+      payload: this.capDebugPayload(entry.method || "", (entry as any).payload),
       id: `dbg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       at: Date.now(),
     }
@@ -225,9 +277,14 @@ export class AgentWebSocketClient {
     if (this.debugLogs.length > 300) {
       this.debugLogs.pop()
     }
-    for (const listener of this.debugListeners) {
-      listener([...this.debugLogs])
-    }
+    // 通知节流：调试面板是给人看的，没必要每帧（16ms）刷一次 React
+    if (this.debugNotifyTimer) return
+    this.debugNotifyTimer = setTimeout(() => {
+      this.debugNotifyTimer = null
+      for (const listener of this.debugListeners) {
+        listener([...this.debugLogs])
+      }
+    }, 250)
   }
 
   public subscribeDebug(listener: (logs: DebugEntry[]) => void): () => void {
