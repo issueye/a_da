@@ -329,6 +329,27 @@ impl EngineInjection {
 }
 
 
+/// 慢臂打点守卫：Drop 时若耗时 ≥200ms 就打一行 [slow]。
+///
+/// 用守卫而不是在每个 return 前埋点：dispatch 有几十个臂与早退路径，
+/// 守卫能覆盖**全部**返回路径（含 ? 提前返回），不会漏。
+struct SlowArm {
+    method: String,
+    started: std::time::Instant,
+}
+
+impl Drop for SlowArm {
+    fn drop(&mut self) {
+        let ms = self.started.elapsed().as_millis();
+        if ms >= 200 {
+            tracing::warn!(
+                "[slow] {} 耗时 {}ms —— 这段时间里所有请求都在排队（WS 读取循环逐条 await）",
+                self.method,
+                ms
+            );
+        }
+    }
+}
 /// 把检查点回滚结果转成协议回执（W6-T4）。
 ///
 /// 为什么要单独一个函数：三个 `revert_*` 臂原先都**丢弃**结果、统一回 `{ok:true}`——
@@ -1236,6 +1257,14 @@ impl Dispatcher {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, ProtocolError> {
+        // 🔴 **慢臂打点**：WS 读取循环是逐条 await 的，任何一个方法臂耗时过长，
+        // 排在它后面的请求（实测：点批准 ②→③ 曾经 6437ms → 限流 2207ms → mtime 过滤 262ms）
+        // 都会看起来"点了没反应"。这里用 Drop 守卫覆盖**所有**返回路径，
+        // 只在 ≥200ms 时打一行 `[slow]`，把"谁占着循环"直接指出来。
+        let _slow = SlowArm {
+            method: method.to_string(),
+            started: std::time::Instant::now(),
+        };
         match method {
             SESSION_INITIALIZE => {
                 let p = params.as_object().ok_or_else(|| {
