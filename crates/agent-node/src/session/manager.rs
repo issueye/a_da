@@ -562,6 +562,35 @@ impl SessionManager {
     }
 
     /// 还原所有工作区的所有持久化会话（深度重建为 UI Item 卡片流与 Messages 上下文）
+    /// **便宜的会话文件“变没变”探针**：只 stat，不解析。
+    ///
+    /// 为什么需要：`restore_all_threads` 会把每个会话文件重新解析一遍，实测环境
+    /// （2.8MB + 1.3MB + 454KB + …）是**秒级** CPU，而它每 1.5 秒被调用一次、
+    /// 还握着 store 写锁——用户“点批准要等 2–6 秒”就是这么来的。
+    /// 先用这个探针比对 `(mtime, len)`：一个文件都没动就**一次解析都不做**。
+    pub fn session_file_stamps(&self) -> Vec<(std::path::PathBuf, u64, u64)> {
+        let mut out = Vec::new();
+        let root = self.sessions_dir();
+        let Ok(entries) = std::fs::read_dir(&root) else { return out };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            if !ft.is_dir() { continue }
+            let Ok(files) = std::fs::read_dir(entry.path()) else { continue };
+            for f in files.flatten() {
+                let p = f.path();
+                if !p.extension().map(|e| e == "jsonl").unwrap_or(false) { continue }
+                if let Ok(md) = f.metadata() {
+                    let mtime_ms = md.modified().ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    out.push((p, mtime_ms, md.len()));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
     pub fn restore_all_threads(&self) -> Vec<Thread> {
         let root = self.sessions_dir();
         if !root.exists() {

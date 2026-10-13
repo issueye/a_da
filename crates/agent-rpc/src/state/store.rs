@@ -19,6 +19,12 @@ pub fn set_clock(c: Box<dyn Clock>) -> Result<(), Box<dyn Clock>> {
     CLOCK.set(c)
 }
 
+/// 上一次整树同步时各会话文件的 `(路径, mtime, 长度)`。
+///
+/// 放进程级静态而非 `AgentStore` 字段：这只是"要不要重解析"的缓存，
+/// 不是领域状态；放静态可以避免动结构体与所有构造点（把改动面压到最小）。
+static SYNC_STAMPS: std::sync::Mutex<Option<Vec<(std::path::PathBuf, u64, u64)>>> =
+    std::sync::Mutex::new(None);
 pub fn now_millis() -> u64 {
     clock().now_ms().max(0) as u64
 }
@@ -441,6 +447,26 @@ impl AgentStore {
 
     /// 同步并合并来自磁盘持久化存储的会话（支持多 Agent 实例/跨网关创建的子智能体会话动态发现）
     pub fn sync_threads_from_disk(&mut self, session_mgr: &agent_node::session::SessionManager) -> bool {
+        // 🔴 **一个文件都没动，就别解析**。
+        //
+        // 原先每次都把 sessions/ 下每个会话文件重新解析一遍（实测环境 2.8MB + 1.3MB + 454KB + …），
+        // 秒级 CPU，还握着 store 写锁；WS 读取循环逐条 await，于是批准/发消息只能排队
+        // ——实测“点批准等 6437ms → 限流后 2207ms”，那 2.2 秒就是它单次的成本。
+        // 这里先 stat 比对 `(mtime, len)`：没变直接 return false（不去碰锁里的解析）。
+        // 例外：有**正在跑的子会话**时不做早退——子会话的进度只从磁盘回流，
+        // `restore_all_threads` 是它唯一的实时来源（守门测试 test_running_subagent_thread_still_merges_disk_content 钉的就是这条）。
+        let live_subagent = self
+            .threads
+            .iter()
+            .any(|t| t.is_subagent == Some(true) && self.running_thread_ids.contains(&t.id));
+        if !live_subagent {
+            let stamps = session_mgr.session_file_stamps();
+            let mut guard = SYNC_STAMPS.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.as_ref() == Some(&stamps) {
+                return false;
+            }
+            *guard = Some(stamps);
+        }
         let disk_threads = session_mgr.restore_all_threads();
         if disk_threads.is_empty() {
             return false;
