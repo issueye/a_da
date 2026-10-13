@@ -89,6 +89,17 @@ export const AskUserPrompt: React.FC<{
                     {active && <Check size={9} />}
                   </span>
                 )}
+                {/* 选项 id（如 `c1`）必须显示出来：题干/参数里就是用它编号的，
+                    用户要能一眼对上"我在选哪一条"，也能照着 id 在输入框里回话。 */}
+                {opt.id && (
+                  <span
+                    className={`font-mono text-[10px] leading-none px-1 py-0.5 rounded ${
+                      active ? 'bg-white/20 text-white' : 'bg-black/10 dark:bg-white/15 opacity-80'
+                    }`}
+                  >
+                    {opt.id}
+                  </span>
+                )}
                 <span>{opt.label}</span>
               </button>
             )

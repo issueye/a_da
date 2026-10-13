@@ -69,8 +69,12 @@ export interface ToolCallItem {
 }
 
 export interface QuestionOption {
+  /** 题干里给的短标识（如 `c1`）——**要在选项前面显示出来**，用户才能对上号/照着回话 */
+  id?: string
   value: string
   label: string
+  /** 选项的补充说明（模型常用来写风险/代价）；目前作 hover 提示用 */
+  description?: string
 }
 
 export interface QuestionData {

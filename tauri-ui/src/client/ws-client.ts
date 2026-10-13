@@ -649,8 +649,11 @@ export class AgentWebSocketClient {
       let options = Array.isArray(question.options) ? question.options : []
       if (options.length === 0 && Array.isArray(question.choices)) {
         options = question.choices.map((c: any) => ({
-          value: c.id || c.value,
-          label: c.label || c.title || String(c),
+          // `id` 要**单独留着**：界面得把它显示在选项前面（用户照着 c1/c2 回话）
+          id: typeof c === 'string' ? undefined : c.id || c.value,
+          value: typeof c === 'string' ? c : c.id || c.value || c.label || String(c),
+          label: typeof c === 'string' ? c : c.label || c.title || String(c),
+          description: typeof c === 'string' ? undefined : c.description,
         }))
       }
       question = {
@@ -666,8 +669,10 @@ export class AgentWebSocketClient {
         let options = Array.isArray(parsedArgs.options) ? parsedArgs.options : []
         if (options.length === 0 && Array.isArray(parsedArgs.choices)) {
           options = parsedArgs.choices.map((c: any) => ({
-            value: c.id || c.value,
-            label: c.label || c.title || String(c),
+            id: typeof c === 'string' ? undefined : c.id || c.value,
+            value: typeof c === 'string' ? c : c.id || c.value || c.label || String(c),
+            label: typeof c === 'string' ? c : c.label || c.title || String(c),
+            description: typeof c === 'string' ? undefined : c.description,
           }))
         }
         question = {

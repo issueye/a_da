@@ -359,9 +359,10 @@ export const Composer: React.FC<ComposerProps> = ({
         let options = Array.isArray(q.options) ? q.options : []
         if (options.length === 0 && Array.isArray((q as any).choices)) {
           options = (q as any).choices.map((c: any) => ({
-            value: c.id || c.value,
-            label: c.label || c.title || String(c),
-            description: c.description,
+            id: typeof c === 'string' ? undefined : c.id || c.value,
+            value: typeof c === 'string' ? c : c.id || c.value || c.label || String(c),
+            label: typeof c === 'string' ? c : c.label || c.title || String(c),
+            description: typeof c === 'string' ? undefined : c.description,
           }))
         }
         return {

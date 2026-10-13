@@ -902,8 +902,10 @@ const ToolCard: React.FC<{
     let options = Array.isArray(rawQuestion?.options) ? rawQuestion.options : []
     if (options.length === 0 && Array.isArray(rawQuestion?.choices)) {
       options = rawQuestion.choices.map((c: any) => ({
-        value: c.id || c.value,
-        label: c.label || c.title || String(c),
+        id: typeof c === 'string' ? undefined : c.id || c.value,
+        value: typeof c === 'string' ? c : c.id || c.value || c.label || String(c),
+        label: typeof c === 'string' ? c : c.label || c.title || String(c),
+        description: typeof c === 'string' ? undefined : c.description,
       }))
     }
     return {
