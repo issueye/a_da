@@ -12,7 +12,7 @@
  * - 居中空会话欢迎视图（EmptyConversationView）
  */
 
-import React, { useState, useEffect, useRef, useMemo } from 'react'
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react'
 import {
   Terminal,
   FileText,
@@ -50,6 +50,11 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 import { AskUserPrompt } from './AskUserPrompt'
 import { TodoFloatingPanel } from './TodoFloatingPanel'
 import { notify } from './ToastHost'
+
+// 一次渲染多少个 item（长会话按窗口渲染，更早的折在"显示更早"后面）。
+// 依据：实测一条长会话 822 个 item → 单帧快照 1.85 MB、渲染进程堆 1.5 GB。
+// 没人会同时读 800 张卡片，全铺成 DOM 只是白烧内存。
+const TRANSCRIPT_WINDOW = 60
 
 interface TranscriptProps {
   threadId?: string
@@ -322,7 +327,56 @@ export const Transcript: React.FC<TranscriptProps> = ({
     return list
   }, [items])
 
+  // 对话项目流：按窗口渲染（见下方注释）；更早的折叠在"显示更早"后面
+  const [visibleCount, setVisibleCount] = useState(TRANSCRIPT_WINDOW)
+  const expandAnchorRef = useRef<{ height: number; top: number } | null>(null)
+
+  // 切会话就回到默认窗口（别把上一条会话的展开状态带过去）
+  useEffect(() => {
+    setVisibleCount(TRANSCRIPT_WINDOW)
+  }, [threadId])
+
+  const { rows, hiddenCount } = useMemo(() => {
+    if (mergedItems.length <= visibleCount) {
+      return { rows: mergedItems, hiddenCount: 0 }
+    }
+    const tail = mergedItems.slice(-visibleCount)
+    const tailIds = new Set(tail.map((it) => it.id))
+    // 正在等你操作 / 正在跑的卡片：无论多早都必须留在渲染里
+    const pinned = mergedItems.slice(0, mergedItems.length - visibleCount).filter((it) => {
+      if (tailIds.has(it.id)) return false
+      const s = it.status || it.state
+      return s === 'running' || s === 'awaiting' || s === 'waiting_approval'
+    })
+    return { rows: [...pinned, ...tail], hiddenCount: mergedItems.length - tail.length - pinned.length }
+  }, [mergedItems, visibleCount])
+
+  // 展开更早内容时保持视线不跳：渲染前记下高度，渲染后按增量补偿 scrollTop
+  const expandOlderItems = () => {
+    const el = containerRef.current
+    if (el) expandAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop }
+    setVisibleCount((c) => c + TRANSCRIPT_WINDOW)
+  }
+  const showAllItems = () => {
+    const el = containerRef.current
+    if (el) expandAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop }
+    setVisibleCount(mergedItems.length)
+  }
+  useLayoutEffect(() => {
+    const anchor = expandAnchorRef.current
+    const el = containerRef.current
+    if (!anchor || !el) return
+    expandAnchorRef.current = null
+    el.scrollTop = anchor.top + (el.scrollHeight - anchor.height)
+  }, [visibleCount])
+
   // 对话项目流：紧凑的时间线排版（人说的话留白，工具和思考行紧密贴合）
+  //
+  // 🔴 **按窗口渲染**：合帧是**全量快照**，一条长会话能到 800+ 个 item（实测 822 条、
+  // 单帧 1.85 MB）。全部铺成 DOM 时，光这些卡片就能把渲染进程堆推到 GB 级
+  // （实测 1.5 GB）——而且没人会同时读 800 张卡。这里只渲染最近 `TRANSCRIPT_WINDOW` 条，
+  // 更早的折在"显示更早"后面；**正在等你操作/正在跑的卡片一律置顶保留**，
+  // 免得审批卡或提问卡被窗口挡在外面。
   return (
     <div className="relative flex-1 flex flex-col h-full overflow-hidden">
       {/* 任务规划步骤独立收缩悬浮框（右上角常驻） */}
@@ -333,7 +387,29 @@ export const Transcript: React.FC<TranscriptProps> = ({
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto px-3 md:px-6 py-2.5 space-y-1.5 select-text relative [scrollbar-gutter:stable]"
       >
-        {mergedItems.map((item, index) => (
+        {hiddenCount > 0 && (
+          <div className="flex items-center justify-center gap-2 py-1.5">
+            <button
+              type="button"
+              onClick={expandOlderItems}
+              className="px-2.5 py-1 rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300 text-[11px] transition-colors"
+            >
+              显示更早的 {Math.min(TRANSCRIPT_WINDOW, hiddenCount)} 条
+            </button>
+            <span className="text-[11px] text-zinc-500 dark:text-zinc-500">
+              还有 {hiddenCount} 条更早的内容未渲染（不影响会话本身）
+            </span>
+            <button
+              type="button"
+              onClick={showAllItems}
+              className="px-2.5 py-1 rounded-lg border border-transparent hover:border-zinc-300 dark:hover:border-zinc-600 text-zinc-500 dark:text-zinc-400 text-[11px] transition-colors"
+            >
+              全部显示
+            </button>
+          </div>
+        )}
+
+        {rows.map((item, index) => (
           <TranscriptItemRow
             key={item.id || index}
             item={item}
