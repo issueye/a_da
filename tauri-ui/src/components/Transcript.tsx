@@ -49,6 +49,8 @@ import { agentClient } from '../client/ws-client'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { AskUserPrompt } from './AskUserPrompt'
 import { TodoFloatingPanel } from './TodoFloatingPanel'
+import { TOOL_LABEL } from '../utils/tool-labels'
+import { approvalPreviewOf } from '../utils/pending-approvals'
 import { notify } from './ToastHost'
 
 // 一次渲染多少个 item（长会话按窗口渲染，更早的折在"显示更早"后面）。
@@ -63,39 +65,11 @@ interface TranscriptProps {
   activeWorkspace?: string
   currentMode?: AgentMode
   onAnswerQuestion: (callId: string, choice?: string, text?: string, choices?: string[]) => void
-  onDecideApproval: (toolItemId: string, approved: boolean) => void
   onRetry?: () => void
   onSelectThread?: (threadId: string) => void
 }
 
-/** 工具名称映射（对齐产品工具集与内置插件） */
-const TOOL_LABEL: Record<string, string> = {
-  list_files: '列出文件',
-  read_file: '读取文件',
-  search_files: '搜索代码',
-  find_symbol: '查找符号',
-  write_file: '写入文件',
-  edit_file: '修改文件',
-  run_command: '执行命令',
-  run_background: '后台命令',
-  check_task: '查看后台任务',
-  kill_task: '停止后台任务',
-  todo: '任务规划',
-  invoke_subagent: '委派子智能体',
-  check_subagent: '查询子智能体',
-  ask_user: '向用户提问',
-  decide: '结构化决策',
-  check_gate: '验收门禁',
-  git_status: 'Git 状态',
-  git_diff: 'Git 变更',
-  git_log: 'Git 历史',
-  code_outline: '代码大纲',
-  run_tests: '运行测试',
-  batch_write: '批量写入',
-  batch_replace: '批量替换',
-  project_inspect: '项目诊断',
-  read_url_content: '网页抓取',
-}
+/** 工具名称映射见 `../utils/tool-labels`（与审批浮窗共用同一份，避免两处漂移） */
 
 /** 工具图标渲染 */
 function renderToolIcon(name: string, size = 13, className = '') {
@@ -220,7 +194,6 @@ export const Transcript: React.FC<TranscriptProps> = ({
   activeWorkspace,
   currentMode = 'code',
   onAnswerQuestion,
-  onDecideApproval,
   onRetry,
   onSelectThread,
 }) => {
@@ -416,7 +389,6 @@ export const Transcript: React.FC<TranscriptProps> = ({
             running={running}
             threadId={threadId}
             onAnswerQuestion={onAnswerQuestion}
-            onDecideApproval={onDecideApproval}
             onRetry={onRetry}
             onSelectThread={onSelectThread}
           />
@@ -454,10 +426,9 @@ const TranscriptItemRow: React.FC<{
   running: boolean
   threadId?: string
   onAnswerQuestion: (callId: string, choice?: string, text?: string, choices?: string[]) => void
-  onDecideApproval: (toolItemId: string, approved: boolean) => void
   onRetry?: () => void
   onSelectThread?: (threadId: string) => void
-}> = ({ item, running, threadId, onAnswerQuestion, onDecideApproval, onRetry, onSelectThread }) => {
+}> = ({ item, running, threadId, onAnswerQuestion, onRetry, onSelectThread }) => {
   // 1. 思考过程块
   if (item.kind === 'thinking') {
     return <ThinkingRow item={item} />
@@ -468,7 +439,6 @@ const TranscriptItemRow: React.FC<{
     return (
       <ToolCard
         item={item}
-        onDecideApproval={onDecideApproval}
         onAnswerQuestion={onAnswerQuestion}
         onSelectThread={onSelectThread}
         currentThreadId={threadId}
@@ -783,11 +753,10 @@ const LiveElapsed: React.FC<{ since?: number; className?: string }> = ({ since, 
  */
 const ToolCard: React.FC<{
   item: Item
-  onDecideApproval: (toolItemId: string, approved: boolean) => void
   onAnswerQuestion: (callId: string, choice?: string, text?: string, choices?: string[]) => void
   onSelectThread?: (threadId: string) => void
   currentThreadId?: string
-}> = ({ item, onDecideApproval, onAnswerQuestion, onSelectThread, currentThreadId }) => {
+}> = ({ item, onAnswerQuestion, onSelectThread, currentThreadId }) => {
   const toolName = item.tool || item.name || 'tool'
   // 默认**收缩**：子智能体卡片内容很长（任务书 + 步骤 + 汇报），展开交给用户点。
   // 注意等待答复的工具（ask_user / 待批准）由下面的 `(open || isAwaiting)` 自动展开，
@@ -995,28 +964,11 @@ const ToolCard: React.FC<{
   const target = parsedTarget.target
   const dir = parsedTarget.dir
 
-  /// 审批条上"要批准什么"的一行预览（危险命令原文 / 目标路径 / 参数原文）。
+  /// 审批条上"要批准什么"的预览（危险命令原文 / 目标路径 / 参数原文）。
   ///
-  /// 宿主在 `ApprovalRequested` 事件里带上了 args，卡片建出来就带着它；
-  /// 万一某条老路径没带，退回到目标名/工具名，**绝不能什么都不显示**——
-  /// 那就又回到"只能闭眼点批准"。
-  const approvalPreview = (() => {
-    if (!isAwaiting || isQuestionTool) return ''
-    const a: any = item.args
-    const cmd =
-      typeof a === 'string'
-        ? a
-        : (typeof a?.command === 'string' && a.command) ||
-          (typeof a?.cmd === 'string' && a.cmd) ||
-          ''
-    if (cmd) return `$ ${cmd}`
-    if (target && target !== toolName) return `${toolName} → ${dir ? `${dir}${target}` : target}`
-    if (a && typeof a === 'object') {
-      const json = JSON.stringify(a, null, 2)
-      return json === '{}' ? '' : json.slice(0, 600)
-    }
-    return typeof a === 'string' ? a.slice(0, 600) : ''
-  })()
+  /// 与输入框上方的**审批浮窗**共用 `approvalPreviewOf`（`../utils/pending-approvals`）：
+  /// 两处各写一份必然漂移，而"看不到命令的二次确认等于让人闭眼点批准"。
+  const approvalPreview = isAwaiting && !isQuestionTool ? approvalPreviewOf(item) : ''
 
   // 状态与色彩映射：采用更加轻淡柔和的微色调
   const statusBadge = (() => {
@@ -1162,28 +1114,14 @@ const ToolCard: React.FC<{
               </div>
             )}
 
-            {/* 2. 真正的写工作区审批授权操作条（非提问工具且处于 awaiting 时展示） */}
+            {/* 2. 写工作区审批：**操作面已上移到输入框上方的浮动审批窗口**，
+                   这里只留对话流里的记录（批的是什么 + 谁在处理）。
+                   同一件事摆两套按钮，用户会怀疑"点哪个才算数"——所以按钮只在一处。 */}
             {isAwaiting && !isQuestionTool && (
               <div className="flex flex-col gap-2 p-2.5 bg-amber-500/10 border-b border-amber-500/20 text-xs">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2 text-amber-700 dark:text-amber-300 font-medium">
-                    <ShieldAlert size={13} />
-                    <span>这次调用会修改工作区，是否执行？</span>
-                  </div>
-                  <div className="flex items-center space-x-1.5">
-                    <button
-                      onClick={() => onDecideApproval(item.callId || item.id, false)}
-                      className="px-2.5 py-0.5 rounded bg-zinc-200/80 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 text-xs transition-colors"
-                    >
-                      拒绝
-                    </button>
-                    <button
-                      onClick={() => onDecideApproval(item.callId || item.id, true)}
-                      className="px-2.5 py-0.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors shadow-xs"
-                    >
-                      批准
-                    </button>
-                  </div>
+                <div className="flex items-center space-x-2 text-amber-700 dark:text-amber-300 font-medium">
+                  <ShieldAlert size={13} />
+                  <span>这次调用会修改工作区，等待批准</span>
                 </div>
                 {/* 🔴 批准前必须能看清"批的是什么"：危险命令的原文 / 要动的目标。
                     宿主把参数原文随审批事件一起送来了（ApprovalRequested.args），
@@ -1193,6 +1131,10 @@ const ToolCard: React.FC<{
                     {approvalPreview}
                   </pre>
                 )}
+                <div className="flex items-center space-x-1.5 text-[10.5px] text-amber-700/90 dark:text-amber-300/80">
+                  <ArrowUp size={11} />
+                  <span>请在输入框上方的审批浮窗中批准或拒绝（超时未处理将按安全方向自动拒绝）。</span>
+                </div>
               </div>
             )}
 

@@ -152,6 +152,7 @@
   - 审批权限策略药丸（自动 / 每次询问 / 严格只读）。
   - 思考力度档位药丸（Max / High / Medium / Low）。
 - **排队消息浮动面板 (`QueuedMessagesFloatingPanel`)**：展示连续发送排队中的消息，支持提升优先级（置顶）、删除、清空、重新编辑。
+- **审批浮动窗口 (`ApprovalFloatingPanel`)**：待批准的工具调用贴在**输入框正上方**浮动展示（挂在 `Composer` 列里、不随对话流滚动），逐条给出工具名、已等待时长与待批准内容的原文，并就地批准 / 拒绝。
 - **子智能体专属保护状态**：激活子智能体标签时，输入框自动切换为紫色只读保护面板，显示“子智能体专属执行会话”，提供停止、恢复执行与返回主会话操作。
 
 ### 3.4 遥测与上下文洞察
@@ -201,7 +202,8 @@
 | **基础对话流与 Markdown** | `tauri-ui/src/components/Transcript.tsx`（`marked` 渲染） | ✅ |
 | **思考折叠与单行工具卡** | `tauri-ui/src/components/Transcript.tsx` | ✅ |
 | **单卡代码撤销** | `tauri-ui/src/components/Transcript.tsx` + `change.revertCard` | ✅ |
-| **敏感工具审批横幅** | `tauri-ui/src/components/Transcript.tsx`（读 `status == "waiting_approval"`） | ✅ |
+| **审批浮动窗口（输入框上方）** | `tauri-ui/src/components/ApprovalFloatingPanel.tsx`（挂载在 `Composer.tsx`，回执走 `approval.decide`） | ✅ |
+| **审批在对话流里的记录** | `tauri-ui/src/components/Transcript.tsx`（读 `status == "waiting_approval"`，只留内容预览，按钮在浮窗） | ✅ |
 | **交互式提问卡片** | `tauri-ui/src/components/Transcript.tsx` + `question.answer` | ✅ |
 | **输入框与加号综合菜单** | `tauri-ui/src/components/Composer.tsx`（模式/指令/附件） | ✅ |
 | **排队消息管理浮动面板** | `tauri-ui/src/components/Composer.tsx` | ✅ |

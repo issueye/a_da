@@ -35,6 +35,8 @@ import { agentClient } from '../client/ws-client'
 import { formatDuration, formatTokenShort } from './Transcript'
 import { AskUserPrompt } from './AskUserPrompt'
 import { QueuedMessagesFloatingPanel } from './QueuedMessagesFloatingPanel'
+import { ApprovalFloatingPanel } from './ApprovalFloatingPanel'
+import { collectPendingApprovals } from '../utils/pending-approvals'
 import { ContextUsagePopover } from './ContextUsagePopover'
 import { computeContextBreakdown } from '../utils/context-breakdown'
 import { MentionMenu, type MentionItem } from './MentionMenu'
@@ -56,6 +58,13 @@ export interface ComposerProps {
   onSetEffort?: (effort: Effort) => void
   onOpenSettings: () => void
   onAnswerQuestion?: (callId: string, choice?: string, text?: string, choices?: string[]) => void
+  /**
+   * 批准 / 拒绝待批准的工具调用（`approval.decide`）。
+   *
+   * 审批面在输入框上方的**浮动审批窗口**里，这里不再是"顺手加个入口"：
+   * 传不进来就不渲染浮窗（否则只有按钮、发不出回执，比没有更糟）。
+   */
+  onDecideApproval?: (toolItemId: string, approved: boolean) => void
   onPromoteQueueItem?: (index: number) => void
   onRemoveQueueItem?: (index: number) => void
   onClearQueue?: () => void
@@ -122,6 +131,7 @@ export const Composer: React.FC<ComposerProps> = ({
   onSetEffort,
   onOpenSettings,
   onAnswerQuestion,
+  onDecideApproval,
   onPromoteQueueItem,
   onRemoveQueueItem,
   onClearQueue,
@@ -381,6 +391,15 @@ export const Composer: React.FC<ComposerProps> = ({
     return null
   }, [thread])
 
+  // 待批准的工具调用（审批浮动窗口的数据源）。
+  //
+  // 必须在 `thread?.isSubagent` 的提前 return **之前**求值——子智能体会话也要显示审批浮窗，
+  // 否则一旦某条子会话真的等审批，那个分支连渲染入口都没有（只能等超时）。
+  const pendingApprovals = useMemo(
+    () => collectPendingApprovals(thread?.items || []),
+    [thread]
+  )
+
   // 计算当前会话的遥测指标（严格对齐原版 GPUIX 指标算法）
   const telemetry = useMemo(() => {
     const items = thread?.items || []
@@ -458,6 +477,9 @@ export const Composer: React.FC<ComposerProps> = ({
   if (thread?.isSubagent) {
     return (
       <div className="px-3 py-2 border-t border-zinc-200 dark:border-[#27272a] bg-zinc-50 dark:bg-[#141416] flex flex-col space-y-1.5 select-none relative transition-colors">
+        {/* 审批浮窗：子智能体会话没有输入框，但审批照样得有人点——挂在同一个顶部位置 */}
+        <ApprovalFloatingPanel approvals={pendingApprovals} onDecide={onDecideApproval} />
+
         <div className="flex items-center justify-between p-2.5 bg-white dark:bg-[#1a1a1e] border border-purple-200/80 dark:border-purple-900/40 rounded-xl shadow-xs">
           <div className="flex items-center space-x-2.5 min-w-0 flex-1">
             <div className="w-7 h-7 rounded-lg bg-purple-100 dark:bg-purple-950/60 flex items-center justify-center text-purple-600 dark:text-purple-400 flex-shrink-0">
@@ -669,6 +691,9 @@ export const Composer: React.FC<ComposerProps> = ({
           ))}
         </div>
       )}
+
+      {/* 审批浮窗：紧贴输入框正上方浮动展示（批准后才继续执行，不批就等超时） */}
+      <ApprovalFloatingPanel approvals={pendingApprovals} onDecide={onDecideApproval} />
 
       {/* 3. 主输入卡片容器 */}
       <div

@@ -558,6 +558,7 @@ export function App() {
               onSend={handleSend}
               onAbort={handleAbort}
               onSetMode={handleSetMode}
+              onDecideApproval={handleDecideApproval}
               onSetApprovalMode={(mode) => agentClient.setApprovalMode(mode)}
               onSetEffort={(effort) => agentClient.setEffort(effort)}
               onOpenSettings={() => setSettingsOpen(true)}
@@ -579,7 +580,6 @@ export function App() {
                 activeWorkspace={activeThread.workspace || snapshot.activeWorkspace}
                 currentMode={snapshot.currentMode}
                 onAnswerQuestion={handleAnswerQuestion}
-                onDecideApproval={handleDecideApproval}
                 onRetry={() => handleRetry(activeThread.id)}
                 onSelectThread={handleSelectThread}
               />
@@ -596,6 +596,7 @@ export function App() {
                 onSend={handleSend}
                 onAbort={handleAbort}
                 onSetMode={handleSetMode}
+                onDecideApproval={handleDecideApproval}
                 onSetApprovalMode={(mode) => agentClient.setApprovalMode(mode)}
                 onSetEffort={(effort) => agentClient.setEffort(effort)}
                 onOpenSettings={() => setSettingsOpen(true)}

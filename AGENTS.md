@@ -93,6 +93,12 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1 -Shell tauri       # 同一
   所以审批卡**拿不到** `ToolCallStarted` 的 args，只能自己带；`store.set_tool_waiting_approval`
   会把参数落进卡片（`args`/`raw_args`/`details.approval.args`），界面据此渲染待批准内容。
   只给工具名 = 让用户闭眼点"批准"，那道二次确认闸门形同虚设。
+- **审批的操作面只有一处：输入框上方的浮动审批窗口**
+  （`tauri-ui/src/components/ApprovalFloatingPanel.tsx`，挂在 `Composer` 的列里，因此**不随对话流滚动**；
+  数据源是会话 items 里 `status == "waiting_approval"` 的卡片，回执走 `approval.decide`）。
+  对话流里那张卡只留**记录**：待批准内容的预览 + "去浮窗处理"。
+  同一件事摆两套按钮，用户会怀疑"点哪个才算数"——按钮只在浮窗一处；
+  预览文案两处共用 `tauri-ui/src/utils/pending-approvals.ts` 的 `approvalPreviewOf`，别各写一份。
 - **模型请求重试次数**（设置项，默认 5，范围 `0..=20`）这条链要一起改才生效：
   `ConfigSnapshot.retryCount`（wire/`client-ts`）↔ `~/.a-da/config.json` 的 `retryCount` ↔
   `config.setRetryCount`（`spec/proto/ada-coding.ext.json` 也要登记）↔ 每轮

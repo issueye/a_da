@@ -69,6 +69,7 @@ interface EmptyConversationViewProps {
   onSetApprovalMode?: (mode: ApprovalMode) => void
   onSetEffort?: (effort: Effort) => void
   onOpenSettings: () => void
+  onDecideApproval?: (toolItemId: string, approved: boolean) => void
   onOpenPlugins?: () => void
   onOpenChanges?: () => void
   onOpenDebug?: () => void
@@ -105,6 +106,7 @@ export const EmptyConversationView: React.FC<EmptyConversationViewProps> = ({
   onSetApprovalMode,
   onSetEffort,
   onOpenSettings,
+  onDecideApproval,
   onOpenPlugins,
   onOpenChanges,
   onOpenDebug,
@@ -219,6 +221,7 @@ export const EmptyConversationView: React.FC<EmptyConversationViewProps> = ({
             onSetApprovalMode={onSetApprovalMode}
             onSetEffort={onSetEffort}
             onOpenSettings={onOpenSettings}
+            onDecideApproval={onDecideApproval}
             onOpenPlugins={onOpenPlugins}
             onOpenChanges={onOpenChanges}
             onOpenDebug={onOpenDebug}
