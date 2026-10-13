@@ -21,6 +21,11 @@ pub struct StateBroadcaster {
     dirty: Arc<AtomicBool>,
     /// 上一帧的字节数（自适应间隔的依据）
     last_frame_bytes: Arc<std::sync::atomic::AtomicUsize>,
+    /// 客户端是否声明了 state.patch 能力（见 enable_patch_mode）。
+    ///
+    /// **默认关闭**：没声明的连接继续收全量快照——这是『宿主先落地、客户端后跟上』
+    /// 的安全绳，也是出问题时的回滚路径。
+    patch_enabled: Arc<AtomicBool>,
 }
 
 /// 合帧的基础间隔（60FPS 打字机）
@@ -52,6 +57,7 @@ impl StateBroadcaster {
             broadcast_tx,
             dirty: Arc::new(AtomicBool::new(false)),
             last_frame_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            patch_enabled: Arc::new(AtomicBool::new(false)),
         });
 
         let b = broadcaster.clone();
@@ -69,6 +75,16 @@ impl StateBroadcaster {
         });
 
         broadcaster
+    }
+
+    /// 客户端在 session.initialize 里声明了 state.patch → 后续帧可走增量。
+    pub fn enable_patch_mode(&self) {
+        self.patch_enabled.store(true, Ordering::Relaxed);
+    }
+
+    /// 当前这条连接是否走增量帧（全量快照永远保留给首帧/自愈/未声明能力的连接）。
+    pub fn patch_enabled(&self) -> bool {
+        self.patch_enabled.load(Ordering::Relaxed)
     }
 
     /// 标记状态有更新，等待合帧窗口统一推流

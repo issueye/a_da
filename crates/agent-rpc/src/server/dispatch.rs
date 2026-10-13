@@ -1226,6 +1226,20 @@ impl Dispatcher {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
+                // 增量帧能力协商（docs/state-patch-plan.md 第 1 步）：只有声明了 state.patch 的
+                // 连接才切增量；没声明的继续收全量快照——这是安全绳，也是回滚路径。
+                let wants_patch = p
+                    .get("client")
+                    .and_then(|c| c.get("capabilities"))
+                    .and_then(|c| c.as_array())
+                    .map(|arr| arr.iter().any(|v| v.as_str() == Some("state.patch")))
+                    .unwrap_or(false);
+                if wants_patch {
+                    if let Some(bc) = self.broadcaster.as_ref() {
+                        bc.enable_patch_mode();
+                    }
+                }
+
                 if client_version != PROTOCOL_VERSION {
                     return Err(ProtocolError::new(
                         AppErrorCode::ProtocolVersionMismatch.code(),
