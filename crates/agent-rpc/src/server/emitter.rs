@@ -355,4 +355,57 @@ mod tests {
             "baseSeq 必须是上一帧的 seq"
         );
     }
+
+    /// 📏 **收益实测**（钉进 CI）：800 个 item 的长会话下，
+    /// 全量帧 vs 增量稳态帧的字节数——这就是"MB 级 → 几十 KB"那句话的依据。
+    #[tokio::test]
+    async fn test_patch_frame_is_much_smaller_than_full_snapshot() {
+        let store = Arc::new(RwLock::new(AgentStore::new("E:/test_patch_size".to_string())));
+        let seq = Arc::new(AtomicU64::new(0));
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let broadcaster = StateBroadcaster::new(store.clone(), seq, tx);
+
+        {
+            let mut s = store.write().await;
+            let tid = s.create_thread(Some("大会话".to_string()), None);
+            for i in 0..800 {
+                let cid = format!("call_{i}");
+                s.start_tool_call(&tid, &cid, "run_command", "{}");
+                s.finish_tool_call(
+                    &tid,
+                    &cid,
+                    true,
+                    Some(format!("输出 {i}：{}", "x".repeat(2048))),
+                    Some(1),
+                    Some(0),
+                    Some(1),
+                    None,
+                );
+            }
+        }
+
+        // 全量帧（当前线上行为）
+        broadcaster.broadcast_immediate().await;
+        let full = rx.recv().await.expect("全量帧");
+        // 增量首帧：版本表为空 → 等价于把所有 item 推一次
+        broadcaster.enable_patch_mode();
+        broadcaster.broadcast_immediate().await;
+        let first = rx.recv().await.expect("增量首帧");
+        // 增量稳态帧：没有任何变化
+        broadcaster.broadcast_immediate().await;
+        let steady = rx.recv().await.expect("增量稳态帧");
+
+        println!(
+            "📏 800 item：全量帧 {} KB / 增量首帧 {} KB / 增量稳态帧 {} KB",
+            full.len() / 1024,
+            first.len() / 1024,
+            steady.len() / 1024
+        );
+        assert!(
+            steady.len() * 10 < full.len(),
+            "增量稳态帧应当比全量小一个数量级（全量 {} 字节 / 稳态 {} 字节）",
+            full.len(),
+            steady.len()
+        );
+    }
 }
