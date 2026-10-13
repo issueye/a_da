@@ -10,6 +10,7 @@ import {
   ChevronUp,
 } from 'lucide-react'
 import type { Item, TodoStep } from '../types'
+import { deriveTodoPlan } from '../utils/todo-plan'
 
 /** 从工具项中解析出 Todo 规划列表 */
 export function parseTodosFromItem(item: Item): TodoStep[] | null {
@@ -143,10 +144,13 @@ export const TodoFloatingPanel: React.FC<TodoFloatingPanelProps> = ({ items }) =
   const [collapsed, setCollapsed] = useState(false)
   const [copied, setCopied] = useState(false)
 
-  const latest = getLatestTodoItem(items)
-  if (!latest) return null
+  // 计划必须**按动作推演**（set 替换 / update 增量 / get 只读），而不是"倒序找第一个能
+  // 解析出 items 的卡片"——后者会把 update 的子集、get 回的旧快照当成最新计划，
+  // 于是过了几轮面板就停在旧计划上（实测 7/12 而正文写着 13/13 完成）。
+  const plan = deriveTodoPlan(items)
+  if (!plan) return null
 
-  const { todos, notes } = latest
+  const { todos, notes } = plan
   const completedCount = todos.filter((t) => t.status === 'completed').length
   const allDone = completedCount === todos.length && todos.length > 0
   const activeStep =
