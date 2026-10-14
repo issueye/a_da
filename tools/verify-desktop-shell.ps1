@@ -16,43 +16,30 @@
 #   # Electron 交付形态（默认；先 `bun run electron:pack`）
 #   pwsh -NoProfile -File tools/verify-desktop-shell.ps1
 #   # Electron 壳的 dev 形态（源码直跑；会自己拉起 Vite 以走热重载分支）
-#   pwsh -NoProfile -File tools/verify-desktop-shell.ps1 -Shell electron -Dev
-#   # Tauri 壳（debug 构建 + Vite）
-#   pwsh -NoProfile -File tools/verify-desktop-shell.ps1 -Shell tauri
+#   pwsh -NoProfile -File tools/verify-desktop-shell.ps1 -Dev
 #
 # 注意：会真的动鼠标（点窗口按钮），跑的时候别抢鼠标。
 param(
-  [ValidateSet('electron', 'tauri')]
-  [string]$Shell = 'electron',
   [string]$Exe = '',
   [string]$WorkDir = '',
-  [switch]$Dev,
-  [switch]$SkipVite
+  [switch]$Dev
 )
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $WorkDir) { $WorkDir = $RepoRoot }
 
-# 各壳的默认目标与进程名
-if ($Shell -eq 'electron') {
-  if (-not $Exe) {
-    $Exe = if ($Dev) { '' } else { Join-Path $RepoRoot 'dist\electron\win-unpacked\a_da.exe' }
-  }
-  $appProcessNames = @('a_da', 'electron')
-  # 🔴 Electron 会认 ELECTRON_RUN_AS_NODE：一旦继承到（例如从 Electron 系终端里启动），
-  # 它就以"纯 Node"跑 main.cjs——require('electron') 变成路径字符串，进程当场崩掉。
-  if ($env:ELECTRON_RUN_AS_NODE) {
-    Write-Host "注：检测到 ELECTRON_RUN_AS_NODE=$($env:ELECTRON_RUN_AS_NODE)，已为本次验收清除"
-    Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
-  }
-  $useVite = [bool]$Dev
-} else {
-  if (-not $Exe) {
-    $Exe = Join-Path (Split-Path -Parent $RepoRoot) 'cargo_target_ada\debug\ada-tauri.exe'
-  }
-  $appProcessNames = @('ada-tauri')
-  $useVite = -not $SkipVite
+# 默认目标与进程名（Electron 交付形态）
+if (-not $Exe) {
+  $Exe = if ($Dev) { '' } else { Join-Path $RepoRoot 'dist\electron\win-unpacked\a_da.exe' }
 }
+$appProcessNames = @('a_da', 'electron')
+# 🔴 Electron 会认 ELECTRON_RUN_AS_NODE：一旦继承到（例如从 Electron 系终端里启动），
+# 它就以"纯 Node"跑 main.cjs——require('electron') 变成路径字符串，进程当场崩掉。
+if ($env:ELECTRON_RUN_AS_NODE) {
+  Write-Host "注：检测到 ELECTRON_RUN_AS_NODE=$($env:ELECTRON_RUN_AS_NODE)，已为本次验收清除"
+  Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+}
+$useVite = [bool]$Dev
 if ($Exe) { $Exe = (Resolve-Path -LiteralPath $Exe).Path }
 $artDir = Join-Path $RepoRoot 'tmp'
 New-Item -ItemType Directory -Force -Path $artDir | Out-Null
@@ -335,10 +322,10 @@ function Stop-OurAppProcesses {
 Stop-OurAppProcesses
 Start-Sleep -Seconds 2
 
-# Vite 开发服务器：Tauri debug 构建走 `devUrl`；Electron -Dev 时若它没起来就会退回静态产物
+# Vite 开发服务器：Electron -Dev 时若它没起来就会退回静态产物
 $vite = $null
 if ($useVite) {
-  $vite = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'npm --prefix tauri-ui run dev' -WorkingDirectory $RepoRoot -PassThru -WindowStyle Hidden
+  $vite = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'npm --prefix desktop-ui run dev' -WorkingDirectory $RepoRoot -PassThru -WindowStyle Hidden
   $up = $false
   for ($i = 0; $i -lt 60; $i++) {
     Start-Sleep -Milliseconds 500
@@ -357,7 +344,7 @@ $logBefore = (Get-Item $logPath).Length
 # 别把用户环境里别的 Electron 应用算进来
 $preexistingHostPids = @(Get-Process -Name $appProcessNames -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
 
-$env:A_DA_SILENT_FATAL = '1'   # Tauri 宿主的原生错误框静音，避免挡住无人值守流程
+$env:A_DA_SILENT_FATAL = '1'   # 宿主的原生错误框静音，避免挡住无人值守流程
 $proc = if ($Exe) {
   Start-Process -FilePath $Exe -WorkingDirectory $WorkDir -PassThru
 } else {
@@ -403,16 +390,14 @@ for ($i = 0; $i -lt 40; $i++) {
 # ---------------- 1. 壳子唤醒网关 ----------------
 Write-Host '== 1. 网关唤醒与 IPC 桥 =='
 Check ($h -ne [IntPtr]::Zero) '找到主窗口'
-# 两个宿主的措辞不同（Electron「网关进程」/ Tauri「网关程序」），一起认
+# Electron 宿主拉起网关时写「网关进程」
 Check ($newLog -match '正在拉起网关(进程|程序)') '宿主拉起了网关进程'
 Check ($newLog -match 'A_DA_GATEWAY_READY') '读到网关就绪行（A_DA_GATEWAY_READY）'
 Check $connected '界面已接入网关（UI 与网关握手成功）'
 Check ($null -ne (Get-Process -Name 'ada-gateway' -ErrorAction SilentlyContinue)) 'ada-gateway 进程在线'
-if ($Shell -eq 'electron') {
-  # 这两个是"Electron 版功能全哑"的根因守卫：preload 一漏打包，界面就再也连不上网关
-  Check ($newLog -match 'preload 路径:') '宿主加载到了 preload（window.electronAPI 可用）'
-  Check ($newLog -match '\[Renderer') '渲染进程日志已转发进 launcher.log（可诊断）'
-}
+# 这两个是"Electron 版功能全哑"的根因守卫：preload 一漏打包，界面就再也连不上网关
+Check ($newLog -match 'preload 路径:') '宿主加载到了 preload（window.electronAPI 可用）'
+Check ($newLog -match '\[Renderer') '渲染进程日志已转发进 launcher.log（可诊断）'
 if ($h -eq [IntPtr]::Zero) { exit 1 }
 
 $fgOk = $false
@@ -486,8 +471,8 @@ Check ($sigDblBack -ne $sigDblMax) '双击还原后按钮图标切回「最大�
 # 2.4 只重启网关（新能力：不必重启整个桌面端）
 #     点标题栏中间的连接状态胶囊 → 打开进程管理 → 找 emerald 按钮 → Enter 确认
 Write-Host '== 2.4 重新唤醒网关 =='
-$restartReqMarker = if ($Shell -eq 'electron') { '收到「重新唤醒网关」请求' } else { '正在拉起网关(进程|程序)' }
-$restartDoneMarker = if ($Shell -eq 'electron') { '重新唤醒网关结束' } else { 'A_DA_GATEWAY_READY' }
+$restartReqMarker = '收到「重新唤醒网关」请求'
+$restartDoneMarker = '重新唤醒网关结束'
 $logBeforeRestart = NewLogChunk
 $r = Rect $h
 ClickAt ([int](($r.Left + $r.Right) / 2)) ([int]$r.Top + $ButtonY)
@@ -543,7 +528,7 @@ if ($vite) { taskkill /pid $vite.Id /T /F 2>&1 | Out-Null }
 
 Write-Host ''
 if ($failures.Count -eq 0) {
-  Write-Host "RESULT: PASS — $Shell 壳子（网关唤醒 + IPC 桥 + 窗口控制 + 状态同步 + 退出清理）全部通过"
+  Write-Host "RESULT: PASS — Electron 壳子（网关唤醒 + IPC 桥 + 窗口控制 + 状态同步 + 退出清理）全部通过"
   exit 0
 } else {
   Write-Host "RESULT: FAIL — $($failures.Count) 项未通过:"

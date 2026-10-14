@@ -90,10 +90,9 @@ export const TitleBar: React.FC<TitleBarProps> = ({
 
   return (
     <header
-      // `deep`：标题栏**整块**都可拖拽；双击空白处由宿主原生切换最大化/还原
-      // （Tauri 注入的 drag region 脚本负责，前端不再自己 onDoubleClick——
-      //  两边都处理会连按两次，等于什么都没发生）。
-      data-tauri-drag-region="deep"
+      // `deep`：标题栏**整块**都可拖拽；双击空白处由 Electron 宿主原生切换最大化/还原
+      // （前端不再自己 onDoubleClick，两边都处理会连按两次，等于什么都没发生）。
+      data-app-drag-region="deep"
       // 🔴 无边框窗口的标题栏是**窗口 chrome**，必须永远压在所有应用模态层之上
       // （应用里的弹窗统一是 `fixed inset-0 z-50`）。少了这一层，任何弹窗打开时
       // 它都会被盖住：最小化/最大化/关闭点不动、窗口也拖不动——正是"无法最小化/关闭窗口"。
@@ -140,7 +139,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       {/* 中间：连接状态与运行模式（点击打开进程管理或重试） */}
       <div
         // 标题栏是 deep 拖拽区，这里必须显式退出拖拽，否则 mousedown 被拖拽吃掉、点不动
-        data-tauri-drag-region="false"
+        data-app-drag-region="false"
         className="flex items-center space-x-1.5 px-2.5 py-1 rounded-md transition-all cursor-pointer hover:bg-zinc-200/80 dark:hover:bg-zinc-800 border border-transparent hover:border-zinc-300 dark:hover:border-zinc-700 pointer-events-auto group"
         onClick={() => {
           if (onOpenProcesses) {
@@ -166,7 +165,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       </div>
 
       {/* 右侧：按钮群组 */}
-      <div className="flex items-center space-x-1" data-tauri-drag-region={false}>
+      <div className="flex items-center space-x-1" data-app-drag-region={false}>
         {onOpenCommandPalette && (
           <button
             onClick={onOpenCommandPalette}

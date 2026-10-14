@@ -100,7 +100,7 @@ bun run typecheck
 | P2-2 | CLI `a-da run` 未实现 | [src-tauri/src/main.rs:239-248](../src-tauri/src/main.rs#L239-L248) | W6-T3 |
 | P2-3 | 三处 `revert_*` 返回值被丢弃；`THREAD_EDIT_AND_RESEND` 吞错 + 丢事件流 + 不可 abort | dispatch.rs 三处 revert + resend 臂 | **✅ W6-T4 已修复**：回执带回恢复/删除清单；resend 与 `thread.start` 共用**同一条执行泵**（事件写 store + 广播、错误进 `Error` 事件、`abort_tx` 注册可停） |
 | P2-4 | 合规套件两处空壳（INV-7 空函数、`ports/model.rs` 自比）；"8 端口"名不副实 | `inv7:5-8`；`ports/model.rs:43-44` | W6-T5 |
-| P2-5 | 前端重连无退避/无上限/竞态；`onclose` 不清 `pendingRequests` | `tauri-ui/src/client/ws-client.ts:290-312` | W6-T6 |
+| P2-5 | 前端重连无退避/无上限/竞态；`onclose` 不清 `pendingRequests` | `desktop-ui/src/client/ws-client.ts:290-312` | W6-T6 |
 | P2-6 | README 正文仍是 TS/GPUIX 时代；`unfinished-features.md` / `feature-catalog.md` 过期 | README 656 行 + 另两份文档共 60 条归档引用 | **✅ W6-T7 已修复**：三份文档按当前实现重写，`verify-docs` **60 → 0** |
 | **P0-6** | 🔴 **`ask_user` 在新引擎上不可用**：工具在 catalog 里、UI 卡片组件也在，但链路永远不触发 | `AskUserTool::execute` 直接返回错误（`agent-toolkit/src/core/ask_user.rs`）；`AgentEventBody::QuestionAsked` **全仓无发射者**；唯一会注册 waiter 的 legacy `execute_ask_user` 已随 S1 删除 | **S1a**（提问端口化 + 真实现；门禁已用 `UNEMITTED_EVENT_ALLOW` 钉住） |
 | **P1-17** | 🔴 **子智能体生命周期未上报**：`SubagentStarted` / `SubagentFinished` 定义了却无发射者，`engine_bridge` 把两者映射为 `None` | `crates/agent-base/src/domain/event.rs:32-33`；`engine_bridge.rs:94-95`；进度通道 `SubagentStepUpdate` 在 `InvokeSubagentTool` 里被置 `None`（`subagents/tool.rs:167`） | **S6**（交互平台一并解决：进度/生命周期上报是 agent 间交互的一部分） |
@@ -151,7 +151,7 @@ bun run typecheck
 让调用点零改动。shim 的删除单独排一个任务，**且必须在所有调用点迁移完成后**。
 
 ### R7 前端零改动（事件与负载兼容）
-W3 切引擎时**前端 `tauri-ui` 不许改**（除 W6-T6 明确列出的重连项）。事件名与负载形状
+W3 切引擎时**前端 `desktop-ui` 不许改**（除 W6-T6 明确列出的重连项）。事件名与负载形状
 必须由投影层适配；任何"顺便改一下前端"的需求都要新开任务并说明理由。
 
 ### R8 每个里程碑独立可交付、可回退
@@ -329,7 +329,7 @@ W3 切引擎时**前端 `tauri-ui` 不许改**（除 W6-T6 明确列出的重连
 |---|---|---|---|---|---|---|---|
 | W3-T1 | `agent-host`：`run_from_spec(spec)` 装配真实端口 + ws 传输挂钩 | 设计 §9 要求 `agent-host`；当前不存在 | `crates/agent-host/**`（新建）、workspace `Cargo.toml`、`products/ada-skeleton/**` | 单测：从 spec 到 `AgentRuntime` 全链路；骨架产品端到端走宿主层 | W1、W2 | 3 | ✅ 已完成 |
 | W3-T2 | 3 处 `run_agent_loop` 调用点切到 `AgentRuntime::run_turn`（**先加开关**） | [dispatch.rs:534](../crates/agent-core/src/server/dispatch.rs#L534)/[:1476](../crates/agent-core/src/server/dispatch.rs#L1476)/[:1562](../crates/agent-core/src/server/dispatch.rs#L1562) | `crates/agent-core/src/runner/engine_bridge.rs`（新）、`server/dispatch.rs`、`server/ws.rs`、`crates/agent-adapter/src/cancel.rs`、`products/ada-coding/**` | 选择矩阵（含降级）+ **真引擎实跑**集成断言 + 产品冒烟 | W3-T1 | 3 | ✅ 已完成（默认仍 legacy，见 P1-14） |
-| W3-T3 | 事件投影：`AgentEvent` → 现有 UI 事件/快照（**前端零改动**，R7） | legacy `AgentLoopEvent` 与领域事件形状不同（[agent_loop.rs:17-36](../crates/agent-core/src/runner/agent_loop.rs#L17-L36)） | `crates/agent-core/src/runner/engine_bridge.rs`、`server/dispatch.rs`、`state/store.rs` | 投影表**覆盖全部 12 种领域事件**；审批通道端到端；`tauri-ui` 无 diff | W3-T2 | 2 | ✅ 已完成 |
+| W3-T3 | 事件投影：`AgentEvent` → 现有 UI 事件/快照（**前端零改动**，R7） | legacy `AgentLoopEvent` 与领域事件形状不同（[agent_loop.rs:17-36](../crates/agent-core/src/runner/agent_loop.rs#L17-L36)） | `crates/agent-core/src/runner/engine_bridge.rs`、`server/dispatch.rs`、`state/store.rs` | 投影表**覆盖全部 12 种领域事件**；审批通道端到端；`desktop-ui` 无 diff | W3-T2 | 2 | ✅ 已完成 |
 | W3-T4 | **删除 legacy**：`run_agent_loop`、`executor::execute_tool_call_extended`、legacy 工具分派 | 事实 B | `crates/agent-core/src/runner/**`、`server/dispatch.rs`、`server/ws.rs`、`src-tauri/**`、`tools/verify-archive.ts` | `verify-archive`：主干**无** `fn run_agent_loop`；无引擎注入 = 硬失败 | W3-T2/T3 | 2 | ✅ 已完成 |
 | W3-T5 | **golden 回放夹具**（M0-T3 补课）：脚本化模型 → 冻结事件序列 JSON | `crates/agent-conformance/golden/` 不存在 | `crates/agent-conformance/golden/**`、`crates/agent-conformance/src/golden.rs`（新） | 夹具跑通且与冻结产物逐字段相等；篡改期望必须被检出 | W3-T1 | 1.5 | ✅ 已完成 |
 | W3-T6 | 握手能力位与产品身份**从声明派生**（不再硬编码） | `session.initialize` 回 `ServerCapabilities::default()` + 硬编码的 `ada-coding` 产品信息 | `crates/agent-core/src/server/dispatch.rs`、`crates/agent-host/src/lib.rs`、`products/ada-coding/src/main.rs` | 断言：声明 `rollback=false`/无 `plugins` 的产品 → 握手回 `false`（default 是 `true`，两者结果不同）；产品 id/name/archetype 来自声明 | W3-T1 | 1 | ✅ 已完成 |
@@ -438,12 +438,12 @@ CLI `a-da run`、`revert_*` 返回值与 `THREAD_EDIT_AND_RESEND`、INV-7 模型
 
 | ID | 任务 | 现状证据 | 产出（write scope） | 守门测试 | 依赖 | 人日 | 状态 |
 |---|---|---|---|---|---|---|---|
-| W6-T1 | `SUBAGENT_RESUME` 真实现（或按 R3 删声明并让前端不再调用） | dispatch.rs 只回 `{ok:true}`；前端 `resumeSubagent` 先置 `running=true` 再调它 | `spec/proto/base.json`、`crates/agent-proto/{src/methods.rs,client-ts/methods.ts}`、`tauri-ui/src/{App.tsx,client/ws-client.ts,components/Composer.tsx}` | 断言：协议方法数与 dispatch 臂数一致（72/72）；`typecheck` 绿 | W3 | 1.5 | ✅ 已完成（**判定删声明**） |
+| W6-T1 | `SUBAGENT_RESUME` 真实现（或按 R3 删声明并让前端不再调用） | dispatch.rs 只回 `{ok:true}`；前端 `resumeSubagent` 先置 `running=true` 再调它 | `spec/proto/base.json`、`crates/agent-proto/{src/methods.rs,client-ts/methods.ts}`、`desktop-ui/src/{App.tsx,client/ws-client.ts,components/Composer.tsx}` | 断言：协议方法数与 dispatch 臂数一致（72/72）；`typecheck` 绿 | W3 | 1.5 | ✅ 已完成（**判定删声明**） |
 | W6-T2 | `STATS_PROMPT_CHARS` / `WORKSPACE_RESCAN` 真实现或删声明 | `:891-896` 硬编码 `1200/800`；`WORKSPACE_RESCAN` 回 `Ok(Null)` | `crates/agent-core/src/server/dispatch.rs`、`spec/proto/*.json`、`crates/agent-proto/**` | 断言：`systemChars` = 实测提示词长度、`toolSpecsChars` = schema 字符数之和、且**不等于** 1200/800；无引擎时如实报错 | W3 | 1.5 | ✅ 已完成（`stats` 真实现 / `rescan` 删声明） |
 | W6-T3 | CLI `a-da run`：加载模型 + 跑一轮 + 落盘 | `main.rs` 只建内存会话就退出（**不跑模型、不落盘**） | `src-tauri/src/cli_run.rs`（新）、`src-tauri/src/main.rs`、`src-tauri/Cargo.toml` | 断言：`--dry-run` 真跑一轮并落盘 JSONL；空指令退出码 2；无 provider 如实报错 | W3 | 1.5 | ✅ 已完成 |
 | W6-T4 | `revert_*` 返回值回传前端；`THREAD_EDIT_AND_RESEND` 不再吞错/丢事件/可 abort | 三个 revert 臂丢弃 `_outcome` 回 `{ok:true}`；resend 另 spawn 空循环把事件抽干丢弃、只 `warn` 错误、`abort_rx: None` | `crates/agent-core/src/server/dispatch.rs` | 断言：回执含恢复/删除清单（`None` → `ok:false`）；resend 与 `thread.start` **共用执行泵**；抗体测试钉住"抽干丢弃"形态 | W3 | 1.5 | ✅ 已完成 |
 | W6-T5 | 清掉两处空壳：`inv7` 真断言；`ports/model.rs` 自比断言 | `inv7:5-8`；`ports/model.rs:43-44` | `crates/agent-conformance/src/**`、`tools/xtask/src/gates.rs` | 两处都有真实断言且**能红**；端口清单**从 trait 派生**（11 个，缺实现 0） | W1 | 1 | ✅ 已完成 |
-| W6-T6 | 前端重连：指数退避 + 上限 + generation guard + `onclose` 清 `pendingRequests` | 固定 2s 重连；无代次保护（旧回调覆盖新连接）；`onclose` 不清在途请求 | `tauri-ui/src/client/{ws-client.ts,reconnect-policy.ts}`、`tools/xtask/src/gates.rs` | `verify-wiring` 新门（四项结构性断言）+ 3 种故障注入证明能红；退避策略独立脚本验证 | — | 1.5 | ✅ 已完成 |
+| W6-T6 | 前端重连：指数退避 + 上限 + generation guard + `onclose` 清 `pendingRequests` | 固定 2s 重连；无代次保护（旧回调覆盖新连接）；`onclose` 不清在途请求 | `desktop-ui/src/client/{ws-client.ts,reconnect-policy.ts}`、`tools/xtask/src/gates.rs` | `verify-wiring` 新门（四项结构性断言）+ 3 种故障注入证明能红；退避策略独立脚本验证 | — | 1.5 | ✅ 已完成 |
 | W6-T7 | 文档收口：README 正文重写、`unfinished-features.md` 重写、`feature-catalog.md` 更新路径、本文件状态列 | README 656 行几乎全是 TS/GPUIX 时代内容；另两份文档 19 条引用归档路径 | `README.md`、`docs/unfinished-features.md`、`docs/feature-catalog.md`、本文件 | `verify-docs` **60 → 0**；新文档零新增违约 | 全部 | 2 | ✅ 已完成 |
 
 ---
@@ -580,7 +580,7 @@ CLI `a-da run`、`revert_*` 返回值与 `THREAD_EDIT_AND_RESEND`、INV-7 模型
 | W6-T1/T2/T4 | `crates/agent-core/src/server/dispatch.rs`、`crates/agent-core/src/subagents/` |
 | W6-T3 | `src-tauri/src/main.rs` |
 | W6-T5 | `crates/agent-conformance/src/` |
-| W6-T6 | `tauri-ui/src/client/ws-client.ts` |
+| W6-T6 | `desktop-ui/src/client/ws-client.ts` |
 | W6-T7 | `README.md`、`docs/**` |
 
 **冲突预警**（R5）：`crates/agent-core/src/server/dispatch.rs` 被 W0-T3/T4、W2-T5、W3-T2、
@@ -1087,7 +1087,7 @@ W5-T2/T4、W6-T1/T2/T4 共用 → **这些任务必须串行**，不得并行改
 `Transcript.tsx:683` 的 `isAwaiting = toolStatus === 'waiting_approval' || 'awaiting'`
 会渲染批准/拒绝按钮，点击发 `approval.decide`。缺的一直是**后端从没把状态置成 `waiting_approval`**
 （全仓 `waiting_approval` 在 Rust 侧原本**零出现**）。所以这一轮补的是后端最后一公里，
-界面一行不用改（R7 成立；`git diff tauri-ui` 为空，只有 `bun run typecheck` 生成的未跟踪 `bun.lock`）。
+界面一行不用改（R7 成立；`git diff desktop-ui` 为空，只有 `bun run typecheck` 生成的未跟踪 `bun.lock`）。
 
 **转绿证据**：
 
@@ -1662,7 +1662,7 @@ a-da 命令行任务执行器，工作区: <tmp>
 
 **修法**：
 
-1. **退避策略抽成无副作用纯模块** `tauri-ui/src/client/reconnect-policy.ts`：
+1. **退避策略抽成无副作用纯模块** `desktop-ui/src/client/reconnect-policy.ts`：
    `reconnectDelayMs(attempt, random?)` = `500ms * 2^attempt`，**封顶 30s**，叠加 **±20% 抖动**。
    单独成文件的原因很实际：放在 `ws-client.ts` 里的话，任何 `import` 都会执行该模块顶层
    （创建客户端实例 → 发起连接），"只想算一下退避"的脚本会**挂住进程**（踩过一次）。
@@ -1722,7 +1722,7 @@ a-da 命令行任务执行器，工作区: <tmp>
 |---|---|
 | `README.md` | **按当前实现重写**（656 → 约 330 行）：架构与依赖方向、产品声明式装配、24 个工具、一轮对话的流程、审批与取消（含 `FailDirection` 表）、子智能体隔离、检查点回滚、运行与 CLI（含 `run --dry-run` 与退出码）、代码结构、**唯一真源清单**、六条门禁、已知限制 |
 | `docs/unfinished-features.md` | **重写**为 10 条**经核实**的缺口 + 明确不做项 + 工程注意 |
-| `docs/feature-catalog.md` | 第四节"两套 UI 对比表"改为**单列**的 `tauri-ui` 功能清单（含实现位置）；第五节 CLI 补上 `run --dry-run` 与退出码 |
+| `docs/feature-catalog.md` | 第四节"两套 UI 对比表"改为**单列**的 `desktop-ui` 功能清单（含实现位置）；第五节 CLI 补上 `run --dry-run` 与退出码 |
 
 **顺带纠正的三处过时口径**（旧文档说反了）：
 

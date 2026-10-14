@@ -23,15 +23,12 @@ html.light, :root.light {
   color-scheme: light;
 }
 
-/* 窗口拖拽区域（标题栏使用，兼容 Electron 与 Tauri） */
-[data-tauri-drag-region]:not([data-tauri-drag-region="false"]),
+/* 窗口拖拽区域（标题栏使用，Electron 无边框窗口） */
 [data-app-drag-region]:not([data-app-drag-region="false"]) {
   -webkit-app-region: drag;
   app-region: drag;
 }
 
-[data-tauri-drag-region="false"],
-[data-tauri-drag-region="false"] *,
 [data-app-drag-region="false"],
 [data-app-drag-region="false"] *,
 button,

@@ -1,13 +1,32 @@
 /**
  * JSON-RPC 2.0 WebSocket 客户端。
  * 负责与本地 agent_core (或 a-da host) 建立安全双向隧道。
- * 支持在 Tauri 环境下通过 get_core_info 动态发现同进程分配的端口与认证令牌，
- * 在非 Tauri 环境下无缝回落至默认端口。
+ * 支持在 Electron 环境下通过 get_core_info 动态发现宿主分配的端口与认证令牌，
+ * 在非桌面环境下无缝回落至默认端口。
  */
 
 // 调试日志**单条 payload** 上限（字节）：环形缓冲只限条数，条数有界不等于内存有界
 // （vt.state.snapshot 一帧实测 1.8 MB，300 条就是 ~540 MB 常驻）。
 const DEBUG_PAYLOAD_LIMIT = 4096
+
+/**
+ * 把一张新卡片按 `at`（毫秒时间戳）插到列表里正确的位置；时间戳缺失就追加到末尾。
+ *
+ * 卡片顺序**只能按时间戳**定，不能按"到达顺序"：增量帧的 `upserted` 是按 id 排序的
+ * （宿主刻意让帧内容可复现），收尾那一帧一次带回"用户 + 助手"两条时，
+ * 到达顺序会把回答排到提问前面。等时间戳的卡片保持原有相对顺序（稳定插入）。
+ */
+function insertByItemTime(items: any[], item: any): any[] {
+  const at = typeof item?.at === 'number' ? item.at : null
+  if (at === null) return [...items, item]
+  let i = items.length
+  while (i > 0) {
+    const prevAt = typeof items[i - 1]?.at === 'number' ? items[i - 1].at : null
+    if (prevAt === null || prevAt <= at) break
+    i--
+  }
+  return [...items.slice(0, i), item, ...items.slice(i)]
+}
 
 import type { QuestionSubAnswerInput } from '../utils/question-data'
 import type {
@@ -535,15 +554,10 @@ export class AgentWebSocketClient {
       this.notify()
     } else if (method === 'evt.thread.item') {
       const { threadId, item } = params
-      const thread = this.snapshot.threads.find((t) => t.id === threadId)
-      if (thread && item) {
-        const norm = this.normalizeItem(item)
-        const existIdx = thread.items.findIndex((i) => i.id === norm.id)
-        if (existIdx >= 0) {
-          thread.items[existIdx] = norm
-        } else {
-          thread.items.push(norm)
-        }
+      if (threadId && item) {
+        this.snapshot.threads = this.snapshot.threads.map((t: any) =>
+          t.id === threadId ? this.withItemDelta(t, [item]) : t
+        )
         this.notify()
       }
     } else if (method === 'evt.running.state') {
@@ -608,24 +622,36 @@ export class AgentWebSocketClient {
     }
 
     // 3. 增删改 item（这是增量帧唯一携带的"大内容"）
+    //
+    // 🔴 **必须产出新的 `items` 数组与会话对象，不能就地 push / 赋值。**
+    // 界面侧对卡片列表是按**数组身份**记忆的（`Transcript` 的
+    // `useMemo(..., [items])` 合并相邻碎片、再按窗口切 `rows`）。就地改动不换身份，
+    // memo 就不重算：新到的卡片（用户消息、流式回复、工具卡）**在界面上根本不出现**，
+    // 一直要等到某一帧恰好带 `removed`（轮次收尾时从磁盘回填的那一帧）
+    // 或全量快照把数组换掉才刷出来。用户实测的"发完消息界面不动、整轮跑完才刷出内容"
+    // 就是这条：帧一直到了，只是渲染层拿的还是旧数组引用。
     const upserted = Array.isArray(p.upserted) ? p.upserted : []
-    for (const u of upserted) {
-      if (!u?.item) continue
-      const th = this.snapshot.threads.find((t: any) => t.id === u.threadId)
-      if (!th) continue
-      if (!Array.isArray(th.items)) th.items = []
-      const norm = this.normalizeItem(u.item)
-      const idx = th.items.findIndex((x: any) => x.id === norm.id)
-      if (idx >= 0) th.items[idx] = norm
-      else th.items.push(norm)
-    }
-
     const removed = Array.isArray(p.removed) ? p.removed : []
+    const droppedByThread = new Map<string, Set<string>>()
     for (const r of removed) {
-      const th = this.snapshot.threads.find((t: any) => t.id === r?.threadId)
-      if (th && Array.isArray(th.items)) {
-        th.items = th.items.filter((x: any) => x.id !== r.itemId)
-      }
+      if (!r?.threadId || !r.itemId) continue
+      const set = droppedByThread.get(r.threadId) || new Set<string>()
+      set.add(r.itemId)
+      droppedByThread.set(r.threadId, set)
+    }
+    const upsertsByThread = new Map<string, any[]>()
+    for (const u of upserted) {
+      if (!u?.item || !u.threadId) continue
+      const list = upsertsByThread.get(u.threadId) || []
+      list.push(u.item)
+      upsertsByThread.set(u.threadId, list)
+    }
+    if (upsertsByThread.size > 0 || droppedByThread.size > 0) {
+      this.snapshot.threads = this.snapshot.threads.map((th: any) =>
+        upsertsByThread.has(th.id) || droppedByThread.has(th.id)
+          ? this.withItemDelta(th, upsertsByThread.get(th.id) || [], droppedByThread.get(th.id))
+          : th
+      )
     }
 
     // 4. 激活会话：本地那个仍然有效时不被服务端的滞后值覆盖（与 applySnapshot 同一口径）
@@ -820,6 +846,45 @@ export class AgentWebSocketClient {
     this.notify()
   }
 
+  /** 这条 item 是不是用户消息（乐观项与"谁算作者"的判定都用它）。 */
+  private isUserItem(it: any): boolean {
+    return it?.kind === 'user' || it?.role === 'user'
+  }
+
+  /**
+   * 把一批 item 增删改应用到某个会话上，**返回新的会话对象（以及新的 `items` 数组）**。
+   *
+   * 为什么返回值而不是就地改：界面按**数组身份**记忆卡片列表，见 `applyPatch` 里那段说明。
+   * 另外这里顺手让本地乐观消息退场：服务端那条用户消息到达时，本地那份
+   * `optimistic_*` 的 id 服务端永远不认识（也就永远不会发 `removed` 来删它），
+   * 不退场就是同一句话挂着两个气泡。
+   */
+  private withItemDelta(thread: any, upserts: any[], dropIds?: Set<string>): any {
+    let items: any[] = Array.isArray(thread?.items) ? thread.items : []
+    if (dropIds && dropIds.size > 0) items = items.filter((x: any) => !dropIds.has(x.id))
+    const incoming = upserts.filter((raw) => raw != null)
+    const normalized = incoming.map((raw) => this.normalizeItem(raw))
+    if (normalized.some((it) => this.isUserItem(it))) {
+      items = items.filter(
+        (x: any) =>
+          !(typeof x?.id === 'string' && x.id.startsWith('optimistic_') && this.isUserItem(x))
+      )
+    }
+    for (const norm of normalized) {
+      const idx = items.findIndex((x: any) => x.id === norm.id)
+      // 已在列表里 → 就地换成新版本（流式吐字走这条，位置不动）
+      if (idx >= 0) {
+        items = items.map((x: any, i: number) => (i === idx ? norm : x))
+        continue
+      }
+      // 新卡片按时间戳插入，**不能一律追加到末尾**：宿主一帧的 `upserted` 是按 id 排序的
+      // （帧内容可复现），而轮次收尾那一帧会一次带来"用户 + 助手"两条——直接追加就会把
+      // 回答排到提问前面（实测：整轮结束时两行上下颠倒）。
+      items = insertByItemTime(items, norm)
+    }
+    return { ...thread, items }
+  }
+
   private normalizeItem(it: any): Item {
     if (!it) return it
     const kind = it.kind || (it.role === 'user' ? 'user' : 'assistant')
@@ -971,19 +1036,20 @@ export class AgentWebSocketClient {
       this.notify()
     } else {
       // 处于空闲：乐观在会话中追加用户消息，并切换为运行态
-      const activeThread = this.snapshot.threads.find((t) => t.id === targetThreadId)
-      if (activeThread) {
-        const optimisticUserItem: Item = {
-          id: `optimistic_${Date.now()}`,
-          kind: 'user',
-          role: 'user',
-          text,
-          images,
-          at: Date.now(),
-          createdAt: Date.now(),
-        }
-        activeThread.items.push(optimisticUserItem)
+      const optimisticUserItem: Item = {
+        id: `optimistic_${Date.now()}`,
+        kind: 'user',
+        role: 'user',
+        text,
+        images,
+        at: Date.now(),
+        createdAt: Date.now(),
       }
+      // 换新数组而不是 `items.push(...)`：界面按数组身份记忆卡片列表（`useMemo([items])`），
+      // 就地 push 的话用户刚发的那句话不会立刻出现在界面上。
+      this.snapshot.threads = this.snapshot.threads.map((t: any) =>
+        t.id === targetThreadId ? { ...t, items: [...(t.items || []), optimisticUserItem] } : t
+      )
 
       const currentRunning = this.snapshot.runningThreadIds || []
       if (!currentRunning.includes(targetThreadId)) {

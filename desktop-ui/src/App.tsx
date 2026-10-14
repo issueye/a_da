@@ -71,8 +71,8 @@ export function App() {
   /**
    * 统一的"请求用户确认"入口（返回 Promise<boolean>）。
    *
-   * 用应用自己的 `ConfirmModal`，**不用 `window.confirm`**——那是 WebView 的原生弹窗
-   * （标题会写着 `tauri.localhost`），风格不一致、按钮文案也无法本地化。
+   * 用应用自己的 `ConfirmModal`，**不用 `window.confirm`**——那是 WebView 的原生弹窗，
+   * 风格不一致、按钮文案也无法本地化。
    */
   const confirmResolverRef = React.useRef<((ok: boolean) => void) | null>(null)
   const askConfirm = (
@@ -189,7 +189,7 @@ export function App() {
     return unsub
   }, [])
 
-  // 如果是在 Tauri 容器中，尝试从窗口环境获取本地动态端口
+  // 若窗口 URL 带上了本地动态端口，据此接入
   useEffect(() => {
     // 监听 URL 参数或环境变量中的 ws 端口
     const params = new URLSearchParams(window.location.search)
@@ -469,7 +469,7 @@ export function App() {
         isDark ? 'dark bg-[#18181b] text-zinc-100' : 'light bg-zinc-50 text-zinc-900'
       }`}
     >
-      {/* 顶部标题栏（包含 Tauri 窗口控制与状态） */}
+      {/* 顶部标题栏（包含窗口控制与状态） */}
       <TitleBar
         title={activeThread?.title || '新对话'}
         workspace={activeThread?.workspace}

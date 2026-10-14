@@ -2,7 +2,7 @@
 
 > **版本**：v0.5.0  
 > **更新时间**：2026-10-07  
-> **系统定位**：基于纯 Rust 高性能微内核、支持双角色（GUI 桌面 + Headless 守护进程 + CLI 执行器）的本地 AI 敏捷编码智能体。
+> **系统定位**：基于纯 Rust 高性能微内核 + Electron 桌面壳的本地 AI 敏捷编码智能体。
 
 ---
 
@@ -21,27 +21,27 @@
   - [2.9 上下文压缩与紧凑化 (Compact)](#29-上下文压缩与紧凑化-compact)
   - [2.10 全双工 JSON-RPC 2.0 服务网关](#210-全双工-json-rpc-20-服务网关)
 - [三、 前端交互界面功能 (UI Capabilities)](#三-前端交互界面功能-ui-capabilities)
-- [四、 前端交互界面功能清单（`tauri-ui`）](#四-前端交互界面功能清单tauri-ui)
-- [五、 CLI 与终端执行生态](#五-cli-与终端执行生态)
+- [四、 前端交互界面功能清单（`desktop-ui`）](#四-前端交互界面功能清单desktop-ui)
+- [五、 CLI 与网关执行生态](#五-cli-与网关执行生态)
 
 ---
 
 ## 一、 整体架构与运行形态
 
-系统采用**单二进制分发、双角色运行（Single Binary, Dual Role）**架构：
+系统采用**桌面壳 + 网关 + 按工作区拉起的产品进程**架构：
 
 | 模块 / 路径 | 核心定位 | 关键技术栈 |
 |---|---|---|
 | [`agent_core`](file:///E:/codes/rust_projects/a_da/agent_core) | 纯 Rust 后端微内核，提供全部主循环、工具执行、插件沙箱与持久化 | Rust 2021、Tokio、Reqwest、Tracing |
-| [`src-tauri`](file:///E:/codes/rust_projects/a_da/src-tauri) | 现代跨平台桌面宿主，负责窗口管理、进程级双角色分流与端口调度 | Tauri 2、Windows API、Clap |
-| [`tauri-ui`](file:///E:/codes/rust_projects/a_da/tauri-ui) | 现代轻量化 Webview 桌面交互前端 | React 19、TypeScript、Tailwind CSS、Vite、Lucide |
-| [`src/ui`](file:///E:/codes/rust_projects/a_da/src/ui) | 原生 GPU 硬件加速桌面前端 | GPUIX、React 19 |
+| [`electron`](file:///E:/codes/rust_projects/a_da/electron) | Electron 桌面宿主：窗口管理、网关生命周期监督与 IPC 桥接 | Electron 33、TypeScript |
+| [`desktop-ui`](file:///E:/codes/rust_projects/a_da/desktop-ui) | 现代轻量化 Webview 桌面交互前端 | React 19、TypeScript、Tailwind CSS、Vite、Lucide |
+| [`src/ui`](file:///E:/codes/rust_projects/a_da/src/ui) | 原生 GPU 硬件加速桌面前端（GPUIX 客户端，**已归档**） | GPUIX、React 19 |
 
-### 运行形态矩阵
+### 运行形态
 
-1. **默认桌面 GUI 模式** (`a-da.exe`)：双击启动，自动以同进程异步方式拉起核心服务并分配系统随机空闲端口（`--port 0`），隐藏 Windows 控制台黑框，实现开箱即用。
-2. **Headless 守护进程模式** (`a-da.exe --headless` / `a-da.exe daemon`)：作为纯后台服务常驻运行，对外提供 WebSocket JSON-RPC 服务。
-3. **CLI 单次任务执行模式** (`a-da.exe run --workspace <ws> "<prompt>"`)：命令行直接执行单次编码重构或代码审查任务，无需打开任何图形界面。
+1. **默认桌面模式**：`bun run electron:pack` 产出的 Electron 免安装包双击启动，主进程监督
+   `ada-gateway`，网关按工作区拉起 `ada-coding` 实例，前端经 WebSocket JSON-RPC 接入。
+2. **网关守护模式**（`ada-gateway`）：作为纯后台服务常驻运行，对外提供 WebSocket JSON-RPC 服务。
 
 ---
 
@@ -191,67 +191,56 @@
 
 ---
 
-## 四、 前端交互界面功能清单（`tauri-ui`）
+## 四、 前端交互界面功能清单（`desktop-ui`）
 
-> **历史说明**：本节原先是一张 "GPUIX vs Tauri" 两套 UI 的对比表。GPUIX 客户端
+> **历史说明**：本节原先是一张 "GPUIX vs 桌面 Webview" 两套 UI 的对比表。GPUIX 客户端
 > **已整体归档**（不再参与构建与测试），继续按"两套实现"描述会误导读者以为有两条产品线。
-> 现在只列**当前唯一前端** `tauri-ui` 的功能项与实现位置。
+> 现在只列**当前唯一前端** `desktop-ui` 的功能项与实现位置。
 
 | 功能项 | 实现位置 | 状态 |
 |---|---|:---:|
-| **基础对话流与 Markdown** | `tauri-ui/src/components/Transcript.tsx`（`marked` 渲染） | ✅ |
-| **思考折叠与单行工具卡** | `tauri-ui/src/components/Transcript.tsx` | ✅ |
-| **单卡代码撤销** | `tauri-ui/src/components/Transcript.tsx` + `change.revertCard` | ✅ |
-| **审批浮动窗口（输入框上方）** | `tauri-ui/src/components/ApprovalFloatingPanel.tsx`（挂载在 `Composer.tsx`，回执走 `approval.decide`） | ✅ |
-| **审批在对话流里的记录** | `tauri-ui/src/components/Transcript.tsx`（读 `status == "waiting_approval"`，只留内容预览，按钮在浮窗） | ✅ |
-| **交互式提问卡片** | `tauri-ui/src/components/Transcript.tsx` + `question.answer` | ✅ |
-| **输入框与加号综合菜单** | `tauri-ui/src/components/Composer.tsx`（模式/指令/附件） | ✅ |
-| **排队消息管理浮动面板** | `tauri-ui/src/components/Composer.tsx` | ✅ |
-| **子智能体专属只读保护条** | `tauri-ui/src/components/Composer.tsx` | ✅ |
-| **待办任务看板 (Todo)** | `tauri-ui/src/components/Transcript.tsx` | ✅ |
-| **上下文用量细分 Popover** | `tauri-ui/src/utils/context-breakdown.ts`（客户端估算） | ⚠️ 未接服务端实测值 |
-| **插件与能力管理弹窗** | `tauri-ui/src/components/PluginsModal.tsx` | ✅ |
-| **供应商设置弹窗** | `tauri-ui/src/components/SettingsModal.tsx` | ✅ |
-| **侧边栏工作区与父子树** | `tauri-ui/src/components/Sidebar.tsx`（手风琴 + 树形索引） | ✅ |
-| **多标签页 (TabStrip)** | `tauri-ui/src/components/TabStrip.tsx` | ✅ |
-| **改动审查面板 (ChangesPanel)** | `tauri-ui/src/components/ChangesPanel.tsx`（Diff 对比、逐文件与全部重置） | ✅ |
-| **全局命令面板 (Ctrl+K)** | `tauri-ui/src/components/CommandPalette.tsx`（模糊搜索 + 键盘动作导航） | ✅ |
-| **内置文件/目录选择器** | `tauri-ui/src/components/FilePicker.tsx`（盘符切换、新建目录、路径浏览） | ✅ |
-| **`@` 提及文件/技能/子智能体** | `tauri-ui/src/components/MentionMenu.tsx` | ✅ |
-| **`/` 斜杠指令实时联想** | `tauri-ui/src/components/SlashCommandMenu.tsx` | ✅ |
-| **通信底层调试面板** | `tauri-ui/src/components/DebugPanel.tsx`（实时 JSON-RPC 报文与一键复制） | ✅ |
-| **全局 Toast 轻提示体系** | `tauri-ui/src/components/ToastHost.tsx`（队列、分级、撤销） | ✅ |
-| **全局快捷键注册体系** | `tauri-ui/src/utils/shortcuts.ts`（Ctrl+K/N/W/Shift+C/D/X…） | ✅ |
-| **会话内联重命名** | `tauri-ui/src/components/Sidebar.tsx`（双击标题进入编辑） | ✅ |
+| **基础对话流与 Markdown** | `desktop-ui/src/components/Transcript.tsx`（`marked` 渲染） | ✅ |
+| **思考折叠与单行工具卡** | `desktop-ui/src/components/Transcript.tsx` | ✅ |
+| **单卡代码撤销** | `desktop-ui/src/components/Transcript.tsx` + `change.revertCard` | ✅ |
+| **审批浮动窗口（输入框上方）** | `desktop-ui/src/components/ApprovalFloatingPanel.tsx`（挂载在 `Composer.tsx`，回执走 `approval.decide`） | ✅ |
+| **审批在对话流里的记录** | `desktop-ui/src/components/Transcript.tsx`（读 `status == "waiting_approval"`，只留内容预览，按钮在浮窗） | ✅ |
+| **交互式提问卡片** | `desktop-ui/src/components/Transcript.tsx` + `question.answer` | ✅ |
+| **输入框与加号综合菜单** | `desktop-ui/src/components/Composer.tsx`（模式/指令/附件） | ✅ |
+| **排队消息管理浮动面板** | `desktop-ui/src/components/Composer.tsx` | ✅ |
+| **子智能体专属只读保护条** | `desktop-ui/src/components/Composer.tsx` | ✅ |
+| **待办任务看板 (Todo)** | `desktop-ui/src/components/Transcript.tsx` | ✅ |
+| **上下文用量细分 Popover** | `desktop-ui/src/utils/context-breakdown.ts`（客户端估算） | ⚠️ 未接服务端实测值 |
+| **插件与能力管理弹窗** | `desktop-ui/src/components/PluginsModal.tsx` | ✅ |
+| **供应商设置弹窗** | `desktop-ui/src/components/SettingsModal.tsx` | ✅ |
+| **侧边栏工作区与父子树** | `desktop-ui/src/components/Sidebar.tsx`（手风琴 + 树形索引） | ✅ |
+| **多标签页 (TabStrip)** | `desktop-ui/src/components/TabStrip.tsx` | ✅ |
+| **改动审查面板 (ChangesPanel)** | `desktop-ui/src/components/ChangesPanel.tsx`（Diff 对比、逐文件与全部重置） | ✅ |
+| **全局命令面板 (Ctrl+K)** | `desktop-ui/src/components/CommandPalette.tsx`（模糊搜索 + 键盘动作导航） | ✅ |
+| **内置文件/目录选择器** | `desktop-ui/src/components/FilePicker.tsx`（盘符切换、新建目录、路径浏览） | ✅ |
+| **`@` 提及文件/技能/子智能体** | `desktop-ui/src/components/MentionMenu.tsx` | ✅ |
+| **`/` 斜杠指令实时联想** | `desktop-ui/src/components/SlashCommandMenu.tsx` | ✅ |
+| **通信底层调试面板** | `desktop-ui/src/components/DebugPanel.tsx`（实时 JSON-RPC 报文与一键复制） | ✅ |
+| **全局 Toast 轻提示体系** | `desktop-ui/src/components/ToastHost.tsx`（队列、分级、撤销） | ✅ |
+| **全局快捷键注册体系** | `desktop-ui/src/utils/shortcuts.ts`（Ctrl+K/N/W/Shift+C/D/X…） | ✅ |
+| **会话内联重命名** | `desktop-ui/src/components/Sidebar.tsx`（双击标题进入编辑） | ✅ |
 
-**连接层**：`tauri-ui/src/client/ws-client.ts` 是唯一协议客户端，
-重连策略在 `tauri-ui/src/client/reconnect-policy.ts`（指数退避 + 封顶 + 抖动，W6-T6）。
+**连接层**：`desktop-ui/src/client/ws-client.ts` 是唯一协议客户端，
+重连策略在 `desktop-ui/src/client/reconnect-policy.ts`（指数退避 + 封顶 + 抖动，W6-T6）。
 
 ---
 
-## 五、 CLI 与终端执行生态
+## 五、 CLI 与网关执行生态
 
-系统在命令行环境下具备完备的自举与调试能力：
+系统在命令行环境下通过网关与产品二进制协作：
 
 ```bash
-# 1. 默认启动 Tauri GUI 桌面端
-a-da.exe
+# 打包产品二进制（ada-gateway / ada-coding / ada-electron）
+cargo xtask ship --product all
 
-# 2. 指定初始工作区启动 GUI
-a-da.exe --workspace "E:/codes/my_project"
+# 网关：常驻服务，按工作区拉起 ada-coding 实例并对外提供 WebSocket JSON-RPC
+ada-gateway.exe --host 127.0.0.1 --port 52353 --token "my-secret-token"
 
-# 3. 以纯后台 Headless 守护进程启动（自动分配随机空闲端口）
-a-da.exe --headless
-
-# 4. 指定固定端口与认证令牌启动守护进程
-a-da.exe daemon --port 52353 --token "my-secret-token" --workspace "."
-
-# 5. CLI 单次任务：装配引擎 → 跑一轮 → 会话落盘（W6-T3）
-a-da.exe run --workspace "." "审查当前项目所有的 Rust 文件并指出潜在错误"
-
-# 5b. 同上但不联网：只验证装配与会话落盘（模型换成回显替身）
-a-da.exe run --workspace "." --dry-run "冒烟"
-
-# 退出码：0 = 任务完成；1 = 执行失败（含未配置模型供应商）；2 = 用法错误（缺任务指令）
+# ada-coding 由网关/Electron 宿主注入参数拉起，不需要手敲
+ada-coding.exe --host 127.0.0.1 --port 0 --token "…" --workspace "E:/codes/my_project"
 ```
 

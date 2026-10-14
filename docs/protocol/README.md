@@ -122,7 +122,7 @@ const res = await client.request(THREAD_START, { threadId: 't1', prompt: '你好
 client.on('evt.state.snapshot', (params) => { /* seq 对账 */ })
 ```
 
-`tauri-ui/src/client/ws-client.ts` 是生产客户端实现，可直接参考它的
+`desktop-ui/src/client/ws-client.ts` 是生产客户端实现，可直接参考它的
 请求封装、事件订阅与重连逻辑。
 
 ## 7. 相关文档

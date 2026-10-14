@@ -16,7 +16,7 @@
 //!
 //! # 为什么 `Origin: None` 放行
 //!
-//! 非浏览器客户端（桌面端 Tauri、curl、测试）不发 `Origin`。
+//! 非浏览器客户端（桌面端、curl、测试）不发 `Origin`。
 //! 把它们一并拒掉会让"回环上的桌面端"也用不了——而它们**本来就不是**跨源攻击的载体
 //! （浏览器才会自动带上受害者站点的 Origin）。所以策略是：
 //! **有 Origin 就必须在白名单里；没有 Origin 则不因此拒绝**（token 仍然要）。
@@ -308,11 +308,8 @@ impl AuthConfig {
         if self.allow_origins.iter().any(|a| a == "*" || a == o) {
             return Ok(());
         }
-        // 2. 本地回环源或 Tauri 桌面壳内置源放行
-        if o == "tauri://localhost"
-            || o == "http://tauri.localhost"
-            || o == "https://tauri.localhost"
-            || o.starts_with("http://localhost:")
+        // 2. 本地回环源放行
+        if o.starts_with("http://localhost:")
             || o.starts_with("http://127.0.0.1:")
             || o.starts_with("https://localhost:")
             || o.starts_with("https://127.0.0.1:")

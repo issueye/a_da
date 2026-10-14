@@ -2,17 +2,16 @@
 //!
 //! # 它解决什么问题
 //!
-//! W3 之前，产品二进制（`products/ada-coding`）与 Tauri 宿主（`src-tauri`）都是直接调
-//! `agent_core` 的 **legacy 主循环** `run_agent_loop`——也就是说：`AgentRuntime`
+//! W3 之前，产品二进制（`products/ada-coding`）与桌面壳宿主（当时的 Tauri 宿主）
+//! 都是直接调 `agent_core` 的 **legacy 主循环** `run_agent_loop`——也就是说：`AgentRuntime`
 //! （真引擎）虽然装配得出来，**产品运行时却根本没在用它**（计划 §2 P0-1）。
 //!
 //! 本 crate 是那个缺掉的中间层：把「产品声明 + 宿主态」装配成**带真实端口**的
 //! `AgentRuntime`，让上层（产品二进制 / ws 宿主）只需要说"按这份 spec 起一个产品"。
 //!
 //! ```text
-//! products/ada-coding ─┐
-//! src-tauri            ─┼─→ agent-host ─→ agent-runtime ─→ agent-base（引擎）
-//!                      ─┘        └─────→ agent-adapter（真实端口实现）
+//! products/ada-coding ─→ agent-host ─→ agent-runtime ─→ agent-base（引擎）
+//!                            └─────→ agent-adapter（真实端口实现）
 //! ```
 //!
 //! # 端口真实性（INV-2：端口必须真接线，不许留 double）
@@ -436,12 +435,12 @@ pub fn run_from_spec_json(
     run_from_spec(spec, options)
 }
 
-/// 为宿主装配**注入包**（`EngineInjection`）：宿主（产品二进制 / Tauri）只需要
+/// 为宿主装配**注入包**（`EngineInjection`）：宿主（产品二进制 / 桌面壳）只需要
 /// 把 `store`、工作区与自己的 `agent.spec.json` 交给它。
 ///
-/// 收敛在这里的理由（R2：一处真源）：`ada-coding` 与 `src-tauri` 两个宿主
-/// 需要的装配完全一样——复用宿主的 `store`、会话落盘到 app home、把
-/// `ApprovalManager` 一并带出去给 `Dispatcher` 共用。各写一份迟早漂移。
+/// 收敛在这里的理由（R2：一处真源）：产品宿主所需的装配完全一样——复用宿主的 `store`、
+/// 会话落盘到 app home、把 `ApprovalManager` 一并带出去给 `Dispatcher` 共用。
+/// 各写一份迟早漂移。
 ///
 /// `sessions_root` 由调用方给出（通常是 `get_app_home()/sessions`）。
 pub fn build_engine_injection(

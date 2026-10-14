@@ -129,7 +129,7 @@ cargo xtask ship --product ada-coding   # 产出单 exe，双击可用
 |---|---|---|---|---|
 | M3-T1 | 生成器产出四份产物 + `verify` | `agent-proto` 生成物 | 四者集合相等；孤儿臂/无臂常量均为 0 | 1.5 |
 | M3-T2 | `snapshot` 补 `seq`；投影层抽出（`ClientSnapshot`/`Item` 保持兼容） | 投影模块 | Tauri 客户端不改代码通过；`UiSnapshot` 不再进领域类型 | 1.5 |
-| M3-T3 | 客户端类型生成（`crates/agent-proto/client-ts/**`） | 生成物 | `tauri-ui` 的 `types/index.ts` 改为 re-export 生成物（消除第三份手写 DTO） | 1 |
+| M3-T3 | 客户端类型生成（`crates/agent-proto/client-ts/**`） | 生成物 | `desktop-ui` 的 `types/index.ts` 改为 re-export 生成物（消除第三份手写 DTO） | 1 |
 | M3-T4 | 能力位如实回答（`images:false` 等） | 握手返回 | 客户端能读到 `images:false` 并按此隐藏附件入口（或明确提示） | 1 |
 
 ### M4 TS 归档（文件夹降级）（5 人日）—— 详见 §5
@@ -166,7 +166,7 @@ cargo xtask ship --product ada-coding   # 产出单 exe，双击可用
 | 跨产品 | `cargo xtask compat --all` | base 协议哈希相等；L1/L2 并集无冲突 | 冲突即为"产品改内核"，退回声明层 |
 | 出包 | `cargo xtask ship --product ada-coding` | 产出单 exe；`--host` 与 UI 角色都能起 | — |
 | 回归（Rust 侧） | `cargo check --all-targets` + 冻结回放 | 与 M0 冻结的 golden 事件序列一致 | — |
-| 归档后 TS 侧 | `npm --prefix tauri-ui run build`（前端类型+构建） | Tauri 前端类型过、构建过（根 TS 树已无测试） | — |
+| 归档后 TS 侧 | `npm --prefix desktop-ui run build`（前端类型+构建） | Tauri 前端类型过、构建过（根 TS 树已无测试） | — |
 
 > 现状提醒：`bun test` 全量是 **800 项 / 104 文件**（实测），分布为 `src/agent` **69 文件 / 599 项**、
 > `src/ui` **29 文件**、GPUIX 根级与 `src/platform` **6 文件**（`src/assets.test.ts`、`src/theme.test.ts`、
@@ -186,11 +186,11 @@ cargo xtask ship --product ada-coding   # 产出单 exe，双击可用
 - `src/` 根级还有 **GPUIX 客户端资产**：`AgentWindow.tsx`(125 行) + `AgentWindow.test.tsx`、`icons.tsx`(114)、`theme.ts`(268) + `theme.test.ts`、`assets.test.ts`；`src/platform/**` 8 个文件（`clipboard`/`explorer`/`notification`/`win32`/`init`…）被 `src/ui/*.tsx` 专用（`Composer.tsx:16`、`TitleBar.tsx:14`、`main.tsx:11,18` 等），Tauri 侧零引用。
 - `scripts/**` 有 **18 个卫星**耦合 TS 栈：`binary-check.ts`（import `agent/host/main` 的 `parseReadyLine`）、`extension-check.ts`、`projects-check.ts`、`drag-probe.ts`、`session-delete-check.ts`、`menu-check.ts`、`rows-check.ts`、`smoke.ts`、`settings-check.ts`、`startup-baseline.ts`、`scan-methods.ts`（`walk('src/ui')`）、`test-mode-switch.ts`、`test-regular-conversation.ts`、`window-controls.ts`、`verifier.ts`、`test-run.ts`、`build.ts`（entry `app.tsx`）、`launch-own.ts`（真窗口脚本共用的 spawn helper）。
 - 根级：`app.tsx`（双角色入口）、`screenshot.ts`、`package.json`（`dev`/`start`/`build` 全指向 `app.tsx`）、`tsconfig.json`、`README.md` 大量章节。
-- **`tauri-ui/**` 对 `src/agent`、`src/ui`、`src/platform` 零 import**（实测）——所以归档不会波及新客户端。
+- **`desktop-ui/**` 对 `src/agent`、`src/ui`、`src/platform` 零 import**（实测）——所以归档不会波及新客户端。
 
 结论：`src/ui` + `src/` 根级 + `src/platform` 是 **TS 时代宿主的客户端**，它依赖 TS `store` 单例与 TS 纯函数，无法在 `src/agent` 归档后独立存在。
 → **归档 = 整套 TS 栈**：`src/agent/**` + `src/ui/**` + `src/` 根级 GPUIX 文件 + `src/platform/**` + `app.tsx` + `screenshot.ts` + 18 个卫星脚本 → `archive/ts-legacy/**`。
-保留：`ts_engine/**`（插件运行时，独立 crate）、`tauri-ui/**`（新客户端）、`src-tauri/**`（宿主）、`agent_core` 及其后继 crates。
+保留：`ts_engine/**`（插件运行时，独立 crate）、`desktop-ui/**`（新客户端）、`src-tauri/**`（宿主）、`agent_core` 及其后继 crates。
 归档后 `src/` 树只余 `shared/protocol`（随后被生成物取代）——**Rust 侧成为仓库唯一实现**。
 
 ### 5.2 归档范围分类表
@@ -208,7 +208,7 @@ cargo xtask ship --product ada-coding   # 产出单 exe，双击可用
 | `src/shared/protocol/*.ts` | **删除** | 改由 `crates/agent-proto/client-ts/**` 生成 |
 | `ts_engine/**` | **保留** | 插件运行时适配器（M6 可搬进 `crates/agent-adapter/plugin-ts`） |
 | `kernel/`、`compiler/` shim（`agent_core/src/{kernel,compiler}/mod.rs`） | **删除** | 纯 `pub use ts_engine::*` 转发 |
-| `tauri-ui/src/types/index.ts` | **改造** | 改为 re-export 生成类型（M3-T3） |
+| `desktop-ui/src/types/index.ts` | **改造** | 改为 re-export 生成类型（M3-T3） |
 | `tests/`（若后续有） | — | — |
 
 ### 5.3 目标目录树
@@ -278,10 +278,10 @@ cargo xtask verify-archive && cargo test --workspace && bun run typecheck:tauri
 | 对象 | 动作 |
 |---|---|
 `package.json` | `dev`/`start` → 改为 Tauri 路径（或删除，开发走 `bun run tauri:dev`）；`build` → `cargo xtask ship --product ada-coding`；`test` 不再全仓扫描（归档后 TS 侧已无测试，脚本测试按需保留）；删除 `link`（不再连 `../gpuix`）、`screenshot`
-`tsconfig.json` | `include` 收敛到 `tauri-ui`（其自身有 package.json/tsconfig）；`exclude: ["archive/**", "node_modules"]`（**必须**，否则 `tsc --noEmit` 会去查归档代码）
+`tsconfig.json` | `include` 收敛到 `desktop-ui`（其自身有 package.json/tsconfig）；`exclude: ["archive/**", "node_modules"]`（**必须**，否则 `tsc --noEmit` 会去查归档代码）
 `bunfig.toml` | `preload`（`scripts/test-preload.ts`）随 TS 测试一起失效 → 删除或改为 Tauri 侧需要；确认任何 `bun test` 都不递归进 `archive/`
-CI | 门二从 `bun test`（**归档后为 0 文件**）整体切到 `cargo test --workspace`；新增 `cargo xtask verify` / `verify-spec` / `verify-archive` / `compat`；前端类型检查走 `tauri-ui` 自己的 `tsc`
-依赖 | 根 `dependencies`（`eventsource-parser`、`jiti`）与 devDeps（`@types/react`、`typescript`）确认在 `tauri-ui/` 与 `archive/` 之外无引用后删除；`bun run link`（连 `../gpuix`）不再是克隆后必做步骤 → 更新 `AGENTS.md` 与 `README.md`
+CI | 门二从 `bun test`（**归档后为 0 文件**）整体切到 `cargo test --workspace`；新增 `cargo xtask verify` / `verify-spec` / `verify-archive` / `compat`；前端类型检查走 `desktop-ui` 自己的 `tsc`
+依赖 | 根 `dependencies`（`eventsource-parser`、`jiti`）与 devDeps（`@types/react`、`typescript`）确认在 `desktop-ui/` 与 `archive/` 之外无引用后删除；`bun run link`（连 `../gpuix`）不再是克隆后必做步骤 → 更新 `AGENTS.md` 与 `README.md`
 `scripts/build.ts` | 归档；新出包走 `xtask ship`（复用其 PE 子系统补丁逻辑）
 `scripts/binary-check.ts` | 归档；替代品：Rust 侧 `xtask smoke --product ada-coding`（用应用日志当证据，AGENTS.md §17 的约束继续适用）
 文档 | `README.md` 重写运行段（去掉 `app.tsx`/GPUIX/Hermes）；`AGENTS.md` 更新项目速览与「开发与验证」（去掉 GPUIX/Hermes/`bun run link`，§16/§17 改为 Rust 口径）；`docs/feature-catalog.md` 的 `src/ui` 列删掉
@@ -291,7 +291,7 @@ CI | 门二从 `bun test`（**归档后为 0 文件**）整体切到 `cargo test
 | 脚本 | 处置 | 替代 |
 |---|---|---|
 `binary-check.ts` | 归档 | `xtask smoke`（Rust） |
-`extension-check.ts`、`projects-check.ts`、`session-delete-check.ts`、`menu-check.ts`、`rows-check.ts`、`settings-check.ts`、`window-controls.ts`、`drag-probe.ts`、`launch-own.ts` | 归档（GPUIX 真窗口自动化 + 其 spawn helper） | Tauri 侧用现有 `tauri-ui` 测试手段，不在 MVP 范围内重建 |
+`extension-check.ts`、`projects-check.ts`、`session-delete-check.ts`、`menu-check.ts`、`rows-check.ts`、`settings-check.ts`、`window-controls.ts`、`drag-probe.ts`、`launch-own.ts` | 归档（GPUIX 真窗口自动化 + 其 spawn helper） | Tauri 侧用现有 `desktop-ui` 测试手段，不在 MVP 范围内重建 |
 `smoke.ts`、`startup-baseline.ts` | 归档 | `xtask smoke` |
 `scan-methods.ts`（`walk('src/ui')`） | 归档 | 被 `xtask gen/verify` 取代 |
 `test-mode-switch.ts`、`test-regular-conversation.ts`、`verifier.ts` | 归档 | 走协议层测试（Rust conformance + 客户端） |
@@ -303,7 +303,7 @@ CI | 门二从 `bun test`（**归档后为 0 文件**）整体切到 `cargo test
 
 ### 5.8 `verify-archive` 的五条断言
 
-1. `src/**`、`tauri-ui/**`、`scripts/**`、`crates/**`、`products/**`、`src-tauri/**` 中**不存在**指向 `archive/**` 的 import（`ripgrep` 路径检查；文档 `*.md` 不在此列）。
+1. `src/**`、`desktop-ui/**`、`scripts/**`、`crates/**`、`products/**`、`src-tauri/**` 中**不存在**指向 `archive/**` 的 import（`ripgrep` 路径检查；文档 `*.md` 不在此列）。
 2. 仓库内**只有一个多轮循环**：`run_turn` 仅出现在 `crates/agent-base`；非归档路径不得出现 `runAgentLoop`。
 3. 非归档路径不存在 TS 宿主残留：无 `A_DA_FORCE_LEGACY_HOST`、无 `createInProcessClient`、无 `hostEntryArgs`。
 4. `package.json` 的 `dev`/`start`/`build`/`test` 不再指向 `app.tsx`；`tsconfig.json` 的 `include`/`exclude` 已不含 `src/agent`、`src/ui`、`src/platform`、`src/{AgentWindow,theme,icons}`。
@@ -364,16 +364,16 @@ archive/
 |---|---|
 | 死 shim | `agent_core/src/{kernel,compiler}` 删除，`lib.rs` 去掉两行 `pub mod`；`cargo check` 两个 crate 均通过 |
 | 根配置 | 删 `tsconfig.json`（归档代码的解析入口）、旧 `bunfig.toml`；`package.json` 收敛为 `typecheck`/`test`/`verify:archive`/`tauri:*`，**deps 与 devDeps 清空** |
-| 锁文件 | 根 `bun.lock` 被 `bun install` 判为空并删除（无依赖）；`tauri-ui` 继续用 `package-lock.json` |
+| 锁文件 | 根 `bun.lock` 被 `bun install` 判为空并删除（无依赖）；`desktop-ui` 继续用 `package-lock.json` |
 | 新门 | `tools/verify-archive.ts`（`bun run verify:archive`）实现 §5.8 的断言，**当前全绿**；M0 并入 `cargo xtask verify-archive` |
 | 插件契约 | [docs/plugin-sdk/v1.md](plugin-sdk/v1.md) 冻结（形态、注入 API、工具与返回值契约、沙箱限制、v1 缺口）——先写文档后归档，顺序与 §5.4 相反但结果一致 |
 | 文档 | `AGENTS.md`（速览/开发与验证/代码结构/三条规矩 + §索引归档说明）、`README.md`（顶部过期横幅）已改；README 正文重写留 M5 |
 
-**未做（按计划留在后续里程碑）**：`src-tauri`/`tauri-ui` 的依赖改指向 `agent-runtime`（M1）、客户端类型生成（M3-T3）、
+**未做（按计划留在后续里程碑）**：`src-tauri`/`desktop-ui` 的依赖改指向 `agent-runtime`（M1）、客户端类型生成（M3-T3）、
 `xtask ship`/`smoke`（M5）、README 正文重写（M5）。
 
 **验收实测**：`bun run verify:archive` 7 条断言全绿；`cargo check --all-targets`（agent_core、src-tauri）通过；
-`bun run typecheck`（tauri-ui `tsc --noEmit`）通过；`bun test` = "No tests found"（不再扫归档）。
+`bun run typecheck`（desktop-ui `tsc --noEmit`）通过；`bun test` = "No tests found"（不再扫归档）。
 
 ---
 
@@ -592,7 +592,7 @@ archive/
    - `agent_core/src/state/snapshot.rs`：新增 `generate_snapshot_with_seq`；在快照推流广播器（`emitter.rs`）与 WebSocket 首帧连接（`ws.rs`）中统一注入状态版本号，保证重连和长轮询重放有序。
 3. **TypeScript 客户端类型生成与单一真源（M3-T3, INV-9）**：
    - 在 `crates/agent-proto/client-ts/` 生成 `dto.ts`、`methods.ts` 与 `index.ts`。
-   - 重构 `tauri-ui/src/types/index.ts`，全量 re-export 生成的客户端协议类型，彻底废除第三份手写协议 DTO。
+   - 重构 `desktop-ui/src/types/index.ts`，全量 re-export 生成的客户端协议类型，彻底废除第三份手写协议 DTO。
 4. **能力位如实回答（M3-T4, INV-10）**：
    - `agent_core/src/server/dispatch.rs` 在 `session.initialize` 响应中如实声明 `capabilities`（例如 `images: false`, `rollback: true`, `plugins: true`, `events.snapshotSeq: true` 等），避免前端误假设多模态图片支持。
 

@@ -1,5 +1,5 @@
 /**
- * 上下文分解与统计分析引擎 (Tauri UI 版本)
+ * 上下文分解与统计分析引擎 (桌面 UI 版本)
  * 参考 a_da core `src/agent/stats/context-breakdown.ts` 与原版 GPUIX 设计
  */
 

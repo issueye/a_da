@@ -421,7 +421,7 @@ function collectProcesses(): ManagedProcessInfo[] {
 /**
  * **重新唤醒网关**：杀掉当前托管的网关子进程，按同一套参数重新拉起。
  *
- * 与 Tauri 宿主的 `restart_gateway` 命令对齐：网关进程意外死掉、或改了网关配置之后，
+ * 网关进程意外死掉、或改了网关配置之后，
  * 界面上"进程管理"可以只重启网关，而不必重启整个桌面端（会话与界面状态都还在）。
  */
 async function restartGatewaySupervisor(): Promise<ProcessReport> {
@@ -568,10 +568,10 @@ async function createMainWindow(): Promise<BrowserWindow> {
     // **本该使用**的那份前端产物；`__dirname` 在 bun 的产物里被硬编码成构建机源码目录，
     // 放在前面会让"打包后运行"悄悄去读构建机上的源码树（换台机器就是另一份界面）。
     const candidatePaths = [
-      resolveAppPath('tauri-ui', 'dist', 'index.html'),
-      path.join(app.getAppPath(), 'tauri-ui/dist/index.html'),
-      path.resolve(app.getAppPath(), '../tauri-ui/dist/index.html'),
-      path.resolve(__dirname, '../tauri-ui/dist/index.html'),
+      resolveAppPath('desktop-ui', 'dist', 'index.html'),
+      path.join(app.getAppPath(), 'desktop-ui/dist/index.html'),
+      path.resolve(app.getAppPath(), '../desktop-ui/dist/index.html'),
+      path.resolve(__dirname, '../desktop-ui/dist/index.html'),
     ].filter(Boolean) as string[]
     let loaded = false
     for (const p of candidatePaths) {
@@ -624,7 +624,7 @@ function registerIpcHandlers(): void {
     app.exit(0)
   })
 
-  // 只重启网关（与 Tauri 宿主的 restart_gateway 命令对齐）
+  // 只重启网关
   ipcMain.handle('desktop:restart-gateway', async (): Promise<ProcessReport> => {
     return await restartGatewaySupervisor()
   })

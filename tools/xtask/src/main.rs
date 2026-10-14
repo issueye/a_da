@@ -39,7 +39,7 @@ enum Commands {
     VerifyDocs,
     /// 生产打包产品单文件可执行二进制
     Ship {
-        /// 要打包的产品名称（如 ada-coding, ada-gateway, ada-tauri 或 all）
+        /// 要打包的产品名称（如 ada-coding, ada-gateway, ada-electron 或 all）
         #[arg(long, default_value = "ada-coding")]
         product: String,
 
@@ -181,7 +181,7 @@ fn run_bun_script(script: &str) -> anyhow::Result<()> {
 
 fn ship_product(product: &str, gui: bool, out_dir: &str) -> anyhow::Result<()> {
     if product == "all" {
-        for p in &["ada-coding", "ada-gateway", "ada-electron", "ada-tauri"] {
+        for p in &["ada-coding", "ada-gateway", "ada-electron"] {
             ship_product(p, gui, out_dir)?;
         }
         return Ok(());
@@ -193,18 +193,18 @@ fn ship_product(product: &str, gui: bool, out_dir: &str) -> anyhow::Result<()> {
         println!("\x1b[1;36m=================================================================\x1b[0m\n");
 
         println!("\x1b[33m[步骤 1/2]\x1b[0m 检查并构建前端静态产物...");
-        let frontend_dist = Path::new("tauri-ui").join("dist");
+        let frontend_dist = Path::new("desktop-ui").join("dist");
         if !frontend_dist.exists() || !frontend_dist.join("index.html").exists() {
             let npm_cmd = if cfg!(windows) {
                 let mut c = Command::new("cmd");
-                c.args(["/C", "npm", "--prefix", "tauri-ui", "run", "build"]);
+                c.args(["/C", "npm", "--prefix", "desktop-ui", "run", "build"]);
                 c
             } else {
                 let mut c = Command::new("npm");
-                c.args(["--prefix", "tauri-ui", "run", "build"]);
+                c.args(["--prefix", "desktop-ui", "run", "build"]);
                 c
             };
-            run_command_supervised(npm_cmd, "npm run build (tauri-ui)", Duration::from_secs(180))?;
+            run_command_supervised(npm_cmd, "npm run build (desktop-ui)", Duration::from_secs(180))?;
         }
 
         println!("\x1b[33m[步骤 2/2]\x1b[0m 执行 Electron 构建并打包目录 (electron:pack)...");
@@ -248,37 +248,12 @@ fn ship_product(product: &str, gui: bool, out_dir: &str) -> anyhow::Result<()> {
     println!("\x1b[1;36m           a_da 生产出包流水线 (Ship: {})                        \x1b[0m", product);
     println!("\x1b[1;36m=================================================================\x1b[0m\n");
 
-    // 出包 ada-tauri 时，防御性检查并确保前端产物就绪
-    if product == "ada-tauri" {
-        let frontend_dist = Path::new("tauri-ui").join("dist");
-        if !frontend_dist.exists() || !frontend_dist.join("index.html").exists() {
-            println!("\x1b[33m[前置检查]\x1b[0m 未检测到前端构建产物 tauri-ui/dist/index.html，自动构建中...");
-            let npm_cmd = if cfg!(windows) {
-                let mut c = Command::new("cmd");
-                c.args(["/C", "npm", "--prefix", "tauri-ui", "run", "build"]);
-                c
-            } else {
-                let mut c = Command::new("npm");
-                c.args(["--prefix", "tauri-ui", "run", "build"]);
-                c
-            };
-            run_command_supervised(npm_cmd, "npm run build (tauri-ui)", Duration::from_secs(180))?;
-        }
-    }
-
     // 1. 编译 release 二进制
     println!("\x1b[33m[步骤 1/3]\x1b[0m 正在使用 Cargo 编译 release 二进制 (-p {})...", pkg);
     let mut cmd = Command::new("cargo");
     cmd.args(["build", "--release", "-p", pkg]);
     if let Some(b) = bin {
         cmd.args(["--bin", b]);
-    }
-    // 🔴 Tauri 宿主必须显式打开 `custom-protocol`：tauri 的 build.rs 判据是
-    // `dev = !custom_protocol`，不带这个 feature 时**release 构建也会去加载 devUrl**
-    // （开发服务器的 http://localhost:1420），交付出去的免安装包就是"一扇空白窗"。
-    // 只有宿主 crate 声明了这个 feature（见 src-tauri/Cargo.toml），别的产品不能传。
-    if product == "ada-tauri" {
-        cmd.args(["--features", "custom-protocol"]);
     }
     // 控制编译并发为 2，防止 Windows 页面文件上限 2GB 触发 os error 1455
     cmd.args(["-j", "2"]);

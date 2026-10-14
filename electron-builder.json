@@ -9,7 +9,7 @@
   },
   "files": [
     "dist-electron/**/*",
-    "tauri-ui/dist/**/*",
+    "desktop-ui/dist/**/*",
     "assets/**/*",
     "package.json"
   ],

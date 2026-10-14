@@ -28,7 +28,7 @@
 2. **宿主侧版本指纹**：复用 `crates/agent-rpc/src/state/store.rs` 的 `item_visible_key()`
    （id + 文本长度 + 状态 + 完成时刻 …），`StateBroadcaster` 按连接记住 `{itemId → 指纹}`，
    只推**指纹变了**的 item；连接首帧 / `baseSeq` 失配 / 有 item 被删 → 走全量或显式 `removed`。
-3. **客户端合并**：`tauri-ui/src/client/ws-client.ts` 维护
+3. **客户端合并**：`desktop-ui/src/client/ws-client.ts` 维护
    `Map<threadId, Map<itemId, Item>>`；patch 只 upsert/remove；`meta` 覆盖小字段；
    `seq` 不连续 → 发一次 `session.snapshot` 并全量应用（自愈）。
 4. **分页 RPC** `thread.items.page(threadId, from, count)`：让"显示更早的 60 条"

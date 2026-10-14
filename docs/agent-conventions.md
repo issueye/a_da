@@ -361,7 +361,7 @@ M3 之后打包形态是**两个进程**（UI + 自己 spawn 的 `--host`）。�
 - `session/types.rs` 用 serde `alias` 同时接受 `duration_ms` 与 `durationMs`（老会话落盘的是 snake_case）；
 - `session/manager.rs` 重建 `Item::Tool`（读历史 / 做快照）时，字段为 `None` 会从 content JSON 里回捞
   （两种命名都试），再交给 `state/store.rs` 的 `finish_tool_call` 落到工具条目上；
-- 界面 `tauri-ui/src/components/Transcript.tsx` 同理：
+- 界面 `desktop-ui/src/components/Transcript.tsx` 同理：
   `item.durationMs ?? structuredData?.duration_ms ?? structuredData?.durationMs`，状态徽章读 `structuredData.status`。
 
 **坑的形状**：任何"不走执行器"的 `ToolResult`（拦下、超时、兜底、子智能体里的短路分支）如果直接把业务文本

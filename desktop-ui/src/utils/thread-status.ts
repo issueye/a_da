@@ -1,5 +1,5 @@
 /**
- * 会话状态解析（纯函数，无 React / 无 tauri 依赖）。
+ * 会话状态解析（纯函数，无 React / 无桌面壳依赖）。
  *
  * 从 `components/Sidebar.tsx` 抽出来**不是为了好看**：侧边栏与标签页共用同一份判定，
  * 而这里曾经有一个只有把真数据喂进去才看得见的 bug（见下面 `resolveThreadStatus` 的 3a/3b）。

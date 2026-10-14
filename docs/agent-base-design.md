@@ -7,7 +7,7 @@
 > **通用 AI 助手 / 生活类助手 / CODING 助手**（以及后续任何同类）。
 > 依据：本仓当前实现的实测（证据见附录 A）。**没有实测依据的结论不写。**
 >
-> 归档的含义要说清楚：TS 的**客户端类型**（`tauri-ui` 需要的 `ClientSnapshot`/`Item` 类型）仍由生成器产出——
+> 归档的含义要说清楚：TS 的**客户端类型**（`desktop-ui` 需要的 `ClientSnapshot`/`Item` 类型）仍由生成器产出——
 > 归档的是 **agent 实现**，不是"UI 不写 TS"。TS 也仍可作为**插件代码的运行时**（`ts_engine` 沙箱），
 > 那是一个可选适配器，不是设计基准。
 
@@ -65,7 +65,7 @@ cargo xtask verify-archive                                  # 7 没有第二份�
 | 协议目录 | 2 | Rust `protocol/methods.rs` **76 个方法常量** vs TS `ProtocolCommands` **90 个键**（其中 21 `evt.*` + 3 `req.*`）→ **Rust 有、TS 无 10 个** |
 | 主机分发 | 2 | Rust `server/dispatch.rs` 常量臂 vs TS `host/dispatch.ts` 66 个 case |
 | 目录 ↔ 实现 | — | `workspace.set`、`config.update` 声明了却**没有 dispatch 臂**，落到 `_ => method_not_found`（`dispatch.rs:2250`） |
-| 线 DTO | 3 | `protocol/dto.rs` / `src/shared/protocol/dto.ts` / `tauri-ui/src/types/index.ts` |
+| 线 DTO | 3 | `protocol/dto.rs` / `src/shared/protocol/dto.ts` / `desktop-ui/src/types/index.ts` |
 
 **门禁判据**：只要有两份引擎，就必须有"等价性"测试才能证明没漂移；而这个测试本身要维护两套脚手架。
 → **删掉第二份实现，等价性问题消失**，剩下的风险变成"产品之间漂移"，由 §8 的生成+合规闸管住（成本低得多）。
@@ -423,10 +423,10 @@ impl ProductBuilder {
 | 关注点 | 设计 |
 |---|---|
 | 传输 | `agent-host` 提供 `inproc`（同进程库调用）、`ws`（现协议文档 §1.1 的唯一远程传输，含 token 握手）、`cli`（headless，验证"零 UI"）三种宿主，产品在 `transport` 里声明 |
-| 进程角色 | 保留"单 exe 双角色"（`--host`）形态：`tauri-ui` 与 GPUIX 客户端既可直接 lib 调用，也可 spawn 自己当主机 |
+| 进程角色 | 保留"单 exe 双角色"（`--host`）形态：`desktop-ui` 与 GPUIX 客户端既可直接 lib 调用，也可 spawn 自己当主机 |
 | 启动期自检 | `validate()` + `conformance` 的快速子集在启动时跑；能力位与声明不一致 → 直接失败（不许"静默降级"） |
 | 交付 | 每个产品一个单文件 exe；`cargo xtask ship --product <id>` 统一产出（沿用现 `scripts/build.ts` 的 PE 补丁等步骤） |
-| 客户端类型 | `crates/agent-proto/client-ts/` 生成物；`tauri-ui` 与 GPUIX 客户端 import 它，不再各写一份 DTO |
+| 客户端类型 | `crates/agent-proto/client-ts/` 生成物；`desktop-ui` 与 GPUIX 客户端 import 它，不再各写一份 DTO |
 
 ---
 
@@ -524,7 +524,7 @@ tools/xtask/           new-agent | gen | verify | verify-spec | verify-archive |
 |---|---|---|---|
 | 1 | **TS 归档形态** | 移入 `archive/ts-agent/` 并摘出构建（不是立刻删除） | 保留考古能力，同时 `verify-archive` 保证不被引用 |
 | 2 | **插件运行时** | 保留 `ts_engine` 作可选 `PluginHost` 实现；契约由 Rust 定义；产品在 `capabilities.plugins` 里声明 | 插件生态不动，内核不沾 TS |
-| 3 | **GPUIX 客户端** | 冻结在"必须搭档 `agent_core.exe`"（现状默认路径）；新功能只投 `tauri-ui` | 删掉 legacy 兜底，减少一条并行路径 |
+| 3 | **GPUIX 客户端** | 冻结在"必须搭档 `agent_core.exe`"（现状默认路径）；新功能只投 `desktop-ui` | 删掉 legacy 兜底，减少一条并行路径 |
 | 4 | **首个第二产品** | `ada-life`（与 coding 差异最大，最能暴露内核里的产品假设） | 这是设计的真正验收 |
 | 5 | **协议扩展命名** | 统一 `x.<product>.*`，现有 `fs/change/plugin/provider/debug` 归入 `x.coding.*`（保留旧名做别名一个版本） | 老客户端平滑 |
 | 6 | **文档处置** | `docs/jsonrpc-protocol.md` 重写为 Rust-only 口径，表格块改为生成物；`docs/agent-base-design.md`（本文）作为设计源 | 文档与实现同代 |

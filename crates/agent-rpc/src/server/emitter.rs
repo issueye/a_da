@@ -264,20 +264,29 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel::<String>();
         let broadcaster = StateBroadcaster::new(store.clone(), seq, tx);
         {
-            // 造一条足够大的 item，让快照超过门槛
+            // 造足够多的卡片让快照超过门槛。
+            //
+            // ⚠️ **不能再靠"一条超大输出"**：投影侧对单个字段有限幅
+            // （`state::snapshot::SNAPSHOT_FIELD_LIMIT`，32 KB），一条 257 KB 的输出
+            // 进快照只剩 32 KB，整帧到不了 256 KB 的门槛，下面那条断言就再也无法成立。
+            // 真实的大帧形态本来就是"卡片多"（长会话 800 条），所以这里按多张卡造。
             let mut s = store.write().await;
             let tid = s.create_thread(Some("大帧".to_string()), None);
-            s.start_tool_call(&tid, "call_big", "run_command", "{}");
-            s.finish_tool_call(
-                &tid,
-                "call_big",
-                true,
-                Some("x".repeat(FRAME_BIG_BYTES + 1024)),
-                Some(5),
-                Some(0),
-                Some(5),
-                None,
-            );
+            let big_output = "x".repeat(40 * 1024);
+            for i in 0..20 {
+                let call_id = format!("call_big_{i}");
+                s.start_tool_call(&tid, &call_id, "run_command", "{}");
+                s.finish_tool_call(
+                    &tid,
+                    &call_id,
+                    true,
+                    Some(big_output.clone()),
+                    Some(5),
+                    Some(0),
+                    Some(5),
+                    None,
+                );
+            }
         }
         broadcaster.broadcast_immediate().await;
         let last = broadcaster.last_frame_bytes.load(std::sync::atomic::Ordering::Relaxed);

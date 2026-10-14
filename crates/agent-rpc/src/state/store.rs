@@ -928,7 +928,7 @@ impl AgentStore {
     /// 标记工具调用**正在等待用户批准**（W3-T3）。
     ///
     /// 界面按 `status == "waiting_approval"` 渲染"批准/拒绝"按钮
-    /// （`tauri-ui/src/components/Transcript.tsx:683` 的 `isAwaiting`），
+    /// （`desktop-ui/src/components/Transcript.tsx:683` 的 `isAwaiting`），
     /// 点按钮发 `approval.decide` → `Dispatcher.approval_mgr.resolve_approval(...)`
     /// → 唤醒引擎的审批闸门。**前端无需任何改动**（R7）。
     ///
@@ -1162,7 +1162,7 @@ mod tests {
     /// W3-T3 守门：审批请求必须把工具卡片置为界面认得的 **`waiting_approval`**。
     ///
     /// 前端按这个字符串决定是否渲染"批准/拒绝"按钮
-    /// （`tauri-ui/src/components/Transcript.tsx:683` 的 `isAwaiting`）。
+    /// （`desktop-ui/src/components/Transcript.tsx:683` 的 `isAwaiting`）。
     /// 改了状态字符串而没同步前端，审批按钮就会**静默消失**——所以这里钉死它。
     #[test]
     fn test_waiting_approval_status_is_the_ui_contract() {

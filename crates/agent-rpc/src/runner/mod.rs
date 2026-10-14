@@ -15,7 +15,7 @@
 //!
 //! ## 删除前确认过的三件事
 //!
-//! 1. **外部零引用**：全仓（含 `products/`、`src-tauri/`、`tauri-ui/`）没有任何调用点；
+//! 1. **外部零引用**：全仓（含 `products/`、`desktop-ui/`）没有任何调用点；
 //! 2. **行为有替代**：`batch_write` / `decide` / `check_gate` 在 `agent-toolkit` 里有
 //!    真正的 `Tool` 实现与测试；`build_system_prompt` 由 `agent-adapter` 的
 //!    `CodingPromptSource` 取代（含 8 条测试）；

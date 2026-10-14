@@ -20,7 +20,6 @@ members = [
     # S5 网关：AGENT 管理平台 + 桥接面
     "crates/agent-gateway",
     "crates/ts-engine",
-    "src-tauri",
 ]
 resolver = "2"
 

@@ -31,7 +31,7 @@ interface ProcessModalProps {
   /**
    * 统一的操作确认弹窗（App 里的 ConfirmModal）。
    *
-   * 不用 `window.confirm`：那是 WebView 的原生弹窗（标题写着 `tauri.localhost`），
+   * 不用 `window.confirm`：那是 WebView 的原生弹窗，
    * 与应用风格不一致、也无法本地化按钮文案。
    */
   onRequestConfirm?: (opts: {

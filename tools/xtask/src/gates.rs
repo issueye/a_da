@@ -442,7 +442,7 @@ fn production_consumers(
         .ok_or_else(|| anyhow::anyhow!("`{field}` 不在 SPEC_FIELDS 里（检查清单不完整）"))?;
 
     let mut hits = BTreeSet::new();
-    for p in rust_sources(root, &["crates", "products", "src-tauri"]) {
+    for p in rust_sources(root, &["crates", "products"]) {
         let rel_path = rel(root, &p);
         // spec 的定义处不算消费者；testing 是测试替身
         if rel_path.ends_with("agent-runtime/src/spec.rs")
@@ -791,8 +791,8 @@ fn check_fail_direction_is_consumed(root: &Path, rep: &mut Report) -> anyhow::Re
 /// 3. 有**代次保护**（旧连接的回调不得覆盖新连接状态）；
 /// 4. 断线时**立刻失败在途请求**（不许让调用方干等超时）。
 fn check_frontend_reconnect(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
-    let policy_path = "tauri-ui/src/client/reconnect-policy.ts";
-    let client_path = "tauri-ui/src/client/ws-client.ts";
+    let policy_path = "desktop-ui/src/client/reconnect-policy.ts";
+    let client_path = "desktop-ui/src/client/ws-client.ts";
 
     let Ok(policy) = read(root, policy_path) else {
         rep.violations
@@ -868,7 +868,7 @@ fn check_frontend_reconnect(root: &Path, rep: &mut Report) -> anyhow::Result<()>
     if rep
         .violations
         .iter()
-        .all(|v| !v.contains("tauri-ui/src/client"))
+        .all(|v| !v.contains("desktop-ui/src/client"))
     {
         rep.notes.push(
             "前端重连：退避（指数+封顶+抖动）、代次保护、断线清空在途请求 均就位".to_string(),
@@ -1352,7 +1352,7 @@ fn check_port_impls(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
     }
 
     let mut found: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for p in rust_sources(root, &["crates", "products", "src-tauri"]) {
+    for p in rust_sources(root, &["crates", "products"]) {
         let rel_path = rel(root, &p);
         if rel_path.contains("agent-base/src/testing") {
             continue;
@@ -1395,7 +1395,7 @@ fn check_port_impls(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
 ///
 /// 背景：README 正文、`unfinished-features.md`、`feature-catalog.md` 仍在用
 /// `src/agent/**`、`src/ui/**`、`../gpuix`、`bun test` 描述当前架构，
-/// 与它们自己的顶部横幅（纯 Rust 微内核 + Tauri + TS 已归档）自相矛盾。
+/// 与它们自己的顶部横幅（纯 Rust 微内核 + Electron + TS 已归档）自相矛盾。
 ///
 /// 判据：命中任一模式的文件必须出现在 [`DOC_ALLOW`] 里。白名单**逐项写明理由**，
 /// 只放"用途就是描述归档时代或定义归档规矩"的文档——所以这份名单本身是可审阅的。

@@ -7,7 +7,7 @@
   "main": "dist-electron/main.cjs",
   "description": "A local AI coding agent: pure Rust core + Electron desktop host + React UI",
   "scripts": {
-    "typecheck": "npm --prefix tauri-ui run typecheck",
+    "typecheck": "npm --prefix desktop-ui run typecheck",
     "test": "cargo test --workspace -- --test-threads=1",
     "test:core": "cargo test -p agent-rpc -p agent-node -- --test-threads=1",
     "verify:archive": "bun tools/verify-archive.ts",
@@ -15,13 +15,9 @@
     "ship": "cargo run -p xtask -- ship",
     "electron:build:main": "bun build ./electron/main.ts --target node --format cjs --outfile dist-electron/main.cjs --external=electron && bun build ./electron/preload.ts --target node --format cjs --outfile dist-electron/preload.cjs --external=electron",
     "electron:dev": "bun run electron:build:main && electron .",
-    "electron:build": "npm --prefix tauri-ui run build && bun run electron:build:main && node --experimental-require-module ./node_modules/electron-builder/cli.js --win dir && bun tools/heal-electron-perms.ts",
-    "electron:dist": "npm --prefix tauri-ui run build && bun run electron:build:main && node --experimental-require-module ./node_modules/electron-builder/cli.js --win nsis",
-    "electron:pack": "npm --prefix tauri-ui run build && bun run electron:build:main && node --experimental-require-module ./node_modules/electron-builder/cli.js --win dir && bun tools/heal-electron-perms.ts",
-    "tauri:ui:dev": "npm --prefix tauri-ui run dev",
-    "tauri:ui:build": "npm --prefix tauri-ui run build",
-    "tauri:dev": "bunx @tauri-apps/cli dev",
-    "tauri:build": "bunx @tauri-apps/cli build"
+    "electron:build": "npm --prefix desktop-ui run build && bun run electron:build:main && node --experimental-require-module ./node_modules/electron-builder/cli.js --win dir && bun tools/heal-electron-perms.ts",
+    "electron:dist": "npm --prefix desktop-ui run build && bun run electron:build:main && node --experimental-require-module ./node_modules/electron-builder/cli.js --win nsis",
+    "electron:pack": "npm --prefix desktop-ui run build && bun run electron:build:main && node --experimental-require-module ./node_modules/electron-builder/cli.js --win dir && bun tools/heal-electron-perms.ts"
   },
   "devDependencies": {
     "electron": "^33.2.1",

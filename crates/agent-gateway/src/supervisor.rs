@@ -1,8 +1,8 @@
 //! **AGENT 生命周期**：拉起、等就绪、登记、回收。
 //!
-//! # 这段逻辑原先住在 `src-tauri`（UI 壳）里
+//! # 这段逻辑原先住在桌面壳（当时的 Tauri 宿主）里
 //!
-//! `src-tauri/src/lib.rs` 原先自己 `find_ada_coding_binary` → spawn → 解析
+//! 桌面壳原先自己 `find_ada_coding_binary` → spawn → 解析
 //! `A_DA_HOST_READY {port}` → 记 `{port, token, url, child_pid}`。也就是说
 //! **UI 壳在当 agent 的进程 supervisor**——职责放错了位置，而且这就是为什么
 //! "远程接入"做不到（关掉界面就把 agent 带走了）。
@@ -442,7 +442,7 @@ pub fn now_ms() -> i64 {
 
 /// Windows 下隐藏子进程控制台窗口。
 ///
-/// 与 `src-tauri` 里那份同源（那条修复的注释见 git 历史：不加这个会闪一个黑窗）。
+/// 同源的修复见桌面壳（已随 Tauri 宿主移除，那条注释见 git 历史：不加这个会闪一个黑窗）。
 /// `creation_flags` 是 tokio `Command` 在 Windows 上的**固有方法**，不需要引入 trait。
 #[cfg(target_os = "windows")]
 fn hide_child_console_window(cmd: &mut Command) {

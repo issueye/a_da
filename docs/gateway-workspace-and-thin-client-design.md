@@ -7,10 +7,10 @@
 
 ## 0. 一页结论
 
-1. **废弃 Native Dialog**：系统不保留任何操作系统原生文件/文件夹选择弹窗（如 Tauri Dialog、Win32/Cocoa/GTK 原生选择器）。所有目录树与文件选择统一通过前端内置的 Web 原生模态框 [`FilePicker.tsx`](file:///E:/codes/rust_projects/a_da/tauri-ui/src/components/FilePicker.tsx) 实现。
+1. **废弃 Native Dialog**：系统不保留任何操作系统原生文件/文件夹选择弹窗（如 Electron Dialog、Win32/Cocoa/GTK 原生选择器）。所有目录树与文件选择统一通过前端内置的 Web 原生模态框 [`FilePicker.tsx`](file:///E:/codes/rust_projects/a_da/desktop-ui/src/components/FilePicker.tsx) 实现。
 2. **网关作为文件系统与工作区门户**：工作区根目录选择、目录树遍历、历史工作区记录统一由网关管理面（`gateway.fs.*` 与 `gateway.workspaces.*`）提供。无工作区、冷启动、多实例切换及远程访问场景下，客户端均直面网关获取统一视图。
-3. **桌面端蜕化为极限瘦壳**：桌面宿主（[`src-tauri`](file:///E:/codes/rust_projects/a_da/src-tauri)）彻底移除业务逻辑、文件操作以及复杂的多子进程管理，仅保留最基础的原生窗口外壳（Frame、无边框缩放、拖拽）和 WebView 宿主，以及针对本地单机部署的网关守护自启能力。
-4. **全平台 100% 同构体验**：无论运行于 Tauri 桌面壳、普通 Chrome/Safari 浏览器、平板设备还是远程云端开发环境，UI 交互、工作区管理和文件浏览行为逐像素一致，没有任何平台特化分支。
+3. **桌面端蜕化为极限瘦壳**：桌面宿主（[`electron`](file:///E:/codes/rust_projects/a_da/electron)）彻底移除业务逻辑、文件操作以及复杂的多子进程管理，仅保留最基础的原生窗口外壳（Frame、无边框缩放、拖拽）和 WebView 宿主，以及针对本地单机部署的网关守护自启能力。
+4. **全平台 100% 同构体验**：无论运行于 Electron 桌面壳、普通 Chrome/Safari 浏览器、平板设备还是远程云端开发环境，UI 交互、工作区管理和文件浏览行为逐像素一致，没有任何平台特化分支。
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -56,7 +56,7 @@
 | 维度 | 原生文件对话框（Native Dialog） | 网关驱动的 Web-Native FilePicker |
 |---|---|---|
 | **远程 / Headless 场景** | **彻底失效**：网关运行于远程服务器/Docker，本地弹出的只有客户端本机的目录，无法选取服务器目录 | **天然支持**：浏览并选择的是网关宿主机真实文件系统 |
-| **跨端同构（Web 访问）** | **不可用**：Web 浏览器直连网关时不存在 Tauri 原生插件，功能断裂 | **100% 同构**：浏览器与桌面端复用同一套交互组件 |
+| **跨端同构（Web 访问）** | **不可用**：Web 浏览器直连网关时不存在 Electron 原生插件，功能断裂 | **100% 同构**：浏览器与桌面端复用同一套交互组件 |
 | **权限与安全受控** | 操作系统弹窗不可控，无法施加基于 Token 作用域的路径白名单与沙箱拦截 | 网关统一把关，可严格限制可访问目录集（`--allowed-roots`） |
 | **UI 沉浸感与主题** | 风格生硬、阻断主线程、与 Dark 模式及整体 UI 视觉严重割裂 | 深浅主题无缝切换、内联搜索、键盘快捷导航一体化 |
 
@@ -73,7 +73,7 @@
 
 ### 1.3 桌面端蜕变：极限瘦客户端（Extreme Thin Client）
 
-桌面端（[`src-tauri`](file:///E:/codes/rust_projects/a_da/src-tauri)）原先承载了较多职能：检查并启动多个子进程（`ada-coding`、`ada-pm`、`ada-gateway`）、读取本地配置文件、维护进程存活列表等。
+桌面端（[`electron`](file:///E:/codes/rust_projects/a_da/electron)）原先承载了较多职能：检查并启动多个子进程（`ada-coding`、`ada-gateway`）、读取本地配置文件、维护进程存活列表等。
 
 重构后的定位是**极限瘦客户端**：
 - **除原生窗口生命周期外，不编写任何业务与存储逻辑**；
@@ -90,7 +90,7 @@
 sequenceDiagram
     autonumber
     actor User as 用户
-    participant UI as 前端 Web UI (Tauri / Browser)
+    participant UI as 前端 Web UI (Electron / Browser)
     participant GW as ada-gateway 网关
     participant AG as ada-coding / ada-pm 实例
 
@@ -122,10 +122,10 @@ sequenceDiagram
 
 | 模块 | 所属组件 | 职责范围 | 绝对禁止事项 |
 |---|---|---|---|
-| **桌面瘦宿主** | `src-tauri` | • 无边框窗口控制（最小化/最大化/关闭/拖拽）<br>• WebView 容器载入<br>• 本地守护伴侣（单机时静默起网关） | ❌ 禁止调用 OS 文件对话框<br>❌ 禁止直接读写会话/工作区文件<br>❌ 禁止直接管理 PM/Coding 多进程 |
+| **桌面瘦宿主** | `electron` | • 无边框窗口控制（最小化/最大化/关闭/拖拽）<br>• WebView 容器载入<br>• 本地守护伴侣（单机时静默起网关） | ❌ 禁止调用 OS 文件对话框<br>❌ 禁止直接读写会话/工作区文件<br>❌ 禁止直接管理 Coding 多进程 |
 | **网关平台** | `ada-gateway` | • 提供 `gateway.fs.*` 目录遍历与磁盘探测<br>• 提供 `gateway.workspaces.*` 历史记录管理<br>• 路径沙箱安全判定（防 `../` 穿透）<br>• Agent 实例生命周期管理（Supervisor）与透传（Relay） | ❌ 严禁内嵌多轮 Agent 执行循环（INV-1）<br>❌ 严禁缓存会话消息或工具状态（INV-8） |
 | **Agent 实例** | `ada-coding`（PM 是它的**模式预设**，不是第二个产品） | • 工作区沙箱内的多轮执行（`run_turn`）<br>• 编写代码、执行终端命令、检查点管理<br>• 工作区内文件 Base64 预览（`fs.read_base64`） | ❌ 禁止暴露全局磁盘根目录选择接口<br>❌ 禁止自行跨工作区穿透读盘 |
-| **Web 前端** | `tauri-ui` | • 沉浸式内置 `FilePicker` 交互渲染<br>• 全局会话状态机管理<br>• 主题、命令面板、工作区树展示 | ❌ 禁止使用任何 `@tauri-apps/plugin-dialog` 原生接口 |
+| **Web 前端** | `desktop-ui` | • 沉浸式内置 `FilePicker` 交互渲染<br>• 全局会话状态机管理<br>• 主题、命令面板、工作区树展示 | ❌ 禁止使用任何宿主原生文件对话框接口 |
 
 ---
 
@@ -326,10 +326,10 @@ sequenceDiagram
 
 ### 5.1 数据源平滑切换
 
-目前前端的 [`FilePicker.tsx`](file:///E:/codes/rust_projects/a_da/tauri-ui/src/components/FilePicker.tsx) 组件已经具备完善的 UI 交互（驱动器切换、搜索、新建文件夹、面包屑导航、文件类型过滤等），但原本调用的底层方法是直连的 `fs.roots` / `fs.list`。
+目前前端的 [`FilePicker.tsx`](file:///E:/codes/rust_projects/a_da/desktop-ui/src/components/FilePicker.tsx) 组件已经具备完善的 UI 交互（驱动器切换、搜索、新建文件夹、面包屑导航、文件类型过滤等），但原本调用的底层方法是直连的 `fs.roots` / `fs.list`。
 
 **前端改造要点**：
-1. **客户端方法映射升级**（在 [`tauri-ui/src/client/ws-client.ts`](file:///E:/codes/rust_projects/a_da/tauri-ui/src/client/ws-client.ts) 中）：
+1. **客户端方法映射升级**（在 [`desktop-ui/src/client/ws-client.ts`](file:///E:/codes/rust_projects/a_da/desktop-ui/src/client/ws-client.ts) 中）：
    ```typescript
    // 统一使用网关方法
    public fetchRoots(): Promise<FsRoot[]> {
@@ -364,47 +364,36 @@ sequenceDiagram
 
 ---
 
-## 6. 桌面宿主（Tauri）瘦身改造方案
+## 6. 桌面宿主（Electron）瘦身改造方案
 
-### 6.1 精简前后的 `src-tauri` 职责对比
+### 6.1 精简前后的 `electron` 职责对比
 
 | 模块 / 逻辑 | 精简前（现状） | 精简后（极限瘦客户端） | 改造手段 |
 |---|---|---|---|
 | **原生文件夹弹窗** | 未引入但架构未收敛 | **彻底不包含**任何 Native Dialog 依赖 | 彻底收拢至网关与前端 |
-| **子进程多实例编排** | 在 `lib.rs` 内显式同时拉起 `ada-gateway`, `ada-coding`, `ada-pm` 多个进程，手写就绪信号匹配 | **完全下放给网关**：网关内置的 Supervisor 会按需动态管理 Coding/PM 进程 | 移除 Tauri 内的多进程调度代码 |
-| **Tauri Command** | `get_core_info`, `get_process_report`, `kill_process`, `get/set_desktop_config` 等业务管理命令 | 仅保留最简 `get_gateway_endpoint` 与窗口缩放原生辅助命令 | 业务命令全部走网关 JSON-RPC |
-| **代码量** | `lib.rs` 962 行 | 预计精简至 **~120 行** 极简外壳 | 极致纯粹 |
+| **子进程多实例编排** | 在 `main.ts` 内显式同时拉起多个进程，手写就绪信号匹配 | **完全下放给网关**：网关内置的 Supervisor 会按需动态管理 Coding 进程 | 移除宿主内的多进程调度代码 |
+| **窗口命令** | `get_core_info`, `get_process_report`, `kill_process`, `get/set_desktop_config` 等业务管理命令 | 仅保留窗口控制与网关端点注入 | 业务命令全部走网关 JSON-RPC |
+| **代码量** | 主进程 `main.ts` | 极致纯粹的原生窗口外壳 | 极致纯粹 |
 
 ### 6.2 极简桌面宿主模型
 
-瘦身后的 `src-tauri/src/lib.rs` 只做三件事：
+瘦身后的 Electron 主进程只做三件事：
 1. **配置读取与端点确定**：
    - 检查环境变量 `A_DA_GATEWAY_URL` 或本地配置；
    - 若未配置且处于本地单机运行，拉起本地 `ada-gateway --port 0`，捕获就绪端口；
 2. **窗口状态保持**：无边框窗口移动与大小缩放；
 3. **退潮自毁（Watchdog）**：将桌面端 PID 传递给网关，窗口关闭时通知网关退出或依赖 PID 看门狗自然回收。
 
-```rust
-// 瘦身后的 Tauri 入口概念代码（仅约 100 行）
-pub fn run() {
-    tauri::Builder::default()
-        .setup(|app| {
-            // 1. 若本地无网关运行，拉起单个 ada-gateway 守护进程
-            let endpoint = ensure_local_gateway_if_needed()?;
-            // 2. 将网关 WebSocket 端点注入给前端页面
-            app.manage(GatewayEndpoint(endpoint));
-            Ok(())
-        })
-        // 仅保留原生窗口操作命令
-        .invoke_handler(tauri::generate_handler![
-            get_gateway_endpoint,
-            minimize_window,
-            maximize_window,
-            close_window
-        ])
-        .run(tauri::generate_context!())
-        .expect("运行 Tauri 桌面客户端失败");
-}
+```ts
+// 瘦身后的 Electron 主进程概念代码
+app.whenReady().then(async () => {
+  // 1. 若本地无网关运行，拉起单个 ada-gateway 守护进程
+  const endpoint = await ensureLocalGatewayIfNeeded()
+  // 2. 将网关 WebSocket 端点注入给渲染进程（preload → window.electronAPI）
+  preloadEndpoint = endpoint
+  createFramelessWindow()
+})
+// 仅保留窗口操作 IPC：window:minimize / maximize / close
 ```
 
 ---
@@ -416,8 +405,8 @@ pub fn run() {
 ```mermaid
 flowchart TD
     M1["阶段一：网关管理面接口实现<br>• 在 crates/agent-gateway 增加 gateway.fs.*<br>• 增加 gateway.workspaces.*<br>• 完善路径安全校验与单元测试"]
-    M2["阶段二：前端数据层与 FilePicker 改造<br>• 更新 tauri-ui/src/client/ws-client.ts<br>• 适配 FilePicker.tsx 对接 gateway.fs.*<br>• 抹平工作区选择与切换链路"]
-    M3["阶段三：桌面宿主 src-tauri 大瘦身<br>• 剥离多进程编排与状态存储<br>• 仅保留网关单进程守护与原生窗口控制<br>• 代码量精简 80% 以上"]
+    M2["阶段二：前端数据层与 FilePicker 改造<br>• 更新 desktop-ui/src/client/ws-client.ts<br>• 适配 FilePicker.tsx 对接 gateway.fs.*<br>• 抹平工作区选择与切换链路"]
+    M3["阶段三：桌面宿主 electron 大瘦身<br>• 剥离多进程编排与状态存储<br>• 仅保留网关单进程守护与原生窗口控制<br>• 代码量精简 80% 以上"]
     M4["阶段四：全链路验收与门禁固化<br>• cargo xtask verify-wiring<br>• cargo test --workspace<br>• bun run typecheck"]
 
     M1 --> M2 --> M3 --> M4
@@ -427,12 +416,12 @@ flowchart TD
   - 在 [`crates/agent-gateway/src/relay.rs`](file:///E:/codes/rust_projects/a_da/crates/agent-gateway/src/relay.rs) 增加 `gateway.fs.roots`、`gateway.fs.listDirectory`、`gateway.fs.makeDirectory` 的处理臂；
   - 增加历史工作区管理存储 `crates/agent-gateway/src/workspaces.rs`；
   - 编写网关文件系统单元测试（测试路径遍历防护、隐藏文件过滤等）。
-- **阶段二：前端无感切换（`tauri-ui`）**
-  - 在 [`tauri-ui/src/client/ws-client.ts`](file:///E:/codes/rust_projects/a_da/tauri-ui/src/client/ws-client.ts) 中将目录请求改为 `gateway.fs.*`；
+- **阶段二：前端无感切换（`desktop-ui`）**
+  - 在 [`desktop-ui/src/client/ws-client.ts`](file:///E:/codes/rust_projects/a_da/desktop-ui/src/client/ws-client.ts) 中将目录请求改为 `gateway.fs.*`；
   - 验证空工作区启动下直接打开 `FilePicker` 选取新目录全流程；
   - 确认浏览器端与桌面端体验 100% 同构无差别。
-- **阶段三：桌面端代码瘦身（`src-tauri`）**
-  - 重构 [`src-tauri/src/lib.rs`](file:///E:/codes/rust_projects/a_da/src-tauri/src/lib.rs)，删除冗余的进程监控与重复的命令处理器；
+- **阶段三：桌面端代码瘦身（`electron`）**
+  - 重构 [`electron/main.ts`](file:///E:/codes/rust_projects/a_da/electron/main.ts)，删除冗余的进程监控与重复的命令处理器；
   - 保留干净的窗口基础控制器。
 - **阶段四：门禁集成**
   - 跑通 `bun run typecheck` 与 `cargo test --workspace -- --test-threads=1`；

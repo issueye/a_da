@@ -31,7 +31,7 @@
 
 ### 1. MCP client　`待拍板`
 
-- **现状**：全仓 `grep mcp` **零命中**（`crates/` 与 `tauri-ui/` 都没有），设计文档也从未提及。
+- **现状**：全仓 `grep mcp` **零命中**（`crates/` 与 `desktop-ui/` 都没有），设计文档也从未提及。
 - **已评估的最小路径**：stdio 传输 + `tools/list` / `tools/call` 桥接进 `ToolCatalog`
   （`mcp__<server>__<tool>` 前缀），配置放 `~/.a-da/mcp.json`；resource / prompt 后置。
 - **需要决定**：是否接受"外部进程可以注册工具"，以及它的工具按什么分类——
@@ -79,7 +79,7 @@
 ### 7. `stats.promptChars` 缺前端消费者　`未排期`
 
 - **现状**：W6-T2 把它从硬编码 `{1200, 800}` 改成了**实测值**（系统提示词长度 +
-  工具 schema 字符数之和），但前端 `tauri-ui/src/utils/context-breakdown.ts`
+  工具 schema 字符数之和），但前端 `desktop-ui/src/utils/context-breakdown.ts`
   **从未被调用**，`systemChars` 输入也没人提供——界面仍在客户端估算。
 - **最小实现路径**：在上下文用量 Popover 打开时调 `stats.promptChars`，
   把它作为 `buildContextBreakdown` 的输入。
@@ -153,7 +153,7 @@
 - **冷启动退化未测量**：打包形态多了"spawn 主机 + 握手 + 首帧快照"三步，
   只验过"能画出首帧"，没有与进程内形态对比过数字。
 - **前端重连**：W6-T6 已改为指数退避（500ms 起 / 30s 封顶 / ±20% 抖动）+ 代次保护 +
-  断线立刻失败在途请求；策略在 `tauri-ui/src/client/reconnect-policy.ts`，
+  断线立刻失败在途请求；策略在 `desktop-ui/src/client/reconnect-policy.ts`，
   由 `cargo xtask verify-wiring` 的结构性断言守住。
 - **CLI `run`**：W6-T3 已从"只建会话就退出"改为真执行（装配 → 跑一轮 → 落盘），
   退出码 0/1/2 分明；`--dry-run` 可离线验证装配。
@@ -173,7 +173,7 @@
 ## 五、契约字段的界面消费者审计（2026-10-11）
 
 方法：把 `crates/agent-proto/client-ts/dto.ts`（界面契约）里 171 个字段逐个在
-`tauri-ui/src/**` 里查标识符。**28 个字段界面从不读**，逐个定性如下——
+`desktop-ui/src/**` 里查标识符。**28 个字段界面从不读**，逐个定性如下——
 **不是都该修**，但每一条都要有归属（接线 / 明确留给别的客户端 / 删声明）。
 
 ### 已接线（本轮修掉）

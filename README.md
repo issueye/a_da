@@ -1,6 +1,6 @@
 # a_da
 
-> **状态（2026-10-09）**：纯 Rust 微内核 + Tauri 桌面宿主，M1–M6 接线收口已完成。
+> **状态（2026-10-09）**：纯 Rust 微内核 + Electron 桌面壳，M1–M6 接线收口已完成。
 >
 > 本 README 描述**当前**实现。历史 TypeScript 实现已整体冻结，不再是参考设计、
 > 不参与构建与测试。设计与计划的唯一口径是
@@ -9,8 +9,7 @@
 
 <img src="./assets/logo.svg" width="88" align="right" alt="a_da logo" />
 
-一个**本地** AI 编码 Agent 的桌面程序：纯 Rust 内核 + Tauri 桌面壳（同进程起
-JSON-RPC 宿主）+ React 前端。标志是一条 shell 提示符 `>_`——Agent 就是在工作区里
+一个**本地** AI 编码 Agent 的桌面程序：纯 Rust 内核 + Electron 桌面壳 + React 前端。标志是一条 shell 提示符 `>_`——Agent 就是在工作区里
 跑命令的那个东西，方块的落点正好是名字里那条下划线。
 
 ![a_da 主界面](./docs/app.png)
@@ -41,7 +40,7 @@ JSON-RPC 宿主）+ React 前端。标志是一条 shell 提示符 `>_`——Age
 ```
 agent-base  →  agent-proto / agent-adapter / agent-toolkit / agent-runtime  →  agent-host
                                                                                   ↓
-                                                            agent-core / products / src-tauri
+                                                            agent-core / products / gateway
 ```
 
 | 层 | 位置 | 职责 |
@@ -55,7 +54,7 @@ agent-base  →  agent-proto / agent-adapter / agent-toolkit / agent-runtime  �
 | 核心库 | `crates/agent-core` | JSON-RPC 分发、会话状态、插件/技能/子智能体管理 |
 | 合规套件 | `crates/agent-conformance` | 端口契约 + 8 条跨端口不变量 + golden 回放夹具 |
 | 产品 | `products/ada-coding`、`products/ada-skeleton` | 声明式产品（`agent.spec.json` + 极小 `main`） |
-| 桌面宿主 | `src-tauri` + `tauri-ui` | Tauri 壳 + React 界面（`ws-client.ts` 是唯一协议客户端） |
+| 桌面宿主 | `electron` + `desktop-ui` | Electron 壳 + React 界面（`ws-client.ts` 是唯一协议客户端） |
 
 **产品声明式装配**：`products/*/agent.spec.json` 声明 `toolkits` / `capabilities` /
 `identity` / `policies`，`agent-host` 按声明装配。声明的每个字段都有**真实消费者**
@@ -195,8 +194,8 @@ INV-8 的断言是"**执行中**取消穿透到工具"——工具必须**观察
 ## 运行
 
 ```bash
-# 桌面客户端（前端热重载 + 宿主）
-bun run tauri:dev
+# 桌面客户端（Electron 壳：前端热重载 + 网关监督）
+bun run electron:dev
 
 # 构建
 cargo build --workspace
@@ -205,19 +204,9 @@ cargo build --workspace
 cargo xtask ship --product ada-coding
 ```
 
-**单 exe 多角色**：
-
-```bash
-a-da.exe                                  # 默认：Tauri GUI 桌面端
-a-da.exe --workspace "E:/codes/proj"      # 指定初始工作区启动 GUI
-a-da.exe --headless                       # 纯后台守护进程（自动分配空闲端口）
-a-da.exe daemon --port 52353 --token "…"  # 固定端口与令牌
-
-# 单次任务：装配引擎 → 跑一轮 → 会话落盘
-a-da.exe run --workspace "." "审查所有 Rust 文件并指出潜在错误"
-a-da.exe run --workspace "." --dry-run "冒烟"   # 不联网，只验证装配与落盘
-# 退出码：0 = 完成；1 = 执行失败（含未配置模型供应商）；2 = 用法错误
-```
+**桌面壳**：Electron 主进程监督 `ada-gateway` 生命周期，网关按工作区拉起 `ada-coding`
+实例。`ada-coding` 接受 `--host/--port/--token/--parent-pid/--workspace`，通常由网关或
+Electron 宿主注入，不需要手敲。
 
 **数据目录**：配置、会话流水、插件、调试日志都在 `~/.a-da` 下；
 `A_DA_HOME` 可以换掉这个目录。`A_DA_CONFIG` 可以换掉配置文件路径。
@@ -254,8 +243,8 @@ crates/
 products/
   ada-coding/          产品声明 + 极小 main
   ada-skeleton/        极简骨架（用于验证"产品只是一份声明"）
-src-tauri/             Tauri 宿主 + CLI（`run` 在 cli_run.rs）
-tauri-ui/              React 界面（client/ws-client.ts 是唯一协议客户端）
+electron/              Electron 桌面宿主主进程（网关监督 + 窗口控制 + IPC 桥接）
+desktop-ui/            React 界面（client/ws-client.ts 是唯一协议客户端）
 spec/proto/            协议登记表（唯一手写源）
 tools/xtask/           门禁与打包
 ```
