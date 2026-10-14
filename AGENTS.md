@@ -105,6 +105,18 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
   `sync_threads_from_disk` 整份覆盖，界面上的错误卡片会"闪一下就没"。
   实机回归：`pwsh -NoProfile -File tools/verify-retry-and-disconnect.ps1`
   （起真产品、走真 JSON-RPC、改用户配置前先备份后还原）。
+- **图片输入（多模态）这条链也要一起改才生效**：`thread.send` / `thread.editAndResend` 的
+  `images`（**data URI**）→ `dispatch::normalize_images`（**全仓唯一的图片 IO 边界**：
+  裸路径在这里读盘转 base64，读不到就丢弃并记日志）→ `spawn_thread_loop` 的 `current_images`
+  → `run_agent_turn` → `TurnRequest::with_images` → `format_messages_for_model` 把 `images`
+  挂到那条用户消息上 → 适配器按协议编成内容块（OpenAI `image_url` / Anthropic `source.base64`
+  / Responses `input_image`）。
+  🔴 `ChatCompletionMessage.images` **刻意 `#[serde(skip)]`**：三家协议的图片形状不同，
+  且**没有图片时 `content` 必须是裸字符串**（数组形态会被部分上游 400），所以编码只在适配器里做，
+  消息类型只负责把图片带过去——别把它改成可序列化字段，`test_chat_completion_message_does_not_serialize_images` 守着这条。
+  声明侧：`capabilities.images` 来自产品 spec（`ada-coding` 与 PM 预设都是 `true`），
+  单个模型认不认图由 `ModelEntry.supportsImages` 表达——**两者不是一回事**。
+  界面那排"图片素材"胶囊只是投影：它在没接通之前也一样显示，所以别拿它当"已经发给模型了"的证据。
 - 🔴 **Electron 宿主里 `__dirname` 不可信**：`bun run electron:build:main`（`bun build --target node
   --format cjs`）会把 `__dirname` **硬编码成构建机的源码目录**。用
   `path.join(__dirname, 'preload.cjs')` 当 preload 路径 → preload 静默加载失败 →

@@ -19,7 +19,10 @@ impl NetworkModelClient {
             capabilities: ModelCapabilities {
                 streaming: true,
                 tools: true,
-                images: false, // MVP 严格遵从如实回答：false，不虚报
+                // 图片现在真的能发出去：三家协议都在请求体里编出图片内容块
+                // （OpenAI `image_url` / Anthropic `source.base64` / Responses `input_image`）。
+                // 这里说的是**客户端能力**；某一个模型认不认图由 `ModelEntry.supports_images` 说。
+                images: true,
                 thinking: true,
             },
         }

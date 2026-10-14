@@ -144,6 +144,18 @@ pub struct ChatCompletionMessage {
     pub role: String, // "system" | "user" | "assistant" | "tool"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    /// 用户消息附带的图片，每项是**自包含的 URI**（`data:image/png;base64,...` 或 http(s) URL）。
+    ///
+    /// **刻意不进 serde**：三家协议的图片编码形态互不相同（OpenAI 是 `image_url` 内容块、
+    /// Anthropic 是 `source.base64`、Responses 是 `input_image`），而且**没有图片时
+    /// `content` 必须是裸字符串**而不是单元素数组——直接序列化本字段会让请求体多出一个
+    /// 上游不认的 `images` 键。所以编码一律由适配器按协议构造（`agent-adapter`），
+    /// 这里只负责把图片从会话历史带到适配器手上。
+    ///
+    /// 路径形态的图片在这里**已经不该存在**：`agent-base` 是零 IO 层，读盘转 base64
+    /// 发生在 `agent-rpc` 的入口（见 `dispatch.rs` 的 `normalize_images`）。
+    #[serde(skip)]
+    pub images: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -200,6 +212,7 @@ mod tests {
         let tool_msg = ChatCompletionMessage {
             role: "tool".to_string(),
             content: Some("ok".to_string()),
+            images: None,
             tool_calls: None,
             tool_call_id: Some("call_123".to_string()),
             reasoning_content: None,
@@ -212,6 +225,7 @@ mod tests {
         let asst_msg = ChatCompletionMessage {
             role: "assistant".to_string(),
             content: None,
+            images: Some(vec!["data:image/png;base64,AAA".to_string()]),
             tool_calls: Some(vec![serde_json::json!({ "id": "call_123" })]),
             tool_call_id: None,
             reasoning_content: None,
@@ -229,6 +243,7 @@ mod tests {
         let with_thinking = ChatCompletionMessage {
             role: "assistant".to_string(),
             content: Some("答案".to_string()),
+            images: None,
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: Some("先看用户要什么".to_string()),
@@ -243,6 +258,7 @@ mod tests {
         let without = ChatCompletionMessage {
             role: "assistant".to_string(),
             content: Some("答案".to_string()),
+            images: None,
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
@@ -257,5 +273,30 @@ mod tests {
         let parsed_none: ChatCompletionMessage =
             serde_json::from_str(r#"{"role":"assistant","content":"x"}"#).unwrap();
         assert_eq!(parsed_none.reasoning_content, None);
+    }
+
+    /// 图片**不得**出现在消息的序列化结果里。
+    ///
+    /// 上游只认 `content`（字符串或内容块数组），多一个 `images` 键就是"Unrecognized
+    /// request argument"；编码形态由适配器按协议构造。这条断言钉死那条 `#[serde(skip)]`，
+    /// 免得后人"顺手"把它改成可序列化字段。
+    #[test]
+    fn test_chat_completion_message_does_not_serialize_images() {
+        let msg = ChatCompletionMessage {
+            role: "user".to_string(),
+            content: Some("看看这张图".to_string()),
+            images: Some(vec!["data:image/png;base64,AAA".to_string()]),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("images"), "图片不该走 serde 序列化：{json}");
+
+        // 兼容：请求体里混进 `images` 也不该解析失败（该字段被跳过）
+        let parsed: ChatCompletionMessage =
+            serde_json::from_str(r#"{"role":"user","content":"x","images":["data:image/png;base64,AAA"]}"#)
+                .unwrap();
+        assert_eq!(parsed.images, None, "images 是内部载体，不从线上反序列化");
     }
 }

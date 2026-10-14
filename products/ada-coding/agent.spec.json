@@ -8,7 +8,7 @@
   },
   "toolkits": ["core", "fs", "command", "decision", "git", "project"],
   "capabilities": {
-    "images": false,
+    "images": true,
     "streaming": true,
     "rollback": true,
     "subagents": true,

@@ -78,6 +78,7 @@ fn cancel_probe() -> CompletionRequest {
         messages: vec![ChatCompletionMessage {
             role: "user".into(),
             content: Some("取消探测".into()),
+            images: None,
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
@@ -170,6 +171,7 @@ mod tests {
             messages: vec![ChatCompletionMessage {
                 role: "user".into(),
                 content: Some("你好".into()),
+                images: None,
                 tool_calls: None,
                 tool_call_id: None,
                 reasoning_content: None,

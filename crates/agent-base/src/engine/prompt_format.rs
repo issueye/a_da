@@ -16,6 +16,7 @@ pub fn format_messages_for_model(
         out.push(ChatCompletionMessage {
             role: "system".to_string(),
             content: Some(system_prompt.to_string()),
+            images: None,
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
@@ -24,10 +25,13 @@ pub fn format_messages_for_model(
 
     for msg in history {
         match msg {
-            AgentMessage::User { content, .. } => {
+            AgentMessage::User { content, images, .. } => {
                 out.push(ChatCompletionMessage {
                     role: "user".to_string(),
                     content: Some(content.clone()),
+                    // 空数组按"没有图片"处理：适配器据此决定 `content` 是裸字符串还是
+                    // 内容块数组，留着 `Some(vec![])` 会把每条普通消息都变成数组形态。
+                    images: images.clone().filter(|imgs| !imgs.is_empty()),
                     tool_calls: None,
                     tool_call_id: None,
                     reasoning_content: None,
@@ -67,6 +71,7 @@ pub fn format_messages_for_model(
                         Some(content.clone())
                     },
                     tool_calls: tc_json,
+                    images: None,
                     tool_call_id: None,
                     // thinking 模式：上游要求把上一轮思考链原样带回，否则多轮工具调用直接 400
                     reasoning_content: thinking
@@ -82,6 +87,7 @@ pub fn format_messages_for_model(
                 out.push(ChatCompletionMessage {
                     role: "tool".to_string(),
                     content: Some(content.clone()),
+                    images: None,
                     tool_calls: None,
                     tool_call_id: Some(tool_call_id.clone()),
                     reasoning_content: None,
@@ -172,5 +178,40 @@ mod tests {
         let blank = vec![assistant("直接回答", Some("   \n "))];
         let formatted_blank = format_messages_for_model("", &blank);
         assert_eq!(formatted_blank[0].reasoning_content, None);
+    }
+
+    /// 多模态：用户消息的图片必须一路带到模型消息上。
+    ///
+    /// 这里守的是"历史 → 模型请求"的最后一段。图片在 `TurnRequest` 之前就断了是
+    /// 另一条链（`dispatch` → `engine_bridge`），两处都通才算真的接上。
+    #[test]
+    fn test_user_images_reach_the_model_message() {
+        let history = vec![
+            AgentMessage::User {
+                content: "看看这张图".to_string(),
+                images: Some(vec!["data:image/png;base64,AAA".to_string()]),
+                timestamp: None,
+            },
+            AgentMessage::User {
+                content: "没有图".to_string(),
+                images: None,
+                timestamp: None,
+            },
+            AgentMessage::User {
+                content: "空数组".to_string(),
+                images: Some(vec![]),
+                timestamp: None,
+            },
+        ];
+
+        let formatted = format_messages_for_model("", &history);
+        assert_eq!(
+            formatted[0].images.as_deref(),
+            Some(["data:image/png;base64,AAA".to_string()].as_slice()),
+            "用户消息的图片必须带到模型消息上"
+        );
+        assert_eq!(formatted[0].content.as_deref(), Some("看看这张图"));
+        assert_eq!(formatted[1].images, None, "没有图片时保持 None");
+        assert_eq!(formatted[2].images, None, "空数组归一成 None，别让普通消息变成数组形态");
     }
 }

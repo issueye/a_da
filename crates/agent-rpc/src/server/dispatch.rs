@@ -421,6 +421,38 @@ pub struct Dispatcher {
     pm_workspace_engines: Arc<Mutex<HashMap<std::path::PathBuf, Arc<agent_base::engine::AgentRuntime>>>>,
 }
 
+/// 把界面传来的图片**归一成可以直接进模型请求的 data URI**。
+///
+/// 界面产出的一律是 data URI（粘贴/拖拽走 `FileReader.readAsDataURL`，选文件走
+/// `fs.read_base64`），但老盘上恢复出来的会话可能是裸路径，所以这里兜一手。
+///
+/// **为什么归一化在这层**：`agent-base` 是零 IO 的领域层，引擎拿不到文件系统——
+/// 读盘转 base64 只能发生在 RPC 入口。读不到的图片**丢掉并记日志**，不给模型一个
+/// 它取不到的路径（那会变成一个只有上游能看懂的报错）。
+fn normalize_images(images: Option<Vec<String>>) -> Option<Vec<String>> {
+    let images = images?;
+    let mut out = Vec::with_capacity(images.len());
+    for img in images {
+        let trimmed = img.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("data:") {
+            out.push(trimmed.to_string());
+            continue;
+        }
+        match fs_service::read_file_base64(trimmed) {
+            Ok(data_uri) => out.push(data_uri),
+            Err(e) => warn!("图片无法读取，本轮丢弃该图（path={trimmed}）：{}", e.message),
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 /// 辅助函数：根据目标工作区优先从缓存中获取引擎，若缺失且存在工厂则现场装配并写入缓存
 async fn resolve_engine_from_cache(
     ws_str: &str,
@@ -498,6 +530,7 @@ async fn summarize_for_compaction(provider: &ProviderConfig, transcript: &str) -
         messages: vec![ChatCompletionMessage {
             role: "user".to_string(),
             content: Some(prompt),
+            images: None,
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
@@ -657,6 +690,7 @@ impl Dispatcher {
         &self,
         thread_id: String,
         first_prompt: Option<String>,
+        first_images: Option<Vec<String>>,
         provider_config: ProviderConfig,
     ) {
         let target_tid_clone_for_insert = thread_id.clone();
@@ -676,6 +710,9 @@ impl Dispatcher {
 
         let runner_task = tokio::spawn(async move {
             let mut current_prompt: Option<String> = first_prompt;
+            // 与 `current_prompt` 同生命周期：本轮带哪几张图。排队指令出队时一并换成它自带的那组，
+            // 否则第二条指令会"继承"第一条的图片（图片被当成会话级状态而不是消息级附件）。
+            let mut current_images: Option<Vec<String>> = first_images;
             // 本次执行链里已经自动压缩过几次（防"压了还撞顶"无限循环）
             let mut auto_compact_rounds = 0u32;
             loop {
@@ -688,6 +725,9 @@ impl Dispatcher {
                 let turn_started = std::time::Instant::now();
                 let tid = target_tid_clone.clone();
                 let prompt = current_prompt.take();
+                let images = current_images.take();
+                // 压缩重试要复用同一组图片（见下面的 `current_images = retry_images`）
+                let retry_images = images.clone();
                 let p_cfg = provider_config.clone();
                 // 本轮是否是"撞顶停的"（引擎通过专门事件告知，见下面的事件臂）
                 let mut context_exceeded: Option<(u64, u64)> = None;
@@ -744,6 +784,7 @@ impl Dispatcher {
                         engine_for_turn,
                         &tid,
                         prompt.as_deref(),
+                        images,
                         p_cfg,
                         context_window,
                         Some(retry_count),
@@ -1074,6 +1115,9 @@ impl Dispatcher {
                                 ),
                                 None => "【上下文已自动压缩】请基于压缩后的上下文继续完成原任务。".to_string(),
                             });
+                            // 压缩后的重试仍是**同一轮**：用户附的图片要跟着一起重发，
+                            // 否则"发图 + 上下文撞顶"就变成图片被静默吞掉。
+                            current_images = retry_images;
                             continue;
                         }
 
@@ -1084,6 +1128,9 @@ impl Dispatcher {
                         };
 
                         if let Some(queued) = next_item {
+                            // 出队指令**自带**它的图片：本轮换用队列里那一组，别继承上一条指令的
+                            // （图片是消息级附件，不是会话级状态）。
+                            let queued_images = queued.images.clone();
                             let mut store = store_clone.write().await;
                             store.add_user_message_with_images(&target_tid_clone, &queued.text, queued.images);
                             drop(store);
@@ -1091,6 +1138,7 @@ impl Dispatcher {
                                 bc.broadcast_immediate().await;
                             }
                             current_prompt = Some(queued.text);
+                            current_images = queued_images;
                         } else {
                             // 对话队列已清空，退出 drain 循环
                             break;
@@ -1602,9 +1650,9 @@ impl Dispatcher {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 text 参数"))?;
-                let images = params.get("images")
+                let images = normalize_images(params.get("images")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<String>>());
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<String>>()));
 
                 let mut store = self.store.write().await;
                 let target_tid = if store.threads.iter().any(|t| t.id == thread_id) {
@@ -1638,6 +1686,8 @@ impl Dispatcher {
                 }
 
                 // 首次启动该会话：注入用户消息，标记为运行态并启动 drain 连续执行循环
+                // 入库与送模型用同一份图片：卡片上的缩略图与真正发给模型的字节一致
+                let turn_images = images.clone();
                 store.add_user_message_with_images(&target_tid, &text, images);
                 store.set_thread_running(&target_tid, true);
                 let provider_config = store.provider.clone();
@@ -1648,7 +1698,7 @@ impl Dispatcher {
                 }
 
                 self
-                    .spawn_thread_loop(target_tid.clone(), Some(text.to_string()), provider_config)
+                    .spawn_thread_loop(target_tid.clone(), Some(text.to_string()), turn_images, provider_config)
                     .await;
 
                 Ok(serde_json::json!({ "accepted": true }))
@@ -2478,6 +2528,12 @@ impl Dispatcher {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 text 参数"))?
                     .to_string();
+                // 编辑重发同样要带图：界面在这条路径上**本来就发** `images`
+                // （`ws-client.editAndResend`），以前服务端把它丢了，于是"重发带图的提问"
+                // 会变成一条没有图的提问。
+                let images = normalize_images(params.get("images")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<String>>()));
 
                 // W6-T4：编辑重发走**与 thread.start 同一条执行泵**。
                 //
@@ -2505,7 +2561,7 @@ impl Dispatcher {
                     bc.broadcast_immediate().await;
                 }
 
-                self.spawn_thread_loop(thread_id, Some(text), provider_config).await;
+                self.spawn_thread_loop(thread_id, Some(text), images, provider_config).await;
 
                 // 与 `thread.start` 同口径：**已受理**（真正完成由事件流通知）
                 Ok(serde_json::json!({ "accepted": true }))
@@ -2554,7 +2610,7 @@ impl Dispatcher {
                     bc.broadcast_immediate().await;
                 }
 
-                self.spawn_thread_loop(target_tid.clone(), None, provider_config).await;
+                self.spawn_thread_loop(target_tid.clone(), None, None, provider_config).await;
 
                 Ok(serde_json::json!({
                     "accepted": true,
@@ -3180,6 +3236,47 @@ impl Dispatcher {
 mod tests {
     use super::*;
 
+    /// 图片归一化：data URI 原样通过。
+    #[test]
+    fn test_normalize_images_accepts_data_uri_as_is() {
+        let out = normalize_images(Some(vec!["data:image/png;base64,AAA".to_string()]));
+        assert_eq!(out, Some(vec!["data:image/png;base64,AAA".to_string()]));
+    }
+
+    /// 空的、读不到的——一律归成"没有图片"，**绝不把裸路径原样送进模型请求**。
+    ///
+    /// 这条归一化就是**零 IO 边界**本身：`agent-base` 读不了盘，路径形态的图片必须在
+    /// RPC 入口被消灭掉，否则模型只会收到一个它取不到的路径（错误还很难看懂）。
+    #[test]
+    fn test_normalize_images_drops_empty_and_unreadable() {
+        assert_eq!(normalize_images(None), None);
+        assert_eq!(normalize_images(Some(vec![])), None);
+        assert_eq!(normalize_images(Some(vec!["   ".to_string()])), None);
+        assert_eq!(
+            normalize_images(Some(vec!["E:/definitely/not/here_9f3a.png".to_string()])),
+            None
+        );
+    }
+
+    /// 裸路径（老盘上恢复出来的会话）读盘转成 data URI，mime 按扩展名判。
+    #[test]
+    fn test_normalize_images_reads_a_real_file_as_data_uri() {
+        let dir = std::env::temp_dir().join(format!("a_da_img_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("shot.png");
+        std::fs::write(&path, [0x89u8, 0x50, 0x4E, 0x47]).expect("写临时图片");
+
+        let out = normalize_images(Some(vec![path.to_string_lossy().to_string()]))
+            .expect("路径应当被读成 data URI");
+        assert!(
+            out[0].starts_with("data:image/png;base64,"),
+            "应按扩展名判出 image/png：{}",
+            out[0]
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 守门：压缩必须**真的落盘 compact 条目**、留下最近几项、并用**真实**的上下文规模记账。
     ///
     /// 早先 `thread.compact` 只写一句"已对前序 N 轮…进行了结构化压缩与归纳"——假装总结过，
@@ -3655,7 +3752,9 @@ mod tests {
             .expect("握手成功");
 
         let caps = init_val.get("capabilities").expect("必须包含 capabilities 节点");
-        assert_eq!(caps.get("images").and_then(|v| v.as_bool()), Some(false), "MVP 如实声明 images: false");
+        // ada-coding 声明 images=true（多模态已接通：dispatch → engine_bridge → TurnRequest
+        // → 适配器请求体），带头的是产品声明本身——声明改了握手没跟上，这里就会红。
+        assert_eq!(caps.get("images").and_then(|v| v.as_bool()), Some(true), "ada-coding 声明 images=true");
         assert_eq!(caps.get("rollback").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(caps.get("plugins").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(caps.get("hooks").and_then(|v| v.as_bool()), Some(false));

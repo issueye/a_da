@@ -3,7 +3,7 @@
 > **维护约定**：每条写清「现状证据（`file:line` 或 grep 判据）／影响／最小实现路径／状态」。
 > 状态取值：`未排期`（没人做）、`待拍板`（缺一个产品决定）、`明确不做`（设计上划出去了）。
 >
-> **最后核对**：2026-10-09。核对方式＝全仓 grep + 跑六条门禁，**不是凭印象**。
+> **最后核对**：2026-10-14。核对方式＝全仓 grep + 跑六条门禁，**不是凭印象**。
 > 改动功能后请顺手更新本文件。
 >
 > **注意**：本文件只写"**功能缺口**"。接线类问题（"看起来装上了其实没接线"）
@@ -14,9 +14,9 @@
 
 | 命令 | 结果 |
 |---|---|
-| `cargo test --workspace -- --test-threads=1` | **302 passed / 0 failed** |
-| `cargo xtask verify` | ✔ 全仓 Verify 通过 |
-| `cargo xtask verify-wiring` | ✔ 无违约（协议方法 72 / match 臂 72；端口 11 个全有生产实现） |
+| `cargo test --workspace -- --test-threads=1` | **430 passed / 0 failed** |
+| `cargo xtask verify` | ✔ 全仓 Verify 通过（6 阶段全绿） |
+| `cargo xtask verify-wiring` | ✔ 无违约（协议方法 74 / match 臂 74；端口 11 个全有生产实现） |
 | `cargo xtask verify-spec` | ✔ 无违约 |
 | `cargo xtask compat` | ✔ 无违约 |
 | `cargo xtask verify-archive` | ✔ 全绿（8 条断言） |
@@ -84,14 +84,23 @@
 - **最小实现路径**：在上下文用量 Popover 打开时调 `stats.promptChars`，
   把它作为 `buildContextBreakdown` 的输入。
 
-### 8. 图片输入从未送进模型　`未排期（当前产品都声明 images=false）`
+### 8. ~~图片输入从未送进模型~~　`✅ 已完成（2026-10-14）`
 
-- **现状**：`TurnRequest::with_images` **全仓零消费者**；`thread.start` 把 images 存进
-  UI store（`add_user_message_with_images`）后就**没有下文**——模型永远收不到图片。
-- **已就位的部分**：`capabilities.images` 的**门禁**是真的（W5-T4：
-  声明 `false` 的产品会在 `run_turn_with_images` 里被拒）。
-- **最小实现路径**：`dispatch.rs` 的 `run_agent_turn` 调用点把 images 透传进 `TurnRequest`；
-  并在模型侧按 `ModelCapabilities.images` 决定是否携带。
+- **现状**：已接通。`thread.send` / `thread.editAndResend` 的 `images` 经
+  `dispatch::normalize_images` 归一成 **data URI** → `spawn_thread_loop` 的 `current_images`
+  → `run_agent_turn` / `run_turn_with_engine` → `TurnRequest::with_images`
+  → `format_messages_for_model` 挂到那条用户消息上 → 适配器按协议编成内容块
+  （OpenAI `image_url` / Anthropic `source.base64` / Responses `input_image`）。
+- **零 IO 边界**：`agent-base` 读不了盘，所以裸路径（老盘上恢复出来的会话）在 RPC 入口
+  就被读盘转成 data URI；读不到的图**丢掉并记日志**，绝不把取不到的路径送进请求。
+- **声明侧**：`ada-coding` 与 PM 预设都改为 `capabilities.images: true`，
+  `NetworkModelClient` 声明 `images: true`（客户端能编码图片）；
+  单个模型认不认图仍由 `ModelEntry.supportsImages` 表达——两者不是一回事。
+- **守门**：`prompt_format` 的单测、适配器三家协议的编码单测、
+  `engine_bridge::test_images_reach_the_model_request`（端到端到模型请求）、
+  `dispatch::test_normalize_images_*`。
+- **仍不在范围内**：`run_turn_with_images` 的门禁（W5-T4）只在 `agent-host` 直连路径上，
+  RPC 生产路径没有二次校验——两份产品声明现在都是 `true`，所以不构成不一致。
 
 ### 9. 钩子点位 = 0　`未排期`
 

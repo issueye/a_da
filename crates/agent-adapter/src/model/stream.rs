@@ -188,6 +188,81 @@ async fn run_stream(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 图片编码（三家协议的形状各不相同，共用这里解析 data URI）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 拆开 `data:<mime>;base64,<payload>`，返回 `(mime, base64)`。
+///
+/// 只认这一种形态（界面产出的就是它：`fs.read_base64` 与粘贴/拖拽都走 data URI）。
+/// 非 data URI（http(s) 链接）返回 `None`，由调用方决定降级形态。
+fn parse_data_uri(uri: &str) -> Option<(String, String)> {
+    let rest = uri.strip_prefix("data:")?;
+    let (meta, payload) = rest.split_once(',')?;
+    // 非 base64 的 data URI（如 `data:text/plain,hello`）不按图片处理
+    let mime = meta.strip_suffix(";base64")?;
+    if mime.is_empty() || payload.is_empty() {
+        return None;
+    }
+    Some((mime.to_string(), payload.to_string()))
+}
+
+/// OpenAI Chat Completions 的一条 `messages[]` 项。
+///
+/// 出参刻意与原来的 `#[derive(Serialize)]` 逐键一致（无图时）；有图才切到内容块数组。
+fn openai_chat_message_value(m: ChatCompletionMessage) -> Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("role".to_string(), Value::String(m.role));
+
+    let images = m
+        .images
+        .filter(|imgs| !imgs.is_empty())
+        .unwrap_or_default();
+    if images.is_empty() {
+        if let Some(content) = m.content {
+            obj.insert("content".to_string(), Value::String(content));
+        }
+    } else {
+        let mut parts: Vec<Value> = Vec::with_capacity(images.len() + 1);
+        // 纯图片消息（正文为空）只发图片块，不发空的 text 块
+        if let Some(text) = m.content.filter(|t| !t.is_empty()) {
+            parts.push(serde_json::json!({ "type": "text", "text": text }));
+        }
+        for uri in images {
+            parts.push(serde_json::json!({ "type": "image_url", "image_url": { "url": uri } }));
+        }
+        obj.insert("content".to_string(), Value::Array(parts));
+    }
+
+    if let Some(tcs) = m.tool_calls {
+        obj.insert("tool_calls".to_string(), Value::Array(tcs));
+    }
+    if let Some(id) = m.tool_call_id {
+        obj.insert("tool_call_id".to_string(), Value::String(id));
+    }
+    if let Some(rc) = m.reasoning_content {
+        obj.insert("reasoning_content".to_string(), Value::String(rc));
+    }
+    Value::Object(obj)
+}
+
+/// Anthropic 的一个图片内容块。
+///
+/// base64 形态用 `source.base64`；拿不到 data URI（例如 http(s) 链接）时退回
+/// `source.url`——Anthropic 两种都认，发错形态才是真的失败。
+fn anthropic_image_block(uri: &str) -> Value {
+    match parse_data_uri(uri) {
+        Some((media_type, data)) => serde_json::json!({
+            "type": "image",
+            "source": { "type": "base64", "media_type": media_type, "data": data }
+        }),
+        None => serde_json::json!({
+            "type": "image",
+            "source": { "type": "url", "url": uri }
+        }),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 1. OpenAI Chat Completions 协议实现
 // ─────────────────────────────────────────────────────────────────────────────
 async fn run_stream_openai_chat(
@@ -199,9 +274,14 @@ async fn run_stream_openai_chat(
 ) -> Result<()> {
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
 
+    // 逐条手工构造而不是 `"messages": messages`：带图片的用户消息必须发成
+    // `content: [{type:"text"},{type:"image_url"}]` 的内容块数组，**没有图片时又必须是
+    // 裸字符串**（数组形态在部分兼容网关/旧模型上会直接 400）。这条分叉只有这里知道。
+    let wire_messages: Vec<Value> = messages.into_iter().map(openai_chat_message_value).collect();
+
     let mut body = serde_json::json!({
         "model": config.model,
-        "messages": messages,
+        "messages": wire_messages,
         "stream": true,
         "stream_options": { "include_usage": true }
     });
@@ -528,10 +608,28 @@ async fn run_stream_anthropic(
                 }));
             }
         } else {
-            anthropic_messages.push(serde_json::json!({
-                "role": "user",
-                "content": m.content.unwrap_or_default()
-            }));
+            // 用户消息：无图时 `content` 给字符串，有图时给内容块数组（Anthropic 只在
+            // 拿不到 data URI 时才退回 `source.url`，见 `anthropic_image_block`）。
+            let images = m.images.filter(|imgs| !imgs.is_empty()).unwrap_or_default();
+            let text = m.content.unwrap_or_default();
+            if images.is_empty() {
+                anthropic_messages.push(serde_json::json!({
+                    "role": "user",
+                    "content": text
+                }));
+            } else {
+                let mut content_parts: Vec<Value> = Vec::with_capacity(images.len() + 1);
+                if !text.is_empty() {
+                    content_parts.push(serde_json::json!({ "type": "text", "text": text }));
+                }
+                for uri in images {
+                    content_parts.push(anthropic_image_block(&uri));
+                }
+                anthropic_messages.push(serde_json::json!({
+                    "role": "user",
+                    "content": content_parts
+                }));
+            }
         }
     }
 
@@ -816,10 +914,28 @@ async fn run_stream_openai_responses(
                 "output": m.content.unwrap_or_default()
             }));
         } else {
-            input_items.push(serde_json::json!({
-                "role": m.role,
-                "content": m.content.unwrap_or_default()
-            }));
+            // 图片在 Responses 协议里是 `input_image` 内容块；只有用户消息会带图，
+            // 无图路径与改动前逐字一致（助手消息走这里也不受影响）。
+            let images = m.images.filter(|imgs| !imgs.is_empty()).unwrap_or_default();
+            let text = m.content.unwrap_or_default();
+            if images.is_empty() {
+                input_items.push(serde_json::json!({
+                    "role": m.role,
+                    "content": text
+                }));
+            } else {
+                let mut parts: Vec<Value> = Vec::with_capacity(images.len() + 1);
+                if !text.is_empty() {
+                    parts.push(serde_json::json!({ "type": "input_text", "text": text }));
+                }
+                for uri in images {
+                    parts.push(serde_json::json!({ "type": "input_image", "image_url": uri }));
+                }
+                input_items.push(serde_json::json!({
+                    "role": m.role,
+                    "content": parts
+                }));
+            }
         }
     }
 
@@ -1263,6 +1379,102 @@ mod tests {
         assert!(err.contains("HTTP 400"));
         assert!(err.contains("invalid payload"));
         assert_eq!(request_count.load(Ordering::SeqCst), 1);
+    }
+
+    fn user_msg(content: Option<&str>, images: Option<Vec<&str>>) -> ChatCompletionMessage {
+        ChatCompletionMessage {
+            role: "user".to_string(),
+            content: content.map(|c| c.to_string()),
+            images: images.map(|v| v.into_iter().map(|s| s.to_string()).collect()),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+        }
+    }
+
+    /// 无图片时必须保持**裸字符串** content：内容块数组在部分兼容网关/旧模型上直接 400。
+    /// 这条断言防止"顺手统一成数组"把普通对话打挂。
+    #[test]
+    fn test_openai_message_without_images_stays_a_plain_string() {
+        let v = openai_chat_message_value(user_msg(Some("你好"), None));
+        assert_eq!(v["content"], Value::String("你好".to_string()));
+        assert!(v.get("images").is_none(), "不得下发 images 键：{v}");
+
+        // 空数组也按"没有图片"处理
+        let v = openai_chat_message_value(user_msg(Some("你好"), Some(vec![])));
+        assert_eq!(v["content"], Value::String("你好".to_string()));
+    }
+
+    /// 有图片时切成内容块数组：文本在前、图片在后。
+    #[test]
+    fn test_openai_message_with_images_becomes_content_parts() {
+        let v = openai_chat_message_value(user_msg(
+            Some("看看这张图"),
+            Some(vec!["data:image/png;base64,AAA"]),
+        ));
+        let parts = v["content"].as_array().expect("必须是内容块数组");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "看看这张图");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,AAA");
+    }
+
+    /// 纯图片消息（正文为空）不该多发一个空的 text 块——空的 text 块会被部分上游拒绝。
+    #[test]
+    fn test_openai_message_with_only_images_omits_empty_text() {
+        let v = openai_chat_message_value(user_msg(None, Some(vec!["data:image/png;base64,AAA"])));
+        let parts = v["content"].as_array().expect("必须是内容块数组");
+        assert_eq!(parts.len(), 1, "只该有图片块：{v}");
+        assert_eq!(parts[0]["type"], "image_url");
+    }
+
+    /// OpenAI 侧的既有键一个都不能丢（工具调用 / 工具回执 / 思考链）。
+    #[test]
+    fn test_openai_message_keeps_tool_and_reasoning_keys() {
+        let mut m = user_msg(Some("x"), None);
+        m.role = "assistant".to_string();
+        m.tool_calls = Some(vec![serde_json::json!({ "id": "call_1" })]);
+        m.reasoning_content = Some("先看看".to_string());
+        let v = openai_chat_message_value(m);
+        assert_eq!(v["tool_calls"][0]["id"], "call_1");
+        assert_eq!(v["reasoning_content"], "先看看");
+
+        let mut t = user_msg(Some("ok"), None);
+        t.role = "tool".to_string();
+        t.tool_call_id = Some("call_1".to_string());
+        let v = openai_chat_message_value(t);
+        assert_eq!(v["tool_call_id"], "call_1");
+    }
+
+    #[test]
+    fn test_parse_data_uri() {
+        assert_eq!(
+            parse_data_uri("data:image/png;base64,AAA"),
+            Some(("image/png".to_string(), "AAA".to_string()))
+        );
+        assert_eq!(
+            parse_data_uri("data:image/jpeg;base64,ZZZ"),
+            Some(("image/jpeg".to_string(), "ZZZ".to_string()))
+        );
+        // 非 data URI / 非 base64 / 空载荷一律不认
+        assert_eq!(parse_data_uri("https://example.com/a.png"), None);
+        assert_eq!(parse_data_uri("data:text/plain,hello"), None);
+        assert_eq!(parse_data_uri("data:image/png;base64,"), None);
+    }
+
+    /// Anthropic 认两种形态：base64 走 `source.base64`，拿不到 data URI 才退回 `source.url`。
+    #[test]
+    fn test_anthropic_image_block_forms() {
+        let b64 = anthropic_image_block("data:image/png;base64,AAA");
+        assert_eq!(b64["type"], "image");
+        assert_eq!(b64["source"]["type"], "base64");
+        assert_eq!(b64["source"]["media_type"], "image/png");
+        assert_eq!(b64["source"]["data"], "AAA");
+
+        let url = anthropic_image_block("https://example.com/a.png");
+        assert_eq!(url["source"]["type"], "url");
+        assert_eq!(url["source"]["url"], "https://example.com/a.png");
     }
 }
 

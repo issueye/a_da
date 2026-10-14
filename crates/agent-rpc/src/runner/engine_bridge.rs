@@ -285,6 +285,9 @@ pub async fn run_turn_with_engine(
     engine: Arc<AgentRuntime>,
     thread_id: &str,
     user_prompt: Option<&str>,
+    // 本轮用户附带的图片（**data URI**）。`agent-base` 是零 IO 层，路径转 base64 已在
+    // `dispatch` 入口做完（见那里的 `normalize_images`）。
+    images: Option<Vec<String>>,
     provider_config: ProviderConfig,
     context_window: Option<u64>,
     max_retries: Option<usize>,
@@ -303,6 +306,13 @@ pub async fn run_turn_with_engine(
     if let Some(p) = user_prompt {
         if !p.trim().is_empty() {
             req = req.with_user_prompt(p);
+        }
+    }
+    // 只在真有图片时才登记：`with_images(None)` 与不调用等价，但显式过滤掉空数组
+    // 能避免 "用户发了张空图" 这种状态在引擎里留下 `Some(vec![])`。
+    if let Some(imgs) = images {
+        if !imgs.is_empty() {
+            req = req.with_images(imgs);
         }
     }
 
@@ -340,6 +350,7 @@ pub async fn run_agent_turn(
     engine: Option<Arc<AgentRuntime>>,
     thread_id: &str,
     user_prompt: Option<&str>,
+    images: Option<Vec<String>>,
     provider_config: ProviderConfig,
     context_window: Option<u64>,
     max_retries: Option<usize>,
@@ -351,6 +362,7 @@ pub async fn run_agent_turn(
         engine,
         thread_id,
         user_prompt,
+        images,
         provider_config,
         context_window,
         max_retries,
@@ -516,6 +528,7 @@ mod tests {
             None,
             "t_no_engine",
             Some("你好"),
+            None,
             ProviderConfig {
                 id: "p".into(),
                 name: "p".into(),
@@ -580,6 +593,7 @@ mod tests {
             runtime,
             "t_switch",
             Some("你好"),
+            None,
             ProviderConfig {
                 id: "p".into(),
                 name: "p".into(),
@@ -605,6 +619,85 @@ mod tests {
         }
         assert!(kinds.iter().any(|k| k == "text.delta"), "脚本化模型的文本必须进入事件流：{kinds:?}");
         assert!(kinds.iter().any(|k| k == "turn.finished"), "收尾事件必须进入事件流：{kinds:?}");
+    }
+
+    /// **多模态端到端**：桥这一层收到的图片必须出现在**真正发给模型的那份 messages** 里。
+    ///
+    /// 这条链一共四段：`thread.send` → `spawn_thread_loop` → 本函数（`TurnRequest::with_images`）
+    /// → `format_messages_for_model`。**断任何一段的表现都一样**——界面卡片上有图、
+    /// 模型却看不见，而且不报错。这里从桥的出口钉死，另外三段各有自己的单测。
+    #[tokio::test]
+    async fn test_images_reach_the_model_request() {
+        use agent_base::model::{ProviderConfig, StreamDelta};
+        use agent_base::testing::{
+            FixedClock, FixedPrompt, InMemorySessionStore, MockScope, RecordingApprovalGate,
+            ScriptedModelClient,
+        };
+        use agent_runtime::ProductBuilder;
+
+        let model = Arc::new(ScriptedModelClient::new(vec![vec![
+            StreamDelta::Text { text: "看到了。".into() },
+            StreamDelta::Done { stop_reason: "stop".into() },
+        ]]));
+        let runtime = Arc::new(
+            ProductBuilder::new(switch_spec())
+                .with_tools(
+                    agent_toolkit::tools_for_toolkits(&["core".to_string()], std::path::Path::new("."))
+                        .expect("core 工具包可装配"),
+                )
+                .with_model(model.clone())
+                .with_approval(Arc::new(RecordingApprovalGate::new(true)))
+                .with_store(Arc::new(InMemorySessionStore::new()))
+                .with_prompt(Arc::new(FixedPrompt::new("测试人格")))
+                .with_scope(Arc::new(MockScope::new("s")))
+                .with_clock(Arc::new(FixedClock::new(1_700_000_000_000)))
+                .build()
+                .expect("装配真引擎"),
+        );
+
+        let (tx, _rx) = mpsc::channel::<AgentEvent>(64);
+        run_turn_with_engine(
+            runtime,
+            "t_images",
+            Some("看看这张图"),
+            Some(vec!["data:image/png;base64,AAA".into()]),
+            ProviderConfig {
+                id: "p".into(),
+                name: "p".into(),
+                protocol: Default::default(),
+                base_url: "http://localhost".into(),
+                api_key: "k".into(),
+                model: "m".into(),
+                max_output_tokens: None,
+                custom_headers: None,
+                proxy_url: None,
+            },
+            None,
+            Some(0),
+            tx,
+            None,
+        )
+        .await
+        .expect("带图片的轮次必须成功");
+
+        let requests = model.requests();
+        assert_eq!(requests.len(), 1, "这一轮只该调用一次模型");
+
+        let user = requests[0]
+            .messages
+            .iter()
+            .find(|m| m.role == "user")
+            .expect("必须有一条用户消息");
+        assert_eq!(user.content.as_deref(), Some("看看这张图"));
+        assert_eq!(
+            user.images.as_deref(),
+            Some(["data:image/png;base64,AAA".to_string()].as_slice()),
+            "图片必须出现在发给模型的消息上"
+        );
+
+        // 反向：图片只挂在**那条**用户消息上，不许顺着历史漏到别的消息
+        let carriers = requests[0].messages.iter().filter(|m| m.images.is_some()).count();
+        assert_eq!(carriers, 1, "只有那条用户消息该带图");
     }
 
     /// W3-T3 守门：投影表必须**覆盖全部 12 种领域事件**，且每种只出现一次。
@@ -790,6 +883,7 @@ mod tests {
                 runtime,
                 "t_gate",
                 Some("执行受约束的工具"),
+                None,
                 ProviderConfig {
                     id: "p".into(),
                     name: "p".into(),
