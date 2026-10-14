@@ -176,12 +176,44 @@ pub struct ChoiceOption {
     pub description: Option<String>,
 }
 
+/// 一次提问里的**单个问题**（`ask_user` 支持一次问多题）。
+///
+/// 与 [`AgentQuestion`] 是"一小一大"的关系：单选路径只有一个问题，就退化成
+/// `AgentQuestion` 自己的字段；多题路径把每一项放在 `AgentQuestion::questions` 里。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentQuestionItem {
+    /// 题号（如 `q1`）。答复按它对应回题目，缺省由工具补齐。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub question: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub choices: Option<Vec<ChoiceOption>>,
+    #[serde(
+        rename = "allowText",
+        alias = "allow_text",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub allow_text: Option<bool>,
+    #[serde(
+        default,
+        rename = "multiSelect",
+        alias = "multi_select",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub multi_select: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentQuestion {
     pub question: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub choices: Option<Vec<ChoiceOption>>,
-    #[serde(rename = "allowText", skip_serializing_if = "Option::is_none")]
+    /// 提问事件里发的是 `allow_text`（snake），线协议对外是 `allowText`——两种拼写都收。
+    #[serde(
+        rename = "allowText",
+        alias = "allow_text",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub allow_text: Option<bool>,
     /// 是否多选。提问事件里发的是 `multi_select`（与 `allow_text` 同风格），
     /// 这里两种拼写都收（`alias`），对外仍按驼峰序列化。
@@ -192,6 +224,12 @@ pub struct AgentQuestion {
         skip_serializing_if = "Option::is_none"
     )]
     pub multi_select: Option<bool>,
+    /// 一次问多题时的题目列表。单选路径为空（题目就在上面的 `question`/`choices` 里）。
+    ///
+    /// 顶层的 `question`/`choices`/`multi_select` 在多题时填**首题**，这样老的渲染路径
+    /// （不认识 `questions`）至少还能显示第一题，而不是一片空白。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub questions: Option<Vec<AgentQuestionItem>>,
     /// 状态与提问时刻由**持有方**（AgentStore）填，提问事件本身不带——
     /// 所以这里必须容忍缺省，否则 `pending_questions` 会因为反序列化失败而永远为空。
     #[serde(default)]

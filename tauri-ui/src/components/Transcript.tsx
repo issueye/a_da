@@ -46,6 +46,8 @@ import {
 } from 'lucide-react'
 import type { Item, ToolCallItem, QuestionData, AgentMode } from '../types'
 import { agentClient } from '../client/ws-client'
+import { normalizeQuestionData } from '../utils/question-data'
+import type { QuestionSubAnswerInput } from '../utils/question-data'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { AskUserPrompt } from './AskUserPrompt'
 import { TodoFloatingPanel } from './TodoFloatingPanel'
@@ -64,7 +66,13 @@ interface TranscriptProps {
   running: boolean
   activeWorkspace?: string
   currentMode?: AgentMode
-  onAnswerQuestion: (callId: string, choice?: string, text?: string, choices?: string[]) => void
+  onAnswerQuestion: (
+    callId: string,
+    choice?: string,
+    text?: string,
+    choices?: string[],
+    answers?: QuestionSubAnswerInput[]
+  ) => void
   onRetry?: () => void
   onSelectThread?: (threadId: string) => void
 }
@@ -425,7 +433,13 @@ const TranscriptItemRow: React.FC<{
   item: Item
   running: boolean
   threadId?: string
-  onAnswerQuestion: (callId: string, choice?: string, text?: string, choices?: string[]) => void
+  onAnswerQuestion: (
+    callId: string,
+    choice?: string,
+    text?: string,
+    choices?: string[],
+    answers?: QuestionSubAnswerInput[]
+  ) => void
   onRetry?: () => void
   onSelectThread?: (threadId: string) => void
 }> = ({ item, running, threadId, onAnswerQuestion, onRetry, onSelectThread }) => {
@@ -753,7 +767,13 @@ const LiveElapsed: React.FC<{ since?: number; className?: string }> = ({ since, 
  */
 const ToolCard: React.FC<{
   item: Item
-  onAnswerQuestion: (callId: string, choice?: string, text?: string, choices?: string[]) => void
+  onAnswerQuestion: (
+    callId: string,
+    choice?: string,
+    text?: string,
+    choices?: string[],
+    answers?: QuestionSubAnswerInput[]
+  ) => void
   onSelectThread?: (threadId: string) => void
   currentThreadId?: string
 }> = ({ item, onAnswerQuestion, onSelectThread, currentThreadId }) => {
@@ -943,21 +963,14 @@ const ToolCard: React.FC<{
   // 提取归一化问题对象
   const questionData = (() => {
     if (!isQuestionTool) return null
-    const qText = rawQuestion?.question || (typeof item.args === 'object' ? item.args?.question : '') || '请回复智能体的提问'
-    let options = Array.isArray(rawQuestion?.options) ? rawQuestion.options : []
-    if (options.length === 0 && Array.isArray(rawQuestion?.choices)) {
-      options = rawQuestion.choices.map((c: any) => ({
-        id: typeof c === 'string' ? undefined : c.id || c.value,
-        value: typeof c === 'string' ? c : c.id || c.value || c.label || String(c),
-        label: typeof c === 'string' ? c : c.label || c.title || String(c),
-        description: typeof c === 'string' ? undefined : c.description,
-      }))
-    }
-    return {
-      callId: rawQuestion?.callId || item.callId || item.id,
-      question: qText,
-      options,
-    }
+    // 台账里可能只有 args（提问事件还没到），拼一份最小形态给归一化器
+    const raw = rawQuestion || (typeof item.args === 'object' && item.args ? item.args : {})
+    const qText =
+      raw?.question || '请回复智能体的提问'
+    return normalizeQuestionData(
+      { ...raw, question: qText },
+      raw?.callId || item.callId || item.id
+    )
   })()
 
   const parsedTarget = toolTarget(toolName, item.args)
@@ -1106,7 +1119,9 @@ const ToolCard: React.FC<{
                 </div>
 
                 <div className="text-xs text-zinc-800 dark:text-zinc-200 font-medium leading-relaxed">
-                  {questionData.question}
+                  {(questionData.questions?.length ?? 1) > 1
+                    ? `一次问了 ${questionData.questions!.length} 个问题（逐题作答后一起提交）`
+                    : questionData.question}
                 </div>
 
                 {/* 作答条：单选点一下即答；多选（题目声明 multi_select 或用户自己切换）勾选后提交 */}
@@ -1651,15 +1666,25 @@ function CopyButton({ text, label = '复制' }: { text: string; label?: string }
 /** 提问卡片组件（QuestionCard） */
 const QuestionCardItem: React.FC<{
   question: QuestionData
-  onAnswer: (callId: string, choice?: string, text?: string, choices?: string[]) => void
+  onAnswer: (
+    callId: string,
+    choice?: string,
+    text?: string,
+    choices?: string[],
+    answers?: QuestionSubAnswerInput[]
+  ) => void
 }> = ({ question, onAnswer }) => {
+  // 走到这里的可能是线上原样数据（选择题键是 `choices`）——归一化后再渲染，
+  // 否则多题的选项会因为键名对不上而整片消失。
+  const q = normalizeQuestionData(question, question.callId)
+  const count = q.questions?.length ?? 1
   return (
     <div className="p-2.5 border border-blue-500/30 bg-blue-50/40 dark:bg-blue-950/20 rounded-xl space-y-2 text-xs w-full shadow-xs">
       <div className="font-semibold text-blue-900 dark:text-blue-200">
-        {question.question}
+        {count > 1 ? `一次问了 ${count} 个问题（逐题作答后一起提交）` : q.question}
       </div>
 
-      <AskUserPrompt question={question} onAnswer={onAnswer} />
+      <AskUserPrompt question={q} onAnswer={onAnswer} />
     </div>
   )
 }

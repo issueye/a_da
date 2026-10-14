@@ -9,6 +9,7 @@
 // （vt.state.snapshot 一帧实测 1.8 MB，300 条就是 ~540 MB 常驻）。
 const DEBUG_PAYLOAD_LIMIT = 4096
 
+import type { QuestionSubAnswerInput } from '../utils/question-data'
 import type {
   ClientSnapshot,
   AgentMode,
@@ -1280,9 +1281,16 @@ export class AgentWebSocketClient {
     return this.request('skill.setEnabled', { id, enabled })
   }
 
-  public answerQuestion(callId: string, choice?: string, text?: string, choices?: string[]) {
-    // 多选走 `choices: [...]`；单选仍走 `choice`（后端两条路都收）
-    return this.request('question.answer', { callId, choice, text, choices })
+  public answerQuestion(
+    callId: string,
+    choice?: string,
+    text?: string,
+    choices?: string[],
+    answers?: QuestionSubAnswerInput[]
+  ) {
+    // 多选走 `choices: [...]`；单选仍走 `choice`；**一次问多题**走 `answers: [{id, choice, choices, text}]`
+    // （后端三条路都收）
+    return this.request('question.answer', { callId, choice, text, choices, answers })
   }
 
   /// 批准/拒绝的**四段耗时**诊断（只写日志，不改行为）。

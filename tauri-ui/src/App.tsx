@@ -17,6 +17,7 @@ import { ToastHost, notify } from './components/ToastHost'
 import { ConfirmModal } from './components/ConfirmModal'
 import { ProcessModal } from './components/ProcessModal'
 import { deriveActiveChangeCount } from './utils/derive-changes'
+import type { QuestionSubAnswerInput } from './utils/question-data'
 
 export function App() {
   const [snapshot, setSnapshot] = useState<ClientSnapshot>(agentClient.snapshot)
@@ -285,9 +286,10 @@ export function App() {
     callId: string,
     choice?: string,
     text?: string,
-    choices?: string[]
+    choices?: string[],
+    answers?: QuestionSubAnswerInput[]
   ) => {
-    agentClient.answerQuestion(callId, choice, text, choices)
+    agentClient.answerQuestion(callId, choice, text, choices, answers)
   }
 
   const handleDecideApproval = (toolItemId: string, approved: boolean) => {

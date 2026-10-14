@@ -2753,6 +2753,7 @@ impl Dispatcher {
                                 choices: None,
                                 text: None,
                                 answered_by: "user".to_string(),
+                                answers: None,
                             },
                         );
                     } else {
@@ -2806,6 +2807,16 @@ impl Dispatcher {
                     })
                     .filter(|list| !list.is_empty());
                 let text = params.get("text").and_then(|v| v.as_str()).map(|s| s.to_string());
+                // 多题：`answers: [{id?, choice?, choices?, text?}]`（单题路径留空）
+                let answers: Option<Vec<agent_toolkit::core::ask_user::QuestionSubAnswer>> = params
+                    .get("answers")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|a| serde_json::from_value(a.clone()).ok())
+                            .collect::<Vec<_>>()
+                    })
+                    .filter(|list: &Vec<_>| !list.is_empty());
 
                 let mut store = self.store.write().await;
                 store.pending_questions.retain(|q| q.call_id != call_id);
@@ -2822,6 +2833,7 @@ impl Dispatcher {
                         choices,
                         text,
                         answered_by: "user".to_string(),
+                        answers,
                     },
                 );
 

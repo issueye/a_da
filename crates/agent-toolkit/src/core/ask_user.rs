@@ -9,6 +9,20 @@ use agent_base::ports::{BoxFuture, Tool, ToolContext};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+/// 单题的答复（多题路径按 `id` 对应回题目）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuestionSubAnswer {
+    /// 题号（与提问里的题号对应）。缺省时按**顺序**对应题目。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choices: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuestionAnswerPayload {
     pub choice: Option<String>,
@@ -17,6 +31,126 @@ pub struct QuestionAnswerPayload {
     pub choices: Option<Vec<String>>,
     pub text: Option<String>,
     pub answered_by: String,
+    /// 一次问多题时的**逐题答复**。单题路径留空，仍走上面的 `choice`/`choices`/`text`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answers: Option<Vec<QuestionSubAnswer>>,
+}
+
+/// 一次提问里准备就绪的**一道题**（参数校验 + 选项 id 补齐之后）。
+struct PreparedQuestion {
+    /// 题号（`q1`、`q2`…；`questions[i].id` 给了就用给的）
+    id: String,
+    question: String,
+    /// 已补齐 `c1, c2…` 的选项数组
+    choices: serde_json::Value,
+    allow_text: bool,
+    multi_select: bool,
+}
+
+/// 一次提问最多几道题。再多就不是"同批确认"，而是把问卷丢给用户。
+const MAX_QUESTIONS: usize = 10;
+/// 单题文本上限（与单题路径保持一致）。
+const MAX_QUESTION_CHARS: usize = 600;
+
+/// 把 `ask_user` 的参数规整成题目列表：单题简写（顶层 `question`/`choices`）与
+/// 多题（`questions: [...]`）两种写法都收，后者优先。
+fn prepare_questions(args: &serde_json::Value) -> Result<Vec<PreparedQuestion>, String> {
+    let raw_list: Vec<serde_json::Value> =
+        match args.get("questions").and_then(|v| v.as_array()) {
+            Some(arr) if !arr.is_empty() => arr.clone(),
+            // 单题简写：整份参数就是那一题（`question`/`choices`/… 都在顶层）
+            _ => vec![args.clone()],
+        };
+
+    if raw_list.len() > MAX_QUESTIONS {
+        return Err(format!(
+            "一次最多问 {MAX_QUESTIONS} 个问题（收到 {} 个）。请挑最要紧的先问。",
+            raw_list.len()
+        ));
+    }
+
+    let mut out = Vec::with_capacity(raw_list.len());
+    for (idx, raw) in raw_list.iter().enumerate() {
+        let text = raw
+            .get("question")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let ordinal = idx + 1;
+
+        if text.is_empty() {
+            return Err(if raw_list.len() > 1 {
+                format!(
+                    "第 {ordinal} 个问题缺少 question 文本（`questions` 里每一项都要有 `question`）"
+                )
+            } else {
+                "缺少 question 参数：要问用户什么？".to_string()
+            });
+        }
+        if text.chars().count() > MAX_QUESTION_CHARS {
+            return Err(format!(
+                "第 {ordinal} 个问题太长（上限 {MAX_QUESTION_CHARS} 字）。请把背景压缩成几句后再问。"
+            ));
+        }
+
+        let id = raw
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("q{ordinal}"));
+
+        out.push(PreparedQuestion {
+            id,
+            question: text.to_string(),
+            choices: normalize_choices(raw.get("choices").cloned().unwrap_or(json!([]))),
+            allow_text: raw.get("allow_text").and_then(|v| v.as_bool()).unwrap_or(true),
+            multi_select: raw
+                .get("multi_select")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        });
+    }
+
+    Ok(out)
+}
+
+/// 把**一道题**的答复渲染成一句话。
+///
+/// 单选/多选/纯文本三条路都要能落到同一句里：模型该看到"选择 [方案 A, 方案 C]"，
+/// 而不是一串它自己编的 id（它得靠这个继续推理）。
+fn render_answer(
+    choices: &serde_json::Value,
+    choice: Option<&str>,
+    chosen: Option<&[String]>,
+    text: Option<&str>,
+) -> String {
+    let label_of = |id: &str| -> String {
+        choices
+            .as_array()
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(id))
+            })
+            .and_then(|c| c.get("label").and_then(|v| v.as_str()))
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| id.to_string())
+    };
+
+    let picked: Option<String> = match chosen {
+        Some(list) if !list.is_empty() => {
+            Some(list.iter().map(|id| label_of(id)).collect::<Vec<_>>().join("、"))
+        }
+        _ => choice.map(|c| label_of(c)),
+    };
+
+    match (picked, text) {
+        (Some(c), Some(t)) => format!("选择 [{c}]，说明：{t}"),
+        (Some(c), None) => format!("选择 [{c}]"),
+        (None, Some(t)) => t.to_string(),
+        (None, None) => "未作答".to_string(),
+    }
 }
 
 pub type QuestionWaiterFuture = Pin<Box<dyn Future<Output = Result<QuestionAnswerPayload, String>> + Send>>;
@@ -108,27 +242,11 @@ impl Tool for AskUserTool {
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
 
-            // 1. 参数校验与对齐
-            let question = call
-                .args
-                .get("question")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
-
-            if question.is_empty() {
-                let finished_at = started_at;
-                return ToolReceipt::error("缺少 question 参数：要问用户什么？", started_at, finished_at);
-            }
-
-            if question.chars().count() > 600 {
-                let finished_at = started_at;
-                return ToolReceipt::error(
-                    "问题太长（上限 600 字）。请把背景压缩成几句后再问。",
-                    started_at,
-                    finished_at,
-                );
-            }
+            // 1. 参数校验与对齐：单题简写（顶层 question/choices）与多题（questions[]）都收
+            let questions = match prepare_questions(&call.args) {
+                Ok(list) => list,
+                Err(msg) => return ToolReceipt::error(msg, started_at, started_at),
+            };
 
             // 2. 取消检查
             if ctx.cancel.is_cancelled() {
@@ -155,17 +273,29 @@ impl Tool for AskUserTool {
             let waiter = reg(&call.id);
 
             // 发射提问事件（通知界面/上层协调者）
-            let choices = normalize_choices(call.args.get("choices").cloned().unwrap_or(json!([])));
-            let allow_text = call
-                .args
-                .get("allow_text")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            let multi_select = call
-                .args
-                .get("multi_select")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            //
+            // 顶层 `question`/`choices`/`multi_select` 在多题时填**首题**：老的渲染路径
+            // 不认识 `questions`，至少还能显示第一题，而不是一片空白。
+            let top = &questions[0];
+            let mut question_payload = json!({
+                "question": top.question,
+                "choices": top.choices,
+                "allow_text": top.allow_text,
+                "multi_select": top.multi_select,
+            });
+            // `questions` 只在**真的多题**时带上：单题的线上格式与以前逐字节一致，零回归。
+            if questions.len() > 1 {
+                question_payload["questions"] = json!(questions
+                    .iter()
+                    .map(|q| json!({
+                        "id": q.id,
+                        "question": q.question,
+                        "choices": q.choices,
+                        "allow_text": q.allow_text,
+                        "multi_select": q.multi_select,
+                    }))
+                    .collect::<Vec<_>>());
+            }
 
             ctx.events.emit(AgentEvent::new(
                 0,
@@ -173,12 +303,7 @@ impl Tool for AskUserTool {
                 ctx.thread_id,
                 AgentEventBody::QuestionAsked {
                     call_id: call.id.clone(),
-                    question: json!({
-                        "question": question,
-                        "choices": choices,
-                        "allow_text": allow_text,
-                        "multi_select": multi_select,
-                    }),
+                    question: question_payload,
                 },
             ));
 
@@ -218,38 +343,53 @@ impl Tool for AskUserTool {
                             finished_at,
                         );
                     }
-                    // 选项 id 还原成 label：模型该看到"选择 [方案 A, 方案 C]"，
-                    // 而不是一串它自己编的 id（它得靠这个继续推理）
-                    let label_of = |id: &str| -> String {
-                        choices
-                            .as_array()
-                            .and_then(|arr| {
-                                arr.iter().find(|c| {
-                                    c.get("id").and_then(|v| v.as_str()) == Some(id)
-                                })
-                            })
-                            .and_then(|c| c.get("label").and_then(|v| v.as_str()))
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| id.to_string())
-                    };
-                    let picked: Option<String> = match ans.choices.clone() {
-                        Some(list) if !list.is_empty() => Some(
-                            list.iter()
-                                .map(|id| label_of(id))
-                                .collect::<Vec<_>>()
-                                .join("、"),
-                        ),
-                        _ => ans.choice.clone().map(|c| label_of(&c)),
-                    };
-                    let summary = match (picked, ans.text) {
-                        (Some(c), Some(t)) => {
-                            format!("答复已记录（来源: {}）：选择 [{c}]，说明：{t}", ans.answered_by)
+                    // 多题（`answers` 有内容）→ 逐题一行；否则走单题的老路径。
+                    // 单题那段的措辞保持不变：它是既有测试与给人看的稳定输出。
+                    let body = match ans.answers.as_deref().filter(|list| !list.is_empty()) {
+                        Some(list) => {
+                            let mut lines = Vec::with_capacity(questions.len());
+                            for (idx, q) in questions.iter().enumerate() {
+                                // 先按题号对，对不上就按**顺序**对（客户端可能没回题号）
+                                let hit = list
+                                    .iter()
+                                    .find(|a| a.id.as_deref() == Some(q.id.as_str()))
+                                    .or_else(|| list.get(idx));
+                                let rendered = match hit {
+                                    Some(a) => render_answer(
+                                        &q.choices,
+                                        a.choice.as_deref(),
+                                        a.choices.as_deref(),
+                                        a.text.as_deref(),
+                                    ),
+                                    None => "未作答".to_string(),
+                                };
+                                lines.push(format!("{}. {} → {}", idx + 1, q.question, rendered));
+                            }
+                            format!("\n{}", lines.join("\n"))
                         }
-                        (Some(c), None) => format!("答复已记录（来源: {}）：选择 [{c}]", ans.answered_by),
-                        (None, Some(t)) => format!("答复已记录（来源: {}）：{t}", ans.answered_by),
-                        (None, None) => format!("答复已记录（来源: {}）：已确认", ans.answered_by),
+                        None => {
+                            // 单题：选项 id 还原成 label，模型该看到"选择 [方案 A, 方案 C]"，
+                            // 而不是一串它自己编的 id（它得靠这个继续推理）
+                            let rendered = render_answer(
+                                &top.choices,
+                                ans.choice.as_deref(),
+                                ans.choices.as_deref(),
+                                ans.text.as_deref(),
+                            );
+                            // 老路径里"什么都没答"（如 approval 兜底按批准放行）历史上报"已确认"
+                            let rendered = if rendered == "未作答" {
+                                "已确认".to_string()
+                            } else {
+                                rendered
+                            };
+                            format!("：{rendered}")
+                        }
                     };
-                    ToolReceipt::success(summary, started_at, finished_at)
+                    ToolReceipt::success(
+                        format!("答复已记录（来源: {}）{body}", ans.answered_by),
+                        started_at,
+                        finished_at,
+                    )
                 }
                 Err(err) => ToolReceipt::error(format!("提问失败：{err}"), started_at, finished_at),
             }
@@ -290,7 +430,97 @@ mod tests {
         assert!(props.get("choices").is_some());
         assert!(props.get("allow_text").is_some());
         assert!(props.get("multi_select").is_some(), "多选必须能在 schema 里声明");
-        assert_eq!(schema["required"], json!(["question"]));
+        assert!(props.get("questions").is_some(), "多题数组必须能在 schema 里声明");
+        // 单题（question）与多题（questions）两种写法都要被认可，但至少得给一个
+        assert_eq!(
+            schema["anyOf"],
+            json!([{ "required": ["question"] }, { "required": ["questions"] }])
+        );
+    }
+
+    /// 守门：`ask_user` 一次问多题——逐题作答必须**逐题带回**，一题都不许丢。
+    #[tokio::test]
+    async fn test_ask_user_multi_questions_returns_every_answer() {
+        let tool = AskUserTool::new();
+        let scope = DummyScope;
+        let cancel = ManualCancel::new();
+        let events = RecordingSink::new();
+        let ctx = ToolContext {
+            scope: &scope,
+            cancel: &cancel,
+            events: &events,
+            thread_id: "t_multi_q",
+        };
+
+        set_question_registrar(Arc::new(|_call_id: &str| {
+            Box::pin(async {
+                Ok(QuestionAnswerPayload {
+                    choice: None,
+                    choices: None,
+                    text: None,
+                    answered_by: "user".into(),
+                    answers: Some(vec![
+                        // 第一题按题号回，第二题只按顺序回
+                        QuestionSubAnswer {
+                            id: Some("q1".into()),
+                            choice: Some("c2".into()),
+                            choices: None,
+                            text: None,
+                        },
+                        QuestionSubAnswer {
+                            id: None,
+                            choice: None,
+                            choices: None,
+                            text: Some("先按现有方案走".into()),
+                        },
+                    ]),
+                })
+            })
+        }));
+
+        let call = ToolCall {
+            id: "call_multi_q".to_string(),
+            name: "ask_user".to_string(),
+            args: json!({
+                "questions": [
+                    {
+                        "id": "q1",
+                        "question": "发布节奏怎么定？",
+                        "choices": [
+                            {"id": "c1", "label": "每周一发"},
+                            {"id": "c2", "label": "双周发"}
+                        ]
+                    },
+                    { "question": "还有什么补充？" }
+                ]
+            }),
+        };
+
+        let receipt = tool.execute(&call, &ctx).await;
+        assert_eq!(receipt.status, ToolStatus::Success, "{}", receipt.output);
+        // 两题都要出现在回执里，且选项要还原成 label
+        assert!(receipt.output.contains("发布节奏怎么定？"), "{}", receipt.output);
+        assert!(receipt.output.contains("双周发"), "{}", receipt.output);
+        assert!(receipt.output.contains("还有什么补充？"), "{}", receipt.output);
+        assert!(receipt.output.contains("先按现有方案走"), "{}", receipt.output);
+        assert!(!receipt.output.contains("每周一发"), "没选的不得混进来：{}", receipt.output);
+
+        // 事件里必须带 `questions` 数组，且题号缺省时自动补 `q2`
+        let asked = events
+            .snapshot()
+            .into_iter()
+            .find_map(|e| match e.body {
+                AgentEventBody::QuestionAsked { question, .. } => Some(question),
+                _ => None,
+            })
+            .expect("必须发出 QuestionAsked");
+        let list = asked["questions"].as_array().expect("多题必须带 questions 数组");
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0]["id"], json!("q1"));
+        assert_eq!(list[1]["id"], json!("q2"), "缺省题号要自动补");
+        assert_eq!(list[0]["choices"][0]["id"], json!("c1"));
+
+        clear_question_registrar();
     }
 
     /// 守门：多选答复必须**把选中的多个选项都带回模型**，且用 label 而不是 id。
@@ -313,6 +543,7 @@ mod tests {
                     choice: None,
                     choices: Some(vec!["a1".into(), "a3".into()]),
                     text: Some("另外补一句".into()),
+                    answers: None,
                     answered_by: "user".into(),
                 })
             })
@@ -441,6 +672,7 @@ mod tests {
                     choice: Some("c2".into()),
                     choices: None,
                     text: None,
+                    answers: None,
                     answered_by: "user".into(),
                 })
             })
@@ -496,6 +728,7 @@ mod tests {
                     choice: Some("c1".into()),
                     choices: None,
                     text: Some("选用方案 A".into()),
+                    answers: None,
                     answered_by: "main_agent".into(),
                 })
             })

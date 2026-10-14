@@ -10,6 +10,9 @@ pub struct QuestionAnswer {
     pub choices: Option<Vec<String>>,
     pub text: Option<String>,
     pub answered_by: String, // "user" | "aborted"
+    /// 一次问多题时的**逐题答复**（单题路径留空）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answers: Option<Vec<agent_toolkit::core::ask_user::QuestionSubAnswer>>,
 }
 
 #[derive(Debug, Default)]
@@ -30,6 +33,7 @@ pub fn init_question_registrar() {
                     choices: ans.choices,
                     text: ans.text,
                     answered_by: ans.answered_by,
+                    answers: ans.answers,
                 }),
                 Err(_) => Err("提问通道已关闭或已被中止".to_string()),
             }
@@ -85,6 +89,7 @@ impl QuestionManager {
                 choices: None,
                 text: None,
                 answered_by: "aborted".to_string(),
+                answers: None,
             });
         }
     }
@@ -98,6 +103,7 @@ impl QuestionManager {
                 choices: None,
                 text: None,
                 answered_by: "aborted".to_string(),
+                answers: None,
             });
         }
     }
@@ -122,6 +128,7 @@ mod tests {
                 choices: None,
                 text: Some("使用方案 A".to_string()),
                 answered_by: "user".to_string(),
+                answers: None,
             },
         );
         assert!(resolved);

@@ -77,11 +77,25 @@ export interface QuestionOption {
   description?: string
 }
 
-export interface QuestionData {
-  callId: string
+/** 一次提问里的单个问题（`ask_user` 支持一次问多题）。 */
+export interface QuestionItemData {
+  /** 题号（如 `q1`）；答复按它对应回题目 */
+  id?: string
   question: string
   options?: QuestionOption[]
   isMultiSelect?: boolean
+  /** 是否允许文本补充（默认 true） */
+  allowText?: boolean
+}
+
+export interface QuestionData {
+  callId: string
+  /** 单题路径就是题目本身；多题路径填首题（兼容不认识 `questions` 的旧渲染） */
+  question: string
+  options?: QuestionOption[]
+  isMultiSelect?: boolean
+  /** 一次问多题时的题目列表（界面逐题作答、一次提交） */
+  questions?: QuestionItemData[]
 }
 
 export interface Item {

@@ -34,6 +34,8 @@ import type { AgentMode, ProviderConfig, ApprovalMode, Effort, Thread, Item, Que
 import { agentClient } from '../client/ws-client'
 import { formatDuration, formatTokenShort } from './Transcript'
 import { AskUserPrompt } from './AskUserPrompt'
+import type { QuestionSubAnswerInput } from '../utils/question-data'
+import { normalizeQuestionData } from '../utils/question-data'
 import { QueuedMessagesFloatingPanel } from './QueuedMessagesFloatingPanel'
 import { ApprovalFloatingPanel } from './ApprovalFloatingPanel'
 import { collectPendingApprovals } from '../utils/pending-approvals'
@@ -57,7 +59,13 @@ export interface ComposerProps {
   onSetApprovalMode?: (mode: ApprovalMode) => void
   onSetEffort?: (effort: Effort) => void
   onOpenSettings: () => void
-  onAnswerQuestion?: (callId: string, choice?: string, text?: string, choices?: string[]) => void
+  onAnswerQuestion?: (
+    callId: string,
+    choice?: string,
+    text?: string,
+    choices?: string[],
+    answers?: QuestionSubAnswerInput[]
+  ) => void
   /**
    * 批准 / 拒绝待批准的工具调用（`approval.decide`）。
    *
@@ -366,24 +374,8 @@ export const Composer: React.FC<ComposerProps> = ({
       const isAwaiting = it.status === 'awaiting' || it.state === 'awaiting' || it.tool === 'ask_user'
       const q = it.question || (it.details as any)?.question
       if (q && isAwaiting && it.status !== 'done' && it.status !== 'error') {
-        let options = Array.isArray(q.options) ? q.options : []
-        if (options.length === 0 && Array.isArray((q as any).choices)) {
-          options = (q as any).choices.map((c: any) => ({
-            id: typeof c === 'string' ? undefined : c.id || c.value,
-            value: typeof c === 'string' ? c : c.id || c.value || c.label || String(c),
-            label: typeof c === 'string' ? c : c.label || c.title || String(c),
-            description: typeof c === 'string' ? undefined : c.description,
-          }))
-        }
-        return {
-          ...q,
-          callId: q.callId || it.callId || it.id,
-          options,
-          // 多选标记：工具发的是 `multi_select`，线协议 DTO 叫 `isMultiSelect`
-          isMultiSelect: Boolean(
-            (q as any).isMultiSelect ?? (q as any).multiSelect ?? (q as any).multi_select
-          ),
-        }
+        // 单题/多题的归一化收敛在 `utils/question-data.ts`（对话流里的提问卡共用同一份）
+        return normalizeQuestionData(q, q.callId || it.callId || it.id)
       }
       // 如果遇到最新的用户消息则说明提问已翻篇
       if (it.kind === 'user') break
@@ -661,7 +653,9 @@ export const Composer: React.FC<ComposerProps> = ({
             </div>
           </div>
           <div className="text-xs text-zinc-800 dark:text-zinc-200 font-medium">
-            {pendingQuestion.question}
+            {(pendingQuestion.questions?.length ?? 1) > 1
+              ? `智能体一次问了 ${pendingQuestion.questions!.length} 个问题`
+              : pendingQuestion.question}
           </div>
           <AskUserPrompt
             question={pendingQuestion}

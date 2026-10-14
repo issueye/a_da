@@ -231,7 +231,7 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "properties": {
                         "question": {
                             "type": "string",
-                            "description": "向用户提出的主要问题文本"
+                            "description": "向用户提出的问题文本。**要一次问多个问题请改用 `questions`**（一次问完，用户逐题作答后一起提交）"
                         },
                         "choices": {
                             "type": "array",
@@ -253,9 +253,39 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                         "allow_text": {
                             "type": "boolean",
                             "description": "是否允许用户输入自定义文本（默认为 true）"
+                        },
+                        "questions": {
+                            "type": "array",
+                            "description": "一次向用户提出**多个**问题（最多 10 题）。给了它就忽略 question/choices/multi_select/allow_text：界面把每道题分别渲染出来，用户逐题作答后一次提交。适合'发布前一次确认几个约束'这类同批问题。",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": { "type": "string", "description": "题号（可选，如 q1、q2；不填自动生成）" },
+                                    "question": { "type": "string", "description": "该题的题目文本" },
+                                    "choices": {
+                                        "type": "array",
+                                        "description": "该题的选项列表（可选）",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "id": { "type": "string", "description": "选项唯一标识（可选，如 c1、c2）" },
+                                                "label": { "type": "string", "description": "显示给用户的选项文案" },
+                                                "description": { "type": "string", "description": "选项说明或辅助解释" }
+                                            },
+                                            "required": ["label"]
+                                        }
+                                    },
+                                    "multi_select": { "type": "boolean", "description": "该题是否多选（默认 false）" },
+                                    "allow_text": { "type": "boolean", "description": "该题是否允许文本补充（默认 true）" }
+                                },
+                                "required": ["question"]
+                            }
                         }
                     },
-                    "required": ["question"]
+                    "anyOf": [
+                        { "required": ["question"] },
+                        { "required": ["questions"] }
+                    ]
                 }),
                 access: Access::ReadOnly,
                 approval: ApprovalPolicy::Never,
