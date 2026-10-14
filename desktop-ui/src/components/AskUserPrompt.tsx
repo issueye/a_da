@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Check, ListChecks } from 'lucide-react'
+import { Check, ListChecks, Sparkles } from 'lucide-react'
 import type { QuestionData, QuestionItemData } from '../types'
 import type { QuestionSubAnswerInput } from '../utils/question-data'
 
@@ -16,12 +16,15 @@ export type AskUserAnswerFn = (
 /**
  * 提问作答条（ask_user）——**支持多选**，也支持**一次问多题**。
  *
- * 三处渲染（工具卡里的作答条、独立提问卡、输入框上方的浮动提问面板）共用这一份实现，
- * 免得"多选/多题"只在其中一处生效（问答交互各写一遍是历史上踩过的坑）。
+ * 这个组件是**操作面**，只由输入框上方的提问浮窗（`AskUserFloatingPanel`）使用。
+ * 对话流里的提问卡是**只读记录**（`AskUserQuestionRecord`），同审批的处理方式：
+ * 同一件事摆两套按钮，用户会怀疑"点哪个才算数"——按钮只在一处。
  *
  * 行为：
  * - **单题**：点一下即答（不牺牲一步操作）；题目声明或用户手动切多选时改为勾选后提交；
- * - **多题**：逐题作答（单选点一下换选项、多选勾选），底部**一次提交**，逐题答复一起回传；
+ * - **多题**：**一次只显示一题**，用「上一题 / 下一题」翻页，底部**一次提交**，
+ *   逐题答复一起回传。早先是把 N 道题纵向平铺——题目一多，面板就长到把输入框顶走，
+ *   还要滚动才看得到"提交"；一题一屏之后，占用高度与题数无关。
  * - **每个选项独占一行**（不做横向平铺）：说明里通常写着"代价/风险"，一行一条才读得清，
  *   平铺时说明一折行、旁边还挤着别的选项，反而看不出在选哪一条。
  */
@@ -30,19 +33,8 @@ export const AskUserPrompt: React.FC<{
   onAnswer: AskUserAnswerFn
   tone?: 'blue' | 'amber'
 }> = ({ question, onAnswer, tone = 'blue' }) => {
-  // 归一化之后 `questions` 恒非空；这里再兜一层，组件单独用时也能工作
-  const items: QuestionItemData[] =
-    Array.isArray(question.questions) && question.questions.length > 0
-      ? question.questions
-      : [
-          {
-            id: 'q1',
-            question: question.question,
-            options: question.options || [],
-            isMultiSelect: Boolean(question.isMultiSelect),
-            allowText: true,
-          },
-        ]
+  // 归一化之后 `questions` 恒非空；`questionItems` 再兜一层，组件单独用时也能工作
+  const items: QuestionItemData[] = questionItems(question)
   const multiQuestion = items.length > 1
 
   // ── 单题路径的状态（保持"点一下即答"的老交互）──
@@ -52,6 +44,8 @@ export const AskUserPrompt: React.FC<{
 
   // ── 多题路径的状态：每题一份草稿，最后一次性提交 ──
   const [draft, setDraft] = useState<Record<string, { selected: string[]; text: string }>>({})
+  // 多题时当前显示第几题（一题一屏，见下面的多题分支）
+  const [page, setPage] = useState(0)
   const draftOf = (id: string) => draft[id] || { selected: [], text: '' }
   const patchDraft = (id: string, patch: Partial<{ selected: string[]; text: string }>) =>
     setDraft((prev) => ({ ...prev, [id]: { ...(prev[id] || { selected: [], text: '' }), ...patch } }))
@@ -179,55 +173,115 @@ export const AskUserPrompt: React.FC<{
     </button>
   )
 
-  // ── 多题：逐题作答、一次提交 ──
+  // ── 多题：一题一屏，靠「上一题 / 下一题」切换 ──
   if (multiQuestion) {
+    // 题目集合可能在作答过程中被新快照替换，页号一律夹到合法区间（不做 effect，免得闪一帧空白）
+    const pageIdx = Math.min(Math.max(page, 0), items.length - 1)
+    const cur = items[pageIdx]
+    const curKey = cur.id || `q${pageIdx + 1}`
+    const curAns = draftOf(curKey)
+    const isCurMulti = Boolean(cur.isMultiSelect)
+    const isLast = pageIdx >= items.length - 1
+    const goto = (next: number) => setPage(Math.min(Math.max(next, 0), items.length - 1))
+
+    /** 单选：点一下选定；**后面还有题就顺手翻过去**（可随时「上一题」回来改）。
+     *  多选：只勾选、不翻页——多选的意图本来就是"这一题可能选好几个"。 */
+    const chooseOption = (opt: any) => {
+      const next = toggleIn(curAns.selected, opt.value, isCurMulti)
+      patchDraft(curKey, { selected: next })
+      if (!isCurMulti && next.length > 0 && !isLast) goto(pageIdx + 1)
+    }
+
+    const navBtn =
+      'px-2 py-0.5 rounded-lg border text-[11px] font-medium transition-colors shadow-xs disabled:opacity-40 disabled:cursor-not-allowed'
+    const navIdle =
+      'bg-white dark:bg-black/30 border-zinc-300/80 dark:border-zinc-700/60 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800/60'
+
     return (
-      <div className="space-y-3">
-        {items.map((it, idx) => {
-          const key = it.id || `q${idx + 1}`
-          const a = draftOf(key)
-          const isMulti = Boolean(it.isMultiSelect)
-          return (
-            <div key={key} className="space-y-1.5">
-              <div className="flex items-start space-x-1.5">
-                {it.id && (
-                  <span className="mt-[1px] shrink-0 font-mono text-[10px] leading-none px-1 py-0.5 rounded bg-black/10 dark:bg-white/15 opacity-80">
-                    {it.id}
-                  </span>
-                )}
-                <span className="text-xs font-medium text-zinc-800 dark:text-zinc-200 leading-snug">
-                  {idx + 1}. {it.question}
-                </span>
-              </div>
+      <div className="space-y-2">
+        {/* 题号导航：左右翻页 + "第 N/M 题"；每题答没答由提交按钮上的「已答」如实给出 */}
+        <div className="flex items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={() => goto(pageIdx - 1)}
+            disabled={pageIdx === 0}
+            className={`${navBtn} ${navIdle}`}
+            title="上一题"
+          >
+            上一题
+          </button>
+          <span className="flex items-center space-x-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+            <span className="font-medium text-zinc-700 dark:text-zinc-200">
+              第 {pageIdx + 1}/{items.length} 题
+            </span>
+            {/* 已答圆点：一眼看出哪几题还没答，不用逐页翻过去找 */}
+            <span className="flex items-center space-x-0.5">
+              {items.map((it, i) => {
+                const a = draftOf(it.id || `q${i + 1}`)
+                const done = a.selected.length > 0 || Boolean(a.text.trim())
+                return (
+                  <button
+                    key={it.id || `q${i + 1}`}
+                    type="button"
+                    onClick={() => goto(i)}
+                    title={done ? `第 ${i + 1} 题（已答）` : `第 ${i + 1} 题（未答）`}
+                    className={`w-1.5 h-1.5 rounded-full transition-colors ${
+                      i === pageIdx
+                        ? 'bg-blue-600 dark:bg-blue-400'
+                        : done
+                          ? 'bg-emerald-500/80'
+                          : 'bg-zinc-300 dark:bg-zinc-600'
+                    }`}
+                  />
+                )
+              })}
+            </span>
+          </span>
+          <button
+            type="button"
+            onClick={() => goto(pageIdx + 1)}
+            disabled={isLast}
+            className={`${navBtn} ${navIdle}`}
+            title="下一题"
+          >
+            下一题
+          </button>
+        </div>
 
-              {(it.options || []).length > 0 && (
-                <div className="flex flex-col gap-1.5">
-                  {(it.options || []).map((opt: any) =>
-                    renderOption(
-                      opt,
-                      a.selected.includes(opt.value),
-                      () => patchDraft(key, { selected: toggleIn(a.selected, opt.value, isMulti) }),
-                      isMulti
-                    )
-                  )}
-                </div>
-              )}
+        {/* 当前这一题 */}
+        <div className="space-y-1.5">
+          <div className="flex items-start space-x-1.5">
+            {cur.id && (
+              <span className="mt-[1px] shrink-0 font-mono text-[10px] leading-none px-1 py-0.5 rounded bg-black/10 dark:bg-white/15 opacity-80">
+                {cur.id}
+              </span>
+            )}
+            <span className="text-xs font-medium text-zinc-800 dark:text-zinc-200 leading-snug">
+              {pageIdx + 1}. {cur.question}
+            </span>
+          </div>
 
-              {it.allowText !== false && (
-                <input
-                  type="text"
-                  value={a.text}
-                  onChange={(e) => patchDraft(key, { text: e.target.value })}
-                  placeholder={isMulti ? '该题补充说明（可与勾选项一起提交）...' : '该题的自定义答复或说明...'}
-                  className={inputClass}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') submitMulti()
-                  }}
-                />
+          {(cur.options || []).length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              {(cur.options || []).map((opt: any) =>
+                renderOption(opt, curAns.selected.includes(opt.value), () => chooseOption(opt), isCurMulti)
               )}
             </div>
-          )
-        })}
+          )}
+
+          {cur.allowText !== false && (
+            <input
+              type="text"
+              value={curAns.text}
+              onChange={(e) => patchDraft(curKey, { text: e.target.value })}
+              placeholder={isCurMulti ? '该题补充说明（可与勾选项一起提交）...' : '该题的自定义答复或说明...'}
+              className={inputClass}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') submitMulti()
+              }}
+            />
+          )}
+        </div>
 
         <div className="flex items-center space-x-1.5">
           <button
@@ -323,6 +377,90 @@ export const AskUserPrompt: React.FC<{
           跳过
         </button>
       </div>
+    </div>
+  )
+}
+
+/** 把一条提问摊成题目列表（归一化之后 `questions` 恒非空，这里再兜一层）。 */
+function questionItems(question: QuestionData): QuestionItemData[] {
+  return Array.isArray(question.questions) && question.questions.length > 0
+    ? question.questions
+    : [
+        {
+          id: 'q1',
+          question: question.question,
+          options: question.options || [],
+          isMultiSelect: Boolean(question.isMultiSelect),
+        },
+      ]
+}
+
+/**
+ * 提问卡的**只读记录**（对话流里用）。
+ *
+ * 操作面是输入框上方的提问浮窗（`AskUserFloatingPanel`）——同审批：按钮只在一处，
+ * 免得用户怀疑"点哪个才算数"。这里只把"问了什么、有哪些选项"如实留档：
+ * 只留一句"智能体向你提问"，等于把这次交互从历史里抹掉。
+ */
+export const AskUserQuestionRecord: React.FC<{
+  question: QuestionData
+  /** 顶部/底部的一句状态说明，如"等待答复中 · 请在输入框上方的提问浮窗作答" */
+  hint?: string
+  /** 容器外观由调用方给（工具卡内嵌 / 独立卡片两种壳不一样） */
+  className?: string
+}> = ({ question, hint, className }) => {
+  const items = questionItems(question)
+  return (
+    <div className={`space-y-1.5 text-xs ${className || ''}`}>
+      <div className="flex items-center space-x-1.5 font-medium text-blue-900 dark:text-blue-200">
+        <Sparkles size={13} className="text-blue-600 dark:text-blue-400" />
+        <span>
+          {items.length > 1 ? `智能体一次问了 ${items.length} 个问题` : '智能体向你提问'}
+        </span>
+      </div>
+
+      <ol className="space-y-1.5 m-0 p-0 list-none">
+        {items.map((it, idx) => (
+          <li key={it.id || `q${idx + 1}`} className="space-y-0.5">
+            <div className="flex items-start space-x-1.5">
+              {it.id && (
+                <span className="mt-[1px] shrink-0 font-mono text-[10px] leading-none px-1 py-0.5 rounded bg-black/10 dark:bg-white/15 opacity-80">
+                  {it.id}
+                </span>
+              )}
+              <span className="text-zinc-800 dark:text-zinc-200 leading-snug">
+                {idx + 1}. {it.question}
+              </span>
+            </div>
+            {(it.options || []).length > 0 && (
+              <ul className="ml-4 space-y-0.5 m-0 p-0 list-none">
+                {(it.options || []).map((opt) => (
+                  <li
+                    key={opt.value}
+                    className="flex items-start space-x-1.5 text-[11px] text-blue-900/85 dark:text-blue-200/75"
+                  >
+                    {opt.id && (
+                      <span className="shrink-0 font-mono text-[10px] leading-none px-1 py-0.5 rounded bg-black/5 dark:bg-white/10 opacity-80">
+                        {opt.id}
+                      </span>
+                    )}
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="break-words">{opt.label}</span>
+                      {opt.description && (
+                        <span className="text-[10px] leading-snug opacity-70 break-words">
+                          {opt.description}
+                        </span>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </li>
+        ))}
+      </ol>
+
+      {hint && <div className="text-[10.5px] text-blue-700/80 dark:text-blue-300/80">{hint}</div>}
     </div>
   )
 }

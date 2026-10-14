@@ -47,9 +47,8 @@ import {
 import type { Item, ToolCallItem, QuestionData, AgentMode } from '../types'
 import { agentClient } from '../client/ws-client'
 import { normalizeQuestionData } from '../utils/question-data'
-import type { QuestionSubAnswerInput } from '../utils/question-data'
 import { MarkdownRenderer } from './MarkdownRenderer'
-import { AskUserPrompt } from './AskUserPrompt'
+import { AskUserQuestionRecord } from './AskUserPrompt'
 import { TodoFloatingPanel } from './TodoFloatingPanel'
 import { TOOL_LABEL } from '../utils/tool-labels'
 import { approvalPreviewOf } from '../utils/pending-approvals'
@@ -66,13 +65,6 @@ interface TranscriptProps {
   running: boolean
   activeWorkspace?: string
   currentMode?: AgentMode
-  onAnswerQuestion: (
-    callId: string,
-    choice?: string,
-    text?: string,
-    choices?: string[],
-    answers?: QuestionSubAnswerInput[]
-  ) => void
   onRetry?: () => void
   onSelectThread?: (threadId: string) => void
 }
@@ -201,7 +193,6 @@ export const Transcript: React.FC<TranscriptProps> = ({
   running,
   activeWorkspace,
   currentMode = 'code',
-  onAnswerQuestion,
   onRetry,
   onSelectThread,
 }) => {
@@ -396,7 +387,6 @@ export const Transcript: React.FC<TranscriptProps> = ({
             item={item}
             running={running}
             threadId={threadId}
-            onAnswerQuestion={onAnswerQuestion}
             onRetry={onRetry}
             onSelectThread={onSelectThread}
           />
@@ -433,16 +423,9 @@ const TranscriptItemRow: React.FC<{
   item: Item
   running: boolean
   threadId?: string
-  onAnswerQuestion: (
-    callId: string,
-    choice?: string,
-    text?: string,
-    choices?: string[],
-    answers?: QuestionSubAnswerInput[]
-  ) => void
   onRetry?: () => void
   onSelectThread?: (threadId: string) => void
-}> = ({ item, running, threadId, onAnswerQuestion, onRetry, onSelectThread }) => {
+}> = ({ item, running, threadId, onRetry, onSelectThread }) => {
   // 1. 思考过程块
   if (item.kind === 'thinking') {
     return <ThinkingRow item={item} />
@@ -453,7 +436,6 @@ const TranscriptItemRow: React.FC<{
     return (
       <ToolCard
         item={item}
-        onAnswerQuestion={onAnswerQuestion}
         onSelectThread={onSelectThread}
         currentThreadId={threadId}
       />
@@ -464,7 +446,7 @@ const TranscriptItemRow: React.FC<{
   if (item.kind === 'question' && item.question) {
     return (
       <div className="w-full pl-2 pr-2 my-2">
-        <QuestionCardItem question={item.question} onAnswer={onAnswerQuestion} />
+        <QuestionCardItem question={item.question} />
       </div>
     )
   }
@@ -767,16 +749,9 @@ const LiveElapsed: React.FC<{ since?: number; className?: string }> = ({ since, 
  */
 const ToolCard: React.FC<{
   item: Item
-  onAnswerQuestion: (
-    callId: string,
-    choice?: string,
-    text?: string,
-    choices?: string[],
-    answers?: QuestionSubAnswerInput[]
-  ) => void
   onSelectThread?: (threadId: string) => void
   currentThreadId?: string
-}> = ({ item, onAnswerQuestion, onSelectThread, currentThreadId }) => {
+}> = ({ item, onSelectThread, currentThreadId }) => {
   const toolName = item.tool || item.name || 'tool'
   // 默认**收缩**：子智能体卡片内容很长（任务书 + 步骤 + 汇报），展开交给用户点。
   // 注意等待答复的工具（ask_user / 待批准）由下面的 `(open || isAwaiting)` 自动展开，
@@ -1105,28 +1080,15 @@ const ToolCard: React.FC<{
       {(open || isAwaiting) && (
         <div className="ml-2 pl-2.5 border-l border-zinc-200/80 dark:border-zinc-800/80 my-0.5">
           <div className="bg-zinc-50/60 dark:bg-[#18191c]/60 border border-zinc-200/50 dark:border-zinc-800/40 rounded-lg overflow-hidden shadow-none text-xs">
-            {/* 1. 提问作答交互条（ask_user 处于 awaiting 时展示） */}
+            {/* 1. 提问卡：**操作面已上移到输入框上方的提问浮窗**，这里只留对话流里的记录
+                   （问了什么、有哪些选项）。同审批：同一件事摆两套按钮，
+                   用户会怀疑"点哪个才算数"——所以按钮只在一处。 */}
             {isAwaiting && isQuestionTool && questionData && (
-              <div className="p-3 bg-blue-50/70 dark:bg-blue-950/25 border-b border-blue-200/60 dark:border-blue-900/40 space-y-2 text-xs">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-1.5 font-medium text-blue-900 dark:text-blue-200">
-                    <Sparkles size={13} className="text-blue-600 dark:text-blue-400" />
-                    <span>智能体向你提问</span>
-                  </div>
-                  <span className="text-[10px] text-blue-600/80 dark:text-blue-400/80 bg-blue-100/70 dark:bg-blue-900/40 px-1.5 py-0.2 rounded">
-                    等待答复后继续
-                  </span>
-                </div>
-
-                <div className="text-xs text-zinc-800 dark:text-zinc-200 font-medium leading-relaxed">
-                  {(questionData.questions?.length ?? 1) > 1
-                    ? `一次问了 ${questionData.questions!.length} 个问题（逐题作答后一起提交）`
-                    : questionData.question}
-                </div>
-
-                {/* 作答条：单选点一下即答；多选（题目声明 multi_select 或用户自己切换）勾选后提交 */}
-                <AskUserPrompt question={questionData} onAnswer={onAnswerQuestion} />
-              </div>
+              <AskUserQuestionRecord
+                question={questionData}
+                className="p-2.5 bg-blue-50/70 dark:bg-blue-950/25 border-b border-blue-200/60 dark:border-blue-900/40"
+                hint="等待答复中 —— 请在输入框上方的提问浮窗作答"
+              />
             )}
 
             {/* 2. 写工作区审批：**操作面已上移到输入框上方的浮动审批窗口**，
@@ -1663,29 +1625,21 @@ function CopyButton({ text, label = '复制' }: { text: string; label?: string }
   )
 }
 
-/** 提问卡片组件（QuestionCard） */
-const QuestionCardItem: React.FC<{
-  question: QuestionData
-  onAnswer: (
-    callId: string,
-    choice?: string,
-    text?: string,
-    choices?: string[],
-    answers?: QuestionSubAnswerInput[]
-  ) => void
-}> = ({ question, onAnswer }) => {
-  // 走到这里的可能是线上原样数据（选择题键是 `choices`）——归一化后再渲染，
-  // 否则多题的选项会因为键名对不上而整片消失。
+/** 提问卡片（对话流里的**只读记录**）。
+ *
+ * 作答在输入框上方的提问浮窗（`AskUserFloatingPanel`）里进行——这里只把
+ * "问了什么、有哪些选项"留档，不再摆第二套按钮。
+ * 走到这里的可能是线上原样数据（选择题键是 `choices`）——归一化后再渲染，
+ * 否则多题的选项会因为键名对不上而整片消失。
+ */
+const QuestionCardItem: React.FC<{ question: QuestionData }> = ({ question }) => {
   const q = normalizeQuestionData(question, question.callId)
-  const count = q.questions?.length ?? 1
   return (
-    <div className="p-2.5 border border-blue-500/30 bg-blue-50/40 dark:bg-blue-950/20 rounded-xl space-y-2 text-xs w-full shadow-xs">
-      <div className="font-semibold text-blue-900 dark:text-blue-200">
-        {count > 1 ? `一次问了 ${count} 个问题（逐题作答后一起提交）` : q.question}
-      </div>
-
-      <AskUserPrompt question={q} onAnswer={onAnswer} />
-    </div>
+    <AskUserQuestionRecord
+      question={q}
+      className="p-2.5 border border-blue-500/30 bg-blue-50/40 dark:bg-blue-950/20 rounded-xl w-full shadow-xs"
+      hint="在输入框上方的提问浮窗作答"
+    />
   )
 }
 

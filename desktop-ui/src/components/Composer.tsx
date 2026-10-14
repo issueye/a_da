@@ -33,7 +33,7 @@ import {
 import type { AgentMode, ProviderConfig, ApprovalMode, Effort, Thread, Item, QuestionData, QueuedItem } from '../types'
 import { agentClient } from '../client/ws-client'
 import { formatDuration, formatTokenShort } from './Transcript'
-import { AskUserPrompt } from './AskUserPrompt'
+import { AskUserFloatingPanel } from './AskUserFloatingPanel'
 import type { QuestionSubAnswerInput } from '../utils/question-data'
 import { normalizeQuestionData } from '../utils/question-data'
 import { QueuedMessagesFloatingPanel } from './QueuedMessagesFloatingPanel'
@@ -640,30 +640,9 @@ export const Composer: React.FC<ComposerProps> = ({
         </div>
       )}
 
-      {/* 1. 待回答提问浮动置顶面板（对齐原版 PendingQuestionsFloatingPanel） */}
-      {pendingQuestion && onAnswerQuestion && (
-        <div className="p-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-600/40 rounded-xl shadow-lg flex flex-col space-y-1.5 animate-in fade-in slide-in-from-bottom-2 duration-150">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-2">
-              <Sparkles size={13} className="text-amber-600 dark:text-amber-400" />
-              <span className="text-xs font-semibold text-amber-900 dark:text-amber-200">智能体提问</span>
-              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-medium bg-amber-200/80 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300">
-                待你回答后继续执行
-              </span>
-            </div>
-          </div>
-          <div className="text-xs text-zinc-800 dark:text-zinc-200 font-medium">
-            {(pendingQuestion.questions?.length ?? 1) > 1
-              ? `智能体一次问了 ${pendingQuestion.questions!.length} 个问题`
-              : pendingQuestion.question}
-          </div>
-          <AskUserPrompt
-            question={pendingQuestion}
-            onAnswer={onAnswerQuestion}
-            tone="amber"
-          />
-        </div>
-      )}
+      {/* 1. 待回答提问：**浮动**在输入框上方（覆盖层，不占布局空间）——与审批浮窗同形态。
+              早先这块是流里的面板，一出现就把输入框顶下去；多题还纵向平铺、能长到半屏。 */}
+      <AskUserFloatingPanel question={pendingQuestion} onAnswer={onAnswerQuestion} />
 
       {/* 2. 待发送图片预览条 */}
       {images.length > 0 && (

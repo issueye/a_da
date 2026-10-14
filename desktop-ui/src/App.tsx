@@ -581,7 +581,6 @@ export function App() {
                 running={Boolean(activeThread?.id && (snapshot.runningThreadIds || []).includes(activeThread.id))}
                 activeWorkspace={activeThread.workspace || snapshot.activeWorkspace}
                 currentMode={snapshot.currentMode}
-                onAnswerQuestion={handleAnswerQuestion}
                 onRetry={() => handleRetry(activeThread.id)}
                 onSelectThread={handleSelectThread}
               />
