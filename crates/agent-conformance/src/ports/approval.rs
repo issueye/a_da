@@ -81,11 +81,13 @@ mod tests {
     /// `agent-conformance` 不依赖 `agent-core`（依赖图如此，不该反向加边）。
     /// 所以这里用"真实策略 + 最小 gate 壳"来覆盖契约本身，
     /// `HostApprovalGate` 的行为（超时/中止/User/Policy 四种来源）在 `agent-core` 单测里断言。
-    struct PolicyBackedProbeGate;
+    /// 真实策略驱动的探针闸门。档位做成参数，因为"危险命令要不要二次确认"的答案
+    /// **取决于档位**：正是这一点在本契约里被断言（Auto 是 YOLO，Ask/Readonly 才拦）。
+    struct PolicyBackedProbeGate(agent_proto::ApprovalMode);
 
     impl ApprovalGate for PolicyBackedProbeGate {
-        fn direction(&self) -> FailDirection {
-            FailDirection::Closed
+        fn direction(&self) -> agent_base::domain::FailDirection {
+            agent_base::domain::FailDirection::Closed
         }
 
         fn needs_approval<'a>(
@@ -103,7 +105,7 @@ mod tests {
                         patterns.iter().any(|p| s.contains(p))
                     }
                     ApprovalPolicy::Named(_) => agent_adapter::approval::should_ask_approval(
-                        agent_proto::ApprovalMode::Auto,
+                        self.0,
                         tool,
                         args,
                         &agent_adapter::approval::ApprovalGuardConfig::default(),
@@ -125,17 +127,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_real_policy_backed_gate_conformance() {
-        verify_approval_gate_contract(&PolicyBackedProbeGate)
+        verify_approval_gate_contract(&PolicyBackedProbeGate(agent_proto::ApprovalMode::Auto))
             .await
             .expect("真实策略驱动的 gate 必须通过契约");
     }
 
-    /// 真实策略在端口契约之外还必须"答得对"：Auto 档位下普通写工具不该被一律要求审批
-    /// （这正是 W1-T6 修掉的 `ApprovalPolicy::Named(_) => true`）。
+    /// 真实策略在端口契约之外还必须"答得对"：
+    /// - 档位说了算——`Auto`（自动批准）是 YOLO，连危险命令也不再询问；
+    /// - 危险命中判定本身没被删，只是不再压过 Auto（`Ask` 档仍然拦）。
     #[tokio::test]
-    async fn test_real_policy_named_is_not_always_ask() {
-        let gate = PolicyBackedProbeGate;
-        let benign = gate
+    async fn test_real_policy_named_follows_the_mode() {
+        let auto = PolicyBackedProbeGate(agent_proto::ApprovalMode::Auto);
+        let benign = auto
             .needs_approval(
                 "write_file",
                 &ApprovalPolicy::Named("approval-guard"),
@@ -147,13 +150,29 @@ mod tests {
             "Auto 档位下 Named 策略不得一律要求审批（名字不等于永远要问）"
         );
 
-        let dangerous = gate
+        let dangerous_in_auto = auto
             .needs_approval(
                 "run_command",
                 &ApprovalPolicy::Named("approval-guard"),
                 &serde_json::json!({ "command": "rm -rf /" }),
             )
             .await;
-        assert!(dangerous, "危险命令必须二次确认");
+        assert!(
+            !dangerous_in_auto,
+            "自动批准档位 = YOLO：危险命令也不该弹出审批"
+        );
+
+        let ask = PolicyBackedProbeGate(agent_proto::ApprovalMode::Ask);
+        let dangerous_in_ask = ask
+            .needs_approval(
+                "run_command",
+                &ApprovalPolicy::Named("approval-guard"),
+                &serde_json::json!({ "command": "rm -rf /" }),
+            )
+            .await;
+        assert!(
+            dangerous_in_ask,
+            "每次询问档位下危险命令必须二次确认（危险命中判定仍在）"
+        );
     }
 }

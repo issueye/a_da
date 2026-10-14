@@ -214,18 +214,28 @@ mod tests {
                 .await,
             "Auto 档位下普通写工具不该被 Named 策略一律要求审批"
         );
-        // Auto 档位 + 危险命令 → 仍要问（规则 1 优先于档位）
+        // Auto 档位 + 危险命令 → 也不问了（Auto 是 YOLO 档，规则 0 短路一切）
         assert!(
-            gate.needs_approval(
+            !gate.needs_approval(
                 "run_command",
                 &ApprovalPolicy::Named("approval-guard"),
                 &json!({"command": "rm -rf /"})
             )
             .await,
-            "危险命令必须二次确认，即使开了自动批准"
+            "自动批准档位下不该再有任何审批弹窗，危险命令也不例外"
         );
-        // Ask 档位 → 一律要问
+        // …但换成「每次询问」档，危险命令必须拦下（危险命中判定本身没被删）
         let (ask_gate, _) = gate_with_mode(ApprovalMode::Ask);
+        assert!(
+            ask_gate
+                .needs_approval(
+                    "run_command",
+                    &ApprovalPolicy::Named("approval-guard"),
+                    &json!({"command": "rm -rf /"})
+                )
+                .await,
+            "每次询问档位下危险命令必须二次确认"
+        );
         assert!(
             ask_gate
                 .needs_approval("read_file", &ApprovalPolicy::Named("approval-guard"), &json!({}))

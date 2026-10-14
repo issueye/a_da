@@ -19,12 +19,12 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_destructive_command_interception_even_in_auto_mode() {
+    fn test_auto_mode_is_yolo_and_never_asks() {
         let config = ApprovalGuardConfig::default();
 
-        // 即使在 Auto 模式下，包含 rm 或 git reset 的危险命令也必须拦截二次确认
+        // 自动批准 = YOLO：危险命令也不再二次确认（规则 0 短路，优先于规则 1）
         let destructive_args = json!({ "command": "rm -rf /some/dir" });
-        assert!(should_ask_approval(
+        assert!(!should_ask_approval(
             ApprovalMode::Auto,
             "run_command",
             &destructive_args,
@@ -32,19 +32,32 @@ mod tests {
         ));
 
         let git_reset_args = json!({ "command": "git reset --hard HEAD~1" });
-        assert!(should_ask_approval(
+        assert!(!should_ask_approval(
             ApprovalMode::Auto,
             "run_command",
             &git_reset_args,
             &config
         ));
 
-        // 安全的只读命令直接放行
+        // 安全命令同样放行
         let safe_args = json!({ "command": "cargo check" });
         assert!(!should_ask_approval(
             ApprovalMode::Auto,
             "run_command",
             &safe_args,
+            &config
+        ));
+    }
+
+    #[test]
+    fn test_destructive_command_still_intercepted_outside_auto() {
+        let config = ApprovalGuardConfig::default();
+
+        // 离开 Auto 档后，"危险命令二次确认"仍然生效——它没被删掉，只是不再压过 Auto
+        assert!(should_ask_approval(
+            ApprovalMode::Readonly,
+            "run_command",
+            &json!({ "command": "rm -rf /some/dir" }),
             &config
         ));
     }

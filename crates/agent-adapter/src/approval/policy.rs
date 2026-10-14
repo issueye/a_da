@@ -134,14 +134,27 @@ pub fn is_destructive_command(cmd: &str, confirm_list: &[String]) -> bool {
 }
 
 /// 审批策略决策判定核心（严格对齐 TS 端 approval-guard 规范）。
+///
+/// **档位优先级最高**：`Auto`（自动批准）是 YOLO 档——无条件放行，连危险命令的二次确认
+/// 也一并免掉。这与界面文案一致（"读写文件和执行命令都不再询问"），也是用户显式选择
+/// 这一档的语义。需要危险命令二次确认的场景请用 `Ask` / `Readonly`。
 pub fn should_ask_approval(
     mode: ApprovalMode,
     tool_name: &str,
     args: &Value,
     config: &ApprovalGuardConfig,
 ) -> bool {
+    // 规则 0：`Auto` = YOLO，**先短路**。
+    //
+    // 必须放在规则 1 之前：规则 1（危险命令二次确认）原本是唯一能拦下自动批准的例外，
+    // 而用户选了自动批准就是不要任何弹窗——它不能再绕过档位。
+    if mode == ApprovalMode::Auto {
+        return false;
+    }
+
     // 规则 1：高危需二次确认。
-    // 命令类工具（由 ToolDescriptor 或自定义配置驱动）命中危险模式时，即使用户开了自动批准也必须强制问用户。
+    // 命令类工具（由 ToolDescriptor 或自定义配置驱动）命中危险模式时强制问用户。
+    // 走到这里档位只可能是 `Ask` / `Readonly`（`Auto` 已在规则 0 短路）。
     if is_command_tool(tool_name, config) {
         if let Some(cmd) = extract_command(args) {
             if is_destructive_command(&cmd, &config.confirm_commands) {
@@ -164,6 +177,7 @@ pub fn should_ask_approval(
     // 规则 4：通用档位判断。
     match mode {
         ApprovalMode::Ask => true,
+        // 规则 0 已短路，这里只为 match 穷尽；语义上"自动批准不询问"
         ApprovalMode::Auto => false,
         ApprovalMode::Readonly => agent_toolkit::is_write_tool(tool_name),
     }
@@ -189,18 +203,29 @@ mod tests {
     }
 
     #[test]
-    fn test_auto_mode_still_asks_for_destructive_command() {
-        // 规则 1 优先于档位：自动批准也要为 `rm ` 二次确认
-        assert!(should_ask_approval(
+    fn test_auto_mode_is_yolo_and_never_asks() {
+        // 规则 0：自动批准 = YOLO，连危险命令也不再二次确认
+        assert!(!should_ask_approval(
             ApprovalMode::Auto,
             "run_command",
             &json!({ "command": "rm -rf /tmp/x" }),
             &config()
         ));
-        assert!(should_ask_approval(
+        assert!(!should_ask_approval(
             ApprovalMode::Auto,
             "run_command",
             &json!({ "cmd": "git push --force" }),
+            &config()
+        ));
+    }
+
+    #[test]
+    fn test_destructive_command_still_asks_outside_auto() {
+        // 离开 Auto 档之后，"危险命令二次确认"依然生效（规则 0 只放行 Auto）
+        assert!(should_ask_approval(
+            ApprovalMode::Readonly,
+            "run_command",
+            &json!({ "command": "rm -rf /tmp/x" }),
             &config()
         ));
     }
