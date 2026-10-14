@@ -5,8 +5,9 @@
  * 用户既看不到"正在等批准"，也不知道"到底在批准哪条命令"——实测一条 `cargo test`
  * 的审批就这样静默等到超时被自动拒绝。
  *
- * 现在审批**以浮动窗口的形式贴在下方的输入框正上方**（挂进 Composer 的列，
+ * 现在审批**以浮动窗口的形式覆盖在对话内容之上**（绝对定位挂在 Composer 的容器里，
  * 输入框区域不随对话流滚动，因此始终可见）：
+ * - 它是**覆盖层，不占布局空间**：出现/消失都不会把输入框或对话内容顶来顶去；
  * - 点名工具 + 等待时长，开门见山说明"这次调用会修改工作区"；
  * - 摆出待批准内容的原文（危险命令 / 目标路径 / 参数），**看不到内容就不该点批准**；
  * - 批准 / 拒绝按钮就在这里，不需要先去对话流里找那张卡。
@@ -97,12 +98,15 @@ export const ApprovalFloatingPanel: React.FC<ApprovalFloatingPanelProps> = ({
     }, 8000)
   }
 
+  // 绝对定位：贴在所在容器**之上**覆盖对话内容，且**不占布局空间**。
+  // `bottom-full` 把整个面板抬到容器顶边以上；左右各留 3 与下方输入框对齐。
+  // 所在的 Composer 容器是 `relative`，所以这里是相对它定位。
   return (
     <div
       data-testid="approval-floating-panel"
       role="alertdialog"
       aria-label={`审批请求：${approvals.length} 项等待批准`}
-      className={`w-full mb-1.5 rounded-xl border border-amber-300/90 dark:border-amber-600/50 bg-white/95 dark:bg-[#1f1a14]/95 shadow-xl backdrop-blur-md overflow-hidden select-none animate-in fade-in slide-in-from-bottom-2 duration-150 ${
+      className={`absolute bottom-full inset-x-3 mb-2 z-40 rounded-xl border border-amber-300/90 dark:border-amber-600/50 bg-white/95 dark:bg-[#1f1a14]/95 shadow-xl backdrop-blur-md overflow-hidden select-none animate-in fade-in slide-in-from-bottom-2 duration-150 ${
         className || ''
       }`}
     >
