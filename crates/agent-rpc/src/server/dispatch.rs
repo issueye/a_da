@@ -126,36 +126,22 @@ fn save_app_config(store: &AgentStore) -> Result<(), String> {
     Ok(())
 }
 
-/// 把一次「模型请求失败」如实写进会话文件。
+/// 把一次「模型请求失败」作为 **notice 记录**写进会话文件。
 ///
-/// 🔴 **必须落盘**：这条错误若只活在内存里，1.5 秒后 `sync_threads_from_disk` 会发现
-/// 磁盘版本与内存不同（磁盘上没有这次失败），于是把整份 `items` 覆盖回去——
-/// 界面上的错误卡片「闪一下就没了」，用户只看到自己的提问孤零零挂在那儿。
-/// 落盘走的是与引擎写"部分正文"同一条 jsonl 实现（`SessionManager::append_message`），
-/// 所以刷新/重启后这条失败记录还在。
-fn persist_failure_message(
+/// 🔴 **必须落盘**：这条提示若只活在内存里，1.5 秒后 `sync_threads_from_disk` 会发现
+/// 磁盘版本与内存不同（磁盘上没有它），于是把整份 `items` 覆盖回去——
+/// 界面上的提示卡片「闪一下就没了」，用户只看到自己的提问孤零零挂在那儿。
+///
+/// 与旧版 `persist_failure_message` 的差别：旧版写的是 `AgentMessage::Assistant`
+/// （带 `error_message`），于是这条**报错**既进了助手正文、又进了模型上下文；
+/// 现在写 `SessionEntry::Notice`，`fold_messages` 会跳过它——只给人看。
+fn persist_failure_notice(
     session_mgr: &agent_node::session::SessionManager,
     thread_id: &str,
-    content: &str,
-    error: &str,
+    text: &str,
 ) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
-    let message = agent_base::domain::AgentMessage::Assistant {
-        content: content.to_string(),
-        thinking: None,
-        tool_calls: None,
-        stop_reason: Some("error".to_string()),
-        error_message: Some(error.to_string()),
-        timestamp: Some(now),
-        usage: None,
-        duration_ms: None,
-        turn_duration_ms: None,
-    };
-    if let Err(e) = session_mgr.append_message(thread_id, message, None) {
-        tracing::warn!("失败信息落盘失败（界面仍会显示，但下次同步就会丢）: {e}");
+    if let Err(e) = session_mgr.append_notice_entry(thread_id, text, "error", None) {
+        tracing::warn!("失败提示落盘失败（界面仍会显示，但下次同步就会丢）: {e}");
     }
 }
 
@@ -1003,23 +989,31 @@ impl Dispatcher {
                                     break;
                                 }
                                 AgentEventBody::Failed { message } => {
-                                    // 「已断开」这句由**宿主**写进会话正文，而不是只做界面提示：
+                                    // 失败信息走 **Notice 卡片**，绝不写进助手正文：
+                                    // ① 落进正文会把一段连贯回答从中间劈开（截图里的形态）；
+                                    // ② 正文会被回传给模型，等于让模型以为"我上一轮说过这句报错"。
+                                    // Notice 的落盘记录在 `fold_messages` 里被明确跳过，
+                                    // 所以它**只给人看**、永不进上下文。
+                                    //
+                                    // 「已断开」这句由**宿主**写，而不是只做界面提示：
                                     // 任何客户端（桌面 / Web / CLI）都该看到"这轮到此为止"，
                                     // 而不是各端各自猜。
-                                    let error_text = format!(
-                                        "\n\n**请求异常**：{message}\n\n\
-                                         > 重试已耗尽，本次对话已断开；排队中的指令仍保留。"
+                                    let notice_text = format!(
+                                        "请求异常：{message}\n\
+                                         重试已耗尽，本次对话已断开；排队中的指令仍保留。"
                                     );
-                                    store.append_assistant_delta(&target_tid_clone, &error_text);
-                                    store.push_log("error", format!("Agent 执行异常: {message}"), None);
-                                    drop(store);
-                                    // 落盘，否则 1.5s 后的磁盘同步会把这张错误卡片抹掉
-                                    persist_failure_message(
+                                    // 落盘**在改内存之前**（与重试清理同一顺序）：
+                                    // 后台每 1.5s 一次的 `sync_threads_from_disk` 要拿 store
+                                    // 写锁，所以还握着写锁时先把磁盘写好，就不存在
+                                    // "同步读到旧磁盘内容、把这张卡片抹掉"的窗口。
+                                    persist_failure_notice(
                                         &session_mgr_clone,
                                         &target_tid_clone,
-                                        &error_text,
-                                        &message,
+                                        &notice_text,
                                     );
+                                    store.add_notice(&target_tid_clone, &notice_text, "error");
+                                    store.push_log("error", format!("Agent 执行异常: {message}"), None);
+                                    drop(store);
                                     // 模型请求的重试次数已在适配器里用完（次数由设置项决定）
                                     // → 记下来，收尾时**断开本轮对话**而不是接着跑排队指令
                                     hard_failure = Some(message);
@@ -2586,22 +2580,14 @@ impl Dispatcher {
                     return Ok(serde_json::json!({ "accepted": false, "reason": "会话正在运行中" }));
                 }
 
-                // 清理上一次失败留下的「请求异常」报错文本或空的 Assistant 卡片
-                if let Some(t) = store.get_thread_mut(&target_tid) {
-                    if let Some(pos) = t.items.iter().rposition(|it| match it {
-                        Item::Assistant { text, .. } => text.contains("请求异常"),
-                        _ => false,
-                    }) {
-                        if let Item::Assistant { ref mut text, .. } = t.items[pos] {
-                            if let Some(idx) = text.find("\n\n**请求异常**") {
-                                text.truncate(idx);
-                            } else if text.contains("请求异常") {
-                                t.items.remove(pos);
-                            }
-                        }
-                    }
+                // 清掉上一次失败留下的提示卡片。磁盘与内存**一起清**，且磁盘在前：
+                // 后台每 1.5s 一次的 `sync_threads_from_disk` 要拿 store 写锁，所以
+                // 在写锁内先落盘、再改内存，就不存在"同步把卡片从磁盘读回来"的窗口。
+                // （旧实现在这里裁助手正文、且只动内存，所以那张卡片总是"删不掉"。）
+                if let Err(e) = self.session_mgr.clear_notice_entries(&target_tid) {
+                    tracing::warn!("重试时清理磁盘提示记录失败（卡片可能重新出现）: {e}");
                 }
-
+                store.clear_notices(&target_tid);
                 store.set_thread_running(&target_tid, true);
                 let provider_config = store.provider.clone();
                 drop(store);

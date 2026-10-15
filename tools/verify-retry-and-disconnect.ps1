@@ -172,6 +172,16 @@ Check (($retryLines -join "`n") -match [regex]::Escape($expectedRetry)) "设置�
 Check ($retryLines.Count -eq $Retries) "重试次数正好 $Retries 次（实际 $($retryLines.Count)）"
 Check ($allText -match "已重试 $Retries 次仍失败") '错误信息带上了「已重试 N 次仍失败」'
 Check ($allText -match '断开') '会话里明确写了「已断开」'
+# 报错必须落在 **Notice 卡片**上，而不是助手正文里——落进正文会劈开一段连贯回答，
+# 还会被当成"模型说过的话"回传给模型（详见 AGENTS.md 那条）。
+$noticeItems = @($thread.items | Where-Object { $_.kind -eq 'notice' })
+Check ($noticeItems.Count -ge 1) "报错落在 notice 卡片上（找到 $($noticeItems.Count) 张）"
+$noticeText = ($noticeItems | ForEach-Object { $_.text }) -join "`n"
+Check ($noticeText -match "已重试 $Retries 次仍失败") 'notice 卡片里带着「已重试 N 次仍失败」'
+$asstWithError = @($thread.items | Where-Object { $_.kind -eq 'assistant' -and $_.text -match '请求异常' })
+Check ($asstWithError.Count -eq 0) "报错**没有**混进助手正文（助手卡片命中 $($asstWithError.Count) 张）"
+$queueText = ($snap.queue | ForEach-Object { $_.text }) -join ','
+$running = $snap.runningThreadIds -contains $tid
 Check ($queueText -match 'second-queued-message') '重试耗尽后不再消费队列（第 2 条仍在队列里）'
 Check (-not $running) '会话已不在运行中（对话确实断开了）'
 Write-Host "--- 会话文本（截断） ---"

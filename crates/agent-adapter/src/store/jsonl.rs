@@ -137,6 +137,23 @@ pub fn new_message_entry(now_ms: i64, message: AgentMessage) -> SessionMessageEn
     }
 }
 
+/// 造一条 `notice` 条目（id 规则同 `new_message_entry`，只是前缀不同）。
+///
+/// `level` 取 `"info"` / `"warn"` / `"error"`。**Notice 不进模型上下文**
+/// （见 [`fold_messages`]），这正是它存在的理由：像"模型请求失败"这类**面向人的提示**
+/// 只该出现在界面上，绝不能混进助手正文被回传给模型——那会让模型以为
+/// "我上一轮说了这句话"，也会把一段连贯回答从中间劈开。
+pub fn new_notice_entry(now_ms: i64, text: impl Into<String>, level: impl Into<String>) -> SessionNoticeEntry {
+    let random_suffix = uuid::Uuid::new_v4().to_string();
+    SessionNoticeEntry {
+        entry_type: "notice".to_string(),
+        id: format!("notice_{}_{}", now_ms, &random_suffix[..6]),
+        timestamp: now_ms,
+        text: text.into(),
+        level: level.into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,5 +329,37 @@ mod tests {
         assert_eq!(e.id.len(), "msg_1234_".len() + 6, "随机后缀应为 6 位");
         assert_eq!(e.entry_type, "message");
         assert_eq!(e.timestamp, 1234);
+    }
+
+    /// `notice` 条目：落盘形状与 id 规则，以及**写进去也读不回模型上下文**。
+    ///
+    /// 这条断言守的是「报错只给人看」这条边界：一旦有人把 `Notice` 也折进 messages，
+    /// 界面上的错误提示就会被当成助手正文回传给模型。
+    #[test]
+    fn test_new_notice_entry_roundtrip_and_stays_out_of_context() {
+        let path = tmp_file("new_notice");
+        append_message(&path, &message_entry("m1", "正常提问")).expect("追加失败");
+        append_notice(
+            &path,
+            &new_notice_entry(7, "模型请求失败：HTTP 400", "error"),
+        )
+        .expect("追加失败");
+
+        let e = new_notice_entry(7, "x", "info");
+        assert!(e.id.starts_with("notice_7_"), "id 前缀与规则不符: {}", e.id);
+        assert_eq!(e.id.len(), "notice_7_".len() + 6, "随机后缀应为 6 位");
+        assert_eq!(e.entry_type, "notice");
+
+        let outcome = read_entries(&path).expect("读取失败");
+        assert_eq!(outcome.skipped_lines, 0, "notice 行必须写得回、读得回");
+        assert_eq!(outcome.entries.len(), 2);
+        let (_, messages) = fold_messages(&outcome.entries);
+        assert_eq!(messages.len(), 1, "只有那条 message 进上下文");
+        assert!(
+            matches!(&messages[0], AgentMessage::User { content, .. } if content == "正常提问"),
+            "notice 不得进入模型上下文"
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 }

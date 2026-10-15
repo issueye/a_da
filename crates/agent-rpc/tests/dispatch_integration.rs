@@ -1016,3 +1016,123 @@ async fn test_approval_request_reaches_store_and_decide_resumes_the_turn() {
 
     let _ = std::fs::remove_dir_all(&test_dir);
 }
+
+/// 「模型请求失败」的报错必须落在 **Notice 卡片**上，而不是助手正文里。
+///
+/// 为什么值得一条集成测试（而不是只测 jsonl 的 `fold_messages`）：
+/// 失败链路的三个环节分布在三个 crate——宿主拼文案并落盘（`agent-rpc`）、
+/// 会话文件读写（`agent-adapter`）、还原成 UI 卡片（`agent-node`）。
+/// 任何一环把 Notice 当成普通消息，"报错混进模型上下文"就会悄悄回来。
+///
+/// 这条测试同时钉住两件事：
+/// 1. 还原出的 items 里有 `Item::Notice`（界面有东西可渲染）；
+/// 2. 模型上下文（`load_session` 的 messages）里**没有**这条报错——
+///    否则模型会以为"我上一轮说过这句"，而一段连贯回答也会被从中间劈开。
+#[tokio::test]
+async fn test_failure_notice_stays_out_of_assistant_text_and_model_context() {
+    let test_dir = std::env::temp_dir().join(format!("a_da_test_notice_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&test_dir);
+    let session_mgr = SessionManager::new(Some(test_dir.clone()));
+    let ws = "E:/test-notice";
+    let tid = "thread_notice_1";
+    session_mgr
+        .create_session(tid, ws, Some("提示测试"), None, None)
+        .expect("建会话失败");
+
+    // 先有一条正常对话，模拟"回答说到一半失败了"（正是截图里的形态）
+    session_mgr
+        .append_message(
+            tid,
+            agent_base::domain::AgentMessage::User {
+                content: "帮我看下这个项目".to_string(),
+                images: None,
+                timestamp: Some(1),
+            },
+            Some(ws),
+        )
+        .expect("写用户消息失败");
+    session_mgr
+        .append_message(
+            tid,
+            agent_base::domain::AgentMessage::Assistant {
+                content: "我先看看目录结构。".to_string(),
+                thinking: None,
+                tool_calls: None,
+                stop_reason: Some("stop".to_string()),
+                error_message: None,
+                timestamp: Some(2),
+                usage: None,
+                duration_ms: None,
+                turn_duration_ms: None,
+            },
+            Some(ws),
+        )
+        .expect("写助手消息失败");
+
+    let err_text = "请求异常：OpenAI API 错误 (HTTP 400)（已重试 0 次仍失败）\n\
+                    重试已耗尽，本次对话已断开；排队中的指令仍保留。";
+    session_mgr
+        .append_notice_entry(tid, err_text, "error", Some(ws))
+        .expect("写 notice 失败");
+
+    // 1. 还原出的卡片流：助手正文干净 + 有一条 error 级 Notice
+    let threads = session_mgr.restore_all_threads();
+    let t = threads.iter().find(|t| t.id == tid).expect("应还原出会话");
+    assert!(
+        t.items.iter().any(|it| matches!(it, Item::Notice { level, text, .. }
+            if level == "error" && text.contains("已重试 0 次仍失败"))),
+        "报错应还原成一张 Notice 卡片；实际 items：{:?}",
+        t.items
+    );
+    assert!(
+        !t.items
+            .iter()
+            .any(|it| matches!(it, Item::Assistant { text, .. } if text.contains("请求异常"))),
+        "报错**不得**混进助手正文"
+    );
+
+    // 2. 模型上下文里没有它（这才是"只给人看"的硬证据）
+    let (_, messages) = session_mgr
+        .load_session(tid, Some(ws))
+        .expect("加载会话失败")
+        .expect("会话应存在");
+    let flat = format!("{messages:?}");
+    assert!(
+        !flat.contains("请求异常") && !flat.contains("重试已耗尽"),
+        "Notice 绝不该进入模型上下文；实际：{flat}"
+    );
+    assert_eq!(messages.len(), 2, "上下文只应有两轮正常对话");
+
+    // 3. 重试清理：内存卡片没了，磁盘记录也得没（否则同步会把卡片拽回来）
+    let mut store_items = t.items.clone();
+    store_items.retain(|it| !matches!(it, Item::Notice { .. }));
+    assert!(
+        !store_items.iter().any(|it| matches!(it, Item::Notice { .. })),
+        "清内存后不该还有 Notice"
+    );
+    let removed = session_mgr.clear_notice_entries(tid).expect("清理磁盘 notice 失败");
+    assert_eq!(removed, 1, "磁盘上应正好删掉 1 条 notice");
+    assert!(
+        session_mgr
+            .clear_notice_entries(tid)
+            .expect("再清一次不该报错")
+            == 0,
+        "没有 notice 时应如实返回 0"
+    );
+    // 清完之后：正常对话仍在，报错彻底消失
+    let threads_after = session_mgr.restore_all_threads();
+    let t_after = threads_after.iter().find(|t| t.id == tid).expect("会话应还在");
+    assert!(
+        !t_after.items.iter().any(|it| matches!(it, Item::Notice { .. })),
+        "磁盘清干净后不该再还原出 Notice"
+    );
+    assert!(
+        t_after
+            .items
+            .iter()
+            .any(|it| matches!(it, Item::Assistant { text, .. } if text.contains("我先看看"))),
+        "清理只该删 Notice，正常对话必须留着"
+    );
+
+    let _ = std::fs::remove_dir_all(&test_dir);
+}

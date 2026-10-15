@@ -281,6 +281,21 @@ impl SessionManager {
         None
     }
 
+    /// 解析"要写进哪个会话文件"：给了工作区就按其目录取，否则跨目录扫。
+    ///
+    /// `Ok(None)` = 这个会话还没有文件（调用方**安静跳过**，与既有 append 语义一致）。
+    fn resolve_write_path(&self, session_id: &str, workspace: Option<&str>) -> Result<Option<PathBuf>> {
+        if let Some(ws) = workspace {
+            let dir = self.workspace_dir(ws);
+            if !dir.exists() {
+                fs::create_dir_all(&dir)?;
+            }
+            Ok(Some(self.get_session_path(ws, session_id)))
+        } else {
+            Ok(self.find_session_path(session_id))
+        }
+    }
+
     /// 向会话以 Append-only 方式追加一条消息
     pub fn append_message(
         &self,
@@ -288,15 +303,7 @@ impl SessionManager {
         message: AgentMessage,
         workspace: Option<&str>,
     ) -> Result<()> {
-        let file_path = if let Some(ws) = workspace {
-            let dir = self.workspace_dir(ws);
-            if !dir.exists() {
-                fs::create_dir_all(&dir)?;
-            }
-            self.get_session_path(ws, session_id)
-        } else if let Some(path) = self.find_session_path(session_id) {
-            path
-        } else {
+        let Some(file_path) = self.resolve_write_path(session_id, workspace)? else {
             return Ok(());
         };
 
@@ -315,21 +322,74 @@ impl SessionManager {
         mut compact_entry: SessionCompactEntry,
         workspace: Option<&str>,
     ) -> Result<()> {
-        let file_path = if let Some(ws) = workspace {
-            let dir = self.workspace_dir(ws);
-            if !dir.exists() {
-                fs::create_dir_all(&dir)?;
-            }
-            self.get_session_path(ws, session_id)
-        } else if let Some(path) = self.find_session_path(session_id) {
-            path
-        } else {
+        let Some(file_path) = self.resolve_write_path(session_id, workspace)? else {
             return Ok(());
         };
 
         compact_entry.entry_type = "compact".to_string();
         agent_adapter::store::jsonl::append_compact(&file_path, &compact_entry)?;
         Ok(())
+    }
+
+    /// 向会话追加一条 `notice` 记录（**面向人的提示，不进模型上下文**）。
+    ///
+    /// 用途是"模型请求失败"这类只该显示给人看的信息：早先它被写进助手正文，
+    /// 于是既劈开了一段连贯回答，又会被当成模型自己说过的话回传给它。
+    pub fn append_notice_entry(
+        &self,
+        session_id: &str,
+        text: &str,
+        level: &str,
+        workspace: Option<&str>,
+    ) -> Result<()> {
+        let Some(file_path) = self.resolve_write_path(session_id, workspace)? else {
+            return Ok(());
+        };
+        let entry = agent_adapter::store::jsonl::new_notice_entry(now_ms(), text, level);
+        agent_adapter::store::jsonl::append_notice(&file_path, &entry)?;
+        Ok(())
+    }
+
+    /// 删除该会话**所有** `notice` 记录（整份重写，保留其余行原样）。
+    ///
+    /// 重试时要连磁盘一起清：只清内存的话，1.5s 后的磁盘同步会发现两边不一致、
+    /// 把整份 `items` 覆盖回去，界面上那张卡片"闪一下又回来"。
+    /// 返回删掉的条数（`0` = 本来就没有，调用方可据此跳过重写）。
+    pub fn clear_notice_entries(&self, session_id: &str) -> Result<usize> {
+        let Some(file_path) = self.find_session_path(session_id) else {
+            return Ok(0);
+        };
+        if !file_path.exists() {
+            return Ok(0);
+        }
+        let content = fs::read_to_string(&file_path)?;
+        let mut kept: Vec<&str> = Vec::new();
+        let mut removed = 0usize;
+        for line in content.split('\n') {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            // 用解析而不是子串匹配：`text` 里出现的 `"type":"notice"` 不该被误判
+            let is_notice = serde_json::from_str::<SessionEntry>(trimmed)
+                .map(|e| matches!(e, SessionEntry::Notice(_)))
+                .unwrap_or(false);
+            if is_notice {
+                removed += 1;
+            } else {
+                kept.push(line);
+            }
+        }
+        if removed == 0 {
+            return Ok(0);
+        }
+        let mut output = String::with_capacity(content.len());
+        for line in kept {
+            output.push_str(line);
+            output.push('\n');
+        }
+        fs::write(&file_path, output)?;
+        Ok(removed)
     }
 
     /// 更新会话标题
@@ -689,7 +749,16 @@ impl SessionManager {
             for (index, entry) in raw_entries.into_iter().enumerate() {
                 match entry {
                     SessionEntry::Header(_) => {}
-                    SessionEntry::Notice(_) => {}
+                    // 提示是**给人看的**：还原成一张卡片，但**不进 `messages`**
+                    // （上下文里绝不能出现它，否则界面上的报错会变成"模型说过的话"）。
+                    SessionEntry::Notice(n) => {
+                        items.push(Item::Notice {
+                            id: n.id.clone(),
+                            at: n.timestamp as u64,
+                            text: n.text.clone(),
+                            level: n.level.clone(),
+                        });
+                    }
                     SessionEntry::Compact(c) => {
                         let _pruned = std::mem::take(&mut items);
                         items.push(Item::Compact {

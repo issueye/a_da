@@ -862,6 +862,49 @@ impl AgentStore {
         self.refresh_waiting_state(thread_id);
     }
 
+    /// 追加一张**提示卡片**（`Item::Notice`）——面向人的信息，不进模型上下文。
+    ///
+    /// 与 `append_assistant_delta` 的关键差别：那条把文本并进助手正文（会被回传给模型、
+    /// 还会把一段连贯回答从中间劈开），这条是**独立的一等卡片**。
+    ///
+    /// 落盘由调用方负责（宿主拿到返回值后写 `SessionManager::append_notice_entry`），
+    /// 因为 store 不持有会话文件——它只是"给界面看的投影"。
+    pub fn add_notice(&mut self, thread_id: &str, text: &str, level: &str) {
+        let Some(t) = self.get_thread_mut(thread_id) else { return };
+        // 收尾流式态：提示一到，本轮就没有更多正文了
+        for item in t.items.iter_mut() {
+            if let Item::Assistant { streaming, .. } = item {
+                *streaming = None;
+            }
+        }
+        // 末尾的空助手卡片只是占位（模型还没吐字就失败了）→ 清掉，别留个空气泡在提示前面
+        if let Some(Item::Assistant { text: t_text, .. }) = t.items.last() {
+            if t_text.trim().is_empty() {
+                t.items.pop();
+            }
+        }
+        t.items.push(Item::Notice {
+            id: next_id("item_notice"),
+            at: now_millis(),
+            text: text.to_string(),
+            level: level.to_string(),
+        });
+    }
+
+    /// 移除该会话的所有提示卡片（重试时清掉上一次的报错）。
+    ///
+    /// 返回是否真的删掉了东西——调用方据此决定要不要同步清磁盘。
+    ///
+    /// 前身是 `THREAD_RETRY` 里那段"从助手正文里截掉 `**请求异常**`"的逻辑：
+    /// 提示落进正文之后只能靠字符串裁剪，一旦格式轻微变化（少个换行、多了空格）
+    /// 就截不干净，留下半截文本混在回答里。现在它是独立卡片，整条删即可。
+    pub fn clear_notices(&mut self, thread_id: &str) -> bool {
+        let Some(t) = self.get_thread_mut(thread_id) else { return false };
+        let before = t.items.len();
+        t.items.retain(|it| !matches!(it, Item::Notice { .. }));
+        before != t.items.len()
+    }
+
     /// 标记工具调用正在等待用户提问答复
     pub fn set_tool_awaiting_question(&mut self, thread_id: &str, call_id: &str, question_val: serde_json::Value) {
         if let Some(t) = self.get_thread_mut(thread_id) {

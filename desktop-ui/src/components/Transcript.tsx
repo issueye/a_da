@@ -456,8 +456,83 @@ const TranscriptItemRow: React.FC<{
     return <UserRow item={item} />
   }
 
-  // 5. 模型助手回复（对齐 AssistantRow：Markdown 渲染 + 请求异常警示与重试 + 底部遥测状态条）
+  // 5. 提示卡片（Notice）：面向人的独立提示，**不在助手正文里**
+  //    ——模型请求失败这类信息走这里，所以它不会劈开一段连贯回答，
+  //    也不会被当成"模型说过的话"回传给模型。
+  if (item.kind === 'notice') {
+    return <NoticeRow item={item} running={running} threadId={threadId} onRetry={onRetry} />
+  }
+
+  // 6. 模型助手回复（对齐 AssistantRow：Markdown 渲染 + 请求异常警示与重试 + 底部遥测状态条）
   return <AssistantRow item={item} running={running} threadId={threadId} onRetry={onRetry} />
+}
+
+/**
+ * 提示卡片（NoticeRow）
+ *
+ * 承载"模型请求失败 / 对话已断开"这类**只给人看**的信息。它是一等卡片，
+ * 与助手回复并列，而不是拼进正文——这是 `Item::Notice` 存在的理由
+ * （落盘侧 `fold_messages` 会跳过它，故永不进入模型上下文）。
+ *
+ * `error` 级提示保留「请求重试」按钮：这个入口原先长在助手错误卡上，
+ * 报错改走 Notice 之后必须跟着搬过来，否则用户就只剩"手打一遍"这一条路了。
+ */
+const NoticeRow: React.FC<{
+  item: Item
+  running: boolean
+  threadId?: string
+  onRetry?: () => void
+}> = ({ item, running, threadId, onRetry }) => {
+  const level = item.level || 'info'
+  const isError = level === 'error'
+
+  const handleRetry = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (onRetry) {
+      onRetry()
+    } else {
+      agentClient.retry(threadId)
+    }
+  }
+
+  // 提示文本约定是「首行=结论，其余行=补充说明」（见宿主 dispatch 的拼装处）。
+  const lines = (item.text || '').split('\n').filter((l) => l.trim())
+  const headline = lines[0] || ''
+  const detail = lines.slice(1).join('\n')
+
+  const palette = isError
+    ? 'bg-red-50/80 dark:bg-red-950/25 border-red-200/80 dark:border-red-900/50 text-red-700 dark:text-red-300'
+    : level === 'warn'
+      ? 'bg-amber-50/80 dark:bg-amber-950/25 border-amber-200/80 dark:border-amber-900/50 text-amber-700 dark:text-amber-300'
+      : 'bg-blue-50/80 dark:bg-blue-950/25 border-blue-200/80 dark:border-blue-900/50 text-blue-700 dark:text-blue-300'
+
+  return (
+    <div className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3 rounded-xl border text-xs my-1.5 shadow-2xs ${palette}`}>
+      <div className="flex items-start space-x-2 min-w-0 flex-1">
+        <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <span className="font-semibold mr-1.5">请求异常:</span>
+          <span className="font-mono text-[11.5px] break-all leading-relaxed">{headline}</span>
+          {detail && (
+            <div className="mt-1.5 font-sans text-[11px] opacity-90 whitespace-pre-wrap">{detail}</div>
+          )}
+        </div>
+      </div>
+
+      {isError && (
+        <button
+          type="button"
+          onClick={handleRetry}
+          disabled={running}
+          className="flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-lg text-xs font-medium transition-all shadow-xs shrink-0 cursor-pointer active:scale-95 self-start sm:self-center"
+          title="重新发起此模型请求"
+        >
+          <RotateCw size={12} className={running ? 'animate-spin' : ''} />
+          <span>请求重试</span>
+        </button>
+      )}
+    </div>
+  )
 }
 
 /**
@@ -1471,7 +1546,11 @@ const AssistantRow: React.FC<{
   const isStreaming = Boolean(item.streaming) && running
   const durationText = formatDuration(item.turnDurationMs || item.durationMs)
 
-  // 识别并分离请求异常内容（如 "**请求异常**：发起模型请求失败: ..." 或 "请求异常: ..." 或 item.error）
+  // 从助手正文里分离出「请求异常」——**只为读老会话**。
+  //
+  // 新产生的失败信息已经改走 `Item::Notice`（见 NoticeRow），不再落进正文。
+  // 但 2026-10 之前写下的会话文件里，那段 `**请求异常**…` 确实存在于助手文本中，
+  // 删掉这段解析会让历史会话的回答里裸露出一串 JSON 报错。
   const { normalText, errorDetail } = React.useMemo(() => {
     if (item.error) {
       return { normalText: text, errorDetail: item.error }

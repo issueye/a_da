@@ -101,8 +101,14 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
   `config.setRetryCount`（`spec/proto/ada-coding.ext.json` 也要登记）↔ 每轮
   `TurnRequest::with_max_retries` → `ModelChatOptions.max_retries` → 适配器指数退避
   （429 认 `Retry-After`，上限 30s）。**重试耗尽即断开本轮对话**：不再消费排队指令，
-  失败文本由 `persist_failure_message` **落盘**——只放内存里会被 1.5s 后的
-  `sync_threads_from_disk` 整份覆盖，界面上的错误卡片会"闪一下就没"。
+  失败文本走 **`Item::Notice` 卡片**（`persist_failure_notice` 落盘）——只放内存里会被 1.5s 后的
+  `sync_threads_from_disk` 整份覆盖，界面上的提示卡片会"闪一下就没"。
+  🔴 **报错绝不写进助手正文**：早先它是 `append_assistant_delta` 拼进回答里的，
+  于是既把一段连贯回答从中间劈开，又会被当成"模型说过的话"回传给它。
+  Notice 的落盘记录在 `fold_messages` 里被明确跳过，所以它**只给人看、永不进模型上下文**；
+  重试时的清理必须**磁盘与内存一起清**（`clear_notice_entries` + `clear_notices`），
+  只清内存会被磁盘同步把卡片拽回来。界面侧由 `NoticeRow` 渲染（`Transcript.tsx`），
+  「请求重试」按钮随之从助手错误卡搬到了这里——那是重试的唯一入口，别只删不搬。
   实机回归：`pwsh -NoProfile -File tools/verify-retry-and-disconnect.ps1`
   （起真产品、走真 JSON-RPC、改用户配置前先备份后还原）。
 - **图片输入（多模态）这条链也要一起改才生效**：`thread.send` / `thread.editAndResend` 的
