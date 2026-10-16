@@ -378,6 +378,68 @@ impl AgentRuntime {
         // 1. 发送 TurnStarted
         self.emit(sink, &thread_id, &trace, AgentEventBody::TurnStarted);
 
+        match self
+            .run_before_hook(
+                points::BEFORE_AGENT_START,
+                None,
+                serde_json::json!({
+                    "threadId": thread_id,
+                    "hasUserPrompt": req.user_prompt.as_ref().is_some_and(|p| !p.trim().is_empty()),
+                    "kind": "main",
+                }),
+                sink,
+                &thread_id,
+                &trace,
+                cancel,
+            )
+            .await
+        {
+            BeforeOutcome::Pass | BeforeOutcome::Replace { .. } => {}
+            BeforeOutcome::Deny { reason } => {
+                let stop = TurnStopReason::Denied;
+                let _ = self
+                    .run_after_hook(
+                        points::AFTER_AGENT_END,
+                        None,
+                        serde_json::json!({ "threadId": thread_id, "reason": reason }),
+                        sink,
+                        &thread_id,
+                        &trace,
+                        cancel,
+                    )
+                    .await;
+                self.emit(sink, &thread_id, &trace, AgentEventBody::TurnFinished { stop: stop.clone() });
+                return Ok(TurnOutcome {
+                    thread_id,
+                    stop_reason: stop,
+                    steps_taken: 0,
+                    total_duration_ms: (self.clock.now_ms() - turn_start_ms).max(0) as u64,
+                });
+            }
+            BeforeOutcome::AbortTurn { reason } => {
+                let stop = TurnStopReason::Aborted;
+                    self.emit_aborted(sink, &thread_id, &trace, "hook:beforeAgentStart");
+                let _ = self
+                    .run_after_hook(
+                        points::AFTER_AGENT_END,
+                        None,
+                        serde_json::json!({ "threadId": thread_id, "reason": reason }),
+                        sink,
+                        &thread_id,
+                        &trace,
+                        cancel,
+                    )
+                    .await;
+                self.emit(sink, &thread_id, &trace, AgentEventBody::TurnFinished { stop: stop.clone() });
+                return Ok(TurnOutcome {
+                    thread_id,
+                    stop_reason: stop,
+                    steps_taken: 0,
+                    total_duration_ms: (self.clock.now_ms() - turn_start_ms).max(0) as u64,
+                });
+            }
+        }
+
         // 2. 检查启动前是否已取消
         if cancel.is_cancelled() {
             self.emit_aborted(sink, &thread_id, &trace, "cancel_before_start");
@@ -405,6 +467,34 @@ impl AgentRuntime {
         // 4. 加载会话历史与系统提示词
         let mut history = self.store.load_messages(&thread_id).await?;
         let system_prompt = self.prompt.system_prompt();
+        let _ = self
+            .run_before_hook(
+                points::BEFORE_SYSTEM_PROMPT,
+                None,
+                serde_json::json!({
+                    "threadId": thread_id,
+                    "bytes": system_prompt.len(),
+                }),
+                sink,
+                &thread_id,
+                &trace,
+                cancel,
+            )
+            .await;
+        let _ = self
+            .run_after_hook(
+                points::AFTER_SYSTEM_PROMPT,
+                None,
+                serde_json::json!({
+                    "threadId": thread_id,
+                    "bytes": system_prompt.len(),
+                }),
+                sink,
+                &thread_id,
+                &trace,
+                cancel,
+            )
+            .await;
         // 提示词组装的埋点（P2·SP-43）：除了总字节，还**按片段**报"这段是谁加的、多少字节"。
         //
         // 只有总长度时，"这轮多了 200 字节"是没法排查的——不知道是技能正文变长了、
@@ -542,7 +632,38 @@ impl AgentRuntime {
             let mut step_usage: Option<TokenUsage> = None;
             let mut accumulated_usage = TokenUsage::default();
 
+            let _ = self
+                .run_before_hook(
+                    points::BEFORE_CONTEXT,
+                    None,
+                    serde_json::json!({
+                        "step": step_index,
+                        "threadId": thread_id,
+                        "messageCount": history.len(),
+                        "systemPromptBytes": system_prompt.len(),
+                    }),
+                    sink,
+                    &thread_id,
+                    &trace,
+                    cancel,
+                )
+                .await;
             let chat_messages = format_messages_for_model(&system_prompt, &history);
+            let _ = self
+                .run_after_hook(
+                    points::AFTER_CONTEXT,
+                    None,
+                    serde_json::json!({
+                        "step": step_index,
+                        "threadId": thread_id,
+                        "messageCount": chat_messages.len(),
+                    }),
+                    sink,
+                    &thread_id,
+                    &trace,
+                    cancel,
+                )
+                .await;
             let mut options = req.options.clone().unwrap_or_else(|| ModelChatOptions {
                 tools: None,
                 system_prompt: None,
@@ -565,6 +686,69 @@ impl AgentRuntime {
             };
 
             // 调用模型流式
+            for point in [points::BEFORE_PROVIDER_REQUEST, points::BEFORE_PROVIDER_HEADERS] {
+                match self
+                    .run_before_hook(
+                        point,
+                        Some(req.provider_config.model.clone()),
+                        serde_json::json!({
+                            "step": step_index,
+                            "threadId": thread_id,
+                            "model": req.provider_config.model.clone(),
+                            "messageCount": completion_req.messages.len(),
+                        }),
+                        sink,
+                        &thread_id,
+                        &trace,
+                        cancel,
+                    )
+                    .await
+                {
+                    BeforeOutcome::Pass | BeforeOutcome::Replace { .. } => {}
+                    BeforeOutcome::Deny { reason } => {
+                        self.emit(sink, &thread_id, &trace, AgentEventBody::Failed { message: reason });
+                        final_stop_reason = TurnStopReason::Denied;
+                        break 'turn_loop;
+                    }
+                    BeforeOutcome::AbortTurn { reason } => {
+                        self.emit_aborted(sink, &thread_id, &trace, &format!("hook:{point}:{reason}"));
+                        final_stop_reason = TurnStopReason::Aborted;
+                        break 'turn_loop;
+                    }
+                }
+            }
+
+            match self
+                .run_before_hook(
+                    points::BEFORE_LLM_REQUEST,
+                    Some(req.provider_config.model.clone()),
+                    serde_json::json!({
+                        "step": step_index,
+                        "threadId": thread_id,
+                        "model": req.provider_config.model.clone(),
+                        "messageCount": completion_req.messages.len(),
+                        "toolCount": completion_req.options.tools.as_ref().map(|t| t.len()).unwrap_or(0),
+                    }),
+                    sink,
+                    &thread_id,
+                    &trace,
+                    cancel,
+                )
+                .await
+            {
+                BeforeOutcome::Pass | BeforeOutcome::Replace { .. } => {}
+                BeforeOutcome::Deny { reason } => {
+                    self.emit(sink, &thread_id, &trace, AgentEventBody::Failed { message: reason });
+                    final_stop_reason = TurnStopReason::Denied;
+                    break 'turn_loop;
+                }
+                BeforeOutcome::AbortTurn { reason } => {
+                    self.emit_aborted(sink, &thread_id, &trace, &format!("hook:{}:{reason}", points::BEFORE_LLM_REQUEST));
+                    final_stop_reason = TurnStopReason::Aborted;
+                    break 'turn_loop;
+                }
+            }
+
             let stream_res = self.model.stream(completion_req, Some(cancel)).await;
             let mut stream_rx = match stream_res {
                 Ok(rx) => rx,
@@ -626,6 +810,42 @@ impl AgentRuntime {
                     }
                 }
             }
+
+            let _ = self
+                .run_after_hook(
+                    points::AFTER_LLM_RESPONSE,
+                    Some(req.provider_config.model.clone()),
+                    serde_json::json!({
+                        "step": step_index,
+                        "threadId": thread_id,
+                        "status": if stream_error.is_some() { "error" } else { "completed" },
+                        "textChars": accumulated_text.chars().count(),
+                        "thinkingChars": accumulated_thinking.chars().count(),
+                        "toolCalls": tool_calls.len(),
+                    }),
+                    sink,
+                    &thread_id,
+                    &trace,
+                    cancel,
+                )
+                .await;
+            let _ = self
+                .run_after_hook(
+                    points::AFTER_PROVIDER_RESPONSE,
+                    Some(req.provider_config.model.clone()),
+                    serde_json::json!({
+                        "step": step_index,
+                        "threadId": thread_id,
+                        "status": if stream_error.is_some() { "error" } else { "completed" },
+                        "textChars": accumulated_text.chars().count(),
+                        "toolCalls": tool_calls.len(),
+                    }),
+                    sink,
+                    &thread_id,
+                    &trace,
+                    cancel,
+                )
+                .await;
 
             if let Some(err) = stream_error {
                 // 流到一半断了（网关掉线 / 超时 / 传输错误）：模型**已经产出的正文不能丢**。
@@ -1265,6 +1485,21 @@ impl AgentRuntime {
         }
 
         // 6. 收尾保证：每轮恰好发出一个 TurnFinished！
+        let _ = self
+            .run_after_hook(
+                points::AFTER_AGENT_END,
+                None,
+                serde_json::json!({
+                    "threadId": thread_id,
+                    "reason": format!("{:?}", final_stop_reason),
+                    "steps": step_index,
+                }),
+                sink,
+                &thread_id,
+                &trace,
+                cancel,
+            )
+            .await;
         self.emit(sink, &thread_id, &trace, AgentEventBody::TurnFinished { stop: final_stop_reason.clone() });
 
         let total_duration_ms = (self.clock.now_ms() - turn_start_ms).max(0) as u64;

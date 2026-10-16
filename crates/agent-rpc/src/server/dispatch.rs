@@ -1907,11 +1907,37 @@ impl Dispatcher {
                 let mut store = self.store.write().await;
                 // 会话文件躺在它自己的工作区目录下，删除前先取出来
                 let ws = thread_workspace(&store, thread_id);
+                let before = self
+                    .run_out_of_turn_before(
+                        agent_base::ports::hooks::points::BEFORE_THREAD_DELETE,
+                        Some(thread_id.to_string()),
+                        serde_json::json!({ "threadId": thread_id, "workspace": ws.clone() }),
+                    )
+                    .await;
+                match before {
+                    agent_base::ports::BeforeOutcome::Pass
+                    | agent_base::ports::BeforeOutcome::Replace { .. } => {}
+                    agent_base::ports::BeforeOutcome::Deny { reason }
+                    | agent_base::ports::BeforeOutcome::AbortTurn { reason } => {
+                        return Ok(serde_json::json!({ "ok": false, "denied": true, "reason": reason }));
+                    }
+                }
                 let deleted = store.delete_thread(thread_id);
                 drop(store);
 
                 let _ = self.session_mgr.delete_session(thread_id, Some(&ws));
                 let _ = self.checkpoint_mgr.discard(thread_id);
+                let notes = self
+                    .run_out_of_turn_after(
+                        agent_base::ports::hooks::points::AFTER_THREAD_DELETE,
+                        Some(thread_id.to_string()),
+                        serde_json::json!({
+                            "threadId": thread_id,
+                            "workspace": ws,
+                            "deleted": deleted,
+                        }),
+                    )
+                    .await;
 
                 if let Some(ref bc) = self.broadcaster {
                     bc.broadcast_immediate().await;
@@ -1919,7 +1945,8 @@ impl Dispatcher {
 
                 Ok(serde_json::json!({
                     "ok": deleted,
-                    "message": null
+                    "message": null,
+                    "notes": notes
                 }))
             }
 
@@ -2799,7 +2826,31 @@ impl Dispatcher {
                     .to_string();
 
                 // 手动压缩与自动压缩走**同一份实现**（含真实的模型摘要）
+                let before = self
+                    .run_out_of_turn_before(
+                        agent_base::ports::hooks::points::BEFORE_COMPACTION,
+                        Some(thread_id.clone()),
+                        serde_json::json!({ "threadId": thread_id.clone() }),
+                    )
+                    .await;
+                if let agent_base::ports::BeforeOutcome::Deny { reason }
+                | agent_base::ports::BeforeOutcome::AbortTurn { reason } = before
+                {
+                    return Ok(serde_json::json!({ "success": false, "denied": true, "reason": reason }));
+                }
+
                 let summary = compact_thread_now(&self.store, &self.session_mgr, &thread_id).await;
+                let notes = self
+                    .run_out_of_turn_after(
+                        agent_base::ports::hooks::points::AFTER_COMPACTION,
+                        Some(thread_id.clone()),
+                        serde_json::json!({
+                            "threadId": thread_id,
+                            "success": summary.is_some(),
+                            "summaryChars": summary.as_ref().map(|s| s.chars().count()).unwrap_or(0),
+                        }),
+                    )
+                    .await;
 
                 if let Some(ref bc) = self.broadcaster {
                     bc.broadcast_immediate().await;
@@ -2810,6 +2861,7 @@ impl Dispatcher {
                         "success": true,
                         "reason": "上下文压缩已完成",
                         "summary": s,
+                        "notes": notes,
                     }),
                     None => serde_json::json!({
                         "success": false,
@@ -4353,4 +4405,3 @@ mod tests {
         assert_eq!(snap_val.get("seq").and_then(|v| v.as_u64()), Some(0));
     }
 }
-

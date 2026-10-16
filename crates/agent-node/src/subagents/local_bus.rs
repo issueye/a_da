@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_base::model::ProviderConfig;
-use agent_base::ports::BoxFuture;
+use agent_base::ports::{BoxFuture, HookRunner};
 
 use super::{RunSubagentOptions, SubagentManager};
 use crate::agent_bus::{AgentBus, AgentHandle, DispatchOutcome, DispatchRequest};
@@ -30,6 +30,7 @@ pub struct LocalAgentBus {
     toolkits: Vec<String>,
     on_started: Option<Arc<dyn Fn(&str, &str, &str, &std::path::Path) + Send + Sync>>,
     on_finished: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    hook_runner: Option<Arc<dyn HookRunner>>,
 }
 
 impl LocalAgentBus {
@@ -48,6 +49,7 @@ impl LocalAgentBus {
             toolkits,
             on_started: None,
             on_finished: None,
+            hook_runner: None,
         }
     }
 
@@ -58,6 +60,11 @@ impl LocalAgentBus {
     ) -> Self {
         self.on_started = on_started;
         self.on_finished = on_finished;
+        self
+    }
+
+    pub fn with_hook_runner(mut self, hook_runner: Option<Arc<dyn HookRunner>>) -> Self {
+        self.hook_runner = hook_runner;
         self
     }
 }
@@ -144,6 +151,7 @@ impl AgentBus for LocalAgentBus {
                 on_started: self.on_started.clone(),
                 // 父节点登记的窗口上限：子智能体撞顶时提前失败（而不是被 provider 掐断）
                 context_window: self.config_source.context_window(),
+                hook_runner: self.hook_runner.clone(),
             });
             tokio::pin!(fut);
             let res = loop {

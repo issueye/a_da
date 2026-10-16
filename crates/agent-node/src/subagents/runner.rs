@@ -28,7 +28,7 @@ use agent_adapter::model::client::NetworkModelClient;
 use agent_adapter::scope::WorkspaceScope;
 use agent_base::domain::{AgentEvent, AgentEventBody, TurnStopReason};
 use agent_base::engine::{AgentRuntime, RunPolicy, TurnRequest};
-use agent_base::ports::{EventSink, Tool};
+use agent_base::ports::{AfterRequest, BeforeOutcome, BeforeRequest, EventSink, HookCtx, HookRunner, Tool};
 use agent_runtime::CompositeToolCatalog;
 use tokio::sync::{mpsc, watch};
 
@@ -180,6 +180,8 @@ pub struct RunSubagentOptions {
     ///
     /// 子智能体是上下文爆掉的重灾区（实测一次 445k tokens 被网关掐断，报告只写了一半）。
     pub context_window: Option<u64>,
+    /// Optional lifecycle hook runner inherited from the parent product.
+    pub hook_runner: Option<Arc<dyn HookRunner>>,
 }
 
 /// 把引擎的领域事件投影成子智能体进度（W4-T6）。
@@ -325,9 +327,100 @@ fn build_result(
 }
 
 /// 子智能体隔离执行器（**走 `AgentRuntime::run_turn`**）。
+async fn run_subagent_before(
+    runner: Option<&Arc<dyn HookRunner>>,
+    point: &str,
+    payload: serde_json::Value,
+) -> BeforeOutcome {
+    let Some(runner) = runner else {
+        return BeforeOutcome::Pass;
+    };
+    let cancel = WatchedCancel::never();
+    let observations = Mutex::new(Vec::new());
+    let on_event = |obs| {
+        if let Ok(mut events) = observations.lock() {
+            events.push(obs);
+        }
+    };
+    let ctx = HookCtx {
+        thread_id: "",
+        turn_id: "",
+        call_id: None,
+        cancel: &cancel,
+        on_event: &on_event,
+    };
+    runner
+        .before(
+            BeforeRequest {
+                point: point.to_string(),
+                subject: None,
+                payload,
+            },
+            &ctx,
+        )
+        .await
+}
+
+async fn run_subagent_after(
+    runner: Option<&Arc<dyn HookRunner>>,
+    point: &str,
+    payload: serde_json::Value,
+) {
+    let Some(runner) = runner else {
+        return;
+    };
+    let cancel = WatchedCancel::never();
+    let observations = Mutex::new(Vec::new());
+    let on_event = |obs| {
+        if let Ok(mut events) = observations.lock() {
+            events.push(obs);
+        }
+    };
+    let ctx = HookCtx {
+        thread_id: "",
+        turn_id: "",
+        call_id: None,
+        cancel: &cancel,
+        on_event: &on_event,
+    };
+    let _ = runner
+        .after(
+            AfterRequest {
+                point: point.to_string(),
+                subject: None,
+                payload,
+            },
+            &ctx,
+        )
+        .await;
+}
+
 pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
     let start_time = Instant::now();
     let max_steps = options.profile.max_steps;
+
+    let before = run_subagent_before(
+        options.hook_runner.as_ref(),
+        agent_base::ports::hooks::points::BEFORE_SUBAGENT_START,
+        serde_json::json!({
+            "subagentId": options.profile.id,
+            "taskChars": options.task.chars().count(),
+            "parentThreadId": options.parent_thread_id,
+        }),
+    )
+    .await;
+    if let BeforeOutcome::Deny { reason } | BeforeOutcome::AbortTurn { reason } = before {
+        return build_result(
+            false,
+            "���������ӵ���ʼ�����ӵ�λ�ܾ�".to_string(),
+            0,
+            0,
+            start_time.elapsed(),
+            Some(reason),
+            None,
+            None,
+        );
+    }
 
     if !options.profile.enabled {
         return build_result(
@@ -458,7 +551,7 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
     let failure_reason = sink.failure_reason();
     let prompt_tokens = sink.peak_prompt_tokens();
 
-    match outcome {
+    let result = match outcome {
         Ok(o) => {
             let (ok, error) = match o.stop_reason {
                 TurnStopReason::Completed => (true, None),
@@ -497,7 +590,7 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
                 tool_calls,
                 elapsed,
                 error,
-                Some(thread_id),
+                Some(thread_id.clone()),
                 prompt_tokens,
             )
         }
@@ -513,11 +606,24 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
                     Some(detail) => format!("{e}（{detail}）"),
                     None => e.to_string(),
                 }),
-                Some(thread_id),
+                Some(thread_id.clone()),
                 prompt_tokens,
             )
         }
-    }
+    };
+    run_subagent_after(
+        options.hook_runner.as_ref(),
+        agent_base::ports::hooks::points::AFTER_SUBAGENT_END,
+        serde_json::json!({
+            "subagentId": options.profile.id,
+            "threadId": thread_id,
+            "ok": result.ok,
+            "durationMs": result.duration_ms,
+            "error": result.error_message,
+        }),
+    )
+    .await;
+    result
 }
 
 #[cfg(test)]
@@ -790,6 +896,7 @@ mod tests {
             toolkits: vec!["core".to_string(), "command".to_string()],
             model: Some(model),
             on_started: None,
+            hook_runner: None,
         };
 
         let started = Instant::now();

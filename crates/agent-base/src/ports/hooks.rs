@@ -43,6 +43,27 @@ pub mod points {
     /// 待办清单被更新（P3b · SP-63）：载荷是**全量清单**。
     pub const BEFORE_TODO_UPDATE: &str = "beforeTodoUpdate";
     pub const AFTER_TODO_UPDATE: &str = "afterTodoUpdate";
+    pub const BEFORE_AGENT_START: &str = "beforeAgentStart";
+    pub const AFTER_AGENT_END: &str = "afterAgentEnd";
+    pub const BEFORE_COMPACTION: &str = "beforeCompaction";
+    pub const AFTER_COMPACTION: &str = "afterCompaction";
+    pub const BEFORE_LLM_REQUEST: &str = "beforeLlmRequest";
+    pub const AFTER_LLM_RESPONSE: &str = "afterLlmResponse";
+    pub const BEFORE_THREAD_DELETE: &str = "beforeThreadDelete";
+    pub const AFTER_THREAD_DELETE: &str = "afterThreadDelete";
+    pub const BEFORE_SUBAGENT_START: &str = "beforeSubagentStart";
+    pub const AFTER_SUBAGENT_END: &str = "afterSubagentEnd";
+    pub const BEFORE_SYSTEM_PROMPT: &str = "beforeSystemPrompt";
+    pub const AFTER_SYSTEM_PROMPT: &str = "afterSystemPrompt";
+    pub const BEFORE_PERSIST: &str = "beforePersist";
+    pub const AFTER_CHECKPOINT: &str = "afterCheckpoint";
+    pub const BEFORE_SKILL_LOAD: &str = "beforeSkillLoad";
+    pub const AFTER_SKILL_LOAD: &str = "afterSkillLoad";
+    pub const BEFORE_PROVIDER_REQUEST: &str = "beforeProviderRequest";
+    pub const BEFORE_PROVIDER_HEADERS: &str = "beforeProviderHeaders";
+    pub const AFTER_PROVIDER_RESPONSE: &str = "afterProviderResponse";
+    pub const BEFORE_CONTEXT: &str = "beforeContext";
+    pub const AFTER_CONTEXT: &str = "afterContext";
 
     /// 事前实现范围（其余点位在装配期被拒：`point_not_implemented`）。
     pub const IMPLEMENTED: &[&str] = &[
@@ -58,6 +79,23 @@ pub mod points {
         AFTER_TURN,
         BEFORE_APPROVAL,
         AFTER_APPROVAL,
+        BEFORE_AGENT_START,
+        AFTER_AGENT_END,
+        BEFORE_COMPACTION,
+        AFTER_COMPACTION,
+        BEFORE_LLM_REQUEST,
+        AFTER_LLM_RESPONSE,
+        BEFORE_THREAD_DELETE,
+        AFTER_THREAD_DELETE,
+        BEFORE_SUBAGENT_START,
+        AFTER_SUBAGENT_END,
+        BEFORE_SYSTEM_PROMPT,
+        AFTER_SYSTEM_PROMPT,
+        BEFORE_PROVIDER_REQUEST,
+        BEFORE_PROVIDER_HEADERS,
+        AFTER_PROVIDER_RESPONSE,
+        BEFORE_CONTEXT,
+        AFTER_CONTEXT,
     ];
 
     /// **支持改写**的点位（P3b · SP-60）。
@@ -92,6 +130,18 @@ impl HookLevel {
             BEFORE_PLUGIN_TOGGLE | AFTER_PLUGIN_TOGGLE => Some(Self::ControlPlane),
             BEFORE_THREAD_CREATE | AFTER_THREAD_CREATE => Some(Self::ControlPlane),
             BEFORE_TURN | AFTER_TURN => Some(Self::ControlPlane),
+            BEFORE_AGENT_START | AFTER_AGENT_END => Some(Self::ControlPlane),
+            BEFORE_COMPACTION | AFTER_COMPACTION => Some(Self::ControlPlane),
+            BEFORE_LLM_REQUEST | AFTER_LLM_RESPONSE => Some(Self::ControlPlane),
+            BEFORE_THREAD_DELETE | AFTER_THREAD_DELETE => Some(Self::ControlPlane),
+            BEFORE_SUBAGENT_START | AFTER_SUBAGENT_END => Some(Self::ControlPlane),
+            BEFORE_SYSTEM_PROMPT | AFTER_SYSTEM_PROMPT => Some(Self::ControlPlane),
+            BEFORE_PERSIST | AFTER_CHECKPOINT => Some(Self::ObserveOnly),
+            BEFORE_SKILL_LOAD | AFTER_SKILL_LOAD => Some(Self::ObserveOnly),
+            BEFORE_PROVIDER_REQUEST | BEFORE_PROVIDER_HEADERS | AFTER_PROVIDER_RESPONSE => {
+                Some(Self::ControlPlane)
+            }
+            BEFORE_CONTEXT | AFTER_CONTEXT => Some(Self::ControlPlane),
             _ => None,
         }
     }

@@ -583,7 +583,8 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
                     None,
                     // W4-T6：子智能体的工具按**同一份产品声明**装配，而不是另一张手写清单
                     spec.toolkits.clone(),
-                )),
+                )
+                .with_hook_runner(hook_runner.clone())),
                 // 进程内委派由 `NEVER_FOR_SUBAGENT` 拦，不使用深度
                 0,
             ),
