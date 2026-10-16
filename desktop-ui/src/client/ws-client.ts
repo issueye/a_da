@@ -15,6 +15,12 @@ const DEBUG_PAYLOAD_LIMIT = 4096
  * 卡片顺序**只能按时间戳**定，不能按"到达顺序"：增量帧的 `upserted` 是按 id 排序的
  * （宿主刻意让帧内容可复现），收尾那一帧一次带回"用户 + 助手"两条时，
  * 到达顺序会把回答排到提问前面。等时间戳的卡片保持原有相对顺序（稳定插入）。
+ *
+ * 🔴 这条规则的**前提**是宿主保证"同一个会话里卡片的 `at` 严格递增"
+ * （内存侧 `store::next_item_at`、磁盘回填侧 `session::manager::CardStamps`）——
+ * 否则同一毫秒里的两张卡（思考 + 正文、正文 + 首段流式）会按 id 字典序落位，
+ * 表现为**轮次一收尾思考块就掉到正文下面**。
+ * 契约与守门见 `docs/state-patch-plan.md` 的"顺序"一节。
  */
 function insertByItemTime(items: any[], item: any): any[] {
   const at = typeof item?.at === 'number' ? item.at : null

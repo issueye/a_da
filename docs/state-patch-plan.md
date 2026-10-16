@@ -48,6 +48,27 @@
 - 门：`cargo test --workspace -- --test-threads=1`（34 套件）+ `bun run typecheck` +
   `verify-wiring` / `verify-spec`；跑完比对 `~/.a-da/{config.json,gateway_workspaces.json,skills_state.json}` 哈希未变。
 
+## 🔴 顺序：`upserted` 是按 **id** 排序发的，所以定位只能按 `at`
+
+`upserted` 要保证帧内容可复现，因此按 `(threadId, itemId)` 排序——**到达顺序没有意义**。
+客户端给"本地还没有的卡片"定位就只能按 `at`（`ws-client.ts::insertByItemTime`：
+按时间插入，**等时间戳保持已有相对顺序**）。
+
+于是有一条必须两处都守的不变量：**同一个会话里卡片的 `at` 严格递增**，且与显示顺序一致。
+
+- 磁盘回填（`agent_node::session::SessionManager::restore_all_threads`）：一条 assistant 消息
+  会派生好几张卡（思考 / 正文 / 工具），它们原本共用消息自己的毫秒时间戳，先后就落到 id 字典序上——
+  `..._restored_asst_*` 恰好排在 `..._restored_think_*` 前面，于是**轮次一收尾（内存卡片被磁盘回填
+  整份换掉、id 全变），思考块从最上面掉到最下面**（用户实拍）。现在按折叠顺序发时间戳
+  （`CardStamps`），顺序为**思考 → 正文 → 工具卡**，与流式现场一致。
+- 内存侧（`agent_rpc::state::store::next_item_at`）：同一毫秒里连建两张卡（思考 + 首段正文、
+  非流式模型一次返回的思考与正文）也会踩同一个坑，所以新卡片的 `at` 不许小于上一张。
+
+守门：`agent-node` 的 `test_restored_cards_have_increasing_at_so_client_order_matches`
+（按客户端那条规则重放一遍，断言顺序一致）+ 实机验收
+`bun tools/verify-card-order-e2e.mjs [--with-tool]`（本地假模型走真协议，比较
+**收尾前后界面上看到的顺序**——只读服务端快照是看不出问题的，服务端数组一直是对的）。
+
 ## 已知取舍
 
 - `meta` 仍是全量（但它只有几十字节到几 KB：queue/running/log/config 等），

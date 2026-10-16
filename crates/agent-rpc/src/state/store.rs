@@ -36,6 +36,38 @@ pub fn next_id(prefix: &str) -> String {
     format!("{}_{}_{}", prefix, now_millis(), count)
 }
 
+/// 一张新卡片的 `at`：**同一个会话里卡片的 `at` 严格递增**。
+///
+/// 为什么不能直接用 `now_millis()`：界面给新卡片定位**只按 `at`**
+/// （`insertByItemTime`——增量帧的 `upserted` 是按 id 排序发的，到达顺序没有意义），
+/// 于是同一毫秒里生成的两张卡（思考 + 首段正文；非流式模型一次返回的思考与正文）
+/// 会按 **id 字典序**落位：`item_asst_*` 排在 `item_think_*` 前面，
+/// 界面表现就是"思考块跑到正文下面去了"。
+///
+/// 这里退化成"不比上一张早"，顺序就只由生成顺序决定。
+/// 磁盘回填侧（`agent_node::session::SessionManager::restore_all_threads`）遵守同一条不变量。
+pub fn next_item_at(prev: &[Item]) -> u64 {
+    let last = prev.last().map(|i| item_at(i)).unwrap_or(0);
+    let now = now_millis();
+    if now > last {
+        now
+    } else {
+        last + 1
+    }
+}
+
+/// 取一张卡片的 `at`（`Item` 的六个变体都带 `at`，但没有公共字段）。
+fn item_at(item: &Item) -> u64 {
+    match item {
+        Item::User { at, .. }
+        | Item::Thinking { at, .. }
+        | Item::Assistant { at, .. }
+        | Item::Tool { at, .. }
+        | Item::Notice { at, .. }
+        | Item::Compact { at, .. } => *at,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentStore {
     pub threads: Vec<Thread>,
@@ -642,7 +674,7 @@ impl AgentStore {
         if let Some(t) = self.get_thread_mut(thread_id) {
             t.items.push(Item::User {
                 id: next_id("item_user"),
-                at: now_millis(),
+                at: next_item_at(&t.items),
                 text: text.to_string(),
                 images,
                 queued: None,
@@ -676,7 +708,7 @@ impl AgentStore {
             // 否则创建新的 Thinking 卡片
             t.items.push(Item::Thinking {
                 id: next_id("item_think"),
-                at: now_millis(),
+                at: next_item_at(&t.items),
                 text: delta.to_string(),
                 ended_at: None,
             });
@@ -713,7 +745,7 @@ impl AgentStore {
             // 否则创建新的流式 Assistant 卡片
             t.items.push(Item::Assistant {
                 id: next_id("item_asst"),
-                at: now_millis(),
+                at: next_item_at(&t.items),
                 text: delta.to_string(),
                 streaming: Some(true),
                 duration_ms: None,
@@ -750,7 +782,7 @@ impl AgentStore {
 
         t.items.push(Item::Assistant {
             id: next_id("item_asst"),
-            at: now_millis(),
+            at: next_item_at(&t.items),
             text: String::new(),
             streaming: None,
             duration_ms: Some(duration_ms),
@@ -797,7 +829,7 @@ impl AgentStore {
             } else {
                 t.items.push(Item::Tool {
                     id: next_id("item_tool"),
-                    at: now_millis(),
+                    at: next_item_at(&t.items),
                     call_id: call_id.to_string(),
                     name: name.to_string(),
                     args: serde_json::from_str(raw_args).unwrap_or(serde_json::Value::Null),
@@ -898,7 +930,7 @@ impl AgentStore {
         }
         t.items.push(Item::Notice {
             id: next_id("item_notice"),
-            at: now_millis(),
+            at: next_item_at(&t.items),
             text: text.to_string(),
             level: level.to_string(),
         });
@@ -1038,7 +1070,7 @@ impl AgentStore {
             if !found {
                 t.items.push(Item::Tool {
                     id: next_id("item_tool"),
-                    at: now_millis(),
+                    at: next_item_at(&t.items),
                     call_id: call_id.to_string(),
                     name: tool.to_string(),
                     // 参数如实落卡：界面据此把"要批准的命令"摆出来
@@ -1156,6 +1188,33 @@ fn items_visibly_differ(a: &[Item], b: &[Item]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 同一会话里新卡片的 `at` 必须**不比上一张小**。
+    ///
+    /// 界面给新卡片定位只按 `at`（增量帧的 `upserted` 按 id 排序发，到达顺序没有意义），
+    /// 所以"同一毫秒里生成的思考卡 + 正文卡"曾经按 id 字典序落位：
+    /// `item_asst_*` 排在 `item_think_*` 前面 → 思考块掉到正文下面。
+    /// 这里用一个**未来时间戳**的卡片把"顺延"这条路径逼出来（不用 sleep，避免慢测试）。
+    #[test]
+    fn test_next_item_at_never_goes_backwards() {
+        let future = now_millis() + 60_000;
+        let last = Item::User {
+            id: "item_user_test".to_string(),
+            at: future,
+            text: "上一条".to_string(),
+            images: None,
+            queued: None,
+        };
+        assert_eq!(
+            next_item_at(&[last.clone()]),
+            future + 1,
+            "比上一张卡还早的时刻必须顺延，否则两张卡会共用同一个 at"
+        );
+        assert!(
+            next_item_at(&[]) >= now_millis(),
+            "没有上一张卡时就用当前时刻"
+        );
+    }
 
     #[test]
     fn test_store_config_and_session_restore() {

@@ -123,6 +123,18 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
   声明侧：`capabilities.images` 来自产品 spec（`ada-coding` 与 PM 预设都是 `true`），
   单个模型认不认图由 `ModelEntry.supportsImages` 表达——**两者不是一回事**。
   界面那排"图片素材"胶囊只是投影：它在没接通之前也一样显示，所以别拿它当"已经发给模型了"的证据。
+- 🔴 **卡片顺序由 `at` 表达，而且必须两处都守**：增量帧 `evt.state.patch` 的 `upserted`
+  是**按 id 排序**发的（帧内容要可复现），界面给新卡片定位只能按 `at`
+  （`ws-client.ts::insertByItemTime`，等时间戳则保持已有相对顺序）。所以
+  **一个会话内卡片的 `at` 必须严格递增**：
+  内存侧 `agent_rpc::state::store::next_item_at`（同一毫秒连建两张卡——思考 + 首段正文、
+  非流式模型一次返回的思考与正文——也会踩坑），磁盘回填侧
+  `agent_node::session::SessionManager::CardStamps`（顺序为**思考 → 正文 → 工具卡**，
+  与流式现场一致）。破了这条的表现是：**轮次一收尾，思考块从最上面掉到最下面**
+  （内存卡片被磁盘回填整份换掉、id 全变，那一帧按 id 字典序落位）。
+  只读 `session.snapshot` 是**看不出**这个问题的——服务端数组一直是对的，被换乱的是界面拼出来的那份；
+  实机验收用 `bun tools/verify-card-order-e2e.mjs [--with-tool]`（本地假模型 + 真协议，
+  比较收尾前后**界面上**的顺序），契约见 `docs/state-patch-plan.md` 的"顺序"一节。
 - 🔴 **Electron 宿主里 `__dirname` 不可信**：`bun run electron:build:main`（`bun build --target node
   --format cjs`）会把 `__dirname` **硬编码成构建机的源码目录**。用
   `path.join(__dirname, 'preload.cjs')` 当 preload 路径 → preload 静默加载失败 →

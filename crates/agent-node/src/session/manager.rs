@@ -107,6 +107,35 @@ where
     }
 }
 
+/// 磁盘回填时给卡片发的时间戳：**按折叠顺序严格递增**。
+///
+/// 为什么回填侧也必须管这件事（而不只是"用消息自己的时间戳"）：
+/// 增量帧（`evt.state.patch`）只带 `upserted`，而它是**按 id 排序**发的（帧内容要可复现），
+/// 所以界面给新卡片定位**只能按 `at`**（`insertByItemTime`）。
+/// 一条 assistant 消息会派生好几张卡（思考 / 工具 / 正文），它们共用同一个毫秒时，
+/// 先后就落到 id 字典序上：`..._restored_asst_*` < `..._restored_think_*`，
+/// 于是轮次一收尾（内存卡片被磁盘回填整份换掉、id 全变），**思考块会掉到正文下面**。
+/// 实测一条 132 张卡的会话里有 68 张卡位置被换乱。
+///
+/// 所以这里按折叠顺序发时间戳：思考 < 正文 < 工具卡（与流式现场一致），且整条会话单调递增。
+/// 内存侧遵守同一条不变量（`agent_rpc::state::store::next_item_at`）。
+struct CardStamps {
+    clock: u64,
+}
+
+impl CardStamps {
+    fn new() -> Self {
+        Self { clock: 0 }
+    }
+
+    /// 取下一个时间戳：**不比上一张小**。消息自己的时间戳更大时用它（与真实时间贴合），
+    /// 否则顺延 1ms——顺延量只用来表达顺序，没有任何地方把它当墙上时钟显示。
+    fn next(&mut self, preferred: u64) -> u64 {
+        self.clock = if preferred > self.clock { preferred } else { self.clock + 1 };
+        self.clock
+    }
+}
+
 impl SessionManager {
     pub fn new(explicit_dir: Option<PathBuf>) -> Self {
         Self { explicit_dir }
@@ -651,6 +680,7 @@ impl SessionManager {
         out.sort();
         out
     }
+
     pub fn restore_all_threads(&self) -> Vec<Thread> {
         let root = self.sessions_dir();
         if !root.exists() {
@@ -745,6 +775,8 @@ impl SessionManager {
             let mut items: Vec<Item> = Vec::new();
             let mut messages: Vec<serde_json::Value> = Vec::new();
             let mut rendered_tool_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+            // 卡片时间戳按**折叠顺序**发（见 `CardStamps`）
+            let mut stamps = CardStamps::new();
 
             for (index, entry) in raw_entries.into_iter().enumerate() {
                 match entry {
@@ -754,7 +786,7 @@ impl SessionManager {
                     SessionEntry::Notice(n) => {
                         items.push(Item::Notice {
                             id: n.id.clone(),
-                            at: n.timestamp as u64,
+                            at: stamps.next(n.timestamp as u64),
                             text: n.text.clone(),
                             level: n.level.clone(),
                         });
@@ -763,7 +795,7 @@ impl SessionManager {
                         let _pruned = std::mem::take(&mut items);
                         items.push(Item::Compact {
                             id: c.id.clone(),
-                            at: c.timestamp as u64,
+                            at: stamps.next(c.timestamp as u64),
                             summary: c.summary.clone(),
                             pre_tokens: c.pre_tokens,
                             post_tokens: c.post_tokens,
@@ -800,7 +832,7 @@ impl SessionManager {
                                 }));
                                 items.push(Item::User {
                                     id: format!("{}_restored_user_{}", header.id, index),
-                                    at,
+                                    at: stamps.next(at),
                                     text: content,
                                     images,
                                     queued: None,
@@ -827,13 +859,32 @@ impl SessionManager {
 
                                 if let Some(th) = thinking {
                                     if !th.trim().is_empty() {
+                                        let think_at = stamps.next(at);
                                         items.push(Item::Thinking {
                                             id: format!("{}_restored_think_{}", header.id, index),
-                                            at,
+                                            at: think_at,
                                             text: th,
-                                            ended_at: Some(at),
+                                            ended_at: Some(think_at),
                                         });
                                     }
+                                }
+
+                                // 🔴 **正文排在工具卡前面**：这条消息里的正文是"我要做什么"的引子，
+                                // 引擎是**流结束后**才执行工具调用的，所以现场看到的顺序恒为
+                                // 思考 → 正文 → 工具卡。早先这里把正文压到最后，于是轮次一收尾
+                                // （内存卡片被磁盘回填整份换掉）正文会**跳到自己的工具卡下面**——
+                                // 与思考块掉下去是同一个事故的两种形态（实机验收
+                                // `tools/verify-card-order-e2e.mjs --with-tool` 钉着顺序不变）。
+                                if !content.trim().is_empty() {
+                                    items.push(Item::Assistant {
+                                        id: format!("{}_restored_asst_{}", header.id, index),
+                                        at: stamps.next(at),
+                                        text: content,
+                                        streaming: Some(false),
+                                        duration_ms,
+                                        turn_duration_ms,
+                                        usage: restored_usage,
+                                    });
                                 }
 
                                 if let Some(calls) = tool_calls {
@@ -904,7 +955,7 @@ impl SessionManager {
 
                                         items.push(Item::Tool {
                                             id: format!("{}_restored_tool_{}", header.id, call.id),
-                                            at: tool_at,
+                                            at: stamps.next(tool_at),
                                             call_id: call.id,
                                             name: call.name,
                                             args: call.arguments,
@@ -921,18 +972,6 @@ impl SessionManager {
                                             finished_at,
                                         });
                                     }
-                                }
-
-                                if !content.trim().is_empty() {
-                                    items.push(Item::Assistant {
-                                        id: format!("{}_restored_asst_{}", header.id, index),
-                                        at,
-                                        text: content,
-                                        streaming: Some(false),
-                                        duration_ms,
-                                        turn_duration_ms,
-                                        usage: restored_usage,
-                                    });
                                 }
                             }
                             AgentMessage::ToolResult {
@@ -992,7 +1031,7 @@ impl SessionManager {
                                     };
                                     items.push(Item::Tool {
                                         id: format!("{}_restored_tool_{}", header.id, tool_call_id),
-                                        at,
+                                        at: stamps.next(at),
                                         call_id: tool_call_id,
                                         name: tool_name,
                                         args: serde_json::json!({}),
@@ -1495,7 +1534,14 @@ mod tests {
         assert_eq!(thread.workspace, ws);
 
         // 验证 items 卡片流
-        assert_eq!(thread.items.len(), 4, "应生成 User, Thinking, Tool, Assistant 共 4 个卡片");
+        //
+        // 🔴 顺序是「用户 → 思考 → 正文 → 工具卡」：**正文在工具卡前面**。
+        // 这条消息里的正文是"我要做什么"的引子，而引擎是流结束后才执行工具调用的，
+        // 所以现场（流式）看到的顺序恒为思考 → 正文 → 工具卡。
+        // 早先这里把正文压到最后，于是轮次一收尾正文会跳到自己的工具卡下面
+        // （见 `test_restored_cards_have_increasing_at_so_client_order_matches` 与
+        // `tools/verify-card-order-e2e.mjs`）。
+        assert_eq!(thread.items.len(), 4, "应生成 User, Thinking, Assistant, Tool 共 4 个卡片");
         match &thread.items[0] {
             Item::User { text, .. } => assert_eq!(text, "请帮我运行 git status"),
             other => panic!("第一张卡片应为 User 卡片，实际为 {:?}", other),
@@ -1505,20 +1551,169 @@ mod tests {
             other => panic!("第二张卡片应为 Thinking 卡片，实际为 {:?}", other),
         }
         match &thread.items[2] {
+            Item::Assistant { text, .. } => assert_eq!(text, "我将检查当前 git 状态。"),
+            other => panic!("第三张卡片应为 Assistant 卡片，实际为 {:?}", other),
+        }
+        match &thread.items[3] {
             Item::Tool { call_id: cid, name, status, output, .. } => {
                 assert_eq!(cid, call_id);
                 assert_eq!(name, "run_command");
                 assert_eq!(status, "done");
                 assert_eq!(output.as_deref(), Some("On branch main\nnothing to commit"));
             }
-            other => panic!("第三张卡片应为 Tool 卡片，实际为 {:?}", other),
-        }
-        match &thread.items[3] {
-            Item::Assistant { text, .. } => assert_eq!(text, "我将检查当前 git 状态。"),
-            other => panic!("第四张卡片应为 Assistant 卡片，实际为 {:?}", other),
+            other => panic!("第四张卡片应为 Tool 卡片，实际为 {:?}", other),
         }
 
         // 5. 清理
+        let _ = fs::remove_dir_all(temp_dir);
+        Ok(())
+    }
+
+    /// **回填出来的卡片，`at` 必须按折叠顺序严格递增**。
+    ///
+    /// 为什么这条是硬要求：轮次一收尾，内存里的卡片会被磁盘回填**整份换掉**（id 全变），
+    /// 那一帧走的是增量通道，而增量帧的 `upserted` 是**按 id 排序**发的（帧内容要可复现），
+    /// 界面因此只能按 `at` 给新卡片定位。同一条 assistant 消息派生的几张卡
+    /// （思考 / 工具 / 正文）原本共用一个毫秒，先后就落到 id 字典序上，
+    /// 而 `..._restored_asst_*` 恰恰排在 `..._restored_think_*` 前面——
+    /// 用户看到的就是"对话一完成，思考块从最上面掉到最下面"（实测一条 132 张卡的会话里
+    /// 有 68 张卡位置被换乱）。这条用例按**界面那条插入规则**重放一遍，钉住顺序。
+    #[test]
+    fn test_restored_cards_have_increasing_at_so_client_order_matches() -> Result<()> {
+        let temp_dir = std::env::temp_dir().join(format!("a_da_test_{}", uuid::Uuid::new_v4()));
+        let manager = SessionManager::new(Some(temp_dir.clone()));
+        let ws = "E:/code/test_ws";
+        let sid = "session_order_restore";
+        manager.create_session(sid, ws, Some("回填顺序测试"), None, None)?;
+
+        // 一条"思考 + 工具调用 + 正文"的助手消息：三张卡的**消息时间戳完全相同**
+        manager.append_message(
+            sid,
+            AgentMessage::User { content: "跑一下 git status".to_string(), images: None, timestamp: Some(1000) },
+            Some(ws),
+        )?;
+        let call_id = "call_order_001";
+        manager.append_message(
+            sid,
+            AgentMessage::Assistant {
+                content: "我看了一下，工作区是干净的。".to_string(),
+                thinking: Some("先看看有没有未提交的改动".to_string()),
+                tool_calls: Some(vec![crate::session::ToolCallBlock {
+                    id: call_id.to_string(),
+                    name: "run_command".to_string(),
+                    arguments: serde_json::json!({ "command": "git status" }),
+                    raw_arguments: "{\"command\":\"git status\"}".to_string(),
+                }]),
+                stop_reason: Some("stop".to_string()),
+                error_message: None,
+                timestamp: Some(2000),
+                usage: None,
+                duration_ms: None,
+                turn_duration_ms: None,
+            },
+            Some(ws),
+        )?;
+        // 工具结果**也**落在同一个毫秒上（最容易踩的那一档）
+        manager.append_message(
+            sid,
+            AgentMessage::ToolResult {
+                tool_call_id: call_id.to_string(),
+                tool_name: "run_command".to_string(),
+                content: "nothing to commit".to_string(),
+                is_error: Some(false),
+                details: None,
+                patch: None,
+                checkpoint_id: None,
+                timestamp: Some(2000),
+                status: Some("success".to_string()),
+                duration_ms: Some(10),
+                started_at: Some(2000),
+                finished_at: Some(2010),
+            },
+            Some(ws),
+        )?;
+
+        let threads = manager.restore_all_threads();
+        let items = &threads.iter().find(|t| t.id == sid).expect("会话应被还原").items;
+
+        let kinds: Vec<&str> = items
+            .iter()
+            .map(|i| match i {
+                Item::User { .. } => "user",
+                Item::Thinking { .. } => "thinking",
+                Item::Tool { .. } => "tool",
+                Item::Assistant { .. } => "assistant",
+                Item::Notice { .. } => "notice",
+                Item::Compact { .. } => "compact",
+            })
+            .collect();
+        assert_eq!(kinds, vec!["user", "thinking", "assistant", "tool"], "折叠顺序：思考 → 正文 → 工具卡（与流式现场一致）");
+
+        // ① 时间戳严格递增（同毫秒的卡片必须被顺延开）
+        let times: Vec<u64> = items
+            .iter()
+            .map(|i| match i {
+                Item::User { at, .. }
+                | Item::Thinking { at, .. }
+                | Item::Tool { at, .. }
+                | Item::Assistant { at, .. }
+                | Item::Notice { at, .. }
+                | Item::Compact { at, .. } => *at,
+            })
+            .collect();
+        for w in times.windows(2) {
+            assert!(w[1] > w[0], "回填卡片的 at 必须严格递增，实际 {times:?}");
+        }
+
+        // ② 按**界面那条规则**重放：upserted 按 id 字典序到达，逐张按 `at` 稳定插入。
+        //    这一条才是用户看到的东西——顺序对了，但 `at` 一样时它会按 id 排。
+        let id_of = |i: &Item| -> String {
+            match i {
+                Item::User { id, .. }
+                | Item::Thinking { id, .. }
+                | Item::Tool { id, .. }
+                | Item::Assistant { id, .. }
+                | Item::Notice { id, .. }
+                | Item::Compact { id, .. } => id.clone(),
+            }
+        };
+        let at_of = |i: &Item| -> u64 {
+            match i {
+                Item::User { at, .. }
+                | Item::Thinking { at, .. }
+                | Item::Tool { at, .. }
+                | Item::Assistant { at, .. }
+                | Item::Notice { at, .. }
+                | Item::Compact { at, .. } => *at,
+            }
+        };
+        let mut frame: Vec<&Item> = items.iter().collect();
+        frame.sort_by_key(|i| id_of(i));
+        let mut client: Vec<&Item> = Vec::new();
+        for it in frame {
+            let at = at_of(it);
+            let mut idx = client.len();
+            while idx > 0 && at_of(client[idx - 1]) > at {
+                idx -= 1;
+            }
+            client.insert(idx, it);
+        }
+        let client_kinds: Vec<&str> = client
+            .iter()
+            .map(|i| match i {
+                Item::User { .. } => "user",
+                Item::Thinking { .. } => "thinking",
+                Item::Tool { .. } => "tool",
+                Item::Assistant { .. } => "assistant",
+                Item::Notice { .. } => "notice",
+                Item::Compact { .. } => "compact",
+            })
+            .collect();
+        assert_eq!(
+            client_kinds, kinds,
+            "界面按 at 重建出来的顺序必须与宿主数组一致（否则思考块会掉到正文下面）"
+        );
+
         let _ = fs::remove_dir_all(temp_dir);
         Ok(())
     }
