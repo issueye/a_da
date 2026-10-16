@@ -91,7 +91,8 @@
 > **7 个已登记点位都有真发射方**：`prompt.composed`（每轮一次 + 字节数）、
 > `approval.waited`（**补掉"审批等待无耗时埋点"这个 §1.2 缺口**）、`turn.aborted`（带中止点）、
 > `plugin.discovered` / `plugin.skipped`（含**缺席信号** `no_plugin` 与如实信号
-> `execution_not_wired`）、`skill.loaded` / `skill.skipped`（聚合 + `no_custom_skill`）。
+> `execution_not_wired` → **后者已在 P1 接线后删除**，见 §P4 的注）、
+> `skill.loaded` / `skill.skipped`（聚合 + `no_custom_skill`）。
 >
 > **实现口径的三处偏离（都已同步进设计文档）**：
 > 1. 不是"一个点位一个变体"，而是**一个 `Diagnostic` 变体 + `point` 字段**——加一个点位
@@ -683,9 +684,12 @@ P1（脚本）未完成前，界面对"脚本执行"一项必须标注**尚未�
 >   所以"没配"不等于"没护栏"。界面/配置文件的可视化留给后续。
 > - **SP-74 ◐ 大部分完成**：两处界面改动，都是"让已经存在的数据看得见"——
 >   ① **插件卡渲染 `PluginItem.diagnostics`**（`PluginDiagnostics.tsx`）：数据从 P0 起就被扫描端
->   如实填好了（"执行面尚未接线 / 已停用 / 工具清单是文本扫描推断的"），但界面一处都没渲染，
+>   如实填好了（"已停用 / 本页工具清单是文本推断的"），但界面一处都没渲染，
 >   于是插件卡永远显示不出问题。`info` 也显示：只显示 warn/error 会让"正常"与"没被检查过"
->   长得一样（缺席可见）。② **诊断日志按来源聚合**（`DebugPanel`）：每个来源一条 chip，
+>   长得一样（缺席可见）。P0 那条"脚本执行面尚未接线"的 info 已在 P1 接线后删除——
+>   它当时是真的，接线之后就是对已经生效的插件喊"不生效"（日志侧的
+>   `plugin.skipped{execution_not_wired}` 同批删除，只留 `disabled`）。
+>   ② **诊断日志按来源聚合**（`DebugPanel`）：每个来源一条 chip，
 >   显示**条数 + 最近的点位**，点一下即按它过滤（复用既有的来源过滤状态，不引入第二套交互）。
 >   点位名本身就说明问题类型：`hook.replace_rejected` 是被重校验拒了、
 >   `hook.finished{timed_out}` 是撞预算、`plugin.skipped` 是压根没装上。

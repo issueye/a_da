@@ -234,7 +234,8 @@ Origin = Builtin | Plugin { id } | Skill { id } | Hook { point } | Subagent { id
 > **P0 已落地的点位**（`DIAG_POINTS` 是"已实现"清单，不是上面这张目标表）：
 > `prompt.composed`（引擎，每轮一次 + 字节数）、`approval.waited`（引擎，含等待时长与是谁给的答案）、
 > `turn.aborted`（引擎，带中止点）、`plugin.discovered` / `plugin.skipped`（扫描，含
-> **缺席信号** `reason=no_plugin` 与如实信号 `reason=execution_not_wired`）、
+> **缺席信号** `reason=no_plugin`；~~如实信号 `reason=execution_not_wired`~~
+> 已在 P1 接线后**删除**——见 dev-plan §P4 的注）、
 > `skill.loaded` / `skill.skipped`（扫描，聚合一条 + `reason=no_custom_skill`）。
 >
 > **P1 / P2 追加**：`script.invoked` / `script.finished`（脚本宿主，一进一出**成对** + 耗时 +

@@ -415,11 +415,12 @@ impl PluginManager {
                     }
                 }
 
-                // P0 埋点：把"这个插件为什么不会生效"如实写进诊断字段。
+                // 埋点：把"这个插件为什么不会生效"如实写进诊断字段。
                 //
-                // 以前这里恒为 `Vec::new()`，于是插件卡永远显示不出任何问题——而实情是：
-                // **脚本执行面要到 P1 才接**，第三方插件的工具此刻一次也不会被调用。
-                // 声明了却不说，界面就会把"被列出来"当成"在生效"。
+                // 以前这里恒为 `Vec::new()`，于是插件卡永远显示不出任何问题。P0 当时还补过一条
+                // 「脚本执行面尚未接线，工具不会被模型调用」——**P1 已经把它接上了**
+                // （`ScriptHost::load` 会真的执行一遍插件，贡献进装配），
+                // 那条诊断等于对着已经生效的插件喊"不生效"，已删除。
                 let mut diagnostics: Vec<PluginDiagnostic> = Vec::new();
                 if !enabled {
                     diagnostics.push(PluginDiagnostic {
@@ -429,20 +430,16 @@ impl PluginManager {
                         hint: None,
                     });
                 }
-                diagnostics.push(PluginDiagnostic {
-                    plugin_id: id.clone(),
-                    level: "info".to_string(),
-                    message: "当前仅登记插件信息：脚本执行面尚未接线，工具不会被模型调用".to_string(),
-                    hint: Some(
-                        "执行面排期见 docs/script-plugin-system-dev-plan.md 的 P1".to_string(),
-                    ),
-                });
                 if !tools.is_empty() {
+                    // 本页（`plugin.list`）是**管理面的清单**，为了不执行代码就列出插件，
+                    // 工具名是从源码文本里猜的；真正生效的贡献由 `ScriptHost::load`
+                    // 执行插件得到，两者可能不同（名字在运行时拼出来、`api.registerTool`
+                    // 写在工厂函数里……）。把口径说清，别让"列出来了"被当成"已经在服务模型"。
                     diagnostics.push(PluginDiagnostic {
                         plugin_id: id.clone(),
                         level: "info".to_string(),
                         message: format!(
-                            "工具清单由源码文本扫描推断（{} 条），未经执行验证",
+                            "本页工具清单由源码文本推断（{} 条）；实际生效的贡献以脚本执行结果为准，两者可能不同",
                             tools.len()
                         ),
                         hint: None,

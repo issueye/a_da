@@ -3449,19 +3449,24 @@ impl Dispatcher {
                                     "tools": p.tools.len(),
                                 })),
                             );
-                            // 未启用 / 执行面尚未接线——两件事都要**如实**说，
-                            // 否则界面把"被列出来"当成"在生效"
-                            let reason = if !p.enabled { "disabled" } else { "execution_not_wired" };
-                            crate::server::diag::project_out_of_turn(
-                                &mut store_w,
-                                &DiagnosticEvent::new(
-                                    DiagFamily::Plugin,
-                                    POINT_PLUGIN_SKIPPED,
-                                    origin,
-                                )
-                                .with_outcome(DiagOutcome::Skipped)
-                                .with_reason(reason),
-                            );
+                            // **只报真的**：只有"已停用"才是本页能确定的事。
+                            // 早先这里对启用中的插件也发一条 `execution_not_wired`，
+                            // 那是 P0（执行面还没接）的实话，P1 接线之后就成了**假话**——
+                            // 面板上会对一个正常服务的插件喊"它不会被执行"。
+                            // "启用了却没生效"有别的判据且更准：装配期按贡献逐条报
+                            // （`plugin.skipped{tool_not_registered}` / 钩子被拒的原因）。
+                            if !p.enabled {
+                                crate::server::diag::project_out_of_turn(
+                                    &mut store_w,
+                                    &DiagnosticEvent::new(
+                                        DiagFamily::Plugin,
+                                        POINT_PLUGIN_SKIPPED,
+                                        origin,
+                                    )
+                                    .with_outcome(DiagOutcome::Skipped)
+                                    .with_reason("disabled"),
+                                );
+                            }
                         }
                     }
                 }

@@ -1626,12 +1626,17 @@ async fn test_plugin_set_enabled_drives_reassembly_and_reports_the_delta() {
 }
 
 /// SP-08 契约（正向）：磁盘上真有一个插件时，诊断必须**如实**说明两件事——
-/// 它被扫到了，以及**它现在不会被执行**（`execution_not_wired`）。
+/// 它被扫到了，以及**本页（列表）并没有执行它**（工具清单是文本推断的，
+/// 实际生效的贡献以装配期的脚本执行结果为准）。
 ///
 /// 为什么这条也必要：界面把"列出来了"当成"在生效"是这次埋点要根治的误读之一。
-/// 只报 discovered 不报 skipped，等于给用户一个"插件正常工作"的假象。
+///
+/// 🔴 这条用例改过一次，改的原因值得留着：它原先断言的是"执行面尚未接线"。
+/// P1 把执行面接上了，那句断言就从"如实"变成了"钉住一句假话"——留着它，
+/// 面板会永远对一个正常服务的插件喊"它不会被执行"。现在钉的是**真话**：
+/// 列表不执行代码，所以清单是推断的；以及**不许再出现任何"未接线"的说法**。
 #[tokio::test]
-async fn test_disk_plugin_is_reported_as_discovered_but_not_wired() {
+async fn test_disk_plugin_is_reported_as_discovered_with_listing_caveat() {
     let ws_dir = std::env::temp_dir().join(format!("a_da_ws_plugin_{}", uuid::Uuid::new_v4()));
     let plugins_dir = ws_dir.join(".ada").join("plugins");
     std::fs::create_dir_all(&plugins_dir).expect("建临时插件目录失败");
@@ -1660,7 +1665,7 @@ async fn test_disk_plugin_is_reported_as_discovered_but_not_wired() {
         .await
         .expect("plugin.list 必须可分发");
 
-    // 2) 响应里的插件项必须自述"为什么不生效"——这条字段以前恒为空，
+    // 2) 响应里的插件项必须自述口径——这条字段以前恒为空，
     //    于是插件卡永远显示不出问题（"有壳无用"）。
     let items = listed["plugins"].as_array().expect("plugin.list 必须回插件数组");
     let disk_item = items
@@ -1673,8 +1678,14 @@ async fn test_disk_plugin_is_reported_as_discovered_but_not_wired() {
     assert!(
         diags
             .iter()
-            .any(|d| d["message"].as_str().unwrap_or("").contains("执行面尚未接线")),
-        "必须如实告诉用户'列出来了但还不会执行'：{diags:?}"
+            .any(|d| d["message"].as_str().unwrap_or("").contains("源码文本推断")),
+        "必须如实告诉用户'这一页的工具清单是推断出来的'：{diags:?}"
+    );
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d["message"].as_str().unwrap_or("").contains("尚未接线")),
+        "执行面在 P1 已接线，不许再对正常插件喊'未接线'：{diags:?}"
     );
 
     let s = store.read().await;
@@ -1703,9 +1714,11 @@ async fn test_disk_plugin_is_reported_as_discovered_but_not_wired() {
 
     let skipped = by_point("plugin.skipped");
     assert!(
-        skipped.iter().any(|p| p["reason"] == "execution_not_wired"),
-        "**必须**报出'列出来了但还没接线'——否则界面把 listing 当成生效：{skipped:?}"
+        skipped.is_empty(),
+        "这个插件是启用状态：本页没有任何东西被跳过（P1 已接线，启用中的插件工具会被模型调用，\
+         不许再报 execution_not_wired）：{skipped:?}"
     );
+
 
     drop(s);
     let _ = std::fs::remove_dir_all(&ws_dir);

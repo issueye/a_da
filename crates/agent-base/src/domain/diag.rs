@@ -187,8 +187,10 @@ pub const POINT_PLUGIN_REPLACED_BUILTIN: &str = "plugin.replaced_builtin";
 /// 插件被扫到（按插件 id 归因）。`outcome = skipped` 且 `reason = no_plugin` 表示
 /// **一个都没有**——缺席也要发，否则"没扫到"与"没扫过"在面板上分不出来。
 pub const POINT_PLUGIN_DISCOVERED: &str = "plugin.discovered";
-/// 插件被跳过（`disabled` / `execution_not_wired`）。后者是**如实**的：
-/// 执行面要到 P1 才接，此刻被列出来的插件确实不会被执行。
+/// 插件被跳过（`disabled`；装配期另有按贡献逐条给出的原因，如 `tool_not_registered`）。
+///
+/// ⚠️ 早先这里还有一条 `execution_not_wired`：那是 P0 的实话（执行面还没接），
+/// P1 接上之后它就是对正常插件的**假警报**，已删除。
 pub const POINT_PLUGIN_SKIPPED: &str = "plugin.skipped";
 /// 技能扫描结果（聚合一条，避免每步扫盘把 60 条环形缓冲刷爆）。
 pub const POINT_SKILL_LOADED: &str = "skill.loaded";

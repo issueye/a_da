@@ -234,7 +234,7 @@
 | 字段 | 归属 | 说明 |
 |---|---|---|
 | `ServerCapabilities.resync` / `ServerEventsCapability.snapshotSeq` / `ClientSnapshot.seq` | 缺口检测 | 服务端发了单调 `seq` 与"支持重同步"能力位，**界面完全没用**：INV-6 的"缺口即重同步"在客户端尚未实现（当前靠全量快照兜住，所以不痛，但契约是空的） |
-| `LoadedPlugin.diagnostics` / `PluginItem.diagnostics` / `PluginListResponse.diagnostics` | 插件诊断 | ✅ **已补全**（P4·SP-74）：扫描期如实写入"执行面尚未接线 / 已停用 / 工具清单是文本扫描推断的"（`plugins/manager.rs`，集成用例钉住），界面由 `PluginDiagnostics` 渲染（**`info` 也显示**、`hint` 一起显示——只显示 warn/error 会让"正常"与"没被检查过"长得一样） |
+| `LoadedPlugin.diagnostics` / `PluginItem.diagnostics` / `PluginListResponse.diagnostics` | 插件诊断 | ✅ **已补全**（P4·SP-74）：扫描期如实写入"已停用 / 本页工具清单由源码文本推断（实际生效的贡献以脚本执行结果为准）"（`plugins/manager.rs`），界面由 `PluginDiagnostics` 渲染（**`info` 也显示**、`hint` 一起显示——只显示 warn/error 会让"正常"与"没被检查过"长得一样）。原先那条"执行面尚未接线"的 info 已在 P1 接线后删除，见下表 `plugin.setEnabled` 的 `report` |
 | `LoadedPlugin.blockedTools` / `ResolvedPluginCapabilitiesDto.invalid` / `.overrides` | 插件诊断 | "哪些工具被挡住了、哪些声明无效、哪些被覆盖"界面不显示（与 §三.3 同族） |
 | `PluginListResponse.secrets` | 插件密钥 | 密钥状态（是否已设置）界面不显示 |
 | `plugin.setEnabled` 回执里的 `report`（SP-46 新增） | 插件启停 | 服务端现在会回"这次启停**实际**改变了哪些贡献"（工具/片段/技能的新增与移除、提示词字节变化），界面只刷新开关状态、不显示这份差异——**数据已就位，渲染待做**（P3a 接 `afterPluginToggle` 时一并处理） |
