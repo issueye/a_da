@@ -3492,7 +3492,7 @@ impl Dispatcher {
 
             PLUGIN_LIST => {
                 let ws = params.get("workspace").and_then(|v| v.as_str());
-                let plugins = self.plugin_mgr.scan_plugins(ws);
+                let plugins = self.plugin_mgr.load_plugins(ws);
                 let resolved_caps = self.plugin_mgr.get_capabilities(ws);
                 let configs = self.plugin_mgr.read_configs();
 
@@ -3583,6 +3583,23 @@ impl Dispatcher {
                     "secrets": secrets,
                     "diagnostics": []
                 }))
+            }
+
+            PLUGIN_LOAD => {
+                let workspace = params.get("workspace").and_then(|v| v.as_str());
+                let plugin_id = params.get("pluginId").and_then(|v| v.as_str());
+                let plugins = self.plugin_mgr.load_plugins(workspace);
+                let plugins: Vec<_> = match plugin_id {
+                    Some(id) => plugins.into_iter().filter(|p| p.id == id).collect(),
+                    None => plugins,
+                };
+                Ok(serde_json::json!({ "ok": true, "plugins": plugins }))
+            }
+
+            PLUGIN_RELOAD => {
+                let workspace = params.get("workspace").and_then(|v| v.as_str());
+                let plugins = self.plugin_mgr.reload_plugins(workspace);
+                Ok(serde_json::json!({ "ok": true, "plugins": plugins }))
             }
 
             PLUGIN_CAPABILITIES_SET => {

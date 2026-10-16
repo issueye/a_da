@@ -57,6 +57,24 @@ impl PluginManager {
         }
     }
 
+    /// Canonical workspace extension directory used by the agent runtime.
+    pub fn agent_extensions_dir(workspace: &str) -> PathBuf {
+        PathBuf::from(workspace).join(".ada").join("agent-coding").join("extensions")
+    }
+
+    /// Load the current plugin view from the canonical agent directory and
+    /// compatible legacy directories. The manager is intentionally stateless;
+    /// each call is a fresh load.
+    pub fn load_plugins(&self, workspace: Option<&str>) -> Vec<PluginItem> {
+        self.scan_plugins(workspace)
+    }
+
+    /// Explicit reload entry point. Kept separate from `load_plugins` so RPC
+    /// callers can express intent and future caching can be added in one place.
+    pub fn reload_plugins(&self, workspace: Option<&str>) -> Vec<PluginItem> {
+        self.scan_plugins(workspace)
+    }
+
     /// 获取配置中已禁用的插件集合
     pub fn load_disabled_plugins(&self) -> HashSet<String> {
         let mut disabled = HashSet::new();
@@ -281,6 +299,7 @@ impl PluginManager {
         if let Some(ws) = workspace {
             let ws_path = PathBuf::from(ws);
             if !ws.trim().is_empty() {
+                scan_dirs.push((Self::agent_extensions_dir(ws), "workspace"));
                 scan_dirs.push((ws_path.join(".ada").join("extensions"), "workspace"));
                 scan_dirs.push((ws_path.join(".ada").join("plugins"), "workspace"));
             }
@@ -288,6 +307,7 @@ impl PluginManager {
 
         // 全局扩展目录：~/.a-da/extensions 与 ~/.a-da/plugins
         let app_home = self.app_home();
+        scan_dirs.push((app_home.join("agent-coding").join("extensions"), "global"));
         scan_dirs.push((app_home.join("extensions"), "global"));
         scan_dirs.push((app_home.join("plugins"), "global"));
 
@@ -504,9 +524,9 @@ impl PluginManager {
         code: Option<&str>,
     ) -> Result<String> {
         let dir = if scope == "workspace" && workspace.map(|s| !s.trim().is_empty()).unwrap_or(false) {
-            PathBuf::from(workspace.unwrap()).join(".ada").join("extensions")
+            Self::agent_extensions_dir(workspace.unwrap())
         } else {
-            self.app_home().join("extensions")
+            self.app_home().join("agent-coding").join("extensions")
         };
 
         fs::create_dir_all(&dir)?;

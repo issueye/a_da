@@ -74,7 +74,7 @@ pub async fn collect_plugin_tools(
     let mut out = PluginToolAssembly::default();
     let ws_str = workspace.to_string_lossy().to_string();
 
-    for item in plugin_mgr.scan_plugins(Some(&ws_str)) {
+    for item in plugin_mgr.load_plugins(Some(&ws_str)) {
         if item.scope == "builtin" {
             continue;
         }

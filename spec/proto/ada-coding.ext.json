@@ -57,6 +57,8 @@
     { "name": "debug.trace", "alias": "x.coding.debug.trace", "kind": "command", "since": "1.0", "description": "记录调试追踪日志" },
     { "name": "debug.log.clear", "alias": "x.coding.debug.log.clear", "kind": "command", "since": "1.0", "description": "清空调试日志" },
     { "name": "debug.hostInfo", "alias": "x.coding.debug.hostInfo", "kind": "command", "since": "1.0", "description": "获取宿主进程信息" },
-    { "name": "stats.promptChars", "alias": "x.coding.stats.promptChars", "kind": "command", "since": "1.0", "description": "计算提示词字符数与估算用量" }
+    { "name": "stats.promptChars", "alias": "x.coding.stats.promptChars", "kind": "command", "since": "1.0", "description": "计算提示词字符数与估算用量" },
+    { "name": "plugin.load", "alias": "x.coding.plugin.load", "kind": "command", "since": "1.0", "description": "load agent-coding extensions" },
+    { "name": "plugin.reload", "alias": "x.coding.plugin.reload", "kind": "command", "since": "1.0", "description": "reload agent-coding extensions" }
   ]
 }

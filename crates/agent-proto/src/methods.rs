@@ -70,6 +70,8 @@ pub const CHANGE_REVERT_ALL: &str = "change.revertAll";
 
 // 插件管理
 pub const PLUGIN_LIST: &str = "plugin.list";
+pub const PLUGIN_LOAD: &str = "plugin.load";
+pub const PLUGIN_RELOAD: &str = "plugin.reload";
 pub const PLUGIN_CAPABILITIES_SET: &str = "plugin.capabilities.set";
 pub const PLUGIN_CONFIG_SET: &str = "plugin.config.set";
 pub const PLUGIN_SECRET_SET: &str = "plugin.secret.set";
@@ -174,6 +176,8 @@ pub const ALL_METHODS: &[&str] = &[
     CHANGE_REVERT_FILE,
     CHANGE_REVERT_ALL,
     PLUGIN_LIST,
+    PLUGIN_LOAD,
+    PLUGIN_RELOAD,
     PLUGIN_CAPABILITIES_SET,
     PLUGIN_CONFIG_SET,
     PLUGIN_SECRET_SET,
@@ -220,7 +224,7 @@ mod tests {
         // W6-T1/T2：`subagent.resume` / `workspace.rescan` 删除后 74 → 72
         // W7：新增 `config.setRetryCount`（模型请求重试次数）后 72 → 73
         // P1·SP-18：新增 `plugin.validate`（插件只读自检）后 74 → 75
-        assert_eq!(ALL_METHODS.len(), 75);
+        assert_eq!(ALL_METHODS.len(), 77);
 
         let mut event_set = HashSet::new();
         for &e in ALL_EVENTS {
@@ -349,5 +353,4 @@ mod tests {
         }
     }
 }
-
 

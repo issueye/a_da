@@ -75,6 +75,8 @@ export const PROVIDER_FETCH_MODELS = 'provider.fetchModels'
 
 // 插件管理 (Plugin)
 export const PLUGIN_LIST = 'plugin.list'
+export const PLUGIN_LOAD = 'plugin.load'
+export const PLUGIN_RELOAD = 'plugin.reload'
 export const PLUGIN_CAPABILITIES_SET = 'plugin.capabilities.set'
 export const PLUGIN_CONFIG_SET = 'plugin.config.set'
 export const PLUGIN_SECRET_SET = 'plugin.secret.set'

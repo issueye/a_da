@@ -1363,6 +1363,19 @@ export class AgentWebSocketClient {
     return this.request<PluginListResponse>('plugin.list', { workspace: workspace || this.snapshot.activeWorkspace })
   }
 
+  public loadPlugins(workspace?: string, pluginId?: string) {
+    return this.request<{ ok: boolean; plugins: PluginListResponse['plugins'] }>('plugin.load', {
+      workspace: workspace || this.snapshot.activeWorkspace,
+      ...(pluginId ? { pluginId } : {}),
+    })
+  }
+
+  public reloadPlugins(workspace?: string) {
+    return this.request<{ ok: boolean; plugins: PluginListResponse['plugins'] }>('plugin.reload', {
+      workspace: workspace || this.snapshot.activeWorkspace,
+    })
+  }
+
   public fetchBuiltinCatalog() {
     return this.request<BuiltinToolInfo[]>('plugin.builtinCatalog', {})
   }
