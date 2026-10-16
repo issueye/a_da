@@ -202,6 +202,31 @@ impl AgentRuntime {
             .await
     }
 
+    async fn persist_message(
+        &self,
+        thread_id: &str,
+        message: &AgentMessage,
+        sink: &dyn EventSink,
+        trace: &TraceCtx,
+        cancel: &dyn CancelToken,
+    ) -> Result<(), AgentError> {
+        let _ = self
+            .run_before_hook(
+                points::BEFORE_PERSIST,
+                Some(thread_id.to_string()),
+                serde_json::json!({
+                    "threadId": thread_id,
+                    "message": serde_json::to_value(message).unwrap_or(serde_json::Value::Null),
+                }),
+                sink,
+                thread_id,
+                trace,
+                cancel,
+            )
+            .await;
+        self.store.append_message(thread_id, message).await
+    }
+
     /// 问审批端口"这次调用需要问吗"（`Never` 短路——它与档位无关，声明就是声明）。
     ///
     /// 抽出来是为了**改写路径上的风险单调性判定**与真正执行前的那次判定
@@ -460,7 +485,7 @@ impl AgentRuntime {
                     images: req.images.clone(),
                     timestamp: Some(self.clock.now_ms()),
                 };
-                self.store.append_message(&thread_id, &user_msg).await?;
+                self.persist_message(&thread_id, &user_msg, sink, &trace, cancel).await?;
             }
         }
 
@@ -871,7 +896,7 @@ impl AgentRuntime {
                         duration_ms: Some((now - step_start_ms).max(0) as u64),
                         turn_duration_ms: Some((now - turn_start_ms).max(0) as u64),
                     };
-                    let _ = self.store.append_message(&thread_id, &partial).await;
+                    let _ = self.persist_message(&thread_id, &partial, sink, &trace, cancel).await;
                 }
                 final_stop_reason = TurnStopReason::ModelError;
                 break 'turn_loop;
@@ -916,7 +941,7 @@ impl AgentRuntime {
                 turn_duration_ms: Some(turn_duration_ms),
             };
 
-            self.store.append_message(&thread_id, &assistant_msg).await?;
+            self.persist_message(&thread_id, &assistant_msg, sink, &trace, cancel).await?;
             history.push(assistant_msg);
             let mut tool_results_summary: Vec<serde_json::Value> = Vec::new();
             let mut tools_duration_ms = 0u64;
@@ -970,14 +995,14 @@ impl AgentRuntime {
                         let now = self.clock.now_ms();
                         let receipt = ToolReceipt::error(format!("未知的工具: {name}"), now, now);
                         let result_msg = Self::receipt_to_agent_message(&raw_call.id, &raw_call.name, &receipt);
-                        self.store.append_message(&thread_id, &result_msg).await?;
+                        self.persist_message(&thread_id, &result_msg, sink, &trace, cancel).await?;
                         history.push(result_msg);
                     }
                     Err(ToolError::Unsupported(msg)) | Err(ToolError::Failed(msg)) => {
                         let now = self.clock.now_ms();
                         let receipt = ToolReceipt::error(msg, now, now);
                         let result_msg = Self::receipt_to_agent_message(&raw_call.id, &raw_call.name, &receipt);
-                        self.store.append_message(&thread_id, &result_msg).await?;
+                        self.persist_message(&thread_id, &result_msg, sink, &trace, cancel).await?;
                         history.push(result_msg);
                     }
                     Ok(tool) => {
@@ -1323,7 +1348,7 @@ impl AgentRuntime {
                             });
 
                             let result_msg = Self::receipt_to_agent_message(&raw_call.id, &raw_call.name, &receipt);
-                            self.store.append_message(&thread_id, &result_msg).await?;
+                            self.persist_message(&thread_id, &result_msg, sink, &trace, cancel).await?;
                             history.push(result_msg);
 
                             // 归因复位：这一手的 call_id 不再适用于后续事件
@@ -1440,7 +1465,7 @@ impl AgentRuntime {
                             });
 
                             let result_msg = Self::receipt_to_agent_message(&raw_call.id, &raw_call.name, &receipt);
-                            self.store.append_message(&thread_id, &result_msg).await?;
+                            self.persist_message(&thread_id, &result_msg, sink, &trace, cancel).await?;
                             history.push(result_msg);
 
                             // 归因复位（同拒绝分支）

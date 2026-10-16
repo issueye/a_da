@@ -96,6 +96,10 @@ pub mod points {
         AFTER_PROVIDER_RESPONSE,
         BEFORE_CONTEXT,
         AFTER_CONTEXT,
+        BEFORE_PERSIST,
+        AFTER_CHECKPOINT,
+        BEFORE_SKILL_LOAD,
+        AFTER_SKILL_LOAD,
     ];
 
     /// **支持改写**的点位（P3b · SP-60）。

@@ -2148,6 +2148,18 @@ impl Dispatcher {
                 // 否则界面会显示"已回滚"而文件其实没动。
                 let outcome = self.checkpoint_mgr.revert_checkpoint(thread_id, checkpoint_id)
                     .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
+                let _ = self
+                    .run_out_of_turn_after(
+                        agent_base::ports::hooks::points::AFTER_CHECKPOINT,
+                        Some(thread_id.to_string()),
+                        serde_json::json!({
+                            "threadId": thread_id,
+                            "checkpointId": checkpoint_id,
+                            "operation": "revert",
+                            "ok": outcome.is_some(),
+                        }),
+                    )
+                    .await;
 
                 let mut store = self.store.write().await;
                 if let Some(thread) = store.threads.iter_mut().find(|t| t.id == thread_id) {
@@ -2177,6 +2189,18 @@ impl Dispatcher {
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 path 参数"))?;
                 let outcome = self.checkpoint_mgr.revert_file(thread_id, Path::new(file_path))
                     .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
+                let _ = self
+                    .run_out_of_turn_after(
+                        agent_base::ports::hooks::points::AFTER_CHECKPOINT,
+                        Some(thread_id.to_string()),
+                        serde_json::json!({
+                            "threadId": thread_id,
+                            "path": file_path,
+                            "operation": "revert_file",
+                            "ok": outcome.is_some(),
+                        }),
+                    )
+                    .await;
 
                 let mut store = self.store.write().await;
                 if let Some(thread) = store.threads.iter_mut().find(|t| t.id == thread_id) {
@@ -2205,6 +2229,17 @@ impl Dispatcher {
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
                 let outcome = self.checkpoint_mgr.revert_all(thread_id)
                     .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
+                let _ = self
+                    .run_out_of_turn_after(
+                        agent_base::ports::hooks::points::AFTER_CHECKPOINT,
+                        Some(thread_id.to_string()),
+                        serde_json::json!({
+                            "threadId": thread_id,
+                            "operation": "revert_all",
+                            "ok": outcome.is_some(),
+                        }),
+                    )
+                    .await;
 
                 let mut store = self.store.write().await;
                 if let Some(thread) = store.threads.iter_mut().find(|t| t.id == thread_id) {
@@ -3692,6 +3727,13 @@ impl Dispatcher {
 
             SKILL_LIST => {
                 let ws = params.get("workspace").and_then(|v| v.as_str());
+                let _ = self
+                    .run_out_of_turn_before(
+                        agent_base::ports::hooks::points::BEFORE_SKILL_LOAD,
+                        ws.map(str::to_string),
+                        serde_json::json!({ "workspace": ws }),
+                    )
+                    .await;
                 // 🔴 读的是**共享活体**（不是启动时的快照）：插件启停会原地换它，
                 // 于是"界面列出的技能"与"真的进了提示词的技能"始终是同一份。
                 // 早先这里是快照 → 停用插件后引擎侧已经没有那条技能，界面里还在
@@ -3776,6 +3818,17 @@ impl Dispatcher {
                         );
                     }
                 }
+                let _ = self
+                    .run_out_of_turn_after(
+                        agent_base::ports::hooks::points::AFTER_SKILL_LOAD,
+                        ws.map(str::to_string),
+                        serde_json::json!({
+                            "workspace": ws,
+                            "count": skills.len(),
+                            "enabled": skills.iter().filter(|s| s.enabled).count(),
+                        }),
+                    )
+                    .await;
                 Ok(serde_json::to_value(skills).map_err(|e| ProtocolError::internal_error(e.to_string()))?)
             }
 
