@@ -309,6 +309,13 @@ impl PluginSandbox {
                     }}
                     const ws = {ws_json};
                     const targetPoint = {point_json};
+                    const eventPayload = payload && payload.__ada_hook_event !== undefined
+                        ? payload.__ada_hook_event
+                        : payload;
+                    const hookCtx = Object.assign(
+                        {{ point: targetPoint, workspace: ws }},
+                        payload && payload.__ada_hook_ctx !== undefined ? payload.__ada_hook_ctx : {{}},
+                    );
                     let hooksRaw = [];
                     if (typeof desc === 'function') {{
                         const api = {{
@@ -346,7 +353,9 @@ impl PluginSandbox {
                     // "expected value at line 1 column 2" 这种跟插件毫不相干的错。
                     // 也**不要**在这里 `const payload = payload || {}`：同名的 const 会
                     // 在 TDZ 里遮蔽参数，Boa 报 "access of uninitialized binding"。
-                    const res = await target.handler(payload);
+                    // Match pi's extension shape: handlers receive (event, ctx).
+                    // The context is data-only and cannot call host capabilities.
+                    const res = await target.handler(eventPayload, hookCtx);
                     if (res === null || res === undefined) {{
                         return JSON.stringify({{}});
                     }}
@@ -1017,11 +1026,11 @@ mod tests {
                api.registerHook({\n\
                  point: 'beforeToolCall',\n\
                  actions: ['deny'],\n\
-                 handler: async (payload: any) => {\n\
+                 handler: async (payload: any, ctx: any) => {\n\
                    if (String((payload.args && payload.args.cmd) || '').includes('rm -rf')) {\n\
                      return { action: 'deny', reason: '会删掉整个工作区' };\n\
                    }\n\
-                   return {};\n\
+                   return { note: String(ctx.point) + ':' + String(ctx.workspace || '') };\n\
                  },\n\
                });\n\
                api.registerTool({ name: 'git_status', description: '插件版 git 状态', \
@@ -1063,6 +1072,12 @@ mod tests {
         assert!(pass.get("action").is_none(), "无意见不该编一个动作出来：{pass}");
 
         // ③ 同一个插件的**工具**照样能调（少了 `registerHook` 时这一步会红）
+        assert_eq!(
+            pass.get("note").and_then(|v| v.as_str()),
+            Some(format!("beforeToolCall:{}", dir.to_string_lossy()).as_str()),
+            "pi-style ctx should be injected as the second handler argument: {pass}"
+        );
+
         let tool = PluginSandbox::call_tool(
             &path,
             "git_status",

@@ -354,9 +354,20 @@ impl HookRuntime {
             thread_id: ctx.thread_id,
             origin_id: Some(reg.plugin_id.as_str()),
         };
+        let script_payload = serde_json::json!({
+            "__ada_hook_event": payload,
+            "__ada_hook_ctx": {
+                "threadId": ctx.thread_id,
+                "turnId": ctx.turn_id,
+                "callId": ctx.call_id,
+                "pluginId": reg.plugin_id,
+                "point": point,
+                "timeoutMs": self.budget.timeout_ms,
+            },
+        });
         let call = self
             .script_host
-            .invoke_hook(&reg.handle, point, payload.clone(), &script_ctx);
+            .invoke_hook(&reg.handle, point, script_payload, &script_ctx);
 
         // 单点位预算：**超时即无意见**（§5.5）。这里再兜一层墙钟——
         // 沙箱自己也有一层，但那是"这个脚本跑太久"，这里是"这个点位的预算"，
