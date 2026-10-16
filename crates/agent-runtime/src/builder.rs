@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use agent_base::engine::{AgentRuntime, RunPolicy};
 use agent_base::ports::{
-    ApprovalGate, Clock, Consumer, ContractViolation, ModelClient, PromptSource,
+    ApprovalGate, Clock, Consumer, ContractViolation, HookRunner, ModelClient, PromptSource,
     Scope, SessionStore, Tool, ToolCatalog,
 };
 use thiserror::Error;
@@ -33,6 +33,7 @@ pub struct ProductBuilder {
     clock: Option<Arc<dyn Clock>>,
     /// 外部给定的注册表（SP-46）：给了就用它，没给就按 `tools` 新建一个。
     catalog: Option<Arc<CompositeToolCatalog>>,
+    hooks: Option<Arc<dyn HookRunner>>,
 }
 
 impl ProductBuilder {
@@ -47,6 +48,7 @@ impl ProductBuilder {
             scope: None,
             clock: None,
             catalog: None,
+            hooks: None,
         }
     }
 
@@ -115,6 +117,12 @@ impl ProductBuilder {
         self
     }
 
+    /// 装配 AgentRuntime 的钩子运行时（P3a / Phase 1 接火）。
+    pub fn with_hooks(mut self, runner: Arc<dyn HookRunner>) -> Self {
+        self.hooks = Some(runner);
+        self
+    }
+
     /// 校验当前装配是否与产品声明契约双向一致。
     pub fn validate(&self) -> Vec<ContractViolation> {
         let catalog = CompositeToolCatalog::new(self.tools.clone(), None);
@@ -150,7 +158,7 @@ impl ProductBuilder {
             tool_timeout: self.spec.policies.tool_timeout_sec.map(Duration::from_secs),
         };
 
-        Ok(AgentRuntime::new(
+        let mut runtime = AgentRuntime::new(
             model,
             catalog,
             approval,
@@ -159,6 +167,12 @@ impl ProductBuilder {
             scope,
             clock,
             policy,
-        ))
+        );
+
+        if let Some(hooks) = self.hooks {
+            runtime = runtime.with_hooks(hooks);
+        }
+
+        Ok(runtime)
     }
 }
