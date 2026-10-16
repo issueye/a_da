@@ -497,13 +497,22 @@ impl AgentRuntime {
             if cancel.is_cancelled() {
                 self.emit_aborted(sink, &thread_id, &trace, "cancel_before_step");
                 final_stop_reason = TurnStopReason::Aborted;
+                break 'turn_loop;
+            }
 
-            // beforeTurn 钩子 (P3a): 点位已开放，支持 Deny/AbortTurn。
+            // beforeTurn is called after per-turn budget/cancellation checks and
+            // immediately before constructing the model request.
             let before_turn_outcome = self
                 .run_before_hook(
                     points::BEFORE_TURN,
                     None,
-                    serde_json::json!({ "step": step_index }),
+                    serde_json::json!({
+                        "step": step_index,
+                        "threadId": thread_id,
+                        "messageCount": history.len(),
+                        "systemPromptBytes": system_prompt.len(),
+                        "availableTools": model_tools.iter().map(|t| t.function.name.as_str()).collect::<Vec<_>>(),
+                    }),
                     sink,
                     &thread_id,
                     &trace,
@@ -512,7 +521,7 @@ impl AgentRuntime {
                 .await;
             match before_turn_outcome {
                 BeforeOutcome::Pass => {}
-                BeforeOutcome::Deny { reason } => {
+                BeforeOutcome::Deny { reason: _ } => {
                     final_stop_reason = TurnStopReason::Denied;
                     break 'turn_loop;
                 }
@@ -527,9 +536,6 @@ impl AgentRuntime {
                     break 'turn_loop;
                 }
                 BeforeOutcome::Replace { .. } => {}
-            }
-
-                break 'turn_loop;
             }
 
             let step_start_ms = self.clock.now_ms();
@@ -662,6 +668,10 @@ impl AgentRuntime {
             let final_step_usage = step_usage.unwrap_or(accumulated_usage);
             // 记下来给下一轮的上下文治理用（如实数字，不做估算）
             last_round_usage = Some(final_step_usage.clone());
+            let assistant_text_chars = accumulated_text.chars().count();
+            let thinking_chars = accumulated_thinking.chars().count();
+            let requested_tool_names: Vec<String> = tool_calls.iter().map(|c| c.name.clone()).collect();
+            let usage_summary = serde_json::to_value(&final_step_usage).unwrap_or(serde_json::Value::Null);
 
             // 保存 Assistant 消息
             let tool_call_blocks: Vec<ToolCallBlock> = tool_calls
@@ -688,6 +698,8 @@ impl AgentRuntime {
 
             self.store.append_message(&thread_id, &assistant_msg).await?;
             history.push(assistant_msg);
+            let mut tool_results_summary: Vec<serde_json::Value> = Vec::new();
+            let mut tools_duration_ms = 0u64;
 
             // 发送用量与统计事件
             self.emit(sink, &thread_id, &trace, AgentEventBody::UsageReported {
@@ -697,6 +709,26 @@ impl AgentRuntime {
 
             // 如果无工具调用，本轮自然结束
             if tool_calls.is_empty() {
+                self.run_after_hook(
+                    points::AFTER_TURN,
+                    None,
+                    serde_json::json!({
+                        "step": step_index,
+                        "threadId": thread_id,
+                        "status": "completed",
+                        "assistantTextChars": assistant_text_chars,
+                        "thinkingChars": thinking_chars,
+                        "requestedToolNames": requested_tool_names,
+                        "toolResults": tool_results_summary,
+                        "usage": usage_summary,
+                        "llmDurationMs": step_duration_ms,
+                        "toolsDurationMs": tools_duration_ms,
+                    }),
+                    sink,
+                    &thread_id,
+                    &trace,
+                    cancel,
+                ).await;
                 final_stop_reason = TurnStopReason::Completed;
                 break 'turn_loop;
             }
@@ -967,6 +999,12 @@ impl AgentRuntime {
                                 now,
                                 now,
                             );
+                            tools_duration_ms = tools_duration_ms.saturating_add(receipt.duration_ms());
+                            tool_results_summary.push(serde_json::json!({
+                                "tool": raw_call.name,
+                                "status": "denied",
+                                "outputChars": receipt.output.chars().count(),
+                            }));
 
                             // afterToolCall 对**被拒的调用**同样触发（P3a·SP-51）：
                             // 拒绝也产生一条模型会读到的结果，插件（例如一个审计插件）
@@ -1081,6 +1119,12 @@ impl AgentRuntime {
                             // 事后只做**观察 + 追加旁注**：旁注追进 `output`（模型正在读的那段
                             // 文本，前缀写明来自插件），观察只进诊断面。**不得**改写
                             // `status`——"工具到底成没成"是已经发生的事实（设计 §5.3）。
+                            tools_duration_ms = tools_duration_ms.saturating_add(receipt.duration_ms());
+                            tool_results_summary.push(serde_json::json!({
+                                "tool": raw_call.name,
+                                "status": Self::status_label(receipt.status),
+                                "outputChars": receipt.output.chars().count(),
+                            }));
                             let notes = self
                                 .run_after_hook(
                                     points::AFTER_TOOL_CALL,
@@ -1125,7 +1169,18 @@ impl AgentRuntime {
             self.run_after_hook(
                 points::AFTER_TURN,
                 None,
-                serde_json::json!({ "step": step_index }),
+                serde_json::json!({
+                    "step": step_index,
+                    "threadId": thread_id,
+                    "status": "completed",
+                    "assistantTextChars": assistant_text_chars,
+                    "thinkingChars": thinking_chars,
+                    "requestedToolNames": requested_tool_names,
+                    "toolResults": tool_results_summary,
+                    "usage": usage_summary,
+                    "llmDurationMs": step_duration_ms,
+                    "toolsDurationMs": tools_duration_ms,
+                }),
                 sink,
                 &thread_id,
                 &trace,
@@ -1680,7 +1735,7 @@ mod tests {
         assert!(!skipped.is_empty(), "没人订阅也要报（缺席可见）");
         assert_eq!(skipped[0].reason.as_deref(), Some("no_subscriber"));
         assert_eq!(
-            skipped[0].data.get("point").and_then(|v| v.as_str()),
+            skipped.iter().find_map(|d| d.data.get("point").and_then(|v| v.as_str()).filter(|p| *p == "beforeToolCall")),
             Some("beforeToolCall"),
             "要指出是哪个点位没人管：{:?}",
             skipped[0]
