@@ -327,6 +327,11 @@ export interface SkillSummary {
   pluginId?: string
   /** frontmatter 里认不出的键（SP-45）：非空 = 技能文件写错了键名，界面要提示 */
   unknownFrontmatterKeys?: string[]
+  /**
+   * 技能正文（线协议上本来就有；界面只用它算"启用技能的正文合计字节"——
+   * 技能是**全量进提示词**的，这个数字直接对应每轮的固定开销）。
+   */
+  body?: string
 }
 
 export interface PromptItem {

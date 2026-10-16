@@ -3,10 +3,6 @@ import {
   X,
   Puzzle,
   Wrench,
-  Sparkles,
-  CheckCircle,
-  FolderGit2,
-  Globe,
   Shield,
   Sliders,
   Plus,
@@ -36,10 +32,26 @@ interface PluginsModalProps {
   onClose: () => void
 }
 
-type TabType = 'skills' | 'builtin-plugins' | 'workspace' | 'global' | 'builtins' | 'capabilities'
+/**
+ * 标签页（**四页，按"是什么"分**）。
+ *
+ * 早先是六页，其中「内置辅助插件 / 工作区扩展 / 全局扩展」是**同一类东西按来源**切开的三份，
+ * 用户要在三个标签之间点来点去才知道自己到底有哪些扩展。现在它们合成一页
+ * （来源做成**筛选条**），剩下三页分别是技能、核心工具、能力开关——
+ * 一个标签对应一种**事物**，而不是同一件事物的一个切片。
+ */
+type TabType = 'extensions' | 'skills' | 'builtins' | 'capabilities'
+
+/** 扩展的来源筛选（三个插件页合并之后的那个筛选条）。 */
+type ScopeFilter = 'all' | 'builtin' | 'workspace' | 'global'
+
+/** 技能的来源筛选（与插件一栏同口径，另加 `plugin`：插件带来的技能）。 */
+type SkillSourceFilter = 'all' | 'builtin' | 'workspace' | 'global' | 'plugin'
 
 export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) => {
-  const [activeTab, setActiveTab] = useState<TabType>('builtin-plugins')
+  const [activeTab, setActiveTab] = useState<TabType>('extensions')
+  const [scopeFilter, setScopeFilter] = useState<ScopeFilter>('all')
+  const [skillFilter, setSkillFilter] = useState<SkillSourceFilter>('all')
   const [plugins, setPlugins] = useState<PluginItem[]>([])
   const [capabilities, setCapabilities] = useState<ResolvedPluginCapabilitiesDto | null>(null)
   const [pluginConfigs, setPluginConfigs] = useState<Record<string, Record<string, unknown>>>({})
@@ -194,9 +206,46 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
     }
   }
 
-  const builtinPlugins = plugins.filter((p) => p.scope === 'builtin')
-  const workspacePlugins = plugins.filter((p) => p.scope === 'workspace')
-  const globalPlugins = plugins.filter((p) => p.scope === 'global')
+  // ── 派生数据（一页一类事物，筛选只是同一份数据的视图）────────────────────
+  const scopeCounts = {
+    all: plugins.length,
+    builtin: plugins.filter((p) => p.scope === 'builtin').length,
+    workspace: plugins.filter((p) => p.scope === 'workspace').length,
+    global: plugins.filter((p) => p.scope === 'global').length,
+  }
+  const visiblePlugins =
+    scopeFilter === 'all' ? plugins : plugins.filter((p) => p.scope === scopeFilter)
+
+  /** 技能来源：`plugin` 是"插件带来的"（口径与 `SkillSummary.pluginId` 一致）。 */
+  const skillSourceOf = (s: SkillSummary): Exclude<SkillSourceFilter, 'all'> =>
+    s.pluginId ? 'plugin' : (s.scope as 'builtin' | 'workspace' | 'global')
+  const skillCounts = {
+    all: skills.length,
+    builtin: skills.filter((s) => skillSourceOf(s) === 'builtin').length,
+    workspace: skills.filter((s) => skillSourceOf(s) === 'workspace').length,
+    global: skills.filter((s) => skillSourceOf(s) === 'global').length,
+    plugin: skills.filter((s) => skillSourceOf(s) === 'plugin').length,
+  }
+  const visibleSkills =
+    skillFilter === 'all' ? skills : skills.filter((s) => skillSourceOf(s) === skillFilter)
+  /** 启用技能的**正文**总字节：技能是**全量进提示词**的，这个数字直接对应每轮的固定开销。 */
+  const enabledSkillBytes = skills
+    .filter((s) => s.enabled)
+    .reduce((sum, s) => sum + (s.body ? new Blob([s.body]).size : 0), 0)
+
+  /**
+   * **哪些核心工具被磁盘插件顶替了**（决策 1 的口径：插件只能重实现已注册的名字）。
+   *
+   * 只算**启用的磁盘插件**：内置辅助插件（`scope === 'builtin'`）的工具本来就是
+   * 编译进来的实现，把它们标成"顶替"是错的——那会指向不存在的问题。
+   */
+  const replacedBuiltins = new Map<string, string>()
+  for (const p of plugins) {
+    if (!p.enabled || p.scope === 'builtin') continue
+    for (const t of p.tools || []) {
+      if (!replacedBuiltins.has(t.name)) replacedBuiltins.set(t.name, p.name)
+    }
+  }
 
   return (
     <div className="fixed inset-0 bg-black/40 dark:bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 select-none">
@@ -228,11 +277,9 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
         {/* 顶部标签导航 */}
         <div className="flex border-b border-zinc-200 dark:border-[#27272a] bg-zinc-100/70 dark:bg-[#141416] px-4 pt-1 flex-shrink-0 overflow-x-auto">
           {[
-            { id: 'builtin-plugins', label: '内置辅助插件', icon: Puzzle, count: builtinPlugins.length },
-            { id: 'workspace', label: '工作区扩展', icon: FolderGit2, count: workspacePlugins.length },
-            { id: 'global', label: '全局扩展', icon: Globe, count: globalPlugins.length },
+            { id: 'extensions', label: '扩展', icon: Puzzle, count: plugins.length },
             { id: 'skills', label: '技能库 (Skills)', icon: Zap, count: skills.length },
-            { id: 'builtins', label: '内置核心工具', icon: Shield, count: builtinCatalog.length },
+            { id: 'builtins', label: '核心工具', icon: Shield, count: builtinCatalog.length },
             { id: 'capabilities', label: '能力开关', icon: Sliders },
           ].map((tab) => {
             const IconComponent = tab.icon
@@ -261,139 +308,87 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
 
         {/* 内容展示区 */}
         <div className="flex-1 p-5 overflow-y-auto space-y-4">
-          {/* 内置辅助插件 */}
-          {activeTab === 'builtin-plugins' && (
+          {/* 扩展（合并了原先的三个标签：内置辅助插件 / 工作区扩展 / 全局扩展）
+              —— 它们是同一类东西按来源切的三份，来源交给下面的筛选条。 */}
+          {activeTab === 'extensions' && (
             <div className="space-y-3">
-              <div className="text-[11px] text-zinc-600 dark:text-zinc-400">
-                系统官方内置的标准辅助插件，提供版本控制、代码大纲分析、项目探查与准入门禁等开箱即用能力。
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-[11px] text-zinc-600 dark:text-zinc-400">
+                  {scopeFilter === 'builtin'
+                    ? '系统官方内置的标准辅助插件，提供版本控制、代码大纲分析、项目探查与准入门禁等开箱即用能力。'
+                    : scopeFilter === 'workspace'
+                      ? '当前工作区专属插件，存放于 .ada/extensions/（或 .ada/plugins/），随项目版本库管理。'
+                      : scopeFilter === 'global'
+                        ? '用户级全局扩展，存放于 ~/.a-da/extensions/（或 ~/.a-da/plugins/），对所有工程通用。'
+                        : '插件按来源分三类：内置（编译进来）、工作区（随项目走）、全局（对所有工程通用）。同一个工具名被插件重实现时，插件胜出。'}
+                </div>
+                <div className="flex items-center space-x-1.5">
+                  <button
+                    onClick={() => handleCreateTemplate('workspace')}
+                    className="flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium text-[11px] shadow-sm transition-colors"
+                  >
+                    <Plus size={12} />
+                    <span>新建工作区插件</span>
+                  </button>
+                  <button
+                    onClick={() => handleCreateTemplate('global')}
+                    className="flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 font-medium text-[11px] border border-zinc-300 dark:border-zinc-700 transition-colors"
+                  >
+                    <Plus size={12} />
+                    <span>新建全局插件</span>
+                  </button>
+                </div>
               </div>
 
-              <div className="grid grid-cols-1 gap-2.5">
-                {builtinPlugins.map((item) => (
-                  <div
-                    key={item.id}
-                    className="p-3.5 rounded-xl border border-zinc-200 dark:border-[#27272a] bg-zinc-50 dark:bg-[#141416] hover:border-zinc-300 dark:hover:border-zinc-700 transition-colors flex flex-col space-y-2 shadow-sm dark:shadow-none"
+              {/* 来源筛选：三个标签合成的就是这个 */}
+              <div className="flex items-center flex-wrap gap-1">
+                <span className="text-[10px] text-zinc-400 mr-0.5">来源</span>
+                {(
+                  [
+                    ['all', '全部', scopeCounts.all],
+                    ['builtin', '内置', scopeCounts.builtin],
+                    ['workspace', '工作区', scopeCounts.workspace],
+                    ['global', '全局', scopeCounts.global],
+                  ] as const
+                ).map(([value, label, count]) => (
+                  <button
+                    key={value}
+                    onClick={() => setScopeFilter(value)}
+                    className={`px-2 py-0.5 rounded-md text-[11px] transition-colors ${
+                      scopeFilter === value
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-zinc-100 dark:bg-zinc-800/70 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+                    }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-2">
-                        <Wrench size={14} className="text-blue-500 dark:text-blue-400" />
-                        <span className="font-semibold text-zinc-900 dark:text-zinc-200">{item.name}</span>
-                        <span className="font-mono text-[10px] text-zinc-500">{item.id}</span>
-                      </div>
-
-                      <button
-                        onClick={() => handleTogglePlugin(item)}
-                        className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors border ${
-                          item.enabled
-                            ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/40'
-                            : 'bg-zinc-200 dark:bg-zinc-800 border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-400 hover:bg-zinc-300 dark:hover:bg-zinc-700'
-                        }`}
-                      >
-                        {item.enabled ? '已激活' : '已停用'}
-                      </button>
-                    </div>
-
-                    <div className="text-[11px] text-zinc-600 dark:text-zinc-400 leading-relaxed">
-                      {item.plugin.manifest.description || '官方核心插件'}
-                    </div>
-
-                    {item.tools && item.tools.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5 pt-1">
-                        {item.tools.map((t) => (
-                          <span
-                            key={t.name}
-                            className="px-2 py-0.5 rounded bg-white dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 text-[10px] font-mono text-zinc-700 dark:text-zinc-300 shadow-sm dark:shadow-none"
-                            title={t.description}
-                          >
-                            {t.name}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* SP-74：插件自述的诊断（此前界面上完全看不见，见 unfinished-features §三.3） */}
-                    <PluginDiagnostics diagnostics={item.diagnostics} />
-                  </div>
+                    {label} <span className="font-semibold">{count}</span>
+                  </button>
                 ))}
               </div>
-            </div>
-          )}
 
-          {/* 工作区扩展 */}
-          {activeTab === 'workspace' && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-[11px] text-zinc-600 dark:text-zinc-400">
-                  当前工作区专属插件，存放于 <code>.ada/extensions/</code> 目录下，随项目版本库管理。
-                </div>
-                <button
-                  onClick={() => handleCreateTemplate('workspace')}
-                  className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs shadow-sm transition-colors"
-                >
-                  <Plus size={13} />
-                  <span>新建工作区插件</span>
-                </button>
-              </div>
-
-              {workspacePlugins.length === 0 ? (
+              {visiblePlugins.length === 0 ? (
                 <div className="text-center py-12 border border-dashed border-zinc-300 dark:border-zinc-800 rounded-xl text-zinc-500">
-                  当前工作区暂无自定义插件，点击右上角按钮即可一键生成扩展模板。
+                  {scopeFilter === 'all'
+                    ? '还没有任何扩展。用右上角的按钮生成一个插件模板即可开始。'
+                    : scopeFilter === 'workspace'
+                      ? '当前工作区暂无自定义插件，点击右上角「新建工作区插件」生成模板。'
+                      : scopeFilter === 'global'
+                        ? '暂无全局插件，点击右上角「新建全局插件」生成模板。'
+                        : '没有内置辅助插件。'}
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {workspacePlugins.map((item) => (
+                  {visiblePlugins.map((item) => (
                     <PluginDetailCard
                       key={item.id}
                       item={item}
                       configs={pluginConfigs[item.id] || {}}
+                      // 该插件带来的技能条数：与「技能库」里那条 `pluginName` 徽标是同一件事，
+                      // 放在这里是为了"这个扩展到底给我加了什么"能一眼看全。
+                      skillCount={skills.filter((s) => s.pluginId === item.id).length}
                       onToggle={() => handleTogglePlugin(item)}
-                      onDelete={() => handleDeletePlugin(item)}
-                      onSaveConfig={() => handleSavePluginConfig(item)}
-                      onDraftChange={(key, val) => {
-                        setConfigDrafts((prev) => ({
-                          ...prev,
-                          [item.id]: {
-                            ...(prev[item.id] || {}),
-                            [key]: val,
-                          },
-                        }))
-                      }}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* 全局扩展 */}
-          {activeTab === 'global' && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-[11px] text-zinc-600 dark:text-zinc-400">
-                  用户级全局扩展，存放于 <code>~/.a-da/extensions/</code> 目录下，对所有工程通用。
-                </div>
-                <button
-                  onClick={() => handleCreateTemplate('global')}
-                  className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs shadow-sm transition-colors"
-                >
-                  <Plus size={13} />
-                  <span>新建全局插件</span>
-                </button>
-              </div>
-
-              {globalPlugins.length === 0 ? (
-                <div className="text-center py-12 border border-dashed border-zinc-300 dark:border-zinc-800 rounded-xl text-zinc-500">
-                  暂无全局插件，支持通过模板快速扩展自定义自动化工具。
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {globalPlugins.map((item) => (
-                    <PluginDetailCard
-                      key={item.id}
-                      item={item}
-                      configs={pluginConfigs[item.id] || {}}
-                      onToggle={() => handleTogglePlugin(item)}
-                      onDelete={() => handleDeletePlugin(item)}
+                      // 内置插件是**编译进来的**，`filePath` 只是 `(builtin):<id>` 这种占位串，
+                      // 走删除只会"报成功但什么也没删"。这类卡片不给删除按钮。
+                      onDelete={item.scope === 'builtin' ? undefined : () => handleDeletePlugin(item)}
                       onSaveConfig={() => handleSavePluginConfig(item)}
                       onDraftChange={(key, val) => {
                         setConfigDrafts((prev) => ({
@@ -415,11 +410,49 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
           {activeTab === 'skills' && (
             <div className="space-y-3">
               <div className="text-[11px] text-zinc-600 dark:text-zinc-400">
-                标准化专业技能与操作指引规范 (SKILL.md)，模型在执行复杂重构或特定指令时按需加载。
+                标准化专业技能与操作指引规范 (SKILL.md)。技能正文**全量进系统提示词**，
+                所以下面那行字节数就是"每轮固定开销"的一部分——停用不用的技能能省回来。
               </div>
 
-              <div className="grid grid-cols-1 gap-2.5">
-                {skills.map((skill) => (
+              {/* 来源筛选与「扩展」页同口径（目录 / 插件 / 内置）；插件技能另有插件名徽标 */}
+              <div className="flex items-center flex-wrap gap-1">
+                <span className="text-[10px] text-zinc-400 mr-0.5">来源</span>
+                {(
+                  [
+                    ['all', '全部', skillCounts.all],
+                    ['builtin', '内置', skillCounts.builtin],
+                    ['workspace', '工作区', skillCounts.workspace],
+                    ['global', '全局', skillCounts.global],
+                    ['plugin', '插件', skillCounts.plugin],
+                  ] as const
+                ).map(([value, label, count]) => (
+                  <button
+                    key={value}
+                    onClick={() => setSkillFilter(value)}
+                    className={`px-2 py-0.5 rounded-md text-[11px] transition-colors ${
+                      skillFilter === value
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-zinc-100 dark:bg-zinc-800/70 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+                    }`}
+                  >
+                    {label} <span className="font-semibold">{count}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="text-[10px] text-zinc-500 font-mono">
+                启用 {skills.filter((s) => s.enabled).length} / 共 {skills.length} 条 · 启用正文合计{' '}
+                {(enabledSkillBytes / 1024).toFixed(1)} KB
+              </div>
+
+              {visibleSkills.length === 0 ? (
+                <div className="text-center py-12 border border-dashed border-zinc-300 dark:border-zinc-800 rounded-xl text-zinc-500">
+                  {skillFilter === 'plugin'
+                    ? '当前没有插件带来的技能（插件用 api.registerSkill 声明，见「扩展」页）。'
+                    : '这一类暂时没有技能。'}
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-2.5">
+                {visibleSkills.map((skill) => (
                   <div
                     key={skill.id}
                     className="p-3.5 rounded-xl border border-zinc-200 dark:border-[#27272a] bg-zinc-50 dark:bg-[#141416] hover:border-zinc-300 dark:hover:border-zinc-700 transition-colors flex items-center justify-between shadow-sm dark:shadow-none"
@@ -461,44 +494,69 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
                     </button>
                   </div>
                 ))}
-              </div>
+                </div>
+              )}
             </div>
           )}
 
-          {/* 内置核心工具 */}
+          {/* 核心工具 */}
           {activeTab === 'builtins' && (
             <div className="space-y-3">
               <div className="text-[11px] text-zinc-600 dark:text-zinc-400">
                 核心运行引擎提供的最底层系统级工具，包含代码文件读写、沙箱终端执行、任务清单管理与子智能体协作调度。
+                这里列出的是**注册表里的名字**——插件要提供工具只能用这些名字（重实现），所以下面会标出谁被顶替了。
+              </div>
+
+              <div className="text-[10px] text-zinc-500 font-mono">
+                共 {builtinCatalog.length} 个 · 只读 {builtinCatalog.filter((t) => t.isReadOnly).length} ·
+                写入 {builtinCatalog.filter((t) => !t.isReadOnly).length}
+                {replacedBuiltins.size > 0 && (
+                  <span className="text-amber-600 dark:text-amber-400">
+                    {' '}· 被插件重实现 {replacedBuiltins.size} 个
+                  </span>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-2.5">
-                {builtinCatalog.map((tool) => (
-                  <div
-                    key={tool.name}
-                    className="p-3 rounded-xl border border-zinc-200 dark:border-[#27272a] bg-zinc-50 dark:bg-[#141416] hover:border-zinc-300 dark:hover:border-zinc-700 transition-colors flex flex-col justify-between shadow-sm dark:shadow-none"
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center space-x-1.5 font-mono text-xs font-semibold text-zinc-800 dark:text-zinc-200">
-                          <Terminal size={13} className="text-blue-500 dark:text-blue-400" />
-                          <span>{tool.name}</span>
+                {builtinCatalog.map((tool) => {
+                  const replacedBy = replacedBuiltins.get(tool.name)
+                  return (
+                    <div
+                      key={tool.name}
+                      className={`p-3 rounded-xl border bg-zinc-50 dark:bg-[#141416] hover:border-zinc-300 dark:hover:border-zinc-700 transition-colors flex flex-col justify-between shadow-sm dark:shadow-none ${
+                        replacedBy
+                          ? 'border-amber-300 dark:border-amber-500/40'
+                          : 'border-zinc-200 dark:border-[#27272a]'
+                      }`}
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-1.5 font-mono text-xs font-semibold text-zinc-800 dark:text-zinc-200">
+                            <Terminal size={13} className="text-blue-500 dark:text-blue-400" />
+                            <span>{tool.name}</span>
+                          </div>
+                          <span
+                            className={`text-[10px] px-1.5 py-0.2 rounded font-medium border ${
+                              tool.isReadOnly
+                                ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-500/30 text-blue-700 dark:text-blue-300'
+                                : 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-500/30 text-amber-700 dark:text-amber-300'
+                            }`}
+                          >
+                            {tool.isReadOnly ? '只读' : '写入'}
+                          </span>
                         </div>
-                        <span
-                          className={`text-[10px] px-1.5 py-0.2 rounded font-medium border ${
-                            tool.isReadOnly
-                              ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-500/30 text-blue-700 dark:text-blue-300'
-                              : 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-500/30 text-amber-700 dark:text-amber-300'
-                          }`}
-                        >
-                          {tool.isReadOnly ? '只读' : '写入'}
-                        </span>
+                        <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-300">{tool.label}</div>
+                        <div className="text-[10px] text-zinc-500 dark:text-zinc-400 leading-relaxed">{tool.description}</div>
+                        {/* 交叉引用：这个内置实现现在跑的是插件的（决策 1：插件只能重实现已注册的名字） */}
+                        {replacedBy && (
+                          <div className="text-[10px] text-amber-600 dark:text-amber-400 pt-0.5">
+                            ⚠ 已被插件「{replacedBy}」重实现（停用那个插件即恢复内置实现）
+                          </div>
+                        )}
                       </div>
-                      <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-300">{tool.label}</div>
-                      <div className="text-[10px] text-zinc-500 dark:text-zinc-400 leading-relaxed">{tool.description}</div>
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </div>
           )}
@@ -654,11 +712,14 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
 const PluginDetailCard: React.FC<{
   item: PluginItem
   configs: Record<string, unknown>
+  /** 这个插件带来的**技能**条数（与「技能库」里那条 `pluginName` 徽标是同一件事）。 */
+  skillCount?: number
   onToggle: () => void
-  onDelete: () => void
+  /** 省略 = 不可删（内置插件）；只有磁盘上的插件才有东西可删。 */
+  onDelete?: () => void
   onSaveConfig: () => void
   onDraftChange: (key: string, val: string) => void
-}> = ({ item, configs, onToggle, onDelete, onSaveConfig, onDraftChange }) => {
+}> = ({ item, configs, skillCount = 0, onToggle, onDelete, onSaveConfig, onDraftChange }) => {
   const [editingConfig, setEditingConfig] = useState(false)
   const schemaProps = item.plugin.contributions.configSchema?.properties
 
@@ -668,7 +729,22 @@ const PluginDetailCard: React.FC<{
         <div className="flex items-center space-x-2">
           <Wrench size={14} className="text-blue-500 dark:text-blue-400" />
           <span className="font-semibold text-zinc-900 dark:text-zinc-200">{item.name}</span>
-          <span className="text-[10px] text-zinc-500 font-mono">{item.fileName}</span>
+          {/* 来源徽标：一页里混了三种来源，没有它就分不出"这个扩展是谁给的、去哪儿找它"。
+              内置插件不显示 `.ts` 文件名——那是编译进来的，磁盘上并没有那个文件。 */}
+          <span
+            className={`px-1.5 py-0.2 rounded text-[10px] border ${
+              item.scope === 'builtin'
+                ? 'bg-zinc-100 dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-500'
+                : item.scope === 'workspace'
+                  ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-500/30 text-blue-700 dark:text-blue-300'
+                  : 'bg-violet-50 dark:bg-violet-950/30 border-violet-200 dark:border-violet-500/30 text-violet-700 dark:text-violet-300'
+            }`}
+          >
+            {item.scope === 'builtin' ? '内置' : item.scope === 'workspace' ? '工作区' : '全局'}
+          </span>
+          {item.scope !== 'builtin' && (
+            <span className="text-[10px] text-zinc-500 font-mono">{item.fileName}</span>
+          )}
           {item.status !== 'ready' && (
             <span className="px-1.5 py-0.2 rounded text-[10px] bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30">
               {item.status}
@@ -687,13 +763,15 @@ const PluginDetailCard: React.FC<{
             </button>
           )}
 
-          <button
-            onClick={onDelete}
-            className="p-1 text-zinc-400 dark:text-zinc-500 hover:text-rose-500 hover:bg-zinc-200 dark:hover:bg-zinc-800 rounded transition-colors"
-            title="删除插件"
-          >
-            <Trash2 size={13} />
-          </button>
+          {onDelete && (
+            <button
+              onClick={onDelete}
+              className="p-1 text-zinc-400 dark:text-zinc-500 hover:text-rose-500 hover:bg-zinc-200 dark:hover:bg-zinc-800 rounded transition-colors"
+              title="删除插件"
+            >
+              <Trash2 size={13} />
+            </button>
+          )}
 
           <button
             onClick={onToggle}
@@ -709,6 +787,17 @@ const PluginDetailCard: React.FC<{
       </div>
 
       <div className="text-[11px] text-zinc-600 dark:text-zinc-400">{item.plugin.manifest.description || '自定义扩展插件'}</div>
+
+      {/* 这个扩展到底带来了什么：工具 / 技能 / 提示词片段三类一起摆出来，
+          省得用户去「技能库」「核心工具」两页自己拼。 */}
+      {((item.tools && item.tools.length > 0) || skillCount > 0 || (item.prompts && item.prompts.length > 0)) && (
+        <div className="flex items-center flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-zinc-500 dark:text-zinc-400">
+          <span>贡献：</span>
+          <span>工具 {item.tools?.length ?? 0}</span>
+          <span>技能 {skillCount}</span>
+          <span>提示词片段 {item.prompts?.length ?? 0}</span>
+        </div>
+      )}
 
       {item.tools && item.tools.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
