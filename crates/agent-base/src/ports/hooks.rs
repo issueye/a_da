@@ -418,6 +418,13 @@ pub enum HookRegistration {
         when_to_use: Option<String>,
         user_invocable: Option<bool>,
     },
+    Hook {
+        plugin_id: String,
+        point: String,
+        actions: Vec<String>,
+        order: i32,
+        handler_export: String,
+    },
 }
 
 /// 统一预算（来自产品声明的 `hookTimeoutMs`，见 SP-53）。

@@ -572,6 +572,31 @@ impl HookRuntime {
                         user_invocable: item.get("userInvocable").and_then(|value| value.as_bool()),
                     });
                 }
+                "hook" => {
+                    let (Some(point), Some(handler_export)) = (
+                        item.get("point").and_then(|value| value.as_str()),
+                        item.get("handlerExport").and_then(|value| value.as_str()),
+                    ) else {
+                        continue;
+                    };
+                    let actions = item
+                        .get("actions")
+                        .and_then(|value| value.as_array())
+                        .map(|values| {
+                            values
+                                .iter()
+                                .filter_map(|value| value.as_str().map(str::to_string))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    pending.push(HookRegistration::Hook {
+                        plugin_id: reg.plugin_id.clone(),
+                        point: point.to_string(),
+                        actions,
+                        order: item.get("order").and_then(|value| value.as_i64()).unwrap_or(0) as i32,
+                        handler_export: handler_export.to_string(),
+                    });
+                }
                 _ => {}
             }
         }
@@ -1513,7 +1538,8 @@ mod tests {
                     "registrations": [
                         { "kind": "tool", "name": "dynamic_tool", "description": "dynamic", "parameters": { "type": "object" }, "executeExport": "dynamic_tool" },
                         { "kind": "systemPrompt", "id": "dynamic-prompt", "content": "Use dynamic prompt" },
-                        { "kind": "skill", "name": "dynamic-skill", "description": "dynamic skill", "path": ".ada/agent-coding/skills/dynamic-skill.md" }
+                        { "kind": "skill", "name": "dynamic-skill", "description": "dynamic skill", "path": ".ada/agent-coding/skills/dynamic-skill.md" },
+                        { "kind": "hook", "point": "afterTurn", "actions": ["observe"], "order": 5, "handlerExport": "dynamic_hook" }
                     ]
                 }
             }),
@@ -1538,9 +1564,10 @@ mod tests {
             )
             .await;
         let registrations = runtime.take_registrations();
-        assert_eq!(registrations.len(), 3);
+        assert_eq!(registrations.len(), 4);
         assert!(matches!(registrations[0], HookRegistration::Tool { ref name, ref execute_export, .. } if name == "dynamic_tool" && execute_export == "dynamic_tool"));
         assert!(matches!(registrations[1], HookRegistration::SystemPrompt { ref id, .. } if id == "dynamic-prompt"));
         assert!(matches!(registrations[2], HookRegistration::Skill { ref name, ref path, .. } if name == "dynamic-skill" && path.ends_with("dynamic-skill.md")));
+        assert!(matches!(registrations[3], HookRegistration::Hook { ref point, ref handler_export, order, .. } if point == "afterTurn" && handler_export == "dynamic_hook" && order == 5));
     }
 }

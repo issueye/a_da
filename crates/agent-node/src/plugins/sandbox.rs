@@ -352,6 +352,20 @@ impl PluginSandbox {
                         }});
                         return {{ ok: true }};
                     }};
+                    hookCtx.registerHook = (hook) => {{
+                        const handlerExport = hook && (hook.handlerExport || hook.handler);
+                        if (!hook || typeof hook.point !== 'string' || typeof handlerExport !== 'string') {{
+                            return {{ ok: false, reason: 'registerHook requires point and handlerExport' }};
+                        }}
+                        registrations.push({{
+                            kind: 'hook',
+                            point: hook.point,
+                            actions: Array.isArray(hook.actions) ? hook.actions : [],
+                            order: typeof hook.order === 'number' ? hook.order : 0,
+                            handlerExport,
+                        }});
+                        return {{ ok: true }};
+                    }};
                     let hooksRaw = [];
                     if (typeof desc === 'function') {{
                         const api = {{
@@ -1138,6 +1152,7 @@ mod tests {
               ctx.registerTool({ name: 'dynamic_tool', description: 'dynamic', parameters: { type: 'object' }, executeExport: 'dynamic_tool' }); \
               ctx.registerSystemPrompt({ id: 'dynamic-prompt', content: 'Use the dynamic prompt.' }); \
               ctx.registerSkill({ name: 'dynamic-skill', description: 'dynamic skill', path: '.ada/agent-coding/skills/dynamic-skill.md' }); \
+              ctx.registerHook({ point: 'afterTurn', actions: ['observe'], order: 5, handlerExport: 'dynamic_hook' }); \
               return { action: 'observe', data: { point: ctx.point } }; } }] };\n",
         )
         .unwrap();
@@ -1155,12 +1170,14 @@ mod tests {
         let registrations = registrations_result["data"]["registrations"]
             .as_array()
             .expect("registration requests should be returned");
-        assert_eq!(registrations.len(), 3);
+        assert_eq!(registrations.len(), 4);
         assert_eq!(registrations[0]["kind"], "tool");
         assert_eq!(registrations[0]["executeExport"], "dynamic_tool");
         assert_eq!(registrations[1]["kind"], "systemPrompt");
         assert_eq!(registrations[2]["kind"], "skill");
         assert_eq!(registrations[2]["path"], ".ada/agent-coding/skills/dynamic-skill.md");
+        assert_eq!(registrations[3]["kind"], "hook");
+        assert_eq!(registrations[3]["handlerExport"], "dynamic_hook");
         let _ = std::fs::remove_dir_all(&registration_dir);
 
         let _ = std::fs::remove_dir_all(&dir);
