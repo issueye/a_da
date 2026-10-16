@@ -927,7 +927,59 @@ impl AgentRuntime {
                             );
                         }
 
+                        let mut approval_hook_notes = Vec::new();
                         if needs_approval {
+                            match self
+                                .run_before_hook(
+                                    points::BEFORE_APPROVAL,
+                                    Some(raw_call.name.clone()),
+                                    serde_json::json!({
+                                        "callId": raw_call.id,
+                                        "tool": raw_call.name,
+                                        "args": parsed_args,
+                                        "isWrite": is_write,
+                                    }),
+                                    sink,
+                                    &thread_id,
+                                    &trace,
+                                    cancel,
+                                )
+                                .await
+                            {
+                                BeforeOutcome::Pass | BeforeOutcome::Replace { .. } => {}
+                                BeforeOutcome::Deny { reason } => {
+                                    is_denied = true;
+                                    denial_reason = Some(format!("approval hook denied: {reason}"));
+                                    approval_hook_notes = self
+                                        .run_after_hook(
+                                            points::AFTER_APPROVAL,
+                                            Some(raw_call.name.clone()),
+                                            serde_json::json!({
+                                                "tool": raw_call.name,
+                                                "approved": false,
+                                                "by": "hook",
+                                                "reason": reason,
+                                            }),
+                                            sink,
+                                            &thread_id,
+                                            &trace,
+                                            cancel,
+                                        )
+                                        .await;
+                                }
+                                BeforeOutcome::AbortTurn { reason } => {
+                                    self.emit_aborted(
+                                        sink,
+                                        &thread_id,
+                                        &trace,
+                                        &format!("hook:{}:{reason}", points::BEFORE_APPROVAL),
+                                    );
+                                    final_stop_reason = TurnStopReason::Aborted;
+                                    break 'turn_loop;
+                                }
+                            }
+
+                            if !is_denied {
                             // 审批事件**带上参数原文**：界面要能把"要批准的命令"完整摆出来，
                             // 否则用户只能对着一个工具名点"批准"（等于没有确认闸门）。
                             self.emit(sink, &thread_id, &trace, AgentEventBody::ApprovalRequested {
@@ -989,6 +1041,23 @@ impl AgentRuntime {
                                 is_denied = true;
                                 denial_reason = outcome.reason.or_else(|| Some("审批未通过".to_string()));
                             }
+                            approval_hook_notes = self
+                                .run_after_hook(
+                                    points::AFTER_APPROVAL,
+                                    Some(raw_call.name.clone()),
+                                    serde_json::json!({
+                                        "tool": raw_call.name,
+                                        "approved": outcome.approved,
+                                        "by": by,
+                                        "waitedMs": waited_ms,
+                                    }),
+                                    sink,
+                                    &thread_id,
+                                    &trace,
+                                    cancel,
+                                )
+                                .await;
+                            }
                         }
 
                         if is_denied {
@@ -1005,6 +1074,7 @@ impl AgentRuntime {
                                 "status": "denied",
                                 "outputChars": receipt.output.chars().count(),
                             }));
+                            Self::append_hook_notes(&mut receipt, &approval_hook_notes);
 
                             // afterToolCall 对**被拒的调用**同样触发（P3a·SP-51）：
                             // 拒绝也产生一条模型会读到的结果，插件（例如一个审计插件）
