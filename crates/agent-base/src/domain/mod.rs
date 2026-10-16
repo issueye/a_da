@@ -3,11 +3,21 @@
 //! 这一层是"什么是一个 agent 在跑"的唯一定义。适配器可以有无数实现，
 //! 但它们交换的必须是这里的类型。
 
+pub mod diag;
 pub mod error;
 pub mod event;
 pub mod message;
 pub mod tool;
+pub mod trace;
 
+pub use diag::{
+    DiagFamily, DiagOutcome, DiagnosticEvent, DIAG_POINTS, POINT_APPROVAL_SKIPPED,
+    POINT_APPROVAL_WAITED, POINT_HOOK_ENTERED, POINT_HOOK_FINISHED,
+    POINT_HOOK_REPLACE_APPLIED, POINT_HOOK_REPLACE_REJECTED, POINT_HOOK_SKIPPED,
+    POINT_PLUGIN_DISCOVERED, POINT_PLUGIN_REPLACED_BUILTIN, POINT_PLUGIN_SKIPPED,
+    POINT_PROMPT_COMPOSED, POINT_SCRIPT_FINISHED, POINT_SCRIPT_INVOKED, POINT_SKILL_INVALID,
+    POINT_SKILL_LOADED, POINT_SKILL_SKIPPED, POINT_TURN_ABORTED,
+};
 pub use error::{AgentError, DenialKind, FailDirection};
 pub use event::{AgentEvent, AgentEventBody, TurnStopReason};
 pub use message::{AgentMessage, ToolCallBlock};
@@ -15,3 +25,4 @@ pub use tool::{
     Access, ApprovalPolicy, Execution, PathSelector, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
     ToolReceipt, ToolStatus,
 };
+pub use trace::{make_turn_id, Origin, TraceCtx};

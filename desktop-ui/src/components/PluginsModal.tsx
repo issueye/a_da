@@ -29,6 +29,7 @@ import type {
 } from '../types'
 import { agentClient } from '../client/ws-client'
 import { ConfirmModal } from './ConfirmModal'
+import { PluginDiagnostics } from './PluginDiagnostics'
 
 interface PluginsModalProps {
   isOpen: boolean
@@ -309,6 +310,9 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
                         ))}
                       </div>
                     )}
+
+                    {/* SP-74：插件自述的诊断（此前界面上完全看不见，见 unfinished-features §三.3） */}
+                    <PluginDiagnostics diagnostics={item.diagnostics} />
                   </div>
                 ))}
               </div>
@@ -427,9 +431,22 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
                         <span className="text-[10px] px-1.5 py-0.2 rounded bg-zinc-200 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 font-mono">
                           {skill.scope}
                         </span>
+                        {/* SP-45：插件技能要说清是哪个插件带来的——否则用户看到一条
+                            "来源不明"的技能，停用与排查都无从下手 */}
+                        {skill.pluginName && (
+                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-100 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300">
+                            {skill.pluginName}
+                          </span>
+                        )}
                       </div>
                       <div className="text-[11px] text-zinc-600 dark:text-zinc-400">{skill.description}</div>
                       <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono truncate">{skill.path}</div>
+                      {/* SP-45：frontmatter 写错的键以前被静默忽略，作者完全看不出问题出在键名上 */}
+                      {skill.unknownFrontmatterKeys && skill.unknownFrontmatterKeys.length > 0 && (
+                        <div className="text-[10px] text-amber-600 dark:text-amber-400">
+                          认不出的 frontmatter 键：{skill.unknownFrontmatterKeys.join('、')}（这些设置不会生效）
+                        </div>
+                      )}
                     </div>
 
                     <button
@@ -705,6 +722,9 @@ const PluginDetailCard: React.FC<{
           ))}
         </div>
       )}
+
+      {/* SP-74：插件自述的诊断（加载失败 / 已停用 / 工具清单未经执行验证 / 越级声明…） */}
+      <PluginDiagnostics diagnostics={item.diagnostics} />
 
       {/* 插件表单配置项 */}
       {editingConfig && schemaProps && (

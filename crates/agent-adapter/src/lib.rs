@@ -11,7 +11,7 @@
 //! - `prompt/`：`PromptSource` 端口的真实实现 `CodingPromptSource`（W1-T3）
 //! - `store/`：会话与检查点落盘 + `SessionStore` 端口的真实实现 `FsSessionStore`（W1-T2）
 //! - `approval/`：审批**策略**纯函数（W1-T6；执行侧在宿主）
-//! - `plugin/`（ts_engine 沙箱）按计划 W2 逐步搬入
+//! - `plugin/`（ada-ts-engine 沙箱）按计划 W2 逐步搬入
 
 pub mod app_home;
 pub mod approval;

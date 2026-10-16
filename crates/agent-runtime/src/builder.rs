@@ -31,6 +31,8 @@ pub struct ProductBuilder {
     prompt: Option<Arc<dyn PromptSource>>,
     scope: Option<Arc<dyn Scope>>,
     clock: Option<Arc<dyn Clock>>,
+    /// 外部给定的注册表（SP-46）：给了就用它，没给就按 `tools` 新建一个。
+    catalog: Option<Arc<CompositeToolCatalog>>,
 }
 
 impl ProductBuilder {
@@ -44,6 +46,7 @@ impl ProductBuilder {
             prompt: None,
             scope: None,
             clock: None,
+            catalog: None,
         }
     }
 
@@ -102,6 +105,16 @@ impl ProductBuilder {
         Ok(self)
     }
 
+    /// 用**外部给定的注册表**（P2 · SP-46）。
+    ///
+    /// 为什么要它：受控重装配（插件启停）要往引擎正在用的那本注册表里 `register` /
+    /// `unregister`。若不共用，重装配换的是另一本账——界面上"关掉了"，引擎手里照旧，
+    /// 正是这个任务要消除的形态。
+    pub fn with_catalog(mut self, catalog: Arc<CompositeToolCatalog>) -> Self {
+        self.catalog = Some(catalog);
+        self
+    }
+
     /// 校验当前装配是否与产品声明契约双向一致。
     pub fn validate(&self) -> Vec<ContractViolation> {
         let catalog = CompositeToolCatalog::new(self.tools.clone(), None);
@@ -122,8 +135,14 @@ impl ProductBuilder {
         let scope = self.scope.ok_or_else(|| SpecError::MissingPort("Scope".into()))?;
         let clock = self.clock.ok_or_else(|| SpecError::MissingPort("Clock".into()))?;
 
-        // 装配一次 ToolCatalog，注入组合根
-        let catalog = Arc::new(CompositeToolCatalog::new(self.tools, None));
+        // 装配一次 ToolCatalog，注入组合根。
+        //
+        // SP-46：组合根可能已经拿了一个**活体**注册表（重装配要用同一个）——那就复用它，
+        // 而不是另造一个：另造的那个没人改得动，重装配就变成"换一本没人看的账"。
+        let catalog: Arc<CompositeToolCatalog> = match self.catalog {
+            Some(c) => c,
+            None => Arc::new(CompositeToolCatalog::new(self.tools, None)),
+        };
 
         let policy = RunPolicy {
             max_steps: self.spec.policies.max_steps,

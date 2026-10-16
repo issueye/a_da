@@ -16,7 +16,7 @@ uuid = { workspace = true }
 base64 = { workspace = true }
 
 # 独立的 TS 脚本与转译引擎（插件沙箱）
-ts_engine = { workspace = true }
+ada-ts-engine = { workspace = true }
 
 # 基座分层
 agent-base = { workspace = true }
@@ -24,3 +24,13 @@ agent-proto = { workspace = true }
 agent-adapter = { workspace = true }
 agent-toolkit = { workspace = true }
 agent-runtime = { workspace = true }
+
+[dev-dependencies]
+# P1·SP-19：脚本宿主的端口契约由合规套件提供（只依赖基座各 crate，无环）
+agent-conformance = { workspace = true }
+
+# P4·SP-70：插件**子进程入口**。它必须与本 crate 同源（要用 `PluginSandbox`），
+# 所以作为本 crate 的 bin 目标——调用方（宿主 / 测试）按可执行文件路径启动它。
+[[bin]]
+name = "ada-plugin-runner"
+path = "src/bin/ada-plugin-runner.rs"

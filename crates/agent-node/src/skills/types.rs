@@ -21,6 +21,13 @@ pub struct SkillSummary {
     pub user_invocable: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub when_to_use: Option<String>,
+    /// frontmatter 里**认不出的键**（P2 · SP-45）。
+    ///
+    /// 非空 = 这个技能文件写错了键名（`whenToUse` 拼错一个字母就会走到这里）。
+    /// 以前是静默忽略，于是"技能写好了却不生效"没有任何线索；现在由 `skill.list`
+    /// 产出 `skill.invalid` 诊断报给界面。空数组不序列化（老客户端不必知道这个新键）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unknown_frontmatter_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

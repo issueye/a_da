@@ -13,7 +13,6 @@ use tokio::sync::RwLock;
 
 use agent_node::node_config::NodeConfigSource;
 use crate::state::AgentStore;
-
 /// 从 `AgentStore` 读节点配置（生产实现）。
 ///
 /// 持 `Arc<RwLock<AgentStore>>` 的**共享句柄**而非快照：审批档位与 provider 都是
@@ -25,6 +24,17 @@ pub struct StoreBackedNodeConfig {
 impl StoreBackedNodeConfig {
     pub fn new(store: Arc<RwLock<AgentStore>>) -> Self {
         Self { store }
+    }
+}
+
+/// P1b（SP-33）：同一个档位真源也喂给 `Scope`。
+///
+/// 权限档位（能不能越出工作区）与审批档位（问不问）**必须读同一处**——两处各读一份
+/// 迟早会出现"界面显示完全访问、路径却仍被锁在工作区"这种自相矛盾。
+/// 适配器层不认识 `AgentStore`，所以由这里（唯一知道"配置存在投影里"的地方）实现它的小接口。
+impl agent_adapter::scope::ApprovalModeSource for StoreBackedNodeConfig {
+    fn approval_mode(&self) -> agent_proto::ApprovalMode {
+        NodeConfigSource::approval_mode(self)
     }
 }
 

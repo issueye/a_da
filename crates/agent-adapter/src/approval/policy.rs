@@ -144,11 +144,14 @@ pub fn should_ask_approval(
     args: &Value,
     config: &ApprovalGuardConfig,
 ) -> bool {
-    // 规则 0：`Auto` = YOLO，**先短路**。
+    // 规则 0：`Auto` 与 `Full`（完全访问）= 不问，**先短路**。
     //
     // 必须放在规则 1 之前：规则 1（危险命令二次确认）原本是唯一能拦下自动批准的例外，
-    // 而用户选了自动批准就是不要任何弹窗——它不能再绕过档位。
-    if mode == ApprovalMode::Auto {
+    // 而用户选了自动批准/完全访问就是不要任何弹窗——它不能再绕过档位。
+    //
+    // `Full` 与 `Auto` 在"问不问"这一层**完全一致**；它的增量在**权限层**
+    // （工作区边界与脚本网络，见 `PermissionProfile` 与 `scope`）。
+    if matches!(mode, ApprovalMode::Auto | ApprovalMode::Full) {
         return false;
     }
 
@@ -177,9 +180,34 @@ pub fn should_ask_approval(
     // 规则 4：通用档位判断。
     match mode {
         ApprovalMode::Ask => true,
-        // 规则 0 已短路，这里只为 match 穷尽；语义上"自动批准不询问"
-        ApprovalMode::Auto => false,
+        // 规则 0 已短路，这里只为 match 穷尽；语义上"自动批准/完全访问不询问"
+        ApprovalMode::Auto | ApprovalMode::Full => false,
         ApprovalMode::Readonly => agent_toolkit::is_write_tool(tool_name),
+    }
+}
+
+/// 权限档位（P1b 的第二层）：回答"能碰什么"，而不是"问不问"。
+///
+/// 与审批档位**共用一个真源**（[`ApprovalMode`]），但消费者不同：
+/// 审批档位归 [`should_ask_approval`]（问不问），权限档位归 `scope`（能不能越出工作区）
+/// 与脚本的 `Needs`（有没有网络）。
+///
+/// 为什么仍要显式分成两个枚举：将来会出现"问，但允许越界"这类组合
+/// （设计文档 §6.2）；届时给审批层加档、给权限层加档各改一处，不必再动彼此。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionProfile {
+    /// 只在工作区内活动（默认）
+    Workspace,
+    /// 放开工作区边界（`~/.a-da` 红线除外）
+    Full,
+}
+
+/// 由审批档位推出权限档位（**唯一映射处**）。
+pub fn permission_profile_of(mode: ApprovalMode) -> PermissionProfile {
+    match mode {
+        ApprovalMode::Full => PermissionProfile::Full,
+        // 其余三档都只在工作区内活动（`Auto` 只是不再询问，不是放开边界）
+        _ => PermissionProfile::Workspace,
     }
 }
 
@@ -200,6 +228,36 @@ mod tests {
             &json!({ "path": "a.rs" }),
             &config()
         ));
+    }
+
+    #[test]
+    /// P1b：`Full`（完全访问）在"问不问"这一层与 `auto` **完全一致**；
+    /// 它的增量在**权限层**（工作区边界与脚本网络），所以这里同时钉住两层。
+    #[test]
+    fn test_full_access_never_asks_and_maps_to_the_full_permission_profile() {
+        // 层一：问不问 —— 连危险命令也不问（与 auto 同）
+        assert!(!should_ask_approval(
+            ApprovalMode::Full,
+            "run_command",
+            &json!({ "command": "rm -rf /tmp/x" }),
+            &config()
+        ));
+        assert!(!should_ask_approval(
+            ApprovalMode::Full,
+            "write_file",
+            &json!({ "path": "a.rs" }),
+            &config()
+        ));
+
+        // 层二：权限档位 —— 只有 Full 放开边界，其余三档都在工作区内
+        assert_eq!(permission_profile_of(ApprovalMode::Full), PermissionProfile::Full);
+        for m in [ApprovalMode::Auto, ApprovalMode::Ask, ApprovalMode::Readonly] {
+            assert_eq!(
+                permission_profile_of(m),
+                PermissionProfile::Workspace,
+                "{m:?} 不是完全访问，不该放开工作区边界"
+            );
+        }
     }
 
     #[test]

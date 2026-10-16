@@ -81,6 +81,7 @@ export const PLUGIN_SECRET_SET = 'plugin.secret.set'
 export const PLUGIN_SET_ENABLED = 'plugin.setEnabled'
 export const PLUGIN_DELETE = 'plugin.delete'
 export const PLUGIN_CREATE_TEMPLATE = 'plugin.createTemplate'
+export const PLUGIN_VALIDATE = 'plugin.validate'
 export const PLUGIN_BUILTIN_CATALOG = 'plugin.builtinCatalog'
 
 // 提示词管理 (Prompt)

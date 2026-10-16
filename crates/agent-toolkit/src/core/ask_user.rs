@@ -450,6 +450,7 @@ mod tests {
             cancel: &cancel,
             events: &events,
             thread_id: "t_multi_q",
+            hooks: None,
         };
 
         set_question_registrar(Arc::new(|_call_id: &str| {
@@ -535,6 +536,7 @@ mod tests {
             cancel: &cancel,
             events: &events,
             thread_id: "t_multi",
+            hooks: None,
         };
 
         set_question_registrar(Arc::new(|_call_id: &str| {
@@ -597,6 +599,7 @@ mod tests {
             cancel: &cancel,
             events: &events,
             thread_id: "t1",
+            hooks: None,
         };
 
         let call = ToolCall {
@@ -627,6 +630,7 @@ mod tests {
             cancel: &cancel,
             events: &events,
             thread_id: "t1",
+            hooks: None,
         };
 
         let empty_call = ToolCall {
@@ -664,6 +668,7 @@ mod tests {
             cancel: &cancel,
             events: &events,
             thread_id: "t_auto_id",
+            hooks: None,
         };
 
         set_question_registrar(Arc::new(|_call_id: &str| {
@@ -718,6 +723,7 @@ mod tests {
             cancel: &cancel,
             events: &events,
             thread_id: "t_test_qa",
+            hooks: None,
         };
 
         // 注册测试等待器

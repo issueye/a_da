@@ -12,7 +12,8 @@
     "streaming": true,
     "rollback": true,
     "subagents": true,
-    "plugins": true
+    "plugins": true,
+    "hooks": true
   },
   "policies": {
     "parallelTools": 4,

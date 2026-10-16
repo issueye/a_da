@@ -96,7 +96,10 @@ pub fn project_to_loop_event(event: &AgentEvent) -> Option<AgentLoopEvent> {
         AgentEventBody::TurnStarted
         | AgentEventBody::SubagentStarted { .. }
         | AgentEventBody::SubagentFinished { .. }
-        | AgentEventBody::UsageReported { .. } => None,
+        | AgentEventBody::UsageReported { .. }
+        // P0 埋点：诊断遥测**刻意不进 legacy UI 事件集**——它只给人看（诊断面板/日志），
+        // 不进会话流。留在领域事件层由 dispatch 的投影按需消费。
+        | AgentEventBody::Diagnostic(_) => None,
     }
 }
 
@@ -751,6 +754,14 @@ mod tests {
             ),
             (AgentEventBody::TurnFinished { stop: TurnStopReason::Completed }, true),
             (AgentEventBody::Failed { message: "m".into() }, true),
+            (
+                AgentEventBody::Diagnostic(agent_base::domain::DiagnosticEvent::new(
+                    agent_base::domain::DiagFamily::Prompt,
+                    agent_base::domain::POINT_PROMPT_COMPOSED,
+                    agent_base::domain::Origin::Engine,
+                )),
+                false,
+            ),
         ];
 
         // 1. 编译期穷尽性
@@ -768,16 +779,17 @@ mod tests {
                 AgentEventBody::UsageReported { .. } => "usage",
                 AgentEventBody::TurnFinished { .. } => "turn.finished",
                 AgentEventBody::Failed { .. } => "failed",
+                AgentEventBody::Diagnostic(_) => "diagnostic",
             };
         }
 
-        // 2. 完备性：12 种 kind 每种恰好一次
+        // 2. 完备性：13 种 kind 每种恰好一次
         let mut kinds: Vec<&str> = cases.iter().map(|(b, _)| b.kind()).collect();
         kinds.sort_unstable();
         let mut unique = kinds.clone();
         unique.dedup();
         assert_eq!(unique.len(), cases.len(), "投影表里同一事件种类出现了多次：{kinds:?}");
-        assert_eq!(unique.len(), 12, "领域事件共 12 种，投影表必须全覆盖：{unique:?}");
+        assert_eq!(unique.len(), 13, "领域事件共 13 种，投影表必须全覆盖：{unique:?}");
 
         // 3. 结论与表一致
         for (body, expect_mapped) in &cases {

@@ -147,6 +147,12 @@ pub enum AgentMode {
 }
 
 /// 审批模式
+///
+/// `Full`（完全访问）是 P1b 新增的第四档：**完全放行**——不再询问，且放开工作区边界与
+/// 脚本的网络能力（见 `docs/script-plugin-system-design.md` §6）。
+///
+/// 它**不是** `Auto` 的别名：`Auto` 只是"不再询问"，路径仍在工作区内、插件仍拿不到网络；
+/// 真正的增量是那两项（命令执行在 `Auto` 下本来就放行）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ApprovalMode {
@@ -154,6 +160,8 @@ pub enum ApprovalMode {
     Auto,
     Ask,
     Readonly,
+    /// 完全访问：不问 + 放开工作区边界与脚本网络（`~/.a-da` 红线除外）
+    Full,
 }
 
 /// 深度档位

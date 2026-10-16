@@ -4,13 +4,26 @@
 //! 1. [`spec`] —— 产品规格（`agent.spec.json`）数据结构
 //! 2. [`catalog`] —— 组合式工具注册表（装配一次，杜绝每轮扫盘，INV-3/M1-T3）
 //! 3. [`builder`] —— [`ProductBuilder`]：唯一允许读取产品声明并装配各端口的地方（INV-8）
+//! 4. [`contributions`] —— **统一贡献装配管线**（P2 · SP-40）：把工具 / 提示词片段 /
+//!    技能 / 钩子收成一条"收集 → 校验 → 排序 → 产出"的管线
+//! 5. [`reassembly`] —— **受控重装配与贡献收据**（P2 · SP-46）：插件启停真的改变贡献集合
 
 pub mod builder;
 pub mod catalog;
+pub mod contributions;
+pub mod reassembly;
 pub mod spec;
 
 pub use builder::{ProductBuilder, SpecError};
 pub use catalog::CompositeToolCatalog;
+pub use contributions::{
+    AssemblyBuilder, AssemblyError, AssemblyPlan, Contribution, ContributionKind,
+    ContributionOrigin, FailurePolicy, HookRegistration, HookTable, PromptFragment, PromptPlan,
+    PromptSegmentReport, SkillEntry, SkillIndex, SkippedContribution,
+};
+pub use reassembly::{
+    ContributionDelta, ContributionDigest, LiveContributions, PluginToggleRequest, ReassemblyReport,
+};
 pub use spec::{AgentSpec, CapabilitySpec, DelegationMode, GatewaySpec, IdentitySpec, PolicySpec};
 
 #[cfg(test)]

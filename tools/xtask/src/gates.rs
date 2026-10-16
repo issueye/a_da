@@ -350,6 +350,33 @@ const SPEC_FIELDS: &[(&str, &str)] = &[
     ("gateway", "GatewaySpec"),
 ];
 
+/// 能力位的消费者登记（check L 的口径）。
+///
+/// `(位名, 判定消费者用的符号列表)`；符号列表为空 = 该位是**信息性字段**，
+/// 必须在 [`CAPABILITY_INFORMATIONAL`] 里写明理由。为什么仍然是一张表：
+/// 与 [`SPEC_FIELDS`] 同理——"必须检查哪些位"需要唯一口径，而硬编码数组最容易的
+/// 失败方式是"新加一位忘了登记"。
+const CAPABILITY_FIELDS: &[(&str, &[&str])] = &[
+    ("images", &["capabilities.images", "caps.images"]),
+    // 见 CAPABILITY_INFORMATIONAL
+    ("streaming", &[]),
+    ("rollback", &["capabilities.rollback", "caps.rollback"]),
+    ("subagents", &["capabilities.subagents", "caps.subagents"]),
+    ("plugins", &["capabilities.plugins", "caps.plugins"]),
+    // P3a·SP-56：钩子能力位的两个消费者——握手如实回报（dispatch），
+    // 以及**装不装钩子运行时**（agent-host 按它决定；没开就连 runner 都不装）
+    ("hooks", &["capabilities.hooks", "caps.hooks"]),
+    ("delegation", &["capabilities.delegation", "caps.delegation"]),
+];
+
+/// 「只声明、不消费」的能力位白名单：每条必须写明理由，且该位名必须出现在
+/// `docs/unfinished-features.md` 里（否则它就是一个没人知道的空壳声明）。
+const CAPABILITY_INFORMATIONAL: &[(&str, &str)] = &[(
+    "streaming",
+    "引擎恒定流式：该位只用于向客户端表达“本产品支持流式”，没有分支消费点；\
+     已在 docs/unfinished-features.md 的信息性字段清单里登记",
+)];
+
 /// 对账：`AgentSpec` 的顶层字段 ⊆ [`SPEC_FIELDS`]。
 ///
 /// 判据是从 `agent-runtime/src/spec.rs` **解析**出 `pub struct AgentSpec` 的字段名，
@@ -585,6 +612,9 @@ pub fn verify_wiring() -> anyhow::Result<Report> {
     check_no_ui_store_in_node_layer(&root, &mut rep)?;
     check_layer_direction(&root, &mut rep)?;
     check_gateway_boundary(&root, &mut rep)?;
+    // P0 埋点地基的两条新检查：
+    check_diag_points(&root, &mut rep)?;
+    check_capability_bits(&root, &mut rep)?;
 
     Ok(rep)
 }
@@ -1634,4 +1664,332 @@ fn extract_json_names(region: &str) -> BTreeSet<String> {
         rest = &after_quote[end + 1..];
     }
     out
+}
+
+// ── 闸 3 追加：P0 埋点地基的两条检查（K / L） ───────────────────────────────
+
+/// 取 `= &[` … 配对的 `]` 之间的内容。
+///
+/// 为什么不用 [`match_region`]：它只认花括号。`pub const DIAG_POINTS: &[&str] = &[`
+/// 里第一个 `{` 出现在别处（例如测试模块），会取到错误的区间。
+fn match_array_region<'a>(src: &'a str, header: &str) -> Option<&'a str> {
+    let after_header = &src[src.find(header)?..];
+    let open = after_header.find("= &[")? + 3;
+    let bytes = after_header.as_bytes();
+    let mut depth = 0i32;
+    for (i, b) in bytes.iter().enumerate().skip(open) {
+        match b {
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&after_header[open + 1..i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 解析 `pub const <prefix>*: &str = "…";` → `常量名 → 值`。
+fn parse_str_consts(src: &str, prefix: &str) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for line in src.lines() {
+        let t = line.trim();
+        let Some(rest) = t.strip_prefix("pub const ") else { continue };
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !name.starts_with(prefix) {
+            continue;
+        }
+        if let (Some(a), Some(b)) = (rest.find('"'), rest.rfind('"')) {
+            if b > a {
+                out.insert(name, rest[a + 1..b].to_string());
+            }
+        }
+    }
+    out
+}
+
+/// 从数组区间里取出裸标识符（每行一个，容忍尾逗号与注释）。
+fn parse_ident_list(region: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for line in region.lines() {
+        let t = line.split("//").next().unwrap_or("").trim().trim_end_matches(',');
+        if t.is_empty() || t.starts_with(']') {
+            continue;
+        }
+        let name: String = t
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() && name.len() == t.len() {
+            out.insert(name);
+        }
+    }
+    out
+}
+
+/// 解析 Rust 结构体区间里的 `name: Type` 字段名（与 `check_spec_field_coverage` 同一口径）。
+fn parse_struct_field_names(body: &str) -> BTreeSet<String> {
+    body.lines()
+        .filter_map(|l| {
+            let t = l.trim_start();
+            if t.is_empty() || t.starts_with('#') || t.starts_with("//") || t == "}" {
+                return None;
+            }
+            let t = t
+                .strip_prefix("pub(crate) ")
+                .or_else(|| t.strip_prefix("pub "))
+                .unwrap_or(t);
+            if !t.contains(':') {
+                return None;
+            }
+            let name: String = t
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if name.is_empty() { None } else { Some(name) }
+        })
+        .collect()
+}
+
+/// 通用"生产消费者"查找：在 `crates/` + `products/` 的 Rust 源码里找 needle，
+/// 命中任一即可；`skip` 是相对路径片段（定义处/测试替身）。
+fn symbol_consumers(
+    root: &Path,
+    needles: &[&str],
+    skip: &[&str],
+    skipped: &mut BTreeSet<String>,
+) -> Vec<String> {
+    let mut hits = BTreeSet::new();
+    for p in rust_sources(root, &["crates", "products"]) {
+        let rel_path = rel(root, &p);
+        if skip.iter().any(|s| rel_path.contains(*s)) {
+            continue;
+        }
+        let Ok(src) = fs::read_to_string(&p) else { continue };
+        let prod = production_prefix_conservative(&src);
+        if has_multiple_test_modules(&src) {
+            skipped.insert(rel_path.clone());
+        }
+        if needles.iter().any(|n| uses_symbol(prod, n)) {
+            hits.insert(rel_path);
+        }
+    }
+    hits.into_iter().collect()
+}
+
+/// 收集"哪些能力位被产品/预设**声明为 true**"（`位名 → 声明它的文件`）。
+fn capability_declarations(
+    root: &Path,
+    known_bits: &BTreeSet<String>,
+) -> anyhow::Result<BTreeMap<String, Vec<String>>> {
+    let products_dir = root.join("products");
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut spec_files: Vec<PathBuf> = Vec::new();
+    for entry in fs::read_dir(&products_dir)?.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let spec = dir.join("agent.spec.json");
+        if spec.exists() {
+            spec_files.push(spec);
+        }
+        let modes = dir.join("modes");
+        if modes.is_dir() {
+            for m in fs::read_dir(&modes)?.flatten() {
+                let p = m.path();
+                if p.extension().and_then(|e| e.to_str()) == Some("json") {
+                    spec_files.push(p);
+                }
+            }
+        }
+    }
+    for p in spec_files {
+        let Ok(raw) = fs::read_to_string(&p) else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else { continue };
+        let Some(caps) = v.get("capabilities").and_then(|x| x.as_object()) else { continue };
+        for (k, val) in caps {
+            if known_bits.contains(k) && val.as_bool() == Some(true) {
+                out.entry(k.clone()).or_default().push(rel(root, &p));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// K. **诊断点位必须有发射方**（P0 埋点地基）。
+///
+/// 扩展点埋点最容易的失败方式是"点位登记了、没人发"——那正是 AGENTS §15 记的静默失效。
+/// 判据直接从源码派生（不另抄名单）：
+/// 1. `DIAG_POINTS` 词汇表里每个名字都必须有对应的 `POINT_*` 常量（陈旧登记 → 报红）；
+/// 2. 每个 `POINT_*` 常量都必须在 `DIAG_POINTS` 里（孤儿常量 → 报红）；
+/// 3. 每个 `POINT_*` 常量都必须在**生产代码**里被引用（= 真有发射方）。
+///
+/// **豁免表刻意不存在**：新点位不许先声明后实现（同 `plugin-sdk/v1.md` §6 的规矩）。
+fn check_diag_points(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
+    const DIAG_PATH: &str = "crates/agent-base/src/domain/diag.rs";
+    let src = read(root, DIAG_PATH)?;
+
+    let consts = parse_str_consts(&src, "POINT_");
+    if consts.is_empty() {
+        rep.violations
+            .push(format!("`{DIAG_PATH}` 解析不出 `POINT_*` 常量——审计失效（不会静默通过）"));
+        return Ok(());
+    }
+    let Some(vocab_region) = match_array_region(&src, "pub const DIAG_POINTS") else {
+        rep.violations
+            .push(format!("`{DIAG_PATH}` 解析不出 `DIAG_POINTS` 词汇表——审计失效"));
+        return Ok(());
+    };
+    let vocab = parse_ident_list(vocab_region);
+    if vocab.is_empty() {
+        rep.violations
+            .push("`DIAG_POINTS` 是空的——埋点词汇表不能空转".to_string());
+        return Ok(());
+    }
+
+    for name in &vocab {
+        if !consts.contains_key(name) {
+            rep.violations.push(format!(
+                "`DIAG_POINTS` 登记了 `{name}`，但没有这个 `POINT_*` 常量（陈旧登记）"
+            ));
+        }
+    }
+    for name in consts.keys() {
+        if !vocab.contains(name) {
+            rep.violations.push(format!(
+                "`{name}` 定义了却没进 `DIAG_POINTS`（孤儿点位：要么登记，要么删）"
+            ));
+        }
+    }
+
+    let mut skipped = BTreeSet::new();
+    let mut missing: Vec<String> = Vec::new();
+    for (name, value) in &consts {
+        let hits = symbol_consumers(
+            root,
+            &[name.as_str()],
+            &["agent-base/src/domain/diag.rs", "agent-base/src/testing"],
+            &mut skipped,
+        );
+        if hits.is_empty() {
+            missing.push(format!("{name}（{value}）"));
+        } else {
+            rep.notes.push(format!("诊断点位 `{value}` 的发射方 → {}", hits.join(", ")));
+        }
+    }
+    for m in &missing {
+        rep.violations.push(format!(
+            "诊断点位 `{m}` 在生产代码里没有任何引用——**登记了却没人发**。\
+             要么接上发射方，要么从 `DIAG_POINTS` 里删掉（先有发射方再登记）"
+        ));
+    }
+
+    rep.notes.push(format!(
+        "诊断点位 {} 个；{} 个文件含多处测试模块被降级为保守近似",
+        consts.len(),
+        skipped.len()
+    ));
+    Ok(())
+}
+
+/// L. **能力位必须有生产消费者**（或显式登记为信息性字段）。
+///
+/// 为什么需要它：`verify_spec` 的"声明字段必须有生产消费者"只到 `capabilities` 这一层
+/// （它查的是 `CapabilitySpec` 这个**符号**出现过没有），于是 `streaming` 这种
+/// "位声明了、没人读"的情况一路绿灯（见 `docs/unfinished-features.md` 的信息性字段条目）。
+/// 这里下沉一层：逐个能力位判"有没有消费者"。
+fn check_capability_bits(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
+    let spec_src = read(root, "crates/agent-runtime/src/spec.rs")?;
+    let Some(body) = match_region(&spec_src, "pub struct CapabilitySpec") else {
+        rep.violations
+            .push("解析不出 `pub struct CapabilitySpec`——审计失效".to_string());
+        return Ok(());
+    };
+    let declared = parse_struct_field_names(body);
+    if declared.is_empty() {
+        rep.violations
+            .push("`CapabilitySpec` 解析出 0 个字段——审计失效".to_string());
+        return Ok(());
+    }
+
+    let registered: BTreeSet<String> = CAPABILITY_FIELDS.iter().map(|(f, _)| f.to_string()).collect();
+    let missing: Vec<&String> = declared.iter().filter(|f| !registered.contains(*f)).collect();
+    if !missing.is_empty() {
+        rep.violations.push(format!(
+            "`CapabilitySpec` 有字段不在 `CAPABILITY_FIELDS` 里：{missing:?}——新能力位必须登记，\
+             否则「声明了却没人读」会从门禁的缝里溜过去"
+        ));
+    }
+    for f in &registered {
+        if !declared.contains(f) {
+            rep.violations.push(format!(
+                "`CAPABILITY_FIELDS` 里的 `{f}` 不是 `CapabilitySpec` 的字段——陈旧登记"
+            ));
+        }
+    }
+
+    let promised = capability_declarations(root, &declared)?;
+    let gap_doc = fs::read_to_string(root.join("docs/unfinished-features.md")).unwrap_or_default();
+    let mut skipped = BTreeSet::new();
+
+    for (bit, needles) in CAPABILITY_FIELDS {
+        let Some(who) = promised.get(*bit) else { continue };
+
+        if needles.is_empty() {
+            let Some((_, reason)) = CAPABILITY_INFORMATIONAL.iter().find(|(f, _)| f == bit) else {
+                rep.violations.push(format!(
+                    "能力位 `{bit}` 被 {} 声明为 true，但既没有消费者、也没登记为信息性字段——\
+                     要么接上消费点，要么把声明与字段一起删掉",
+                    who.join(", ")
+                ));
+                continue;
+            };
+            if reason.trim().is_empty() {
+                rep.violations
+                    .push(format!("信息性能力位 `{bit}` 的理由为空（登记了等于没登记）"));
+            }
+            if !gap_doc.contains(*bit) {
+                rep.violations.push(format!(
+                    "信息性能力位 `{bit}` 未在 `docs/unfinished-features.md` 登记——\
+                     空壳声明不许静默存在"
+                ));
+            }
+            rep.notes
+                .push(format!("能力位 `{bit}`：信息性字段（{reason}）"));
+            continue;
+        }
+
+        let hits = symbol_consumers(
+            root,
+            needles,
+            &["agent-runtime/src/spec.rs", "agent-base/src/testing"],
+            &mut skipped,
+        );
+        if hits.is_empty() {
+            rep.violations.push(format!(
+                "能力位 `{bit}` 被 {} 声明为 true，但生产代码里没有消费者（判据：{}）——\
+                 未实现的能力位不得声明为 true",
+                who.join(", "),
+                needles.join(" / ")
+            ));
+        } else {
+            rep.notes
+                .push(format!("能力位 `{bit}` → {}", hits.join(", ")));
+        }
+    }
+
+    rep.notes.push(format!(
+        "能力位 {} 个：有消费者 {} 个、信息性 {} 个",
+        CAPABILITY_FIELDS.len(),
+        CAPABILITY_FIELDS.iter().filter(|(_, n)| !n.is_empty()).count(),
+        CAPABILITY_INFORMATIONAL.len()
+    ));
+    Ok(())
 }

@@ -151,7 +151,7 @@ mod tests {
         let flag = Arc::new(AtomicBool::new(false));
         let (scope, sink) = (RootScope(ws.clone()), NoopSink);
         let cancel = FlagCancel(flag);
-        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1" };
+        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1", hooks: None };
 
         let ok = tool.execute(&call(json!({ "command": "echo hello" })), &ctx).await;
         assert_eq!(ok.status, ToolStatus::Success, "{}", ok.output);
@@ -175,7 +175,7 @@ mod tests {
         let flag = Arc::new(AtomicBool::new(false));
         let (scope, sink) = (RootScope(ws.clone()), NoopSink);
         let cancel = FlagCancel(flag);
-        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1" };
+        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1", hooks: None };
 
         // 成功，但输出含 "aborted"（旧判定会误报 Aborted）
         let r = tool
@@ -204,7 +204,7 @@ mod tests {
         let flag = Arc::new(AtomicBool::new(false));
         let (scope, sink) = (RootScope(ws.clone()), NoopSink);
         let cancel = FlagCancel(flag.clone());
-        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1" };
+        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1", hooks: None };
 
         // 100ms 后按"停止键"
         let f = flag.clone();
@@ -239,7 +239,7 @@ mod tests {
         let flag = Arc::new(AtomicBool::new(false));
         let (scope, sink) = (RootScope(ws.clone()), NoopSink);
         let cancel = FlagCancel(flag);
-        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1" };
+        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1", hooks: None };
 
         let r = tool
             .execute(&call(json!({ "command": sleep_cmd(), "timeout": 1 })), &ctx)
@@ -255,7 +255,7 @@ mod tests {
         let flag = Arc::new(AtomicBool::new(true));
         let (scope, sink) = (RootScope(ws.clone()), NoopSink);
         let cancel = FlagCancel(flag);
-        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1" };
+        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1", hooks: None };
 
         let r = tool.execute(&call(json!({ "command": "echo 不该执行" })), &ctx).await;
         assert_eq!(r.status, ToolStatus::Aborted);

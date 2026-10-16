@@ -273,6 +273,37 @@ async fn fetch_remote_models(
 /// 动态按工作区装配引擎的工厂函数。
 pub type EngineFactory = Arc<dyn Fn(&std::path::Path) -> Option<Arc<agent_base::engine::AgentRuntime>> + Send + Sync>;
 
+/// 轮外钩子点位的取消令牌：**永不取消**。
+///
+/// 为什么不是"传个真令牌"：管理面点位（插件启停 / 会话创建）本身就是一次 RPC 请求，
+/// 它的生命周期由请求自己管（请求断开 → 整个 dispatch 被丢掉），没有"轮次取消"可言。
+/// 用一个显式的 no-op 而不是 `agent_base::testing::NeverCancel`：测试替身出现在生产路径上，
+/// 下一个读者会以为这里有测试残留。
+struct NeverCancelled;
+
+impl agent_base::ports::CancelToken for NeverCancelled {
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+}
+
+/// 插件启停之后的**受控重装配**（P2 · SP-46）。
+///
+/// # 为什么由组合根实现
+///
+/// 重装配要**再执行一遍插件**（拿工具/片段/技能声明），那需要 `ScriptHost`；还要把结果换进
+/// **引擎正在用的**那本注册表与提示词/技能活体——这些都只有组合根拿得到。RPC 这一层只负责
+/// "写盘 → 调它 → 把收据回给界面"，不自己拼贡献集合（两处各拼一份必然漂移）。
+///
+/// 返回 `None` = 没有可重装配的活体（如实：界面别把"点了没反应"当成"已经生效"）。
+pub trait PluginReassembler: Send + Sync {
+    fn reassemble<'a>(
+        &'a self,
+        plugin_id: &'a str,
+        enabled: bool,
+    ) -> agent_base::ports::BoxFuture<'a, Option<agent_runtime::ReassemblyReport>>;
+}
+
 /// W3-T2：宿主注入的**真引擎**及其**必须共用**的单例。
 ///
 /// ⚠️ `approval_mgr` 不是可选项：新引擎的审批闸门（`HostApprovalGate`）把 waiter 注册到
@@ -292,6 +323,17 @@ pub struct EngineInjection {
     pub spec: Arc<agent_runtime::AgentSpec>,
     /// 针对多工作区的动态引擎工厂
     pub factory: Option<EngineFactory>,
+    /// 插件声明的**技能**（P2 · SP-45）：装配期在组合根收好的那份。
+    ///
+    /// 随注入包一起走，是因为 ws 宿主拿它去造 `Dispatcher.plugin_skills`——
+    /// `skill.list` 才能在界面里列出插件技能（而它没法自己执行 JS 沙箱）。
+    pub plugin_skills: Vec<agent_node::skills::SkillSummary>,
+    /// 插件启停后的重装配入口（P2 · SP-46）：组合同样只有组合根实现得出来。
+    pub reassembler: Option<Arc<dyn PluginReassembler>>,
+    /// 钩子运行时（P3a · SP-55）：宿主用它跑**管理面**点位（插件启停 / 会话创建）。
+    ///
+    /// 与引擎共用同一个实例（注册表是共享的）：装配期装好的钩子，轮内轮外都该看到同一份。
+    pub hook_runner: Option<Arc<dyn agent_base::ports::HookRunner>>,
 }
 
 impl EngineInjection {
@@ -305,11 +347,29 @@ impl EngineInjection {
             approval_mgr,
             spec,
             factory: None,
+            plugin_skills: Vec::new(),
+            reassembler: None,
+            hook_runner: None,
         }
     }
 
     pub fn with_factory(mut self, factory: EngineFactory) -> Self {
         self.factory = Some(factory);
+        self
+    }
+
+    /// 带上插件技能（SP-45）。没带 = 如实为空，不是"假装没有插件"。
+    pub fn with_plugin_skills(
+        mut self,
+        skills: Vec<agent_node::skills::SkillSummary>,
+    ) -> Self {
+        self.plugin_skills = skills;
+        self
+    }
+
+    /// 带上重装配入口（SP-46）：`plugin.setEnabled` 才能真的改贡献集合并回报收据。
+    pub fn with_reassembler(mut self, r: Arc<dyn PluginReassembler>) -> Self {
+        self.reassembler = Some(r);
         self
     }
 }
@@ -405,6 +465,20 @@ pub struct Dispatcher {
     pm_engine_factory: Option<EngineFactory>,
     /// 按工作区路径缓存的 PM 模式真引擎
     pm_workspace_engines: Arc<Mutex<HashMap<std::path::PathBuf, Arc<agent_base::engine::AgentRuntime>>>>,
+    /// 插件声明的**技能**（P2 · SP-45）。
+    ///
+    /// 为什么放在这一层：`skill.list` 在**这个进程**里扫盘，而插件技能要执行 JS 沙箱才拿得到
+    /// （那是装配期的事，在组合根）。组合根把收好的清单随 `EngineInjection` 递进来，
+    /// 于是"界面上列出的技能"与"真的进了提示词的技能"是**同一份**——
+    /// 两边各扫一次就会出现"界面有、模型没有"这种最难查的错。
+    plugin_skills: Vec<agent_node::skills::SkillSummary>,
+    /// 插件启停后的重装配入口（P2 · SP-46，组合根注入；没注入就如实回 null）。
+    plugin_reassembler: Option<Arc<dyn PluginReassembler>>,
+    /// 钩子运行时（P3a · SP-55）：管理面点位（插件启停 / 会话创建）在**这一层**跑。
+    ///
+    /// 为什么管理面点位不在引擎里：它们发生在**轮外**（没有 turn 上下文），
+    /// 而引擎的钩子调用都绑在某一轮上。运行时本身是同一个（共享注册表）。
+    hook_runner: Option<Arc<dyn agent_base::ports::HookRunner>>,
 }
 
 /// 把界面传来的图片**归一成可以直接进模型请求的 data URI**。
@@ -973,6 +1047,27 @@ impl Dispatcher {
                                         bc.mark_dirty();
                                     }
                                 }
+                                AgentEventBody::Diagnostic(diag) => {
+                                    // P0 埋点地基：诊断遥测**不进会话流、不进模型上下文**，
+                                    // 只进诊断缓冲（界面 DebugPanel）与 tracing。
+                                    //
+                                    // 与 Notice 的分工：Notice 是"给用户看的一条提示"
+                                    // （要落盘、要跨端可见），Diagnostic 是"给排查用的元数据"
+                                    // （不落盘，只此进程有效）。
+                                    //
+                                    // 投影走 `server::diag` 的**唯一一处**：轮次外的扫描类诊断
+                                    // 也从那里进同一个缓冲，两处各写一份格式化必然分叉。
+                                    let text = crate::server::diag::project_diagnostic(
+                                        &mut store,
+                                        &diag,
+                                        &event.trace,
+                                    );
+                                    drop(store);
+                                    tracing::debug!(target: "a_da::diag", "{text}");
+                                    if let Some(ref bc) = broadcaster_clone {
+                                        bc.mark_dirty();
+                                    }
+                                }
                                 AgentEventBody::TurnFinished { stop } => {
                                     // 上下文撞顶：记下来，收尾后**自动压缩并续跑**（见下面的分支）
                                     if let TurnStopReason::ContextWindowExceeded { prompt_tokens, window } = stop {
@@ -1222,7 +1317,142 @@ impl Dispatcher {
             pm_engine: None,
             pm_engine_factory: None,
             pm_workspace_engines: Arc::new(Mutex::new(HashMap::new())),
+            plugin_skills: Vec::new(),
+            plugin_reassembler: None,
+            hook_runner: None,
         }
+    }
+
+    /// P3a·SP-55：注入钩子运行时（管理面点位用）。没注入 = 这些点位不跑（如实）。
+    pub fn with_hook_runner(mut self, runner: Arc<dyn agent_base::ports::HookRunner>) -> Self {
+        self.hook_runner = Some(runner);
+        self
+    }
+
+    /// 跑一个**轮外**事前点位（P3a·SP-55）。
+    ///
+    /// 观测**先攒后发**：诊断要写 `store`（async），而端口给的回调是同步的（`Fn`）。
+    /// 攒起来在调用返回后投影，代价是"发出时刻"晚了一点——这里刻意接受，
+    /// 因为轮外点位本来就没有轮内顺序可谈，而 `duration_ms` 是**运行时实测**的、不是编的。
+    /// 轮内点位（引擎）用的是同步 sink，所以那边是真·实时逐条发。
+    async fn run_out_of_turn_before(
+        &self,
+        point: &str,
+        subject: Option<String>,
+        payload: serde_json::Value,
+    ) -> agent_base::ports::BeforeOutcome {
+        let Some(runner) = &self.hook_runner else {
+            return agent_base::ports::BeforeOutcome::Pass;
+        };
+        let collected: std::sync::Mutex<Vec<agent_base::ports::HookObservation>> =
+            std::sync::Mutex::new(Vec::new());
+        let on_event = |obs: agent_base::ports::HookObservation| {
+            if let Ok(mut v) = collected.lock() {
+                v.push(obs);
+            }
+        };
+        let ctx = agent_base::ports::HookCtx {
+            thread_id: "",
+            turn_id: "",
+            call_id: None,
+            cancel: &NeverCancelled,
+            on_event: &on_event,
+        };
+        let outcome = runner
+            .before(
+                agent_base::ports::BeforeRequest {
+                    point: point.to_string(),
+                    subject,
+                    payload,
+                },
+                &ctx,
+            )
+            .await;
+        self.project_hook_observations(&collected).await;
+        outcome
+    }
+
+    /// 跑一个**轮外**事后点位，返回旁注文本（P3a·SP-55）。
+    async fn run_out_of_turn_after(
+        &self,
+        point: &str,
+        subject: Option<String>,
+        payload: serde_json::Value,
+    ) -> Vec<String> {
+        let Some(runner) = &self.hook_runner else {
+            return Vec::new();
+        };
+        let collected: std::sync::Mutex<Vec<agent_base::ports::HookObservation>> =
+            std::sync::Mutex::new(Vec::new());
+        let on_event = |obs: agent_base::ports::HookObservation| {
+            if let Ok(mut v) = collected.lock() {
+                v.push(obs);
+            }
+        };
+        let ctx = agent_base::ports::HookCtx {
+            thread_id: "",
+            turn_id: "",
+            call_id: None,
+            cancel: &NeverCancelled,
+            on_event: &on_event,
+        };
+        let notes = runner
+            .after(
+                agent_base::ports::AfterRequest {
+                    point: point.to_string(),
+                    subject,
+                    payload,
+                },
+                &ctx,
+            )
+            .await;
+        self.project_hook_observations(&collected).await;
+        notes
+            .into_iter()
+            .filter_map(|n| match n {
+                agent_base::ports::AfterNote::Note { text } if !text.trim().is_empty() => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 把攒下来的观测投影成诊断（**转换点只有一处**：`ports::hooks` 里那个函数）。
+    async fn project_hook_observations(
+        &self,
+        collected: &std::sync::Mutex<Vec<agent_base::ports::HookObservation>>,
+    ) {
+        let obs = match collected.lock() {
+            Ok(v) => v.clone(),
+            Err(_) => return,
+        };
+        if obs.is_empty() {
+            return;
+        }
+        let mut store_w = self.store.write().await;
+        for o in &obs {
+            crate::server::diag::project_out_of_turn(
+                &mut store_w,
+                &agent_base::ports::hooks::observation_to_diagnostic(o),
+            );
+        }
+    }
+
+    /// P2·SP-45：注入插件声明的技能（组合根在装配期收好的那份）。
+    ///
+    /// 保持 builder 风格的理由同 [`Self::with_engine`]：既有调用点与测试一行不改，
+    /// 没注入时 `skill.list` 就只报目录与内置技能（**如实**，不是假装有插件技能）。
+    pub fn with_plugin_skills(
+        mut self,
+        skills: Vec<agent_node::skills::SkillSummary>,
+    ) -> Self {
+        self.plugin_skills = skills;
+        self
+    }
+
+    /// P2·SP-46：注入重装配入口（组合根实现）。没注入 = `plugin.setEnabled` 只写盘不重装配。
+    pub fn with_plugin_reassembler(mut self, r: Arc<dyn PluginReassembler>) -> Self {
+        self.plugin_reassembler = Some(r);
+        self
     }
 
     /// W3-T2：注入真引擎（`AgentRuntime`）。宿主装配层（`agent-host`）构造后传进来。
@@ -1356,10 +1586,10 @@ impl Dispatcher {
                             images: spec.capabilities.images,
                             rollback: spec.capabilities.rollback,
                             plugins: spec.capabilities.plugins,
-                            // `hooks` / `resync` 目前**如实为 false**：机制未落地
-                            // （hooks 点位为 0，见 unfinished-features.md）。
-                            // 不许因为"设计里有"就报 true。
-                            hooks: false,
+                            // P3a·SP-56：钩子机制已落地（引擎有生产调用点、成对埋点、
+                            // 缺席可见用例），所以这里**从声明派生**——声明 true 就是 true。
+                            // `resync` 仍如实为 false：客户端缺口重同步尚未实现。
+                            hooks: spec.capabilities.hooks,
                             resync: false,
                             events: agent_proto::ServerEventsCapability {
                                 granularity: "coarse".to_string(),
@@ -1569,6 +1799,47 @@ impl Dispatcher {
                     "pm" => AgentMode::Pm,
                     _ => AgentMode::Code,
                 });
+                // ── beforeThreadCreate（P3a·SP-55）──────────────────────────
+                //
+                // 🔴 **原子性**（设计 §5.4 的硬约束）：事前必须在**任何状态变更之前**判定。
+                // 放在 `store.write()` 之前，所以 `Deny` 之后不会留下"内存里建了、磁盘没建"
+                // 的半成品——那比直接拒绝更难查（界面看着有这条会话，重启就没了）。
+                //
+                // 控制面点位：第三方只能 observe / note（拒绝用户新建会话 = 拒绝服务，
+                // 装配期已按分级拒掉它的 deny 声明）。
+                let before = self
+                    .run_out_of_turn_before(
+                        agent_base::ports::hooks::points::BEFORE_THREAD_CREATE,
+                        title.clone(),
+                        serde_json::json!({
+                            "title": title,
+                            "mode": mode_param,
+                            "agentId": agent_id_param,
+                            "workspace": ws_param,
+                            "isSubagent": is_subagent,
+                            "parentId": parent_id,
+                        }),
+                    )
+                    .await;
+                match before {
+                    agent_base::ports::BeforeOutcome::Pass => {}
+                    agent_base::ports::BeforeOutcome::Deny { reason }
+                    | agent_base::ports::BeforeOutcome::AbortTurn { reason } => {
+                        return Ok(serde_json::json!({
+                            "denied": true,
+                            "reason": reason,
+                        }));
+                    }
+                    agent_base::ports::BeforeOutcome::Replace { .. } => {
+                        // 管理面点位**没有可改写的载荷**（它只有"允许/不允许"）：装配期已按
+                        // `points::REPLACE_SUPPORTED` 拒掉这类声明，这里再兜一层——当作无意见
+                        // 并**大声**记一行，而不是假装改写生效了。
+                        tracing::warn!(
+                            "[hooks] beforeThreadCreate 收到改写结果：该点位没有可改写的载荷，已忽略"
+                        );
+                    }
+                }
+
                 let mut store = self.store.write().await;
                 let id = store.create_thread_with_details(
                     title.clone(),
@@ -1593,7 +1864,7 @@ impl Dispatcher {
                 drop(store);
 
                 // 会话身份（产品 / 模式）**必须落盘**：重启后左侧树的 PM 标识靠它还原
-                let _ = self.session_mgr.create_session_bound(
+                let persisted = self.session_mgr.create_session_bound(
                     &id,
                     &ws,
                     title.as_deref(),
@@ -1603,13 +1874,29 @@ impl Dispatcher {
                     parsed_mode,
                 );
 
+                // ── afterThreadCreate（P3a·SP-55）───────────────────────────
+                //
+                // 🔴 只在**落盘成功之后**触发（设计 §5.4 的原子性硬约束）：
+                // 内存里建好了、磁盘没建，报"创建成功"就是假的（与"宁缺勿假"同源）。
+                let notes = if persisted.is_ok() {
+                    self.run_out_of_turn_after(
+                        agent_base::ports::hooks::points::AFTER_THREAD_CREATE,
+                        title.clone(),
+                        serde_json::json!({ "threadId": id, "title": title, "workspace": ws }),
+                    )
+                    .await
+                } else {
+                    Vec::new()
+                };
+
                 if let Some(ref bc) = self.broadcaster {
                     bc.broadcast_immediate().await;
                 }
 
                 Ok(serde_json::json!({
                     "id": id,
-                    "threadId": id
+                    "threadId": id,
+                    "notes": notes,
                 }))
             }
 
@@ -3049,11 +3336,117 @@ impl Dispatcher {
                 Ok(serde_json::json!({ "ok": true }))
             }
 
+            PLUGIN_VALIDATE => {
+                // P1·SP-18：插件自检——**只读**（转译 / 装载 / 工具名是否在注册表 / 权限与预算）。
+                //
+                // 宿主现造一个就够：它只承载"这次自检的装载流程"，没有跨调用状态。
+                let plugin_id = params
+                    .get("pluginId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let ws = params
+                    .get("workspace")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                // 路径来源两条：显式 `filePath`，或按 `pluginId` 从扫描结果里找
+                let file_path = match params.get("filePath").and_then(|v| v.as_str()) {
+                    Some(p) if !p.trim().is_empty() => p.to_string(),
+                    _ => self
+                        .plugin_mgr
+                        .scan_plugins(ws.as_deref())
+                        .into_iter()
+                        .find(|p| p.id == plugin_id)
+                        .map(|p| p.file_path)
+                        .unwrap_or_default(),
+                };
+                if file_path.trim().is_empty() {
+                    return Err(ProtocolError::invalid_params(format!(
+                        "找不到插件 `{plugin_id}` 的脚本路径：请给 `filePath`，或确认它已被扫描到"
+                    )));
+                }
+
+                let workspace = ws
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| std::env::current_dir().ok())
+                    .unwrap_or_else(|| std::path::PathBuf::from("."));
+                let host: std::sync::Arc<dyn agent_base::ports::ScriptHost> =
+                    std::sync::Arc::new(agent_node::scripts::TsScriptHost::new());
+                let report = agent_node::scripts::validate_plugin(
+                    &host,
+                    &plugin_id,
+                    std::path::Path::new(&file_path),
+                    &workspace,
+                    agent_base::ports::ScriptBudget::default(),
+                )
+                .await;
+                serde_json::to_value(report)
+                    .map_err(|e| ProtocolError::internal_error(e.to_string()))
+            }
+
             PLUGIN_LIST => {
                 let ws = params.get("workspace").and_then(|v| v.as_str());
                 let plugins = self.plugin_mgr.scan_plugins(ws);
                 let resolved_caps = self.plugin_mgr.get_capabilities(ws);
                 let configs = self.plugin_mgr.read_configs();
+
+                // P0 埋点：插件扫描是**用户动作点**（此刻没有轮次在跑），
+                // 所以在这里如实报成诊断。两条口径写死在这里：
+                // 1. 只报**磁盘插件**（`scope != "builtin"`）——内置插件是编译进来的，
+                //    每次列表都报 9 条只会把 60 条环形缓冲刷满；
+                // 2. **一个都没有也要报**（`reason = no_plugin`）——"没扫到"与"没扫过"
+                //    在面板上必须分得出来，这是 §2.2 第 2 条律（缺席可见）。
+                {
+                    use agent_base::domain::{
+                        DiagFamily, DiagOutcome, DiagnosticEvent, Origin, POINT_PLUGIN_DISCOVERED,
+                        POINT_PLUGIN_SKIPPED,
+                    };
+                    let mut store_w = self.store.write().await;
+                    let disk: Vec<&_> = plugins.iter().filter(|p| p.scope != "builtin").collect();
+                    if disk.is_empty() {
+                        crate::server::diag::project_out_of_turn(
+                            &mut store_w,
+                            &DiagnosticEvent::new(
+                                DiagFamily::Plugin,
+                                POINT_PLUGIN_DISCOVERED,
+                                Origin::Host,
+                            )
+                            .with_outcome(DiagOutcome::Skipped)
+                            .with_reason("no_plugin"),
+                        );
+                    } else {
+                        for p in disk {
+                            let origin = Origin::Plugin { id: p.id.clone() };
+                            crate::server::diag::project_out_of_turn(
+                                &mut store_w,
+                                &DiagnosticEvent::new(
+                                    DiagFamily::Plugin,
+                                    POINT_PLUGIN_DISCOVERED,
+                                    origin.clone(),
+                                )
+                                .with_outcome(DiagOutcome::Applied)
+                                .with_data(serde_json::json!({
+                                    "scope": p.scope,
+                                    "tools": p.tools.len(),
+                                })),
+                            );
+                            // 未启用 / 执行面尚未接线——两件事都要**如实**说，
+                            // 否则界面把"被列出来"当成"在生效"
+                            let reason = if !p.enabled { "disabled" } else { "execution_not_wired" };
+                            crate::server::diag::project_out_of_turn(
+                                &mut store_w,
+                                &DiagnosticEvent::new(
+                                    DiagFamily::Plugin,
+                                    POINT_PLUGIN_SKIPPED,
+                                    origin,
+                                )
+                                .with_outcome(DiagOutcome::Skipped)
+                                .with_reason(reason),
+                            );
+                        }
+                    }
+                }
 
                 let mut secrets = serde_json::Map::new();
                 for item in &plugins {
@@ -3111,9 +3504,97 @@ impl Dispatcher {
             PLUGIN_SET_ENABLED => {
                 let plugin_id = params.get("pluginId").and_then(|v| v.as_str()).unwrap_or("");
                 let enabled = params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+
+                // ── beforePluginToggle（P3a·SP-55）────────────────────────────
+                //
+                // 控制面点位：**只有内置插件**能在这里拦下（第三方想拦 = 自我加冕或
+                // 互斥锁定，装配期就被拒了，见 `ports::hooks::allows`）。
+                let before = self
+                    .run_out_of_turn_before(
+                        agent_base::ports::hooks::points::BEFORE_PLUGIN_TOGGLE,
+                        Some(plugin_id.to_string()),
+                        serde_json::json!({ "pluginId": plugin_id, "enabled": enabled }),
+                    )
+                    .await;
+                match before {
+                    agent_base::ports::BeforeOutcome::Pass => {}
+                    agent_base::ports::BeforeOutcome::Deny { reason }
+                    | agent_base::ports::BeforeOutcome::AbortTurn { reason } => {
+                        // 拦下即定稿：**不写盘、不重装配**，如实把理由回给调用方
+                        return Ok(serde_json::json!({
+                            "ok": false,
+                            "denied": true,
+                            "reason": reason,
+                        }));
+                    }
+                    agent_base::ports::BeforeOutcome::Replace { .. } => {
+                        // 同上：管理面点位没有可改写的载荷（装配期已按
+                        // `points::REPLACE_SUPPORTED` 拒掉这类声明）
+                        tracing::warn!(
+                            "[hooks] beforePluginToggle 收到改写结果：该点位没有可改写的载荷，已忽略"
+                        );
+                    }
+                }
+
                 self.plugin_mgr.toggle_plugin(plugin_id, enabled)
                     .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
-                Ok(serde_json::Value::Null)
+                // P2·SP-46：**启停真的改变贡献集合**。
+                //
+                // 到 SP-45 为止，这里只写了一个布尔值就返回：界面上"关掉了"，引擎手里那份
+                // 工具集合与提示词一字未动——用户看到的是"关掉了但它还在跑"。现在把启停接到
+                // 受控重装配上，并把**实际生效的贡献差异**当回执回给界面。
+                //
+                // 没注入重装配入口时如实回 `null`：不撒谎说"已生效"。
+                let report = match &self.plugin_reassembler {
+                    Some(r) => r.reassemble(plugin_id, enabled).await,
+                    None => None,
+                };
+
+                // ── afterPluginToggle（P3a·SP-55）───────────────────────────
+                //
+                // 事后只做观察 + 旁注：把"实际生效的贡献集合"用旁注再说一遍，
+                // 供审计类插件记录（控制面点位第三方只能 observe / note）。
+                let summary = match &report {
+                    Some(r) => format!(
+                        "贡献 {} → {}（{}）",
+                        r.before.total(),
+                        r.after.total(),
+                        r.delta.describe()
+                    ),
+                    None => "（未接重装配入口：贡献集合未变）".to_string(),
+                };
+                let after_notes = self
+                    .run_out_of_turn_after(
+                        agent_base::ports::hooks::points::AFTER_PLUGIN_TOGGLE,
+                        Some(plugin_id.to_string()),
+                        serde_json::json!({
+                            "pluginId": plugin_id,
+                            "enabled": enabled,
+                            "summary": summary,
+                        }),
+                    )
+                    .await;
+
+                match report {
+                    Some(rep) => {
+                        tracing::info!(
+                            "[plugins] 启停 `{plugin_id}` → enabled={enabled}；贡献差异：{}",
+                            rep.delta.describe()
+                        );
+                        Ok(serde_json::json!({
+                            "ok": true,
+                            "applied": rep.applied,
+                            "report": rep,
+                            "notes": after_notes,
+                        }))
+                    }
+                    None => Ok(serde_json::json!({
+                        "ok": true,
+                        "applied": false,
+                        "report": serde_json::Value::Null,
+                        "notes": after_notes,
+                    })),
+                }
             }
 
             PLUGIN_DELETE => {
@@ -3136,7 +3617,81 @@ impl Dispatcher {
 
             SKILL_LIST => {
                 let ws = params.get("workspace").and_then(|v| v.as_str());
-                let skills = self.skill_mgr.scan_skills(ws);
+                let skills = self.skill_mgr.scan_skills_with(ws, &self.plugin_skills);
+                // P0 埋点：技能扫描同样在**用户动作点**报（`skill.list`）。
+                //
+                // 🔴 刻意**不**在"每步取提示词"的那条路径上报：技能解析器的调用频率是
+                // **每步一次**（一次模型调用一步），逐条报会把 60 条环形缓冲刷爆。
+                // 所以这里报**聚合一条**（启用数 + 正文总字节 + id 清单），信息够用且有界。
+                {
+                    use agent_base::domain::{
+                        DiagFamily, DiagOutcome, DiagnosticEvent, Origin, POINT_SKILL_INVALID,
+                        POINT_SKILL_LOADED, POINT_SKILL_SKIPPED,
+                    };
+                    let enabled: Vec<&_> = skills.iter().filter(|s| s.enabled).collect();
+                    let custom: Vec<&_> = skills.iter().filter(|s| s.scope != "builtin").collect();
+                    let total_bytes: usize = enabled.iter().map(|s| s.body.len()).sum();
+                    let mut store_w = self.store.write().await;
+                    // 🔴 注意：`scan_skills` **总是**附带内置技能，所以"一个技能都没有"
+                    // 在生产里不会发生。缺席信号因此针对**自定义技能**——这才是用户
+                    // 真的会疑惑的那件事（"我放进去的技能怎么没生效"）。
+                    if custom.is_empty() {
+                        crate::server::diag::project_out_of_turn(
+                            &mut store_w,
+                            &DiagnosticEvent::new(
+                                DiagFamily::Skill,
+                                POINT_SKILL_SKIPPED,
+                                Origin::Host,
+                            )
+                            .with_outcome(DiagOutcome::Skipped)
+                            .with_reason("no_custom_skill")
+                            .with_data(serde_json::json!({
+                                "builtin": skills.len(),
+                                "enabled": enabled.len(),
+                            })),
+                        );
+                    } else {
+                        crate::server::diag::project_out_of_turn(
+                            &mut store_w,
+                            &DiagnosticEvent::new(
+                                DiagFamily::Skill,
+                                POINT_SKILL_LOADED,
+                                Origin::Host,
+                            )
+                            .with_outcome(DiagOutcome::Applied)
+                            .with_bytes(total_bytes as u64)
+                            .with_data(serde_json::json!({
+                                "total": skills.len(),
+                                "custom": custom.len(),
+                                "enabled": enabled.len(),
+                                "ids": enabled.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+                            })),
+                        );
+                    }
+
+                    // P2·SP-45：frontmatter 里认不出的键**逐条报出来**。
+                    //
+                    // 以前 `_ => {}` 静默吃掉，于是"技能写好了却不生效"没有任何线索——
+                    // 作者只会反复检查正文，而问题在键名上（`whenToUse` 拼错一个字母）。
+                    // 每个技能一条（不是聚合一条）：这类问题**少而具体**，聚合会丢掉"是哪个文件"。
+                    for s in skills.iter().filter(|s| !s.unknown_frontmatter_keys.is_empty()) {
+                        crate::server::diag::project_out_of_turn(
+                            &mut store_w,
+                            &DiagnosticEvent::new(
+                                DiagFamily::Skill,
+                                POINT_SKILL_INVALID,
+                                Origin::Host,
+                            )
+                            .with_outcome(DiagOutcome::Failed)
+                            .with_reason("unknown_frontmatter_key")
+                            .with_data(serde_json::json!({
+                                "skillId": s.id.clone(),
+                                "name": s.name.clone(),
+                                "keys": s.unknown_frontmatter_keys.clone(),
+                            })),
+                        );
+                    }
+                }
                 Ok(serde_json::to_value(skills).map_err(|e| ProtocolError::internal_error(e.to_string()))?)
             }
 
@@ -3476,7 +4031,7 @@ mod tests {
         assert_eq!(
             caps.get("hooks").and_then(|v| v.as_bool()),
             Some(false),
-            "hooks 机制未落地 → 如实 false，不许因为设计里有就报 true"
+            "骨架产品**没有**声明 hooks → 必须如实回 false（能力位从声明派生，不是恒真）"
         );
 
         // 产品身份同样来自声明
@@ -3743,7 +4298,11 @@ mod tests {
         assert_eq!(caps.get("images").and_then(|v| v.as_bool()), Some(true), "ada-coding 声明 images=true");
         assert_eq!(caps.get("rollback").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(caps.get("plugins").and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(caps.get("hooks").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(
+            caps.get("hooks").and_then(|v| v.as_bool()),
+            Some(true),
+            "P3a 起 ada-coding 声明 hooks=true（引擎有生产调用点 + 成对埋点 + 缺席可见用例）"
+        );
         let evts = caps.get("events").expect("必须包含 events 能力");
         assert_eq!(evts.get("snapshotSeq").and_then(|v| v.as_bool()), Some(true));
 

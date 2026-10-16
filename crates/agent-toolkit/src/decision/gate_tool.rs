@@ -162,6 +162,7 @@ mod tests {
             scope: &dummy_scope,
             cancel: &dummy_cancel,
             events: &dummy_events,
+            hooks: None,
         };
 
         let receipt = tool.execute(&call, &ctx).await;

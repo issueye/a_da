@@ -131,7 +131,15 @@ impl SkillManager {
     }
 
     /// 解析技能 Markdown 正文与 Frontmatter 元数据
-    fn parse_skill_markdown(&self, raw: &str, file_path: &Path) -> (String, String, Option<String>, Option<bool>, String) {
+    /// 解析技能 Markdown 的 frontmatter 与正文。
+    ///
+    /// 返回的第 6 项是**认不出的 frontmatter 键**（P2·SP-45）：以前是静默忽略，
+    /// 于是作者写 `when_to_use:` 拼错一个字母、技能就"看起来装上了却不生效"。
+    fn parse_skill_markdown(
+        &self,
+        raw: &str,
+        file_path: &Path,
+    ) -> (String, String, Option<String>, Option<bool>, String, Vec<String>) {
         let mut name = file_path.file_stem().and_then(|s| s.to_str()).unwrap_or("skill").to_string();
         if name.eq_ignore_ascii_case("SKILL") {
             if let Some(parent) = file_path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()) {
@@ -142,6 +150,7 @@ impl SkillManager {
         let mut when_to_use: Option<String> = None;
         let mut user_invocable: Option<bool> = Some(true);
         let mut body = raw.trim().to_string();
+        let mut unknown_keys: Vec<String> = Vec::new();
 
         if raw.starts_with("---") {
             if let Some(end_idx) = raw[3..].find("---") {
@@ -167,18 +176,52 @@ impl SkillManager {
                             "userInvocable" | "user_invocable" => {
                                 user_invocable = Some(val.eq_ignore_ascii_case("true"));
                             }
-                            _ => {}
+                            other => {
+                                let other = other.trim();
+                                if !other.is_empty() {
+                                    unknown_keys.push(other.to_string());
+                                }
+                            }
                         }
                     }
                 }
             }
         }
 
-        (name, description, when_to_use, user_invocable, body)
+        (
+            name,
+            description,
+            when_to_use,
+            user_invocable,
+            body,
+            unknown_keys,
+        )
     }
 
     /// 扫描并汇集工作区、全局与系统内置的所有技能
     pub fn scan_skills(&self, workspace: Option<&str>) -> Vec<SkillSummary> {
+        self.scan_skills_with(workspace, &[])
+    }
+
+    /// 同 [`Self::scan_skills`]，但额外带上**插件声明的技能**（P2 · SP-45）。
+    ///
+    /// # 为什么插件技能是"注入"而不是自己去读
+    ///
+    /// 技能模块不认识插件（那要执行 JS 沙箱，属于插件装载层）。所以插件技能由**组合根**
+    /// 在装配期收好后在这里合并——技能三来源就此齐了：**目录** / **插件** / **内置**。
+    ///
+    /// # 同名谁胜出（口径写在这里，别处不再判一遍）
+    ///
+    /// 顺序是 `目录 → 插件 → 内置`，先到先得（沿用原有的 `seen_names` 去重）：
+    /// - 用户自己写在 `SKILL.md` 里的技能**胜过**第三方插件带来的同名技能——
+    ///   用户显式写下的那份是最强意图，插件不该顶掉它（与工具口径**刻意不同**：
+    ///   工具名是注册表先占的，插件只能"重实现"）；
+    /// - 插件技能**胜过**内置技能：插件是贴这个项目写的，内置是通用兜底。
+    pub fn scan_skills_with(
+        &self,
+        workspace: Option<&str>,
+        plugin_skills: &[SkillSummary],
+    ) -> Vec<SkillSummary> {
         let state = self.load_state();
         let mut skills = Vec::new();
         let mut seen_names = HashSet::new();
@@ -209,7 +252,8 @@ impl SkillManager {
             let files = self.find_skill_files(&root_dir, 0);
             for item in files {
                 if let Ok(raw) = fs::read_to_string(&item.file_path) {
-                    let (name, desc, when, invocable, body) = self.parse_skill_markdown(&raw, &item.file_path);
+                    let (name, desc, when, invocable, body, unknown_keys) =
+                        self.parse_skill_markdown(&raw, &item.file_path);
                     let dedupe_key = name.to_lowercase();
                     if seen_names.contains(&dedupe_key) {
                         continue;
@@ -233,9 +277,26 @@ impl SkillManager {
                         is_file_skill: Some(item.is_file_skill),
                         user_invocable: invocable,
                         when_to_use: when,
+                        unknown_frontmatter_keys: unknown_keys,
                     });
                 }
             }
+        }
+
+        // 3.5 插件声明的技能（P2·SP-45）：排在目录之后、内置之前。
+        //
+        // 启停状态照旧走 `skills_state.json`（id 形如 `plugin:<插件id>:<技能名>`），
+        // 所以"停用某个插件技能"不需要新机制。
+        for plugin_skill in plugin_skills {
+            let dedupe_key = plugin_skill.name.to_lowercase();
+            if seen_names.contains(&dedupe_key) {
+                continue;
+            }
+            seen_names.insert(dedupe_key);
+
+            let mut s = plugin_skill.clone();
+            s.enabled = state.enabled_state.get(&s.id).copied().unwrap_or(true);
+            skills.push(s);
         }
 
         // 4. 注入系统内置 5 大预设技能（若未被工作区或全局同名技能覆盖）
@@ -308,5 +369,192 @@ impl SkillManager {
             }
         }
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 临时"应用目录 + 工作区"一对。
+    ///
+    /// 🔴 应用目录**必须注入**（`with_home`）：`SkillManager::new()` 会指向用户真实的
+    /// `~/.a-da`，测试写它就会污染真实配置（AGENTS.md 的三条铁律）。
+    fn temp_env(tag: &str) -> (PathBuf, PathBuf) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let base = std::env::temp_dir().join(format!(
+            "a_da_skills_{tag}_{}_{}",
+            std::process::id(),
+            nanos
+        ));
+        let home = base.join("home");
+        let ws = base.join("ws");
+        fs::create_dir_all(&home).expect("建临时应用目录失败");
+        fs::create_dir_all(ws.join(".ada").join("skills")).expect("建临时工作区失败");
+        (home, ws)
+    }
+
+    fn write_workspace_skill(ws: &Path, dir: &str, content: &str) {
+        let dir = ws.join(".ada").join("skills").join(dir);
+        fs::create_dir_all(&dir).expect("建技能目录失败");
+        fs::write(dir.join("SKILL.md"), content).expect("写技能失败");
+    }
+
+    /// SP-45：frontmatter 里认不出的键**必须被如实报出来**（以前是静默忽略）。
+    ///
+    /// 静默的后果很具体：作者把 `whenToUse` 拼错一个字母，技能"看起来装上了却不生效"，
+    /// 而所有线索都不指向键名——他只会去反复检查正文。
+    #[test]
+    fn test_unknown_frontmatter_keys_are_reported() {
+        let (home, ws) = temp_env("ufk");
+        write_workspace_skill(
+            &ws,
+            "mine",
+            "---\nname: 我的规范\ndescription: 说明\nwhen_to_use_typo: 写错了\n---\n正文\n",
+        );
+
+        let mgr = SkillManager::with_home(&home);
+        let skills = mgr.scan_skills(Some(ws.to_str().unwrap()));
+        let found = skills
+            .iter()
+            .find(|s| s.name == "我的规范")
+            .expect("技能必须被扫到");
+        assert_eq!(
+            found.unknown_frontmatter_keys,
+            vec!["when_to_use_typo".to_string()],
+            "认不出的键要报出来，而不是静默吃掉"
+        );
+        // 认识的键照旧生效（不因为多了个未知键就整条作废）
+        assert_eq!(found.description, "说明");
+        let _ = fs::remove_dir_all(home.parent().unwrap());
+    }
+
+    /// 认得出的键**不该**被误报（否则这条诊断会变成噪音，没人再看它）。
+    #[test]
+    fn test_known_frontmatter_keys_are_not_reported() {
+        let (home, ws) = temp_env("kfk");
+        write_workspace_skill(
+            &ws,
+            "ok",
+            "---\nname: 正常技能\ndescription: 说明\nwhenToUse: 当 X 时\nuserInvocable: false\n---\n正文\n",
+        );
+
+        let mgr = SkillManager::with_home(&home);
+        let skills = mgr.scan_skills(Some(ws.to_str().unwrap()));
+        let found = skills.iter().find(|s| s.name == "正常技能").expect("能扫到");
+        assert!(
+            found.unknown_frontmatter_keys.is_empty(),
+            "四个已知键都不该被报：{:?}",
+            found.unknown_frontmatter_keys
+        );
+        assert_eq!(found.when_to_use.as_deref(), Some("当 X 时"));
+        assert_eq!(found.user_invocable, Some(false));
+        let _ = fs::remove_dir_all(home.parent().unwrap());
+    }
+
+    /// SP-45 的核心：插件技能进**同一个扫描结果**，而且带得住归因
+    /// （`plugin_id` / `plugin_name` 到这一条之前恒为空）。
+    #[test]
+    fn test_plugin_skills_join_the_scan_with_attribution() {
+        let (home, _ws) = temp_env("pskills");
+        let mgr = SkillManager::with_home(&home);
+        let extra = vec![SkillSummary {
+            id: "plugin:demo:deploy-runbook".to_string(),
+            name: "deploy-runbook".to_string(),
+            description: "部署手册".to_string(),
+            body: "步骤一……".to_string(),
+            path: String::new(),
+            base_directory: String::new(),
+            scope: "plugin".to_string(),
+            enabled: true,
+            plugin_name: Some("Demo 插件".to_string()),
+            plugin_id: Some("demo".to_string()),
+            is_file_skill: Some(false),
+            user_invocable: Some(true),
+            when_to_use: None,
+            unknown_frontmatter_keys: Vec::new(),
+        }];
+
+        let skills = mgr.scan_skills_with(None, &extra);
+        let found = skills
+            .iter()
+            .find(|s| s.name == "deploy-runbook")
+            .expect("插件技能必须出现在扫描结果里");
+        assert_eq!(found.scope, "plugin");
+        assert_eq!(found.plugin_id.as_deref(), Some("demo"));
+        assert_eq!(found.plugin_name.as_deref(), Some("Demo 插件"));
+        let _ = fs::remove_dir_all(home.parent().unwrap());
+    }
+
+    /// 同名顺序：**用户自己写的目录技能 > 插件技能 > 内置**（口径写在 `scan_skills_with`）。
+    #[test]
+    fn test_directory_skill_wins_over_plugin_skill_of_same_name() {
+        let (home, ws) = temp_env("dedupe");
+        write_workspace_skill(
+            &ws,
+            "dup",
+            "---\nname: 同名技能\ndescription: 用户自己写的\n---\n我的正文\n",
+        );
+
+        let mgr = SkillManager::with_home(&home);
+        let extra = vec![SkillSummary {
+            id: "plugin:demo:同名技能".to_string(),
+            name: "同名技能".to_string(),
+            description: "插件带来的".to_string(),
+            body: "插件正文".to_string(),
+            path: String::new(),
+            base_directory: String::new(),
+            scope: "plugin".to_string(),
+            enabled: true,
+            plugin_name: Some("Demo".to_string()),
+            plugin_id: Some("demo".to_string()),
+            is_file_skill: Some(false),
+            user_invocable: Some(true),
+            when_to_use: None,
+            unknown_frontmatter_keys: Vec::new(),
+        }];
+
+        let skills = mgr.scan_skills_with(Some(ws.to_str().unwrap()), &extra);
+        let hits: Vec<&SkillSummary> = skills.iter().filter(|s| s.name == "同名技能").collect();
+        assert_eq!(hits.len(), 1, "同名只该留一条：{hits:?}");
+        assert_eq!(hits[0].scope, "workspace", "用户自己写的那份必须胜出");
+        let _ = fs::remove_dir_all(home.parent().unwrap());
+    }
+
+    /// 插件技能的启停照旧走 `skills_state.json`：不需要为它发明新机制。
+    #[test]
+    fn test_plugin_skill_can_be_disabled_through_the_state_file() {
+        let (home, _ws) = temp_env("pskills_off");
+        let mgr = SkillManager::with_home(&home);
+        let mut state = SkillsState::default();
+        state
+            .enabled_state
+            .insert("plugin:demo:deploy-runbook".to_string(), false);
+        mgr.save_state(&state).expect("写状态失败");
+
+        let extra = vec![SkillSummary {
+            id: "plugin:demo:deploy-runbook".to_string(),
+            name: "deploy-runbook".to_string(),
+            description: "部署手册".to_string(),
+            body: "步骤一……".to_string(),
+            path: String::new(),
+            base_directory: String::new(),
+            scope: "plugin".to_string(),
+            enabled: true,
+            plugin_name: Some("Demo 插件".to_string()),
+            plugin_id: Some("demo".to_string()),
+            is_file_skill: Some(false),
+            user_invocable: Some(true),
+            when_to_use: None,
+            unknown_frontmatter_keys: Vec::new(),
+        }];
+
+        let skills = mgr.scan_skills_with(None, &extra);
+        let found = skills.iter().find(|s| s.name == "deploy-runbook").expect("还在列表里");
+        assert!(!found.enabled, "停用状态必须被读回来（否则界面点了没用）");
+        let _ = fs::remove_dir_all(home.parent().unwrap());
     }
 }

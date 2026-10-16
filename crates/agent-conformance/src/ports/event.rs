@@ -99,6 +99,17 @@ pub fn event_probe_stream(thread_id: &str) -> Vec<AgentEvent> {
         }),
         next(AgentEventBody::TurnFinished { stop: TurnStopReason::Completed }),
         next(AgentEventBody::Failed { message: "示例失败".into() }),
+        // P0 埋点：诊断遥测也必须能被 `emit` 接受（它是"只给人看"的一类，
+        // 但契约层面与其它事件一视同仁——漏一种就会在这里暴露）
+        next(AgentEventBody::Diagnostic(
+            agent_base::domain::DiagnosticEvent::new(
+                agent_base::domain::DiagFamily::Prompt,
+                agent_base::domain::POINT_PROMPT_COMPOSED,
+                agent_base::domain::Origin::Engine,
+            )
+            .with_outcome(agent_base::domain::DiagOutcome::Applied)
+            .with_bytes(1234),
+        )),
     ]
 }
 
@@ -106,7 +117,7 @@ pub fn event_probe_stream(thread_id: &str) -> Vec<AgentEvent> {
 ///
 /// 端口只承诺一件事：`emit` **同步**接受事件且不 panic。因此这里断言：
 /// 1. 探针流本身合法（否则无法区分"实现有问题"与"探针写错了"）；
-/// 2. 全部 12 种事件类型都能被接受（漏一种就会在这里暴露）。
+/// 2. 全部 13 种事件类型都能被接受（漏一种就会在这里暴露）。
 ///
 /// **不在这里断言**的是"事件被保序记录下来"——端口没有读回接口，
 /// 那是具体实现（如 `agent_core::server::WsEventSink`）自己的不变量，
@@ -134,20 +145,15 @@ mod tests {
     #[test]
     fn test_events_conformance_valid() {
         let events = vec![
-            AgentEvent {
-                seq: 1,
-                thread_id: "t".into(),
-                at_ms: 1000,
-                body: AgentEventBody::TurnStarted,
-            },
-            AgentEvent {
-                seq: 2,
-                thread_id: "t".into(),
-                at_ms: 1010,
-                body: AgentEventBody::TurnFinished {
+            AgentEvent::new(1, 1000, "t", AgentEventBody::TurnStarted),
+            AgentEvent::new(
+                2,
+                1010,
+                "t",
+                AgentEventBody::TurnFinished {
                     stop: TurnStopReason::Completed,
                 },
-            },
+            ),
         ];
 
         assert!(verify_events_conformance(&events).is_ok());
@@ -156,20 +162,16 @@ mod tests {
     #[test]
     fn test_events_conformance_non_monotonic_seq() {
         let events = vec![
-            AgentEvent {
-                seq: 2,
-                thread_id: "t".into(),
-                at_ms: 1000,
-                body: AgentEventBody::TurnStarted,
-            },
-            AgentEvent {
-                seq: 1, // 回退！
-                thread_id: "t".into(),
-                at_ms: 1010,
-                body: AgentEventBody::TurnFinished {
+            AgentEvent::new(2, 1000, "t", AgentEventBody::TurnStarted),
+            // 回退！
+            AgentEvent::new(
+                1,
+                1010,
+                "t",
+                AgentEventBody::TurnFinished {
                     stop: TurnStopReason::Completed,
                 },
-            },
+            ),
         ];
 
         assert!(verify_events_conformance(&events).is_err());
@@ -180,8 +182,8 @@ mod tests {
         let sink = RecordingSink::new();
         verify_event_sink_contract(&sink, &event_probe_stream("t1"))
             .expect("录制型出口必须合规");
-        // 全部 12 种事件类型都必须真的被接受（不许有 todo!()/漏分支）
-        assert_eq!(sink.snapshot().len(), 12, "探针必须覆盖全部事件类型");
+        // 全部 13 种事件类型都必须真的被接受（不许有 todo!()/漏分支）
+        assert_eq!(sink.snapshot().len(), 13, "探针必须覆盖全部事件类型");
     }
 
     /// 探针本身必须是合法的：否则契约失败时无法区分"实现有问题"与"探针写错了"。

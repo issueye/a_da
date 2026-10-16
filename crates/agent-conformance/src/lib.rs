@@ -3,8 +3,9 @@
 //! 提供：
 //! 1. [`ports`] —— 端口契约断言集合。
 //!    端口清单以 `crates/agent-base/src/ports/` 的 `pub trait` 为**唯一真源**
-//!    （当前 **11 个**：`AppHome`、`ApprovalGate`、`CancelToken`、`Clock`、`EventSink`、
-//!    `ModelClient`、`PromptSource`、`Scope`、`SessionStore`、`Tool`、`ToolCatalog`）。
+//!    （`AppHome`、`ApprovalGate`、`CancelToken`、`Clock`、`EventSink`、`ModelClient`、
+//!    `PromptSource`、`Scope`、`ScriptHost`、`SessionStore`、`Tool`、`ToolCatalog`）。
+//!    **这里刻意不写"共 N 个"**：数字随端口增加而变，写死必然过期（本节就吃过一次亏，见下）。
 //!    `cargo xtask verify-wiring` 会**从 trait 定义派生**这份清单，逐个要求有生产实现。
 //!
 //!    口径订正（W6-T5）：此处曾写"8 个端口（… RollbackStore, PluginHost, ScopePolicy …）"，

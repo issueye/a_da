@@ -88,14 +88,32 @@ impl WsHostServer {
         };
         let plugin_mgr = Arc::new(agent_node::plugins::PluginManager::new());
         let skill_mgr = Arc::new(agent_node::skills::SkillManager::new());
+        // P2·SP-45：插件技能由**组合根**（装配期真的执行了插件的那一层）随注入包递进来。
+        // 这里不自己去扫：那要再执行一遍 JS 沙箱，而且拿到的清单可能与引擎那份不一致。
+        let plugin_skills = match (&coding_injection, &pm_injection) {
+            (Some(i), _) if !i.plugin_skills.is_empty() => i.plugin_skills.clone(),
+            (_, Some(i)) => i.plugin_skills.clone(),
+            _ => Vec::new(),
+        };
+        // P2·SP-46：重装配入口（组合根实现）——`plugin.setEnabled` 靠它真的改变贡献集合
+        let reassembler = match (&coding_injection, &pm_injection) {
+            (Some(i), _) if i.reassembler.is_some() => i.reassembler.clone(),
+            (_, Some(i)) => i.reassembler.clone(),
+            _ => None,
+        };
+        // P3a·SP-55：钩子运行时——管理面点位（插件启停 / 会话创建）在 Dispatcher 里跑
+        let hook_runner = match (&coding_injection, &pm_injection) {
+            (Some(i), _) if i.hook_runner.is_some() => i.hook_runner.clone(),
+            (_, Some(i)) => i.hook_runner.clone(),
+            _ => None,
+        };
         let seq = Arc::new(AtomicU64::new(0));
         let broadcaster = crate::server::emitter::StateBroadcaster::new(
             store.clone(),
             seq.clone(),
             broadcast_tx.clone(),
         );
-        let dispatcher = Arc::new(
-            Dispatcher::new(
+        let mut dispatcher = Dispatcher::new(
                 store.clone(),
                 session_mgr,
                 checkpoint_mgr,
@@ -105,10 +123,20 @@ impl WsHostServer {
                 skill_mgr,
                 Some(broadcaster.clone()),
             )
+            // P2·SP-45：技能列表要认得插件带来的技能（否则界面少一截、模型却看得到）
+            .with_plugin_skills(plugin_skills)
             // 宿主注入主引擎与 PM 引擎
             .pipe_engine(coding_injection)
-            .pipe_pm_engine(pm_injection),
-        );
+            .pipe_pm_engine(pm_injection);
+        // P2·SP-46：重装配入口（有才接；没有就如实"只写盘不重装配"）
+        if let Some(r) = reassembler {
+            dispatcher = dispatcher.with_plugin_reassembler(r);
+        }
+        // P3a·SP-55：钩子运行时（有才接；没有就如实"这些点位不跑"）
+        if let Some(r) = hook_runner {
+            dispatcher = dispatcher.with_hook_runner(r);
+        }
+        let dispatcher = Arc::new(dispatcher);
 
         let server = Arc::new(Self {
             port: actual_port,

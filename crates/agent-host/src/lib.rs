@@ -55,6 +55,10 @@ use agent_runtime::{AgentSpec, CapabilitySpec, IdentitySpec, ProductBuilder, Spe
 use thiserror::Error;
 use tokio::sync::RwLock;
 
+pub mod live;
+
+pub use live::{new_skill_store, LivePluginContributions, LivePluginReassembler, SkillStore};
+
 #[derive(Debug, Error)]
 pub enum HostError {
     #[error("产品声明违约：{0}")]
@@ -96,6 +100,34 @@ pub struct HostOptions {
     /// "审批卡弹出来了、点了批准却一直卡住"，直到 30 分钟超时被自动拒绝。
     /// **按工作区动态装配**（`EngineFactory`）时尤其容易漏：那次装配同样必须复用这张表。
     pub approval_mgr: Option<Arc<ApprovalManager>>,
+    /// **组合根预先装好的插件贡献**（P1·SP-16 的工具 + P2·SP-44/45 的片段与技能
+    /// + P3a·SP-50 的钩子句柄）。
+    ///
+    /// 为什么由外部传而不是在这里收集：收集要**异步装载**插件脚本（`ScriptHost::load`），
+    /// 而 `run_from_spec` 是同步的（它连带被同步测试与 CLI 用着）。把异步那一步留在
+    /// 组合根（产品 `main` 本来就是 async），这里只负责"装进管线 + 报审计与拒绝"。
+    ///
+    /// 四类贡献**合成一个结构**（而不是四个 setter）：它们出自**同一次**装载，
+    /// 分开传就会出现"工具装了、钩子没装"这种半截状态，而且没人说得清哪个是权威。
+    pub plugin_contributions: PluginContributions,
+}
+
+/// 组合根收集好的插件贡献（形状与 [`agent_node::scripts::PluginToolAssembly`] 对齐）。
+#[derive(Default)]
+pub struct PluginContributions {
+    /// `(plugin_id, tool)`：id 是**来源标注**，装配归属与埋点都靠它
+    pub tools: Vec<(String, Arc<dyn Tool>)>,
+    /// `(plugin_id, 片段 id, 正文)`：进提示词时带 `plugin:<id>` 来源
+    pub prompt_fragments: Vec<(String, String, String)>,
+    /// `(plugin_id, 插件名, 声明)`：并进技能扫描结果（第三个来源）
+    pub skills: Vec<(String, String, agent_node::plugins::PluginSkillDeclaration)>,
+    /// 钩子运行时（P3a · SP-50）：由组合根用 `collect_hooks` 装好。
+    ///
+    /// 为什么连运行时一起传进来、而不是传句柄让宿主自己装：装它要 **`ScriptHost`**
+    /// （按句柄调处理器），而宿主这一层没有也不该有脚本宿主（它只做组装与审计）。
+    pub hook_runner: Option<Arc<dyn agent_base::ports::HookRunner>>,
+    /// 装配期被拒的钩子声明（越级 / 未实现 / 重复），由宿主如实报成诊断。
+    pub hook_rejections: Vec<agent_node::hooks::HookRejection>,
 }
 
 impl HostOptions {
@@ -109,7 +141,14 @@ impl HostOptions {
             store: None,
             skill_mgr: None,
             approval_mgr: None,
+            plugin_contributions: PluginContributions::default(),
         }
+    }
+
+    /// 传入组合根收集好的插件贡献（工具 / 片段 / 技能 / 钩子句柄）。
+    pub fn with_plugin_contributions(mut self, contributions: PluginContributions) -> Self {
+        self.plugin_contributions = contributions;
+        self
     }
 
     /// 复用宿主已有的审批 waiter 表（跨引擎共享，见字段注释）。
@@ -167,6 +206,10 @@ pub struct HostedProduct {
     /// 轮次取消句柄（每次轮次取 `child()`）。
     pub cancel: CancelHandle,
     /// 装配期工具描述符快照（真源投影，供界面/自检读取）。
+    ///
+    /// ⚠️ 它是**快照**：插件启停的重装配（SP-46）改的是活体注册表（
+    /// [`LivePluginContributions::catalog`]，引擎每轮查的就是那本），这里不跟着变。
+    /// 要问"现在到底装了什么"，用活体注册表。
     pub tool_descriptors: Vec<ToolDescriptor>,
     /// 子智能体配置表（W4-T5）。宿主若要与 Dispatcher 共用（`SUBAGENT_RESUME` 等），
     /// 可把它传给 `WsHostServer`；不传也不会出错——profile 来自内置表 + 用户配置。
@@ -175,6 +218,11 @@ pub struct HostedProduct {
     /// 声明 `false` 的产品不得把图片送进模型。
     pub accepts_images: bool,
     pub workspace: PathBuf,
+    /// 活的插件贡献集合（P2 · SP-46）：组合根据此驱动"插件启停真的改变贡献集合"。
+    ///
+    /// 拿它调 [`LivePluginContributions::apply`]，工具 / 提示词片段 / 技能三样会**一起**换掉；
+    /// 没拿它（老调用点）就只是没有这条能力，其余行为一字不变。
+    pub live: Arc<LivePluginContributions>,
 }
 
 impl HostedProduct {
@@ -272,8 +320,25 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
     let IdentitySpec { name, persona, locale } = &spec.identity;
     let caps: &CapabilitySpec = &spec.capabilities;
 
-    let scope: Arc<dyn agent_base::ports::Scope> =
-        Arc::new(WorkspaceScope::new(workspace.clone()));
+    let scope: Arc<dyn agent_base::ports::Scope> = {
+        // P1b（SP-33）：作用域按**权限档位**裁决路径边界。档位与审批闸门读同一处
+        // （`StoreBackedNodeConfig` 同时实现 `NodeConfigSource` 与 `ApprovalModeSource`）——
+        // 两处各读一份会出现"界面显示完全访问、路径仍被锁在工作区"这种自相矛盾。
+        let mode_source: Arc<dyn agent_adapter::scope::ApprovalModeSource> =
+            Arc::new(agent_rpc::server::StoreBackedNodeConfig::new(store.clone()));
+        // 保留目录：应用自己的配置与密钥（`~/.a-da`）。**任何档位都不可越**（见 `scope::access`）。
+        let app_home_root = {
+            use agent_base::ports::AppHome;
+            agent_adapter::app_home::SystemAppHome::from_env()
+                .root()
+                .to_path_buf()
+        };
+        Arc::new(agent_adapter::scope::ApprovalAwareScope::new(
+            WorkspaceScope::new(workspace.clone()),
+            mode_source,
+            vec![app_home_root],
+        ))
+    };
     let session_store: Arc<dyn agent_base::ports::SessionStore> = Arc::new(FsSessionStore::new(
         sessions_root,
         workspace.to_string_lossy().to_string(),
@@ -283,17 +348,47 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
         Arc::new(agent_node::skills::SkillManager::new())
     });
     let ws_str = workspace.to_string_lossy().to_string();
+    // 组合根收好的插件贡献（四类出自**同一次**装载，见 `PluginContributions`）
+    let PluginContributions {
+        tools: plugin_tools,
+        prompt_fragments: plugin_prompt_fragments,
+        skills: plugin_skills_decls,
+        hook_runner,
+        hook_rejections,
+    } = options.plugin_contributions;
+    // P2·SP-45：插件技能在装配期就转成扫描结果的形状（带 plugin_id / plugin_name / scope）——
+    // 于是提示词里那条技能片段能标上 `plugin:<id>`，界面列表也认得出它是插件带来的。
+    //
+    // SP-46：放进**共享活体**而不是一份快照：插件启停后重装配会原地替换它，
+    // 而解析器每次取提示词都会重新读一遍——于是"关掉插件 → 下一轮提示词里就没有它了"。
+    let plugin_skill_summaries: Vec<agent_node::skills::SkillSummary> = plugin_skills_decls
+        .iter()
+        .map(|(pid, pname, decl)| decl.to_summary(pid, pname))
+        .collect();
+    let plugin_skill_store = new_skill_store(plugin_skill_summaries);
+    // SP-46：片段同理走共享活体（提示词源每步读它一次）
+    let plugin_fragment_store = agent_adapter::prompt::new_plugin_fragment_store();
+    if let Ok(mut f) = plugin_fragment_store.write() {
+        *f = plugin_prompt_fragments.clone();
+    }
     let skill_resolver: agent_adapter::prompt::SkillResolver = {
         let sm = skill_mgr.clone();
         let ws = ws_str.clone();
+        let plugin_skills = plugin_skill_store.clone();
         Arc::new(move || {
-            sm.scan_skills(Some(&ws))
+            let extra = plugin_skills.read().map(|g| g.clone()).unwrap_or_default();
+            // 技能三来源在这里合流：目录 / **插件** / 内置（见 `scan_skills_with`）
+            sm.scan_skills_with(Some(&ws), &extra)
                 .into_iter()
                 .filter(|s| s.enabled)
                 .map(|s| {
                     let mut p = agent_adapter::prompt::SkillPrompt::new(s.name, s.description, s.body);
                     if let Some(w) = s.when_to_use {
                         p = p.with_when_to_use(w);
+                    }
+                    // 归因：插件带来的技能在 `prompt.composed` 的片段报表里标 `plugin:<id>`
+                    if let Some(pid) = s.plugin_id {
+                        p = p.with_source(format!("plugin:{pid}"));
                     }
                     p
                 })
@@ -305,6 +400,8 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
         CodingPromptSource::new(ws_str)
             .with_identity(ProductIdentity::new(name.clone(), persona.clone(), locale.clone()))
             .with_extensions(options.prompt_extensions.clone())
+            // P2·SP-44：插件声明的提示词片段（带 plugin:<id> 来源）；SP-46 走共享活体
+            .with_shared_plugin_fragments(plugin_fragment_store.clone())
             .with_skill_resolver(skill_resolver),
     );
     let clock: Arc<dyn agent_base::ports::Clock> = Arc::new(SystemClock);
@@ -320,9 +417,127 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
         HostApprovalGate::new(node_config.clone(), approval.clone()),
     );
 
-    // ── 按声明装配工具包（`spec.toolkits` 的真实消费者）────────────────────
-    let tools: Vec<Arc<dyn Tool>> = agent_toolkit::tools_for_toolkits(&spec.toolkits, &workspace)
-        .map_err(SpecError::Violation)?;
+    // ── 按声明装配（P2·SP-40：走**统一装配管线**）──────────────────────────
+    //
+    // 工具包工具与插件工具都往同一条管线里加，"同名谁胜出、谁该炸、谁该跳过"由它一处决定
+    // （此前这段规则手写在 `agent-host` 里，而提示词/技能各有自己的一套）。
+    let mut assembly = agent_runtime::AssemblyBuilder::new();
+    for tool in
+        agent_toolkit::tools_for_toolkits(&spec.toolkits, &workspace).map_err(SpecError::Violation)?
+    {
+        assembly
+            .add_builtin_tool(tool)
+            .map_err(|e| SpecError::Violation(e.message))?;
+    }
+    for (plugin_id, tool) in plugin_tools.iter().cloned() {
+        assembly.add_plugin_tool(plugin_id, tool);
+    }
+    let plan = assembly.build();
+    let tools: Vec<Arc<dyn Tool>> = plan.tools.clone();
+    let contribution_summary = plan.contributions.len();
+
+    // ── 钩子装配（P3a · SP-50/54/53）───────────────────────────────────────
+    //
+    // 分级校验（越级/未实现/重名）与运行时构建都在组合根完成（它才有脚本宿主），
+    // 这里只负责两件事：① 按产品声明决定要不要装；② 把拒绝理由如实报成诊断。
+    //
+    // 🔴 声明 `capabilities.hooks == false` 的产品**不装**：那时引擎没有 runner，
+    // 一条 hook.* 诊断都不发。为此**额外报一条**说清"不是你的插件写错了，
+    // 是这个产品没开钩子"——否则插件作者会一直对着自己的代码找问题。
+    let hooks_blocked_by_product = !caps.hooks && hook_runner.is_some();
+    if hooks_blocked_by_product {
+        tracing::warn!("[hooks] 产品声明未开钩子（capabilities.hooks=false）：已装好的钩子不会被执行");
+    }
+    let hook_runner = if caps.hooks { hook_runner } else { None };
+
+    // ── 活的贡献集合（P2·SP-46）────────────────────────────────────────────
+    //
+    // 装配期就把"能改的那本账"造好并挂出去：工具注册表、片段活体、技能活体三者
+    // 与引擎/提示词源用的是**同一份**——否则重装配换的是副本，开关就成了摆设。
+    let live = Arc::new(LivePluginContributions::new(
+        &plan,
+        plugin_fragment_store.clone(),
+        plugin_skill_store.clone(),
+    ));
+
+    // 被插件顶掉的内置工具**必须报出来**：静默替换等于把用户信任的工具悄悄换掉。
+    if !plan.replaced_builtins.is_empty() {
+        use agent_base::domain::{
+            DiagFamily, DiagOutcome, DiagnosticEvent, Origin, POINT_PLUGIN_REPLACED_BUILTIN,
+        };
+        // 装配期没有并发（引擎还没开始跑），`try_write` 基本必然成功；
+        // 万一拿不到锁，宁可丢这条审计也不能在运行时线程上阻塞（会 panic）。
+        match store.try_write() {
+            Ok(mut store_w) => {
+                for name in &plan.replaced_builtins {
+                    agent_rpc::server::diag::project_out_of_turn(
+                        &mut store_w,
+                        &DiagnosticEvent::new(
+                            DiagFamily::Plugin,
+                            POINT_PLUGIN_REPLACED_BUILTIN,
+                            Origin::Builtin {
+                                name: name.clone(),
+                            },
+                        )
+                        .with_outcome(DiagOutcome::Applied)
+                        .with_reason(format!("`{name}` 的实现在本次装配里由插件提供")),
+                    );
+                }
+            }
+            Err(_) => tracing::warn!(
+                "[plugins] 装配期拿不到 store 写锁，未能记录 {:?} 的替换审计",
+                plan.replaced_builtins
+            ),
+        }
+    }
+    for skipped in &plan.skipped {
+        tracing::warn!(
+            "[assembly] 跳过一条 {} 贡献 `{}`（{}）：{}",
+            skipped.kind.label(),
+            skipped.id,
+            skipped.origin.label(),
+            skipped.reason
+        );
+    }
+
+    // 被拒的**钩子声明**必须报出来（P3a·SP-54 的验收判据）：
+    // "第三方想在控制面拦下"这类问题如果只在装配期 `tracing::warn` 一下，
+    // 插件作者在界面上看不到任何线索，只会以为自己的拦截生效了。
+    if !hook_rejections.is_empty() || hooks_blocked_by_product {
+        use agent_base::domain::{
+            DiagFamily, DiagOutcome, DiagnosticEvent, Origin, POINT_PLUGIN_SKIPPED,
+        };
+        if let Ok(mut store_w) = store.try_write() {
+            for r in &hook_rejections {
+                agent_rpc::server::diag::project_out_of_turn(
+                    &mut store_w,
+                    &DiagnosticEvent::new(
+                        DiagFamily::Hook,
+                        POINT_PLUGIN_SKIPPED,
+                        match r.plugin_id.as_str() {
+                            "" => Origin::Host,
+                            id => Origin::Plugin { id: id.to_string() },
+                        },
+                    )
+                    .with_outcome(DiagOutcome::Skipped)
+                    .with_reason(r.reason.clone())
+                    .with_data(serde_json::json!({ "point": r.point })),
+                );
+            }
+            if hooks_blocked_by_product {
+                agent_rpc::server::diag::project_out_of_turn(
+                    &mut store_w,
+                    &DiagnosticEvent::new(DiagFamily::Hook, POINT_PLUGIN_SKIPPED, Origin::Host)
+                        .with_outcome(DiagOutcome::Skipped)
+                        .with_reason("hooks_disabled_by_product")
+                        .with_data(serde_json::json!({
+                            "hint": "该产品声明 capabilities.hooks=false，插件钩子不会被调用",
+                        })),
+                );
+            }
+        }
+    }
+    tracing::debug!("[assembly] 本轮装配贡献 {contribution_summary} 条");
 
     // W4-T5：`invoke_subagent` 是**宿主耦合**工具（要 SubagentManager / 父 provider / 检查点），
     // 工具包工厂构造不出来，所以由组合根注入。
@@ -403,6 +618,8 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
 
     let runtime = ProductBuilder::new(spec.clone())
         .with_tools(tools)
+        // SP-46：引擎用**活体注册表**（重装配要往同一本账里 register/unregister）
+        .with_catalog(live.catalog())
         .with_model(model)
         .with_approval(approval_gate)
         .with_store(session_store)
@@ -410,6 +627,13 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
         .with_scope(scope)
         .with_clock(clock)
         .build()?;
+
+    // P3a·SP-51/53：装上钩子运行时（单点位预算在它内部，来自插件能力的 `hookTimeoutMs`）。
+    // 只有产品开了钩子才装 runner——没开就一条 hook.* 诊断都不发（见上面的说明）。
+    let mut runtime = runtime;
+    if let Some(runner) = hook_runner {
+        runtime = runtime.with_hooks(runner);
+    }
 
     Ok(HostedProduct {
         runtime,
@@ -422,6 +646,7 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
         subagent_mgr,
         accepts_images,
         workspace,
+        live,
     })
 }
 
@@ -478,6 +703,12 @@ pub fn build_engine_injection(
         // W3-T6：声明一起注入，`session.initialize` 才能如实回报能力位与产品身份
         spec: Arc::new(spec),
         factory: Some(factory),
+        // 这条便捷装配路径**不收插件技能**：它没有组合根那一步异步装载（见 `extra_tools`
+        // 的注释）。如实为空，而不是假装扫描过——需要插件技能的宿主走产品的 `build_injection`。
+        plugin_skills: Vec::new(),
+        // 同理：重装配入口与钩子运行时都在组合根（产品 `main`）——这里如实为空
+        reassembler: None,
+        hook_runner: None,
     })
 }
 
@@ -505,6 +736,8 @@ fn assert_path_is_absolute(p: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_base::domain::AgentEventBody;
+    use agent_base::engine::TurnRequest;
     use agent_base::model::StreamDelta;
     use agent_base::testing::ScriptedModelClient;
 
@@ -513,7 +746,7 @@ mod tests {
         "archetype": "coding",
         "identity": { "name": "宿主测试助手", "persona": "system.md", "locale": "zh-CN" },
         "toolkits": ["core"],
-        "capabilities": { "images": false, "streaming": true, "rollback": false, "subagents": false },
+        "capabilities": { "images": false, "streaming": true, "rollback": false, "subagents": false, "hooks": true },
         "policies": { "maxSteps": 3, "parallelTools": 1, "toolTimeoutSec": 60 }
     }"#;
 
@@ -793,6 +1026,492 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// P2·SP-45：插件技能**真的进提示词**，而且片段来源标成 `plugin:<id>`。
+    ///
+    /// 两头都要断言：只断言正文进没进，就分不清"插件技能进来了"与"内置技能恰好同名"；
+    /// 只断言来源标了，又分不清"标注对了但内容没进"。技能三来源（目录/插件/内置）
+    /// 在这条里第一次全部到齐。
+    #[test]
+    fn test_plugin_skill_reaches_prompt_with_plugin_source() {
+        let ws = tmp_ws("plugin_skill");
+        let home = tmp_ws("plugin_skill_home");
+        let spec = AgentSpec::from_json_str(SKELETON_SPEC).expect("spec 语法合法");
+        let decl = agent_node::plugins::PluginSkillDeclaration {
+            name: "deploy-runbook".to_string(),
+            description: "发布流程".to_string(),
+            body: "先跑 cargo test 再打标签。".to_string(),
+            when_to_use: Some("用户要发布时".to_string()),
+            user_invocable: None,
+        };
+        let hosted = run_from_spec(
+            spec,
+            HostOptions::new(&ws)
+                .with_model(scripted())
+                // 注入临时应用目录：绝不读用户真实的 ~/.a-da/skills
+                .with_skill_manager(Arc::new(agent_node::skills::SkillManager::with_home(&home)))
+                .with_plugin_contributions(PluginContributions {
+                    skills: vec![("demo-plugin".to_string(), "Demo 插件".to_string(), decl)],
+                    ..Default::default()
+                }),
+        )
+        .expect("装配必须成功");
+
+        let prompt = hosted.runtime.prompt.system_prompt();
+        assert!(
+            prompt.contains("### 技能: deploy-runbook"),
+            "插件技能必须出现在提示词里：{prompt}"
+        );
+        assert!(
+            prompt.contains("先跑 cargo test 再打标签。"),
+            "技能**正文**也要真的进去（只列个名字等于没给模型任何指引）"
+        );
+
+        // 归因：`prompt.composed` 的字节报表里，这条技能的来源必须是 plugin:demo-plugin
+        let segments = hosted.runtime.prompt.prompt_segments();
+        let seg = segments
+            .iter()
+            .find(|s| s.id == "skill:deploy-runbook")
+            .expect("技能的片段要单独成段（否则答不出'哪个技能占了多少字节'）");
+        assert_eq!(
+            seg.source, "plugin:demo-plugin",
+            "插件带来的技能必须按插件归因，实际 {seg:?}"
+        );
+        assert!(seg.bytes > 0, "字节数要如实带上：{seg:?}");
+
+        let _ = std::fs::remove_dir_all(&ws);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// P2·SP-46 端到端：**停用插件之后，下一轮提示词里就没有它的技能与片段了**。
+    ///
+    /// 这是"启停真的改变贡献集合"最直白的一条：只看 `apply` 的返回值说明不了什么，
+    /// 要看**取提示词的那条路**（技能解析器 + 提示词源）读的是不是同一份活体。
+    /// 只换工具集合而提示词照旧的形态（"关掉了但模型还看得见"）正是这条要挡的。
+    #[test]
+    fn test_plugin_toggle_changes_the_next_prompt() {
+        let ws = tmp_ws("toggle_prompt");
+        let home = tmp_ws("toggle_prompt_home");
+        let spec = AgentSpec::from_json_str(SKELETON_SPEC).expect("spec 语法合法");
+        let decl = agent_node::plugins::PluginSkillDeclaration {
+            name: "deploy-runbook".to_string(),
+            description: "发布流程".to_string(),
+            body: "先跑 cargo test 再打标签。".to_string(),
+            when_to_use: None,
+            user_invocable: None,
+        };
+        let hosted = run_from_spec(
+            spec,
+            HostOptions::new(&ws)
+                .with_model(scripted())
+                .with_skill_manager(Arc::new(agent_node::skills::SkillManager::with_home(&home)))
+                .with_plugin_contributions(PluginContributions {
+                    skills: vec![("demo-plugin".to_string(), "Demo 插件".to_string(), decl)],
+                    prompt_fragments: vec![(
+                        "demo-plugin".to_string(),
+                        "house-style".to_string(),
+                        "本项目一律用 tabs。".to_string(),
+                    )],
+                    ..Default::default()
+                }),
+        )
+        .expect("装配必须成功");
+
+        let on = hosted.runtime.prompt.system_prompt();
+        assert!(on.contains("deploy-runbook"), "启用时技能要在提示词里");
+        assert!(on.contains("本项目一律用 tabs。"), "启用时片段要在提示词里");
+
+        // 停用插件：空计划 + 空片段 + 空技能（组合根重装配时就是这么调的）
+        let mut empty = agent_runtime::AssemblyBuilder::new();
+        for tool in agent_toolkit::tools_for_toolkits(&["core".to_string()], &ws).expect("核心工具包")
+        {
+            empty.add_builtin_tool(tool).expect("内置不重名");
+        }
+        let plan = empty.build();
+        let delta = hosted.live.apply(&plan, Vec::new(), Vec::new());
+        assert!(
+            delta.removed.iter().any(|l| l.contains("deploy-runbook")),
+            "收据要如实报出技能被移除：{delta:?}"
+        );
+
+        let off = hosted.runtime.prompt.system_prompt();
+        assert!(
+            !off.contains("deploy-runbook"),
+            "停用之后技能**必须**从提示词里消失（否则就是'关掉了却还在跑'）"
+        );
+        assert!(
+            !off.contains("本项目一律用 tabs。"),
+            "片段同理——它是模型能直接读到的话，留着比工具更糟"
+        );
+        // 内置技能不受影响（插件启停不该动到别人）
+        assert!(off.contains("### 技能: vibe-coding"), "内置技能必须还在：{off}");
+
+        let _ = std::fs::remove_dir_all(&ws);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// P2·SP-46 生产路径端到端：**真插件 + 真脚本宿主 + 真重装配器**，
+    /// 启停之后工具集合、提示词片段、技能三样一起变。
+    ///
+    /// 与 `test_plugin_toggle_changes_the_next_prompt` 的区别：那条手工构造活体，
+    /// 这条走的是**组合根真正用的那个实现**（`LivePluginReassembler`）——它要读盘、
+    /// 要再执行一遍插件沙箱、还要按产品声明重建内置工具包。测试代码放在这里
+    /// 而不是 `products/*`，正是因为产品二进制没有集成测试入口。
+    #[tokio::test]
+    async fn test_live_reassembler_really_applies_a_plugin_toggle() {
+        let ws = tmp_ws("reasm");
+        let home = tmp_ws("reasm_home");
+        let plugins_dir = ws.join(".ada").join("plugins");
+        std::fs::create_dir_all(&plugins_dir).expect("建插件目录失败");
+        std::fs::write(
+            plugins_dir.join("demo.ts"),
+            "export default function (api: any) {\n\
+               api.registerTool({ name: 'git_status', description: '插件版 git 状态', \
+                 execute: async () => ({ ok: true, output: 'plugin' }) });\n\
+               api.registerSkill({ name: 'deploy-runbook', description: '发布流程', body: '先跑测试再打标签' });\n\
+               api.registerPrompt({ id: 'house-style', content: '本项目一律用 tabs。' });\n\
+             }\n",
+        )
+        .expect("写插件失败");
+
+        let plugin_mgr = Arc::new(agent_node::plugins::PluginManager::with_home(&home));
+        let script_host: Arc<dyn agent_base::ports::ScriptHost> =
+            Arc::new(agent_node::scripts::TsScriptHost::new());
+        let collected = agent_node::scripts::collect_plugin_tools(
+            &plugin_mgr,
+            &script_host,
+            &ws,
+            agent_base::ports::ScriptBudget::default(),
+        )
+        .await;
+        assert_eq!(collected.tools.len(), 1, "插件工具要被收下：{:?}", collected.skipped);
+        assert_eq!(collected.skills.len(), 1, "插件技能要被收下");
+        assert_eq!(collected.prompt_fragments.len(), 1, "插件片段要被收下");
+        // 🔴 取**磁盘插件**的 id，不能取 `first()`：`scan_plugins` 也会列出 9 个内置插件，
+        // 拿错 id 就会去停用一个内置插件（demo 照旧在跑，而用例会以为停用没生效）。
+        let plugin_id = plugin_mgr
+            .scan_plugins(Some(&ws.to_string_lossy()))
+            .into_iter()
+            .find(|p| p.scope != "builtin")
+            .map(|p| p.id.clone())
+            .expect("要能扫到这个磁盘插件");
+        assert!(plugin_id.contains("demo"), "扫到的应当是 demo 插件：{plugin_id}");
+
+        let spec = AgentSpec::from_json_str(SKELETON_SPEC).expect("spec 语法合法");
+        let hosted = run_from_spec(
+            spec.clone(),
+            HostOptions::new(&ws)
+                .with_model(scripted())
+                .with_skill_manager(Arc::new(agent_node::skills::SkillManager::with_home(&home)))
+                .with_plugin_contributions(PluginContributions {
+                    tools: collected.tools.clone(),
+                    prompt_fragments: collected
+                        .prompt_fragments
+                        .iter()
+                        .map(|(pid, f)| (pid.clone(), f.id.clone(), f.content.clone()))
+                        .collect(),
+                    skills: collected.skills.clone(),
+                    ..Default::default()
+                }),
+        )
+        .expect("装配必须成功");
+
+        // 启用态：三样都在
+        assert!(
+            hosted.tool_names().contains(&"git_status"),
+            "插件工具要进引擎的工具集合：{:?}",
+            hosted.tool_names()
+        );
+        let on = hosted.runtime.prompt.system_prompt();
+        assert!(on.contains("deploy-runbook") && on.contains("本项目一律用 tabs。"));
+
+        // 停用插件（写进**临时**应用目录，不碰用户真实配置）
+        plugin_mgr.toggle_plugin(&plugin_id, false).expect("写启停状态失败");
+
+        let reassembler = LivePluginReassembler::new(
+            spec,
+            ws.clone(),
+            plugin_mgr.clone(),
+            script_host.clone(),
+            hosted.live.clone(),
+        );
+        let report = agent_rpc::server::dispatch::PluginReassembler::reassemble(
+            &reassembler,
+            &plugin_id,
+            false,
+        )
+        .await
+        .expect("重装配必须给出收据");
+
+        assert!(report.applied, "收据要如实说已生效");
+        assert_eq!(report.request.plugin_id, plugin_id);
+        for needle in ["deploy-runbook", "git_status", "house-style"] {
+            assert!(
+                report.delta.removed.iter().any(|l| l.contains(needle)),
+                "差异里必须报出被移除的 `{needle}`：{:?}",
+                report.delta
+            );
+        }
+
+        // 三样**真的**没了：工具集合、提示词里的技能与片段
+        //
+        // 🔴 看的是**活体注册表**（引擎每轮查的那本），不是 `tool_names()`：
+        // 后者是装配期快照（`tool_descriptors`），重装配不改它，拿它断言会得到假绿。
+        let live_names: Vec<String> = {
+            use agent_base::ports::ToolCatalog;
+            hosted
+                .live
+                .catalog()
+                .descriptors()
+                .into_iter()
+                .map(|d| d.name)
+                .collect()
+        };
+        assert!(
+            !live_names.contains(&"git_status".to_string()),
+            "停用之后插件工具必须从活体注册表里消失：{live_names:?}"
+        );
+        let off = hosted.runtime.prompt.system_prompt();
+        assert!(!off.contains("deploy-runbook"), "技能必须从提示词里消失");
+        assert!(!off.contains("本项目一律用 tabs。"), "片段同样要消失");
+        assert!(off.contains("### 技能: vibe-coding"), "内置技能不受影响");
+
+        let _ = std::fs::remove_dir_all(&ws);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// P3a·SP-51 生产路径端到端：**真插件在 `beforeToolCall` 拦下一次调用**，
+    /// 理由作为普通工具结果回给模型，而工具**确实没有执行**。
+    ///
+    /// 与引擎侧那条用例的分工：那条用测试替身验"引擎把 Deny 处理对了"，
+    /// 这条验**整条真链路**——插件 JS → 沙箱 → `HookRuntime`（分级/顺序/超时）
+    /// → 引擎 → 工具结果。中间任何一环断掉，这条都会红。
+    #[tokio::test]
+    async fn test_real_plugin_hook_denies_a_tool_call_through_the_engine() {
+        let ws = tmp_ws("hook_e2e");
+        let home = tmp_ws("hook_e2e_home");
+        let plugins_dir = ws.join(".ada").join("plugins");
+        std::fs::create_dir_all(&plugins_dir).expect("建插件目录失败");
+        std::fs::write(
+            plugins_dir.join("guard.ts"),
+            "export default function (api: any) {\n\
+               api.registerHook({\n\
+                 point: 'beforeToolCall',\n\
+                 actions: ['deny'],\n\
+                 handler: async (payload: any) => {\n\
+                   if (String(payload.args && payload.args.cmd || '').includes('rm -rf')) {\n\
+                     return { action: 'deny', reason: '这条命令会删掉整个工作区，请改用更精确的路径' };\n\
+                   }\n\
+                   return {};\n\
+                 },\n\
+               });\n\
+               api.registerTool({ name: 'git_status', description: '插件版 git 状态', \
+                 execute: async () => ({ ok: true, output: '插件真的跑了' }) });\n\
+             }\n",
+        )
+        .expect("写插件失败");
+
+        let plugin_mgr = Arc::new(agent_node::plugins::PluginManager::with_home(&home));
+        let script_host: Arc<dyn agent_base::ports::ScriptHost> =
+            Arc::new(agent_node::scripts::TsScriptHost::new());
+        let collected = agent_node::scripts::collect_plugin_tools(
+            &plugin_mgr,
+            &script_host,
+            &ws,
+            agent_base::ports::ScriptBudget::default(),
+        )
+        .await;
+        assert_eq!(collected.tools.len(), 1, "{:?}", collected.skipped);
+        let (hook_runtime, rejections) = agent_node::hooks::collect_hooks(
+            script_host.clone(),
+            agent_base::ports::HookBudget { timeout_ms: 2_000 },
+            &collected.handles,
+        );
+        assert!(rejections.is_empty(), "第三方在数据面上拦下是允许的：{rejections:?}");
+        assert_eq!(hook_runtime.len(), 1, "钩子注册要装上");
+
+        let spec = AgentSpec::from_json_str(SKELETON_SPEC).expect("spec 语法合法");
+        let hosted = run_from_spec(
+            spec,
+            HostOptions::new(&ws)
+                .with_model(Arc::new(scripted_tool_call("git_status", r#"{"cmd":"rm -rf /"}"#)))
+                .with_skill_manager(Arc::new(agent_node::skills::SkillManager::with_home(&home)))
+                .with_plugin_contributions(PluginContributions {
+                    tools: collected.tools.clone(),
+                    hook_runner: Some(Arc::new(hook_runtime)),
+                    ..Default::default()
+                }),
+        )
+        .expect("装配必须成功");
+
+        let sink = agent_base::testing::RecordingSink::new();
+        let req = TurnRequest::new("thread_hook", provider_config()).with_user_prompt("清理一下");
+        hosted
+            .runtime
+            .run_turn(req, &sink, &agent_base::testing::NeverCancel)
+            .await
+            .expect("轮次应正常结束");
+
+        let receipts: Vec<agent_base::domain::ToolReceipt> = sink
+            .snapshot()
+            .iter()
+            .filter_map(|e| match &e.body {
+                AgentEventBody::ToolCallFinished { receipt, .. } => Some(receipt.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(receipts.len(), 1, "{receipts:?}");
+        assert!(
+            !receipts[0].output.contains("插件真的跑了"),
+            "被拦下的工具绝不能执行：{}",
+            receipts[0].output
+        );
+        assert!(
+            receipts[0].output.contains("会删掉整个工作区"),
+            "插件给的理由必须作为**普通工具结果**回模型（可纠正）：{}",
+            receipts[0].output
+        );
+
+        // 成对埋点也在这条真链路上验一遍（SP-52 的 DoD 之一）
+        let points: Vec<String> = sink
+            .snapshot()
+            .iter()
+            .filter_map(|e| match &e.body {
+                AgentEventBody::Diagnostic(d) if d.point.starts_with("hook.") => Some(d.point.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            points.contains(&"hook.entered".to_string()),
+            "真链路上也要有一进一出的埋点：{points:?}"
+        );
+        assert!(points.contains(&"hook.finished".to_string()), "{points:?}");
+
+        let _ = std::fs::remove_dir_all(&ws);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 造一个"先调一次工具、再收尾"的脚本化模型（钩子用例用）。
+    fn scripted_tool_call(tool: &str, args: &str) -> agent_base::testing::ScriptedModelClient {
+        use agent_base::model::{StreamDelta, ToolCallInfo};
+        agent_base::testing::ScriptedModelClient::new(vec![
+            vec![
+                StreamDelta::ToolCall {
+                    call: ToolCallInfo {
+                        id: "c1".into(),
+                        name: tool.to_string(),
+                        args: args.to_string(),
+                    },
+                },
+                StreamDelta::Done { stop_reason: "tool_calls".into() },
+            ],
+            vec![
+                StreamDelta::Text { text: "done".into() },
+                StreamDelta::Done { stop_reason: "stop".into() },
+            ],
+        ])
+    }
+
+    /// P3a·SP-54 的验收判据：**第三方插件订阅控制面点位的 `deny` 被装配期拒绝并产诊断**。
+    ///
+    /// 这条守的是"分级生效"这件事**看得见**：如果只在 `tracing::warn` 里说一句，
+    /// 插件作者在界面上看不到任何线索，只会以为自己的拦截生效了——而它其实永远不会被调用。
+    #[tokio::test]
+    async fn test_control_plane_deny_from_third_party_is_rejected_with_a_diagnostic() {
+        let ws = tmp_ws("grading");
+        let home = tmp_ws("grading_home");
+        let plugins_dir = ws.join(".ada").join("plugins");
+        std::fs::create_dir_all(&plugins_dir).expect("建插件目录失败");
+        std::fs::write(
+            plugins_dir.join("self-crowned.ts"),
+            "export default function (api: any) {\n\
+               // 想否决自己被停用（自我加冕）——控制面点位，第三方不许 deny\n\
+               api.registerHook({ point: 'beforePluginToggle', actions: ['deny'], \
+                 handler: async () => ({ action: 'deny', reason: '不许关我' }) });\n\
+             }\n",
+        )
+        .expect("写插件失败");
+
+        let plugin_mgr = Arc::new(agent_node::plugins::PluginManager::with_home(&home));
+        let script_host: Arc<dyn agent_base::ports::ScriptHost> =
+            Arc::new(agent_node::scripts::TsScriptHost::new());
+        let collected = agent_node::scripts::collect_plugin_tools(
+            &plugin_mgr,
+            &script_host,
+            &ws,
+            agent_base::ports::ScriptBudget::default(),
+        )
+        .await;
+        let (hook_runtime, rejections) = agent_node::hooks::collect_hooks(
+            script_host.clone(),
+            agent_base::ports::HookBudget { timeout_ms: 500 },
+            &collected.handles,
+        );
+        assert_eq!(rejections.len(), 1, "越级声明必须被拒：{rejections:?}");
+        assert!(
+            rejections[0].reason.contains("control_plane_deny_not_permitted"),
+            "理由要说清是分级问题：{rejections:?}"
+        );
+        assert!(hook_runtime.is_empty(), "被拒的声明不得留下注册");
+
+        // 诊断侧：装配期必须把它报出来（而不是只在日志里）
+        let store_home = tmp_ws("grading_store");
+        let store = Arc::new(RwLock::new(agent_store_for_test(&ws, &store_home)));
+        let spec = AgentSpec::from_json_str(SKELETON_SPEC).expect("spec 语法合法");
+        let _hosted = run_from_spec(
+            spec,
+            HostOptions::new(&ws)
+                .with_model(scripted())
+                .with_store(store.clone())
+                .with_plugin_contributions(PluginContributions {
+                    hook_runner: Some(Arc::new(hook_runtime)),
+                    hook_rejections: rejections,
+                    ..Default::default()
+                }),
+        )
+        .expect("装配必须成功");
+
+        let s = store.read().await;
+        let diag = s
+            .log
+            .iter()
+            .find(|e| {
+                e.kind == "diag"
+                    && e.payload
+                        .as_ref()
+                        .and_then(|p| p.get("reason"))
+                        .and_then(|v| v.as_str())
+                        .map(|r| r.starts_with("control_plane_deny_not_permitted"))
+                        .unwrap_or(false)
+            })
+            .and_then(|e| e.payload.clone())
+            .expect("越级声明必须留下诊断（否则插件作者看不到任何线索）");
+        assert_eq!(
+            diag["family"], "hook",
+            "诊断族要是 hook（否则在面板上会被当成插件加载问题）：{diag:?}"
+        );
+        assert_eq!(
+            diag["data"]["point"], "beforePluginToggle",
+            "要说清是哪个点位：{diag:?}"
+        );
+        assert_eq!(
+            diag["origin"], "plugin:workspace:self-crowned",
+            "按插件归因（否则不知道是谁越级了）：{diag:?}"
+        );
+        drop(s);
+
+        let _ = std::fs::remove_dir_all(&ws);
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&store_home);
+    }
+
+    /// 造一个**注入式应用目录**的 store（集成测试绝不碰用户真实的 `~/.a-da`）。
+    fn agent_store_for_test(workspace: &Path, home: &Path) -> agent_rpc::state::AgentStore {
+        agent_rpc::state::AgentStore::with_home(
+            workspace.to_string_lossy().to_string(),
+            &agent_base::testing::TempAppHome::at(home),
+        )
     }
 
     fn provider_config() -> ProviderConfig {

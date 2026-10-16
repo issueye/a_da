@@ -1,5 +1,5 @@
 [package]
-name = "ts_engine"
+name = "ada-ts-engine"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -26,6 +26,7 @@ oxc_codegen = { workspace = true }
 oxc_span = { workspace = true }
 oxc_transformer = { workspace = true }
 oxc_semantic = { workspace = true }
+oxc_diagnostics = { workspace = true }
 clap = { workspace = true }
 
 [[bin]]

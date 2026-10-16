@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use ts_engine::PureTsRuntime;
+use ada_ts_engine::PureTsRuntime;
 
 /// 编译期可注入的自包含业务脚本载荷
 const EMBEDDED_SCRIPT_PAYLOAD: Option<&str> = option_env!("A_DA_STANDALONE_SCRIPT");

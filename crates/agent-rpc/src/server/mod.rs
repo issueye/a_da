@@ -1,4 +1,5 @@
 pub mod delegation_depth;
+pub mod diag;
 pub mod dispatch;
 pub mod emitter;
 pub mod events;

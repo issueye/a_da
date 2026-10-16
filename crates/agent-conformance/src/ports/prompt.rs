@@ -24,6 +24,24 @@ pub fn verify_prompt_source_contract(source: &dyn PromptSource) -> Result<(), St
         return Err("系统提示词里残留未替换的模板占位（{{ / }}）".into());
     }
 
+    // P2·SP-43：逐段报告（若非空）必须与总长度**自洽**。
+    //
+    // 不自洽的拆分比不拆更坏：埋点会把"这段 200 字节"报出去，排查者照着去追一个
+    // 不存在的差异。空 = 这一份不细分，是允许的（测试替身/子智能体 profile）。
+    let segments = source.prompt_segments();
+    if !segments.is_empty() {
+        let sum: usize = segments.iter().map(|s| s.bytes).sum();
+        if sum != first.len() {
+            return Err(format!(
+                "prompt_segments() 各段字节之和（{sum}）必须等于 system_prompt().len()（{}）",
+                first.len()
+            ));
+        }
+        if segments.iter().any(|s| s.id.trim().is_empty()) {
+            return Err("prompt_segments() 里存在空 id——埋点要靠它指认是哪一段".into());
+        }
+    }
+
     Ok(())
 }
 
@@ -57,11 +75,17 @@ mod tests {
             fn system_prompt(&self) -> String {
                 "   \n\t ".to_string()
             }
+            fn prompt_segments(&self) -> Vec<agent_base::ports::PromptSegment> {
+                Vec::new()
+            }
         }
         struct Unrendered;
         impl PromptSource for Unrendered {
             fn system_prompt(&self) -> String {
                 "你好，{{persona}}".to_string()
+            }
+            fn prompt_segments(&self) -> Vec<agent_base::ports::PromptSegment> {
+                Vec::new()
             }
         }
 

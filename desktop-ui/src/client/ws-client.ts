@@ -240,6 +240,16 @@ export class AgentWebSocketClient {
   private lastSnapshotSeq = -1
 
   public debugLogs: DebugEntry[] = []
+  /**
+   * 服务端诊断缓冲（`AgentStore.log`，随快照的 `log` 字段下发）。
+   *
+   * 与 `debugLogs` **分开存**：本地条目是我们自己幂等追加的，服务端条目是权威值
+   * （它有自己的环形上限，每帧整份覆盖）。面板看到的是两者合并后按时间倒序的结果。
+   *
+   * 为什么要这条链：诊断遥测（P0 埋点）在 Rust 侧产生，而面板此前只显示客户端自己
+   * 记的请求/响应——插件、技能、审批等待这些**根本没有读出路径**，埋点等于白埋。
+   */
+  private serverLogs: DebugEntry[] = []
   private debugListeners = new Set<(logs: DebugEntry[]) => void>()
   private debugNotifyTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -300,19 +310,57 @@ export class AgentWebSocketClient {
     if (this.debugLogs.length > 300) {
       this.debugLogs.pop()
     }
-    // 通知节流：调试面板是给人看的，没必要每帧（16ms）刷一次 React
+    this.notifyDebug()
+  }
+
+  /** 合并两路来源（本地记录 + 服务端诊断），按时间倒序。 */
+  public mergedDebugLogs(): DebugEntry[] {
+    return [...this.debugLogs, ...this.serverLogs].sort((a, b) => (b.at || 0) - (a.at || 0))
+  }
+
+  /**
+   * 通知节流：调试面板是给人看的，没必要每帧（16ms）刷一次 React。
+   */
+  private notifyDebug() {
     if (this.debugNotifyTimer) return
     this.debugNotifyTimer = setTimeout(() => {
       this.debugNotifyTimer = null
+      const merged = this.mergedDebugLogs()
       for (const listener of this.debugListeners) {
-        listener([...this.debugLogs])
+        listener(merged)
       }
     }, 250)
   }
 
+  /**
+   * 服务端诊断缓冲到达（快照的 `log` 字段）：整份覆盖。
+   *
+   * Rust 侧的 `DebugEntry` 与前端这份形状不同（那边是 `text`，这边是 `method`/`error`），
+   * 所以这里做一次**显式映射**——不猜字段、不做 `as any` 直塞。
+   */
+  private ingestServerLogs(raw: any) {
+    if (!Array.isArray(raw)) return
+    const mapped: DebugEntry[] = raw.map((e: any) => {
+      const kind = e?.kind === 'diag' ? 'diag' : e?.kind === 'error' ? 'error' : e?.kind === 'tool' ? 'tool' : 'info'
+      const payload = e?.payload ?? (e?.text ? { text: e.text } : undefined)
+      return {
+        id: `svr_${e?.id ?? Math.random().toString(36).slice(2, 8)}`,
+        kind,
+        at: Number(e?.at ?? 0),
+        // 诊断条目用点位名当"方法名"，面板列表才有可读的一列
+        method: payload?.point || e?.kind || 'server',
+        payload,
+        error: kind === 'error' ? e?.text : undefined,
+        raw: e?.raw,
+      } as DebugEntry
+    })
+    this.serverLogs = mapped
+    this.notifyDebug()
+  }
+
   public subscribeDebug(listener: (logs: DebugEntry[]) => void): () => void {
     this.debugListeners.add(listener)
-    listener([...this.debugLogs])
+    listener(this.mergedDebugLogs())
     return () => {
       this.debugListeners.delete(listener)
     }
@@ -320,9 +368,13 @@ export class AgentWebSocketClient {
 
   public clearDebugLogs() {
     this.debugLogs = []
+    this.serverLogs = []
     for (const listener of this.debugListeners) {
       listener([])
     }
+    // 服务端缓冲是权威值、每帧整份覆盖：只清本地等于"清完立刻又出现"。
+    // 所以同时通知服务端清空（`debug.log.clear` 已存在，此前没人调）。
+    void this.request('debug.log.clear', {}).catch(() => {})
   }
 
   private creatingThreadPromise: Promise<{ threadId: string } | null> | null = null
@@ -600,6 +652,8 @@ export class AgentWebSocketClient {
 
     // 1. 小字段（queue/running/log/config/ui/workspace/providers…）整体覆盖：它们本来就小且是权威值
     Object.assign(this.snapshot, metaRest)
+    // 服务端诊断缓冲随快照到达 → 并入面板数据源（此前这条链是断的：面板只看本地记录）
+    this.ingestServerLogs(metaRest.log)
 
     // 2. 线程**元数据**就地更新：已有线程保留自己的 items；新线程补空 items 等着被 upsert 填
     if (Array.isArray(metaThreads)) {

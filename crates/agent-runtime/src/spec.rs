@@ -52,6 +52,14 @@ pub struct CapabilitySpec {
     pub subagents: bool,
     #[serde(default)]
     pub plugins: bool,
+    /// 钩子点位机制是否开启（P3a · SP-56）。
+    ///
+    /// 为什么要有这个位而不是恒为 true：钩子让每次工具调用多一次**跨沙箱往返**
+    /// （默认预算 500ms），且它把"拦下"这个权力交给了外部代码。产品应当能如实声明
+    /// "我不要这套机制"——那种产品里插件声明了钩子**也不会被执行**，
+    /// 装配期会产一条 `hooks_disabled_by_product` 诊断说清原因。
+    #[serde(default)]
+    pub hooks: bool,
     /// 委派模式（S6）：`local`（进程内临时子智能体，默认）或 `gateway`（经网关到另一个节点）。
     ///
     /// **为什么由声明决定而不是运行时探测**：它决定"这个实例在委派链上的位置"，

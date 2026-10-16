@@ -8,7 +8,7 @@
 //! | **不含 UI 投影**（不得依赖 `AgentStore`） | 节点是领域行为；UI 投影归桥接层（S2 已断掉这条依赖，`verify-wiring` check H 盯着） |
 //!
 //! 节点只依赖基座各 crate（`agent-base` / `agent-proto` / `agent-adapter` / `agent-toolkit`
-//! / `agent-runtime`）+ `ts_engine`（插件沙箱）。
+//! / `agent-runtime`）+ `ada-ts-engine`（插件沙箱）。
 //!
 //! # 与 `agent-core` / `agent-rpc` 的关系
 //!
@@ -24,8 +24,10 @@ pub mod agent_bus;
 pub mod approval;
 pub mod checkpoint;
 pub mod delegation_depth;
+pub mod hooks;
 pub mod node_config;
 pub mod plugins;
+pub mod scripts;
 pub mod session;
 pub mod skills;
 pub mod subagents;

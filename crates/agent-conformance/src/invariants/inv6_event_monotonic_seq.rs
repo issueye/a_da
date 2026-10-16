@@ -27,9 +27,9 @@ mod tests {
     #[test]
     fn test_inv6_event_monotonic_seq() {
         let events = vec![
-            AgentEvent { seq: 10, thread_id: "t".into(), at_ms: 1000, body: AgentEventBody::TurnStarted },
-            AgentEvent { seq: 11, thread_id: "t".into(), at_ms: 1005, body: AgentEventBody::TurnStarted },
-            AgentEvent { seq: 12, thread_id: "t".into(), at_ms: 1010, body: AgentEventBody::TurnStarted },
+            AgentEvent::new(10, 1000, "t", AgentEventBody::TurnStarted),
+            AgentEvent::new(11, 1005, "t", AgentEventBody::TurnStarted),
+            AgentEvent::new(12, 1010, "t", AgentEventBody::TurnStarted),
         ];
         assert_events_seq_strictly_monotonic(&events).expect("单调递增序列通过");
     }

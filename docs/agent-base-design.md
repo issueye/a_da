@@ -8,7 +8,7 @@
 > 依据：本仓当前实现的实测（证据见附录 A）。**没有实测依据的结论不写。**
 >
 > 归档的含义要说清楚：TS 的**客户端类型**（`desktop-ui` 需要的 `ClientSnapshot`/`Item` 类型）仍由生成器产出——
-> 归档的是 **agent 实现**，不是"UI 不写 TS"。TS 也仍可作为**插件代码的运行时**（`ts_engine` 沙箱），
+> 归档的是 **agent 实现**，不是"UI 不写 TS"。TS 也仍可作为**插件代码的运行时**（`ada-ts-engine` 沙箱），
 > 那是一个可选适配器，不是设计基准。
 
 ---
@@ -104,9 +104,9 @@ cargo xtask verify-archive                                  # 7 没有第二份�
 |---|---|---|
 | `src/agent/**`（循环、宿主、工具、store） | **移入 `archive/ts-agent/`（只读保留一个 tag），并从构建与测试中摘除** | 不再是参考设计；留着就会被误用（§1.1 的等价性负担） |
 | `app.tsx` 的 `--host` 分支、`src/ui/client/in-process.ts`、`host-bootstrap.ts` 的兜底与 `A_DA_FORCE_LEGACY_HOST` | 删除 | TS 宿主消失后这些是死路；**GPUIX 客户端改为必须搭档 `agent_core.exe`**（现状默认路径本来就是它，`host-bootstrap.ts:94-116`） |
-| `ts_engine` + `plugins/sandbox.rs` | **保留为可选适配器**（插件代码运行时），但插件**契约**由 Rust 侧的 `PluginHost` 端口定义 | 插件生态是资产；契约必须单源 |
+| `ada-ts-engine` + `plugins/sandbox.rs` | **保留为可选适配器**（插件代码运行时），但插件**契约**由 Rust 侧的 `PluginHost` 端口定义 | 插件生态是资产；契约必须单源 |
 | `src/shared/protocol/*.ts` | 改为**生成物**（客户端类型），不再手写 | 治 §1.1 的第三份 DTO |
-| `kernel/`、`compiler/` shim（`kernel/mod.rs:1-6`、`compiler/mod.rs:1-2`） | 删除（`ts_engine` 直接依赖） | 纯转发，无消费者 |
+| `kernel/`、`compiler/` shim（`kernel/mod.rs:1-6`、`compiler/mod.rs:1-2`） | 删除（`ada-ts-engine` 直接依赖） | 纯转发，无消费者 |
 | `docs/jsonrpc-protocol.md` 中描述 TS 形态的段落（§0.1 客户端是 GPUIX、§16.2 jiti） | 重写为 Rust-only 口径 | 文档与实现必须同代 |
 
 ---
@@ -495,7 +495,7 @@ tools/xtask/           new-agent | gen | verify | verify-spec | verify-archive |
 | **P1 内核抽出** | 建 `agent-base`（3.1–3.3）；`agent_core::runner` 改为"基座引擎 + ada 适配器"；事件名字与负载**保持兼容**（前端不动） | 现 `bun test` 800 项全绿；`cargo check --all-targets` 绿；新增**冻结回放测试**：脚本化模型 → 事件序列与 P0 冻结的产物逐字段相等（不再依赖 TS 对照） | 中：abort 时序、usage 累加 |
 | **P2 注册表化 + 补空接线** | 7 个内置工具与 12 个内置插件工具改 `Toolkit`+`ToolDescriptor`；删 5 处名单；接上审批/取消/`terminate`/图片/回执；空壳工具要么实现要么删声明 | §1.2 每条都有对应合规断言；`run_command` 真正接取消；`ask_user` schema 与 handler 对齐 | 中高（行为面广，正是目的） |
 | **P3 协议单源 + 投影** | 方法表生成物替换手写；`snapshot` 加 `seq`；`UiSnapshot` 出领域；`fs.*`/`change.*`/`plugin.*` 归入 `x.coding.*` | `verify`/`compat` 全绿；前端通过生成类型编译 | 中 |
-| **P4 TS 归档** | `src/agent/**` → `archive/ts-agent`；删 `app.tsx --host`、`in-process.ts`、legacy 兜底、`kernel`/`compiler` shim；`ts_engine` 收敛为插件适配器 | `verify-archive` 绿；GPUIX 与 Tauri 客户端都走 `agent_core.exe`；插件启停/工具调用测试仍绿 | 中：插件链路回归 |
+| **P4 TS 归档** | `src/agent/**` → `archive/ts-agent`；删 `app.tsx --host`、`in-process.ts`、legacy 兜底、`kernel`/`compiler` shim；`ada-ts-engine` 收敛为插件适配器 | `verify-archive` 绿；GPUIX 与 Tauri 客户端都走 `agent_core.exe`；插件启停/工具调用测试仍绿 | 中：插件链路回归 |
 | **P5 第二个产品** | `ada-life`（或 `ada-assistant`）**只写声明**接入；用它暴露基座缺的能力位 | 第二产品零内核改动即可通过 verify + conformance；差异 < 200 行声明 | 低（这一步是设计的验收） |
 
 **存量缺陷处理原则**：P2 只"登记"§1.2 里的每一条，然后逐条决定**补实现**或**删声明**；
@@ -523,7 +523,7 @@ tools/xtask/           new-agent | gen | verify | verify-spec | verify-archive |
 | # | 决策 | 建议 | 影响 |
 |---|---|---|---|
 | 1 | **TS 归档形态** | 移入 `archive/ts-agent/` 并摘出构建（不是立刻删除） | 保留考古能力，同时 `verify-archive` 保证不被引用 |
-| 2 | **插件运行时** | 保留 `ts_engine` 作可选 `PluginHost` 实现；契约由 Rust 定义；产品在 `capabilities.plugins` 里声明 | 插件生态不动，内核不沾 TS |
+| 2 | **插件运行时** | 保留 `ada-ts-engine` 作可选 `PluginHost` 实现；契约由 Rust 定义；产品在 `capabilities.plugins` 里声明 | 插件生态不动，内核不沾 TS |
 | 3 | **GPUIX 客户端** | 冻结在"必须搭档 `agent_core.exe`"（现状默认路径）；新功能只投 `desktop-ui` | 删掉 legacy 兜底，减少一条并行路径 |
 | 4 | **首个第二产品** | `ada-life`（与 coding 差异最大，最能暴露内核里的产品假设） | 这是设计的真正验收 |
 | 5 | **协议扩展命名** | 统一 `x.<product>.*`，现有 `fs/change/plugin/provider/debug` 归入 `x.coding.*`（保留旧名做别名一个版本） | 老客户端平滑 |

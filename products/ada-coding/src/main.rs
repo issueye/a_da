@@ -50,6 +50,14 @@ struct CliArgs {
     /// 网关服务 WebSocket 端点（如 ws://127.0.0.1:4000/rpc），指定后将主动连接并自注册
     #[arg(long)]
     gateway: Option<String>,
+
+    /// 插件脚本的**执行档位**（P4·SP-70）：`inprocess`（默认，进程内 Boa）或 `subprocess`。
+    ///
+    /// 为什么默认是进程内：子进程档每次调用多一次进程启动（数十毫秒），且它是
+    /// **隔离档**而不是"更好的一档"。需要把不可信第三方插件拉进生产时再显式切过去——
+    /// 切换方式是启动参数，因为它是**运维决定**，不是插件能替用户做的选择。
+    #[arg(long, value_name = "TIER", default_value = "inprocess")]
+    script_sandbox: String,
 }
 
 /// 按声明装配真引擎（**唯一实现**，Coding 与 PM 模式共用）；任何失败都如实降级为 legacy。
@@ -64,7 +72,7 @@ struct CliArgs {
 /// `spec_json` 决定"装哪一套"：产品声明（coding）或**模式预设**（pm）。
 /// 早先这里是两份几乎逐行相同的拷贝（`build_engine_injection` /
 /// `build_pm_engine_injection`）——一处改动要同步两遍，正是"第二个产品"的税。
-fn build_injection(
+async fn build_injection(
     spec_json: &'static str,
     label: &'static str,
     store: &Arc<RwLock<AgentStore>>,
@@ -72,6 +80,10 @@ fn build_injection(
     gateway_override: Option<&str>,
     apply_delegation: bool,
     approval_mgr: &Arc<agent_node::approval::ApprovalManager>,
+    // P4·SP-70：**脚本宿主由 main 建好传进来**。理由：档位选错（要求子进程档却找不到入口）
+    // 必须让进程**拒绝启动**，而这里只能返回 `Option`（失败 = 没有真引擎）。把"能不能起"
+    // 放在 main 里判，才不会出现"以为在隔离里跑、其实跑在宿主进程里"。
+    script_host: std::sync::Arc<dyn agent_base::ports::ScriptHost>,
 ) -> Option<agent_rpc::server::dispatch::EngineInjection> {
     let mut spec = match agent_runtime::AgentSpec::from_json_str(spec_json) {
         Ok(s) => s,
@@ -106,18 +118,163 @@ fn build_injection(
 
     let sessions_root =
         std::path::Path::new(&agent_node::session::get_app_home()).join("sessions");
-    let options = agent_host::HostOptions::new(ws)
+    // P1·SP-16：装配期收集**插件工具**（名字已在注册表里的那些）。
+    //
+    // 异步装载放在这里（组合根），因为 `run_from_spec` 是同步的、而产品 `main` 本来就是 async。
+    // ：id 是来源标注，装配与埋点都靠它归因
+    let mut prompt_extensions: Vec<(String, String)> = Vec::new();
+    let mut plugin_skills: Vec<(String, String, agent_node::plugins::PluginSkillDeclaration)> =
+        Vec::new();
+    // P2·SP-46：插件管理器与脚本宿主**提到 if 外面**——重装配（插件启停）要复用同两个实例，
+    // 各造一份就会出现"启停重装时用的是另一份脚本宿主/配置"这种查不出来的错。
+    let plugin_mgr = std::sync::Arc::new(agent_node::plugins::PluginManager::new());
+    // 四类插件贡献（工具 / 片段 / 技能 / 钩子）由**同一次装载**产出，合成一个结构交给装配。
+    let mut contributions = agent_host::PluginContributions::default();
+    // P3a·SP-55：钩子运行时同一个实例给两处（引擎 + Dispatcher 的管理面点位）
+    let mut hook_runtime_for_dispatch: Option<std::sync::Arc<agent_node::hooks::HookRuntime>> = None;
+    if spec.capabilities.plugins {
+        let asm = agent_node::scripts::collect_plugin_tools(
+            &plugin_mgr,
+            &script_host,
+            &ws,
+            agent_base::ports::ScriptBudget::default(),
+        )
+        .await;
+        if asm.plugins_loaded > 0 || !asm.skipped.is_empty() {
+            info!(
+                "[{label}] 插件工具：装载 {} 个插件、收下 {} 个工具、跳过 {} 条声明",
+                asm.plugins_loaded,
+                asm.tools.len(),
+                asm.skipped.len()
+            );
+        }
+        // P2·SP-45：插件技能与工具同源（都出自这一次装载），一起交给装配与 ws 宿主
+        if !asm.skills.is_empty() {
+            info!(
+                "[{label}] 插件技能：{} 条（会与目录/内置技能一起进提示词）",
+                asm.skills.len()
+            );
+        }
+        // 没装上的**要报出来**（「插件写了工具却没生效」必须有人知道，AGENTS §15）
+        if let Ok(mut store_w) = store.try_write() {
+            for s in &asm.skipped {
+                agent_rpc::server::diag::project_out_of_turn(
+                    &mut store_w,
+                    &agent_base::domain::DiagnosticEvent::new(
+                        agent_base::domain::DiagFamily::Plugin,
+                        agent_base::domain::POINT_PLUGIN_SKIPPED,
+                        match s.plugin_id.as_str() {
+                            "" => agent_base::domain::Origin::Host,
+                            id => agent_base::domain::Origin::Plugin { id: id.to_string() },
+                        },
+                    )
+                    .with_outcome(agent_base::domain::DiagOutcome::Skipped)
+                    .with_reason(format!("{}", s.reason))
+                    .with_data(serde_json::json!({ "export": s.export })),
+                );
+            }
+        }
+        // P2·SP-44：把插件工具也写进"已启用的扩展工具"段落——
+        // 那个段落（HostOptions.prompt_extensions）**此前没有任何生产者**，是条空缝：
+        // 模型因此不知道插件带来的这些能力存在。
+        prompt_extensions = asm
+            .tools
+            .iter()
+            .map(|(_, t)| (t.descriptor().name.clone(), t.descriptor().summary.clone()))
+            .collect();
+        // P3a·SP-50：钩子运行时在这里装——它要 `ScriptHost`（按句柄调处理器），
+        // 而宿主那一层没有也不该有脚本宿主。
+        //
+        // 只在这个产品声明了钩子时才装：没声明的产品装一个永不调用的运行时，
+        // 只会让"钩子是不是生效了"更难判断。
+        if spec.capabilities.hooks {
+            // SP-53：单点位预算来自插件能力的 `hookTimeoutMs`（此前**只解析不消费**）
+            let hook_timeout_ms = plugin_mgr
+                .get_capabilities(Some(&ws.to_string_lossy()))
+                .capabilities
+                .hook_timeout_ms;
+            let (runtime, rejections) = agent_node::hooks::collect_hooks(
+                script_host.clone(),
+                agent_base::ports::HookBudget {
+                    timeout_ms: hook_timeout_ms,
+                },
+                &asm.handles,
+            );
+            if !rejections.is_empty() {
+                warn!(
+                    "[{label}] 钩子声明被拒 {} 条（分级/未实现/重复，逐条已进诊断）",
+                    rejections.len()
+                );
+            }
+            if !runtime.is_empty() {
+                info!(
+                    "[{label}] 钩子就绪：{} 条注册（单点位预算 {}ms）",
+                    runtime.len(),
+                    hook_timeout_ms
+                );
+                let rt = std::sync::Arc::new(runtime);
+                // 同一个实例给两处：引擎（轮内点位）与 Dispatcher（管理面点位）。
+                // 各造一个 = 装配期装好的钩子在轮外看不见，而"钩子到底生效了没"就更难判断。
+                hook_runtime_for_dispatch = Some(rt.clone());
+                contributions.hook_runner = Some(rt);
+            }
+            contributions.hook_rejections = rejections;
+        }
+
+        contributions.prompt_fragments = asm
+            .prompt_fragments
+            .into_iter()
+            .map(|(pid, f)| (pid, f.id, f.content))
+            .collect();
+        contributions.skills = asm.skills;
+        contributions.tools = asm.tools;
+        plugin_skills = contributions.skills.clone();
+    }
+
+    // P2·SP-45：同一份技能声明有两个消费者，形状各异但**内容必须一致**：
+    // 装配层（`HostOptions`）要声明本身，ws 宿主（`EngineInjection`）要扫描结果的形状。
+    // 两处各转一遍是刻意的——但源头只有这里一份 `asm.skills`。
+    let plugin_skill_summaries: Vec<agent_node::skills::SkillSummary> = plugin_skills
+        .iter()
+        .map(|(pid, pname, decl)| decl.to_summary(pid, pname))
+        .collect();
+
+    let options = agent_host::HostOptions::new(&ws)
         .with_store(store.clone())
         .with_sessions_root(sessions_root)
         // 审批 waiter 表**全进程共用一张**：ws 宿主会把它交给 `Dispatcher`，
         // UI 的 `approval.decide` 才找得到闸门注册的等待者。
-        .with_approval_manager(approval_mgr.clone());
+        .with_approval_manager(approval_mgr.clone())
+        // P1/P2/P3a：插件贡献（工具 / 提示词片段 / 技能 / 钩子运行时）一次交齐
+        .with_plugin_contributions(contributions)
+        .with_prompt_extensions(prompt_extensions);
 
     match agent_host::run_from_spec(spec, options) {
         Ok(hosted) => {
             let tool_count = hosted.tool_names().len();
-            let agent_host::HostedProduct { runtime, approval, spec, .. } = hosted;
+            let agent_host::HostedProduct { runtime, approval, spec, live, .. } = hosted;
             info!("已按 {label} 装配真引擎：工具 {tool_count} 个");
+
+            // P2·SP-46：把"插件启停 → 重装配 → 收据"这条路接上。实现体在 `agent-host`
+            // （那里才测得到，见 `LivePluginReassembler` 的注释）；这里只交出组合根独有的三样：
+            // 产品声明、脚本宿主、活体贡献集合。
+            let reassembler: Option<Arc<dyn agent_rpc::server::dispatch::PluginReassembler>> =
+                if spec.capabilities.plugins {
+                    let mut r = agent_host::LivePluginReassembler::new(
+                        spec.clone(),
+                        ws.clone(),
+                        plugin_mgr.clone(),
+                        script_host.clone(),
+                        live.clone(),
+                    );
+                    // P3a：启停时**原地重装钩子注册**（否则"关掉了插件，它的钩子还在拦"）
+                    if let Some(hr) = &hook_runtime_for_dispatch {
+                        r = r.with_hook_runtime(hr.clone());
+                    }
+                    Some(Arc::new(r))
+                } else {
+                    None
+                };
 
             let store_for_factory = store.clone();
             // 🔴 动态装配的引擎也必须复用**同一张** waiter 表：只搬走 `h.runtime` 而让它
@@ -162,6 +319,13 @@ fn build_injection(
                 // W3-T6：声明一起注入，握手才能如实回报能力位
                 spec: Arc::new(spec),
                 factory: Some(factory),
+                // P2·SP-45：ws 宿主的 `skill.list` 要列出插件技能，靠的就是这一份
+                plugin_skills: plugin_skill_summaries,
+                // P2·SP-46：插件启停的重装配入口
+                reassembler,
+                // P3a·SP-55：管理面点位（插件启停 / 会话创建）靠它在轮外跑钩子
+                hook_runner: hook_runtime_for_dispatch
+                    .map(|r| r as Arc<dyn agent_base::ports::HookRunner>),
             })
         }
         Err(e) => {
@@ -228,6 +392,35 @@ async fn main() -> Result<(), anyhow::Error> {
     // （各装配一份就变成"界面能弹审批卡、点批准却永远卡住"，见 `HostOptions::approval_mgr`）。
     let approval_mgr = Arc::new(agent_node::approval::ApprovalManager::new());
 
+    // ── 插件脚本的执行档位（P4·SP-70）────────────────────────────────────
+    //
+    // **在启动时定死**：要求子进程档却找不到 `ada-plugin-runner` 时，这里直接拒绝启动，
+    // 而不是悄悄退回进程内档——"以为在隔离里跑、其实跑在宿主进程里"是最坏的误解，
+    // 而它恰恰是"静默降级"这种写法必然产生的后果。
+    let script_host: std::sync::Arc<dyn agent_base::ports::ScriptHost> =
+        match args.script_sandbox.as_str() {
+            "inprocess" => {
+                info!("插件脚本档位：进程内（Boa）。**无内存护栏**，见 docs/unfinished-features.md");
+                std::sync::Arc::new(agent_node::scripts::TsScriptHost::new())
+            }
+            "subprocess" => {
+                let host = agent_node::scripts::SubprocessScriptHost::new().map_err(|e| {
+                    anyhow::anyhow!(
+                        "--script-sandbox subprocess 无法启用：{e:?}\n\
+                         需要 ada-plugin-runner 与本体同目录，或用 A_DA_PLUGIN_RUNNER 指定路径。"
+                    )
+                })?;
+                info!(
+                    "插件脚本档位：子进程（入口 {}）。超时即杀；**不做内存限额**（见文档）",
+                    host.runner_path().display()
+                );
+                std::sync::Arc::new(host)
+            }
+            other => anyhow::bail!(
+                "未知的 --script-sandbox：`{other}`（可选 inprocess / subprocess）"
+            ),
+        };
+
     let injection = build_injection(
         SPEC_JSON,
         "ada-coding 产品声明",
@@ -236,7 +429,9 @@ async fn main() -> Result<(), anyhow::Error> {
         args.gateway.as_deref(),
         false,
         &approval_mgr,
-    );
+        script_host.clone(),
+    )
+    .await;
     let pm_injection = build_injection(
         PM_MODE_SPEC_JSON,
         PM_MODE_LABEL,
@@ -245,7 +440,9 @@ async fn main() -> Result<(), anyhow::Error> {
         args.gateway.as_deref(),
         true,
         &approval_mgr,
-    );
+        script_host.clone(),
+    )
+    .await;
 
     // 启动 WebSocket 服务
     let server = WsHostServer::bind_with_engines(args.port, token.clone(), store, injection, pm_injection).await?;

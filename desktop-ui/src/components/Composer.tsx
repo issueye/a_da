@@ -106,6 +106,11 @@ export const APPROVAL_OPTIONS: { value: ApprovalMode; label: string; desc: strin
   { value: 'auto', label: '自动批准', desc: '读写文件和执行命令都不再询问' },
   { value: 'ask', label: '每次询问', desc: '每次敏感工具调用都等你确认' },
   { value: 'readonly', label: '严格只读', desc: '只允许读取操作，修改需手动确认' },
+  {
+    value: 'full',
+    label: '完全访问',
+    desc: '不再询问，并放开工作区边界与脚本网络（应用自身目录除外）',
+  },
 ]
 
 /** 思考力度选项 */
@@ -599,6 +604,28 @@ export const Composer: React.FC<ComposerProps> = ({
           : 'px-3 py-1.5 border-t border-zinc-200 dark:border-[#27272a] bg-zinc-50 dark:bg-[#141416] flex flex-col space-y-1'
       }`}
     >
+      {/* 完全访问档位的**常驻指示**（P1b · SP-35）。
+          宽松档位不常驻可见 = 用户过十分钟就忘了自己开过；撤回按钮与指示同处，
+          撤回不必翻菜单——"开得容易"必须配"关得也容易"。 */}
+      {approvalMode === 'full' && (
+        <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200/80 dark:border-rose-900/40 text-[11px]">
+          <div className="flex items-center gap-1.5 min-w-0 text-rose-700 dark:text-rose-300">
+            <ShieldAlert size={12} className="flex-shrink-0" />
+            <span className="font-medium truncate">
+              完全访问已开启：不再询问，可读写工作区之外的路径，脚本可联网
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => onSetApprovalMode?.('auto')}
+            className="flex-shrink-0 px-2 py-0.5 rounded-md bg-rose-600 text-white hover:bg-rose-700 transition-colors"
+            title="撤回为「自动批准」"
+          >
+            撤回
+          </button>
+        </div>
+      )}
+
       {/* 0. 会话排队发送队列面板 */}
       {!centered && (
         <QueuedMessagesFloatingPanel

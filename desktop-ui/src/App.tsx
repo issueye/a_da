@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { agentClient } from './client/ws-client'
-import type { ClientSnapshot, AgentMode, ProviderConfig } from './types'
+import type { ClientSnapshot, AgentMode, ApprovalMode, ProviderConfig } from './types'
 import { TitleBar } from './components/TitleBar'
 import { Sidebar } from './components/Sidebar'
 import { TabStrip } from './components/TabStrip'
@@ -278,6 +278,46 @@ export function App() {
     agentClient.setMode(mode)
   }
 
+  /**
+   * 审批档位切换（P1b · SP-35）。
+   *
+   * 「完全访问」是唯一**要先确认**的一档：它放开的是工作区边界与脚本网络，
+   * 属于"选完之后就不再一个个问"的授权，确认必须在**开启时**发生一次
+   * （而不是每次动作时再问——那就不叫完全放行了）。
+   *
+   * 确认文案逐条列出**被放开**与**不放**的东西：只写"完全访问"四个字，
+   * 用户没有依据判断自己在放开什么。
+   */
+  const handleSetApprovalMode = (mode: ApprovalMode) => {
+    if (mode !== 'full') {
+      agentClient.setApprovalMode(mode)
+      return
+    }
+    setConfirmModal({
+      isOpen: true,
+      title: '开启「完全访问」',
+      message: [
+        '开启后，本产品将不再就下面这些操作询问你：',
+        '',
+        '· 脚本执行 —— 插件脚本可以运行',
+        '· 文件操作 —— 可读写工作区**之外**的路径',
+        '· 网络访问 —— 插件脚本可以联网',
+        '',
+        '这些只在你主动撤回（回到「自动批准」）之前有效。',
+      ].join('\n'),
+      subMessage:
+        '仍然不放开的：工具执行超时与取消（防挂死）、插件钩子的拦截、只读子智能体与 Plan 模式的收窄，' +
+        '以及应用自身的配置与密钥目录（那是凭据，任何档位都不可访问）。每次自动放行都会留下审计记录。',
+      confirmText: '我明白，开启',
+      cancelText: '取消',
+      variant: 'danger',
+      onConfirm: () => {
+        agentClient.setApprovalMode('full')
+        setConfirmModal({ isOpen: false, message: '', onConfirm: () => {} })
+      },
+    })
+  }
+
   const handleSaveSettings = (config: ProviderConfig) => {
     agentClient.setProvider(config)
   }
@@ -475,6 +515,7 @@ export function App() {
         workspace={activeThread?.workspace}
         productName={agentClient.productInfo?.name || agentClient.productInfo?.id || 'ada-coding'}
         mode={snapshot.currentMode}
+        approvalMode={snapshot.approvalMode}
         connected={connected}
         isDark={isDark}
         onReconnect={() => agentClient.reconnectImmediately()}
@@ -561,7 +602,7 @@ export function App() {
               onAbort={handleAbort}
               onSetMode={handleSetMode}
               onDecideApproval={handleDecideApproval}
-              onSetApprovalMode={(mode) => agentClient.setApprovalMode(mode)}
+              onSetApprovalMode={handleSetApprovalMode}
               onSetEffort={(effort) => agentClient.setEffort(effort)}
               onOpenSettings={() => setSettingsOpen(true)}
               onOpenPlugins={() => setPluginsOpen(true)}
@@ -598,7 +639,7 @@ export function App() {
                 onAbort={handleAbort}
                 onSetMode={handleSetMode}
                 onDecideApproval={handleDecideApproval}
-                onSetApprovalMode={(mode) => agentClient.setApprovalMode(mode)}
+                onSetApprovalMode={handleSetApprovalMode}
                 onSetEffort={(effort) => agentClient.setEffort(effort)}
                 onOpenSettings={() => setSettingsOpen(true)}
                 onOpenPlugins={() => setPluginsOpen(true)}

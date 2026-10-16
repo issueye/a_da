@@ -14,7 +14,68 @@ use boa_engine::{Context, Source};
 use std::path::Path;
 
 /// 向 Boa 执行上下文全量注入 Node API 基础运行环境 (process, path, Buffer, EventEmitter, os, fs, crypto, url, util, assert, timers, require)
+/// 环境注入清单（P1 · SP-13 的最小版）：**未声明即不注入**。
+///
+/// # 为什么"不注入"比"注入后再拦"更强
+///
+/// 拦截是在既成的能力面上加判断，绕过的路子（顺手造一个别的调用路径、拼一个别名）永远比
+/// 拦截点多。不注入则连 API 都不存在——插件写不出那行代码，也就不需要拦。
+///
+/// # 为什么最小版只有两项
+///
+/// 这里只关**真正带外部副作用**的那一项（网络），fs 的读写分离与 crypto/process 的细粒度
+/// 声明属于 P4·SP-71 的完整版。刻意**不**把无害的纯计算能力（crypto / url / util / Buffer）
+/// 默认关掉：那只会给正常插件制造摩擦，换不来任何安全收益（"默认收紧"要收紧在能力上，
+/// 不是收紧在算术上）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Needs {
+    /// 注入 `fs` 模块与它的原生读写能力（读写分离见 P4·SP-71）。
+    pub fs: bool,
+    /// 注入 `fetch` / `AbortController` / `Response` 与 `__native_fetch_async`。
+    ///
+    /// **默认 false**：这是插件唯一能"把数据送出去"的口子，值得显式声明才开。
+    pub net: bool,
+}
+
+impl Default for Needs {
+    fn default() -> Self {
+        // 默认按**插件**口径收紧（与 [`Needs::everything`] 的差别只有网络这一项）
+        Self::plugin_default()
+    }
+}
+
+impl Needs {
+    /// 全开：CLI（`ts_engine run/eval`）与本地脚本的现状行为——
+    /// 那是用户自己写的脚本，不在"不可信第三方"的口径里。
+    pub fn everything() -> Self {
+        Self { fs: true, net: true }
+    }
+
+    /// 插件默认档：`fs: true`、`net: false`（见设计文档 §3.5 的默认档位）。
+    pub fn plugin_default() -> Self {
+        Self {
+            fs: true,
+            net: false,
+        }
+    }
+}
+
+/// 按声明注入环境（**唯一入口**；`process`/`path`/`Buffer`/`url`/`util`/`assert`/`timers`
+/// 这些纯计算或信息类能力始终注入，见 [`Needs`] 的说明）。
+pub fn inject_environment(
+    ctx: &mut Context,
+    workspace: Option<&Path>,
+    needs: Needs,
+) -> Result<(), String> {
+    inject_common(ctx, workspace, needs)
+}
+
+/// 全量注入（保留给 CLI 与既有调用点；插件路径请用 [`inject_environment`]）。
 pub fn inject_node_environment(ctx: &mut Context, workspace: Option<&Path>) -> Result<(), String> {
+    inject_environment(ctx, workspace, Needs::everything())
+}
+
+fn inject_common(ctx: &mut Context, workspace: Option<&Path>, needs: Needs) -> Result<(), String> {
     // 1. 注入 process 全局对象
     let process_script = process::get_process_polyfill_script(workspace);
     ctx.eval(Source::from_bytes(&process_script))
@@ -40,8 +101,10 @@ pub fn inject_node_environment(ctx: &mut Context, workspace: Option<&Path>) -> R
     ctx.eval(Source::from_bytes(&os_script))
         .map_err(|e| format!("注入 os 失败: {e}"))?;
 
-    // 6. 注册同步 fs 原生函数与封装脚本
-    fs::register_fs_native_and_script(ctx, workspace)?;
+    // 6. 注册同步 fs 原生函数与封装脚本（**按声明**：未声明 fs 就不注册）
+    if needs.fs {
+        fs::register_fs_native_and_script(ctx, workspace)?;
+    }
 
     // 7. 注册 crypto 原生哈希与加密能力
     crypto::register_crypto_native_and_script(ctx)?;
@@ -67,6 +130,10 @@ pub fn inject_node_environment(ctx: &mut Context, workspace: Option<&Path>) -> R
         .map_err(|e| format!("注入 timers 失败: {e}"))?;
 
     // 12. 注入全局 Web API AbortSignal, AbortController, fetch 与 Response
+    //
+    // 🔴 **按声明注入**（SP-13）：`needs.net == false` 时整段不注入，于是 `fetch` 在沙箱里
+    // **根本不存在**（`typeof fetch === 'undefined'`）。这是插件唯一能把数据送出去的口子，
+    // 值得"显式声明才开"。
     let fetch_polyfill_script = r#"
         (function() {
             if (typeof globalThis.AbortSignal === 'undefined') {
@@ -240,46 +307,55 @@ pub fn inject_node_environment(ctx: &mut Context, workspace: Option<&Path>) -> R
             }
         })();
     "#;
-    ctx.eval(Source::from_bytes(fetch_polyfill_script))
-        .map_err(|e| format!("注入 Web API 失败: {e}"))?;
+    if needs.net {
+        ctx.eval(Source::from_bytes(fetch_polyfill_script))
+            .map_err(|e| format!("注入 Web API 失败: {e}"))?;
+    }
 
     // 13. 挂载 require 虚拟模块加载器
+    //
+    // 🔴 **必须容忍"某个能力没注入"**（SP-13）：老实现直接在对象字面量里取
+    // `globalThis.fs.promises`，于是 `needs.fs == false` 时**注入期就崩**
+    // （`cannot convert 'null' or 'undefined' to object`）——也就是说在"按声明注入"
+    // 真正用起来之前，这条路径从没被缺省过。现在只有存在的全局才登记，
+    // 未声明的模块 `require` 时给一条**说清原因**的错误（而不是 undefined 或崩溃）。
     let require_loader_script = r#"
         (function() {
-            const modules = {
-                'path': globalThis.path,
-                'node:path': globalThis.path,
-                'fs': globalThis.fs,
-                'node:fs': globalThis.fs,
-                'fs/promises': globalThis.fs.promises,
-                'node:fs/promises': globalThis.fs.promises,
-                'os': globalThis.os,
-                'node:os': globalThis.os,
-                'events': { EventEmitter: globalThis.EventEmitter, default: { EventEmitter: globalThis.EventEmitter } },
-                'node:events': { EventEmitter: globalThis.EventEmitter, default: { EventEmitter: globalThis.EventEmitter } },
-                'buffer': { Buffer: globalThis.Buffer, default: { Buffer: globalThis.Buffer } },
-                'node:buffer': { Buffer: globalThis.Buffer, default: { Buffer: globalThis.Buffer } },
-                'process': globalThis.process,
-                'node:process': globalThis.process,
-                'crypto': globalThis.crypto,
-                'node:crypto': globalThis.crypto,
-                'url': globalThis.url,
-                'node:url': globalThis.url,
-                'util': globalThis.util,
-                'node:util': globalThis.util,
-                'assert': globalThis.assert,
-                'node:assert': globalThis.assert,
-                'timers': globalThis.timers,
-                'node:timers': globalThis.timers,
-                'timers/promises': globalThis.timers.promises,
-                'node:timers/promises': globalThis.timers.promises,
+            const modules = {};
+            const put = (name, value) => {
+                if (value !== undefined && value !== null) modules[name] = value;
+            };
+            const putAlias = (name, value) => {
+                put(name, value);
+                put('node:' + name, value);
             };
 
+            putAlias('path', globalThis.path);
+            if (globalThis.fs) {
+                putAlias('fs', globalThis.fs);
+                if (globalThis.fs.promises) putAlias('fs/promises', globalThis.fs.promises);
+            }
+            putAlias('os', globalThis.os);
+            putAlias('events', { EventEmitter: globalThis.EventEmitter, default: { EventEmitter: globalThis.EventEmitter } });
+            putAlias('buffer', { Buffer: globalThis.Buffer, default: { Buffer: globalThis.Buffer } });
+            putAlias('process', globalThis.process);
+            putAlias('crypto', globalThis.crypto);
+            putAlias('url', globalThis.url);
+            putAlias('util', globalThis.util);
+            putAlias('assert', globalThis.assert);
+            if (globalThis.timers) {
+                putAlias('timers', globalThis.timers);
+                if (globalThis.timers.promises) putAlias('timers/promises', globalThis.timers.promises);
+            }
+
             globalThis.require = function(modName) {
-                if (modules[modName]) {
+                if (Object.prototype.hasOwnProperty.call(modules, modName)) {
                     return modules[modName];
                 }
-                throw new Error("微内核沙箱找不到模块: '" + modName + "'");
+                throw new Error(
+                    "微内核沙箱里没有模块: '" + modName + "'" +
+                    "（该能力未注入——插件需要在 needs 里声明它，见 docs/plugin-sdk/v1.md）"
+                );
             };
 
             if (typeof globalThis.module === 'undefined') {
@@ -303,6 +379,49 @@ pub fn inject_p0_environment(ctx: &mut Context, workspace: Option<&Path>) -> Res
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// SP-13：**未声明即不注入**。
+    ///
+    /// 判据是"API 在不在"（`typeof`），不是"调用会不会被拦"——不注入的能力连那行代码
+    /// 都写不出来，绕过的路子（换个别名、直呼原生）自然也就没有。
+    #[test]
+    fn test_needs_gate_what_gets_injected() {
+        fn eval_str(ctx: &mut Context, expr: &str) -> String {
+            ctx.eval(Source::from_bytes(expr))
+                .unwrap_or_else(|e| panic!("eval `{expr}` 失败: {e}"))
+                .to_string(ctx)
+                .unwrap()
+                .to_std_string_escaped()
+        }
+
+        // 1. 插件默认档：网络关、fs 开
+        let mut ctx = Context::default();
+        inject_environment(&mut ctx, None, Needs::plugin_default()).expect("注入失败");
+        assert_eq!(eval_str(&mut ctx, "typeof fetch"), "undefined", "默认档下 `fetch` 必须根本不存在");
+        assert_ne!(eval_str(&mut ctx, "typeof globalThis.fs"), "undefined", "fs 在默认档里是开的");
+
+        // 2. 显式关掉 fs：全局不存在，而且 `require` 要**说清原因**地报错
+        let mut ctx2 = Context::default();
+        inject_environment(&mut ctx2, None, Needs { fs: false, net: false }).expect("注入失败");
+        assert_eq!(
+            eval_str(&mut ctx2, "typeof globalThis.fs"),
+            "undefined",
+            "fs 未声明时不该注入"
+        );
+        let msg = eval_str(
+            &mut ctx2,
+            "(function(){ try { require('fs'); return 'no-error' } catch (e) { return String((e && e.message) || e) } })()",
+        );
+        assert!(
+            msg.contains("未注入") || msg.contains("needs"),
+            "未声明的模块必须给出**说清原因**的错误（而不是 undefined 或崩溃）：{msg}"
+        );
+
+        // 3. 全开档：网络回来
+        let mut ctx3 = Context::default();
+        inject_environment(&mut ctx3, None, Needs::everything()).expect("注入失败");
+        assert_eq!(eval_str(&mut ctx3, "typeof fetch"), "function", "声明了网络就应当注入");
+    }
 
     #[test]
     fn test_p0_environment_in_boa() {

@@ -182,7 +182,9 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
   `test_builtins_descriptor_equality` 契约测试（INV-3）机械守门。
   历史上那五处手写名单（`lib.rs` 读写判定、`approval/types.rs` 命令工具、`executor.rs` 检查点、
   子智能体白名单、插件自述 `is_write`）**只剩插件自述一处**，且已改为按描述符校验。
-- **事件流单一真源**：引擎多轮循环向外发射基座一等事件 `AgentEventBody`（12 个变体），
+- **事件流单一真源**：引擎多轮循环向外发射基座一等事件 `AgentEventBody`（13 个变体，其中
+  `Diagnostic` 承载扩展点遥测：点位名在 `point` 字段、词汇表在 `domain/diag.rs` 的 `DIAG_POINTS`，
+  **只登记真有发射方的点位**，由 `verify-wiring` check K 盯着），
   `agent-rpc` 桥接层直接订阅并投影到 UI，严禁在桥接层私造二等中间事件流（历史 `AgentLoopEvent` 已废除）。
 
 ## § 索引（`AGENTS.md §N` 一律指下表第 N 条，正文见 docs/agent-conventions.md）

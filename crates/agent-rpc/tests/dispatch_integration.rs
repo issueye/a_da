@@ -1136,3 +1136,800 @@ async fn test_failure_notice_stays_out_of_assistant_text_and_model_context() {
 
     let _ = std::fs::remove_dir_all(&test_dir);
 }
+
+/// SP-06 端到端（P0 埋点地基）：**诊断遥测必须走完整条链**。
+///
+/// 引擎发 `Diagnostic` 事件 → dispatch 投影进 `AgentStore.log` → 快照的 `log` 字段下发 →
+/// 界面按 `payload.origin` 过滤。
+///
+/// 为什么这条用例必要：面板此前只显示客户端自己记的请求/响应，Rust 侧的诊断写进
+/// `store.log` 之后**没有任何读出路径**——埋点等于白埋。这条用例把"链子真的接上了"钉住，
+/// 而且断言的是**界面过滤所依赖的那些字段**（`family` / `point` / `origin` / `outcome` /
+/// `turnId`），不是"日志里多了一行字"。
+#[tokio::test]
+async fn test_diagnostics_reach_store_log_and_snapshot_with_origin() {
+    use agent_base::engine::{AgentRuntime, RunPolicy};
+    use agent_base::model::StreamDelta;
+    use agent_base::testing::{
+        FixedClock, FixedPrompt, InMemorySessionStore, InMemoryToolCatalog, RecordingApprovalGate,
+        MockScope, ScriptedModelClient,
+    };
+
+    // 最小回合：无工具、纯文本收尾
+    let model = Arc::new(ScriptedModelClient::new(vec![vec![
+        StreamDelta::Text { text: "你好".to_string() },
+        StreamDelta::Done { stop_reason: "stop".to_string() },
+    ]]));
+    let rt = Arc::new(AgentRuntime::new(
+        model,
+        Arc::new(InMemoryToolCatalog::new()),
+        Arc::new(RecordingApprovalGate::new(true)),
+        Arc::new(InMemorySessionStore::new()),
+        Arc::new(FixedPrompt::new("测试系统提示词")),
+        Arc::new(MockScope::new("s")),
+        Arc::new(FixedClock::new(1000)),
+        RunPolicy::default(),
+    ));
+
+    let store = Arc::new(RwLock::new(store_for_test("E:/codes/diag_e2e")));
+    let test_dir = std::env::temp_dir().join(format!("a_da_diag_test_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&test_dir);
+    let dispatcher = Dispatcher::new(
+        store.clone(),
+        Arc::new(SessionManager::new(Some(test_dir.clone()))),
+        Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::with_home(test_home_dir())),
+        Arc::new(SkillManager::with_home(test_home_dir())),
+        None,
+    )
+    .with_engine(rt);
+
+    let created = dispatcher
+        .dispatch("thread.create", serde_json::json!({ "title": "诊断链" }))
+        .await
+        .unwrap();
+    let tid = created.get("threadId").and_then(|v| v.as_str()).unwrap().to_string();
+
+    dispatcher
+        .dispatch("thread.send", serde_json::json!({ "threadId": tid, "text": "打个招呼" }))
+        .await
+        .unwrap();
+
+    // `thread.send` 是**后台起轮次**（生产同构）：必须等它真的跑起来，
+    // 否则断言会撞上"事件还没到"的竞态。
+    let find_composed = |s: &AgentStore| {
+        s.log
+            .iter()
+            .find(|e| {
+                e.kind == "diag"
+                    && e.payload
+                        .as_ref()
+                        .and_then(|p| p.get("point"))
+                        .and_then(|v| v.as_str())
+                        == Some("prompt.composed")
+            })
+            .cloned()
+    };
+    let mut diag = None;
+    for _ in 0..300 {
+        diag = {
+            let s = store.read().await;
+            find_composed(&s)
+        };
+        if diag.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let s = store.read().await;
+
+    // 1) 诊断落进了 store.log，且是结构化的（界面靠这些字段过滤/展示）
+    let diag = diag.or_else(|| find_composed(&s)).expect(
+        "每轮必须有一条 `prompt.composed` 诊断落进 store.log",
+    );
+    let payload = diag.payload.as_ref().expect("诊断必须带结构化 payload");
+    assert_eq!(payload["origin"], "engine", "来源标注是界面过滤的依据：{payload:?}");
+    assert_eq!(payload["family"], "prompt");
+    assert_eq!(payload["outcome"], "applied");
+    assert!(
+        payload["turnId"].is_string(),
+        "关联键必须下发（界面按 turn_id 归组）：{payload:?}"
+    );
+    assert!(
+        payload["bytes"].as_u64().unwrap_or(0) > 0,
+        "提示词字节数必须如实上报：{payload:?}"
+    );
+
+    // 2) 快照的 `log` 字段带着它（界面就是从这里读的）
+    let snapshot = generate_snapshot(&s);
+    let json = serde_json::to_value(&snapshot).expect("快照必须可序列化");
+    let snap_log = json
+        .get("log")
+        .and_then(|v| v.as_array())
+        .expect("快照必须带 log 数组");
+    assert!(
+        snap_log
+            .iter()
+            .any(|e| e["kind"] == "diag" && e["payload"]["origin"] == "engine"),
+        "诊断必须随快照下发，否则界面无路可读：{snap_log:?}"
+    );
+
+    drop(s);
+    let _ = std::fs::remove_dir_all(&test_dir);
+}
+
+/// SP-08 契约（P0 埋点地基，插件/技能侧）：扫描类诊断必须**如实落到诊断缓冲**，
+/// 且**缺席可见**——"一个都没有"要报出来，而不是什么都不发。
+///
+/// 这条守的是 AGENTS §15 的那个坑：声明了却没人发 = 静默失效。缺席不报的话，
+/// 面板上"没扫到"与"根本没扫过"长得一模一样。
+#[tokio::test]
+async fn test_plugin_and_skill_scan_diagnostics_with_absence_signal() {
+    let store = Arc::new(RwLock::new(store_for_test("E:/codes/diag_scan")));
+    // 空的临时应用目录：既保证"没有磁盘插件/自定义技能"，也不碰用户真实的 ~/.a-da
+    let home = test_home_dir();
+    let dispatcher = Dispatcher::new(
+        store.clone(),
+        Arc::new(SessionManager::new(Some(home.clone()))),
+        Arc::new(CheckpointManager::new(Some(home.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::with_home(home.clone())),
+        Arc::new(SkillManager::with_home(home.clone())),
+        None,
+    );
+
+    dispatcher
+        .dispatch("plugin.list", serde_json::json!({ "workspace": "E:/codes/diag_scan" }))
+        .await
+        .expect("plugin.list 必须可分发");
+    dispatcher
+        .dispatch("skill.list", serde_json::json!({ "workspace": "E:/codes/diag_scan" }))
+        .await
+        .expect("skill.list 必须可分发");
+
+    let s = store.read().await;
+    let find = |point: &str| {
+        s.log
+            .iter()
+            .find(|e| {
+                e.kind == "diag"
+                    && e.payload
+                        .as_ref()
+                        .and_then(|p| p.get("point"))
+                        .and_then(|v| v.as_str())
+                        == Some(point)
+            })
+            .and_then(|e| e.payload.clone())
+    };
+
+    // 1) 没有磁盘插件 → 必须留下"缺席"诊断（而不是一条都没有）
+    let discovered = find("plugin.discovered")
+        .expect("插件扫描必须留下诊断：一个都没有时也要报缺席");
+    assert_eq!(
+        discovered["outcome"], "skipped",
+        "没有插件时 outcome 应为 skipped：{discovered:?}"
+    );
+    assert_eq!(
+        discovered["reason"], "no_plugin",
+        "缺席理由必须如实写出来：{discovered:?}"
+    );
+
+    // 2) 技能同理（内置技能总是存在，所以缺席信号针对**自定义**技能）
+    let skill = find("skill.skipped").expect("技能扫描必须留下缺席诊断");
+    assert_eq!(skill["reason"], "no_custom_skill", "{skill:?}");
+    assert!(
+        skill["data"]["builtin"].as_u64().unwrap_or(0) > 0,
+        "内置技能数量要如实带上（否则看不出'只是没有自定义的'）：{skill:?}"
+    );
+
+    drop(s);
+}
+
+/// P2·SP-45：`skill.list` 必须**同时**回答两件界面答不出来的事——
+///
+/// 1. 插件带来的技能在列表里（`pluginId` 非空、`scope = "plugin"`）：装配期收好的那份
+///    随 `EngineInjection` 递进来，所以"界面列出的"与"真的进提示词的"是同一份；
+/// 2. frontmatter 里认不出的键要报出来（`skill.invalid`）——以前是静默忽略。
+#[tokio::test]
+async fn test_skill_list_reports_plugin_skills_and_invalid_frontmatter() {
+    // 工作区里放一个**写错了键名**的技能：它必须进列表（照旧可用）**且**留下诊断
+    let ws_dir = std::env::temp_dir().join(format!("a_da_ws_skill_{}", uuid::Uuid::new_v4()));
+    let skill_dir = ws_dir.join(".ada").join("skills").join("typo");
+    std::fs::create_dir_all(&skill_dir).expect("建技能目录失败");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: 拼错的技能\ndescription: 说明\nwhen_to_use_typo: 写错了\n---\n正文\n",
+    )
+    .expect("写技能失败");
+    let ws = ws_dir.to_string_lossy().to_string();
+
+    let store = Arc::new(RwLock::new(store_for_test(&ws)));
+    let home = test_home_dir();
+    let plugin_skill = agent_node::plugins::PluginSkillDeclaration {
+        name: "deploy-runbook".to_string(),
+        description: "部署手册".to_string(),
+        body: "步骤一……".to_string(),
+        when_to_use: None,
+        user_invocable: None,
+    }
+    .to_summary("demo-plugin", "Demo 插件");
+
+    let dispatcher = Dispatcher::new(
+        store.clone(),
+        Arc::new(SessionManager::new(Some(home.clone()))),
+        Arc::new(CheckpointManager::new(Some(home.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::with_home(home.clone())),
+        Arc::new(SkillManager::with_home(home.clone())),
+        None,
+    )
+    .with_plugin_skills(vec![plugin_skill]);
+
+    let listed = dispatcher
+        .dispatch("skill.list", serde_json::json!({ "workspace": ws }))
+        .await
+        .expect("skill.list 必须可分发");
+    let arr = listed.as_array().expect("技能列表必须是数组");
+
+    let plugin_skill = arr
+        .iter()
+        .find(|s| s["name"] == "deploy-runbook")
+        .expect("插件技能必须出现在列表里（否则界面少一截、模型却看得到）");
+    assert_eq!(plugin_skill["scope"], "plugin");
+    assert_eq!(
+        plugin_skill["pluginId"], "demo-plugin",
+        "归因字段必须被填上（此前恒为空）：{plugin_skill:?}"
+    );
+    assert_eq!(plugin_skill["pluginName"], "Demo 插件");
+
+    let typo = arr
+        .iter()
+        .find(|s| s["name"] == "拼错的技能")
+        .expect("写错的技能照样进列表（不该因为一个键就整条消失）");
+    assert_eq!(
+        typo["unknownFrontmatterKeys"],
+        serde_json::json!(["when_to_use_typo"]),
+        "认不出的键要如实带出去：{typo:?}"
+    );
+
+    // 诊断侧：`skill.invalid` 必须落在缓冲里，且说得清是哪个技能、哪个键
+    let s = store.read().await;
+    let invalid = s
+        .log
+        .iter()
+        .find(|e| {
+            e.kind == "diag"
+                && e.payload
+                    .as_ref()
+                    .and_then(|p| p.get("point"))
+                    .and_then(|v| v.as_str())
+                    == Some("skill.invalid")
+        })
+        .and_then(|e| e.payload.clone())
+        .expect("frontmatter 有认不出的键就必须留下 skill.invalid 诊断");
+    assert_eq!(invalid["reason"], "unknown_frontmatter_key", "{invalid:?}");
+    assert_eq!(
+        invalid["data"]["keys"],
+        serde_json::json!(["when_to_use_typo"]),
+        "要指出是哪个键（否则作者只能靠猜）：{invalid:?}"
+    );
+    drop(s);
+
+    let _ = std::fs::remove_dir_all(&ws_dir);
+}
+
+/// P3a·SP-55：管理面点位（插件启停 / 会话创建）在 **RPC 这一层**跑，而且：
+///
+/// - 拦下即定稿：**不写盘、不重装配**，接口如实回 `denied`；
+/// - 会话创建那条必须**原子**：拒绝之后不得留下"内存里建了、磁盘没建"的半成品；
+/// - 事后点位只追加旁注（控制面第三方只能 observe / note）。
+#[tokio::test]
+async fn test_management_plane_hooks_gate_toggle_and_thread_create() {
+    use agent_base::testing::ScriptedHookRunner;
+
+    let store = Arc::new(RwLock::new(store_for_test("E:/codes/manage_hooks")));
+    let home = test_home_dir();
+    let build = || {
+        Dispatcher::new(
+            store.clone(),
+            Arc::new(SessionManager::new(Some(home.clone()))),
+            Arc::new(CheckpointManager::new(Some(home.clone()))),
+            Arc::new(SubagentManager::new()),
+            Arc::new(ApprovalManager::new()),
+            Arc::new(PluginManager::with_home(home.clone())),
+            Arc::new(SkillManager::with_home(home.clone())),
+            None,
+        )
+    };
+
+    // ① 插件启停被拦下 → 不写盘、不重装配
+    let guard = Arc::new(
+        ScriptedHookRunner::new()
+            .deny_at("beforePluginToggle", "这个插件正在被审计，暂不允许停用"),
+    );
+    let dispatcher = build()
+        .with_hook_runner(guard.clone())
+        .with_plugin_reassembler(Arc::new(NoopReassembler));
+    let res = dispatcher
+        .dispatch(
+            "plugin.setEnabled",
+            serde_json::json!({ "pluginId": "demo-plugin", "enabled": false }),
+        )
+        .await
+        .expect("plugin.setEnabled 必须可分发");
+    assert_eq!(res["denied"], true, "{res:?}");
+    assert!(
+        res["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("正在被审计"),
+        "拦下的理由要如实回给调用方：{res:?}"
+    );
+    assert!(res.get("report").is_none(), "被拦下就不该有重装配收据：{res:?}");
+    assert_eq!(
+        guard.calls(),
+        vec!["beforePluginToggle".to_string()],
+        "被拦下之后不该再问事后点位：{:?}",
+        guard.calls()
+    );
+
+    // ② 会话创建被拦下 → 原子：store 里不得出现新会话
+    let before_count = store.read().await.threads.len();
+    let veto = Arc::new(ScriptedHookRunner::new().deny_at(
+        "beforeThreadCreate",
+        "当前有正在跑的审计，先不要新建会话",
+    ));
+    let dispatcher = build().with_hook_runner(veto);
+    let res = dispatcher
+        .dispatch("thread.create", serde_json::json!({ "title": "被拦下的会话" }))
+        .await
+        .expect("thread.create 必须可分发");
+    assert_eq!(res["denied"], true, "{res:?}");
+    assert_eq!(
+        store.read().await.threads.len(),
+        before_count,
+        "被拦下必须在**任何状态变更之前**（否则留下'内存里建了、磁盘没建'的半成品）"
+    );
+
+    // ③ 放行 + 事后旁注：`afterThreadCreate` 的 note 随回执带出
+    let note_taker = Arc::new(ScriptedHookRunner::new().note_at(
+        "afterThreadCreate",
+        "已记录：新会话已落盘",
+    ));
+    let dispatcher = build().with_hook_runner(note_taker);
+    let res = dispatcher
+        .dispatch("thread.create", serde_json::json!({ "title": "正常新建的会话" }))
+        .await
+        .expect("thread.create 必须可分发");
+    assert!(res["threadId"].is_string(), "正常路径要回 threadId：{res:?}");
+    assert_eq!(
+        res["notes"],
+        serde_json::json!(["已记录：新会话已落盘"]),
+        "事后旁注要随回执带出（模型/审计插件能看到）：{res:?}"
+    );
+}
+
+/// 最小重装配替身（只用来证明"被拦下时它压根不会被调"）。
+struct NoopReassembler;
+
+impl agent_rpc::server::dispatch::PluginReassembler for NoopReassembler {
+    fn reassemble<'a>(
+        &'a self,
+        plugin_id: &'a str,
+        enabled: bool,
+    ) -> agent_base::ports::BoxFuture<'a, Option<agent_runtime::ReassemblyReport>> {
+        Box::pin(async move {
+            let empty = agent_runtime::ContributionDigest::default();
+            Some(agent_runtime::ReassemblyReport {
+                request: agent_runtime::PluginToggleRequest {
+                    plugin_id: plugin_id.to_string(),
+                    scope: "workspace".to_string(),
+                    from_enabled: !enabled,
+                    to_enabled: enabled,
+                },
+                before: empty.clone(),
+                after: empty.clone(),
+                delta: agent_runtime::ContributionDelta::default(),
+                skipped: Vec::new(),
+                applied: true,
+            })
+        })
+    }
+}
+
+/// P2·SP-46：`plugin.setEnabled` 必须**真的驱动重装配**，并把"实际生效的差异"回给界面。
+///
+/// 两个方向都守：
+/// - 接了重装配入口 → 回执里带上差异（界面据此知道"关掉之后少了什么"）；
+/// - 没接 → `applied: false`（**如实**：别让界面把"只写了个布尔值"当成"已经生效"）。
+#[tokio::test]
+async fn test_plugin_set_enabled_drives_reassembly_and_reports_the_delta() {
+    /// 假重装配器：报"启用时新增一个工具、停用时移除它"。
+    struct FakeReassembler;
+
+    impl agent_rpc::server::dispatch::PluginReassembler for FakeReassembler {
+        fn reassemble<'a>(
+            &'a self,
+            plugin_id: &'a str,
+            enabled: bool,
+        ) -> agent_base::ports::BoxFuture<'a, Option<agent_runtime::ReassemblyReport>> {
+            Box::pin(async move {
+                let empty = agent_runtime::ContributionDigest::default();
+                let mut after = agent_runtime::ContributionDigest::default();
+                if enabled {
+                    after.tools = vec![format!("tool:plugin:{plugin_id}:web_search")];
+                }
+                Some(agent_runtime::ReassemblyReport {
+                    request: agent_runtime::PluginToggleRequest {
+                        plugin_id: plugin_id.to_string(),
+                        scope: "workspace".to_string(),
+                        from_enabled: !enabled,
+                        to_enabled: enabled,
+                    },
+                    before: empty.clone(),
+                    after: after.clone(),
+                    delta: agent_runtime::ContributionDelta::between(&empty, &after),
+                    skipped: Vec::new(),
+                    applied: true,
+                })
+            })
+        }
+    }
+
+    let store = Arc::new(RwLock::new(store_for_test("E:/codes/plugin_toggle")));
+    let home = test_home_dir();
+    let build = || {
+        Dispatcher::new(
+            store.clone(),
+            Arc::new(SessionManager::new(Some(home.clone()))),
+            Arc::new(CheckpointManager::new(Some(home.clone()))),
+            Arc::new(SubagentManager::new()),
+            Arc::new(ApprovalManager::new()),
+            Arc::new(PluginManager::with_home(home.clone())),
+            Arc::new(SkillManager::with_home(home.clone())),
+            None,
+        )
+    };
+
+    // ① 接了重装配入口 → 回执带差异
+    let with = build().with_plugin_reassembler(Arc::new(FakeReassembler));
+    let res = with
+        .dispatch(
+            "plugin.setEnabled",
+            serde_json::json!({ "pluginId": "demo-plugin", "enabled": true }),
+        )
+        .await
+        .expect("plugin.setEnabled 必须可分发");
+    assert_eq!(res["applied"], true, "{res:?}");
+    assert_eq!(res["report"]["request"]["pluginId"], "demo-plugin", "{res:?}");
+    assert!(
+        res["report"]["delta"]["added"][0]
+            .as_str()
+            .unwrap_or("")
+            .contains("web_search"),
+        "回执必须带上实际生效的差异：{res:?}"
+    );
+
+    // ② 没接 → 如实说"没有生效"（不撒谎）
+    let without = build();
+    let res = without
+        .dispatch(
+            "plugin.setEnabled",
+            serde_json::json!({ "pluginId": "demo-plugin", "enabled": false }),
+        )
+        .await
+        .expect("plugin.setEnabled 必须可分发");
+    assert_eq!(
+        res["applied"], false,
+        "没有重装配入口时必须如实回报（否则界面会以为关掉就生效了）：{res:?}"
+    );
+    assert!(res["report"].is_null(), "{res:?}");
+}
+
+/// SP-08 契约（正向）：磁盘上真有一个插件时，诊断必须**如实**说明两件事——
+/// 它被扫到了，以及**它现在不会被执行**（`execution_not_wired`）。
+///
+/// 为什么这条也必要：界面把"列出来了"当成"在生效"是这次埋点要根治的误读之一。
+/// 只报 discovered 不报 skipped，等于给用户一个"插件正常工作"的假象。
+#[tokio::test]
+async fn test_disk_plugin_is_reported_as_discovered_but_not_wired() {
+    let ws_dir = std::env::temp_dir().join(format!("a_da_ws_plugin_{}", uuid::Uuid::new_v4()));
+    let plugins_dir = ws_dir.join(".ada").join("plugins");
+    std::fs::create_dir_all(&plugins_dir).expect("建临时插件目录失败");
+    std::fs::write(
+        plugins_dir.join("hello.ts"),
+        "export default { tools: [{ name: 'hello_world', description: '打招呼' }] }\n",
+    )
+    .expect("写临时插件失败");
+
+    let ws = ws_dir.to_string_lossy().to_string();
+    let store = Arc::new(RwLock::new(store_for_test(&ws)));
+    let home = test_home_dir();
+    let dispatcher = Dispatcher::new(
+        store.clone(),
+        Arc::new(SessionManager::new(Some(home.clone()))),
+        Arc::new(CheckpointManager::new(Some(home.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::with_home(home.clone())),
+        Arc::new(SkillManager::with_home(home.clone())),
+        None,
+    );
+
+    let listed = dispatcher
+        .dispatch("plugin.list", serde_json::json!({ "workspace": ws }))
+        .await
+        .expect("plugin.list 必须可分发");
+
+    // 2) 响应里的插件项必须自述"为什么不生效"——这条字段以前恒为空，
+    //    于是插件卡永远显示不出问题（"有壳无用"）。
+    let items = listed["plugins"].as_array().expect("plugin.list 必须回插件数组");
+    let disk_item = items
+        .iter()
+        .find(|p| p["scope"] != "builtin")
+        .expect("磁盘插件必须出现在列表里");
+    let diags = disk_item["diagnostics"]
+        .as_array()
+        .expect("插件项必须带 diagnostics");
+    assert!(
+        diags
+            .iter()
+            .any(|d| d["message"].as_str().unwrap_or("").contains("执行面尚未接线")),
+        "必须如实告诉用户'列出来了但还不会执行'：{diags:?}"
+    );
+
+    let s = store.read().await;
+    let by_point = |point: &str| -> Vec<serde_json::Value> {
+        s.log
+            .iter()
+            .filter(|e| {
+                e.kind == "diag"
+                    && e.payload
+                        .as_ref()
+                        .and_then(|p| p.get("point"))
+                        .and_then(|v| v.as_str())
+                        == Some(point)
+            })
+            .filter_map(|e| e.payload.clone())
+            .collect()
+    };
+
+    let discovered = by_point("plugin.discovered");
+    assert!(
+        discovered
+            .iter()
+            .any(|p| p["outcome"] == "applied" && p["origin"].as_str().unwrap_or("").starts_with("plugin:")),
+        "磁盘插件必须被如实报为 discovered 并按插件 id 归因：{discovered:?}"
+    );
+
+    let skipped = by_point("plugin.skipped");
+    assert!(
+        skipped.iter().any(|p| p["reason"] == "execution_not_wired"),
+        "**必须**报出'列出来了但还没接线'——否则界面把 listing 当成生效：{skipped:?}"
+    );
+
+    drop(s);
+    let _ = std::fs::remove_dir_all(&ws_dir);
+}
+
+/// SP-20 端到端冒烟（P1 主线的闭环）：**插件工具被模型调用并拿到成功回执**。
+///
+/// 这条把所有前序任务串起来跑一遍真实链路：
+/// 磁盘插件 → 装配期收集（SP-16）→ 进 catalog → 模型调用 → 脚本沙箱执行
+/// （SP-10 端口 / SP-12 限额 / SP-13 注入清单）→ 回执映射（SP-15 唯一转换点）
+/// → 界面卡片 `done`。
+///
+/// 判据刻意**不看日志、只看 store 里的卡片**：卡片是界面渲染的依据，
+/// 也是"模型真的拿到了什么"的投影。
+#[tokio::test]
+async fn test_plugin_tool_is_called_by_the_model_and_returns_success() {
+    use agent_base::engine::{AgentRuntime, RunPolicy};
+    use agent_base::model::{StreamDelta, ToolCallInfo};
+    use agent_base::ports::{ScriptBudget, ScriptHost, ToolCatalog};
+    use agent_base::testing::{
+        FixedClock, FixedPrompt, InMemorySessionStore, InMemoryToolCatalog, MockScope,
+        RecordingApprovalGate, ScriptedModelClient,
+    };
+    use std::sync::Arc;
+
+    const CALL_ID: &str = "call_plugin_e2e";
+
+    // 1) 临时工作区里的**磁盘插件**：工具名用注册表里已有的 `read_file`
+    //    （决策 1 的口径：只认注册表，所以插件只能重实现已注册的名字）
+    let ws = std::env::temp_dir().join(format!("a_da_sp20_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(ws.join(".ada").join("plugins")).expect("建临时工作区失败");
+    std::fs::write(
+        ws.join(".ada").join("plugins").join("p.ts"),
+        "export default { tools: [ { name: 'read_file', description: '插件实现', \
+         execute: async (args: any) => ({ ok: true, output: 'plugin-output:' + args.path }) } ] }\n",
+    )
+    .expect("写插件失败");
+
+    // 2) 真装配（SP-16 的口径）：扫磁盘插件 → 装载 → 只收注册表里有的名字
+    let mgr = PluginManager::with_home(test_home_dir());
+    let script_host: Arc<dyn ScriptHost> = Arc::new(agent_node::scripts::TsScriptHost::new());
+    let asm = agent_node::scripts::collect_plugin_tools(
+        &mgr,
+        &script_host,
+        &ws,
+        ScriptBudget::default(),
+    )
+    .await;
+    assert_eq!(
+        asm.tools.len(),
+        1,
+        "插件应当提供 1 个可装工具，实际 {:?}",
+        asm.skipped
+    );
+
+    // 3) catalog **只有插件这一个工具**：于是"模型调到的"必然是插件实现
+    let catalog: Arc<dyn ToolCatalog> = Arc::new(InMemoryToolCatalog::with_tools(asm.tools.into_iter().map(|(_, t)| t).collect::<Vec<_>>()));
+
+    // 4) 脚本模型：先要工具、拿到结果后收尾
+    let model = Arc::new(ScriptedModelClient::new(vec![
+        vec![
+            StreamDelta::ToolCall {
+                call: ToolCallInfo {
+                    id: CALL_ID.to_string(),
+                    name: "read_file".to_string(),
+                    args: r#"{"path":"README.md"}"#.to_string(),
+                },
+            },
+            StreamDelta::Done { stop_reason: "tool_calls".to_string() },
+        ],
+        vec![
+            StreamDelta::Text { text: "读到了".to_string() },
+            StreamDelta::Done { stop_reason: "stop".to_string() },
+        ],
+    ]));
+
+    let rt = Arc::new(AgentRuntime::new(
+        model,
+        catalog,
+        Arc::new(RecordingApprovalGate::new(true)),
+        Arc::new(InMemorySessionStore::new()),
+        Arc::new(FixedPrompt::new("测试系统提示词")),
+        Arc::new(MockScope::new("s")),
+        Arc::new(FixedClock::new(1000)),
+        RunPolicy::default(),
+    ));
+
+    let store = Arc::new(RwLock::new(store_for_test(&ws.to_string_lossy())));
+    let test_dir = std::env::temp_dir().join(format!("a_da_sp20_home_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&test_dir);
+    let dispatcher = Dispatcher::new(
+        store.clone(),
+        Arc::new(SessionManager::new(Some(test_dir.clone()))),
+        Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::with_home(test_home_dir())),
+        Arc::new(SkillManager::with_home(test_home_dir())),
+        None,
+    )
+    .with_engine(rt);
+
+    let created = dispatcher
+        .dispatch("thread.create", serde_json::json!({ "title": "插件工具冒烟" }))
+        .await
+        .unwrap();
+    let tid = created.get("threadId").and_then(|v| v.as_str()).unwrap().to_string();
+
+    dispatcher
+        .dispatch("thread.send", serde_json::json!({ "threadId": tid, "text": "读一下 README" }))
+        .await
+        .unwrap();
+
+    // 5) 等卡片收尾，然后断言"插件真的被执行了"
+    let mut card: Option<(String, Option<String>)> = None;
+    for _ in 0..300 {
+        card = {
+            let s = store.read().await;
+            s.threads.iter().find(|t| t.id == tid).and_then(|t| {
+                t.items.iter().find_map(|it| match it {
+                    Item::Tool { call_id, status, output, .. } if call_id == CALL_ID => {
+                        Some((status.clone(), output.clone()))
+                    }
+                    _ => None,
+                })
+            })
+        };
+        if card.as_ref().map(|(st, _)| st == "done").unwrap_or(false) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let (status, output) = card.expect("必须留下这次工具调用的卡片");
+    let output = output.unwrap_or_default();
+    assert_eq!(status, "done", "回执必须是成功（SP-15 的唯一转换点），实际 output={output}");
+    assert!(
+        output.contains("plugin-output:README.md"),
+        "卡片输出必须来自**插件脚本**（而不是任何内置实现）：{output}"
+    );
+
+    let _ = std::fs::remove_dir_all(&ws);
+    let _ = std::fs::remove_dir_all(&test_dir);
+}
+
+/// SP-18：`plugin.validate` 必须**说人话**——插件作者据此知道"为什么它没生效"。
+#[tokio::test]
+async fn test_plugin_validate_reports_actionable_problems() {
+    let ws = std::env::temp_dir().join(format!("a_da_sp18_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(ws.join(".ada").join("plugins")).expect("建临时工作区失败");
+    let good = ws.join(".ada").join("plugins").join("good.ts");
+    let bad = ws.join(".ada").join("plugins").join("bad.ts");
+    std::fs::write(
+        &good,
+        "export default { tools: [ { name: 'read_file', description: 'x', \
+         execute: async () => ({ ok: true, output: 'ok' }) } ] }\n",
+    )
+    .expect("写好插件失败");
+    std::fs::write(&bad, "export default { tools: [ \n").expect("写坏插件失败");
+
+    let store = Arc::new(RwLock::new(store_for_test(&ws.to_string_lossy())));
+    let test_dir = std::env::temp_dir().join(format!("a_da_sp18_home_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&test_dir);
+    let dispatcher = Dispatcher::new(
+        store.clone(),
+        Arc::new(SessionManager::new(Some(test_dir.clone()))),
+        Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::with_home(test_home_dir())),
+        Arc::new(SkillManager::with_home(test_home_dir())),
+        None,
+    );
+
+    // 1) 好插件：问题清单为空
+    let ok = dispatcher
+        .dispatch(
+            "plugin.validate",
+            serde_json::json!({ "pluginId": "workspace:good", "filePath": good.to_string_lossy(), "workspace": ws.to_string_lossy() }),
+        )
+        .await
+        .expect("plugin.validate 必须可分发");
+    assert_eq!(ok["transpiled"], serde_json::json!(true), "{ok}");
+    assert_eq!(ok["loaded"], serde_json::json!(true), "{ok}");
+    assert_eq!(ok["problems"].as_array().map(|a| a.len()), Some(0), "{ok}");
+    assert_eq!(ok["exports"][0]["registered"], serde_json::json!(true), "{ok}");
+    // 权限与预算要如实说出来（插件作者据此判断能不能联网）
+    assert!(
+        ok["needs"].as_str().unwrap_or("").contains("net: 关"),
+        "{ok}"
+    );
+    assert!(ok["limits"].as_str().unwrap_or("").contains("循环"), "{ok}");
+
+    // 2) 坏插件：问题清单说清楚"转译失败"
+    let broken = dispatcher
+        .dispatch(
+            "plugin.validate",
+            serde_json::json!({ "pluginId": "workspace:bad", "filePath": bad.to_string_lossy(), "workspace": ws.to_string_lossy() }),
+        )
+        .await
+        .expect("plugin.validate 必须可分发");
+    assert_eq!(broken["transpiled"], serde_json::json!(false), "{broken}");
+    let problems = broken["problems"].as_array().cloned().unwrap_or_default();
+    assert!(
+        problems.iter().any(|p| p.as_str().unwrap_or("").contains("转译失败")),
+        "{broken}"
+    );
+
+    // 3) 按 pluginId 也能找到路径（不给 filePath 时走扫描结果）
+    let by_id = dispatcher
+        .dispatch(
+            "plugin.validate",
+            serde_json::json!({ "pluginId": "workspace:good", "workspace": ws.to_string_lossy() }),
+        )
+        .await
+        .expect("按 pluginId 也应当可分发");
+    assert_eq!(by_id["loaded"], serde_json::json!(true), "{by_id}");
+
+    let _ = std::fs::remove_dir_all(&ws);
+    let _ = std::fs::remove_dir_all(&test_dir);
+}

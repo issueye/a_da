@@ -19,7 +19,8 @@
       "to": "bin",
       "filter": [
         "ada-gateway.exe",
-        "ada-coding.exe"
+        "ada-coding.exe",
+        "ada-plugin-runner.exe"
       ]
     }
   ],

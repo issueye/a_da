@@ -150,6 +150,8 @@ pub fn get_builtin_skills() -> Vec<SkillSummary> {
             is_file_skill: Some(false),
             user_invocable: Some(true),
             when_to_use: Some(b.when_to_use.to_string()),
+            // 内置技能是编译进来的，没有 frontmatter 可写错（SP-45 的新字段）
+            unknown_frontmatter_keys: Vec::new(),
         })
         .collect()
 }

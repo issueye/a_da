@@ -3,7 +3,8 @@
  */
 
 export type AgentMode = 'code' | 'plan' | 'create' | 'pm'
-export type ApprovalMode = 'auto' | 'ask' | 'readonly'
+/** `full` = 完全访问（P1b）：不问 + 放开工作区边界与脚本网络（`~/.a-da` 红线除外）。 */
+export type ApprovalMode = 'auto' | 'ask' | 'readonly' | 'full'
 export type Effort = 'max' | 'high' | 'medium' | 'low'
 export type ModelProtocol = 'openai_chat' | 'anthropic' | 'openai_responses'
 
@@ -303,13 +304,21 @@ export interface LoadedPlugin {
   blockedTools?: string[]
 }
 
+/** 技能的来源（SP-45：`plugin` 是第三个来源，与插件本身的 scope 不是一套取值） */
+export type SkillScope = 'builtin' | 'workspace' | 'global' | 'plugin'
+
 export interface SkillSummary {
   id: string
   name: string
   description: string
   path: string
-  scope: PluginScope
+  scope: SkillScope
   enabled: boolean
+  /** 这条技能是**哪个插件**带来的（SP-45）：只有插件技能才非空 */
+  pluginName?: string
+  pluginId?: string
+  /** frontmatter 里认不出的键（SP-45）：非空 = 技能文件写错了键名，界面要提示 */
+  unknownFrontmatterKeys?: string[]
 }
 
 export interface PromptItem {
@@ -418,7 +427,8 @@ export interface SubagentProfile {
   enabled: boolean
 }
 
-export type DebugKind = 'request' | 'response' | 'tools' | 'tool' | 'error' | 'info' | 'delta'
+/** `diag` = P0 埋点的诊断遥测条目（点位在 `payload.point`、来源在 `payload.origin`）。 */
+export type DebugKind = 'request' | 'response' | 'tools' | 'tool' | 'error' | 'info' | 'delta' | 'diag'
 
 export interface DebugEntry {
   id: string

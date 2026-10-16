@@ -404,7 +404,7 @@ mod tests {
         let check = CheckTaskTool::new(tasks.clone());
 
         let (scope, cancel, sink) = ctx_parts(&ws);
-        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1" };
+        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1", hooks: None };
 
         let receipt = run.execute(&call("run_background", json!({"command": echo_cmd("BG_OK")})), &ctx).await;
         assert_eq!(receipt.status, ToolStatus::Success, "启动必须成功：{}", receipt.output);
@@ -444,7 +444,7 @@ mod tests {
         let check = CheckTaskTool::new(tasks.clone());
 
         let (scope, cancel, sink) = ctx_parts(&ws);
-        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1" };
+        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1", hooks: None };
 
         let receipt = run
             .execute(&call("run_background", json!({"command": sleep_cmd()})), &ctx)
@@ -486,7 +486,7 @@ mod tests {
         let kill = KillTaskTool::new(tasks.clone());
 
         let (scope, cancel, sink) = ctx_parts(&ws);
-        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1" };
+        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1", hooks: None };
 
         let r = check.execute(&call("check_task", json!({"task_id": "nope"})), &ctx).await;
         assert_eq!(r.status, ToolStatus::Error);
@@ -502,7 +502,7 @@ mod tests {
         let tasks = Arc::new(BackgroundTasks::new(&ws));
         let run = RunBackgroundTool::new(tasks.clone());
         let (scope, cancel, sink) = ctx_parts(&ws);
-        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1" };
+        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1", hooks: None };
 
         let r = run.execute(&call("run_background", json!({})), &ctx).await;
         assert_eq!(r.status, ToolStatus::Error);
@@ -515,7 +515,7 @@ mod tests {
         let tasks = Arc::new(BackgroundTasks::new(&ws));
         let run = RunBackgroundTool::new(tasks.clone());
         let (scope, cancel, sink) = ctx_parts(&ws);
-        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1" };
+        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1", hooks: None };
 
         let r = run
             .execute(

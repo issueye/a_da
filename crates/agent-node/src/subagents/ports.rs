@@ -36,6 +36,15 @@ impl PromptSource for ProfilePrompt {
     fn system_prompt(&self) -> String {
         self.prompt.clone()
     }
+
+    /// 子智能体 profile 就是**一块**正文：如实报一段（而不是假报拆不开）。
+    fn prompt_segments(&self) -> Vec<agent_base::ports::PromptSegment> {
+        vec![agent_base::ports::PromptSegment {
+            id: "subagent_profile".to_string(),
+            source: "builtin:subagent".to_string(),
+            bytes: self.prompt.len(),
+        }]
+    }
 }
 
 /// 子智能体会话存储（纯内存隔离，可附加工作区磁盘持久化以便独立查看）。

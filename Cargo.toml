@@ -55,7 +55,7 @@ similar = "2.7"
 # 网络客户端
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "socks"] }
 
-# TypeScript 编译与执行引擎核心依赖 (供 ts_engine 独占消费)
+# TypeScript 编译与执行引擎核心依赖 (供 ada-ts-engine 独占消费)
 boa_engine = "0.22.0"
 oxc_allocator = "0.146.0"
 oxc_parser = "0.146.0"
@@ -63,6 +63,7 @@ oxc_codegen = "0.146.0"
 oxc_span = "0.146.0"
 oxc_transformer = "0.146.0"
 oxc_semantic = "0.146.0"
+oxc_diagnostics = "0.146.0"
 
 # Workspace 内部子 Crate
 agent-base = { path = "crates/agent-base" }
@@ -75,4 +76,4 @@ agent-conformance = { path = "crates/agent-conformance" }
 agent-node = { path = "crates/agent-node" }
 agent-rpc = { path = "crates/agent-rpc" }
 agent-gateway = { path = "crates/agent-gateway" }
-ts_engine = { path = "crates/ts-engine" }
+ada-ts-engine = { path = "crates/ts-engine" }

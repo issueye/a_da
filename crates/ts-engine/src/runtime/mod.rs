@@ -1,5 +1,6 @@
 use boa_engine::{
     builtins::promise::ResolvingFunctions,
+    error::EngineError,
     object::builtins::JsPromise,
     Context, JsValue, NativeFunction, Source,
 };
@@ -27,9 +28,186 @@ thread_local! {
     static TOKIO_HANDLE: RefCell<Option<tokio::runtime::Handle>> = RefCell::new(None);
     /// 等待所有未决任务排空的回调通道队列
     static PENDING_IDLE_WAITERS: RefCell<Vec<oneshot::Sender<()>>> = RefCell::new(Vec::new());
+    /// 当前线程的控制台捕获出口（P1·SP-14）。
+    ///
+    /// 用线程局部而不是往闭包里捕获 `Arc`：console 原生是 `from_copy_closure`（无捕获），
+    /// 而**每个运行时独占一个事件循环线程**——于是线程局部正好等于"每个运行时一份"，
+    /// 不用为了捕获把 Boa 的闭包签名改成需要 `Trace` 的那种。
+    static CONSOLE_CAPTURE: RefCell<Option<Arc<std::sync::Mutex<ConsoleCapture>>>> =
+        RefCell::new(None);
+}
+
+/// 控制台单流的捕获上限（字节）。超出后只累计字节数，不再往缓冲里写。
+pub const CONSOLE_CAPTURE_LIMIT: usize = 8 * 1024;
+
+/// 控制台输出是否**同时**照旧打到进程 stdout。
+///
+/// 插件路径用 [`ConsoleMode::Capture`]：插件的 `console.log` 直接打宿主 stdout 就是
+/// 往 `host.log` 里灌水，既不归属、也不限长。CLI（`ts_engine run/eval`）用 `Echo`——
+/// 那是用户自己写的脚本，打印就是它的输出。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsoleMode {
+    Echo,
+    Capture,
+}
+
+/// 结构化控制台捕获（每运行时一份）。
+#[derive(Default)]
+pub struct ConsoleCapture {
+    stdout: String,
+    stderr: String,
+    stdout_bytes: u64,
+    stderr_bytes: u64,
+    truncated: bool,
+}
+
+impl ConsoleCapture {
+    fn push(&mut self, is_err: bool, line: &str) {
+        let text = if is_err { &mut self.stderr } else { &mut self.stdout };
+        let total = if is_err { &mut self.stderr_bytes } else { &mut self.stdout_bytes };
+        *total += line.len() as u64 + 1; // +1 是换行
+        if text.len() + line.len() + 1 > CONSOLE_CAPTURE_LIMIT {
+            // 到顶就不再写，但**字节数继续如实累计**（截断了多少要看得出来）
+            self.truncated = true;
+            return;
+        }
+        text.push_str(line);
+        text.push('\n');
+    }
+
+    /// 取走并清空（按调用归属用）。
+    fn take(&mut self) -> ConsoleSnapshot {
+        ConsoleSnapshot {
+            stdout: std::mem::take(&mut self.stdout),
+            stderr: std::mem::take(&mut self.stderr),
+            stdout_bytes: std::mem::take(&mut self.stdout_bytes),
+            stderr_bytes: std::mem::take(&mut self.stderr_bytes),
+            truncated: std::mem::replace(&mut self.truncated, false),
+        }
+    }
+}
+
+/// 一次调用期间捕获到的控制台输出。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConsoleSnapshot {
+    /// 已截断的 stdout 文本（超过上限的部分不在里面）
+    pub stdout: String,
+    pub stderr: String,
+    /// **原始**字节数（截断前），与文本长度可能不一致——这正是"截断了多少"的依据
+    pub stdout_bytes: u64,
+    pub stderr_bytes: u64,
+    pub truncated: bool,
+}
+
+impl ConsoleSnapshot {
+    pub fn is_empty(&self) -> bool {
+        self.stdout_bytes == 0 && self.stderr_bytes == 0
+    }
+}
+
+/// console 原生往捕获里写一行（本线程没接捕获时什么都不做）。
+fn capture_console(is_err: bool, line: &str) {
+    CONSOLE_CAPTURE.with(|cell| {
+        if let Some(arc) = cell.borrow().as_ref() {
+            if let Ok(mut guard) = arc.lock() {
+                guard.push(is_err, line);
+            }
+        }
+    });
 }
 
 type AsyncHandler = Arc<dyn Fn(Vec<String>) -> BoxFuture<'static, Result<String, String>> + Send + Sync + 'static>;
+
+/// 沙箱运行限额（P1 · SP-12）。
+///
+/// # 为什么必须有
+///
+/// Boa 的循环迭代上限默认是 `u64::MAX`（等于**不限**），而沙箱的 `terminate` 只是往事件循环
+/// 发一条消息——**同步死循环期间它根本排不上队**（消息要等当前执行返回才被处理）。
+/// 结果是 `while(true){}` 把 worker 线程占死：宿主只能超时后放弃等待，那条线程再也回不来。
+///
+/// 有了进程内的指令上限，同步段**必然返回**（Boa 抛 `RuntimeLimitError`），超时才能变成
+/// 一条可纠正的回执，而不是"线程卡住"。
+///
+/// 默认值取"**宽但有限**"：正常脚本碰不到，死循环必然撞上（见 [`Limits::default`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// 循环迭代上限；`0` 表示不限（与 Boa 的 `u64::MAX` 同义）。
+    pub loop_iterations: u64,
+    /// 函数递归深度上限。
+    pub recursion_depth: usize,
+    /// VM 栈上限。
+    pub stack_size: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            // 宽但**有限**：一千万次迭代在 Boa 里约等于数百毫秒到数秒——
+            // 正常脚本碰不到，纯死循环必然撞上。
+            loop_iterations: 10_000_000,
+            // 递归与栈沿用 Boa 的默认值（这两项它本来就有上限，不用我们收紧）
+            recursion_depth: 512,
+            stack_size: 1024 * 10,
+        }
+    }
+}
+
+impl Limits {
+    /// 完全不限（只给"我知道自己在干什么"的场景；默认**不用**）。
+    pub fn unlimited() -> Self {
+        Self {
+            loop_iterations: 0,
+            recursion_depth: 512,
+            stack_size: 1024 * 10,
+        }
+    }
+
+    /// 相对默认更紧的限额（测试与将来的紧凑预算用）。
+    pub fn tight(loop_iterations: u64) -> Self {
+        Self { loop_iterations, ..Self::default() }
+    }
+}
+
+/// 预算超限错误的**统一标记**。
+///
+/// 宿主靠它把错误映射成 `Timeout` 回执，**不必去猜 Boa 的文案**（升级 Boa 时文案会变，
+/// 标记不会）。`crates/agent-node` 的脚本宿主读它，`plugin-sdk` 的契约也以它为准。
+pub const LIMIT_MARKER: &str = "[script-limit]";
+
+/// 错误串是否表示"撞上了沙箱预算"。
+pub fn is_limit_error(err: &str) -> bool {
+    err.contains(LIMIT_MARKER)
+}
+
+/// 把 [`Limits`] 应用到 Boa 的 `Context` 上（唯一一处，避免限额散落）。
+fn apply_limits(ctx: &mut Context, limits: Limits) {
+    let l = ctx.runtime_limits_mut();
+    if limits.loop_iterations == 0 {
+        l.disable_loop_iteration_limit();
+    } else {
+        l.set_loop_iteration_limit(limits.loop_iterations);
+    }
+    l.set_recursion_limit(limits.recursion_depth);
+    l.set_stack_size_limit(limits.stack_size);
+}
+
+/// 结构化识别"是不是撞了限额"：Boa 的 `EngineError::RuntimeLimit` 是引擎级错误，
+/// 可以从 `JsError` 直接取出来（不用匹配文案）。
+fn limit_kind(err: &boa_engine::JsError) -> Option<&'static str> {
+    match err.as_engine() {
+        Some(EngineError::RuntimeLimit(boa_engine::error::RuntimeLimitError::LoopIteration)) => {
+            Some("loop_iterations")
+        }
+        Some(EngineError::RuntimeLimit(boa_engine::error::RuntimeLimitError::Recursion)) => {
+            Some("recursion_depth")
+        }
+        Some(EngineError::RuntimeLimit(boa_engine::error::RuntimeLimitError::StackSize)) => {
+            Some("stack_size")
+        }
+        _ => None,
+    }
+}
 
 /// 专有事件循环 Actor 的消息载荷（保证 100% Send）
 pub enum EventLoopMsg {
@@ -67,6 +245,8 @@ pub enum EventLoopMsg {
 #[derive(Clone)]
 pub struct PureTsRuntime {
     sender: Sender<EventLoopMsg>,
+    /// 控制台捕获（每运行时一份；线程局部指向同一个 `Arc`）。
+    console: Arc<std::sync::Mutex<ConsoleCapture>>,
 }
 
 impl PureTsRuntime {
@@ -77,60 +257,134 @@ impl PureTsRuntime {
 
     /// 初始化并指定工作区绝对路径
     pub fn with_workspace(workspace: Option<std::path::PathBuf>) -> Self {
+        Self::with_workspace_and_limits(workspace, Limits::default())
+    }
+
+    /// 初始化并指定工作区与运行限额（宿主按预算给限额时用这个）。
+    pub fn with_workspace_and_limits(
+        workspace: Option<std::path::PathBuf>,
+        limits: Limits,
+    ) -> Self {
+        Self::with_environment(workspace, limits, crate::env::Needs::everything())
+    }
+
+    /// 初始化并指定工作区、限额与**环境注入清单**（P1 · SP-13）。
+    ///
+    /// 这是插件路径该用的构造器：`needs` 里没声明的能力**连注入都不做**
+    /// （既没有 JS 包装，也没有挂到 `globalThis` 的原生函数）。
+    pub fn with_environment(
+        workspace: Option<std::path::PathBuf>,
+        limits: Limits,
+        needs: crate::env::Needs,
+    ) -> Self {
+        // 老签名保持"照旧打印"（CLI/本地脚本口径），插件路径用下面的显式版本
+        Self::with_environment_and_console(workspace, limits, needs, ConsoleMode::Echo)
+    }
+
+    /// 同 [`Self::with_environment`]，但显式指定控制台模式（P1 · SP-14）。
+    pub fn with_environment_and_console(
+        workspace: Option<std::path::PathBuf>,
+        limits: Limits,
+        needs: crate::env::Needs,
+        console_mode: ConsoleMode,
+    ) -> Self {
+        Self::with_environment_console_and_net(
+            workspace,
+            limits,
+            needs,
+            console_mode,
+            // 宿主/运维给的策略（P4·SP-72）：环境变量读不到就用默认值
+            crate::net::NetPolicy::from_env(),
+        )
+    }
+
+    /// 同 [`Self::with_environment_and_console`]，但**联网策略由宿主给**（P4·SP-72）：
+    /// 超时与域名白名单。默认档见 [`crate::net::NetPolicy`]。
+    pub fn with_environment_console_and_net(
+        workspace: Option<std::path::PathBuf>,
+        limits: Limits,
+        needs: crate::env::Needs,
+        console_mode: ConsoleMode,
+        net: crate::net::NetPolicy,
+    ) -> Self {
         let (tx, rx) = channel::<EventLoopMsg>();
         let worker_tx = tx.clone();
         let tokio_handle = tokio::runtime::Handle::try_current().ok();
         let ws_for_thread = workspace.clone();
+        let capture = Arc::new(std::sync::Mutex::new(ConsoleCapture::default()));
+        let capture_for_thread = capture.clone();
+        let net_for_thread = net.clone();
 
         thread::Builder::new()
             .name("pure-ts-event-loop".into())
             .spawn(move || {
                 let mut ctx = Context::default();
+                // P1·SP-12：限额在 `Context` 建好之后立刻应用——它是"同步段必然返回"的
+                // 唯一依据，晚一步就等于给死循环留了一整段时间窗。
+                apply_limits(&mut ctx, limits);
                 WORKER_TX.with(|cell| *cell.borrow_mut() = Some(worker_tx.clone()));
+                // P1·SP-14：把捕获出口挂到本线程（console 原生按线程局部取它）
+                CONSOLE_CAPTURE.with(|cell| *cell.borrow_mut() = Some(capture_for_thread));
                 TOKIO_HANDLE.with(|cell| *cell.borrow_mut() = tokio_handle);
 
-                // 自动装配 P0 基础运行底座 (process, path, Buffer, EventEmitter, require)
-                if let Err(err) = crate::env::inject_p0_environment(&mut ctx, ws_for_thread.as_deref()) {
+                // 自动装配 P0 基础运行底座（**按声明**：SP-13 的注入清单）
+                if let Err(err) = crate::env::inject_environment(&mut ctx, ws_for_thread.as_deref(), needs) {
                     tracing::error!("P0 基础运行底座注入失败: {err}");
                 }
 
                 // 注入基础全局能力，例如 console (log, error, warn, info)
-                let console_log = NativeFunction::from_copy_closure(|_this, args, ctx| {
+                let console_log = NativeFunction::from_copy_closure(move |_this, args, ctx| {
                     let parts: Vec<String> = args
                         .iter()
                         .map(|v| v.to_string(ctx).unwrap_or_default().to_std_string_escaped())
                         .collect();
-                    println!("{}", parts.join(" "));
+                    // P1·SP-14：先捕获（结构化、可截断、可归属），再决定要不要照旧打印。
+                    // 插件路径不打印：直接打宿主 stdout 等于往 host.log 灌水。
+                    capture_console(false, &parts.join(" "));
+                    if matches!(console_mode, ConsoleMode::Echo) {
+                        println!("{}", parts.join(" "));
+                    }
                     tracing::info!("[TS Console] {}", parts.join(" "));
                     Ok(JsValue::undefined())
                 });
 
-                let console_info = NativeFunction::from_copy_closure(|_this, args, ctx| {
+                let console_info = NativeFunction::from_copy_closure(move |_this, args, ctx| {
                     let parts: Vec<String> = args
                         .iter()
                         .map(|v| v.to_string(ctx).unwrap_or_default().to_std_string_escaped())
                         .collect();
-                    println!("{}", parts.join(" "));
+                    // P1·SP-14：先捕获（结构化、可截断、可归属），再决定要不要照旧打印。
+                    // 插件路径不打印：直接打宿主 stdout 等于往 host.log 灌水。
+                    capture_console(false, &parts.join(" "));
+                    if matches!(console_mode, ConsoleMode::Echo) {
+                        println!("{}", parts.join(" "));
+                    }
                     tracing::info!("[TS Console] {}", parts.join(" "));
                     Ok(JsValue::undefined())
                 });
 
-                let console_error = NativeFunction::from_copy_closure(|_this, args, ctx| {
+                let console_error = NativeFunction::from_copy_closure(move |_this, args, ctx| {
                     let parts: Vec<String> = args
                         .iter()
                         .map(|v| v.to_string(ctx).unwrap_or_default().to_std_string_escaped())
                         .collect();
-                    eprintln!("{}", parts.join(" "));
+                    capture_console(true, &parts.join(" "));
+                    if matches!(console_mode, ConsoleMode::Echo) {
+                        eprintln!("{}", parts.join(" "));
+                    }
                     tracing::error!("[TS Console Error] {}", parts.join(" "));
                     Ok(JsValue::undefined())
                 });
 
-                let console_warn = NativeFunction::from_copy_closure(|_this, args, ctx| {
+                let console_warn = NativeFunction::from_copy_closure(move |_this, args, ctx| {
                     let parts: Vec<String> = args
                         .iter()
                         .map(|v| v.to_string(ctx).unwrap_or_default().to_std_string_escaped())
                         .collect();
-                    eprintln!("{}", parts.join(" "));
+                    capture_console(true, &parts.join(" "));
+                    if matches!(console_mode, ConsoleMode::Echo) {
+                        eprintln!("{}", parts.join(" "));
+                    }
                     tracing::warn!("[TS Console Warn] {}", parts.join(" "));
                     Ok(JsValue::undefined())
                 });
@@ -148,7 +402,7 @@ impl PureTsRuntime {
                 ).ok();
 
                 // 注入异步工具完成时的原生回调函数
-                let tool_return = NativeFunction::from_copy_closure(|_this, args, ctx| {
+                let tool_return = NativeFunction::from_copy_closure(move |_this, args, ctx| {
                     let call_id = args.get(0).and_then(|v| v.to_u32(ctx).ok()).unwrap_or(0) as u64;
                     let result_str = args.get(1).map(|v| v.to_string(ctx).unwrap_or_default().to_std_string_escaped()).unwrap_or_default();
                     let is_error = args.get(2).map(|v| v.to_boolean()).unwrap_or(false);
@@ -185,7 +439,10 @@ impl PureTsRuntime {
                             const outStr = typeof res === 'string' ? res : JSON.stringify(res);
                             __native_tool_return(callId, outStr, false);
                         } catch (err) {
-                            __native_tool_return(callId, String(err), true);
+                            // 🔴 带上 `stack`（P4·SP-73）：`String(err)` 只有一句消息，
+                            // 没有文件与行号——插件作者只能靠猜。
+                            const detail = err && err.stack ? String(err.stack) : String(err);
+                            __native_tool_return(callId, detail, true);
                         }
                     };
                 "#;
@@ -204,14 +461,32 @@ impl PureTsRuntime {
                             };
 
                             // 2. Boa 引擎执行纯 JS
-                            let eval_res = ctx.eval(Source::from_bytes(&js_code));
+                            // P4·SP-73：把**源码名**带上（Boa 的栈回溯用它定位）。
+                            // 不带的话报错长这样：`ReferenceError: x is not defined (unknown at :4:2)`
+                            // ——文件是 "unknown"、行号也没法跟编辑器对上，作者只能靠猜。
+                            let eval_res = match filename.as_deref() {
+                                Some(name) => ctx.eval(
+                                    Source::from_bytes(&js_code)
+                                        .with_path(std::path::Path::new(name)),
+                                ),
+                                None => ctx.eval(Source::from_bytes(&js_code)),
+                            };
                             
                             // 3. 立即排空本次执行产生的微任务队列
                             let _ = ctx.run_jobs();
 
                             let response = eval_res
                                 .map(|val| val.to_string(&mut ctx).unwrap_or_default().to_std_string_escaped())
-                                .map_err(|err| format!("JS 执行异常: {err}"));
+                                .map_err(|err| {
+                                    // 撞限额与"脚本自己抛错"必须能分开：前者是可纠正的
+                                    // （调用方映射成 Timeout 回执），后者是脚本的错。
+                                    match limit_kind(&err) {
+                                        Some(kind) => {
+                                            format!("{LIMIT_MARKER} {kind} exceed; JS 执行异常: {err}")
+                                        }
+                                        None => format!("JS 执行异常: {err}"),
+                                    }
+                                });
 
                             let _ = response_tx.send(response);
                         }
@@ -297,8 +572,30 @@ impl PureTsRuntime {
                                 serde_json::to_string(&args_json).unwrap_or_else(|_| "\"\"".to_string())
                             );
 
-                            let _ = ctx.eval(Source::from_bytes(&js_invocation));
-                            let _ = ctx.run_jobs();
+                            // 🔴 **不许吞这次 eval 的错误**（老实现是 `let _ =`）。
+                            //
+                            // 撞上进程内限额时，`__dispatch_tool_call` 会中途抛错：
+                            // 那个 Promise **永远不会 resolve/reject**，于是调用方只能白等到
+                            // 墙钟超时——表现正是"工具卡片卡住"。把错误立刻回给等待方，
+                            // 既能立刻返回，又能让上层把"撞限额"映射成一条可纠正的回执。
+                            match ctx.eval(Source::from_bytes(&js_invocation)) {
+                                Ok(_) => {
+                                    let _ = ctx.run_jobs();
+                                }
+                                Err(err) => {
+                                    let msg = match limit_kind(&err) {
+                                        Some(kind) => {
+                                            format!("{LIMIT_MARKER} {kind} exceed; JS 执行异常: {err}")
+                                        }
+                                        None => format!("JS 执行异常: {err}"),
+                                    };
+                                    if let Some(tx) =
+                                        PENDING_TOOL_CALLS.with(|cell| cell.borrow_mut().remove(&call_id))
+                                    {
+                                        let _ = tx.send(Err(msg));
+                                    }
+                                }
+                            }
                         }
                         EventLoopMsg::WaitIdle { response_tx } => {
                             let is_empty = PENDING_PROMISES.with(|cell| cell.borrow().is_empty());
@@ -314,11 +611,14 @@ impl PureTsRuntime {
             })
             .expect("创建纯 Rust TS 事件循环线程失败");
 
-        let runtime = Self { sender: tx };
+        let runtime = Self {
+            sender: tx,
+            console: capture,
+        };
 
         // 自动注册 Tokio 异步 fs 原生能力并附加沙箱安全防御
         let ws_r = workspace.clone();
-        runtime.register_async_fn("__native_fs_read_file_async", move |args| {
+        runtime.register_async_fn_gated(needs.fs, "__native_fs_read_file_async", move |args| {
             let rel = args.get(0).cloned().unwrap_or_default();
             let base = ws_r.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
             async move {
@@ -329,7 +629,7 @@ impl PureTsRuntime {
         });
 
         let ws_w = workspace.clone();
-        runtime.register_async_fn("__native_fs_write_file_async", move |args| {
+        runtime.register_async_fn_gated(needs.fs, "__native_fs_write_file_async", move |args| {
             let rel = args.get(0).cloned().unwrap_or_default();
             let content = args.get(1).cloned().unwrap_or_default();
             let base = ws_w.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
@@ -345,7 +645,7 @@ impl PureTsRuntime {
         });
 
         let ws_mkdir = workspace.clone();
-        runtime.register_async_fn("__native_fs_mkdir_async", move |args| {
+        runtime.register_async_fn_gated(needs.fs, "__native_fs_mkdir_async", move |args| {
             let rel = args.get(0).cloned().unwrap_or_default();
             let base = ws_mkdir.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
             async move {
@@ -357,7 +657,7 @@ impl PureTsRuntime {
         });
 
         let ws_readdir = workspace.clone();
-        runtime.register_async_fn("__native_fs_readdir_async", move |args| {
+        runtime.register_async_fn_gated(needs.fs, "__native_fs_readdir_async", move |args| {
             let rel = args.get(0).cloned().unwrap_or_default();
             let base = ws_readdir.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
             async move {
@@ -375,7 +675,7 @@ impl PureTsRuntime {
         });
 
         let ws_stat = workspace.clone();
-        runtime.register_async_fn("__native_fs_stat_async", move |args| {
+        runtime.register_async_fn_gated(needs.fs, "__native_fs_stat_async", move |args| {
             let rel = args.get(0).cloned().unwrap_or_default();
             let base = ws_stat.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
             async move {
@@ -400,7 +700,7 @@ impl PureTsRuntime {
         });
 
         let ws_rm = workspace.clone();
-        runtime.register_async_fn("__native_fs_rm_async", move |args| {
+        runtime.register_async_fn_gated(needs.fs, "__native_fs_rm_async", move |args| {
             let rel = args.get(0).cloned().unwrap_or_default();
             let base = ws_rm.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
             async move {
@@ -415,11 +715,17 @@ impl PureTsRuntime {
             }
         });
 
-        // 自动注册 Tokio 驱动的原生异步 HTTP fetch 桥接能力
-        runtime.register_async_fn("__native_fetch_async", move |args| {
+        // 自动注册 Tokio 驱动的原生异步 HTTP fetch 桥接能力（**按声明**：未声明就整条不注册）
+        runtime.register_async_fn_gated(needs.net, "__native_fetch_async", move |args| {
             let url = args.get(0).cloned().unwrap_or_default();
+            let policy = net_for_thread.clone();
             let opts_str = args.get(1).cloned().unwrap_or_default();
             async move {
+                // 🔴 **策略先于请求**（P4 SP-72）：白名单之外的域名连连接都不该建，
+                // 而且失败原因要说人话（插件作者据此知道该改哪个域名）。
+                if let Err(reason) = policy.check_url(&url) {
+                    return Err(format!("网络请求被宿主策略拒绝：{reason}"));
+                }
                 let (method, headers, body_str, proxy_str) = if let Ok(val) = serde_json::from_str::<serde_json::Value>(&opts_str) {
                     let m = val.get("method").and_then(|v| v.as_str()).unwrap_or("GET").to_string();
                     let mut h_map = std::collections::HashMap::new();
@@ -450,8 +756,8 @@ impl PureTsRuntime {
                         .filter(|s| !s.is_empty())
                 });
 
-                let mut client_builder = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(30));
+                // 超时来自宿主策略（此前是硬编码 30s）
+                let mut client_builder = reqwest::Client::builder().timeout(policy.timeout);
 
                 if let Some(ref proxy_url) = effective_proxy {
                     match reqwest::Proxy::all(proxy_url) {
@@ -536,6 +842,16 @@ impl PureTsRuntime {
         rx.await.map_err(|e| format!("事件循环挂起无响应: {e}"))?
     }
 
+    /// 取走本运行时**累计**的控制台输出（P1·SP-14）。
+    ///
+    /// 取走即清空：调用方按自己的归属口径上报（插件路径按 `plugin_id`）。
+    pub fn take_console(&self) -> ConsoleSnapshot {
+        match self.console.lock() {
+            Ok(mut guard) => guard.take(),
+            Err(_) => ConsoleSnapshot::default(),
+        }
+    }
+
     /// 等待当前所有未决异步任务排空（空闲）
     pub async fn wait_idle(&self) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
@@ -559,6 +875,21 @@ impl PureTsRuntime {
     {
         let handler: AsyncHandler = Arc::new(move |args| Box::pin(async_logic(args)));
         let _ = self.sender.send(EventLoopMsg::RegisterAsyncFn { name, handler });
+    }
+
+    /// 按声明注册异步原生：`allowed == false` 时**连全局函数都不注册**。
+    ///
+    /// 🔴 为什么必须裁到这一层：异步原生是经 `register_global_callable` 挂到 `globalThis`
+    /// 上的（`runtime/mod.rs` 的 `RegisterAsyncFn` 处理处）。只关 JS 侧的包装脚本挡不住
+    /// `globalThis.__native_fetch_async(...)` 这种**直呼**——那正是"注入后再拦"的漏法。
+    pub fn register_async_fn_gated<F, Fut>(&self, allowed: bool, name: &'static str, async_logic: F)
+    where
+        F: Fn(Vec<String>) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<String, String>> + Send + 'static,
+    {
+        if allowed {
+            self.register_async_fn(name, async_logic);
+        }
     }
 
     /// 调用在微内核中注册的全局异步 TypeScript/JavaScript 工具函数
@@ -588,6 +919,159 @@ impl Default for PureTsRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P4·SP-73：运行时错误的栈里要能看见**文件名与行号**。
+    ///
+    /// 不带源码名时 Boa 报的是 `(unknown at :4:2)`——文件是 "unknown"、行号也没法跟编辑器
+    /// 对上，插件作者只能靠猜。这条用例断言"名字真的传下去了"。
+    #[tokio::test]
+    async fn test_runtime_error_carries_the_source_name_and_line() {
+        let runtime = PureTsRuntime::with_workspace(None);
+        let err = runtime
+            .eval_ts(
+                "function boom() {\n  return missingThing();\n}\nboom();\n",
+                Some("plugins/probe.ts"),
+            )
+            .await
+            .expect_err("引用未定义的名字必须报错");
+        assert!(
+            err.contains("plugins/probe.ts"),
+            "错误文案里必须出现源码名（否则作者不知道是哪个文件）：{err}"
+        );
+        assert!(
+            !err.contains("unknown at"),
+            "不该再出现 `unknown at`（那等于没有位置信息）：{err}"
+        );
+        // 位置由 Boa 给出（调用点 / 定义点各一条），只断言"是文件里的某一行"
+        let has_line = (1..=4).any(|n| err.contains(&format!("plugins/probe.ts:{n}:")));
+        assert!(has_line, "要点回源码里的某一行：{err}");
+    }
+
+    /// SP-12 的核心判据：**同步死循环必须必然返回**。
+    ///
+    /// 为什么这条用例是 P1 的关键：`terminate` 只是往事件循环发消息，同步段期间它排不上队，
+    /// 所以"取消/超时"在死循环面前完全无效——只有进程内的指令上限能让同步段回来。
+    #[tokio::test]
+    async fn test_loop_limit_turns_sync_infinite_loop_into_an_error() {
+        let runtime = PureTsRuntime::with_workspace_and_limits(None, Limits::tight(100_000));
+        let started = std::time::Instant::now();
+        let res = runtime.eval_ts("while (true) {}", None).await;
+        let elapsed = started.elapsed();
+
+        let err = res.expect_err("死循环必须被限额打断，而不是永远跑不完");
+        assert!(is_limit_error(&err), "错误必须带限额标记（宿主靠它映射成 Timeout）：{err}");
+        assert!(err.contains("loop_iterations"), "要能看出撞的是哪一项限额：{err}");
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "必须在很短时间内返回，实际 {elapsed:?}"
+        );
+        runtime.terminate();
+    }
+
+    /// 递归上限同样生效（证明限额是**三项**都接上了，不是只接了循环那一项）。
+    #[tokio::test]
+    async fn test_recursion_limit_is_reported() {
+        let runtime = PureTsRuntime::with_workspace(None);
+        let res = runtime
+            .eval_ts("function f(){ return f() + 1 } f()", None)
+            .await;
+        let err = res.expect_err("无限递归必须被递归上限打断");
+        assert!(is_limit_error(&err), "递归超限也要带限额标记：{err}");
+        assert!(err.contains("recursion_depth"), "{err}");
+        runtime.terminate();
+    }
+
+    /// SP-13：**原生桥也必须按声明裁剪**。
+    ///
+    /// 🔴 这条守的是一个真实的绕过路径：异步原生是经 `register_global_callable` 挂到
+    /// `globalThis` 上的，只关 JS 侧的 `fetch` 包装脚本挡不住
+    /// `globalThis.__native_fetch_async(...)` 这种**直呼**。
+    #[tokio::test]
+    async fn test_net_needs_gates_the_native_bridge_too() {
+        // 默认（插件口径）：网络关 → 包装不存在，原生桥也不存在
+        let closed = PureTsRuntime::with_environment(None, Limits::default(), crate::env::Needs::plugin_default());
+        for expr in ["typeof fetch", "typeof globalThis.__native_fetch_async"] {
+            let got = closed.eval_ts(expr, None).await.expect("eval 应当成功");
+            assert_eq!(got, "undefined", "`{expr}` 在默认档下必须不存在");
+        }
+        closed.terminate();
+
+        // 全开：两者都在
+        let open = PureTsRuntime::with_environment(None, Limits::default(), crate::env::Needs::everything());
+        for expr in ["typeof fetch", "typeof globalThis.__native_fetch_async"] {
+            let got = open.eval_ts(expr, None).await.expect("eval 应当成功");
+            assert_eq!(got, "function", "`{expr}` 在声明了网络之后必须存在");
+        }
+        open.terminate();
+    }
+
+    /// SP-14：控制台输出必须**被结构化捕获**，且超限时**如实标注截断**。
+    ///
+    /// 判据里同时断言"原始字节数 > 文本长度"——那正是"截了多少"的依据；
+    /// 只看文本的话，"只有两行"与"截得只剩两行"分不出来。
+    #[tokio::test]
+    async fn test_console_output_is_captured_and_truncation_is_marked() {
+        let runtime = PureTsRuntime::with_environment_and_console(
+            None,
+            Limits::default(),
+            crate::env::Needs::plugin_default(),
+            ConsoleMode::Capture,
+        );
+
+        runtime
+            .eval_ts(
+                "console.log('hello'); console.error('oops');",
+                None,
+            )
+            .await
+            .expect("eval 应当成功");
+
+        let snap = runtime.take_console();
+        assert!(snap.stdout.contains("hello"), "stdout 必须被捕获：{snap:?}");
+        assert!(snap.stderr.contains("oops"), "stderr 必须被捕获：{snap:?}");
+        assert!(!snap.truncated);
+
+        // 取走即清空（按调用归属）
+        let again = runtime.take_console();
+        assert!(again.is_empty(), "取走之后必须清空：{again:?}");
+
+        // 刷屏：文本被截，但**字节数继续如实累计**
+        let big = format!("for (let i = 0; i < 5000; i++) console.log('x'.repeat(40));");
+        runtime.eval_ts(big, None).await.expect("eval 应当成功");
+        let flooded = runtime.take_console();
+        assert!(flooded.truncated, "超限必须标记截断");
+        assert!(
+            (flooded.stdout.len() as u64) < flooded.stdout_bytes,
+            "文本必须短于原始字节数（截断的依据）：text={} bytes={}",
+            flooded.stdout.len(),
+            flooded.stdout_bytes
+        );
+        assert!(
+            flooded.stdout_bytes > CONSOLE_CAPTURE_LIMIT as u64,
+            "原始字节数要如实超过上限：{}",
+            flooded.stdout_bytes
+        );
+
+        runtime.terminate();
+    }
+
+    /// 默认限额**必须有限**：`while(true){}` 的危险不该靠"记得传限额"来避免。
+    #[test]
+    fn test_default_limits_are_finite_but_wide() {
+        let d = Limits::default();
+        assert!(d.loop_iterations > 0, "默认不限循环 = 死循环会占死线程");
+        assert!(d.loop_iterations >= 1_000_000, "默认要给宽值，不能在正常脚本上误伤");
+        assert!(d.recursion_depth > 0 && d.stack_size > 0);
+
+        // `tight` 只收循环那一项，另外两项沿用默认（避免测试里连带改语义）
+        let t = Limits::tight(123);
+        assert_eq!(t.loop_iterations, 123);
+        assert_eq!(t.recursion_depth, d.recursion_depth);
+        assert_eq!(t.stack_size, d.stack_size);
+
+        // 0 = 不限（显式选择才生效）
+        assert_eq!(Limits::unlimited().loop_iterations, 0);
+    }
 
     #[tokio::test]
     async fn test_pure_ts_runtime_eval_sync() {
@@ -919,6 +1403,64 @@ mod tests {
         assert_eq!(parsed["timeoutFired"], true);
         assert_eq!(parsed["cancelledFired"], false);
         assert_eq!(parsed["promiseValue"], "AntigravityTimerOK");
+    }
+
+    /// P4·SP-72：白名单之外的域名**在建立连接之前**就被拒，且理由能直接给作者看。
+    ///
+    /// 直接打原生桥（而不是 `fetch(...)`）是为了让断言只落在**策略**这一件事上：
+    /// 走 JS 包装层会引入 Promise 与 polyfill 的噪音，而这里要证明的是
+    /// "策略先于请求"——真发出去就晚了。
+    #[tokio::test]
+    async fn test_net_policy_blocks_disallowed_domain_before_the_request() {
+        let runtime = PureTsRuntime::with_environment_console_and_net(
+            None,
+            Limits::default(),
+            crate::env::Needs::everything(),
+            ConsoleMode::Capture,
+            crate::net::NetPolicy::allow_only(&["allowed.example"]),
+        );
+        let err = runtime
+            .call_async_fn(
+                "__native_fetch_async",
+                r#"["https://evil.example/x", "{}"]"#,
+            )
+            .await
+            .expect_err("白名单之外的域名必须被拒");
+        assert!(
+            err.contains("网络请求被宿主策略拒绝"),
+            "要说明是**策略**拒的（而不是网络不通）：{err}"
+        );
+        assert!(
+            err.contains("evil.example") && err.contains("allowed.example"),
+            "要说清是哪个域名、允许的是哪些：{err}"
+        );
+    }
+
+    /// P4·SP-73：**JS 侧捕获到的**错误也要带得住位置。
+    ///
+    /// 工具路径的错误是在 JS 里 catch 之后回传的（`__dispatch_tool_call` 的 catch），
+    /// 那里现在用 `err.stack` 而不是 `String(err)`——这条用例钉住的前提是
+    /// **Boa 真的把 `stack` 暴露成字符串**。若哪天引擎换了实现、`stack` 没了，
+    /// 报错会静默退回"只有一句话、没有位置"，而这条会红。
+    #[tokio::test]
+    async fn test_js_error_exposes_a_stack_string() {
+        let runtime = PureTsRuntime::with_environment_and_console(
+            None,
+            Limits::default(),
+            crate::env::Needs::everything(),
+            ConsoleMode::Capture,
+        );
+        let _ = runtime
+            .eval_ts(
+                "try { undefinedName(); } catch (e) { console.log('TYPEOF=' + typeof e.stack); }\n",
+                Some("plugins/probe.ts"),
+            )
+            .await;
+        let out = runtime.take_console().stdout;
+        assert!(
+            out.contains("TYPEOF=string"),
+            "Boa 必须把 `stack` 暴露成字符串（宿主靠它把位置带给插件作者）：{out}"
+        );
     }
 }
 

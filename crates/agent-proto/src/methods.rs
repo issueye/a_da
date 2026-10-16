@@ -76,6 +76,8 @@ pub const PLUGIN_SECRET_SET: &str = "plugin.secret.set";
 pub const PLUGIN_SET_ENABLED: &str = "plugin.setEnabled";
 pub const PLUGIN_DELETE: &str = "plugin.delete";
 pub const PLUGIN_CREATE_TEMPLATE: &str = "plugin.createTemplate";
+/// 自检一个插件：转译 / 装载 / 工具名是否在注册表里 / 当前权限与预算（P1·SP-18）
+pub const PLUGIN_VALIDATE: &str = "plugin.validate";
 
 // 提示词管理
 pub const PROMPT_LIST: &str = "prompt.list";
@@ -178,6 +180,7 @@ pub const ALL_METHODS: &[&str] = &[
     PLUGIN_SET_ENABLED,
     PLUGIN_DELETE,
     PLUGIN_CREATE_TEMPLATE,
+    PLUGIN_VALIDATE,
     PROMPT_LIST,
     PROMPT_SET_ENABLED,
     PROMPT_CREATE,
@@ -216,7 +219,8 @@ mod tests {
         // W5-T2：`workspace.set` / `config.update` 删除后 76 → 74；
         // W6-T1/T2：`subagent.resume` / `workspace.rescan` 删除后 74 → 72
         // W7：新增 `config.setRetryCount`（模型请求重试次数）后 72 → 73
-        assert_eq!(ALL_METHODS.len(), 74);
+        // P1·SP-18：新增 `plugin.validate`（插件只读自检）后 74 → 75
+        assert_eq!(ALL_METHODS.len(), 75);
 
         let mut event_set = HashSet::new();
         for &e in ALL_EVENTS {

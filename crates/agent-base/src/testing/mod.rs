@@ -3,11 +3,17 @@
 //! 这些替身放在基座里（而不是各 crate 的 `#[cfg(test)]`），因为适配器与产品的测试都要用同一套，
 //! 且它们**必须**与端口实现同一份契约——合规套件拿它们当参照实现。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
 
 use crate::domain::AgentEvent;
+use crate::ports::hooks::{
+    AfterNote, AfterRequest, BeforeOutcome, BeforeRequest, HookCtx, HookEntryOutcome,
+    HookObservation, HookPhase, HookRunner,
+};
+use crate::ports::tools::BoxFuture;
 use crate::ports::{AppHome, CancelToken, Clock, EventSink};
 /// 确定性时钟：时间只在测试要求时前进。
 pub struct FixedClock {
@@ -37,6 +43,49 @@ impl Default for FixedClock {
 impl Clock for FixedClock {
     fn now_ms(&self) -> i64 {
         self.now_ms.load(Ordering::SeqCst)
+    }
+}
+
+/// 收集**诊断遥测**的测试替身。
+///
+/// 给 `ScriptCtx::diag` 那种 `&dyn Fn(DiagnosticEvent)` 出口用：那里的契约只要"能报一条
+/// 遥测"，不需要（也拿不到）完整事件信封——见 `ports::scripts` 的说明。
+#[derive(Default)]
+pub struct DiagCollector {
+    events: std::sync::Mutex<Vec<crate::domain::DiagnosticEvent>>,
+}
+
+impl DiagCollector {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 取走并清空（断言"这次调用报了什么"用）。
+    pub fn take(&self) -> Vec<crate::domain::DiagnosticEvent> {
+        std::mem::take(&mut self.events.lock().expect("诊断收集器锁中毒"))
+    }
+
+    /// 只看不清。
+    pub fn snapshot(&self) -> Vec<crate::domain::DiagnosticEvent> {
+        self.events.lock().expect("诊断收集器锁中毒").clone()
+    }
+
+    /// 借出一个可交给 `ScriptCtx::diag` 的闭包。
+    pub fn sink(&self) -> impl Fn(crate::domain::DiagnosticEvent) + '_ {
+        move |d| {
+            self.events
+                .lock()
+                .expect("诊断收集器锁中毒")
+                .push(d);
+        }
+    }
+
+    /// 直接塞一条（给宿主级出口那种 `Fn` 用：拿不到借用，只能靠 `Arc<Self>`）。
+    pub fn push(&self, d: crate::domain::DiagnosticEvent) {
+        self.events
+            .lock()
+            .expect("诊断收集器锁中毒")
+            .push(d);
     }
 }
 
@@ -139,12 +188,11 @@ impl CancelToken for ManualCancel {
     }
 }
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use crate::domain::{AgentError, AgentMessage, ApprovalPolicy, DenialKind, FailDirection, ToolCall, ToolDescriptor, ToolReceipt};
 use crate::model::StreamDelta;
 use crate::ports::{
-    AnsweredBy, ApprovalGate, ApprovalOutcome, ApprovalRequest, BoxFuture,
+    AnsweredBy, ApprovalGate, ApprovalOutcome, ApprovalRequest,
     CompletionRequest, Consumer, ContractViolation, DeltaStream, ModelCapabilities,
     ModelClient, ModelError, PromptSource, Scope, SessionStore, Tool,
     ToolCatalog, ToolContext, ToolError,
@@ -207,6 +255,12 @@ impl Default for FixedPrompt {
 impl PromptSource for FixedPrompt {
     fn system_prompt(&self) -> String {
         self.prompt.clone()
+    }
+
+    /// 测试替身**不细分**：返回空表示"这一份没有逐段信息"，
+    /// 引擎据此只报总字节（契约允许空，但非空时必须自洽）。
+    fn prompt_segments(&self) -> Vec<crate::ports::PromptSegment> {
+        Vec::new()
     }
 }
 
@@ -484,6 +538,184 @@ impl ModelClient for ScriptedModelClient {
         });
 
         Box::pin(async move { Ok(rx) })
+    }
+}
+
+/// 脚本化钩子运行时（测试替身，P3a）。
+///
+/// 与真实实现（`agent_node::hooks::HookRuntime`）保持**同样的观测行为**：
+/// 一进一出各报一次、没人订阅时报 `no_subscriber`。测试替身若在这点上与真实实现不同，
+/// 那么"引擎把观测转成成对诊断"这条链路就永远测不出问题。
+#[derive(Default)]
+pub struct ScriptedHookRunner {
+    before_outcomes: Mutex<HashMap<String, BeforeOutcome>>,
+    after_notes: Mutex<HashMap<String, Vec<AfterNote>>>,
+    /// 实际被调用的 `point`（断言"调没调、调了几次"）
+    calls: Mutex<Vec<String>>,
+    /// 置真时模拟"这个点位没人订阅"（`plugin_id` 空 + `reason = no_subscriber`）
+    unsubscribed: bool,
+}
+
+impl ScriptedHookRunner {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 让某个点位事前返回指定结果。
+    pub fn deny_at(self, point: &str, reason: &str) -> Self {
+        self.before_outcomes.lock().expect("lock").insert(
+            point.to_string(),
+            BeforeOutcome::Deny {
+                reason: reason.to_string(),
+            },
+        );
+        self
+    }
+
+    pub fn abort_at(self, point: &str, reason: &str) -> Self {
+        self.before_outcomes.lock().expect("lock").insert(
+            point.to_string(),
+            BeforeOutcome::AbortTurn {
+                reason: reason.to_string(),
+            },
+        );
+        self
+    }
+
+    /// 让某个点位事后追加一句旁注。
+    pub fn note_at(self, point: &str, text: &str) -> Self {
+        self.after_notes
+            .lock()
+            .expect("lock")
+            .entry(point.to_string())
+            .or_default()
+            .push(AfterNote::Note {
+                text: text.to_string(),
+            });
+        self
+    }
+
+    /// 让某个点位事前**改写参数**（P3b·SP-60）；`args` 是要换上的那份参数对象。
+    pub fn replace_at(self, point: &str, args: serde_json::Value) -> Self {
+        self.before_outcomes.lock().expect("lock").insert(
+            point.to_string(),
+            BeforeOutcome::Replace {
+                args,
+                by: "fake-plugin".to_string(),
+            },
+        );
+        self
+    }
+
+    /// 模拟"没有任何插件订阅"（引擎应当报 `hook.skipped`）。
+    pub fn unsubscribed(mut self) -> Self {
+        self.unsubscribed = true;
+        self
+    }
+
+    /// 被调用过的点位（按顺序，含重复）。
+    pub fn calls(&self) -> Vec<String> {
+        self.calls.lock().map(|c| c.clone()).unwrap_or_default()
+    }
+
+    fn report(&self, point: &str, ctx: &HookCtx<'_>, entry: HookEntryOutcome, reason: Option<String>) {
+        if self.unsubscribed {
+            (ctx.on_event)(HookObservation {
+                call_id: format!("{point}#none#0"),
+                point: point.to_string(),
+                plugin_id: String::new(),
+                phase: HookPhase::Finished,
+                entry_outcome: Some(HookEntryOutcome::Passed),
+                duration_ms: Some(0),
+                reason: Some("no_subscriber".to_string()),
+                before_hash: None,
+                after_hash: None,
+                bytes_delta: None,
+            });
+            return;
+        }
+        (ctx.on_event)(HookObservation {
+            call_id: format!("{point}#fake#0"),
+            point: point.to_string(),
+            plugin_id: "fake-plugin".to_string(),
+            phase: HookPhase::Entered,
+            entry_outcome: None,
+            duration_ms: None,
+            reason: None,
+            before_hash: None,
+            after_hash: None,
+            bytes_delta: None,
+        });
+        (ctx.on_event)(HookObservation {
+            call_id: format!("{point}#fake#0"),
+            point: point.to_string(),
+            plugin_id: "fake-plugin".to_string(),
+            phase: HookPhase::Finished,
+            entry_outcome: Some(entry),
+            duration_ms: Some(1),
+            reason,
+            before_hash: None,
+            after_hash: None,
+            bytes_delta: None,
+        });
+    }
+}
+
+impl HookRunner for ScriptedHookRunner {
+    fn before<'a>(
+        &'a self,
+        req: BeforeRequest,
+        ctx: &'a HookCtx<'a>,
+    ) -> BoxFuture<'a, BeforeOutcome> {
+        Box::pin(async move {
+            if let Ok(mut c) = self.calls.lock() {
+                c.push(req.point.clone());
+            }
+            if self.unsubscribed {
+                self.report(&req.point, ctx, HookEntryOutcome::Passed, None);
+                return BeforeOutcome::Pass;
+            }
+            let outcome = self
+                .before_outcomes
+                .lock()
+                .expect("lock")
+                .get(&req.point)
+                .cloned()
+                .unwrap_or(BeforeOutcome::Pass);
+            let (entry, reason) = match &outcome {
+                BeforeOutcome::Pass => (HookEntryOutcome::Passed, None),
+                BeforeOutcome::Deny { reason } => {
+                    (HookEntryOutcome::Denied, Some(reason.clone()))
+                }
+                BeforeOutcome::AbortTurn { reason } => {
+                    (HookEntryOutcome::Aborted, Some(reason.clone()))
+                }
+                BeforeOutcome::Replace { .. } => (HookEntryOutcome::Replaced, None),
+            };
+            self.report(&req.point, ctx, entry, reason);
+            outcome
+        })
+    }
+
+    fn after<'a>(&'a self, req: AfterRequest, ctx: &'a HookCtx<'a>) -> BoxFuture<'a, Vec<AfterNote>> {
+        Box::pin(async move {
+            if let Ok(mut c) = self.calls.lock() {
+                c.push(req.point.clone());
+            }
+            if self.unsubscribed {
+                self.report(&req.point, ctx, HookEntryOutcome::Passed, None);
+                return Vec::new();
+            }
+            let notes = self
+                .after_notes
+                .lock()
+                .expect("lock")
+                .get(&req.point)
+                .cloned()
+                .unwrap_or_default();
+            self.report(&req.point, ctx, HookEntryOutcome::Passed, None);
+            notes
+        })
     }
 }
 

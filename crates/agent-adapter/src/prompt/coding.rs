@@ -15,6 +15,8 @@
 
 use agent_base::ports::PromptSource;
 
+use super::plan::{PromptFragment, PromptPlan};
+
 /// 产品身份（来自 `agent.spec.json` 的 `identity`，W5-T4）。
 ///
 /// 这是 `identity` 声明的**真实消费者**：产品声明的名字/人格/语言必须真的进入系统提示词，
@@ -94,6 +96,12 @@ pub struct SkillPrompt {
     pub description: String,
     pub when_to_use: Option<String>,
     pub content: String,
+    /// 这条技能**是谁带来的**（P2 · SP-45）：`None` = 内置排版口径，`Some("plugin:<id>")` =
+    /// 插件声明。
+    ///
+    /// 它只影响 `PromptPlan` 里的来源标注（埋点归因），**不影响渲染出来的字节**——
+    /// 逐字节黄金夹具因此不受影响。
+    pub source: Option<String>,
 }
 
 impl SkillPrompt {
@@ -107,11 +115,17 @@ impl SkillPrompt {
             description: description.into(),
             when_to_use: None,
             content: content.into(),
+            source: None,
         }
     }
 
     pub fn with_when_to_use(mut self, when: impl Into<String>) -> Self {
         self.when_to_use = Some(when.into());
+        self
+    }
+
+    pub fn with_source(mut self, source: impl Into<String>) -> Self {
+        self.source = Some(source.into());
         self
     }
 }
@@ -133,53 +147,101 @@ pub fn compose_system_prompt_with_identity(
     compose_system_prompt_full(workspace, extensions, identity, &[])
 }
 
-/// 完整系统提示词拼接函数：包含工作区、身份、扩展工具与已启用技能规范。
+/// 完整系统提示词拼接函数（= [`build_prompt_plan`] + `render()`）。
+///
+/// 保留这个入口是为了**行为不变**：它在 `build_prompt_plan` 之前就存在，既有调用点与
+/// 逐字节黄金夹具都按它写。片段化的收益（来源、字节数、插件可追加）走 `build_prompt_plan`。
 pub fn compose_system_prompt_full(
     workspace: &str,
     extensions: &[(String, String)],
     identity: Option<&ProductIdentity>,
     skills: &[SkillPrompt],
 ) -> String {
-    let mut prompt = format!(
-        "{}\n\
-         当前工作区根目录为：{}\n\
-         请遵循以下指引：\n\
+    build_prompt_plan(workspace, extensions, identity, skills).render()
+}
+
+/// 把系统提示词拆成**有序片段**（SP-41）。
+///
+/// 每段自带分隔符（见 [`plan`] 模块说明），所以 `render()` 是纯拼接、结果与
+/// `compose_system_prompt_full` **逐字节一致**（由 `tests/prompt_golden.rs` 的黄金夹具守着）。
+///
+/// 片段的 `source` 一律标 `builtin:core`：这几段是编码助手的固有排版；
+/// 插件追加的片段（SP-44）会带 `plugin:<id>`，于是埋点能回答"这段是谁加的"。
+pub fn build_prompt_plan(
+    workspace: &str,
+    extensions: &[(String, String)],
+    identity: Option<&ProductIdentity>,
+    skills: &[SkillPrompt],
+) -> PromptPlan {
+    const SOURCE: &str = "builtin:core";
+    let frag = |id: &str, order: i32, content: String| PromptFragment {
+        id: id.to_string(),
+        source: SOURCE.to_string(),
+        order,
+        content,
+    };
+
+    let mut plan = PromptPlan::new();
+    plan.push(frag("persona", 0, format!("{}\n", intro_for(identity))));
+    plan.push(frag(
+        "workspace",
+        10,
+        format!("当前工作区根目录为：{workspace}\n"),
+    ));
+    plan.push(frag(
+        "guidelines",
+        20,
+        "请遵循以下指引：\n\
          1. 谨慎修改代码。在修改未知文件前，先用 list_files 或 read_file 确认文件结构。\n\
          2. 对于局部小修改，优先使用 edit_file 工具以保持代码精准并生成 Unified Diff。\n\
-         3. 执行终端命令时注意避免执行可能导致死循环的阻塞指令。\n\
-         {}",
-        intro_for(identity),
-        workspace,
-        language_line_for(identity)
-    );
+         3. 执行终端命令时注意避免执行可能导致死循环的阻塞指令。\n"
+            .to_string(),
+    ));
+    plan.push(frag("language", 30, language_line_for(identity)));
 
     if !extensions.is_empty() {
-        prompt.push_str("\n\n当前已启用的扩展工具与额外能力：\n");
+        let mut block = String::from("\n\n当前已启用的扩展工具与额外能力：\n");
         for (name, description) in extensions {
-            prompt.push_str(&format!("- {}: {}\n", name, description));
+            block.push_str(&format!("- {}: {}\n", name, description));
         }
-        prompt.push_str("当用户询问你的能力或需要相关操作时，你具备上述扩展工具所赋予的能力（如联网搜索等）。");
+        block.push_str("当用户询问你的能力或需要相关操作时，你具备上述扩展工具所赋予的能力（如联网搜索等）。");
+        plan.push(frag("extensions", 100, block));
     }
 
     if !skills.is_empty() {
-        prompt.push_str("\n\n## 当前已启用的专业技能与工作指引\n\n");
-        prompt.push_str("当面临对应场景或用户请求时，请遵循以下已启用的技能规范：\n");
-        for skill in skills {
-            prompt.push_str(&format!("\n### 技能: {}\n", skill.name));
+        plan.push(frag(
+            "skills_header",
+            200,
+            "\n\n## 当前已启用的专业技能与工作指引\n\n\
+             当面临对应场景或用户请求时，请遵循以下已启用的技能规范：\n"
+                .to_string(),
+        ));
+        // 技能**逐条**成片段（而不是拼成一大块）：这样埋点能回答"哪个技能占了多少字节"，
+        // 也让将来的"技能索引 + 按需加载"有地方下手。
+        for (idx, skill) in skills.iter().enumerate() {
+            let mut block = format!("\n### 技能: {}\n", skill.name);
             if let Some(ref when) = skill.when_to_use {
                 if !when.trim().is_empty() {
-                    prompt.push_str(&format!("- **适用场景**: {}\n", when.trim()));
+                    block.push_str(&format!("- **适用场景**: {}\n", when.trim()));
                 }
             } else if !skill.description.trim().is_empty() {
-                prompt.push_str(&format!("- **描述**: {}\n", skill.description.trim()));
+                block.push_str(&format!("- **描述**: {}\n", skill.description.trim()));
             }
-            prompt.push_str("- **指引规范**:\n");
-            prompt.push_str(skill.content.trim());
-            prompt.push_str("\n");
+            block.push_str("- **指引规范**:\n");
+            block.push_str(skill.content.trim());
+            block.push('\n');
+            // SP-45：片段来源跟着技能来源走——插件带来的技能在这张字节报表里标成
+            // `plugin:<id>`，否则"这段是谁加的"在插件技能上就又答不出来了。
+            plan.push(PromptFragment {
+                id: format!("skill:{}", skill.name),
+                source: skill.source.clone().unwrap_or_else(|| SOURCE.to_string()),
+                order: 210 + idx as i32,
+                content: block,
+            });
         }
     }
 
-    prompt
+    plan
 }
 
 use std::sync::Arc;
@@ -194,6 +256,19 @@ pub struct CodingPromptSource {
     identity: Option<ProductIdentity>,
     skills: Vec<SkillPrompt>,
     skill_resolver: Option<SkillResolver>,
+    /// 插件声明的提示词片段：`(plugin_id, 片段 id, 正文)`（P2 · SP-44）。
+    ///
+    /// SP-46 起是**共享句柄**（而不是一份快照）：插件启停会真的改这份内容，而
+    /// 提示词每一步都重新拼一遍——于是"关掉插件 → 下一轮提示词里就没有它了"。
+    plugin_fragments: PluginFragmentStore,
+}
+
+/// 插件提示词片段的**共享活体**（SP-46）：装配期填一次，重装配时原地替换。
+pub type PluginFragmentStore = std::sync::Arc<std::sync::RwLock<Vec<(String, String, String)>>>;
+
+/// 造一个空的片段活体（`CodingPromptSource::new` 与组合根共用这一处）。
+pub fn new_plugin_fragment_store() -> PluginFragmentStore {
+    std::sync::Arc::new(std::sync::RwLock::new(Vec::new()))
 }
 
 impl std::fmt::Debug for CodingPromptSource {
@@ -216,6 +291,7 @@ impl CodingPromptSource {
             identity: None,
             skills: Vec::new(),
             skill_resolver: None,
+            plugin_fragments: new_plugin_fragment_store(),
         }
     }
 
@@ -238,6 +314,24 @@ impl CodingPromptSource {
     }
 
     /// 注入动态技能提供器（每次取提示词时实时求值，及时反映用户启停）。
+    /// 追加**插件声明的提示词片段**（SP-44）：。
+    ///
+    /// 排在固有段落与技能之后（order 300+），来源标 `plugin:<id>`——
+    /// 于是提示词埋点能回答"这段话是谁加的"。
+    pub fn with_plugin_fragments(
+        mut self,
+        fragments: Vec<(String, String, String)>,
+    ) -> Self {
+        self.plugin_fragments = std::sync::Arc::new(std::sync::RwLock::new(fragments));
+        self
+    }
+
+    /// 注入**共享的**片段活体（SP-46）：重装配时原地替换内容，下一次取提示词即可见。
+    pub fn with_shared_plugin_fragments(mut self, store: PluginFragmentStore) -> Self {
+        self.plugin_fragments = store;
+        self
+    }
+
     pub fn with_skill_resolver(mut self, resolver: SkillResolver) -> Self {
         self.skill_resolver = Some(resolver);
         self
@@ -246,12 +340,62 @@ impl CodingPromptSource {
 
 impl PromptSource for CodingPromptSource {
     fn system_prompt(&self) -> String {
+        self.build_plan().render()
+    }
+
+    fn prompt_segments(&self) -> Vec<agent_base::ports::PromptSegment> {
+        // 走**同一个计划**（不是另算一份）：埋点报的字节数必须与真正发出去的提示词自洽
+        self.build_plan()
+            .byte_report()
+            .into_iter()
+            .map(|r| agent_base::ports::PromptSegment {
+                id: r.id,
+                source: r.source,
+                bytes: r.bytes,
+            })
+            .collect()
+    }
+}
+
+impl CodingPromptSource {
+    /// 取当前（技能解析器每次实时求值）的提示词计划——`system_prompt` 与
+    /// `prompt_segments` 共用它，避免"报的字节数与发的文本不是同一份"。
+    fn build_plan(&self) -> PromptPlan {
         let skills = if let Some(ref resolver) = self.skill_resolver {
             resolver()
         } else {
             self.skills.clone()
         };
-        compose_system_prompt_full(&self.workspace, &self.extensions, self.identity.as_ref(), &skills)
+        let mut plan = build_prompt_plan(
+            &self.workspace,
+            &self.extensions,
+            self.identity.as_ref(),
+            &skills,
+        );
+        // SP-44：插件片段排在固有段落与技能之后；**内容为空的不追加**（空片段只会多出空行）
+        //
+        // SP-46：先取一份快照再拼——拼的过程中不该占着写锁（重装配那边等着它）。
+        // 快照是**每次**取的，所以插件启停对下一轮提示词立即生效。
+        let fragments = self
+            .plugin_fragments
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        for (idx, (plugin_id, id, content)) in fragments.iter().enumerate() {
+            let content = content.trim();
+            if content.is_empty() {
+                continue;
+            }
+            plan.push(PromptFragment {
+                id: format!("plugin:{plugin_id}:{id}"),
+                source: format!("plugin:{plugin_id}"),
+                order: 300 + idx as i32,
+                content: format!("
+
+{content}"),
+            });
+        }
+        plan
     }
 }
 

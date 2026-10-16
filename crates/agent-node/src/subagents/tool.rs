@@ -330,7 +330,7 @@ mod tests {
         let ws = std::env::current_dir().unwrap();
         let t = tool(&ws, default_provider());
         let (scope, cancel, sink) = ctx_parts(&ws);
-        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1" };
+        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1", hooks: None };
 
         let r = t.execute(&call(json!({ "subagent_id": "general_purpose" })), &ctx).await;
         assert_eq!(r.status, ToolStatus::Error);
@@ -342,7 +342,7 @@ mod tests {
         let ws = std::env::current_dir().unwrap();
         let t = tool(&ws, default_provider());
         let (scope, cancel, sink) = ctx_parts(&ws);
-        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1" };
+        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1", hooks: None };
 
         let r = t
             .execute(&call(json!({ "subagent_id": "no_such_profile", "task": "x" })), &ctx)
@@ -360,7 +360,7 @@ mod tests {
         empty.api_key = String::new();
         let t = tool(&ws, empty);
         let (scope, cancel, sink) = ctx_parts(&ws);
-        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1" };
+        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1", hooks: None };
 
         let r = t
             .execute(&call(json!({ "subagent_id": "general_purpose", "task": "做点事" })), &ctx)
@@ -411,6 +411,7 @@ mod tests {
                 cancel: &cancel,
                 events: &sink,
                 thread_id: "t-depth",
+                hooks: None,
             };
             let _ = tool.execute(&call, &ctx).await;
             let got = seen.lock().unwrap().clone();
@@ -441,6 +442,7 @@ mod tests {
             cancel: &cancel,
             events: &sink,
             thread_id: "t-depth",
+            hooks: None,
         };
         let _ = tool.execute(&call, &ctx).await;
         assert_eq!(seen.lock().unwrap().clone(), vec![1]);

@@ -9,9 +9,11 @@ pub mod approval;
 pub mod cancel;
 pub mod clock;
 pub mod events;
+pub mod hooks;
 pub mod model;
 pub mod prompt;
 pub mod scope;
+pub mod scripts;
 pub mod store;
 pub mod tools;
 
@@ -20,8 +22,17 @@ pub use approval::{AnsweredBy, ApprovalGate, ApprovalOutcome, ApprovalRequest};
 pub use cancel::CancelToken;
 pub use clock::Clock;
 pub use events::EventSink;
+pub use hooks::{
+    AfterNote, AfterRequest, BeforeOutcome, BeforeRequest, HookAction, HookBudget, HookCtx,
+    HookEntryOutcome, HookLevel, HookObservation, HookPhase, HookRunner, PluginTrust, ToolHooks,
+};
 pub use model::{CompletionRequest, DeltaStream, ModelCapabilities, ModelClient, ModelError};
-pub use prompt::PromptSource;
+pub use prompt::{PromptSegment, PromptSource};
 pub use scope::Scope;
+pub use scripts::{
+    InvokeRequest, LoadRequest, ModuleHandle, ScriptBudget, ScriptCtx, ScriptError, ScriptHookDeclaration,
+    ScriptHookOutcome, ScriptHost, ScriptNeeds, ScriptOutcome, ScriptPromptFragment,
+    ScriptSkillDeclaration, ScriptSource,
+};
 pub use store::SessionStore;
 pub use tools::{BoxFuture, Consumer, ContractViolation, Tool, ToolCatalog, ToolContext, ToolError};

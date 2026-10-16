@@ -14,7 +14,7 @@ import {
   Activity,
   Copy,
 } from 'lucide-react'
-import type { AgentMode } from '../types'
+import type { AgentMode, ApprovalMode } from '../types'
 import { agentClient } from '../client/ws-client'
 import {
   windowMinimize,
@@ -39,6 +39,8 @@ interface TitleBarProps {
   onOpenChanges?: () => void
   onReconnect?: () => void
   activeChangeCount?: number
+  /** 当前审批档位（只在「完全访问」时用于常驻指示，P1b）。 */
+  approvalMode?: ApprovalMode
 }
 
 export const TitleBar: React.FC<TitleBarProps> = ({
@@ -56,6 +58,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onOpenChanges,
   onReconnect,
   activeChangeCount = 0,
+  approvalMode,
 }) => {
   const [isMax, setIsMax] = React.useState(false)
 
@@ -134,6 +137,17 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         >
           {modeBadge.label}
         </span>
+
+        {/* 完全访问档位的**第二处常驻指示**（P1b · SP-35）：标题栏在最上层，
+            不管对话流滚到哪里、输入区是否被遮住，这一档都看得见。 */}
+        {approvalMode === 'full' && (
+          <span
+            className="px-1.5 py-0.5 rounded text-[10px] font-semibold border bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30"
+            title="完全访问：不再询问，可读写工作区之外的路径，脚本可联网（应用自身目录除外）"
+          >
+            完全访问
+          </span>
+        )}
       </div>
 
       {/* 中间：连接状态与运行模式（点击打开进程管理或重试） */}

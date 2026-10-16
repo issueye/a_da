@@ -102,12 +102,27 @@
 - **仍不在范围内**：`run_turn_with_images` 的门禁（W5-T4）只在 `agent-host` 直连路径上，
   RPC 生产路径没有二次校验——两份产品声明现在都是 `true`，所以不构成不一致。
 
-### 9. 钩子点位 = 0　`未排期`
+### 9. 钩子点位　`已落地（P3a，2026-10-16）`
 
-- **现状**：插件契约承诺"机制 + 3 个点位"，实际**一个点位都没接**——
-  `grep HookPoint|beforeTurn|afterAgentEnd` 在 `crates/` 零命中。
-- **口径**：要么接上点位（至少 1 个真被调用的），要么把契约里的点位声明删掉（R3）。
-  **不能保持"契约里有、实现里没有"**——那正是 AGENTS.md §15 警告的"静默失效"。
+- **现状（已更新）**：机制与首批点位已接线，`capabilities.hooks` 从声明派生
+  （`ada-coding` / PM 预设为 `true`）。已实现的点位见
+  `agent_base::ports::hooks::points::IMPLEMENTED`：
+  `beforeToolCall` / `afterToolCall`（引擎，拦下 + 旁注）、
+  `beforePluginToggle` / `afterPluginToggle`、`beforeThreadCreate` / `afterThreadCreate`
+  （Dispatcher，管理面）。成对埋点 `hook.entered` / `hook.finished` / `hook.skipped`。
+- **仍未接**（插件声明它们会被**装配期如实拒**，不是静默不生效）：
+  `beforeApproval` / `afterApproval`、`beforeLlmRequest` / `afterLlmResponse`、
+  `beforeSystemPrompt` / `afterSystemPrompt`、`beforeCompaction` / `afterCompaction`、
+  `beforePersist` / `afterCheckpoint`、
+  `beforeSubagentStart` / `afterSubagentEnd`、`beforeSkillLoad` / `afterSkillLoad`、
+  `beforeThreadDelete` / `afterThreadDelete`、`onThreadSwitch`、`beforeTurn` / `afterTurn`。
+- **改写（`Replace`）**：`beforeToolCall` 已开（P3b，2026-10-16），并与"改写后重校验
+  （形状 / schema / 路径沙箱）+ 风险单调性"**同批**落地——改写不是授权，改完还要过同一套闸门。
+  载荷只有 `args`：工具名、读写性、描述符字段都改不动。**其余点位不支持改写**
+  （`points::REPLACE_SUPPORTED` 是单一真源；声明它们会被装配期如实拒），
+  `beforeTodoUpdate` 待接（需把钩子运行时接进 `ToolContext`）。
+- **"受信"档位不存在**：控制面点位的 `Deny` 因此对第三方一律关闭（只有内置插件能用）。
+  将来要放开，应由 manifest 的显式字段驱动，不靠目录猜。
 
 ### 10. i18n　`未排期`
 
@@ -132,6 +147,29 @@
 - **`cargo xtask gen`（协议四产物生成）**：W5-T1 判定不划算，**正式降级**为
   "手写 + 三对副本双向校验"（决策与依据见 `docs/agent-base-design.md` §6.2）。
 - **`enum` 化协议方法常量 + 编译器穷尽性**：同上，降级为散装 `&str` + 机械校验。
+
+> **P4 之后仍然缺的（2026-10-16 记）**：
+> - **子进程档没有内存限额**（SP-70 只做了一半的护栏）：档位本身已经落地
+>   （`--script-sandbox subprocess` → `ada-plugin-runner` 子进程 + `SubprocessScriptHost`，
+>   超时即 `kill`），所以"插件把自己跑死"已经被隔离住了。但**"它死之前能吃掉多少内存"
+>   没有被限制**：给子进程设 RSS 上限要看平台（Windows Job Object / Linux rlimit），本档没做。
+>   另一半仍然成立：**进程内档（默认）同样没有内存护栏**——Boa 没有堆上限 API，
+>   宿主 `tokio::timeout` 也拦不住同步段里的内存暴涨。
+> - **`net` 策略的配置面只有环境变量**（SP-72 的一半）：超时与域名白名单**已经生效**
+>   （`NetPolicy`，策略先于请求），但来源是运维环境变量
+>   （`A_DA_PLUGIN_NET_TIMEOUT_SECS` / `A_DA_PLUGIN_NET_ALLOW`）——
+>   配置文件 + 界面（和 `hookTimeoutMs` 那样可编辑）还没做。
+> - **`fs` 没有 read/write 分离**：`@ada-needs fs` 是"读写都能"，不是 §3.5 设计的
+>   `fs: [read|write]`。
+> - **运行时错误的行号是"转译后 JS"的座标**（source map 未做）：转译错误已经带原始
+>   行列与出错行原文，运行时错误带文件/位置/栈，但 oxc 的 codegen 会重排行，
+>   所以行号与原 TS 不一一对应。
+> - **诊断面板只聚合到"来源"这一层**（SP-74 的余下部分）：插件卡已渲染自述诊断、
+>   诊断日志已按来源聚合（条数 + 最近点位），但还没有跨会话的持久化汇总、
+>   也没有按点位的二次分组。
+> - **待办清单的"上一次"在内存里**（SP-63 的口径）：权威清单不在 Rust 侧（模型每次带全量、
+>   界面据参数渲染），所以工具只为"算 diff"记了每线程上一版；**重启后第一份快照没有历史可比**，
+>   此时 `afterTodoUpdate` 如实说"首个快照"，而不是把整张清单报成新增。
 
 ---
 
@@ -196,9 +234,10 @@
 | 字段 | 归属 | 说明 |
 |---|---|---|
 | `ServerCapabilities.resync` / `ServerEventsCapability.snapshotSeq` / `ClientSnapshot.seq` | 缺口检测 | 服务端发了单调 `seq` 与"支持重同步"能力位，**界面完全没用**：INV-6 的"缺口即重同步"在客户端尚未实现（当前靠全量快照兜住，所以不痛，但契约是空的） |
-| `LoadedPlugin.diagnostics` / `PluginItem.diagnostics` / `PluginListResponse.diagnostics` | 插件诊断 | 插件加载/能力问题**在界面上完全看不见**，只能查 `getLoadedPlugins()` |
+| `LoadedPlugin.diagnostics` / `PluginItem.diagnostics` / `PluginListResponse.diagnostics` | 插件诊断 | ✅ **已补全**（P4·SP-74）：扫描期如实写入"执行面尚未接线 / 已停用 / 工具清单是文本扫描推断的"（`plugins/manager.rs`，集成用例钉住），界面由 `PluginDiagnostics` 渲染（**`info` 也显示**、`hint` 一起显示——只显示 warn/error 会让"正常"与"没被检查过"长得一样） |
 | `LoadedPlugin.blockedTools` / `ResolvedPluginCapabilitiesDto.invalid` / `.overrides` | 插件诊断 | "哪些工具被挡住了、哪些声明无效、哪些被覆盖"界面不显示（与 §三.3 同族） |
 | `PluginListResponse.secrets` | 插件密钥 | 密钥状态（是否已设置）界面不显示 |
+| `plugin.setEnabled` 回执里的 `report`（SP-46 新增） | 插件启停 | 服务端现在会回"这次启停**实际**改变了哪些贡献"（工具/片段/技能的新增与移除、提示词字节变化），界面只刷新开关状态、不显示这份差异——**数据已就位，渲染待做**（P3a 接 `afterPluginToggle` 时一并处理） |
 | `WorkspaceSnapshot.scanning` | 工作区扫描 | 扫描中状态界面不提示 |
 | `SubagentProfile.allowedTools` | 子智能体 | 选子智能体时看不到它的工具白名单（只有 `systemPrompt` 的间接体现） |
 | `PluginToolInfo.isWrite` / `.parameters` | 插件工具 | 插件工具卡不标"写工具"，也不展示参数 schema |
@@ -210,8 +249,11 @@
 桌面端自己持有状态、只写不读；保留是给 CLI / Web / 未来多端接入用的。
 `ProductInfo.archetype`、`InitializeResult.sessionId`、`PluginManifest.author`、
 `LoadedPlugin.declarative`、`PluginItem.isPackage` / `.sizeBytes`、
-`ServerEventsCapability.granularity`、`ServerCapabilities.rollback`、`ServerCapabilities.hooks`
-（后者见 §一.9「钩子点位 = 0」，**属已知缺口**）：信息性字段，界面暂时不需要。
+`ServerEventsCapability.granularity`、`ServerCapabilities.rollback`：信息性字段，界面暂时不需要。
+`ServerCapabilities.hooks` 自 P3a 起**不再属于本条**（点位已接线，见 §一.9），界面暂未消费它。
+`CapabilitySpec.streaming`（产品声明位）：引擎**恒定流式**，该位没有分支消费点，只用于向客户端
+表达"本产品支持流式"。由 `verify-wiring` 的 check L 盯着——它要么在这里登记，要么就得接上消费者
+（未实现的能力位不得声明为 true）。
 
 ---
 

@@ -21,6 +21,12 @@ pub struct ToolContext<'a> {
     pub cancel: &'a dyn CancelToken,
     pub events: &'a dyn EventSink,
     pub thread_id: &'a str,
+    /// **工具内部点位**的钩子入口（P3b · SP-63）。
+    ///
+    /// `None` = 这个产品没开钩子（或这次调用没经过引擎，例如测试直接构造上下文）。
+    /// 需要它的工具目前只有 `todo`——它解释"清单"这个载荷的语义，所以点位由它自己跑
+    /// （设计 §5.4 把 `beforeTodoUpdate` 的实施位置定在"todo 工具内部"）。
+    pub hooks: Option<crate::ports::hooks::ToolHooks<'a>>,
 }
 
 pub trait Tool: Send + Sync {

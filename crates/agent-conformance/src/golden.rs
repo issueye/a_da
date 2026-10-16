@@ -172,7 +172,23 @@ pub async fn replay(fixture: &GoldenFixture) -> Result<GoldenReport, String> {
     Ok(GoldenReport {
         steps_taken: outcome.steps_taken,
         stop_reason: stop_reason_name(&outcome.stop_reason),
-        events: raw.iter().map(project_event).collect(),
+        // golden 只冻结**对话面**：诊断遥测（P0 埋点的 `Diagnostic`）不参与。
+        //
+        // 理由是维护税：诊断点位每个分期都会长新的，把它写进每份夹具等于让
+        // "加一个埋点"变成"改一遍所有 golden"——那种税迟早会被关掉。
+        // 诊断本身由 `agent-base` 的契约用例（`test_diagnostics_carry_trace_…`）
+        // 与 `verify-wiring` 的 check K 守着，不靠这里。
+        // `seq` 因此按对话面**重编号**，否则诊断留下的空号会让夹具无法稳定。
+        events: raw
+            .iter()
+            .filter(|e| !matches!(e.body, agent_base::domain::AgentEventBody::Diagnostic(_)))
+            .enumerate()
+            .map(|(i, e)| {
+                let mut projected = project_event(e);
+                projected.seq = i as u64 + 1;
+                projected
+            })
+            .collect(),
         raw,
     })
 }

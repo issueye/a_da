@@ -12,6 +12,8 @@
     "streaming": true,
     "rollback": false,
     "subagents": true,
+    "plugins": true,
+    "hooks": true,
     "delegation": "gateway"
   },
   "gateway": {

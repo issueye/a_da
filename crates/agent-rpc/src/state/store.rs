@@ -155,10 +155,23 @@ impl AgentStore {
                         prov.custom_headers = Some(map);
                     }
                     if let Some(appr) = val.get("approval").and_then(|v| v.as_str()) {
+                        // 🔴 认不出的档位**倒向更严的一侧**（`Ask`），不要落回 `Auto`。
+                        //
+                        // 老实现是 `_ => Auto`（最松的非 Full 档）：于是"老版本读到 `full`"
+                        // 会**静默变成自动放行**——用户以为自己开着完全访问、或以为设的是
+                        // 只读却打错了词，两种情况下界面显示的都不是真实行为。
+                        // 与 `StoreBackedNodeConfig::approval_mode` 的失败方向同一原则。
                         config_snapshot.approval = match appr.to_lowercase().as_str() {
                             "ask" => ApprovalMode::Ask,
                             "readonly" => ApprovalMode::Readonly,
-                            _ => ApprovalMode::Auto,
+                            "full" => ApprovalMode::Full,
+                            "auto" => ApprovalMode::Auto,
+                            other => {
+                                tracing::warn!(
+                                    "[config] 认不出的审批档位 `{other}`：按更严的一档（ask）处理"
+                                );
+                                ApprovalMode::Ask
+                            }
                         };
                     }
                     if let Some(eff) = val.get("effort").and_then(|v| v.as_str()) {

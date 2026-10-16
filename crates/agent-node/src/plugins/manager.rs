@@ -6,7 +6,7 @@ use anyhow::Result;
 
 use super::builtins::get_builtin_plugin_items;
 use super::types::{
-    LoadedPlugin, LoadedPluginContributions, PluginCapabilities, PluginItem,
+    LoadedPlugin, LoadedPluginContributions, PluginCapabilities, PluginDiagnostic, PluginItem,
     PluginManifest, PluginScope, PluginToolDeclaration, PluginToolInfo,
     ResolvedPluginCapabilitiesDto,
 };
@@ -415,6 +415,40 @@ impl PluginManager {
                     }
                 }
 
+                // P0 埋点：把"这个插件为什么不会生效"如实写进诊断字段。
+                //
+                // 以前这里恒为 `Vec::new()`，于是插件卡永远显示不出任何问题——而实情是：
+                // **脚本执行面要到 P1 才接**，第三方插件的工具此刻一次也不会被调用。
+                // 声明了却不说，界面就会把"被列出来"当成"在生效"。
+                let mut diagnostics: Vec<PluginDiagnostic> = Vec::new();
+                if !enabled {
+                    diagnostics.push(PluginDiagnostic {
+                        plugin_id: id.clone(),
+                        level: "warn".to_string(),
+                        message: "插件已停用：它的贡献不会参与装配".to_string(),
+                        hint: None,
+                    });
+                }
+                diagnostics.push(PluginDiagnostic {
+                    plugin_id: id.clone(),
+                    level: "info".to_string(),
+                    message: "当前仅登记插件信息：脚本执行面尚未接线，工具不会被模型调用".to_string(),
+                    hint: Some(
+                        "执行面排期见 docs/script-plugin-system-dev-plan.md 的 P1".to_string(),
+                    ),
+                });
+                if !tools.is_empty() {
+                    diagnostics.push(PluginDiagnostic {
+                        plugin_id: id.clone(),
+                        level: "info".to_string(),
+                        message: format!(
+                            "工具清单由源码文本扫描推断（{} 条），未经执行验证",
+                            tools.len()
+                        ),
+                        hint: None,
+                    });
+                }
+
                 let manifest = PluginManifest {
                     id: id.clone(),
                     name: plugin_name.clone(),
@@ -436,7 +470,7 @@ impl PluginManager {
                     },
                     declarative: false,
                     status: "ready".to_string(),
-                    diagnostics: Vec::new(),
+                    diagnostics: diagnostics.clone(),
                 };
 
                 items.push(PluginItem {
@@ -449,7 +483,7 @@ impl PluginManager {
                     enabled,
                     status: "ready".to_string(),
                     version: Some("1.0.0".to_string()),
-                    diagnostics: Vec::new(),
+                    diagnostics,
                     tools,
                     skills: Vec::new(),
                     prompts: Vec::new(),

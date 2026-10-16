@@ -1,10 +1,12 @@
 pub mod ask_user;
 pub mod finish;
 pub mod todo;
+pub mod todo_diff;
 
 pub use ask_user::AskUserTool;
 pub use finish::FinishTool;
 pub use todo::TodoTool;
+pub use todo_diff::{diff_todos, TodoDiff, TodoStep};
 
 use std::sync::Arc;
 use agent_base::ports::Tool;
