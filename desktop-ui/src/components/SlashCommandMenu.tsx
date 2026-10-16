@@ -35,6 +35,8 @@ interface SlashCommandMenuProps {
   onCompact: () => void
   onNewThread: () => void
   onSetMode: (mode: 'code' | 'plan' | 'create') => void
+  /** 会话已开始：`/plan`（切模式那条）不再列出，见 `ModeSlider` 的说明 */
+  modeLocked?: boolean
 }
 
 export const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
@@ -47,6 +49,7 @@ export const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
   onCompact,
   onNewThread,
   onSetMode,
+  modeLocked = false,
 }) => {
   const [prompts, setPrompts] = useState<PromptItem[]>([])
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -157,7 +160,12 @@ export const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
     icon: FileText,
   }))
 
-  const allCommands = [...systemCommands, ...promptCommands]
+  // 🔴 会话已开始就不列 `/plan`：那一条会**切模式**，而模式只在新建会话时选
+  //（服务端同样会拒，见 `thread.setMode` 的守卫）。留着只会让用户点出一个错误提示。
+  const allCommands = [
+    ...(modeLocked ? systemCommands.filter((c) => c.id !== 'sys-plan') : systemCommands),
+    ...promptCommands,
+  ]
 
   const filtered = allCommands.filter((cmd) => {
     const q = filterQuery.trim().toLowerCase().replace(/^\//, '')

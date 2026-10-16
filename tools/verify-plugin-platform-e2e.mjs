@@ -48,7 +48,16 @@ export default function (api) {
 )
 
 // ── 起真产品，拿端口与 token ────────────────────────────────────────────────
-const child = spawn(EXE, ['--port', '0', '--workspace', wsDir], { stdio: ['ignore', 'pipe', 'pipe'] })
+//
+// 🔴 **应用目录必须隔离**（`A_DA_HOME` 指向临时目录）：这个脚本会调
+// `plugin.setEnabled`，而它按设计把启停状态写进**应用目录**的 `config.json`。
+// 不隔离就是拿用户真实配置当草稿纸——本项目为此出过一次真事故（测试改掉了
+// 用户激活的供应商），所以这里显式隔离，跑完连临时目录一起删。
+const appHome = mkdtempSync(join(tmpdir(), 'ada_e2e_home_'))
+const child = spawn(EXE, ['--port', '0', '--workspace', wsDir], {
+  stdio: ['ignore', 'pipe', 'pipe'],
+  env: { ...process.env, A_DA_HOME: appHome },
+})
 let stdoutBuf = ''
 const ready = await new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error(`等 READY 超时；stdout=${stdoutBuf.slice(0, 400)}`)), 20000)
@@ -142,6 +151,7 @@ try {
   setTimeout(() => {
     try {
       rmSync(wsDir, { recursive: true, force: true })
+      rmSync(appHome, { recursive: true, force: true })
     } catch {}
   }, 500)
 }

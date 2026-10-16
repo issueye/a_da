@@ -30,6 +30,12 @@ interface CommandPaletteProps {
   isOpen: boolean
   onClose: () => void
   currentMode: AgentMode
+  /**
+   * 会话已开始（不能改模式）：这时把三条"切换到 X 模式"收起来，换成一条说明。
+   * 比让用户点出一个错误提示好；也比静默隐藏好——静默隐藏会让人以为"这个功能没了"。
+   * 判据由调用方给（`utils/conversation.ts` 的 `isFreshConversation`）。
+   */
+  modeLocked?: boolean
   onSelectMode: (mode: AgentMode) => void
   onNewThread: () => void
   onOpenSettings: () => void
@@ -56,6 +62,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   onCompact,
   onToggleTheme,
   isDark,
+  modeLocked = false,
 }) => {
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -70,27 +77,47 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       icon: Plus,
       action: onNewThread,
     },
-    {
-      id: 'mode-code',
-      label: '切换到 Code 敏捷编码模式',
-      description: currentMode === 'code' ? '全量工具开放（当前激活）' : '全量工具开放',
-      icon: Code2,
-      action: () => onSelectMode('code'),
-    },
-    {
-      id: 'mode-plan',
-      label: '切换到 Plan 只读规划模式',
-      description: currentMode === 'plan' ? '严禁文件修改，只读探查与规划（当前激活）' : '严禁文件修改，只读探查与规划',
-      icon: Compass,
-      action: () => onSelectMode('plan'),
-    },
-    {
-      id: 'mode-create',
-      label: '切换到 Create 架构创造模式',
-      description: currentMode === 'create' ? '智能体自我进化与工具扩展（当前激活）' : '智能体自我进化与工具扩展',
-      icon: Sparkles,
-      action: () => onSelectMode('create'),
-    },
+    // 🔴 模式只在**新建会话**时选：会话已开始就把这三条收起来，
+    // 换成一条说明（服务端也会拒，见 `thread.setMode` 的守卫）。
+    ...(modeLocked
+      ? [
+          {
+            id: 'mode-locked',
+            label: '模式已在新建会话时确定',
+            description: '会话开始后不能切换模式；需要换模式请新建一条会话',
+            icon: Compass,
+            action: onClose,
+          } as PaletteItem,
+        ]
+      : [
+          {
+            id: 'mode-code',
+            label: '切换到 Code 敏捷编码模式',
+            description: currentMode === 'code' ? '全量工具开放（当前激活）' : '全量工具开放',
+            icon: Code2,
+            action: () => onSelectMode('code'),
+          } as PaletteItem,
+          {
+            id: 'mode-plan',
+            label: '切换到 Plan 只读规划模式',
+            description:
+              currentMode === 'plan'
+                ? '严禁文件修改，只读探查与规划（当前激活）'
+                : '严禁文件修改，只读探查与规划',
+            icon: Compass,
+            action: () => onSelectMode('plan'),
+          } as PaletteItem,
+          {
+            id: 'mode-create',
+            label: '切换到 Create 架构创造模式',
+            description:
+              currentMode === 'create'
+                ? '智能体自我进化与工具扩展（当前激活）'
+                : '智能体自我进化与工具扩展',
+            icon: Sparkles,
+            action: () => onSelectMode('create'),
+          } as PaletteItem,
+        ]),
     {
       id: 'open-workspace',
       label: '打开工作区目录',

@@ -93,13 +93,9 @@ export interface ComposerProps {
   centered?: boolean
 }
 
-/** 模式定义选项（对齐原版 GPUIX Composer） */
-export const MODE_OPTIONS: { value: AgentMode; label: string; icon: any; desc: string }[] = [
-  { value: 'code', label: 'Code 编码', icon: Code2, desc: '全能敏捷编码与工程构建 (默认)' },
-  { value: 'pm', label: 'PM 项目管理', icon: ListTodo, desc: '目标拆解与分派，经网关驱动 Coding Agent 落地' },
-  { value: 'plan', label: 'Plan 规划', icon: Compass, desc: '只读架构分析与实施计划设计 (只读防写)' },
-  { value: 'create', label: 'Create 创造', icon: Sparkles, desc: '智能体自我进化与工具/技能 CRUD' },
-]
+/** 模式定义：**单一真源在 `ModeSlider`**（滑块、提示、档位说明都用那一份，别在这儿再抄一遍） */
+import { MODE_OPTIONS } from './ModeSlider'
+export { MODE_OPTIONS }
 
 /** 审批策略选项 */
 export const APPROVAL_OPTIONS: { value: ApprovalMode; label: string; desc: string }[] = [
@@ -183,7 +179,6 @@ export const Composer: React.FC<ComposerProps> = ({
 
   // 下拉菜单与浮窗控制
   const [plusMenuOpen, setPlusMenuOpen] = useState(false)
-  const [modeMenuOpen, setModeMenuOpen] = useState(false)
   const [approvalMenuOpen, setApprovalMenuOpen] = useState(false)
   const [effortMenuOpen, setEffortMenuOpen] = useState(false)
   const [contextPopoverOpen, setContextPopoverOpen] = useState(false)
@@ -196,7 +191,6 @@ export const Composer: React.FC<ComposerProps> = ({
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const plusMenuRef = useRef<HTMLDivElement>(null)
-  const modeMenuRef = useRef<HTMLDivElement>(null)
   const modelMenuRef = useRef<HTMLDivElement>(null)
   const approvalMenuRef = useRef<HTMLDivElement>(null)
   const effortMenuRef = useRef<HTMLDivElement>(null)
@@ -218,7 +212,6 @@ export const Composer: React.FC<ComposerProps> = ({
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as Node
       if (plusMenuRef.current && !plusMenuRef.current.contains(target)) setPlusMenuOpen(false)
-      if (modeMenuRef.current && !modeMenuRef.current.contains(target)) setModeMenuOpen(false)
       if (modelMenuRef.current && !modelMenuRef.current.contains(target)) setModelMenuOpen(false)
       if (approvalMenuRef.current && !approvalMenuRef.current.contains(target)) setApprovalMenuOpen(false)
       if (effortMenuRef.current && !effortMenuRef.current.contains(target)) setEffortMenuOpen(false)
@@ -730,6 +723,8 @@ export const Composer: React.FC<ComposerProps> = ({
             onCompact={onCompact || (() => {})}
             onNewThread={onNewThread || (() => {})}
             onSetMode={onSetMode}
+            // 🔴 会话已开始就不给"切模式"的条目（`centered` = 新会话，见 `isFreshConversation`）
+            modeLocked={!centered}
           />
         )}
 
@@ -792,35 +787,8 @@ export const Composer: React.FC<ComposerProps> = ({
               {/* 加号弹出选择菜单 */}
               {plusMenuOpen && (
                 <div className="absolute bottom-full left-0 mb-2 w-60 bg-white dark:bg-[#1f1f23] border border-zinc-200 dark:border-[#333338] rounded-xl shadow-2xl p-1.5 z-50 text-xs space-y-1 backdrop-blur-md">
-                  <div className="px-2 py-1 text-[10px] font-semibold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">
-                    协作模式切换
-                  </div>
-                  {MODE_OPTIONS.map((m) => {
-                    const IconComp = m.icon
-                    const isSelected = mode === m.value
-                    return (
-                      <button
-                        key={m.value}
-                        onClick={() => {
-                          onSetMode(m.value)
-                          setPlusMenuOpen(false)
-                        }}
-                        className={`w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-left transition-colors ${
-                          isSelected
-                            ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 font-medium'
-                            : 'text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
-                        }`}
-                      >
-                        <IconComp size={14} className="text-blue-500" />
-                        <div className="flex-1">
-                          <div>{m.label}</div>
-                          <div className="text-[10px] text-zinc-400 dark:text-zinc-500">{m.desc}</div>
-                        </div>
-                      </button>
-                    )
-                  })}
-
-                  <div className="h-[1px] bg-zinc-200 dark:bg-zinc-800 my-1" />
+                  {/* 这里**不再有"协作模式切换"**：模式只在新建会话时选（见 `ModeSlider`）。
+                      同一件事摆两套入口，用户会怀疑"点哪个才算数"。 */}
 
                   <div className="px-2 py-1 text-[10px] font-semibold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">
                     快捷指令与提及
@@ -895,40 +863,21 @@ export const Composer: React.FC<ComposerProps> = ({
               )}
             </div>
 
-            {/* 模式切换快捷药丸（仅展示 SVG 图标，适配 H5 布局） */}
-            <div className="relative" ref={modeMenuRef}>
-              <button
-                type="button"
-                onClick={() => setModeMenuOpen(!modeMenuOpen)}
-                className="p-1.5 rounded-md bg-zinc-100 dark:bg-zinc-800/80 hover:bg-zinc-200 dark:hover:bg-zinc-700/80 text-zinc-700 dark:text-zinc-300 transition-colors border border-zinc-200 dark:border-zinc-700/50 cursor-pointer"
-                title={`当前模式: ${currentModeOption.label}。点击切换`}
-                aria-label={`当前模式: ${currentModeOption.label}`}
+            {/* 模式**只显示、不可切**（🔴 模式在新建会话时确定）。
+                新会话那一路由 `ModeSlider` 负责选择；这里摆一个能点的按钮就是
+                "同一件事两套入口"，而它的后果比多余的按钮更重：
+                会话已经开始后换模式，等于把同一段对话交给两套系统提示词与工具集去解释。
+                居中（新会话）时不渲染——上面那块滑块就在旁边。 */}
+            {!centered && (
+              <div
+                className="flex items-center space-x-1 px-1.5 py-1 rounded-md bg-zinc-100 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700/50 text-zinc-600 dark:text-zinc-400"
+                title={`本会话模式：${currentModeOption.label}（在新建会话时确定，会话开始后不可切换）`}
+                aria-label={`本会话模式：${currentModeOption.label}`}
               >
                 <currentModeOption.icon size={13} className="text-blue-500" />
-              </button>
-
-              {modeMenuOpen && (
-                <div className="absolute bottom-full left-0 mb-2 w-48 bg-white dark:bg-[#1f1f23] border border-zinc-200 dark:border-[#333338] rounded-xl shadow-2xl p-1 z-50 text-xs space-y-0.5">
-                  {MODE_OPTIONS.map((m) => (
-                    <button
-                      key={m.value}
-                      onClick={() => {
-                        onSetMode(m.value)
-                        setModeMenuOpen(false)
-                      }}
-                      className={`w-full flex items-center space-x-2 px-2 py-1.5 rounded-lg text-left ${
-                        mode === m.value
-                          ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 font-medium'
-                          : 'text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
-                      }`}
-                    >
-                      <m.icon size={13} className="text-blue-500" />
-                      <span>{m.label}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+                <span className="text-[10px]">{currentModeOption.short}</span>
+              </div>
+            )}
 
             {/* 模型选择配置药丸（仅展示 SVG 图标，适配 H5 布局） */}
             <div className="relative" ref={modelMenuRef}>

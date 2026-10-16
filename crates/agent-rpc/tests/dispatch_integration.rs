@@ -281,101 +281,94 @@ async fn test_dispatcher_extension_methods() {
         .expect("change.count 分发失败");
     assert!(change_cnt.get("count").is_some());
 }
-
+/// 模式切换的**唯一窗口是"会话还没开始"**（本轮口径：滑块只在新建会话里出现）。
+///
+/// 这条用例守两件事：
+/// 1. 空会话（新建、还没发过消息）里切模式**照旧有效**——否则"新会话选模式"就成了空话；
+/// 2. 已经有内容的会话里切模式**必须被拒**，且理由说清"新建一条会话即可换模式"。
+///
+/// 为什么服务端也要拦（界面上的滑块已经不可点）：别处还有调用点（老客户端、脚本、
+/// 将来的移动端）。改掉一个已开始会话的模式，等于把同一段对话的一半交给另一套系统
+/// 提示词与工具集去解释，事后没人说得清哪句话是谁说的。
 #[tokio::test]
-async fn test_dispatcher_mode_switching() {
+async fn test_mode_can_only_be_chosen_before_the_conversation_starts() {
     let store = Arc::new(RwLock::new(store_for_test("E:/test")));
-    let test_dir = std::env::temp_dir().join(format!("a_da_test_{}", uuid::Uuid::new_v4()));
-    let session_mgr = Arc::new(SessionManager::new(Some(test_dir.clone())));
-    let checkpoint_mgr = Arc::new(CheckpointManager::new(Some(test_dir.clone())));
-    let subagent_mgr = Arc::new(SubagentManager::new());
-    let approval_mgr = Arc::new(ApprovalManager::new());
-    let plugin_mgr = Arc::new(PluginManager::with_home(test_home_dir()));
-    let skill_mgr = Arc::new(SkillManager::with_home(test_home_dir()));
+    let test_dir = std::env::temp_dir().join(format!("a_da_mode_{}", uuid::Uuid::new_v4()));
     let dispatcher = Dispatcher::new(
         store.clone(),
-        session_mgr,
-        checkpoint_mgr,
-        subagent_mgr,
-        approval_mgr,
-        plugin_mgr,
-        skill_mgr,
+        Arc::new(SessionManager::new(Some(test_dir.clone()))),
+        Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::with_home(test_home_dir())),
+        Arc::new(SkillManager::with_home(test_home_dir())),
         None,
     );
 
-    // 初始状态默认为 Code 模式
-    assert_eq!(store.read().await.config.mode, AgentMode::Code);
+    // 造一条**干净**的会话：`store_for_test` 的 store 在集成测试里可能已经同步过
+    // 别的会话（依赖按非 test 编译，应用目录端口仍指真实 `~/.a-da`），
+    // 所以这里不假设活动会话是空的，而是自己建一条。
+    let created = dispatcher
+        .dispatch("thread.create", serde_json::json!({ "title": "模式用例" }))
+        .await
+        .expect("新建会话");
+    let tid = created.get("threadId").and_then(|v| v.as_str()).unwrap().to_string();
+    {
+        let mut s = store.write().await;
+        if let Some(t) = s.threads.iter_mut().find(|t| t.id == tid) {
+            t.items.clear();
+            t.messages.clear();
+        }
+    }
 
-    // 1. 切换到 Create 创造模式
+    // ① 空会话：切模式有效，并且同时更新"下一个新会话的默认模式"
     dispatcher
-        .dispatch("thread.setMode", serde_json::json!({ "mode": "create" }))
+        .dispatch("thread.setMode", serde_json::json!({ "mode": "plan", "threadId": tid }))
         .await
-        .expect("切换到 create 模式失败");
-    assert_eq!(store.read().await.config.mode, AgentMode::Create);
-    let active_id = store.read().await.active_id.clone();
-    let current_thread = store.read().await.threads.iter().find(|t| t.id == active_id).cloned().unwrap();
-    assert_eq!(current_thread.mode, Some(AgentMode::Create));
+        .expect("空会话应当允许选模式");
+    {
+        let s = store.read().await;
+        assert_eq!(s.config.mode, AgentMode::Plan, "config.mode 是下一个新会话的默认值");
+        assert_eq!(
+            s.threads.iter().find(|t| t.id == tid).and_then(|t| t.mode.clone()),
+            Some(AgentMode::Plan)
+        );
+    }
 
-    // 2. 切换到 Plan 规划模式
-    dispatcher
-        .dispatch("thread.setMode", serde_json::json!({ "mode": "plan" }))
+    // ② 会话一旦有内容：拒，且理由能指导用户怎么办
+    {
+        let mut s = store.write().await;
+        if let Some(t) = s.threads.iter_mut().find(|t| t.id == tid) {
+            t.messages.push(serde_json::json!({ "role": "user", "content": "开始干活" }));
+        }
+    }
+    let err = dispatcher
+        .dispatch("thread.setMode", serde_json::json!({ "mode": "create", "threadId": tid }))
         .await
-        .expect("切换到 plan 模式失败");
-    assert_eq!(store.read().await.config.mode, AgentMode::Plan);
-
-    // 3. 切换回 Code 编码模式
-    dispatcher
-        .dispatch("thread.setMode", serde_json::json!({ "mode": "code" }))
-        .await
-        .expect("切换到 code 模式失败");
-    assert_eq!(store.read().await.config.mode, AgentMode::Code);
-
-    // 4. 创建新会话并直接指定 create 模式
-    let create_res = dispatcher
-        .dispatch("thread.create", serde_json::json!({ "mode": "create", "title": "创造测试" }))
-        .await
-        .expect("带模式创建新会话失败");
-    let new_id = create_res.get("threadId").and_then(|v| v.as_str()).unwrap();
-    let new_thread = store.read().await.threads.iter().find(|t| t.id == new_id).cloned().unwrap();
-    assert_eq!(new_thread.mode, Some(AgentMode::Create));
-    assert_eq!(new_thread.agent_id, Some("ada-coding".to_string()));
-    assert_eq!(store.read().await.config.mode, AgentMode::Create);
-
-    // 5. 新建 PM 模式会话：**产品仍是 ada-coding**（PM 已降级为模式，不再是产品）
-    let create_pm_res = dispatcher
-        .dispatch("thread.create", serde_json::json!({ "mode": "pm", "title": "项目管理测试" }))
-        .await
-        .expect("新建 PM 会话失败");
-    let pm_id = create_pm_res.get("threadId").and_then(|v| v.as_str()).unwrap();
-    let pm_thread = store.read().await.threads.iter().find(|t| t.id == pm_id).cloned().unwrap();
-    assert_eq!(pm_thread.mode, Some(AgentMode::Pm));
+        .expect_err("已开始的会话不能再切模式");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("会话已开始") && msg.contains("新建一条会话"),
+        "拒绝理由要说清为什么、以及该怎么办：{msg}"
+    );
     assert_eq!(
-        pm_thread.agent_id,
-        Some("ada-coding".to_string()),
-        "PM 是**模式**：产品身份必须仍是 ada-coding（早先这里写成 ada-pm，正是双身份的账）"
+        store.read().await.config.mode,
+        AgentMode::Plan,
+        "被拒之后连默认模式也不该被改（否则下一条新会话会莫名变成另一个模式）"
     );
 
-    // 6. 切换既有会话模式至 PM：模式变、**产品身份不变**
-    dispatcher
-        .dispatch("thread.setMode", serde_json::json!({ "threadId": new_id, "mode": "pm" }))
+    // ③ 新建会话时带模式仍然有效（滑块那一路的正规做法）
+    let created2 = dispatcher
+        .dispatch("thread.create", serde_json::json!({ "mode": "create", "title": "带模式" }))
         .await
-        .expect("切换会话为 pm 失败");
-    let switched_thread = store.read().await.threads.iter().find(|t| t.id == new_id).cloned().unwrap();
-    assert_eq!(switched_thread.mode, Some(AgentMode::Pm));
-    assert_eq!(
-        switched_thread.agent_id,
-        Some("ada-coding".to_string()),
-        "切到 PM 模式不得改产品身份"
-    );
+        .expect("带模式新建会话");
+    let tid2 = created2.get("threadId").and_then(|v| v.as_str()).unwrap();
+    let t2 = store.read().await.threads.iter().find(|t| t.id == tid2).cloned().unwrap();
+    assert_eq!(t2.mode, Some(AgentMode::Create));
+    // PM 是模式不是产品：产品身份恒为 ada-coding
+    assert_eq!(t2.agent_id, Some("ada-coding".to_string()));
 
-    // 7. 切回 code 模式，联动恢复为 ada-coding
-    dispatcher
-        .dispatch("thread.setMode", serde_json::json!({ "threadId": new_id, "mode": "code" }))
-        .await
-        .expect("切换会话为 code 失败");
-    let restored_thread = store.read().await.threads.iter().find(|t| t.id == new_id).cloned().unwrap();
-    assert_eq!(restored_thread.mode, Some(AgentMode::Code));
-    assert_eq!(restored_thread.agent_id, Some("ada-coding".to_string()));
+    let _ = std::fs::remove_dir_all(&test_dir);
 }
 
 #[tokio::test]

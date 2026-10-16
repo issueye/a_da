@@ -2713,8 +2713,26 @@ impl Dispatcher {
                     _ => AgentMode::Code,
                 };
                 let mut store = self.store.write().await;
-                store.config.mode = mode;
                 let thread_id = params.get("threadId").and_then(|v| v.as_str()).unwrap_or(&store.active_id).to_string();
+
+                // 🔴 **模式只在新建会话时确定**：已经开始的会话不许再改。
+                //
+                // 为什么在服务端也拦一道（界面上的滑块已经不可点了）：别处还有调用点
+                // （老客户端、脚本、将来的移动端）。改掉一个已开始会话的模式，等于把
+                // 同一段对话的一半交给另一套系统提示词与工具集去解释——前半段的账
+                // 落在这条会话里、后半段却是另一个智能体，事后没人说得清哪句话是谁说的。
+                // 拒绝要说清**为什么**，而不是静默改掉或静默不动。
+                if let Some(t) = store.threads.iter().find(|t| t.id == thread_id) {
+                    if !t.items.is_empty() || !t.messages.is_empty() {
+                        return Err(ProtocolError::invalid_params(
+                            "会话已开始，不能切换模式：模式在新建会话时选择（新建一条会话即可换模式）",
+                        ));
+                    }
+                }
+
+                // 空会话 / 还没有会话：更新"下一个新会话的默认模式"。
+                // 这一条是**新会话**那一路要的（滑块在居中视图里改的就是它）。
+                store.config.mode = mode;
                 if let Some(t) = store.threads.iter_mut().find(|t| t.id == thread_id) {
                     t.mode = Some(mode);
                     // **PM 是模式，不是产品**：切到 PM 模式不再改 `agent_id`。

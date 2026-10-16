@@ -17,6 +17,7 @@ import { ToastHost, notify } from './components/ToastHost'
 import { ConfirmModal } from './components/ConfirmModal'
 import { ProcessModal } from './components/ProcessModal'
 import { deriveActiveChangeCount } from './utils/derive-changes'
+import { isFreshConversation } from './utils/conversation'
 import type { QuestionSubAnswerInput } from './utils/question-data'
 
 export function App() {
@@ -558,7 +559,6 @@ export function App() {
           runningThreadIds={snapshot.runningThreadIds || []}
           onSelectThread={handleSelectThread}
           onCreateThread={handleCreateThread}
-          onSelectMode={handleSetMode}
           onDeleteThread={handleDeleteThread}
           onRemoveWorkspace={handleRemoveWorkspace}
           onOpenWorkspacePicker={() => {
@@ -581,8 +581,11 @@ export function App() {
             onNewTab={() => handleCreateThread(activeThread?.workspace || snapshot.activeWorkspace)}
           />
 
-          {/* 新会话界面上下垂直居中；有消息时无缝恢复常规消息流与底部输入框 */}
-          {!activeThread || activeThread.items.length === 0 ? (
+          {/* 新会话界面上下垂直居中；有消息时无缝恢复常规消息流与底部输入框。
+              🔴 判据走 `isFreshConversation`（与服务端拒改模式的判据**同源**）：
+              它同时决定"模式滑块能不能点"。两处各写一份的话会漂移成
+              "滑块能点、点了报错"，或反过来"该能选的时候不给选"。 */}
+          {isFreshConversation(activeThread) ? (
             <EmptyConversationView
               thread={activeThread}
               mode={snapshot.currentMode}
@@ -672,6 +675,9 @@ export function App() {
         isOpen={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
         currentMode={snapshot.currentMode}
+        // 🔴 会话一旦开始就不能再切模式（服务端同样拒），所以面板里那几条
+        // "切换到 X 模式"要收起来——留着只会让用户点出一个错误提示。
+        modeLocked={!isFreshConversation(activeThread)}
         onSelectMode={handleSetMode}
         onNewThread={() => handleCreateThread(activeThread?.workspace || snapshot.activeWorkspace)}
         onOpenSettings={() => setSettingsOpen(true)}

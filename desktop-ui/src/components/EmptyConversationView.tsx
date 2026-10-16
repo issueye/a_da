@@ -3,6 +3,7 @@ import { Sparkles, Terminal, ShieldAlert, CheckCircle2, Search, ListTodo, GitPul
 import type { AgentMode, ProviderConfig, ApprovalMode, Effort, Thread, QueuedItem } from '../types'
 import { WorkspaceSelector } from './WorkspaceSelector'
 import { Composer } from './Composer'
+import { ModeSlider } from './ModeSlider'
 import { agentClient } from '../client/ws-client'
 
 const QUICK_CODING_PROMPTS = [
@@ -152,47 +153,9 @@ export const EmptyConversationView: React.FC<EmptyConversationViewProps> = ({
           </p>
         </div>
 
-        {/* 2. 模式切换滑块 (CODING ↔ PM) */}
-        <div className="relative flex p-0.5 rounded-xl bg-zinc-100 dark:bg-zinc-800/80 border border-zinc-200/80 dark:border-zinc-700/60 select-none shadow-xs w-64 max-w-xs">
-          {/* 滑动背景药丸指示物 */}
-          <div
-            className={`absolute top-0.5 bottom-0.5 w-[calc(50%-2px)] rounded-lg transition-all duration-200 ease-out shadow-xs ${
-              isPm
-                ? 'left-[calc(50%+1px)] bg-amber-500 dark:bg-amber-600 text-white shadow-amber-500/20'
-                : 'left-0.5 bg-blue-600 dark:bg-blue-600 text-white shadow-blue-600/20'
-            }`}
-          />
-
-          {/* CODING 模式按钮 */}
-          <button
-            type="button"
-            onClick={() => onSetMode('code')}
-            className={`relative z-10 flex-1 flex items-center justify-center space-x-1.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-              !isPm
-                ? 'text-white font-semibold'
-                : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
-            }`}
-            title="切换至 CODING 模式：连接 ada-coding Agent (全功能敏捷编码、终端执行)"
-          >
-            <Code2 size={13} className={!isPm ? 'text-white' : 'text-blue-500'} />
-            <span>CODING</span>
-          </button>
-
-          {/* PM 模式按钮 */}
-          <button
-            type="button"
-            onClick={() => onSetMode('pm')}
-            className={`relative z-10 flex-1 flex items-center justify-center space-x-1.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-              isPm
-                ? 'text-white font-semibold'
-                : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
-            }`}
-            title="切换至 PM 模式：目标拆解、任务委派与跟进（同一 ada-coding 实例的模式预设）"
-          >
-            <ListTodo size={13} className={isPm ? 'text-white' : 'text-amber-500'} />
-            <span>PM</span>
-          </button>
-        </div>
+        {/* 2. 模式滑块（四档：编码 / 规划 / 创造 / PM）。
+            只在**新会话**这里出现——会话一旦开始就不能再切，见 `ModeSlider` 的说明。 */}
+        <ModeSlider value={mode} onChange={onSetMode} className="w-72 max-w-full" />
 
         {/* 3. 选择工作区 */}
         <div className="w-full flex justify-center">

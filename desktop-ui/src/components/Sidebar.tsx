@@ -39,7 +39,6 @@ interface SidebarProps {
   runningThreadIds?: string[]
   onSelectThread: (threadId: string) => void
   onCreateThread: (workspace?: string, mode?: AgentMode) => void
-  onSelectMode?: (mode: AgentMode) => void
   onDeleteThread: (threadId: string) => void
   onRemoveWorkspace?: (workspace: string) => void
   onOpenWorkspacePicker?: () => void
@@ -486,7 +485,7 @@ const SidebarComponent: React.FC<SidebarProps> = ({
   runningThreadIds = [],
   onSelectThread,
   onCreateThread,
-  onSelectMode,
+
   onDeleteThread,
   onRemoveWorkspace,
   onOpenWorkspacePicker,

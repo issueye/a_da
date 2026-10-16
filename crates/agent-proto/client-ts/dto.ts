@@ -159,6 +159,14 @@ export interface Thread {
   mode: AgentMode
   agentId?: string
   items: Item[]
+  /**
+   * 原始消息序列（模型面）。
+   *
+   * 界面的卡片渲染走 `items`，**这个字段只用于判断"这条会话是否已经开始"**——
+   * 模式滑块能不能点、服务端允不允许改模式，都以"`items` 与 `messages` 都为空"为判据
+   * （两处必须同源，否则会出现"滑块能点、点了报错"）。
+   */
+  messages?: unknown[]
   stats?: ThreadStats
   createdAt: number
   updatedAt: number
