@@ -1368,7 +1368,8 @@ async fn test_skill_list_reports_plugin_skills_and_invalid_frontmatter() {
         Arc::new(SkillManager::with_home(home.clone())),
         None,
     )
-    .with_plugin_skills(vec![plugin_skill]);
+    // P2·SP-46 起技能是**共享活体**（不是快照）：启停重装配原地换它
+    .with_plugin_skills(agent_node::skills::new_skill_store(vec![plugin_skill]));
 
     let listed = dispatcher
         .dispatch("skill.list", serde_json::json!({ "workspace": ws }))

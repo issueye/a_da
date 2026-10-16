@@ -15,7 +15,7 @@
 //! 所以这个结构由装配函数造好、挂进 [`HostedProduct`]，组合根拿着它驱动启停。
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use agent_adapter::prompt::PluginFragmentStore;
 use agent_node::skills::SkillSummary;
@@ -23,13 +23,10 @@ use agent_runtime::{
     AssemblyPlan, ContributionDelta, ContributionDigest, LiveContributions,
 };
 
-/// 插件技能的**共享活体**：技能解析器每步读它一次，所以换了内容下一轮即生效。
-pub type SkillStore = Arc<RwLock<Vec<SkillSummary>>>;
-
-/// 造一个技能活体（装配期与组合根共用这一处）。
-pub fn new_skill_store(skills: Vec<SkillSummary>) -> SkillStore {
-    Arc::new(RwLock::new(skills))
-}
+// 技能的共享活体**定义在 `agent-node::skills`**（P2·SP-46）：rpc 侧的 `skill.list` 与
+// host 侧的提示词解析器必须拿**同一个句柄**，否则就会出现"界面有、模型没有"这种
+// 最难查的错。这里只是转出去给本 crate 的调用方用。
+pub use agent_node::skills::{new_skill_store, SkillStore};
 
 /// 活的插件贡献集合。
 pub struct LivePluginContributions {

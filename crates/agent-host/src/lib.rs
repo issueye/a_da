@@ -705,7 +705,7 @@ pub fn build_engine_injection(
         factory: Some(factory),
         // 这条便捷装配路径**不收插件技能**：它没有组合根那一步异步装载（见 `extra_tools`
         // 的注释）。如实为空，而不是假装扫描过——需要插件技能的宿主走产品的 `build_injection`。
-        plugin_skills: Vec::new(),
+        plugin_skills: None,
         // 同理：重装配入口与钩子运行时都在组合根（产品 `main`）——这里如实为空
         reassembler: None,
         hook_runner: None,

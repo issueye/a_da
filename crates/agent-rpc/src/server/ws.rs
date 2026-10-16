@@ -90,10 +90,14 @@ impl WsHostServer {
         let skill_mgr = Arc::new(agent_node::skills::SkillManager::new());
         // P2·SP-45：插件技能由**组合根**（装配期真的执行了插件的那一层）随注入包递进来。
         // 这里不自己去扫：那要再执行一遍 JS 沙箱，而且拿到的清单可能与引擎那份不一致。
+        //
+        // 🔴 递进来的是**活体句柄**（不是快照）：rpc 侧的 `skill.list` 与引擎的提示词解析器
+        // 共用同一个 `SkillStore`，插件启停才会"两边一起变"——分成两份就会出现
+        // "界面有、模型没有"（或反过来）这种最难查的错。
         let plugin_skills = match (&coding_injection, &pm_injection) {
-            (Some(i), _) if !i.plugin_skills.is_empty() => i.plugin_skills.clone(),
-            (_, Some(i)) => i.plugin_skills.clone(),
-            _ => Vec::new(),
+            (Some(i), _) if i.plugin_skills.is_some() => i.plugin_skills.clone().unwrap(),
+            (_, Some(i)) if i.plugin_skills.is_some() => i.plugin_skills.clone().unwrap(),
+            _ => agent_node::skills::new_skill_store(Vec::new()),
         };
         // P2·SP-46：重装配入口（组合根实现）——`plugin.setEnabled` 靠它真的改变贡献集合
         let reassembler = match (&coding_injection, &pm_injection) {

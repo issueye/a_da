@@ -327,7 +327,7 @@ pub struct EngineInjection {
     ///
     /// 随注入包一起走，是因为 ws 宿主拿它去造 `Dispatcher.plugin_skills`——
     /// `skill.list` 才能在界面里列出插件技能（而它没法自己执行 JS 沙箱）。
-    pub plugin_skills: Vec<agent_node::skills::SkillSummary>,
+    pub plugin_skills: Option<agent_node::skills::SkillStore>,
     /// 插件启停后的重装配入口（P2 · SP-46）：组合同样只有组合根实现得出来。
     pub reassembler: Option<Arc<dyn PluginReassembler>>,
     /// 钩子运行时（P3a · SP-55）：宿主用它跑**管理面**点位（插件启停 / 会话创建）。
@@ -347,7 +347,7 @@ impl EngineInjection {
             approval_mgr,
             spec,
             factory: None,
-            plugin_skills: Vec::new(),
+            plugin_skills: None,
             reassembler: None,
             hook_runner: None,
         }
@@ -361,9 +361,9 @@ impl EngineInjection {
     /// 带上插件技能（SP-45）。没带 = 如实为空，不是"假装没有插件"。
     pub fn with_plugin_skills(
         mut self,
-        skills: Vec<agent_node::skills::SkillSummary>,
+        skills: agent_node::skills::SkillStore,
     ) -> Self {
-        self.plugin_skills = skills;
+        self.plugin_skills = Some(skills);
         self
     }
 
@@ -471,7 +471,7 @@ pub struct Dispatcher {
     /// （那是装配期的事，在组合根）。组合根把收好的清单随 `EngineInjection` 递进来，
     /// 于是"界面上列出的技能"与"真的进了提示词的技能"是**同一份**——
     /// 两边各扫一次就会出现"界面有、模型没有"这种最难查的错。
-    plugin_skills: Vec<agent_node::skills::SkillSummary>,
+    plugin_skills: agent_node::skills::SkillStore,
     /// 插件启停后的重装配入口（P2 · SP-46，组合根注入；没注入就如实回 null）。
     plugin_reassembler: Option<Arc<dyn PluginReassembler>>,
     /// 钩子运行时（P3a · SP-55）：管理面点位（插件启停 / 会话创建）在**这一层**跑。
@@ -1317,7 +1317,7 @@ impl Dispatcher {
             pm_engine: None,
             pm_engine_factory: None,
             pm_workspace_engines: Arc::new(Mutex::new(HashMap::new())),
-            plugin_skills: Vec::new(),
+            plugin_skills: agent_node::skills::new_skill_store(Vec::new()),
             plugin_reassembler: None,
             hook_runner: None,
         }
@@ -1443,7 +1443,7 @@ impl Dispatcher {
     /// 没注入时 `skill.list` 就只报目录与内置技能（**如实**，不是假装有插件技能）。
     pub fn with_plugin_skills(
         mut self,
-        skills: Vec<agent_node::skills::SkillSummary>,
+        skills: agent_node::skills::SkillStore,
     ) -> Self {
         self.plugin_skills = skills;
         self
@@ -3617,7 +3617,16 @@ impl Dispatcher {
 
             SKILL_LIST => {
                 let ws = params.get("workspace").and_then(|v| v.as_str());
-                let skills = self.skill_mgr.scan_skills_with(ws, &self.plugin_skills);
+                // 🔴 读的是**共享活体**（不是启动时的快照）：插件启停会原地换它，
+                // 于是"界面列出的技能"与"真的进了提示词的技能"始终是同一份。
+                // 早先这里是快照 → 停用插件后引擎侧已经没有那条技能，界面里还在
+                // （实机验收 `tools/verify-plugin-platform-e2e.mjs` 抓到的正是这个）。
+                let plugin_skills = self
+                    .plugin_skills
+                    .read()
+                    .map(|g| g.clone())
+                    .unwrap_or_default();
+                let skills = self.skill_mgr.scan_skills_with(ws, &plugin_skills);
                 // P0 埋点：技能扫描同样在**用户动作点**报（`skill.list`）。
                 //
                 // 🔴 刻意**不**在"每步取提示词"的那条路径上报：技能解析器的调用频率是

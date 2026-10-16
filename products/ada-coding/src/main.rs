@@ -123,8 +123,6 @@ async fn build_injection(
     // 异步装载放在这里（组合根），因为 `run_from_spec` 是同步的、而产品 `main` 本来就是 async。
     // ：id 是来源标注，装配与埋点都靠它归因
     let mut prompt_extensions: Vec<(String, String)> = Vec::new();
-    let mut plugin_skills: Vec<(String, String, agent_node::plugins::PluginSkillDeclaration)> =
-        Vec::new();
     // P2·SP-46：插件管理器与脚本宿主**提到 if 外面**——重装配（插件启停）要复用同两个实例，
     // 各造一份就会出现"启停重装时用的是另一份脚本宿主/配置"这种查不出来的错。
     let plugin_mgr = std::sync::Arc::new(agent_node::plugins::PluginManager::new());
@@ -228,16 +226,12 @@ async fn build_injection(
             .collect();
         contributions.skills = asm.skills;
         contributions.tools = asm.tools;
-        plugin_skills = contributions.skills.clone();
     }
 
-    // P2·SP-45：同一份技能声明有两个消费者，形状各异但**内容必须一致**：
-    // 装配层（`HostOptions`）要声明本身，ws 宿主（`EngineInjection`）要扫描结果的形状。
-    // 两处各转一遍是刻意的——但源头只有这里一份 `asm.skills`。
-    let plugin_skill_summaries: Vec<agent_node::skills::SkillSummary> = plugin_skills
-        .iter()
-        .map(|(pid, pname, decl)| decl.to_summary(pid, pname))
-        .collect();
+    // 技能声明的**唯一源头**是上面的 `asm.skills`（随 `contributions` 交给装配层）；
+    // 装配层据此造出技能活体，并把**同一个句柄**交给 ws 宿主（见下面的 `live.skill_store()`）。
+    // 早先这里另造一份"扫描结果形状"的快照给 rpc，那份快照不会随插件启停更新——
+    // 于是停用插件后"界面里还有、引擎里已经没有"。
 
     let options = agent_host::HostOptions::new(&ws)
         .with_store(store.clone())
@@ -319,8 +313,11 @@ async fn build_injection(
                 // W3-T6：声明一起注入，握手才能如实回报能力位
                 spec: Arc::new(spec),
                 factory: Some(factory),
-                // P2·SP-45：ws 宿主的 `skill.list` 要列出插件技能，靠的就是这一份
-                plugin_skills: plugin_skill_summaries,
+                // P2·SP-45：ws 宿主的 `skill.list` 要列出插件技能。
+                // 🔴 交出去的是**装配期造好的那个活体句柄**（`live.skill_store()`），
+                // 不是一份快照：插件启停时重装配原地换的就是它，于是
+                // "界面列出的技能"与"真的进了提示词的技能"始终是同一份。
+                plugin_skills: Some(live.skill_store()),
                 // P2·SP-46：插件启停的重装配入口
                 reassembler,
                 // P3a·SP-55：管理面点位（插件启停 / 会话创建）靠它在轮外跑钩子
