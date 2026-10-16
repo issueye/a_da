@@ -316,6 +316,41 @@ impl PluginSandbox {
                         {{ point: targetPoint, workspace: ws }},
                         payload && payload.__ada_hook_ctx !== undefined ? payload.__ada_hook_ctx : {{}},
                     );
+                    const registrations = [];
+                    hookCtx.registerTool = (tool) => {{
+                        if (!tool || typeof tool.name !== 'string' || typeof tool.executeExport !== 'string') {{
+                            return {{ ok: false, reason: 'registerTool requires name and executeExport' }};
+                        }}
+                        registrations.push({{
+                            kind: 'tool',
+                            name: tool.name,
+                            description: typeof tool.description === 'string' ? tool.description : '',
+                            parameters: tool.parameters || {{ type: 'object', properties: {{}} }},
+                            executeExport: tool.executeExport,
+                        }});
+                        return {{ ok: true }};
+                    }};
+                    hookCtx.registerSystemPrompt = (prompt) => {{
+                        if (!prompt || typeof prompt.id !== 'string' || typeof prompt.content !== 'string') {{
+                            return {{ ok: false, reason: 'registerSystemPrompt requires id and content' }};
+                        }}
+                        registrations.push({{ kind: 'systemPrompt', id: prompt.id, content: prompt.content }});
+                        return {{ ok: true }};
+                    }};
+                    hookCtx.registerSkill = (skill) => {{
+                        if (!skill || typeof skill.name !== 'string' || typeof skill.body !== 'string') {{
+                            return {{ ok: false, reason: 'registerSkill requires name and body' }};
+                        }}
+                        registrations.push({{
+                            kind: 'skill',
+                            name: skill.name,
+                            description: typeof skill.description === 'string' ? skill.description : '',
+                            body: skill.body,
+                            whenToUse: typeof skill.whenToUse === 'string' ? skill.whenToUse : undefined,
+                            userInvocable: typeof skill.userInvocable === 'boolean' ? skill.userInvocable : undefined,
+                        }});
+                        return {{ ok: true }};
+                    }};
                     let hooksRaw = [];
                     if (typeof desc === 'function') {{
                         const api = {{
@@ -367,10 +402,13 @@ impl PluginSandbox {
                         if (typeof res.action === 'string') out.action = res.action;
                         if (typeof res.reason === 'string') out.reason = res.reason;
                         if (typeof res.note === 'string') out.note = res.note;
-                        if (res.data !== undefined) out.data = res.data;
+                        const data = res.data && typeof res.data === 'object' ? Object.assign({{}}, res.data) : {{}};
+                        if (registrations.length > 0) data.registrations = registrations;
+                        if (Object.keys(data).length > 0) out.data = data;
                         return JSON.stringify(out);
                     }}
-                    return JSON.stringify({{}});
+                    const data = registrations.length > 0 ? {{ registrations }} : undefined;
+                    return data ? JSON.stringify({{ data }}) : JSON.stringify({{}});
                 }} catch (err) {{
                     // 🔴 带上 `stack`（P4·SP-73）：只拿 `err.message` 的话，报错不带文件与行号。
                     const detail = err && err.stack ? String(err.stack) : String(err);
@@ -1089,6 +1127,39 @@ mod tests {
         .expect("工具调用不应直接失败");
         assert!(tool.ok, "带钩子的插件，工具必须照常可调：{}", tool.output);
         assert_eq!(tool.output, "插件真的跑了");
+
+        let registration_dir = std::env::temp_dir().join(format!("a_da_hook_register_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&registration_dir).unwrap();
+        let registration_path = registration_dir.join("registrations.ts");
+        std::fs::write(
+            &registration_path,
+            "export default { hooks: [{ point: 'afterTurn', actions: ['observe'], handler: async (_event: any, ctx: any) => { \
+              ctx.registerTool({ name: 'dynamic_tool', description: 'dynamic', parameters: { type: 'object' }, executeExport: 'dynamic_tool' }); \
+              ctx.registerSystemPrompt({ id: 'dynamic-prompt', content: 'Use the dynamic prompt.' }); \
+              ctx.registerSkill({ name: 'dynamic-skill', description: 'dynamic skill', body: 'Do the dynamic thing.' }); \
+              return { action: 'observe', data: { point: ctx.point } }; } }] };\n",
+        )
+        .unwrap();
+        let registrations_result = PluginSandbox::call_hook_budgeted(
+            &registration_path,
+            "afterTurn",
+            serde_json::json!({ "step": 1 }),
+            &registration_dir,
+            10,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("registration hook should succeed");
+        let registrations = registrations_result["data"]["registrations"]
+            .as_array()
+            .expect("registration requests should be returned");
+        assert_eq!(registrations.len(), 3);
+        assert_eq!(registrations[0]["kind"], "tool");
+        assert_eq!(registrations[0]["executeExport"], "dynamic_tool");
+        assert_eq!(registrations[1]["kind"], "systemPrompt");
+        assert_eq!(registrations[2]["kind"], "skill");
+        let _ = std::fs::remove_dir_all(&registration_dir);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -24,7 +24,8 @@ pub use clock::Clock;
 pub use events::EventSink;
 pub use hooks::{
     AfterNote, AfterRequest, BeforeOutcome, BeforeRequest, HookAction, HookBudget, HookCtx,
-    HookEntryOutcome, HookLevel, HookObservation, HookPhase, HookRunner, PluginTrust, ToolHooks,
+    HookEntryOutcome, HookLevel, HookObservation, HookPhase, HookRegistration, HookRunner,
+    PluginTrust, ToolHooks,
 };
 pub use model::{CompletionRequest, DeltaStream, ModelCapabilities, ModelClient, ModelError};
 pub use prompt::{PromptSegment, PromptSource};

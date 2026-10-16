@@ -20,7 +20,8 @@ use std::time::{Duration, Instant};
 
 use agent_base::ports::hooks::{
     allows, points, AfterNote, AfterRequest, BeforeOutcome, BeforeRequest, HookAction, HookBudget,
-    HookCtx, HookEntryOutcome, HookLevel, HookObservation, HookPhase, HookRunner, PluginTrust,
+    HookCtx, HookEntryOutcome, HookLevel, HookObservation, HookPhase, HookRegistration,
+    HookRunner, PluginTrust,
 };
 use agent_base::ports::{
     BoxFuture, ModuleHandle, ScriptBudget, ScriptCtx, ScriptError, ScriptHost,
@@ -64,6 +65,7 @@ pub struct HookRuntime {
     /// 为什么不是"装配期定死"：引擎持的是 `Arc<dyn HookRunner>`（换不掉），
     /// 而"停用插件之后它的钩子还在拦"正是 SP-46 要消灭的那类半截状态。
     registrations: std::sync::RwLock<Vec<RegisteredHook>>,
+    pending_registrations: std::sync::Mutex<Vec<HookRegistration>>,
     budget: HookBudget,
 }
 
@@ -72,8 +74,16 @@ impl HookRuntime {
         Self {
             script_host,
             registrations: std::sync::RwLock::new(Vec::new()),
+            pending_registrations: std::sync::Mutex::new(Vec::new()),
             budget,
         }
+    }
+
+    pub fn take_registrations(&self) -> Vec<HookRegistration> {
+        self.pending_registrations
+            .lock()
+            .map(|mut pending| std::mem::take(&mut *pending))
+            .unwrap_or_default()
     }
 
     /// 空运行时（没有脚本宿主，也没有任何注册）。
@@ -153,6 +163,7 @@ impl HookRuntime {
         Self {
             script_host: Arc::new(NoScriptHost),
             registrations: std::sync::RwLock::new(Vec::new()),
+            pending_registrations: std::sync::Mutex::new(Vec::new()),
             budget: HookBudget::default(),
         }
     }
@@ -390,6 +401,8 @@ impl HookRuntime {
             Ok(Ok(raw)) => raw,
         };
 
+        self.collect_registrations(reg, &raw);
+
         match raw.action.as_deref().map(str::trim) {
             None | Some("") => HookEntryResult::simple(HookEntryOutcome::Passed, ""),
             Some("observe") => HookEntryResult::new(HookEntryOutcome::Observed).with_note(
@@ -473,6 +486,92 @@ impl HookRuntime {
             ),
         }
     }
+
+    fn collect_registrations(&self, reg: &RegisteredHook, raw: &agent_base::ports::ScriptHookOutcome) {
+        let Some(items) = raw
+            .data
+            .as_ref()
+            .and_then(|data| data.get("registrations"))
+            .and_then(|items| items.as_array())
+        else {
+            return;
+        };
+
+        let mut pending = match self.pending_registrations.lock() {
+            Ok(pending) => pending,
+            Err(_) => return,
+        };
+
+        for item in items {
+            let Some(kind) = item.get("kind").and_then(|value| value.as_str()) else {
+                continue;
+            };
+            match kind {
+                "tool" => {
+                    let (Some(name), Some(execute_export)) = (
+                        item.get("name").and_then(|value| value.as_str()),
+                        item.get("executeExport").and_then(|value| value.as_str()),
+                    ) else {
+                        continue;
+                    };
+                    pending.push(HookRegistration::Tool {
+                        plugin_id: reg.plugin_id.clone(),
+                        name: name.to_string(),
+                        description: item
+                            .get("description")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        parameters: item
+                            .get("parameters")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({
+                                "type": "object",
+                                "properties": {}
+                            })),
+                        execute_export: execute_export.to_string(),
+                    });
+                }
+                "systemPrompt" => {
+                    let (Some(id), Some(content)) = (
+                        item.get("id").and_then(|value| value.as_str()),
+                        item.get("content").and_then(|value| value.as_str()),
+                    ) else {
+                        continue;
+                    };
+                    pending.push(HookRegistration::SystemPrompt {
+                        plugin_id: reg.plugin_id.clone(),
+                        id: id.to_string(),
+                        content: content.to_string(),
+                    });
+                }
+                "skill" => {
+                    let (Some(name), Some(body)) = (
+                        item.get("name").and_then(|value| value.as_str()),
+                        item.get("body").and_then(|value| value.as_str()),
+                    ) else {
+                        continue;
+                    };
+                    pending.push(HookRegistration::Skill {
+                        plugin_id: reg.plugin_id.clone(),
+                        name: name.to_string(),
+                        description: item
+                            .get("description")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        body: body.to_string(),
+                        when_to_use: item
+                            .get("whenToUse")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_string),
+                        user_invocable: item.get("userInvocable").and_then(|value| value.as_bool()),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 /// 一条钩子跑完的完整结果（P3b 起含改写载荷与改写痕迹）。
@@ -535,6 +634,10 @@ impl HookEntryResult {
 }
 
 impl HookRunner for HookRuntime {
+    fn take_registrations(&self) -> Vec<HookRegistration> {
+        HookRuntime::take_registrations(self)
+    }
+
     fn before<'a>(
         &'a self,
         req: BeforeRequest,

@@ -393,6 +393,32 @@ pub struct AfterRequest {
     pub payload: serde_json::Value,
 }
 
+/// Registration requests emitted by a hook context. These are data-only
+/// requests; the host decides when and how to apply them.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HookRegistration {
+    Tool {
+        plugin_id: String,
+        name: String,
+        description: String,
+        parameters: serde_json::Value,
+        execute_export: String,
+    },
+    SystemPrompt {
+        plugin_id: String,
+        id: String,
+        content: String,
+    },
+    Skill {
+        plugin_id: String,
+        name: String,
+        description: String,
+        body: String,
+        when_to_use: Option<String>,
+        user_invocable: Option<bool>,
+    },
+}
+
 /// 统一预算（来自产品声明的 `hookTimeoutMs`，见 SP-53）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HookBudget {
@@ -536,6 +562,11 @@ impl ToolHooks<'_> {
 /// 任一钩子 `Deny` / `AbortTurn` 即**定稿**（后续钩子不再被问）；
 /// 单点位超时视为 `Pass`。
 pub trait HookRunner: Send + Sync {
+    /// Drain registration requests emitted by hook handlers.
+    fn take_registrations(&self) -> Vec<HookRegistration> {
+        Vec::new()
+    }
+
     /// 事前：`Pass` / `Deny` / `AbortTurn`。
     ///
     /// 没有任何订阅者时**必须**通过 `ctx.on_event` 报一条 `reason = "no_subscriber"` 的
