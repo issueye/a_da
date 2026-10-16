@@ -618,7 +618,7 @@ impl PureTsRuntime {
 
         // 自动注册 Tokio 异步 fs 原生能力并附加沙箱安全防御
         let ws_r = workspace.clone();
-        runtime.register_async_fn_gated(needs.fs, "__native_fs_read_file_async", move |args| {
+        runtime.register_async_fn_gated(needs.fs_read, "__native_fs_read_file_async", move |args| {
             let rel = args.get(0).cloned().unwrap_or_default();
             let base = ws_r.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
             async move {
@@ -629,7 +629,7 @@ impl PureTsRuntime {
         });
 
         let ws_w = workspace.clone();
-        runtime.register_async_fn_gated(needs.fs, "__native_fs_write_file_async", move |args| {
+        runtime.register_async_fn_gated(needs.fs_write, "__native_fs_write_file_async", move |args| {
             let rel = args.get(0).cloned().unwrap_or_default();
             let content = args.get(1).cloned().unwrap_or_default();
             let base = ws_w.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
@@ -645,7 +645,7 @@ impl PureTsRuntime {
         });
 
         let ws_mkdir = workspace.clone();
-        runtime.register_async_fn_gated(needs.fs, "__native_fs_mkdir_async", move |args| {
+        runtime.register_async_fn_gated(needs.fs_write, "__native_fs_mkdir_async", move |args| {
             let rel = args.get(0).cloned().unwrap_or_default();
             let base = ws_mkdir.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
             async move {
@@ -657,7 +657,7 @@ impl PureTsRuntime {
         });
 
         let ws_readdir = workspace.clone();
-        runtime.register_async_fn_gated(needs.fs, "__native_fs_readdir_async", move |args| {
+        runtime.register_async_fn_gated(needs.fs_read, "__native_fs_readdir_async", move |args| {
             let rel = args.get(0).cloned().unwrap_or_default();
             let base = ws_readdir.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
             async move {
@@ -675,7 +675,7 @@ impl PureTsRuntime {
         });
 
         let ws_stat = workspace.clone();
-        runtime.register_async_fn_gated(needs.fs, "__native_fs_stat_async", move |args| {
+        runtime.register_async_fn_gated(needs.fs_read || needs.fs_write, "__native_fs_stat_async", move |args| {
             let rel = args.get(0).cloned().unwrap_or_default();
             let base = ws_stat.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
             async move {
@@ -700,7 +700,7 @@ impl PureTsRuntime {
         });
 
         let ws_rm = workspace.clone();
-        runtime.register_async_fn_gated(needs.fs, "__native_fs_rm_async", move |args| {
+        runtime.register_async_fn_gated(needs.fs_write, "__native_fs_rm_async", move |args| {
             let rel = args.get(0).cloned().unwrap_or_default();
             let base = ws_rm.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
             async move {

@@ -99,7 +99,8 @@ pub struct ScriptPromptFragment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ScriptNeeds {
     /// 工作区文件读写
-    pub fs: bool,
+    pub fs_read: bool,
+    pub fs_write: bool,
     /// 网络（`fetch` 与原生桥）
     pub net: bool,
 }
@@ -108,7 +109,8 @@ impl ScriptNeeds {
     /// 什么都不给。
     pub fn none() -> Self {
         Self {
-            fs: false,
+            fs_read: false,
+            fs_write: false,
             net: false,
         }
     }
@@ -120,7 +122,8 @@ impl ScriptNeeds {
     /// 就没人认真读了。真正需要显式声明的是**网络**——那是插件唯一能把数据送出去的口子。
     pub fn plugin_floor() -> Self {
         Self {
-            fs: true,
+            fs_read: true,
+            fs_write: true,
             net: false,
         }
     }

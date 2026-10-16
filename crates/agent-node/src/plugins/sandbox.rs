@@ -389,7 +389,7 @@ impl PluginSandbox {
             }
             Err(_) => {
                 runtime.terminate();
-                anyhow::bail!("插件钩子执行超时（超过 {} 秒）", timeout_s);
+                anyhow::bail!("脚本执行超时（{} 秒）", timeout_s);
             }
         };
 

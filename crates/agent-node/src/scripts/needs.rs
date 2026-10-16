@@ -65,7 +65,9 @@ pub fn parse_needs(source: &str) -> ParsedNeeds {
     let mut unknown = Vec::new();
     for t in &tokens {
         match t.as_str() {
-            "fs" => needs.fs = true,
+            "fs" => { needs.fs_read = true; needs.fs_write = true; }
+            "fs=read" | "fs_read" | "read" => needs.fs_read = true,
+            "fs=write" | "fs_write" | "write" => needs.fs_write = true,
             "net" | "network" | "fetch" => needs.net = true,
             // 显式空集：`// @ada-needs none` 比"声明一个空列表"更难读错
             "none" => {}
@@ -100,7 +102,7 @@ mod tests {
         let p = parse_needs("// @ada-needs net\nexport default {}");
         assert!(p.declared);
         assert!(p.needs.net, "声明了网络就要给网络");
-        assert!(!p.needs.fs, "声明里没有 fs 就不给 fs（一一对上，不做心算）");
+        assert!(!p.needs.fs_read && !p.needs.fs_write, "声明里没有 fs 就不给 fs（一一对上，不做心算）");
     }
 
     /// 多 token 的各种写法都要能读（逗号 / 空格 / 行尾注释符）。
@@ -113,7 +115,7 @@ mod tests {
             "/* @ada-needs fs,net */",
         ] {
             let p = parse_needs(src);
-            assert!(p.needs.fs && p.needs.net, "读不出两种能力：{src}");
+            assert!(p.needs.fs_read && p.needs.fs_write && p.needs.net, "读不出两种能力：{src}");
         }
     }
 
@@ -129,7 +131,7 @@ mod tests {
     #[test]
     fn test_unknown_token_is_reported_and_not_granted() {
         let p = parse_needs("// @ada-needs fs,nett\n");
-        assert!(p.needs.fs);
+        assert!(p.needs.fs_read && p.needs.fs_write);
         assert!(!p.needs.net, "拼错的 token 绝不能授予能力");
         assert_eq!(p.unknown, vec!["nett".to_string()]);
     }
@@ -151,7 +153,7 @@ mod tests {
     #[test]
     fn test_trailing_prose_after_directive() {
         let p = parse_needs("// @ada-needs fs\n// 说明：为什么需要 fs\n");
-        assert!(p.needs.fs);
+        assert!(p.needs.fs_read && p.needs.fs_write);
         assert_eq!(p.unknown, Vec::<String>::new(), "下一行不算指令的一部分");
     }
 }

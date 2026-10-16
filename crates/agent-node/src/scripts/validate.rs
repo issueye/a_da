@@ -130,7 +130,7 @@ pub async fn validate_plugin(
     let limits = ada_ts_engine::Limits::default();
     let mut needs_text = format!(
         "fs: {} / net: {}",
-        if declared.needs.fs { "开" } else { "关" },
+        if declared.needs.fs_read || declared.needs.fs_write { "开" } else { "关" },
         if declared.needs.net {
             "开".to_string()
         } else {

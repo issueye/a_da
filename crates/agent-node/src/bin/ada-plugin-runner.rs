@@ -56,7 +56,9 @@ struct Request {
 #[derive(Debug, Deserialize)]
 struct NeedsSpec {
     #[serde(default)]
-    fs: bool,
+    fs_read: bool,
+    #[serde(default)]
+    fs_write: bool,
     #[serde(default)]
     net: bool,
 }
@@ -98,13 +100,15 @@ async fn handle(req: Request) -> serde_json::Value {
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let needs = match &req.needs {
         Some(n) => Needs {
-            fs: n.fs,
+            fs_read: n.fs_read,
+            fs_write: n.fs_write,
             net: n.net,
         },
         // 缺省按**最紧**（什么都不给）：这个入口是"不可信第三方"跑的地方，
         // 默认值不该是宽的那一端。
         None => Needs {
-            fs: false,
+            fs_read: false,
+            fs_write: false,
             net: false,
         },
     };

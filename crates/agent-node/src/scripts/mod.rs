@@ -461,7 +461,8 @@ impl ScriptHost for TsScriptHost {
 /// 各写一份迟早出现"端口说给了 fs、引擎那边没注入"这种对不上的账。
 fn to_engine_needs(needs: ScriptNeeds) -> ada_ts_engine::Needs {
     ada_ts_engine::Needs {
-        fs: needs.fs,
+        fs_read: needs.fs_read,
+        fs_write: needs.fs_write,
         net: needs.net,
     }
 }

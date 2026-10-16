@@ -30,7 +30,8 @@ use std::path::Path;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Needs {
     /// 注入 `fs` 模块与它的原生读写能力（读写分离见 P4·SP-71）。
-    pub fs: bool,
+    pub fs_read: bool,
+    pub fs_write: bool,
     /// 注入 `fetch` / `AbortController` / `Response` 与 `__native_fetch_async`。
     ///
     /// **默认 false**：这是插件唯一能"把数据送出去"的口子，值得显式声明才开。
@@ -48,13 +49,14 @@ impl Needs {
     /// 全开：CLI（`ts_engine run/eval`）与本地脚本的现状行为——
     /// 那是用户自己写的脚本，不在"不可信第三方"的口径里。
     pub fn everything() -> Self {
-        Self { fs: true, net: true }
+        Self { fs_read: true, fs_write: true, net: true }
     }
 
     /// 插件默认档：`fs: true`、`net: false`（见设计文档 §3.5 的默认档位）。
     pub fn plugin_default() -> Self {
         Self {
-            fs: true,
+            fs_read: true,
+            fs_write: true,
             net: false,
         }
     }
@@ -102,7 +104,7 @@ fn inject_common(ctx: &mut Context, workspace: Option<&Path>, needs: Needs) -> R
         .map_err(|e| format!("注入 os 失败: {e}"))?;
 
     // 6. 注册同步 fs 原生函数与封装脚本（**按声明**：未声明 fs 就不注册）
-    if needs.fs {
+    if needs.fs_read || needs.fs_write {
         fs::register_fs_native_and_script(ctx, workspace)?;
     }
 
@@ -402,7 +404,7 @@ mod tests {
 
         // 2. 显式关掉 fs：全局不存在，而且 `require` 要**说清原因**地报错
         let mut ctx2 = Context::default();
-        inject_environment(&mut ctx2, None, Needs { fs: false, net: false }).expect("注入失败");
+        inject_environment(&mut ctx2, None, Needs { fs_read: false, fs_write: false, net: false }).expect("注入失败");
         assert_eq!(
             eval_str(&mut ctx2, "typeof globalThis.fs"),
             "undefined",

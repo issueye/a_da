@@ -151,7 +151,7 @@ impl SubprocessScriptHost {
     }
 
     fn needs_json(needs: ScriptNeeds) -> serde_json::Value {
-        serde_json::json!({ "fs": needs.fs, "net": needs.net })
+        serde_json::json!({ "fs_read": needs.fs_read, "fs_write": needs.fs_write, "net": needs.net })
     }
 }
 
