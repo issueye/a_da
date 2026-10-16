@@ -667,7 +667,9 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
 
         {/* 底部信息栏 */}
         <div className="flex items-center justify-between px-5 py-3 border-t border-zinc-200 dark:border-[#27272a] bg-zinc-50 dark:bg-[#1e1e22]/50 text-zinc-500 text-[11px] flex-shrink-0">
-          <span>扩展目录兼容：.ada/extensions 与 ~/.a-da/extensions</span>
+          {/* 两条路径都说全：扫描目录是 `<ws>/.ada/{extensions,plugins}` 与 `~/.a-da/{extensions,plugins}`
+              （`plugins/manager.rs::scan_plugins`），只写一半会让人把插件放进另一个目录里等它生效。 */}
+          <span>扩展目录：.ada/extensions · .ada/plugins · ~/.a-da/extensions · ~/.a-da/plugins</span>
           <button
             onClick={onClose}
             className="px-4 py-1.5 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 font-medium transition-colors"
