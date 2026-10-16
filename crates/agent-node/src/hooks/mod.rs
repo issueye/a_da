@@ -546,9 +546,9 @@ impl HookRuntime {
                     });
                 }
                 "skill" => {
-                    let (Some(name), Some(body)) = (
+                    let (Some(name), Some(path)) = (
                         item.get("name").and_then(|value| value.as_str()),
-                        item.get("body").and_then(|value| value.as_str()),
+                        item.get("path").and_then(|value| value.as_str()),
                     ) else {
                         continue;
                     };
@@ -560,7 +560,11 @@ impl HookRuntime {
                             .and_then(|value| value.as_str())
                             .unwrap_or("")
                             .to_string(),
-                        body: body.to_string(),
+                        path: path.to_string(),
+                        body: item
+                            .get("body")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_string),
                         when_to_use: item
                             .get("whenToUse")
                             .and_then(|value| value.as_str())
@@ -1495,5 +1499,48 @@ mod tests {
             2,
             "两条钩子都要被调到（事后没有否决权，不因前一条而短路）"
         );
+    }
+
+    #[tokio::test]
+    async fn test_hook_registration_requests_are_drained_by_host() {
+        let mut host = FakeHost::default();
+        host.ret(
+            "registrar",
+            "afterTurn",
+            serde_json::json!({
+                "action": "observe",
+                "data": {
+                    "registrations": [
+                        { "kind": "tool", "name": "dynamic_tool", "description": "dynamic", "parameters": { "type": "object" }, "executeExport": "dynamic_tool" },
+                        { "kind": "systemPrompt", "id": "dynamic-prompt", "content": "Use dynamic prompt" },
+                        { "kind": "skill", "name": "dynamic-skill", "description": "dynamic skill", "path": ".ada/agent-coding/skills/dynamic-skill.md" }
+                    ]
+                }
+            }),
+        );
+        let host = Arc::new(host);
+        let (runtime, rejections) = runtime_with(
+            host,
+            &[("registrar", PluginTrust::ThirdParty, &[("afterTurn", &["observe"], 0)])],
+            500,
+        );
+        assert!(rejections.is_empty(), "{rejections:?}");
+        let observations = Observers::new();
+        let sink = observations.sink();
+        let _ = runtime
+            .after(
+                AfterRequest {
+                    point: "afterTurn".to_string(),
+                    subject: None,
+                    payload: serde_json::json!({ "step": 1 }),
+                },
+                &ctx(&sink),
+            )
+            .await;
+        let registrations = runtime.take_registrations();
+        assert_eq!(registrations.len(), 3);
+        assert!(matches!(registrations[0], HookRegistration::Tool { ref name, ref execute_export, .. } if name == "dynamic_tool" && execute_export == "dynamic_tool"));
+        assert!(matches!(registrations[1], HookRegistration::SystemPrompt { ref id, .. } if id == "dynamic-prompt"));
+        assert!(matches!(registrations[2], HookRegistration::Skill { ref name, ref path, .. } if name == "dynamic-skill" && path.ends_with("dynamic-skill.md")));
     }
 }

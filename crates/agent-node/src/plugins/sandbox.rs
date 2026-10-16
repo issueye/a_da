@@ -338,14 +338,15 @@ impl PluginSandbox {
                         return {{ ok: true }};
                     }};
                     hookCtx.registerSkill = (skill) => {{
-                        if (!skill || typeof skill.name !== 'string' || typeof skill.body !== 'string') {{
-                            return {{ ok: false, reason: 'registerSkill requires name and body' }};
+                        if (!skill || typeof skill.name !== 'string' || typeof skill.description !== 'string' || typeof skill.path !== 'string') {{
+                            return {{ ok: false, reason: 'registerSkill requires name, description and path' }};
                         }}
                         registrations.push({{
                             kind: 'skill',
                             name: skill.name,
-                            description: typeof skill.description === 'string' ? skill.description : '',
-                            body: skill.body,
+                            description: skill.description,
+                            path: skill.path,
+                            body: typeof skill.body === 'string' ? skill.body : undefined,
                             whenToUse: typeof skill.whenToUse === 'string' ? skill.whenToUse : undefined,
                             userInvocable: typeof skill.userInvocable === 'boolean' ? skill.userInvocable : undefined,
                         }});
@@ -1136,7 +1137,7 @@ mod tests {
             "export default { hooks: [{ point: 'afterTurn', actions: ['observe'], handler: async (_event: any, ctx: any) => { \
               ctx.registerTool({ name: 'dynamic_tool', description: 'dynamic', parameters: { type: 'object' }, executeExport: 'dynamic_tool' }); \
               ctx.registerSystemPrompt({ id: 'dynamic-prompt', content: 'Use the dynamic prompt.' }); \
-              ctx.registerSkill({ name: 'dynamic-skill', description: 'dynamic skill', body: 'Do the dynamic thing.' }); \
+              ctx.registerSkill({ name: 'dynamic-skill', description: 'dynamic skill', path: '.ada/agent-coding/skills/dynamic-skill.md' }); \
               return { action: 'observe', data: { point: ctx.point } }; } }] };\n",
         )
         .unwrap();
@@ -1159,6 +1160,7 @@ mod tests {
         assert_eq!(registrations[0]["executeExport"], "dynamic_tool");
         assert_eq!(registrations[1]["kind"], "systemPrompt");
         assert_eq!(registrations[2]["kind"], "skill");
+        assert_eq!(registrations[2]["path"], ".ada/agent-coding/skills/dynamic-skill.md");
         let _ = std::fs::remove_dir_all(&registration_dir);
 
         let _ = std::fs::remove_dir_all(&dir);
