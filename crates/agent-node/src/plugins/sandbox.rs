@@ -12,6 +12,7 @@ use agent_toolkit::ToolResult;
 /// 一次插件检查的完整结果（工具 + 提示词片段 + 技能 + 钩子声明）。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PluginInspection {
+    pub metadata: Option<serde_json::Value>,
     pub tools: Vec<PluginToolDeclaration>,
     pub prompts: Vec<PluginPromptDeclaration>,
     /// P2·SP-45：插件声明的技能（没声明就是空数组——**空不是错误**）
@@ -97,6 +98,7 @@ impl PluginSandbox {
                         return JSON.stringify({{ ok: false, error: "插件未导出有效对象或函数 (export default)" }});
                     }}
                     const ws = {ws_json};
+                    const metadata = desc && typeof desc === 'object' ? desc.metadata : undefined;
                     let toolsRaw = [];
                     let promptsRaw = [];
                     let skillsRaw = [];
@@ -192,7 +194,7 @@ impl PluginSandbox {
                             order: typeof h.order === 'number' ? h.order : 0,
                         }});
                     }}
-                    return JSON.stringify({{ ok: true, tools: tools, prompts: prompts, skills: skills, hooks: hooks }});
+                    return JSON.stringify({{ ok: true, metadata: metadata || null, tools: tools, prompts: prompts, skills: skills, hooks: hooks }});
                 }} catch (err) {{
                     // 🔴 带上 `stack`（P4·SP-73）：只拿 `err.message` 的话，报错不带文件与行号。
                     const detail = err && err.stack ? String(err.stack) : String(err);
@@ -241,7 +243,19 @@ impl PluginSandbox {
                 resp.get("hooks").cloned().unwrap_or(serde_json::json!([])),
             )
             .unwrap_or_default();
+            let metadata = resp.get("metadata").cloned().filter(|value| !value.is_null());
+            if plugin_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == "index.js")
+            {
+                let metadata = metadata
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("插件包 index.js 缺少 metadata 对象"))?;
+                Self::validate_package_metadata(metadata, &tools, &prompts, &skills, &hooks)?;
+            }
             Ok(PluginInspection {
+                metadata,
                 tools,
                 prompts,
                 skills,
@@ -259,6 +273,61 @@ impl PluginSandbox {
     /// 按**点位名**找处理器、入参是载荷、出参是动作。刻意**不复用**工具那条路：
     /// 工具是按 export 名调用、结果要包成 `ToolResult`，两件事混在一起会让
     /// "钩子返回的东西被当成工具回执"这种错很难查。
+    fn validate_package_metadata(
+        metadata: &serde_json::Value,
+        tools: &[PluginToolDeclaration],
+        prompts: &[PluginPromptDeclaration],
+        skills: &[PluginSkillDeclaration],
+        hooks: &[PluginHookDeclaration],
+    ) -> Result<()> {
+        let object = metadata
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("插件 metadata 必须是对象"))?;
+        for key in ["name", "description"] {
+            if object
+                .get(key)
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+            {
+                anyhow::bail!("插件 metadata 缺少非空 `{key}`");
+            }
+        }
+        Self::validate_metadata_group(metadata, "tools", tools.len(), tools.iter().map(|v| v.name.as_str()))?;
+        Self::validate_metadata_group(metadata, "systemPrompt", prompts.len(), prompts.iter().map(|v| v.id.as_str()))?;
+        Self::validate_metadata_group(metadata, "skills", skills.len(), skills.iter().map(|v| v.name.as_str()))?;
+        Self::validate_metadata_group(metadata, "hooks", hooks.len(), hooks.iter().map(|v| v.point.as_str()))?;
+        Ok(())
+    }
+
+    fn validate_metadata_group<'a>(
+        metadata: &serde_json::Value,
+        key: &str,
+        actual_count: usize,
+        actual_names: impl Iterator<Item = &'a str>,
+    ) -> Result<()> {
+        let group = metadata
+            .get(key)
+            .and_then(|value| value.as_object())
+            .ok_or_else(|| anyhow::anyhow!("插件 metadata 缺少 `{key}` 对象"))?;
+        let declared_count = group
+            .get("count")
+            .and_then(|value| value.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("插件 metadata `{key}.count` 必须是整数"))? as usize;
+        if declared_count != actual_count {
+            anyhow::bail!("插件 metadata `{key}.count`={declared_count}，实际为 {actual_count}");
+        }
+        if let Some(names) = group.get("names").or_else(|| group.get("items")).and_then(|value| value.as_array()) {
+            let expected: Vec<&str> = actual_names.collect();
+            let declared: Vec<&str> = names.iter().filter_map(|value| value.as_str()).collect();
+            if declared != expected {
+                anyhow::bail!("插件 metadata `{key}.names` 与实际声明不一致");
+            }
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn call_hook_budgeted(
         plugin_path: &Path,
@@ -1180,6 +1249,54 @@ mod tests {
         assert_eq!(registrations[3]["handlerExport"], "dynamic_hook");
         let _ = std::fs::remove_dir_all(&registration_dir);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_package_index_requires_matching_metadata() {
+        let dir = std::env::temp_dir().join(format!("a_da_metadata_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let index = dir.join("index.js");
+        std::fs::write(
+            &index,
+            r#"export default {
+              metadata: {
+                name: 'test', description: '测试插件',
+                tools: { count: 1, names: ['test_tool'] },
+                systemPrompt: { count: 1, names: ['增强命中'] },
+                skills: { count: 1, names: ['test_skill'] },
+                hooks: { count: 1, names: ['test_hook'] }
+              },
+              tools: [{ name: 'test_tool', description: 'tool', parameters: {} }],
+              prompts: [{ id: '增强命中', content: '命中提示' }],
+              skills: [{ name: 'test_skill', description: 'skill', body: 'skill body' }],
+              hooks: [{ point: 'test_hook', actions: ['observe'] }]
+            }"#,
+        )
+        .unwrap();
+
+        let inspected = PluginSandbox::inspect_plugin_full(
+            &index,
+            &dir,
+            ada_ts_engine::Needs::everything(),
+        )
+        .await
+        .expect("valid package metadata should pass");
+        assert_eq!(inspected.metadata.as_ref().and_then(|m| m.get("name")).and_then(|v| v.as_str()), Some("test"));
+
+        std::fs::write(
+            &index,
+            "export default { metadata: { name: 'test', description: 'bad', tools: { count: 2 }, systemPrompt: { count: 0 }, skills: { count: 0 }, hooks: { count: 0 } }, tools: [{ name: 'test_tool' }] }",
+        )
+        .unwrap();
+        let error = PluginSandbox::inspect_plugin_full(
+            &index,
+            &dir,
+            ada_ts_engine::Needs::everything(),
+        )
+        .await
+        .expect_err("metadata count mismatch must fail");
+        assert!(error.to_string().contains("metadata `tools.count`"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

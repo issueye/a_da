@@ -362,13 +362,8 @@ impl PluginManager {
                 let mut tools = Vec::new();
                 let mut tools_decl = Vec::new();
                 let script_path = if is_package {
-                    let candidates = [
-                        path.join("index.ts"),
-                        path.join("index.js"),
-                        path.join("tools.ts"),
-                        path.join(format!("{}.ts", plugin_name)),
-                    ];
-                    candidates.into_iter().find(|p| p.exists())
+                    let index = path.join("index.js");
+                    index.exists().then_some(index)
                 } else if file_name.ends_with(".ts") || file_name.ends_with(".js") {
                     Some(path.clone())
                 } else {
@@ -442,6 +437,16 @@ impl PluginManager {
                 // （`ScriptHost::load` 会真的执行一遍插件，贡献进装配），
                 // 那条诊断等于对着已经生效的插件喊"不生效"，已删除。
                 let mut diagnostics: Vec<PluginDiagnostic> = Vec::new();
+                let package_entry_missing = is_package && script_path.is_none();
+                let plugin_status = if package_entry_missing { "broken" } else { "ready" };
+                if package_entry_missing {
+                    diagnostics.push(PluginDiagnostic {
+                        plugin_id: id.clone(),
+                        level: "error".to_string(),
+                        message: "插件包根目录必须包含 index.js".to_string(),
+                        hint: Some("请将插件入口放在包根目录 index.js，并导出 metadata 对象".to_string()),
+                    });
+                }
                 if !enabled {
                     diagnostics.push(PluginDiagnostic {
                         plugin_id: id.clone(),
@@ -486,7 +491,7 @@ impl PluginManager {
                         config_schema: None,
                     },
                     declarative: false,
-                    status: "ready".to_string(),
+                    status: plugin_status.to_string(),
                     diagnostics: diagnostics.clone(),
                 };
 
@@ -498,14 +503,18 @@ impl PluginManager {
                     file_path: script_path.unwrap_or(path).to_string_lossy().to_string(),
                     scope: scope.to_string(),
                     enabled,
-                    status: "ready".to_string(),
+                    status: plugin_status.to_string(),
                     version: Some("1.0.0".to_string()),
                     diagnostics,
                     tools,
                     skills: Vec::new(),
                     prompts: Vec::new(),
                     is_package: Some(is_package),
-                    error: None,
+                    error: if package_entry_missing {
+                        Some("missing index.js".to_string())
+                    } else {
+                        None
+                    },
                     size_bytes,
                     updated_at,
                 });
