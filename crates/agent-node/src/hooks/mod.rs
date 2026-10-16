@@ -1308,7 +1308,7 @@ mod tests {
             &[("p", PluginTrust::ThirdParty, &[("beforeTurn", &["deny"], 0)])],
             500,
         );
-        assert_eq!(rejections[0].reason, "point_not_implemented");
+        assert!(rejections[0].reason.starts_with("control_plane_deny_not_permitted"));
 
         // ⑦ 根本不存在的点位 → 另一个理由
         let (_, rejections) = runtime_with(

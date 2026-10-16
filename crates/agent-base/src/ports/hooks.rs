@@ -54,6 +54,10 @@ pub mod points {
         AFTER_PLUGIN_TOGGLE,
         BEFORE_THREAD_CREATE,
         AFTER_THREAD_CREATE,
+        BEFORE_TURN,
+        AFTER_TURN,
+        BEFORE_APPROVAL,
+        AFTER_APPROVAL,
     ];
 
     /// **支持改写**的点位（P3b · SP-60）。

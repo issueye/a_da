@@ -446,7 +446,7 @@ impl AgentRuntime {
             .collect();
 
         let mut step_index = 0u32;
-        let final_stop_reason: TurnStopReason;
+        let mut final_stop_reason: TurnStopReason;
         // 上一轮模型**如实报回来**的用量：上下文治理拿它当"下一轮 prompt 会有多大"的依据
         let mut last_round_usage: Option<TokenUsage> = None;
 
@@ -497,6 +497,38 @@ impl AgentRuntime {
             if cancel.is_cancelled() {
                 self.emit_aborted(sink, &thread_id, &trace, "cancel_before_step");
                 final_stop_reason = TurnStopReason::Aborted;
+
+            // beforeTurn 钩子 (P3a): 点位已开放，支持 Deny/AbortTurn。
+            let before_turn_outcome = self
+                .run_before_hook(
+                    points::BEFORE_TURN,
+                    None,
+                    serde_json::json!({ "step": step_index }),
+                    sink,
+                    &thread_id,
+                    &trace,
+                    cancel,
+                )
+                .await;
+            match before_turn_outcome {
+                BeforeOutcome::Pass => {}
+                BeforeOutcome::Deny { reason } => {
+                    final_stop_reason = TurnStopReason::Denied;
+                    break 'turn_loop;
+                }
+                BeforeOutcome::AbortTurn { reason } => {
+                    self.emit_aborted(
+                        sink,
+                        &thread_id,
+                        &trace,
+                        &format!("hook:{}:{reason}", points::BEFORE_TURN),
+                    );
+                    final_stop_reason = TurnStopReason::Aborted;
+                    break 'turn_loop;
+                }
+                BeforeOutcome::Replace { .. } => {}
+            }
+
                 break 'turn_loop;
             }
 
@@ -1089,6 +1121,17 @@ impl AgentRuntime {
                     }
                 }
             }
+
+            self.run_after_hook(
+                points::AFTER_TURN,
+                None,
+                serde_json::json!({ "step": step_index }),
+                sink,
+                &thread_id,
+                &trace,
+                cancel,
+            )
+            .await;
 
             if should_terminate_turn {
                 final_stop_reason = TurnStopReason::Completed;
