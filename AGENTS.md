@@ -9,8 +9,8 @@
 + **网关**（S5/S6）：`crates/agent-gateway/`（`ada-gateway`：AGENT 管理平台 + 交互平台 + 桥接平台）
 + **桌面客户端宿主**：**Electron 桌面壳**（`electron/`：彻底根除 Windows WebView2 权限污染与目录锁死问题，支持 `bun run electron:dev` 与 `bun run electron:pack`）+ **React 前端**（`desktop-ui/`：通过 `src/client/desktop-bridge.ts` 与 Electron 宿主通信）；
 `crates/ts-engine/` 是独立的 TS 执行引擎，只作插件运行时。
-**TypeScript 时代的实现（Bun + GPUIX 客户端 + TS 侧 agent/宿主）已整体归档到
-[`archive/ts-legacy/`](archive/ts-legacy)**：它不再是参考设计、不参与构建与测试。
+**TypeScript 时代的实现（Bun + GPUIX 客户端 + TS 侧 agent/宿主）已于 2026-10-17 整体删除**
+（原 `archive/ts-legacy/`，可从 git 历史取回）：它不再是参考设计、不参与构建与测试。
 设计与计划的唯一口径是 [docs/agent-base-design.md](docs/agent-base-design.md) 与
 [docs/agent-base-plan.md](docs/agent-base-plan.md)（含"看起来装上了其实没接线"的逐条处置表）。
 **功能缺口清单在 [docs/unfinished-features.md](docs/unfinished-features.md)**：接活前先看一眼，
@@ -23,7 +23,6 @@
 cargo build --workspace                       # 基座四 crate + agent-node + agent-rpc + 产品
 cargo test --workspace -- --test-threads=1     # 门二（必须串行：有共享全局态的用例）
 bun run typecheck                             # 门一：desktop-ui 的 tsc --noEmit
-bun run verify:archive                        # 归档门：主干不得引用 archive/、不得有第二份引擎
 cargo xtask verify-wiring                     # 接线门：方法覆盖 / 描述符单源 / 端口实现 / 依赖方向
 cargo xtask verify-spec                       # 声明门：产品/预设 spec 校验
 bun run electron:dev                          # Electron 桌面端开发（前端热重载 + 网关监督）
@@ -47,7 +46,7 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
   `temp/a_da_agent_core_test_home_<pid>`），**但那只覆盖 crate 自身的单测**：
   集成测试（`crates/*/tests/`）里依赖是按**非 test** 编译的，端口仍指真实 `~/.a-da`。
   所以集成测试必须显式注入（见下一条三条铁律），**不要用 `std::env::set_var`**。
-- **别跑 `bun test`**：TS 测试已随归档冻结，`bunfig.toml` 已把 `archive/**` 排除在 test 发现之外（跑只会得到 "No tests found"）；门是 `cargo test`。
+- **TS 时代的测试已随归档一并删除**（`bunfig.toml` 也不再需要）；门是 `cargo test`。
 - 🔴 **测试绝不能写用户真实的 `~/.a-da`**。2026-10-12 真事故：跑一次 `cargo test -p agent-rpc`，
   用户配置里的激活供应商被改成了测试数据（`anthropic-claude`）、顶层 baseUrl/apiKey/model 一起被改。
   铁律三条：
@@ -182,11 +181,10 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
 - `electron/` **Electron 桌面宿主**：主进程监督 `ada-gateway` 生命周期、单实例锁、无边框原生控制与 IPC 桥接；`dist-electron/` 为构建中间产物
 - `desktop-ui/` **React 桌面前端**：通过 `src/client/desktop-bridge.ts` 与 Electron 宿主通信（`ws-client.ts` 是唯一协议客户端）
 - `dist/` **发布交付套件**：包含 `ada-gateway.exe`、`ada-coding.exe` 以及 `dist/electron/win-unpacked/`（Electron 完整绿色便携包，内置 Chromium 运行时与 `resources/bin/` 关联二进制，彻底规避 WebView2 权限污染）
-- `archive/ts-legacy` **只读归档**（TS 时代的 src + scripts + app.tsx）
 
 ## 核心红线与防踩坑规矩
 
-- **不许引用归档**：主干任何代码/配置都不得 import 或指向 `archive/ts-legacy/**`——那会把"两份实现"的漂移重新引进来；`bun run verify:archive` 会红。
+- **不要复活 TS 时代的实现**：它已于 2026-10-17 整体删除（可从 git 历史取回）。仓库里只保留 Rust 这一份引擎/宿主；新增代码不得引入第二套多轮循环。
 - **改 Rust 核心前先看 [docs/agent-base-plan.md](docs/agent-base-plan.md) §1.3**：审批闸门、取消贯穿、`terminate`、插件 `enabled`、空壳工具等**目前多数是"看起来装上了、其实没接线"**，那里逐条写明了处置口径（补实现 / 删声明）。
 - **工具描述符与元数据单一真源**（W2-T2 + 单源化收敛）：读写性（`is_write`）、审批要求、
   检查点回滚策略（`rollback`）、终止语义，以及全部 24 个内置工具的标准描述符与参数 Schema，
@@ -201,10 +199,11 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
 
 ## § 索引（`AGENTS.md §N` 一律指下表第 N 条，正文见 docs/agent-conventions.md）
 
-> ⚠️ **归档说明（2026-10-08）**：§1–§15 的正文描述的是**已归档的 TS 实现**（`archive/ts-legacy/`）里的机制，
-> 它们在 Rust 权威路径上多数**尚未落地**——逐条处置（补实现 / 删声明）见
-> [docs/agent-base-plan.md](docs/agent-base-plan.md) §1.3。§16（协议方法多端同步）与 §18（工具结构化回执）
-> 按原样继续生效；§17 的"用应用日志当证据"仍然有效，但那条 `console.log` 劫持链路本身已随 `src/platform/` 归档。
+> ⚠️ **历史说明（2026-10-17 更新）**：§1–§15 的正文描述的是**TS 时代**的实现机制
+> （该实现已删除，可从 git 历史取回），它们在 Rust 权威路径上多数**尚未落地**——逐条处置
+> （补实现 / 删声明）见 [docs/agent-base-plan.md](docs/agent-base-plan.md) §1.3。
+> §16（协议方法多端同步）与 §18（工具结构化回执）按原样继续生效；
+> §17 的"用应用日志当证据"仍然有效，但那条 `console.log` 劫持链路本身已随 TS 实现删除。
 
 | § | 一句话警告 |
 |---|---|

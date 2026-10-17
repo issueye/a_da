@@ -19,7 +19,7 @@ struct Cli {
 enum Commands {
     /// 执行全仓单测与协议/合规检验
     Verify {
-        /// 快速模式：仅执行静态架构校验（spec、wiring、compat、docs、archive），跳过耗时的全仓单测
+        /// 快速模式：仅执行静态架构校验（spec、wiring、compat、docs），跳过耗时的全仓单测
         #[arg(long, default_value_t = false)]
         fast: bool,
 
@@ -27,8 +27,6 @@ enum Commands {
         #[arg(long, default_value_t = 600)]
         timeout_secs: u64,
     },
-    /// 校验 TS 归档完整性（不被主干引用、无第二份引擎）
-    VerifyArchive,
     /// 校验产品声明 ↔ 实现一致（toolkit 有模块、字段有生产消费者）
     VerifySpec,
     /// 校验跨产品 base 协议一致（base 唯一、base ∪ ext 无交集）
@@ -121,26 +119,23 @@ fn main() -> anyhow::Result<()> {
             println!("\x1b[1;35m=================================================================\x1b[0m\n");
 
             // 阶段 1: 静态高速架构审计 (秒级完成，fail-fast)
-            println!("\x1b[33m[阶段 1/6]\x1b[0m 校验产品声明 (verify-spec)...");
+            println!("\x1b[33m[阶段 1/5]\x1b[0m 校验产品声明 (verify-spec)...");
             gate(gates::verify_spec())?;
 
-            println!("\x1b[33m[阶段 2/6]\x1b[0m 校验接线与单源描述符 (verify-wiring)...");
+            println!("\x1b[33m[阶段 2/5]\x1b[0m 校验接线与单源描述符 (verify-wiring)...");
             gate(gates::verify_wiring())?;
 
-            println!("\x1b[33m[阶段 3/6]\x1b[0m 校验跨产品协议一致性 (compat)...");
+            println!("\x1b[33m[阶段 3/5]\x1b[0m 校验跨产品协议一致性 (compat)...");
             gate(gates::compat())?;
 
-            println!("\x1b[33m[阶段 4/6]\x1b[0m 校验文档时效性 (verify-docs)...");
+            println!("\x1b[33m[阶段 4/5]\x1b[0m 校验文档时效性 (verify-docs)...");
             gate(gates::verify_docs())?;
-
-            println!("\x1b[33m[阶段 5/6]\x1b[0m 校验 TS 归档完整性 (verify-archive)...");
-            run_bun_script("tools/verify-archive.ts")?;
 
             // 阶段 2: 全仓单元测试
             if fast {
-                println!("\x1b[33m[阶段 6/6]\x1b[0m \x1b[90m已启用 --fast，跳过全量单测 (cargo test)\x1b[0m\n");
+                println!("\x1b[33m[阶段 5/5]\x1b[0m \x1b[90m已启用 --fast，跳过全量单测 (cargo test)\x1b[0m\n");
             } else {
-                println!("\x1b[33m[阶段 6/6]\x1b[0m 运行全仓 Rust 单元测试 (串行 --test-threads=1)...");
+                println!("\x1b[33m[阶段 5/5]\x1b[0m 运行全仓 Rust 单元测试 (串行 --test-threads=1)...");
                 let mut cmd = Command::new("cargo");
                 cmd.args(["test", "--workspace", "-j", "2", "--", "--test-threads=1"]);
                 run_command_supervised(cmd, "cargo test --workspace", Duration::from_secs(timeout_secs))?;
@@ -149,10 +144,6 @@ fn main() -> anyhow::Result<()> {
             println!("\x1b[1;32m=================================================================\x1b[0m");
             println!("\x1b[1;32m       🎉 全仓 Verify 检验全绿通过！ (总耗时 {:.1}s)            \x1b[0m", total_start.elapsed().as_secs_f32());
             println!("\x1b[1;32m=================================================================\x1b[0m\n");
-        }
-        Commands::VerifyArchive => {
-            println!("==> 校验 TS 归档完整性...");
-            run_bun_script("tools/verify-archive.ts")?;
         }
         Commands::VerifySpec => gate(gates::verify_spec())?,
         Commands::Compat => gate(gates::compat())?,
@@ -164,19 +155,6 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-fn run_bun_script(script: &str) -> anyhow::Result<()> {
-    let cmd = if cfg!(windows) {
-        let mut c = Command::new("cmd");
-        c.args(["/C", "bun", script]);
-        c
-    } else {
-        let mut c = Command::new("bun");
-        c.arg(script);
-        c
-    };
-    run_command_supervised(cmd, script, Duration::from_secs(60))
 }
 
 fn ship_product(product: &str, gui: bool, out_dir: &str) -> anyhow::Result<()> {

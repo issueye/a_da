@@ -263,27 +263,24 @@ tools/xtask/           门禁与打包
 
 ## 门禁与测试
 
-**六条命令，全绿才算完**：
+**五条命令，全绿才算完**：
 
 ```bash
 cargo test --workspace -- --test-threads=1   # 门二：全量测试（必须串行）
 bun run typecheck                            # 门一：前端类型检查
-cargo xtask verify                           # 主门禁：cargo test + 归档校验
+cargo xtask verify                           # 主门禁：静态校验 + cargo test
 cargo xtask verify-wiring                    # 接线结构审计（协议覆盖、注册表派生、端口实现、失败方向、前端重连）
 cargo xtask verify-spec                      # 产品声明：工具包存在 + 每个声明字段有生产消费者
 cargo xtask compat                           # 跨产品 base 协议一致
-cargo xtask verify-archive                   # 归档门：主干不得引用归档、不得有第二份引擎
 ```
 
 **为什么必须串行**：个别用例共享进程级状态（`AppHome` 单例、全局问题管理器）。
 测试默认 home 已指向临时目录，但仍有个别用例共享状态。
 
-**为什么归档门里有一条"不得有第二份引擎"**：仓库曾经有两套多轮循环
-（主循环 + 子智能体循环），取消与工具判定各写一遍。现在只有
-`agent-base` 一份，`verify-archive` 会盯着这一点。
+**仓库里只有一份引擎**：曾经有两套多轮循环（主循环 + 子智能体循环），取消与工具判定各写一遍；
+TS 时代那套实现已于 2026-10-17 整体删除（可从 git 历史取回），现在只有 `agent-base` 一份。
 
-**TS 测试已整体冻结**：`bunfig.toml` 已把旧实现排除在测试发现之外，
-跑 TS 测试只会得到 "No tests found"。门就是上面这六条。
+**TS 时代的测试已随归档一并删除**，门就是上面这五条。
 
 ---
 

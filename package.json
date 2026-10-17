@@ -10,7 +10,6 @@
     "typecheck": "npm --prefix desktop-ui run typecheck",
     "test": "cargo test --workspace -- --test-threads=1",
     "test:core": "cargo test -p agent-rpc -p agent-node -- --test-threads=1",
-    "verify:archive": "bun tools/verify-archive.ts",
     "verify": "cargo run -p xtask -- verify",
     "ship": "cargo run -p xtask -- ship",
     "electron:build:main": "bun build ./electron/main.ts --target node --format cjs --outfile dist-electron/main.cjs --external=electron && bun build ./electron/preload.ts --target node --format cjs --outfile dist-electron/preload.cjs --external=electron",
