@@ -662,14 +662,14 @@ P1（脚本）未完成前，界面对"脚本执行"一项必须标注**尚未�
 > 包装脚本的前导部分也压成了一行：插件代码从第 1 行开始，报错行号不再被前导脚本整体顶偏。
 >
 > **③ 未做（按优先级）**：
-> - **SP-70（L3 子进程档）✅ 已落地**：`crates/agent-node/src/bin/ada-plugin-runner.rs`（读一条
+> - **SP-70（L3 子进程档）✅ 已落地**：`crates/agent-node/src/bin/runner.rs`（读一条
 >   JSON 请求、干一件事、写一条结果；**一次请求一个进程**，不带常驻状态）+ `SubprocessScriptHost`
 >   （同一端口、同一份句柄注册表、同一套截断口径与遥测）。**超时即杀**靠 `kill_on_drop`：
 >   宿主不再等它的那一刻，子进程就被回收——否则"超时"只意味着宿主不等了，插件还在后台吃内存。
 >   档位用 `--script-sandbox inprocess|subprocess` 选（默认进程内）：
 >   要求子进程档却找不到入口时**拒绝启动**，绝不静默退回进程内档
 >   （"以为在隔离里跑、其实跑在宿主进程里"是最坏的误解）。
->   `electron-builder.json` 的 `extraResources` 也加上了 `ada-plugin-runner.exe`，否则打包后
+>   `electron-builder.json` 的 `extraResources` 也加上了 `runner.exe`，否则打包后
 >   这一档会因为找不到入口而拒绝启动（那是对的：宁可拒绝，也不要假装隔离）。
 >   ⚠️ **它不做内存限额**：给子进程设 RSS 上限要看平台（Windows Job Object / Linux rlimit），
 >   本档只做到"进程死掉这件事被隔离住"。这条限制写在 `docs/unfinished-features.md`。
@@ -806,7 +806,7 @@ bun run verify:archive                   # 归档门
 | P3b | SP-61 改写后重校验（审批读改写后的 args） | SP-60 | L | ✅ 已完成（`engine::hook_guard`：形状/schema/路径沙箱 + 风险单调性；执行用的参数在**改写之后**才组装） |
 | P3b | SP-62 风险单调性用例 | SP-61 | M | ✅ 已完成（5 条：审批读新参数 / 降级被拒用回原参数 / 越界被拦 / schema 不符被拒 / 工具名改不动；另加档位对照落在 `agent-adapter`） |
 | P3b | SP-63 todo 点位对 | SP-60 | M | ✅ 已完成（`ToolContext.hooks` 把运行时交给工具，点位由**工具自己跑**；`diffTodos` 纯函数含"完成又被改回"单列；改写回到工具内**重新校验**；5 条端到端用例） |
-| P4 | SP-70 L3 子进程档 | P1 | L | ✅ 已完成（`ada-plugin-runner` 子进程入口 + `SubprocessScriptHost` 实现同一端口；超时即 `kill_on_drop`；档位由 `--script-sandbox` 选，默认仍是进程内。**不做内存限额**——见下方说明） |
+| P4 | SP-70 L3 子进程档 | P1 | L | ✅ 已完成（`runner` 子进程入口 + `SubprocessScriptHost` 实现同一端口；超时即 `kill_on_drop`；档位由 `--script-sandbox` 选，默认仍是进程内。**不做内存限额**——见下方说明） |
 | P4 | SP-71 `needs` 完整裁剪 | SP-13 | L | ✅ 已完成（声明面 `// @ada-needs fs,net`；**未声明即不注入**；调用期按插件自己的声明建沙箱；认不出的 token 不授予并产诊断） |
 | P4 | SP-72 网络参数可配 | SP-71 | M | ✅ 已完成（`NetPolicy`：超时 + 域名白名单，**策略先于请求**；来源是运维环境变量 `A_DA_PLUGIN_NET_TIMEOUT_SECS` / `A_DA_PLUGIN_NET_ALLOW`，默认值本身即安全档） |
 | P4 | SP-73 source map + 结构化转译错误 | — | M | ◐ 部分：**转译错误**已带行列 + 出错行原文 + 插入符；**运行时错误**已带文件名/位置/栈（含 JS 侧 catch 的那条路）。**source map 未做**：转译后 JS 的行号与原 TS 不一一对应，运行时行号仍是"转译后"的座标 |

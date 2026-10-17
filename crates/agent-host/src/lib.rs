@@ -1042,6 +1042,7 @@ mod tests {
         let decl = agent_node::plugins::PluginSkillDeclaration {
             name: "deploy-runbook".to_string(),
             description: "发布流程".to_string(),
+            path: None,
             body: "先跑 cargo test 再打标签。".to_string(),
             when_to_use: Some("用户要发布时".to_string()),
             user_invocable: None,
@@ -1098,6 +1099,7 @@ mod tests {
         let decl = agent_node::plugins::PluginSkillDeclaration {
             name: "deploy-runbook".to_string(),
             description: "发布流程".to_string(),
+            path: None,
             body: "先跑 cargo test 再打标签。".to_string(),
             when_to_use: None,
             user_invocable: None,

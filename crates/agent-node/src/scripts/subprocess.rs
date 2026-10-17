@@ -29,6 +29,7 @@ use agent_base::domain::{DiagOutcome, Origin};
 use agent_base::ports::{
     BoxFuture, InvokeRequest, LoadRequest, ModuleHandle, ScriptCtx, ScriptError, ScriptHookDeclaration,
     ScriptHookOutcome, ScriptHost, ScriptNeeds, ScriptOutcome, ScriptSkillDeclaration, ScriptSource,
+    ScriptToolDeclaration,
 };
 
 use crate::scripts::registry::{LoadedScript, ScriptRegistry};
@@ -50,7 +51,7 @@ impl SubprocessScriptHost {
     pub fn new() -> Result<Self, ScriptError> {
         let runner = resolve_runner_path().ok_or_else(|| ScriptError::Unavailable {
             message: format!(
-                "找不到插件子进程入口 `ada-plugin-runner`：可执行文件同目录下没有它，\
+                "找不到插件子进程入口 `runner.exe`：可执行文件同目录下没有它，\
                  也没有设置 A_DA_PLUGIN_RUNNER。子进程档需要它——不静默退回进程内档。\
                  （当前可执行文件：{}）",
                 std::env::current_exe()
@@ -169,9 +170,9 @@ pub fn resolve_runner_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     let name = if cfg!(windows) {
-        "ada-plugin-runner.exe"
+        "runner.exe"
     } else {
-        "ada-plugin-runner"
+        "runner"
     };
     // ① 同目录（发布形态 / `target/debug`）
     let same_dir = dir.join(name);
@@ -258,6 +259,15 @@ impl ScriptHost for SubprocessScriptHost {
                 resp.get("tools").cloned().unwrap_or(serde_json::json!([])),
             )
             .unwrap_or_default();
+            let tools: Vec<ScriptToolDeclaration> = tools
+                .into_iter()
+                .map(|tool| ScriptToolDeclaration {
+                    name: tool.name,
+                    label: tool.label,
+                    description: tool.description,
+                    parameters: tool.parameters,
+                })
+                .collect();
             let prompts: Vec<crate::plugins::PluginPromptDeclaration> = serde_json::from_value(
                 resp.get("prompts").cloned().unwrap_or(serde_json::json!([])),
             )
@@ -270,11 +280,16 @@ impl ScriptHost for SubprocessScriptHost {
                 resp.get("hooks").cloned().unwrap_or(serde_json::json!([])),
             )
             .unwrap_or_default();
+            let mut resolved_skills = Vec::new();
+            for skill in skills {
+                resolved_skills.push(crate::scripts::load_skill_declaration(&path, &workspace, skill).await?);
+            }
 
             self.registry.insert(LoadedScript {
                 path,
                 workspace,
-                exports: tools.into_iter().map(|t| t.name).collect(),
+                exports: tools.iter().map(|t| t.name.clone()).collect(),
+                tools,
                 prompts: prompts
                     .into_iter()
                     .map(|p| agent_base::ports::ScriptPromptFragment {
@@ -282,17 +297,7 @@ impl ScriptHost for SubprocessScriptHost {
                         content: p.content,
                     })
                     .collect(),
-                skills: skills
-                    .into_iter()
-                    .filter(|s| !s.body.trim().is_empty() && !s.name.trim().is_empty())
-                    .map(|s| ScriptSkillDeclaration {
-                        name: s.name,
-                        description: s.description,
-                        body: s.body,
-                        when_to_use: s.when_to_use,
-                        user_invocable: s.user_invocable,
-                    })
-                    .collect(),
+                skills: resolved_skills,
                 hooks: hooks
                     .into_iter()
                     .filter(|h| !h.point.trim().is_empty())
@@ -309,6 +314,10 @@ impl ScriptHost for SubprocessScriptHost {
 
     fn exports(&self, handle: &ModuleHandle) -> Result<Vec<String>, ScriptError> {
         Ok(self.lookup(handle)?.exports)
+    }
+
+    fn tool_declarations(&self, handle: &ModuleHandle) -> Result<Vec<ScriptToolDeclaration>, ScriptError> {
+        Ok(self.lookup(handle)?.tools)
     }
 
     fn prompt_fragments(
@@ -497,7 +506,7 @@ mod tests {
     /// "以为在隔离里跑、其实在宿主进程里跑"是最坏的一种误解。
     #[test]
     fn test_missing_runner_is_reported_loudly() {
-        let host = SubprocessScriptHost::with_runner("/definitely/not/here/ada-plugin-runner");
+        let host = SubprocessScriptHost::with_runner("/definitely/not/here/runner");
         let ctx = ScriptCtx {
             budget: agent_base::ports::ScriptBudget::default(),
             cancel: &agent_base::testing::NeverCancel,

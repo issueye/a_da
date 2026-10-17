@@ -56,6 +56,9 @@ pub struct PluginPromptDeclaration {
 pub struct PluginSkillDeclaration {
     /// 技能名（同一个插件内唯一；合并时同名先到先得，见 `SkillManager`）
     pub name: String,
+    /// Optional source file path, resolved by the host inside the plugin/workspace roots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     #[serde(default)]
     pub description: String,
     /// 正文。**空正文的技能不装**：它进提示词只会白占字节，而"技能"的意义就是那段规范。
@@ -79,8 +82,13 @@ impl PluginSkillDeclaration {
             description: self.description.clone(),
             body: self.body.clone(),
             // 插件技能没有独立的文件路径：正文来自插件模块的声明，不是磁盘上的 .md
-            path: String::new(),
-            base_directory: String::new(),
+            path: self.path.clone().unwrap_or_default(),
+            base_directory: self
+                .path
+                .as_deref()
+                .and_then(|path| std::path::Path::new(path).parent())
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_default(),
             scope: "plugin".to_string(),
             enabled: true,
             plugin_name: Some(plugin_name.to_string()),

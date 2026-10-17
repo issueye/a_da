@@ -391,7 +391,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // ── 插件脚本的执行档位（P4·SP-70）────────────────────────────────────
     //
-    // **在启动时定死**：要求子进程档却找不到 `ada-plugin-runner` 时，这里直接拒绝启动，
+    // **在启动时定死**：要求子进程档却找不到 `runner.exe` 时，这里直接拒绝启动，
     // 而不是悄悄退回进程内档——"以为在隔离里跑、其实跑在宿主进程里"是最坏的误解，
     // 而它恰恰是"静默降级"这种写法必然产生的后果。
     let script_host: std::sync::Arc<dyn agent_base::ports::ScriptHost> =
@@ -404,7 +404,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 let host = agent_node::scripts::SubprocessScriptHost::new().map_err(|e| {
                     anyhow::anyhow!(
                         "--script-sandbox subprocess 无法启用：{e:?}\n\
-                         需要 ada-plugin-runner 与本体同目录，或用 A_DA_PLUGIN_RUNNER 指定路径。"
+                         需要 runner.exe 与本体同目录，或用 A_DA_PLUGIN_RUNNER 指定路径。"
                     )
                 })?;
                 info!(

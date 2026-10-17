@@ -1345,6 +1345,7 @@ async fn test_skill_list_reports_plugin_skills_and_invalid_frontmatter() {
     let plugin_skill = agent_node::plugins::PluginSkillDeclaration {
         name: "deploy-runbook".to_string(),
         description: "部署手册".to_string(),
+        path: None,
         body: "步骤一……".to_string(),
         when_to_use: None,
         user_invocable: None,

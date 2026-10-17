@@ -163,6 +163,7 @@ pub async fn collect_plugin_tools(
                 PluginSkillDeclaration {
                     name: s.name,
                     description: s.description,
+                    path: s.path,
                     body: s.body,
                     when_to_use: s.when_to_use,
                     user_invocable: s.user_invocable,
@@ -170,8 +171,14 @@ pub async fn collect_plugin_tools(
             ));
         }
 
-        for export in host.exports(&handle).unwrap_or_default() {
-            match PluginTool::new(&export, host.clone(), handle.clone(), item.id.clone()) {
+        for declaration in host.tool_declarations(&handle).unwrap_or_default() {
+            let export = declaration.name.clone();
+            let tool = if agent_toolkit::find_tool_descriptor(&export).is_some() {
+                PluginTool::new(&export, host.clone(), handle.clone(), item.id.clone())
+            } else {
+                PluginTool::from_declaration(&declaration, host.clone(), handle.clone(), item.id.clone())
+            };
+            match tool {
                 Ok(mut tool) => {
                     tool = tool.with_budget(budget);
                     out.tools.push((item.id.clone(), Arc::new(tool) as Arc<dyn Tool>));
@@ -212,17 +219,26 @@ mod tests {
         dir
     }
 
-    /// SP-16 的核心：**只装注册表里有的名字**，其余如实报出来。
+    /// Plugin-declared tools are dynamically registered with a conservative descriptor.
     #[tokio::test]
     async fn test_collects_only_registered_names_and_reports_the_rest() {
         let ws = temp_ws("mix");
         std::fs::write(
             ws.join(".ada").join("plugins").join("p.ts"),
-            "export default { tools: [ \
-             { name: 'read_file', description: '注册表里有', \
-               execute: async () => ({ ok: true, output: 'from-plugin' }) }, \
-             { name: 'my_custom_tool', description: '注册表里没有', \
-               execute: async () => ({ ok: true, output: 'nope' }) } ] }\n",
+            r#"export default function (ada: any) {
+              ada.registerTool({
+                name: 'read_file', description: '注册表里有', parameters: { type: 'object', properties: {} },
+                execute: async () => ({ ok: true, output: 'from-plugin' })
+              });
+              ada.registerTool({
+                name: 'my_custom_tool', description: '插件自定义工具', parameters: { type: 'object', properties: {} },
+                execute: async () => ({ ok: true, output: 'custom-output' })
+              });
+              ada.registerSystemPrompt({ id: 'factory-prompt', content: 'factory prompt fragment' });
+              ada.registerSkill({ name: 'factory-skill', description: 'factory skill', body: 'factory skill body' });
+              ada.on('turn_end', async (event: any, ctx: any) => ({ action: 'note', note: `${ctx.point}:${event.step}` }));
+            }
+"#,
         )
         .expect("写插件失败");
 
@@ -231,18 +247,33 @@ mod tests {
         let asm = collect_plugin_tools(&mgr, &host, &ws, ScriptBudget::default()).await;
 
         let names: Vec<String> = asm.tools.iter().map(|(_, t)| t.descriptor().name.clone()).collect();
-        assert_eq!(names, vec!["read_file".to_string()], "只该装注册表里的那个");
+        assert_eq!(names, vec!["read_file".to_string(), "my_custom_tool".to_string()]);
         assert_eq!(asm.plugins_loaded, 1);
+        assert_eq!(asm.prompt_fragments.len(), 1, "factory system prompt registration should be assembled");
+        assert_eq!(asm.skills.len(), 1, "factory skill registration should be assembled");
+        assert_eq!(asm.handles.len(), 1, "factory ada.on should be collected as a hook declaration");
+        let custom = asm.tools.iter().find(|(_, tool)| tool.descriptor().name == "my_custom_tool").unwrap();
+        assert!(!custom.1.descriptor().is_readonly(), "unknown plugin tools fail closed as write tools");
+        assert_eq!(custom.1.descriptor().approval, agent_base::domain::ApprovalPolicy::Always);
 
-        let skipped: Vec<(&str, &str)> = asm
-            .skipped
-            .iter()
-            .map(|s| (s.export.as_str(), s.reason.as_str()))
-            .collect();
-        assert!(
-            skipped.contains(&("my_custom_tool", "tool_not_registered")),
-            "未注册的名字必须如实报出来（否则'插件写了却没生效'无人知晓）：{skipped:?}"
-        );
+        let cancel = agent_base::testing::NeverCancel;
+        let sink = agent_base::testing::RecordingSink::new();
+        let scope = agent_base::testing::MockScope::new(ws.to_string_lossy().to_string());
+        let call = agent_base::domain::ToolCall {
+            id: "dynamic-call".to_string(),
+            name: "my_custom_tool".to_string(),
+            args: serde_json::json!({}),
+        };
+        let ctx = agent_base::ports::ToolContext {
+            scope: &scope,
+            cancel: &cancel,
+            events: &sink,
+            thread_id: "dynamic-thread",
+            hooks: None,
+        };
+        let receipt = custom.1.execute(&call, &ctx).await;
+        assert!(receipt.ok(), "custom declared tool should execute: {receipt:?}");
+        assert_eq!(receipt.output, "custom-output");
 
         let _ = std::fs::remove_dir_all(&ws);
     }

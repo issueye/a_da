@@ -23,10 +23,13 @@
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt};
+use agent_base::domain::{
+    Access, ApprovalPolicy, Execution, PathSelector, RollbackPolicy, Termination, ToolCall,
+    ToolDescriptor, ToolReceipt,
+};
 use agent_base::ports::{
     BoxFuture, InvokeRequest, ModuleHandle, ScriptBudget, ScriptCtx, ScriptError, ScriptHost,
-    ScriptOutcome, Tool, ToolContext,
+    ScriptOutcome, ScriptToolDeclaration, Tool, ToolContext,
 };
 
 /// 系统时钟毫秒（与既有工具同一约定）。
@@ -140,6 +143,46 @@ impl PluginTool {
         self.budget = budget;
         self
     }
+
+    /// Create a plugin-defined tool. Since third-party declarations cannot
+    /// claim read-only status, custom tools are conservatively write-classified
+    /// and require approval. Filesystem access is still constrained by script
+    /// needs and the runtime workspace sandbox.
+    pub fn from_declaration(
+        declaration: &ScriptToolDeclaration,
+        host: Arc<dyn ScriptHost>,
+        handle: ModuleHandle,
+        plugin_id: impl Into<String>,
+    ) -> Result<Self, String> {
+        let name = declaration.name.trim();
+        if name.is_empty() || name.contains(' ') {
+            return Err("插件工具名称不能为空且不能包含空格".to_string());
+        }
+        if !declaration.parameters.is_object() {
+            return Err(format!("插件工具 `{name}` 的 parameters 必须是 JSON Schema 对象"));
+        }
+        let descriptor = agent_toolkit::find_tool_descriptor(name).cloned().unwrap_or_else(|| ToolDescriptor {
+            name: name.to_string(),
+            summary: if declaration.description.trim().is_empty() {
+                format!("插件工具 {name}")
+            } else {
+                declaration.description.clone()
+            },
+            schema: declaration.parameters.clone(),
+            access: Access::Mutates { paths: PathSelector::Batch("paths") },
+            approval: ApprovalPolicy::Always,
+            rollback: RollbackPolicy::PerTargetInBatch,
+            execution: Execution::Sequential,
+            termination: Termination::ContinueTurn,
+        });
+        Ok(Self {
+            descriptor,
+            host,
+            handle,
+            plugin_id: plugin_id.into(),
+            budget: ScriptBudget::default(),
+        })
+    }
 }
 
 impl Tool for PluginTool {
@@ -247,20 +290,26 @@ mod tests {
         assert!(script.output.contains("boom"));
     }
 
-    /// 决策 1（只认注册表）：**不在注册表里的名字必须拒绝构造**——
-    /// 否则插件可以自述一个"只读"的工具来绕过只读约束。
+    /// Builtin wrappers still use the canonical descriptor, while custom
+    /// plugin tools receive a conservative write/approval descriptor.
     #[test]
-    fn test_unknown_tool_name_is_rejected() {
+    fn test_custom_tool_gets_conservative_descriptor() {
         let host: Arc<dyn ScriptHost> = Arc::new(crate::scripts::TsScriptHost::new());
         let handle = ModuleHandle {
             id: "script-x".to_string(),
         };
-        let err = PluginTool::new("插件自创的工具名", host.clone(), handle.clone(), "p")
-            .err()
-            .expect("未注册的工具名必须被拒绝");
-        assert!(err.contains("只认注册表"), "{err}");
+        let declaration = ScriptToolDeclaration {
+            name: "plugin_custom".to_string(),
+            label: None,
+            description: "plugin custom tool".to_string(),
+            parameters: serde_json::json!({ "type": "object", "properties": {} }),
+        };
+        let custom = PluginTool::from_declaration(&declaration, host.clone(), handle.clone(), "p")
+            .expect("valid custom declaration is dynamically registered");
+        assert!(!custom.descriptor().is_readonly(), "custom tool registration must fail safe as write");
+        assert_eq!(custom.descriptor().approval, ApprovalPolicy::Always);
 
-        // 已注册的名字可以构造（描述符取自注册表，不是插件自述）
+        // Builtin names retain their canonical descriptors.
         let tool = PluginTool::new("read_file", host, handle, "p").expect("已注册名字应当可以构造");
         assert_eq!(tool.descriptor().name, "read_file");
         assert!(tool.descriptor().is_readonly(), "读写性来自注册表");
@@ -272,7 +321,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("a_da_plugintool_{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("建临时目录失败");
         let path = dir.join("t.ts");
-        // 名字用注册表里已有的 `read_file`（决策 1 的口径）
+        // Builtin wrapper names continue to use the canonical descriptor.
         std::fs::write(
             &path,
             "export default { tools: [ { name: 'read_file', description: 'x', \

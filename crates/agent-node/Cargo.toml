@@ -32,5 +32,5 @@ agent-conformance = { workspace = true }
 # P4·SP-70：插件**子进程入口**。它必须与本 crate 同源（要用 `PluginSandbox`），
 # 所以作为本 crate 的 bin 目标——调用方（宿主 / 测试）按可执行文件路径启动它。
 [[bin]]
-name = "ada-plugin-runner"
-path = "src/bin/ada-plugin-runner.rs"
+name = "runner"
+path = "src/bin/runner.rs"

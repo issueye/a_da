@@ -15,6 +15,7 @@
 //! - **内联源码**：沙箱按路径装载（要读盘、要做路径沙箱判定），所以 `ScriptSource::Inline`
 //!   在这里**如实拒绝**，而不是偷偷写临时文件凑合。
 
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 pub mod assembly;
@@ -35,10 +36,10 @@ use agent_base::domain::{
 use agent_base::ports::{
     BoxFuture, InvokeRequest, LoadRequest, ModuleHandle, ScriptCtx, ScriptError, ScriptHookDeclaration,
     ScriptHookOutcome, ScriptHost, ScriptNeeds, ScriptOutcome, ScriptSkillDeclaration,
-    ScriptSource,
+    ScriptSource, ScriptToolDeclaration,
 };
 
-use crate::plugins::PluginSandbox;
+use crate::plugins::{PluginSandbox, PluginSkillDeclaration};
 use crate::scripts::registry::{LoadedScript, ScriptRegistry};
 
 /// 宿主级的遥测出口。
@@ -46,6 +47,60 @@ use crate::scripts::registry::{LoadedScript, ScriptRegistry};
 /// 用 `Arc<dyn Fn>` 而不是借用：出口在构造时接一次，之后每次调用都要用；
 /// 组合根（谁装配宿主谁接）通常自己也是个 `Arc` 里的东西。
 pub type DiagOutlet = std::sync::Arc<dyn Fn(DiagnosticEvent) + Send + Sync>;
+
+pub(super) async fn load_skill_declaration(
+    plugin_path: &Path,
+    workspace: &Path,
+    declaration: PluginSkillDeclaration,
+) -> Result<ScriptSkillDeclaration, ScriptError> {
+    let mut body = declaration.body.clone();
+    let mut resolved_path = None;
+    if body.trim().is_empty() {
+        let declared_path = declaration.path.as_deref().filter(|path| !path.trim().is_empty()).ok_or_else(|| {
+            ScriptError::Load { message: format!("skill `{}` must provide path or body", declaration.name) }
+        })?;
+        let plugin_root = plugin_path.parent().unwrap_or_else(|| Path::new("."));
+        let workspace_skill_root = workspace.join(".ada").join("agent-coding").join("skills");
+        let plugin_root = tokio::fs::canonicalize(plugin_root).await.map_err(|error| ScriptError::Load {
+            message: format!("cannot resolve plugin root for skill `{}`: {error}", declaration.name),
+        })?;
+        let workspace_skill_root = tokio::fs::canonicalize(&workspace_skill_root).await.ok();
+        let path = PathBuf::from(declared_path);
+        let candidates = if path.is_absolute() {
+            vec![path]
+        } else {
+            vec![plugin_root.join(&path), workspace.join(&path)]
+        };
+        let mut resolved = None;
+        for candidate in candidates {
+            let Ok(candidate) = tokio::fs::canonicalize(&candidate).await else { continue };
+            let in_plugin = candidate.starts_with(&plugin_root);
+            let in_workspace_skills = workspace_skill_root.as_ref().is_some_and(|root| candidate.starts_with(root));
+            if in_plugin || in_workspace_skills {
+                resolved = Some(candidate);
+                break;
+            }
+        }
+        let path = resolved.ok_or_else(|| ScriptError::Load {
+            message: format!("skill `{}` path is missing or outside allowed plugin skill roots", declaration.name),
+        })?;
+        body = tokio::fs::read_to_string(&path).await.map_err(|error| ScriptError::Load {
+            message: format!("cannot read skill `{}`: {error}", declaration.name),
+        })?;
+        resolved_path = Some(path.to_string_lossy().to_string());
+    }
+    if declaration.name.trim().is_empty() || body.trim().is_empty() {
+        return Err(ScriptError::Load { message: "skill name/body must not be empty".to_string() });
+    }
+    Ok(ScriptSkillDeclaration {
+        name: declaration.name,
+        description: declaration.description,
+        path: resolved_path.or(declaration.path),
+        body,
+        when_to_use: declaration.when_to_use,
+        user_invocable: declaration.user_invocable,
+    })
+}
 
 /// 按预算截断脚本输出，并**如实标注**。
 ///
@@ -163,7 +218,17 @@ impl ScriptHost for TsScriptHost {
                 .map_err(|e| ScriptError::Load {
                     message: format!("装载脚本失败（{}）：{e}", path.display()),
                 })?;
-            let exports: Vec<String> = inspected.tools.into_iter().map(|t| t.name).collect();
+            let tools: Vec<ScriptToolDeclaration> = inspected
+                .tools
+                .into_iter()
+                .map(|tool| ScriptToolDeclaration {
+                    name: tool.name,
+                    label: tool.label,
+                    description: tool.description,
+                    parameters: tool.parameters,
+                })
+                .collect();
+            let exports: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
             let prompts: Vec<agent_base::ports::ScriptPromptFragment> = inspected
                 .prompts
                 .into_iter()
@@ -174,18 +239,10 @@ impl ScriptHost for TsScriptHost {
                 .collect();
             // P2·SP-45：技能声明也挂在句柄上。**去掉空正文的那些**（沙箱已经滤过一遍，
             // 这里再滤一次是因为端口契约不该依赖某个实现的过滤行为）。
-            let skills: Vec<ScriptSkillDeclaration> = inspected
-                .skills
-                .into_iter()
-                .filter(|s| !s.body.trim().is_empty() && !s.name.trim().is_empty())
-                .map(|s| ScriptSkillDeclaration {
-                    name: s.name,
-                    description: s.description,
-                    body: s.body,
-                    when_to_use: s.when_to_use,
-                    user_invocable: s.user_invocable,
-                })
-                .collect();
+            let mut skills: Vec<ScriptSkillDeclaration> = Vec::new();
+            for declaration in inspected.skills {
+                skills.push(load_skill_declaration(&path, &workspace, declaration).await?);
+            }
             // P3a·SP-50：钩子注册（点位 + 声明动作 + 顺序）。**没有 handler 的声明照收**：
             // 它会在调用期被如实报成"未实现 handler"（装配期过滤掉反而看不出问题）。
             let hooks: Vec<ScriptHookDeclaration> = inspected
@@ -203,6 +260,7 @@ impl ScriptHost for TsScriptHost {
                 path,
                 workspace,
                 exports,
+                tools,
                 prompts,
                 skills,
                 hooks,
@@ -213,6 +271,10 @@ impl ScriptHost for TsScriptHost {
 
     fn exports(&self, handle: &ModuleHandle) -> Result<Vec<String>, ScriptError> {
         Ok(self.lookup(handle)?.exports)
+    }
+
+    fn tool_declarations(&self, handle: &ModuleHandle) -> Result<Vec<ScriptToolDeclaration>, ScriptError> {
+        Ok(self.lookup(handle)?.tools)
     }
 
     fn prompt_fragments(

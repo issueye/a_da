@@ -388,7 +388,7 @@ discover → manifest 解析 → 校验(id/scope/权限声明) → transpile(可
   映射为 `ScriptBudgetExceeded` → 回执 `ToolStatus::Timeout`（沿用引擎既有超时口径）。
   这一层把"同步死循环"从"挂住线程"变成"一条可纠正的工具回执"。
 - **L3 进程隔离（可选严格档）✅ 已落地（P4·SP-70）**：把插件执行放进 worker 子进程
-  （`ada-plugin-runner`），超时 `kill`（`kill_on_drop`：宿主不再等它的那一刻就被回收）。
+  （`runner.exe`），超时 `kill`（`kill_on_drop`：宿主不再等它的那一刻就被回收）。
   档位用 `--script-sandbox subprocess` 选，默认仍是进程内。
   > **⚠️ 两点与本节原始设计的差别，必须一起读**：
   > ① 原始设计写的是"子进程的 stdin 一律 `Stdio::null()`"——那条针对的是**工具的子进程**

@@ -150,7 +150,7 @@
 
 > **P4 之后仍然缺的（2026-10-16 记）**：
 > - **子进程档没有内存限额**（SP-70 只做了一半的护栏）：档位本身已经落地
->   （`--script-sandbox subprocess` → `ada-plugin-runner` 子进程 + `SubprocessScriptHost`，
+>   （`--script-sandbox subprocess` → `runner.exe` 子进程 + `SubprocessScriptHost`，
 >   超时即 `kill`），所以"插件把自己跑死"已经被隔离住了。但**"它死之前能吃掉多少内存"
 >   没有被限制**：给子进程设 RSS 上限要看平台（Windows Job Object / Linux rlimit），本档没做。
 >   另一半仍然成立：**进程内档（默认）同样没有内存护栏**——Boa 没有堆上限 API，

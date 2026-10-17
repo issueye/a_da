@@ -1,7 +1,7 @@
 //! P4 · SP-70 的验收：**子进程档**真的把插件隔出去了，而且超时会杀掉它。
 //!
 //! 为什么放在集成测试（`tests/`）里：唯一的证据是**真的启动一个子进程**。
-//! `CARGO_BIN_EXE_ada-plugin-runner` 这个环境变量只在集成测试里可用，单元测试拿不到
+//! `CARGO_BIN_EXE_runner` 这个环境变量只在集成测试里可用，单元测试拿不到
 //! 入口路径——而"路径解析不到就静默退回进程内档"恰恰是这一档最不该有的失败形态。
 //!
 //! 顺带守住 DoD 的那句话：**内存暴涨的插件被 kill，并使宿主活下来**。
@@ -17,7 +17,7 @@ use agent_base::testing::NeverCancel;
 use agent_node::scripts::SubprocessScriptHost;
 
 fn runner_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_ada-plugin-runner"))
+    PathBuf::from(env!("CARGO_BIN_EXE_runner"))
 }
 
 fn temp_dir(tag: &str) -> PathBuf {

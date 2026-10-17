@@ -78,6 +78,9 @@ impl PluginSandbox {
         let init_script = format!(
             "(function() {{ const module = {{ exports: {{}} }}; const exports = module.exports; \
              const __filename = {plugin_file}; const __dirname = path.dirname(__filename);{js_code}\n\
+             globalThis.__ada_module_metadata = module.exports.metadata || (module.exports.default && module.exports.default.metadata) || null;\n\
+             globalThis.__ada_entry_factory = module.exports.default || module.exports;\n\
+             globalThis.__ada_factory_initialized = false;\n\
              globalThis.__ada_current_plugin = module.exports.default || module.exports;\n}})();",
             plugin_file = plugin_file_json,
             js_code = js_code.trim_start_matches(['\n', '\r'])
@@ -98,7 +101,7 @@ impl PluginSandbox {
                         return JSON.stringify({{ ok: false, error: "插件未导出有效对象或函数 (export default)" }});
                     }}
                     const ws = {ws_json};
-                    const metadata = desc && typeof desc === 'object' ? desc.metadata : undefined;
+                    let metadata = globalThis.__ada_module_metadata || (desc && (typeof desc === 'object' || typeof desc === 'function') ? desc.metadata : undefined);
                     let toolsRaw = [];
                     let promptsRaw = [];
                     let skillsRaw = [];
@@ -107,22 +110,47 @@ impl PluginSandbox {
                         const api = {{
                             trace: (msg) => console.log(msg),
                             workspace: ws,
+                            metadata: metadata || undefined,
                             registerTool: (tool) => {{ toolsRaw.push(tool); }},
-                            // P2·SP-45：不再是空壳——插件可以用它声明技能
-                            registerSkill: (s) => {{ skillsRaw.push(s); }},
-                            // P2·SP-44：不再是空壳——插件可以用它声明提示词片段
-                            registerPrompt: (p) => {{ promptsRaw.push(p); }},
-                            // P3a·SP-50：钩子注册（处理器不进 JSON，只收声明）
-                            registerHook: (h) => {{ hooksRaw.push(h); }},
+                            registerSystemPrompt: (prompt) => {{ promptsRaw.push(prompt); }},
+                            registerPrompt: (prompt) => {{ promptsRaw.push(prompt); }},
+                            registerSkill: (skill) => {{ skillsRaw.push(skill); }},
+                            registerHook: (hook) => {{ hooksRaw.push(hook); }},
+                            on: (event, handler, options = {{}}) => {{
+                                const aliases = {{
+                                    turn_start: 'beforeTurn', turn_end: 'afterTurn',
+                                    tool_call: 'beforeToolCall', tool_execution_start: 'beforeToolCall',
+                                    tool_execution_end: 'afterToolCall', tool_result: 'afterToolCall',
+                                    agent_start: 'beforeAgentStart', agent_end: 'afterAgentEnd',
+                                    before_provider_request: 'beforeProviderRequest',
+                                    before_provider_headers: 'beforeProviderHeaders',
+                                    after_provider_response: 'afterProviderResponse',
+                                    context: 'beforeContext',
+                                }};
+                                const point = aliases[event] || event;
+                                if (typeof handler !== 'function') throw new Error('ada.on requires a handler');
+                                const inferredActions = point === 'beforeToolCall'
+                                    ? ['observe', 'note', 'deny', 'abort', 'replace']
+                                    : ['observe', 'note'];
+                                hooksRaw.push({{
+                                    point,
+                                    apiEvent: event,
+                                    handler,
+                                    actions: Array.isArray(options.actions) ? options.actions : inferredActions,
+                                    order: typeof options.order === 'number' ? options.order : 0,
+                                }});
+                            }},
                         }};
                         try {{
                             await desc(api);
+                            metadata = api.metadata || metadata;
+                            globalThis.__ada_factory_initialized = true;
                         }} catch (e) {{
                             return JSON.stringify({{ ok: false, error: "插件执行异常: " + (e && e.message ? e.message : e) }});
                         }}
                     }} else if (typeof desc === 'object') {{
                         const raw = desc.tools || [];
-                        const rawPrompts = desc.prompts || [];
+                        const rawPrompts = desc.systemPrompts || desc.prompts || [];
                         const rawSkills = desc.skills || [];
                         const rawHooks = desc.hooks || [];
                         for (let i = 0; i < rawPrompts.length; i++) {{ promptsRaw.push(rawPrompts[i]); }}
@@ -163,11 +191,13 @@ impl PluginSandbox {
                         if (!s || typeof s !== 'object') continue;
                         const name = typeof s.name === 'string' ? s.name.trim() : '';
                         const body = typeof s.body === 'string' ? s.body.trim() : '';
-                        if (!name || !body) continue;
+                        const skillPath = typeof s.path === 'string' ? s.path.trim() : '';
+                        if (!name || (!body && !skillPath)) continue;
                         skills.push({{
                             name: name,
                             description: typeof s.description === 'string' ? s.description : '',
                             body: body,
+                            path: skillPath,
                             whenToUse: typeof s.whenToUse === 'string' ? s.whenToUse
                                 : (typeof s.when_to_use === 'string' ? s.when_to_use : null),
                             userInvocable: typeof s.userInvocable === 'boolean' ? s.userInvocable
@@ -177,6 +207,7 @@ impl PluginSandbox {
                     // P3a·SP-50：钩子注册的**声明**（处理器是函数，不进 JSON——
                     // 它在调用期按点位名重新找出来执行）。
                     const hooks = [];
+                    const hooksByPoint = new Map();
                     for (let i = 0; i < hooksRaw.length; i++) {{
                         const h = hooksRaw[i];
                         if (!h || typeof h !== 'object') continue;
@@ -188,11 +219,16 @@ impl PluginSandbox {
                         for (let j = 0; j < rawActions.length; j++) {{
                             if (typeof rawActions[j] === 'string') actions.push(rawActions[j]);
                         }}
-                        hooks.push({{
-                            point: point,
-                            actions: actions,
-                            order: typeof h.order === 'number' ? h.order : 0,
-                        }});
+                        const order = typeof h.order === 'number' ? h.order : 0;
+                        const existing = hooksByPoint.get(point);
+                        if (existing) {{
+                            for (const action of actions) if (!existing.actions.includes(action)) existing.actions.push(action);
+                            existing.order = Math.min(existing.order, order);
+                        }} else {{
+                            const declaration = {{ point, actions, order }};
+                            hooksByPoint.set(point, declaration);
+                            hooks.push(declaration);
+                        }}
                     }}
                     return JSON.stringify({{ ok: true, metadata: metadata || null, tools: tools, prompts: prompts, skills: skills, hooks: hooks }});
                 }} catch (err) {{
@@ -318,12 +354,15 @@ impl PluginSandbox {
         if declared_count != actual_count {
             anyhow::bail!("插件 metadata `{key}.count`={declared_count}，实际为 {actual_count}");
         }
-        if let Some(names) = group.get("names").or_else(|| group.get("items")).and_then(|value| value.as_array()) {
-            let expected: Vec<&str> = actual_names.collect();
-            let declared: Vec<&str> = names.iter().filter_map(|value| value.as_str()).collect();
-            if declared != expected {
-                anyhow::bail!("插件 metadata `{key}.names` 与实际声明不一致");
-            }
+        let names = group
+            .get("names")
+            .or_else(|| group.get("items"))
+            .and_then(|value| value.as_array())
+            .ok_or_else(|| anyhow::anyhow!("插件 metadata `{key}.names` 必须是字符串数组"))?;
+        let expected: Vec<&str> = actual_names.collect();
+        let declared: Vec<&str> = names.iter().filter_map(|value| value.as_str()).collect();
+        if declared.len() != names.len() || declared != expected {
+            anyhow::bail!("插件 metadata `{key}.names` 与实际声明不一致");
         }
         Ok(())
     }
@@ -442,8 +481,26 @@ impl PluginSandbox {
                             workspace: ws,
                             registerTool: () => {{}},
                             registerSkill: () => {{}},
+                            registerSystemPrompt: () => {{}},
                             registerPrompt: () => {{}},
                             registerHook: (h) => {{ hooksRaw.push(h); }},
+                            on: (event, handler, options = {{}}) => {{
+                                const aliases = {{
+                                    turn_start: 'beforeTurn', turn_end: 'afterTurn',
+                                    tool_call: 'beforeToolCall', tool_execution_end: 'afterToolCall',
+                                    agent_start: 'beforeAgentStart', agent_end: 'afterAgentEnd',
+                                    before_provider_request: 'beforeProviderRequest',
+                                    before_provider_headers: 'beforeProviderHeaders',
+                                    after_provider_response: 'afterProviderResponse',
+                                    context: 'beforeContext',
+                                }};
+                                const point = aliases[event] || event;
+                                if (typeof handler === 'function') hooksRaw.push({{
+                                    point, apiEvent: event, handler,
+                                    actions: Array.isArray(options.actions) ? options.actions : (point === 'beforeToolCall' ? ['observe', 'note', 'deny', 'abort', 'replace'] : ['observe', 'note']),
+                                    order: typeof options.order === 'number' ? options.order : 0,
+                                }});
+                            }},
                         }};
                         try {{
                             await desc(api);
@@ -455,16 +512,10 @@ impl PluginSandbox {
                         for (let i = 0; i < raw.length; i++) {{ hooksRaw.push(raw[i]); }}
                     }}
 
-                    let target = null;
-                    for (let i = 0; i < hooksRaw.length; i++) {{
-                        const h = hooksRaw[i];
-                        if (h && h.point === targetPoint) {{ target = h; break; }}
-                    }}
-                    if (!target) {{
+                    const targets = hooksRaw.filter((h) => h && h.point === targetPoint)
+                        .sort((a, b) => (a.order || 0) - (b.order || 0));
+                    if (targets.length === 0) {{
                         return JSON.stringify({{ error: "插件未声明点位: " + targetPoint }});
-                    }}
-                    if (typeof target.handler !== 'function') {{
-                        return JSON.stringify({{ error: "点位 " + targetPoint + " 未实现 handler" }});
                     }}
 
                     // 🔴 入参**已经是对象**：`call_async_fn` 会把传进去的 JSON 串解析成 JS 值
@@ -472,27 +523,44 @@ impl PluginSandbox {
                     // "expected value at line 1 column 2" 这种跟插件毫不相干的错。
                     // 也**不要**在这里 `const payload = payload || {}`：同名的 const 会
                     // 在 TDZ 里遮蔽参数，Boa 报 "access of uninitialized binding"。
-                    // Match pi's extension shape: handlers receive (event, ctx).
-                    // The context is data-only and cannot call host capabilities.
-                    const res = await target.handler(eventPayload, hookCtx);
-                    if (res === null || res === undefined) {{
-                        return JSON.stringify({{}});
+                    let finalResult = {{}};
+                    const notes = [];
+                    for (const target of targets) {{
+                        if (typeof target.handler !== 'function') continue;
+                        let event = eventPayload && typeof eventPayload === 'object'
+                            ? Object.assign({{}}, eventPayload)
+                            : {{ value: eventPayload }};
+                        if (target.apiEvent === 'tool_call') {{
+                            event = Object.assign({{}}, event, {{ toolName: event.tool, input: event.args }});
+                        }}
+                        const beforeInput = target.apiEvent === 'tool_call' ? JSON.stringify(event.input) : undefined;
+                        // pi-compatible handlers receive (event, ctx). ctx is data-only
+                        // except for the explicit, validated registration methods.
+                        const res = await target.handler(event, hookCtx);
+                        if (target.apiEvent === 'tool_call' && JSON.stringify(event.input) !== beforeInput) {{
+                            finalResult = {{ action: 'replace', data: {{ args: event.input }} }};
+                        }}
+                        if (res && typeof res === 'object') {{
+                            if (res.block === true && !finalResult.action) {{
+                                finalResult = {{ action: res.terminate === true ? 'abort' : 'deny', reason: res.reason }};
+                            }} else if (typeof res.action === 'string' && !finalResult.action) {{
+                                finalResult = res;
+                            }}
+                            if (typeof res.note === 'string' && res.note.trim()) notes.push(res.note);
+                        }} else if (typeof res === 'string' && !finalResult.action) {{
+                            finalResult = {{ action: res }};
+                        }}
                     }}
-                    if (typeof res === 'string') {{
-                        return JSON.stringify({{ action: res }});
-                    }}
-                    if (typeof res === 'object') {{
-                        const out = {{}};
-                        if (typeof res.action === 'string') out.action = res.action;
-                        if (typeof res.reason === 'string') out.reason = res.reason;
-                        if (typeof res.note === 'string') out.note = res.note;
-                        const data = res.data && typeof res.data === 'object' ? Object.assign({{}}, res.data) : {{}};
+                    if (notes.length > 0 && finalResult.note === undefined) finalResult.note = notes.join('\\n');
+                    if (Object.keys(finalResult).length > 0) {{
+                        const data = finalResult.data && typeof finalResult.data === 'object' ? Object.assign({{}}, finalResult.data) : {{}};
                         if (registrations.length > 0) data.registrations = registrations;
-                        if (Object.keys(data).length > 0) out.data = data;
-                        return JSON.stringify(out);
+                        if (Object.keys(data).length > 0) finalResult.data = data;
+                        return JSON.stringify(finalResult);
                     }}
-                    const data = registrations.length > 0 ? {{ registrations }} : undefined;
-                    return data ? JSON.stringify({{ data }}) : JSON.stringify({{}});
+                    if (registrations.length > 0) return JSON.stringify({{ data: {{ registrations }} }});
+                    if (notes.length > 0) return JSON.stringify({{ action: 'note', note: notes.join('\\n') }});
+                    return JSON.stringify({{}});
                 }} catch (err) {{
                     // 🔴 带上 `stack`（P4·SP-73）：只拿 `err.message` 的话，报错不带文件与行号。
                     const detail = err && err.stack ? String(err.stack) : String(err);
@@ -640,8 +708,10 @@ impl PluginSandbox {
                             // 插件工厂调了任何一个都会抛，工具就再也找不到了
                             // （实测过一次：少了 `registerHook`，带钩子的插件连工具都调不动）。
                             registerSkill: () => {{}},
+                            registerSystemPrompt: () => {{}},
                             registerPrompt: () => {{}},
                             registerHook: () => {{}},
+                            on: () => {{}},
                         }};
                         try {{
                             await desc(api);
@@ -1259,18 +1329,19 @@ mod tests {
         let index = dir.join("index.js");
         std::fs::write(
             &index,
-            r#"export default {
-              metadata: {
-                name: 'test', description: '测试插件',
-                tools: { count: 1, names: ['test_tool'] },
-                systemPrompt: { count: 1, names: ['增强命中'] },
-                skills: { count: 1, names: ['test_skill'] },
-                hooks: { count: 1, names: ['test_hook'] }
-              },
-              tools: [{ name: 'test_tool', description: 'tool', parameters: {} }],
-              prompts: [{ id: '增强命中', content: '命中提示' }],
-              skills: [{ name: 'test_skill', description: 'skill', body: 'skill body' }],
-              hooks: [{ point: 'test_hook', actions: ['observe'] }]
+            r#"const metadata = {
+              name: 'test', description: '测试插件',
+              tools: { count: 1, names: ['test_tool'] },
+              systemPrompt: { count: 1, names: ['增强命中'] },
+              skills: { count: 1, names: ['test_skill'] },
+              hooks: { count: 1, names: ['afterTurn'] }
+            };
+            export default function (ada) {
+              ada.metadata = metadata;
+              ada.registerTool({ name: 'test_tool', description: 'tool', parameters: {}, execute: async () => 'ok' });
+              ada.registerSystemPrompt({ id: '增强命中', content: '命中提示' });
+              ada.registerSkill({ name: 'test_skill', description: 'skill', path: 'skills/test_skill.md', body: 'skill body' });
+              ada.on('turn_end', async (event, ctx) => ({ action: 'note', note: `${ctx.point}:${event.step}` }));
             }"#,
         )
         .unwrap();
@@ -1283,10 +1354,28 @@ mod tests {
         .await
         .expect("valid package metadata should pass");
         assert_eq!(inspected.metadata.as_ref().and_then(|m| m.get("name")).and_then(|v| v.as_str()), Some("test"));
+        assert_eq!(inspected.tools[0].name, "test_tool");
+        assert_eq!(inspected.prompts[0].id, "增强命中");
+        assert_eq!(inspected.skills[0].path.as_deref(), Some("skills/test_skill.md"));
+        assert_eq!(inspected.hooks[0].point, "afterTurn");
+
+        let hook_result = PluginSandbox::call_hook_budgeted(
+            &index,
+            "afterTurn",
+            serde_json::json!({ "step": 3 }),
+            &dir,
+            10,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("pi-style on registration should execute");
+        assert_eq!(hook_result["action"], "note");
+        assert_eq!(hook_result["note"], "afterTurn:3");
 
         std::fs::write(
             &index,
-            "export default { metadata: { name: 'test', description: 'bad', tools: { count: 2 }, systemPrompt: { count: 0 }, skills: { count: 0 }, hooks: { count: 0 } }, tools: [{ name: 'test_tool' }] }",
+            "const metadata = { name: 'test', description: 'bad', tools: { count: 2, names: ['test_tool', 'extra'] }, systemPrompt: { count: 0, names: [] }, skills: { count: 0, names: [] }, hooks: { count: 0, names: [] } }; export default function (ada) { ada.metadata = metadata; ada.registerTool({ name: 'test_tool', description: 'tool', parameters: {}, execute: async () => 'ok' }); }",
         )
         .unwrap();
         let error = PluginSandbox::inspect_plugin_full(

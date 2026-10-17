@@ -88,6 +88,15 @@ pub struct ScriptPromptFragment {
     pub content: String,
 }
 
+/// Tool declaration discovered by the isolated script host during load.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScriptToolDeclaration {
+    pub name: String,
+    pub label: Option<String>,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
 /// 插件被授予的**能力**（P4 · SP-71）。
 ///
 /// 端口层的抽象：`agent-base` 不认识 ts-engine 的 `Needs`，只表达"这个插件要不要
@@ -144,6 +153,7 @@ pub struct ModuleHandle {
 pub struct ScriptSkillDeclaration {
     pub name: String,
     pub description: String,
+    pub path: Option<String>,
     /// 正文（规范本体）。空正文的技能由装配层丢弃——它进提示词只会白占字节。
     pub body: String,
     pub when_to_use: Option<String>,
@@ -231,6 +241,9 @@ pub trait ScriptHost: Send + Sync {
     /// （把插件工具装进 catalog）需要的正是这份清单。没有这个方法，装配层就只能退回去
     /// 文本扫描源码——那正是这套设计要替掉的东西。
     fn exports(&self, handle: &ModuleHandle) -> Result<Vec<String>, ScriptError>;
+
+    /// Return the declarations collected during the same load/inspect pass.
+    fn tool_declarations(&self, handle: &ModuleHandle) -> Result<Vec<ScriptToolDeclaration>, ScriptError>;
 
     /// 这个模块声明的**提示词片段**（没有就返回空——空不是错误）。
     ///

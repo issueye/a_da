@@ -112,6 +112,9 @@ impl HookRuntime {
                     message: "该运行时未接脚本宿主".to_string(),
                 })
             }
+            fn tool_declarations(&self, _h: &ModuleHandle) -> Result<Vec<agent_base::ports::ScriptToolDeclaration>, ScriptError> {
+                Ok(Vec::new())
+            }
             fn prompt_fragments(
                 &self,
                 _h: &ModuleHandle,
@@ -938,6 +941,9 @@ mod tests {
         fn exports(&self, _h: &ModuleHandle) -> Result<Vec<String>, ScriptError> {
             Ok(Vec::new())
         }
+        fn tool_declarations(&self, _h: &ModuleHandle) -> Result<Vec<agent_base::ports::ScriptToolDeclaration>, ScriptError> {
+            Ok(Vec::new())
+        }
         fn prompt_fragments(
             &self,
             _h: &ModuleHandle,
@@ -1254,6 +1260,9 @@ mod tests {
                 Box::pin(async { Err(ScriptError::Unavailable { message: "x".into() }) })
             }
             fn exports(&self, _h: &ModuleHandle) -> Result<Vec<String>, ScriptError> {
+                Ok(Vec::new())
+            }
+            fn tool_declarations(&self, _h: &ModuleHandle) -> Result<Vec<agent_base::ports::ScriptToolDeclaration>, ScriptError> {
                 Ok(Vec::new())
             }
             fn prompt_fragments(

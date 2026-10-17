@@ -16,7 +16,7 @@ use std::sync::Mutex;
 
 use agent_base::ports::{
     ModuleHandle, ScriptError, ScriptHookDeclaration, ScriptNeeds, ScriptPromptFragment,
-    ScriptSkillDeclaration,
+    ScriptSkillDeclaration, ScriptToolDeclaration,
 };
 
 /// 已装载脚本的元信息（句柄的 `id` 指向它）。
@@ -30,6 +30,7 @@ pub struct LoadedScript {
     /// （端口的 [`ScriptError::UnknownExport`] 需要真实产生方）。靠调用失败后去匹配
     /// 沙箱的中文文案是最脆弱的那种判法——文案一改就静默失效。
     pub exports: Vec<String>,
+    pub tools: Vec<ScriptToolDeclaration>,
     /// 装载期一并探明的**提示词片段声明**（P2·SP-44；没有就是空）
     pub prompts: Vec<ScriptPromptFragment>,
     /// 装载期一并探明的**技能声明**（P2·SP-45；没有就是空）
@@ -98,6 +99,12 @@ mod tests {
             path: PathBuf::from("/p.ts"),
             workspace: PathBuf::from("/ws"),
             exports: vec!["read_file".to_string()],
+            tools: vec![ScriptToolDeclaration {
+                name: "read_file".to_string(),
+                label: None,
+                description: "read file".to_string(),
+                parameters: serde_json::json!({"type":"object","properties":{}}),
+            }],
             prompts: Vec::new(),
             skills: Vec::new(),
             hooks: Vec::new(),
