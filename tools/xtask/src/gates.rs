@@ -603,6 +603,7 @@ pub fn verify_wiring() -> anyhow::Result<Report> {
     let mut rep = Report::new("接线结构审计（verify-wiring）");
 
     check_dispatch_arms(&root, &mut rep)?;
+    check_ts_methods_mirror(&root, &mut rep)?;
     check_builtin_catalog(&root, &mut rep)?;
     check_descriptor_reachability(&root, &mut rep)?;
     check_port_impls(&root, &mut rep)?;
@@ -615,6 +616,7 @@ pub fn verify_wiring() -> anyhow::Result<Report> {
     // P0 埋点地基的两条新检查：
     check_diag_points(&root, &mut rep)?;
     check_capability_bits(&root, &mut rep)?;
+    check_plugin_capability_bits(&root, &mut rep)?;
 
     Ok(rep)
 }
@@ -659,6 +661,69 @@ fn check_dispatch_arms(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
         arms.len(),
         missing.len(),
         orphans.len()
+    ));
+    Ok(())
+}
+
+/// A2. TS 侧方法常量必须与 Rust 侧一致（`client-ts/methods.ts` ↔ `methods.rs`）。
+///
+/// 背景：方法名在仓库里有两份常量。Rust 那份由 `check_dispatch_arms` 钉着，
+/// 而 TS 那份 `client-ts/methods.ts` 此前**零引用**——前端 `ws-client.ts` 用的是
+/// 字符串字面量，改方法名时 Rust 侧编译会拦、TS 侧毫无保护。
+///
+/// 这条闸不算"接线"（接线要让 `ws-client` 的参数类型来自 `MethodName`，属后续工作），
+/// 但它保证两侧的**字面量集合**从此不会各自漂移：谁漏改一边，这里就红。
+fn check_ts_methods_mirror(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
+    let rs = parse_proto_consts(&read(root, "crates/agent-proto/src/methods.rs")?);
+    let ts_src = read(root, "crates/agent-proto/client-ts/methods.ts")?;
+
+    let mut ts: BTreeMap<String, String> = BTreeMap::new();
+    for line in ts_src.lines() {
+        let l = line.trim();
+        let Some(rest) = l.strip_prefix("export const ") else { continue };
+        let Some((name, tail)) = rest.split_once('=') else { continue };
+        let name = name.trim().trim_end_matches(':').trim();
+        let Some(v) = tail.trim().strip_prefix('\'') else { continue };
+        let Some(end) = v.find('\'') else { continue };
+        ts.insert(name.to_string(), v[..end].to_string());
+    }
+
+    if ts.is_empty() {
+        rep.violations
+            .push("client-ts/methods.ts 里解析不出任何 `export const X = '…'`，审计无效".to_string());
+        return Ok(());
+    }
+
+    let rs_values: BTreeSet<&str> = rs.values().map(String::as_str).collect();
+    let ts_values: BTreeSet<&str> = ts.values().map(String::as_str).collect();
+
+    for v in ts_values.difference(&rs_values) {
+        rep.violations.push(format!(
+            "client-ts/methods.ts 声明了 `{v}`，但 methods.rs 里没有对应常量（TS 侧又多了一条名单）"
+        ));
+    }
+    for v in rs_values.difference(&ts_values) {
+        rep.violations.push(format!(
+            "methods.rs 有 `{v}`，但 client-ts/methods.ts 没跟上（前端类型与协议脱节）"
+        ));
+    }
+
+    // 同名不同值是更隐蔽的漂移：名字对得上、字面量改了
+    for (name, rs_val) in &rs {
+        if let Some(ts_val) = ts.get(name) {
+            if rs_val != ts_val {
+                rep.violations.push(format!(
+                    "常量 `{name}` 两侧字面量不同：methods.rs = `{rs_val}`，methods.ts = `{ts_val}`"
+                ));
+            }
+        }
+    }
+
+    rep.notes.push(format!(
+        "TS 方法常量 {} 条，Rust 方法常量 {} 条，值差异 {} 条",
+        ts.len(),
+        rs.len(),
+        ts_values.symmetric_difference(&rs_values).count()
     ));
     Ok(())
 }
@@ -1430,7 +1495,7 @@ fn check_port_impls(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
 /// 判据：命中任一模式的文件必须出现在 [`DOC_ALLOW`] 里。白名单**逐项写明理由**，
 /// 只放"用途就是描述归档时代或定义归档规矩"的文档——所以这份名单本身是可审阅的。
 ///
-/// 为什么单独一个子命令而不是塞进 `verify-archive`：归档门的语义是"主干没有第二份实现"，
+/// 为什么单独一个子命令："主干没有第二份实现"是结构断言（`verify-wiring` 的端口/依赖方向），
 /// 文档时效性是另一件事；混在一起会让主门禁 `cargo xtask verify` 长期变红、
 /// 掩盖其它信号（违反计划 R8「每个里程碑独立可交付」）。
 pub fn verify_docs() -> anyhow::Result<Report> {
@@ -1468,7 +1533,20 @@ pub fn verify_docs() -> anyhow::Result<Report> {
         ("docs/agent-base-wiring-plan.md", "接线收口计划自身在\"防漂移规则\"里引用这些路径"),
     ];
 
-    let skip = ["node_modules", "target", "dist", "tmp", "archive", ".git", ".ada", ".commandcode"];
+    // `.workbuddy-ai` / `.workbuddy`：AI 协作者的工作区记忆与本地工具目录，不是项目文档；
+    // 它们的内容会随会话变化（含历史措辞），纳入文档时效门只会制造假红。
+    let skip = [
+        "node_modules",
+        "target",
+        "dist",
+        "tmp",
+        "archive",
+        ".git",
+        ".ada",
+        ".commandcode",
+        ".workbuddy",
+        ".workbuddy-ai",
+    ];
     let mut md_files: Vec<PathBuf> = Vec::new();
     collect_md(&root, &skip, &mut md_files);
     md_files.sort();
@@ -1990,6 +2068,103 @@ fn check_capability_bits(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
         CAPABILITY_FIELDS.len(),
         CAPABILITY_FIELDS.iter().filter(|(_, n)| !n.is_empty()).count(),
         CAPABILITY_INFORMATIONAL.len()
+    ));
+    Ok(())
+}
+
+/// 「插件能力开关」的消费者表：`PluginCapabilities` 每位 → **判定处**的判据串。
+///
+/// 判据是**读取点**的写法本身（`caps.allow_builtin_shadow` 这种），而不是"位名出现过"——
+/// 后者在定义处与解析处都成立，等于什么都没检验。
+///
+/// 为什么需要这张表：界面上每一个开关都写着"关掉后会发生什么"。一个没有消费者的位
+/// 就是一句**用户可见的谎话**（关掉它什么都不会发生），而它在代码里长得完全正常
+/// ——与 `CAPABILITY_FIELDS`（产品能力位）同一个理由，那位管 `CapabilitySpec`，这位管插件。
+const PLUGIN_CAPABILITY_FIELDS: &[(&str, &[&str])] = &[
+    // 装配面：同名覆盖（装配管线）/ 提示词片段（`ContributionPolicy`）
+    ("allow_builtin_shadow", &["caps.allow_builtin_shadow"]),
+    (
+        "allow_system_prompt_replace",
+        &["caps.allow_system_prompt_replace"],
+    ),
+    // 钩子面：四位都在 `HookRuntime` 一处判（装配期拒收 / 动作降级）
+    (
+        "allow_third_party_hooks",
+        &["capabilities.allow_third_party_hooks"],
+    ),
+    ("allow_text_rewrite", &["capabilities.allow_text_rewrite"]),
+    (
+        "allow_thread_delete_block",
+        &["capabilities.allow_thread_delete_block"],
+    ),
+    (
+        "allow_compaction_replace",
+        &["capabilities.allow_compaction_replace"],
+    ),
+    // 钩子预算（组合根读出来交给 `HookBudget`）
+    ("hook_timeout_ms", &["plugin_caps.hook_timeout_ms"]),
+];
+
+/// L2. **插件能力开关必须有生产消费者**（P4 · 幽灵开关治理）。
+///
+/// `PluginCapabilities` 被界面渲染成七个带承诺的开关，所以每一位都要有真实判定点：
+/// 缺一个，用户关掉它什么都不发生、界面还在承诺。判据与 [`check_capability_bits`] 同源
+/// （源码派生的字段名 + 读取点判据串），只是对象换成 `agent-node` 的插件开关。
+fn check_plugin_capability_bits(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
+    const TYPES_PATH: &str = "crates/agent-node/src/plugins/types.rs";
+    const MANAGER_PATH: &str = "crates/agent-node/src/plugins/manager.rs";
+    let src = read(root, TYPES_PATH)?;
+    let Some(body) = match_region(&src, "pub struct PluginCapabilities") else {
+        rep.violations
+            .push(format!("`{TYPES_PATH}` 解析不出 `PluginCapabilities`——审计失效"));
+        return Ok(());
+    };
+    let declared = parse_struct_field_names(body);
+    if declared.is_empty() {
+        rep.violations
+            .push("`PluginCapabilities` 解析出 0 个字段——审计失效".to_string());
+        return Ok(());
+    }
+
+    let registered: BTreeSet<String> = PLUGIN_CAPABILITY_FIELDS
+        .iter()
+        .map(|(f, _)| f.to_string())
+        .collect();
+    let missing: Vec<&String> = declared.iter().filter(|f| !registered.contains(*f)).collect();
+    if !missing.is_empty() {
+        rep.violations.push(format!(
+            "`PluginCapabilities` 有字段没进 `PLUGIN_CAPABILITY_FIELDS`：{missing:?}——\
+             新开关必须登记它的判定点，否则「界面承诺了、代码里没人读」会从门禁的缝里溜过去"
+        ));
+    }
+    for f in &registered {
+        if !declared.contains(f) {
+            rep.violations.push(format!(
+                "`PLUGIN_CAPABILITY_FIELDS` 里的 `{f}` 不是 `PluginCapabilities` 的字段——陈旧登记"
+            ));
+        }
+    }
+
+    let mut skipped = BTreeSet::new();
+    for (bit, needles) in PLUGIN_CAPABILITY_FIELDS {
+        // 定义处（types.rs）与"只解析不判定"的配置读取（manager.rs）不算消费者
+        let hits = symbol_consumers(root, needles, &[TYPES_PATH, MANAGER_PATH], &mut skipped);
+        if hits.is_empty() {
+            rep.violations.push(format!(
+                "插件能力开关 `{bit}` 在生产代码里没有判定点（判据：{}）——\
+                 界面写着它关掉后的效果，而关掉它什么都不会发生。\
+                 要么接上判定，要么把开关与界面文案一起删掉",
+                needles.join(" / ")
+            ));
+        } else {
+            rep.notes
+                .push(format!("插件能力开关 `{bit}` → {}", hits.join(", ")));
+        }
+    }
+
+    rep.notes.push(format!(
+        "插件能力开关 {} 个，全部有判定点",
+        PLUGIN_CAPABILITY_FIELDS.len()
     ));
     Ok(())
 }

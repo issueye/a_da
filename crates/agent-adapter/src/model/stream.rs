@@ -263,6 +263,81 @@ fn anthropic_image_block(uri: &str) -> Value {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 请求准备（三家协议共用）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 建 HTTP 客户端：代理 + 超时。
+///
+/// 抽出来的理由不是"省行数"，而是这两项是**运维配置**：改一次超时或代理语义就得三处同改，
+/// 漏一处会变成"只有某个协议不走代理"这类极难复现的故障（用户配了代理，偏偏某一家的流断）。
+fn build_http_client(config: &ProviderConfig) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(120));
+
+    if let Some(ref proxy_str) = config.proxy_url {
+        let trimmed = proxy_str.trim();
+        if !trimmed.is_empty() {
+            if let Ok(proxy) = reqwest::Proxy::all(trimmed) {
+                builder = builder.proxy(proxy);
+            }
+        }
+    }
+
+    Ok(builder.build()?)
+}
+
+/// 鉴权头的形态。三家协议的差异**只在这里**，其余请求头完全一致。
+#[derive(Clone, Copy)]
+enum AuthStyle {
+    /// `Authorization: Bearer <key>`（OpenAI Chat / OpenAI Responses）
+    Bearer,
+    /// `x-api-key: <key>` + 固定 `anthropic-version`（Anthropic）
+    AnthropicKey,
+}
+
+/// 组装请求头：`Content-Type` → 协议固定头 → 鉴权头 → 自定义 header。
+///
+/// `custom_headers` **最后合并**，可以覆盖上面任何一个——这是三家原有实现的共同语义，
+/// 用户靠它对接自建网关（例如把鉴权换成网关自己的 scheme）。
+fn build_headers(config: &ProviderConfig, auth: AuthStyle) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+    if matches!(auth, AuthStyle::AnthropicKey) {
+        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+    }
+
+    // 空 key 不发鉴权头：让服务端回 401，而不是发一个 `Bearer `（尾部空格）去撞网关的怪报错
+    let key = config.api_key.trim();
+    if !key.is_empty() {
+        match auth {
+            AuthStyle::Bearer => {
+                if let Ok(val) = HeaderValue::from_str(&format!("Bearer {key}")) {
+                    headers.insert(AUTHORIZATION, val);
+                }
+            }
+            AuthStyle::AnthropicKey => {
+                if let Ok(val) = HeaderValue::from_str(key) {
+                    headers.insert("x-api-key", val);
+                }
+            }
+        }
+    }
+
+    if let Some(ref custom) = config.custom_headers {
+        for (k, v) in custom {
+            if let (Ok(name), Ok(val)) = (
+                reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+                HeaderValue::from_str(v),
+            ) {
+                headers.insert(name, val);
+            }
+        }
+    }
+
+    headers
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 1. OpenAI Chat Completions 协议实现
 // ─────────────────────────────────────────────────────────────────────────────
 async fn run_stream_openai_chat(
@@ -304,37 +379,9 @@ async fn run_stream_openai_chat(
         body["reasoning_effort"] = serde_json::json!(effort);
     }
 
-    let mut builder = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120));
+    let client = build_http_client(&config)?;
 
-    if let Some(ref proxy_str) = config.proxy_url {
-        let trimmed = proxy_str.trim();
-        if !trimmed.is_empty() {
-            if let Ok(proxy) = reqwest::Proxy::all(trimmed) {
-                builder = builder.proxy(proxy);
-            }
-        }
-    }
-
-    let client = builder.build()?;
-
-    let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    if !config.api_key.trim().is_empty() {
-        if let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", config.api_key.trim())) {
-            headers.insert(AUTHORIZATION, val);
-        }
-    }
-    if let Some(ref custom) = config.custom_headers {
-        for (k, v) in custom {
-            if let (Ok(hname), Ok(hval)) = (
-                reqwest::header::HeaderName::from_bytes(k.as_bytes()),
-                HeaderValue::from_str(v),
-            ) {
-                headers.insert(hname, hval);
-            }
-        }
-    }
+    let headers = build_headers(&config, AuthStyle::Bearer);
 
     let max_retries = options.max_retries.unwrap_or(3);
     let response = match send_http_request_with_retry(
@@ -665,38 +712,9 @@ async fn run_stream_anthropic(
         body["temperature"] = serde_json::json!(temp);
     }
 
-    let mut builder = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120));
+    let client = build_http_client(&config)?;
 
-    if let Some(ref proxy_str) = config.proxy_url {
-        let trimmed = proxy_str.trim();
-        if !trimmed.is_empty() {
-            if let Ok(proxy) = reqwest::Proxy::all(trimmed) {
-                builder = builder.proxy(proxy);
-            }
-        }
-    }
-
-    let client = builder.build()?;
-
-    let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-    if !config.api_key.trim().is_empty() {
-        if let Ok(val) = HeaderValue::from_str(config.api_key.trim()) {
-            headers.insert("x-api-key", val);
-        }
-    }
-    if let Some(ref custom) = config.custom_headers {
-        for (k, v) in custom {
-            if let (Ok(hname), Ok(hval)) = (
-                reqwest::header::HeaderName::from_bytes(k.as_bytes()),
-                HeaderValue::from_str(v),
-            ) {
-                headers.insert(hname, hval);
-            }
-        }
-    }
+    let headers = build_headers(&config, AuthStyle::AnthropicKey);
 
     let max_retries = options.max_retries.unwrap_or(3);
     let response = match send_http_request_with_retry(
@@ -974,37 +992,9 @@ async fn run_stream_openai_responses(
         body["temperature"] = serde_json::json!(temp);
     }
 
-    let mut builder = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120));
+    let client = build_http_client(&config)?;
 
-    if let Some(ref proxy_str) = config.proxy_url {
-        let trimmed = proxy_str.trim();
-        if !trimmed.is_empty() {
-            if let Ok(proxy) = reqwest::Proxy::all(trimmed) {
-                builder = builder.proxy(proxy);
-            }
-        }
-    }
-
-    let client = builder.build()?;
-
-    let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    if !config.api_key.trim().is_empty() {
-        if let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", config.api_key.trim())) {
-            headers.insert(AUTHORIZATION, val);
-        }
-    }
-    if let Some(ref custom) = config.custom_headers {
-        for (k, v) in custom {
-            if let (Ok(hname), Ok(hval)) = (
-                reqwest::header::HeaderName::from_bytes(k.as_bytes()),
-                HeaderValue::from_str(v),
-            ) {
-                headers.insert(hname, hval);
-            }
-        }
-    }
+    let headers = build_headers(&config, AuthStyle::Bearer);
 
     let max_retries = options.max_retries.unwrap_or(3);
     let response = match send_http_request_with_retry(

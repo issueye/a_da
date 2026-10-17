@@ -35,10 +35,7 @@ impl Tool for BatchWriteTool {
         ctx: &'a ToolContext<'a>,
     ) -> BoxFuture<'a, ToolReceipt> {
         Box::pin(async move {
-            let started_at = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            let started_at = crate::now_ms();
 
             if ctx.cancel.is_cancelled() {
                 let finished_at = started_at;
@@ -52,10 +49,7 @@ impl Tool for BatchWriteTool {
                 let mut written = 0;
                 for f in list {
                     if ctx.cancel.is_cancelled() {
-                        let fin = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis() as i64)
-                            .unwrap_or(started_at);
+                        let fin = crate::now_ms().max(started_at);
                         return ToolReceipt::new(ToolStatus::Aborted, "操作已中止", started_at, fin);
                     }
                     if let (Some(p), Some(c)) = (
@@ -64,10 +58,7 @@ impl Tool for BatchWriteTool {
                     ) {
                         let res = write_file(&self.workspace, p, c);
                         if !res.ok {
-                            let fin = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_millis() as i64)
-                                .unwrap_or(started_at);
+                            let fin = crate::now_ms().max(started_at);
                             return ToolReceipt::error(
                                 format!("写入 [{}] 失败: {}", p, res.output),
                                 started_at,
@@ -77,10 +68,7 @@ impl Tool for BatchWriteTool {
                         written += 1;
                     }
                 }
-                finished_at = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(started_at);
+                finished_at = crate::now_ms().max(started_at);
                 ToolReceipt::success(format!("成功原子写入 {} 个文件。", written), started_at, finished_at)
             } else {
                 finished_at = started_at;
@@ -120,10 +108,7 @@ impl Tool for BatchReplaceTool {
         ctx: &'a ToolContext<'a>,
     ) -> BoxFuture<'a, ToolReceipt> {
         Box::pin(async move {
-            let started_at = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            let started_at = crate::now_ms();
 
             if ctx.cancel.is_cancelled() {
                 let finished_at = started_at;
@@ -139,10 +124,7 @@ impl Tool for BatchReplaceTool {
                 let mut replaced = 0;
                 for f in list {
                     if ctx.cancel.is_cancelled() {
-                        let fin = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis() as i64)
-                            .unwrap_or(started_at);
+                        let fin = crate::now_ms().max(started_at);
                         return ToolReceipt::new(ToolStatus::Aborted, "操作已中止", started_at, fin);
                     }
                     if let Some(p) = f.as_str() {
@@ -152,10 +134,7 @@ impl Tool for BatchReplaceTool {
                         }
                     }
                 }
-                finished_at = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(started_at);
+                finished_at = crate::now_ms().max(started_at);
                 ToolReceipt::success(
                     format!("批量替换完成，在 {} 个文件中生效。", replaced),
                     started_at,

@@ -33,7 +33,6 @@ dependencies = [
  "agent-conformance",
  "agent-host",
  "agent-runtime",
- "agent-toolkit",
  "anyhow",
  "clap",
  "serde_json",

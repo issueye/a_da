@@ -102,13 +102,6 @@ fn append_notes(output: &mut String, notes: &[AfterNote]) {
     }
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 impl Tool for TodoTool {
     fn descriptor(&self) -> &ToolDescriptor {
         &self.descriptor
@@ -120,7 +113,7 @@ impl Tool for TodoTool {
         ctx: &'a ToolContext<'a>,
     ) -> BoxFuture<'a, ToolReceipt> {
         Box::pin(async move {
-            let started_at = now_ms();
+            let started_at = crate::now_ms();
             let action = call
                 .args
                 .get("action")
@@ -129,19 +122,19 @@ impl Tool for TodoTool {
 
             // `get` 不改清单 → 不跑点位（点位名就叫 beforeTodo**Update**）
             if action == "get" {
-                return ToolReceipt::success("当前待办列表已同步就绪。", started_at, now_ms());
+                return ToolReceipt::success("当前待办列表已同步就绪。", started_at, crate::now_ms());
             }
             if !matches!(action, "set" | "update") {
                 return ToolReceipt::success(
                     format!("未知待办操作: {action}"),
                     started_at,
-                    now_ms(),
+                    crate::now_ms(),
                 );
             }
 
             let (mut steps, parse_problem) = Self::parse_steps(&call.args);
             if let Some(problem) = parse_problem {
-                return ToolReceipt::error(problem, started_at, now_ms());
+                return ToolReceipt::error(problem, started_at, crate::now_ms());
             }
 
             // ── beforeTodoUpdate（P3b·SP-63）───────────────────────────────
@@ -162,14 +155,14 @@ impl Tool for TodoTool {
                     BeforeOutcome::Pass => {}
                     BeforeOutcome::Deny { reason } => {
                         // 拦下即定稿：**清单不变**，理由作为普通工具结果回模型（可纠正）
-                        return ToolReceipt::denied(reason, started_at, now_ms());
+                        return ToolReceipt::denied(reason, started_at, crate::now_ms());
                     }
                     BeforeOutcome::AbortTurn { reason } => {
                         // 工具内部没有"结束整轮"的能力（那要引擎才能做）：如实说明、按拦下处理
                         return ToolReceipt::denied(
                             format!("{reason}（注：todo 点位不支持结束整轮，已按拦下处理）"),
                             started_at,
-                            now_ms(),
+                            crate::now_ms(),
                         );
                     }
                     BeforeOutcome::Replace { args: new_args, by } => {
@@ -183,7 +176,7 @@ impl Tool for TodoTool {
                                 return ToolReceipt::error(
                                     format!("插件改写清单被拒：{reason}"),
                                     started_at,
-                                    now_ms(),
+                                    crate::now_ms(),
                                 );
                             }
                         }
@@ -224,7 +217,7 @@ impl Tool for TodoTool {
                 append_notes(&mut output, &notes);
             }
 
-            ToolReceipt::success(output, started_at, now_ms())
+            ToolReceipt::success(output, started_at, crate::now_ms())
         })
     }
 }

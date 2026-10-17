@@ -35,7 +35,6 @@
 | [`agent_core`](file:///E:/codes/rust_projects/a_da/agent_core) | 纯 Rust 后端微内核，提供全部主循环、工具执行、插件沙箱与持久化 | Rust 2021、Tokio、Reqwest、Tracing |
 | [`electron`](file:///E:/codes/rust_projects/a_da/electron) | Electron 桌面宿主：窗口管理、网关生命周期监督与 IPC 桥接 | Electron 33、TypeScript |
 | [`desktop-ui`](file:///E:/codes/rust_projects/a_da/desktop-ui) | 现代轻量化 Webview 桌面交互前端 | React 19、TypeScript、Tailwind CSS、Vite、Lucide |
-| [`src/ui`](file:///E:/codes/rust_projects/a_da/src/ui) | 原生 GPU 硬件加速桌面前端（GPUIX 客户端，**已归档**） | GPUIX、React 19 |
 
 ### 运行形态
 
@@ -196,7 +195,7 @@
 ## 四、 前端交互界面功能清单（`desktop-ui`）
 
 > **历史说明**：本节原先是一张 "GPUIX vs 桌面 Webview" 两套 UI 的对比表。GPUIX 客户端
-> **已整体归档**（不再参与构建与测试），继续按"两套实现"描述会误导读者以为有两条产品线。
+> **已整体删除**（2026-10-17，可从 git 历史取回），继续按"两套实现"描述会误导读者以为有两条产品线。
 > 现在只列**当前唯一前端** `desktop-ui` 的功能项与实现位置。
 
 | 功能项 | 实现位置 | 状态 |

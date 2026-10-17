@@ -118,41 +118,22 @@ async fn build_injection(
 
     let sessions_root =
         std::path::Path::new(&agent_node::session::get_app_home()).join("sessions");
-    // P1·SP-16：装配期收集**插件工具**（名字已在注册表里的那些）。
-    //
-    // 异步装载放在这里（组合根），因为 `run_from_spec` 是同步的、而产品 `main` 本来就是 async。
-    // ：id 是来源标注，装配与埋点都靠它归因
-    let mut prompt_extensions: Vec<(String, String)> = Vec::new();
     // P2·SP-46：插件管理器与脚本宿主**提到 if 外面**——重装配（插件启停）要复用同两个实例，
     // 各造一份就会出现"启停重装时用的是另一份脚本宿主/配置"这种查不出来的错。
     let plugin_mgr = std::sync::Arc::new(agent_node::plugins::PluginManager::new());
-    // 四类插件贡献（工具 / 片段 / 技能 / 钩子）由**同一次装载**产出，合成一个结构交给装配。
-    let mut contributions = agent_host::PluginContributions::default();
-    // P3a·SP-55：钩子运行时同一个实例给两处（引擎 + Dispatcher 的管理面点位）
-    let mut hook_runtime_for_dispatch: Option<std::sync::Arc<agent_node::hooks::HookRuntime>> = None;
+    // P4：插件贡献的**活体视图**（界面读它，不再读"只扫目录、不执行插件"的静态结果）。
+    // 装配期填一次，插件启停时由重装配器原地替换——与技能活体同一个模式。
+    let plugin_contribution_views = agent_node::plugins::new_contribution_store(Vec::new());
+    // P1·SP-16 / P2 / P3a：插件贡献（工具 / 片段 / 技能 / 钩子）由**一次装载**产出。
+    // 抽成函数是为了让**按工作区动态装配**那条路走同一份收集逻辑——否则每个会话都会
+    // 拿到一份没有插件的孪生引擎（见 `EngineFactory` 的注释）。
+    let collected = collect_plugins(&ws, &spec, &script_host, &plugin_mgr, label).await;
+    let plugin_caps = collected.caps.clone();
+    let prompt_extensions = collected.prompt_extensions;
+    let contributions = collected.contributions;
+    let hook_runtime_for_dispatch = collected.hook_runtime;
+    let asm = collected.asm;
     if spec.capabilities.plugins {
-        let asm = agent_node::scripts::collect_plugin_tools(
-            &plugin_mgr,
-            &script_host,
-            &ws,
-            agent_base::ports::ScriptBudget::default(),
-        )
-        .await;
-        if asm.plugins_loaded > 0 || !asm.skipped.is_empty() {
-            info!(
-                "[{label}] 插件工具：装载 {} 个插件、收下 {} 个工具、跳过 {} 条声明",
-                asm.plugins_loaded,
-                asm.tools.len(),
-                asm.skipped.len()
-            );
-        }
-        // P2·SP-45：插件技能与工具同源（都出自这一次装载），一起交给装配与 ws 宿主
-        if !asm.skills.is_empty() {
-            info!(
-                "[{label}] 插件技能：{} 条（会与目录/内置技能一起进提示词）",
-                asm.skills.len()
-            );
-        }
         // 没装上的**要报出来**（「插件写了工具却没生效」必须有人知道，AGENTS §15）
         if let Ok(mut store_w) = store.try_write() {
             for s in &asm.skipped {
@@ -172,66 +153,15 @@ async fn build_injection(
                 );
             }
         }
-        // P2·SP-44：把插件工具也写进"已启用的扩展工具"段落——
-        // 那个段落（HostOptions.prompt_extensions）**此前没有任何生产者**，是条空缝：
-        // 模型因此不知道插件带来的这些能力存在。
-        prompt_extensions = asm
-            .tools
-            .iter()
-            .map(|(_, t)| (t.descriptor().name.clone(), t.descriptor().summary.clone()))
-            .collect();
-        // P3a·SP-50：钩子运行时在这里装——它要 `ScriptHost`（按句柄调处理器），
-        // 而宿主那一层没有也不该有脚本宿主。
-        //
-        // 只在这个产品声明了钩子时才装：没声明的产品装一个永不调用的运行时，
-        // 只会让"钩子是不是生效了"更难判断。
-        if spec.capabilities.hooks {
-            // SP-53：单点位预算来自插件能力的 `hookTimeoutMs`（此前**只解析不消费**）
-            let hook_timeout_ms = plugin_mgr
-                .get_capabilities(Some(&ws.to_string_lossy()))
-                .capabilities
-                .hook_timeout_ms;
-            let (runtime, rejections) = agent_node::hooks::collect_hooks(
-                script_host.clone(),
-                agent_base::ports::HookBudget {
-                    timeout_ms: hook_timeout_ms,
-                },
-                &asm.handles,
-            );
-            if !rejections.is_empty() {
-                warn!(
-                    "[{label}] 钩子声明被拒 {} 条（分级/未实现/重复，逐条已进诊断）",
-                    rejections.len()
-                );
-            }
-            if !runtime.is_empty() {
-                info!(
-                    "[{label}] 钩子就绪：{} 条注册（单点位预算 {}ms）",
-                    runtime.len(),
-                    hook_timeout_ms
-                );
-                let rt = std::sync::Arc::new(runtime);
-                // 同一个实例给两处：引擎（轮内点位）与 Dispatcher（管理面点位）。
-                // 各造一个 = 装配期装好的钩子在轮外看不见，而"钩子到底生效了没"就更难判断。
-                hook_runtime_for_dispatch = Some(rt.clone());
-                contributions.hook_runner = Some(rt);
-            }
-            contributions.hook_rejections = rejections;
+        // P4：把"这次装载真的收下了什么"写成视图（插件启停时由重装配器原地替换）
+        let hooks_by_plugin = hook_runtime_for_dispatch
+            .as_ref()
+            .map(|r| r.points_by_plugin())
+            .unwrap_or_default();
+        if let Ok(mut views) = plugin_contribution_views.write() {
+            *views = agent_node::plugins::views_from_assembly(&asm, &hooks_by_plugin);
         }
-
-        contributions.prompt_fragments = asm
-            .prompt_fragments
-            .into_iter()
-            .map(|(pid, f)| (pid, f.id, f.content))
-            .collect();
-        contributions.skills = asm.skills;
-        contributions.tools = asm.tools;
     }
-
-    // 技能声明的**唯一源头**是上面的 `asm.skills`（随 `contributions` 交给装配层）；
-    // 装配层据此造出技能活体，并把**同一个句柄**交给 ws 宿主（见下面的 `live.skill_store()`）。
-    // 早先这里另造一份"扫描结果形状"的快照给 rpc，那份快照不会随插件启停更新——
-    // 于是停用插件后"界面里还有、引擎里已经没有"。
 
     let options = agent_host::HostOptions::new(&ws)
         .with_store(store.clone())
@@ -241,12 +171,17 @@ async fn build_injection(
         .with_approval_manager(approval_mgr.clone())
         // P1/P2/P3a：插件贡献（工具 / 提示词片段 / 技能 / 钩子运行时）一次交齐
         .with_plugin_contributions(contributions)
+        // P4：装配面的两位能力开关（同名覆盖 / 提示词片段）——由宿主在装配管线里判
+        .with_plugin_capabilities(plugin_caps.clone())
         .with_prompt_extensions(prompt_extensions);
 
     match agent_host::run_from_spec(spec, options) {
         Ok(hosted) => {
             let tool_count = hosted.tool_names().len();
             let agent_host::HostedProduct { runtime, approval, spec, live, .. } = hosted;
+            // 启动时装配的这份引擎**带着插件贡献**（工具 / 提示词 / 技能 / 钩子）。
+            // 下面按工作区动态装配的那条路收不到异步装载结果，所以同一工作区必须复用它。
+            let runtime = Arc::new(runtime);
             info!("已按 {label} 装配真引擎：工具 {tool_count} 个");
 
             // P2·SP-46：把"插件启停 → 重装配 → 收据"这条路接上。实现体在 `agent-host`
@@ -265,6 +200,8 @@ async fn build_injection(
                     if let Some(hr) = &hook_runtime_for_dispatch {
                         r = r.with_hook_runtime(hr.clone());
                     }
+                    // P4：启停后刷新界面读的**贡献视图**（否则"关掉了插件、卡片还列着它的工具"）
+                    r = r.with_contribution_views(plugin_contribution_views.clone());
                     Some(Arc::new(r))
                 } else {
                     None
@@ -275,40 +212,75 @@ async fn build_injection(
             // 自建一份表，UI 的批准就永远送不到这个引擎的闸门（点了批准一直卡到超时）。
             let approval_for_factory = approval_mgr.clone();
             let gateway_override_owned = gateway_override.map(|s| s.to_string());
-            let factory: agent_rpc::server::dispatch::EngineFactory = Arc::new(move |ws_path: &std::path::Path| -> Option<Arc<agent_base::engine::AgentRuntime>> {
-                let mut spec_dyn = agent_runtime::AgentSpec::from_json_str(spec_json).ok()?;
-                if apply_delegation {
-                    match &gateway_override_owned {
-                        Some(endpoint) => {
-                            spec_dyn.capabilities.delegation = agent_runtime::DelegationMode::Gateway;
-                            spec_dyn.gateway = Some(agent_runtime::GatewaySpec {
-                                endpoint: endpoint.clone(),
-                            });
+            let script_host_for_factory = script_host.clone();
+            let plugin_mgr_for_factory = plugin_mgr.clone();
+            // 同一工作区直接复用启动时那份：它带着插件贡献，且不必再装一遍。
+            let primary_ws = ws.to_string_lossy().to_string();
+            let runtime_for_factory = runtime.clone();
+            let factory: agent_rpc::server::dispatch::EngineFactory =
+                Arc::new(move |ws_path: std::path::PathBuf| {
+                    let store = store_for_factory.clone();
+                    let approval = approval_for_factory.clone();
+                    let gateway_override_owned = gateway_override_owned.clone();
+                    let host = script_host_for_factory.clone();
+                    let mgr = plugin_mgr_for_factory.clone();
+                    let primary = primary_ws.clone();
+                    let primary_engine = runtime_for_factory.clone();
+                    Box::pin(async move {
+                        if same_workspace(&ws_path, &primary) {
+                            return Some(primary_engine);
                         }
-                        None => {
-                            spec_dyn.capabilities.delegation = agent_runtime::DelegationMode::Local;
+                        let mut spec_dyn = agent_runtime::AgentSpec::from_json_str(spec_json).ok()?;
+                        if apply_delegation {
+                            match &gateway_override_owned {
+                                Some(endpoint) => {
+                                    spec_dyn.capabilities.delegation =
+                                        agent_runtime::DelegationMode::Gateway;
+                                    spec_dyn.gateway = Some(agent_runtime::GatewaySpec {
+                                        endpoint: endpoint.clone(),
+                                    });
+                                }
+                                None => {
+                                    spec_dyn.capabilities.delegation =
+                                        agent_runtime::DelegationMode::Local;
+                                }
+                            }
                         }
-                    }
-                }
-                let s_root = std::path::Path::new(&agent_node::session::get_app_home()).join("sessions");
-                let opts = agent_host::HostOptions::new(ws_path)
-                    .with_store(store_for_factory.clone())
-                    .with_sessions_root(s_root)
-                    .with_approval_manager(approval_for_factory.clone());
-                match agent_host::run_from_spec(spec_dyn, opts) {
-                    Ok(h) => {
-                        info!("为会话工作区 {} 动态装配 {label} 真引擎就绪", ws_path.display());
-                        Some(Arc::new(h.runtime))
-                    }
-                    Err(err) => {
-                        warn!("为工作区 {} 装配 {label} 引擎失败: {err}", ws_path.display());
-                        None
-                    }
-                }
-            });
+                        // 🔴 动态装配**同样要装插件**：这条闭包现在是异步的，等得起
+                        // `collect_plugin_tools`。同步闭包时代这里只能装出一份没有插件
+                        // 贡献的孪生引擎——正是"面板有 weather_query、模型说没有"的根因。
+                        let collected =
+                            collect_plugins(&ws_path, &spec_dyn, &host, &mgr, label).await;
+                        let s_root = std::path::Path::new(&agent_node::session::get_app_home())
+                            .join("sessions");
+                        let opts = agent_host::HostOptions::new(&ws_path)
+                            .with_store(store)
+                            .with_sessions_root(s_root)
+                            .with_approval_manager(approval)
+                            .with_plugin_contributions(collected.contributions)
+                            .with_plugin_capabilities(collected.caps)
+                            .with_prompt_extensions(collected.prompt_extensions);
+                        match agent_host::run_from_spec(spec_dyn, opts) {
+                            Ok(h) => {
+                                info!(
+                                    "为会话工作区 {} 动态装配 {label} 真引擎就绪（含插件贡献）",
+                                    ws_path.display()
+                                );
+                                Some(Arc::new(h.runtime))
+                            }
+                            Err(err) => {
+                                warn!(
+                                    "为工作区 {} 装配 {label} 引擎失败: {err}",
+                                    ws_path.display()
+                                );
+                                None
+                            }
+                        }
+                    })
+                });
 
             Some(agent_rpc::server::dispatch::EngineInjection {
-                runtime: Arc::new(runtime),
+                runtime: runtime.clone(),
                 approval_mgr: approval,
                 // W3-T6：声明一起注入，握手才能如实回报能力位
                 spec: Arc::new(spec),
@@ -320,6 +292,8 @@ async fn build_injection(
                 plugin_skills: Some(live.skill_store()),
                 // P2·SP-46：插件启停的重装配入口
                 reassembler,
+                // P4：界面读的插件贡献活体（`plugin.list` 从它取工具/片段/技能/钩子点位）
+                plugin_contribution_views: Some(plugin_contribution_views),
                 // P3a·SP-55：管理面点位（插件启停 / 会话创建）靠它在轮外跑钩子
                 hook_runner: hook_runtime_for_dispatch
                     .map(|r| r as Arc<dyn agent_base::ports::HookRunner>),
@@ -330,6 +304,119 @@ async fn build_injection(
             None
         }
     }
+}
+
+/// 一次插件装载的产物（工具 / 提示词片段 / 技能 / 钩子）。
+struct CollectedPlugins {
+    asm: agent_node::scripts::PluginToolAssembly,
+    contributions: agent_host::PluginContributions,
+    prompt_extensions: Vec<(String, String)>,
+    hook_runtime: Option<Arc<agent_node::hooks::HookRuntime>>,
+    caps: agent_node::plugins::PluginCapabilities,
+}
+
+/// 按工作区装载插件，产出四类贡献。
+///
+/// **启动装配与按工作区动态装配共用这一份**：两条路各写一遍的话，
+/// "动态装配没有插件"这种差异会永远修不干净（它确实被重复掩盖了很久）。
+async fn collect_plugins(
+    ws: &std::path::Path,
+    spec: &agent_runtime::AgentSpec,
+    script_host: &Arc<dyn agent_base::ports::ScriptHost>,
+    plugin_mgr: &Arc<agent_node::plugins::PluginManager>,
+    label: &str,
+) -> CollectedPlugins {
+    let caps = plugin_mgr
+        .get_capabilities(Some(&ws.to_string_lossy()))
+        .capabilities;
+    let mut out = CollectedPlugins {
+        asm: Default::default(),
+        contributions: Default::default(),
+        prompt_extensions: Vec::new(),
+        hook_runtime: None,
+        caps,
+    };
+    if !spec.capabilities.plugins {
+        return out;
+    }
+    let asm = agent_node::scripts::collect_plugin_tools(
+        plugin_mgr,
+        script_host,
+        ws,
+        agent_base::ports::ScriptBudget::default(),
+    )
+    .await;
+    if asm.plugins_loaded > 0 || !asm.skipped.is_empty() {
+        info!(
+            "[{label}] 插件工具：装载 {} 个插件、收下 {} 个工具、跳过 {} 条声明",
+            asm.plugins_loaded,
+            asm.tools.len(),
+            asm.skipped.len()
+        );
+    }
+    if !asm.skills.is_empty() {
+        info!(
+            "[{label}] 插件技能：{} 条（会与目录/内置技能一起进提示词）",
+            asm.skills.len()
+        );
+    }
+    // P2·SP-44：把插件工具写进"已启用的扩展工具"段落，模型才知道这些能力存在。
+    out.prompt_extensions = asm
+        .tools
+        .iter()
+        .map(|(_, t)| (t.descriptor().name.clone(), t.descriptor().summary.clone()))
+        .collect();
+    // P3a·SP-50：钩子运行时在这里装（它要 ScriptHost，宿主那层没有）。
+    if spec.capabilities.hooks {
+        let hook_timeout_ms = out.caps.hook_timeout_ms;
+        let (runtime, rejections) = agent_node::hooks::collect_hooks(
+            script_host.clone(),
+            agent_base::ports::HookBudget {
+                timeout_ms: hook_timeout_ms,
+            },
+            &asm.handles,
+            out.caps.clone(),
+        );
+        if !rejections.is_empty() {
+            warn!(
+                "[{label}] 钩子声明被拒 {} 条（分级/未实现/重复，逐条已进诊断）",
+                rejections.len()
+            );
+        }
+        if !runtime.is_empty() {
+            info!(
+                "[{label}] 钩子就绪：{} 条注册（单点位预算 {}ms）",
+                runtime.len(),
+                hook_timeout_ms
+            );
+            let rt = Arc::new(runtime);
+            out.hook_runtime = Some(rt.clone());
+            out.contributions.hook_runner = Some(rt);
+        }
+        out.contributions.hook_rejections = rejections;
+    }
+    out.contributions.prompt_fragments = asm
+        .prompt_fragments
+        .iter()
+        .map(|(pid, f)| (pid.clone(), f.id.clone(), f.content.clone()))
+        .collect();
+    out.contributions.skills = asm.skills.clone();
+    out.contributions.tools = asm.tools.clone();
+    out.asm = asm;
+    out
+}
+
+/// 两个工作区路径是否指同一个目录。
+///
+/// Windows 上 `E:\x` / `E:/x/` / `e:/X` 是同一个目录——写法差异不能让我们误判成
+/// "另一个工作区"，否则又会去装配一份**没有插件贡献**的孪生引擎。
+fn same_workspace(path: &std::path::Path, expected: &str) -> bool {
+    let expected = expected.trim();
+    if expected.is_empty() {
+        return false;
+    }
+    let norm = |s: &str| s.replace('\\', "/").trim_end_matches('/').to_lowercase();
+    norm(&path.to_string_lossy()) == norm(expected)
 }
 
 #[tokio::main]

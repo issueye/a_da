@@ -3,6 +3,9 @@
 > 依据：[docs/agent-base-design.md](agent-base-design.md) v0.2（Rust-only、产品线基座）。
 > 本文只给**开发计划**：MVP 边界、里程碑、任务清单、验收门、TS 归档的文件夹降级处理、排期与风险。
 > 所有现状数字均为实测（命令与结果在文内标注）。
+>
+> 🔴 **2026-10-17 更新**：`archive/ts-legacy/` 已删除，`verify-archive` 门与 `bunfig.toml` 一并移除。
+> 文中"归档"相关段落是**历史执行记录**，不再是现行路径或门禁。
 
 ---
 

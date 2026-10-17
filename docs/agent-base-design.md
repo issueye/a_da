@@ -1,5 +1,10 @@
 # AGENT BASE：Rust-only Agent 基座与产品线规范（设计 v0.2）
 
+> 🔴 **2026-10-17 更新**：TS 时代的实现目录（`archive/ts-legacy/`）**已删除**，
+> `verify-archive` 门与 `bunfig.toml` 一并移除。本文中出现的 `archive/...`、
+> `verify-archive`、"归档"等字样均为**历史记录**（迁移过程与决策依据），
+> 不再是现行路径或门禁。现行门禁清单见 [README.md](../README.md) 与 [AGENTS.md](../AGENTS.md)。
+
 > 状态：**设计草案 v0.2，只定设计与规范，不动代码**。
 > **v0.2 的定位变更（相对 v0.1）**：① **只考虑 Rust**——TS 那套 agent 实现（`src/agent/**` 的循环/宿主/工具）
 > 作为**归档版本**，不再是参考设计、不再是等价性基准；② 目标从"把 a_da 抽象出来"改成
@@ -39,7 +44,7 @@
 | `verify-proto` | base 协议在所有产品间**逐字节一致**；每个产品的目录 = base ∪ 自己的扩展；生成物（Rust 常量 / dispatch 臂 / 文档表格 / 客户端类型）**集合相等** |
 | `verify-spec` | 声明里出现的工具/能力位/方法**都能被装配**（没有"声明了没有实现"），且没有"实现了却没声明" |
 | `conformance` | 端口契约 + 跨端口不变量全绿（审批必被调用、取消贯穿、回执完整、失败方向一致…） |
-| `verify-archive` | 仓库里**不再存在**第二份引擎实现（防止 TS 那套以任何形式复活） |
+| ~~`verify-archive`~~ | 仓库里**不再存在**第二份引擎实现（防止 TS 那套以任何形式复活）。**2026-10-17 已随归档删除**；"无第二份引擎"由 `verify-wiring` 的端口实现/依赖方向断言继续守住 |
 
 新增一个 agent core 的路径（**7 步，其中 5 步是生成/校验**）：
 
@@ -50,7 +55,7 @@ cargo xtask gen                                             # 3 生成协议目�
 cargo xtask verify                                          # 4 一致性闸（红则不许合并）
 cargo test -p ada-life                                      # 5 合规套件
 cargo xtask ship --product ada-life                         # 6 单 exe
-cargo xtask verify-archive                                  # 7 没有第二份引擎
+cargo xtask verify-wiring                                   # 7 没有第二份引擎（结构断言）
 ```
 
 ---
@@ -479,7 +484,7 @@ products/
   ada-assistant/
   ada-life/
 spec/proto/{base.json,<product>.ext.json}
-tools/xtask/           new-agent | gen | verify | verify-spec | verify-archive | ship | compat
+tools/xtask/           new-agent | gen | verify | verify-spec | verify-wiring | ship | compat
 ```
 
 `cargo xtask new-agent --archetype life` 产出一个**编译即可通过 verify 与 conformance** 的骨架，

@@ -53,6 +53,37 @@ pub struct AgentRuntime {
     hooks: Option<Arc<dyn HookRunner>>,
 }
 
+/// `AFTER_TURN` 钩子的 payload（**给插件钩子的公开契约**：字段增删都算破坏性变更）。
+///
+/// 为什么必须只有一处构造：`run_turn` 有两条退出路径（"无工具调用自然结束"与
+/// "有工具调用后结束"），此前各自内联了一份同样的 `json!`。加一个字段时漏改一处
+/// **不会有任何编译错误**，只会让钩子在部分轮次里拿不到字段——最难查的那类缺陷。
+fn after_turn_payload(
+    step: u32,
+    thread_id: &str,
+    status: &str,
+    assistant_text_chars: usize,
+    thinking_chars: usize,
+    requested_tool_names: &[String],
+    tool_results: &[serde_json::Value],
+    usage: &serde_json::Value,
+    llm_duration_ms: u64,
+    tools_duration_ms: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "step": step,
+        "threadId": thread_id,
+        "status": status,
+        "assistantTextChars": assistant_text_chars,
+        "thinkingChars": thinking_chars,
+        "requestedToolNames": requested_tool_names,
+        "toolResults": tool_results,
+        "usage": usage,
+        "llmDurationMs": llm_duration_ms,
+        "toolsDurationMs": tools_duration_ms,
+    })
+}
+
 impl AgentRuntime {
     pub fn new(
         model: Arc<dyn ModelClient>,
@@ -957,18 +988,18 @@ impl AgentRuntime {
                 self.run_after_hook(
                     points::AFTER_TURN,
                     None,
-                    serde_json::json!({
-                        "step": step_index,
-                        "threadId": thread_id,
-                        "status": "completed",
-                        "assistantTextChars": assistant_text_chars,
-                        "thinkingChars": thinking_chars,
-                        "requestedToolNames": requested_tool_names,
-                        "toolResults": tool_results_summary,
-                        "usage": usage_summary,
-                        "llmDurationMs": step_duration_ms,
-                        "toolsDurationMs": tools_duration_ms,
-                    }),
+                    after_turn_payload(
+                        step_index,
+                        &thread_id,
+                        "completed",
+                        assistant_text_chars,
+                        thinking_chars,
+                        &requested_tool_names,
+                        &tool_results_summary,
+                        &usage_summary,
+                        step_duration_ms,
+                        tools_duration_ms,
+                    ),
                     sink,
                     &thread_id,
                     &trace,
@@ -1484,18 +1515,18 @@ impl AgentRuntime {
             self.run_after_hook(
                 points::AFTER_TURN,
                 None,
-                serde_json::json!({
-                    "step": step_index,
-                    "threadId": thread_id,
-                    "status": "completed",
-                    "assistantTextChars": assistant_text_chars,
-                    "thinkingChars": thinking_chars,
-                    "requestedToolNames": requested_tool_names,
-                    "toolResults": tool_results_summary,
-                    "usage": usage_summary,
-                    "llmDurationMs": step_duration_ms,
-                    "toolsDurationMs": tools_duration_ms,
-                }),
+                after_turn_payload(
+                    step_index,
+                    &thread_id,
+                    "completed",
+                    assistant_text_chars,
+                    thinking_chars,
+                    &requested_tool_names,
+                    &tool_results_summary,
+                    &usage_summary,
+                    step_duration_ms,
+                    tools_duration_ms,
+                ),
                 sink,
                 &thread_id,
                 &trace,

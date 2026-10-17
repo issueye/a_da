@@ -19,6 +19,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
+use crate::supervisor::now_ms;
+
 /// 一个 agent 实例的生命周期状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -450,13 +452,6 @@ fn collapse_dot_segments(path: &str) -> String {
     } else {
         out
     }
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// 工作区规范化（去掉尾部分隔符，统一 `/`），让"同一工作区的不同写法"落到同一实例。

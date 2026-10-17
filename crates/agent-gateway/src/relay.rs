@@ -484,6 +484,81 @@ pub async fn serve_client(
     relay(gateway, client_ws, instance).await
 }
 
+/// `gateway.register` 的**唯一**实现。
+///
+/// 两个入口都需要它：控制面（`serve_agent_control`，agent 进程自注册）与管理面
+/// （`relay`，客户端代注册）。此前两份各抄一遍，差异只有变量名——而且**不等价**：
+/// 只有控制面那份把 `agent_id` 记了下来用于断连清理，管理面那份不记，
+/// 于是从管理面注册的实例断连后没有清理路径，只能等 15 分钟空闲回收（`ReapPolicy`）。
+///
+/// 返回 `(agent_id, 响应体)`：`agent_id` 必须由调用方持有到连接结束，断开时标记离线。
+fn handle_register(
+    gateway: &Gateway,
+    params: &serde_json::Value,
+) -> Result<(String, serde_json::Value), String> {
+    let product = params.get("product").and_then(|v| v.as_str()).unwrap_or("");
+    let workspace = params.get("workspace").and_then(|v| v.as_str()).unwrap_or("");
+    let endpoint = params.get("endpoint").and_then(|v| v.as_str()).unwrap_or("");
+    let pid = params.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32);
+
+    // 自述服务的产品清单（可选）：一个实例可能同时服务 coding 与 pm
+    let products: Vec<String> = params
+        .get("products")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect::<Vec<String>>()
+        })
+        .filter(|list| !list.is_empty())
+        .unwrap_or_else(|| vec![product.to_string()]);
+
+    if product.is_empty() || workspace.is_empty() || endpoint.is_empty() {
+        return Err("gateway.register 参数缺失：需要 product, workspace, endpoint".to_string());
+    }
+
+    let norm_ws = normalize_workspace(workspace);
+    let agent_id = AgentRegistry::id_for_workspace(product, &norm_ws);
+    let inst = AgentInstance {
+        id: agent_id.clone(),
+        product: product.to_string(),
+        workspace: norm_ws.to_string_lossy().to_string(),
+        endpoint: endpoint.to_string(),
+        status: AgentStatus::Ready,
+        pid,
+        started_at: now_ms(),
+        products,
+        last_active_ms: now_ms(),
+    };
+    let is_new = gateway.registry.register(inst);
+    info!("Agent 成功向网关注册: {} -> {} (pid: {:?})", agent_id, endpoint, pid);
+
+    let resp = serde_json::json!({
+        "registered": true,
+        "id": agent_id,
+        "isNew": is_new,
+    });
+    Ok((agent_id, resp))
+}
+
+/// 连接断开时把"本连接注册的实例"标记离线。
+///
+/// 用 `Drop` 而不是在循环末尾手动调：`relay()` 里有多处 `?` 提前返回，
+/// 手动收尾必然漏一条路径（`ConnGuard` 用的是同一个理由）。
+struct RegisteredAgentGuard {
+    registry: Arc<AgentRegistry>,
+    id: Option<String>,
+}
+
+impl Drop for RegisteredAgentGuard {
+    fn drop(&mut self) {
+        if let Some(id) = &self.id {
+            warn!("连接已关闭，标记注册实例离线: {id}");
+            self.registry.set_status(id, AgentStatus::Stopped);
+        }
+    }
+}
+
 /// Agent 控制与自注册通道：专用于 Agent 进程向网关自报家门与保活。
 async fn serve_agent_control(
     gateway: Arc<Gateway>,
@@ -513,48 +588,10 @@ async fn serve_agent_control(
 
         let out: Result<serde_json::Value, String> = if let Some(method) = req.method.strip_prefix(GATEWAY_METHOD_PREFIX) {
             match method {
-                "register" => {
-                    let product = params.get("product").and_then(|v| v.as_str()).unwrap_or("");
-                    let workspace = params.get("workspace").and_then(|v| v.as_str()).unwrap_or("");
-                    let endpoint = params.get("endpoint").and_then(|v| v.as_str()).unwrap_or("");
-                    let pid = params.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32);
-                    // 自述服务的产品清单（可选）：一个实例可能同时服务 coding 与 pm
-                    let products: Vec<String> = params
-                        .get("products")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                .collect::<Vec<String>>()
-                        })
-                        .filter(|list| !list.is_empty())
-                        .unwrap_or_else(|| vec![product.to_string()]);
-                    if product.is_empty() || workspace.is_empty() || endpoint.is_empty() {
-                        Err("gateway.register 参数缺失：需要 product, workspace, endpoint".to_string())
-                    } else {
-                        let norm_ws = normalize_workspace(workspace);
-                        let agent_id = AgentRegistry::id_for_workspace(product, &norm_ws);
-                        let inst = AgentInstance {
-                            id: agent_id.clone(),
-                            product: product.to_string(),
-                            workspace: norm_ws.to_string_lossy().to_string(),
-                            endpoint: endpoint.to_string(),
-                            status: AgentStatus::Ready,
-                            pid,
-                            started_at: now_ms(),
-                            products,
-                            last_active_ms: now_ms(),
-                        };
-                        let is_new = gateway.registry.register(inst);
-                        info!("Agent 成功向网关注册: {} -> {} (pid: {:?})", agent_id, endpoint, pid);
-                        registered_agent_id = Some(agent_id.clone());
-                        Ok(serde_json::json!({
-                            "registered": true,
-                            "id": agent_id,
-                            "isNew": is_new,
-                        }))
-                    }
-                }
+                "register" => handle_register(&gateway, &params).map(|(agent_id, resp)| {
+                    registered_agent_id = Some(agent_id);
+                    resp
+                }),
                 "info" => Ok(gateway.info_result()),
                 "listAgents" => Ok(gateway.list_agents_result()),
                 "status" => Ok(gateway.status_result()),
@@ -693,6 +730,12 @@ async fn relay(
     let _conn_guard = ConnGuard {
         registry: gateway.registry.clone(),
         id: instance.id.clone(),
+    };
+
+    // 本连接通过 `gateway.register` 注册的实例：断开时标记离线（与控制面同一语义）
+    let mut registered = RegisteredAgentGuard {
+        registry: gateway.registry.clone(),
+        id: None,
     };
 
     // 连到 agent 实例
@@ -885,47 +928,11 @@ async fn relay(
             }
 
             let out: Result<serde_json::Value, String> = match method {
-                "register" => {
-                    let product = params.get("product").and_then(|v| v.as_str()).unwrap_or("");
-                    let workspace = params.get("workspace").and_then(|v| v.as_str()).unwrap_or("");
-                    let endpoint = params.get("endpoint").and_then(|v| v.as_str()).unwrap_or("");
-                    let pid = params.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32);
-                    // 自述服务的产品清单（可选）
-                    let products: Vec<String> = params
-                        .get("products")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                .collect::<Vec<String>>()
-                        })
-                        .filter(|list| !list.is_empty())
-                        .unwrap_or_else(|| vec![product.to_string()]);
-                    if product.is_empty() || workspace.is_empty() || endpoint.is_empty() {
-                        Err("gateway.register 参数缺失：需要 product, workspace, endpoint".to_string())
-                    } else {
-                        let norm_ws = normalize_workspace(workspace);
-                        let id = AgentRegistry::id_for_workspace(product, &norm_ws);
-                        let inst = AgentInstance {
-                            id: id.clone(),
-                            product: product.to_string(),
-                            workspace: norm_ws.to_string_lossy().to_string(),
-                            endpoint: endpoint.to_string(),
-                            status: AgentStatus::Ready,
-                            pid,
-                            started_at: now_ms(),
-                            products,
-                            last_active_ms: now_ms(),
-                        };
-                        let is_new = gw.registry.register(inst);
-                        info!("Agent 成功向网关注册: {} -> {} (pid: {:?})", id, endpoint, pid);
-                        Ok(serde_json::json!({
-                            "registered": true,
-                            "id": id,
-                            "isNew": is_new,
-                        }))
-                    }
-                }
+                "register" => handle_register(&gw, &params).map(|(agent_id, resp)| {
+                    // 与 `serve_agent_control` 同等对待：断连时由 guard 标记离线
+                    registered.id = Some(agent_id);
+                    resp
+                }),
                 "info" => Ok(gw.info_result()),
                 "listAgents" => Ok(gw.list_agents_result()),
                 "status" => Ok(gw.status_result()),

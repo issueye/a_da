@@ -33,13 +33,6 @@ use super::sandbox::check_workspace_sandbox;
 
 /// 已知 INV-8 缝隙：`ToolContext` 目前**没有**时钟端口，所以这里直接读系统时间。
 /// 与同目录的 `command/run.rs` 是同一个缺口，一并等 `ToolContext` 拿到 clock 后收敛。
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 struct BackgroundTask {
     id: String,
     command: String,
@@ -134,7 +127,7 @@ impl BackgroundTasks {
             id: id.clone(),
             command: command.to_string(),
             pid,
-            started_at: now_ms(),
+            started_at: crate::now_ms(),
             output: Mutex::new(String::new()),
             finished: AtomicBool::new(false),
             exit_code: Mutex::new(None),
@@ -220,10 +213,6 @@ where
     }
 }
 
-fn started() -> i64 {
-    now_ms()
-}
-
 // ── run_background ──────────────────────────────────────────────────────────
 
 pub struct RunBackgroundTool {
@@ -247,10 +236,10 @@ impl Tool for RunBackgroundTool {
 
     fn execute<'a>(&'a self, call: &'a ToolCall, _ctx: &'a ToolContext<'a>) -> BoxFuture<'a, ToolReceipt> {
         Box::pin(async move {
-            let t0 = started();
+            let t0 = crate::now_ms();
             let command = call.args.get("command").and_then(|v| v.as_str()).unwrap_or("");
             if command.trim().is_empty() {
-                return ToolReceipt::error("缺少必填参数 `command`", t0, started());
+                return ToolReceipt::error("缺少必填参数 `command`", t0, crate::now_ms());
             }
             let cwd = call.args.get("cwd").and_then(|v| v.as_str());
 
@@ -258,9 +247,9 @@ impl Tool for RunBackgroundTool {
                 Ok(id) => ToolReceipt::success(
                     format!("后台任务已启动：{id}（用 check_task 查看输出，kill_task 终止）"),
                     t0,
-                    started(),
+                    crate::now_ms(),
                 ),
-                Err(e) => ToolReceipt::error(e, t0, started()),
+                Err(e) => ToolReceipt::error(e, t0, crate::now_ms()),
             }
         })
     }
@@ -289,14 +278,14 @@ impl Tool for CheckTaskTool {
 
     fn execute<'a>(&'a self, call: &'a ToolCall, _ctx: &'a ToolContext<'a>) -> BoxFuture<'a, ToolReceipt> {
         Box::pin(async move {
-            let t0 = started();
+            let t0 = crate::now_ms();
             let id = call.args.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
             if id.trim().is_empty() {
-                return ToolReceipt::error("缺少必填参数 `task_id`", t0, started());
+                return ToolReceipt::error("缺少必填参数 `task_id`", t0, crate::now_ms());
             }
             match self.tasks.status(id) {
-                Ok(s) => ToolReceipt::success(s, t0, started()),
-                Err(e) => ToolReceipt::error(e, t0, started()),
+                Ok(s) => ToolReceipt::success(s, t0, crate::now_ms()),
+                Err(e) => ToolReceipt::error(e, t0, crate::now_ms()),
             }
         })
     }
@@ -325,14 +314,14 @@ impl Tool for KillTaskTool {
 
     fn execute<'a>(&'a self, call: &'a ToolCall, _ctx: &'a ToolContext<'a>) -> BoxFuture<'a, ToolReceipt> {
         Box::pin(async move {
-            let t0 = started();
+            let t0 = crate::now_ms();
             let id = call.args.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
             if id.trim().is_empty() {
-                return ToolReceipt::error("缺少必填参数 `task_id`", t0, started());
+                return ToolReceipt::error("缺少必填参数 `task_id`", t0, crate::now_ms());
             }
             match self.tasks.kill(id) {
-                Ok(msg) => ToolReceipt::success(msg, t0, started()),
-                Err(e) => ToolReceipt::error(e, t0, started()),
+                Ok(msg) => ToolReceipt::success(msg, t0, crate::now_ms()),
+                Err(e) => ToolReceipt::error(e, t0, crate::now_ms()),
             }
         })
     }

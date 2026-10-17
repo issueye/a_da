@@ -473,10 +473,7 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
     );
 
     // 4. 为子智能体生成独立会话 ID 并落盘持久化，支持在界面标签与工作区独立查看
-    let now_millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+    let now_millis = agent_toolkit::now_ms();
     let rand_suffix = uuid::Uuid::new_v4().simple().to_string();
     let thread_id = format!("thread_{}_{}", now_millis, &rand_suffix[..6]);
 

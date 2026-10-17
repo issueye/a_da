@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -162,10 +161,7 @@ impl SubagentManager {
             .and_then(|v| v.as_u64())
             .or_else(|| {
                 Some(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64,
+                    agent_toolkit::now_ms() as u64,
                 )
             });
 
@@ -284,10 +280,7 @@ impl SubagentManager {
             scope,
             icon,
             updated_at: Some(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64,
+                agent_toolkit::now_ms() as u64,
             ),
         }
     }

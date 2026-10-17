@@ -35,10 +35,7 @@ impl Tool for ListFilesTool {
         ctx: &'a ToolContext<'a>,
     ) -> BoxFuture<'a, ToolReceipt> {
         Box::pin(async move {
-            let started_at = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            let started_at = crate::now_ms();
 
             if ctx.cancel.is_cancelled() {
                 let finished_at = started_at;
@@ -49,10 +46,7 @@ impl Tool for ListFilesTool {
             let depth = call.args.get("depth").and_then(|v| v.as_u64()).map(|n| n as usize);
 
             let res = list_files(&self.workspace, path, depth);
-            let finished_at = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(started_at);
+            let finished_at = crate::now_ms().max(started_at);
 
             if res.ok {
                 ToolReceipt::success(res.output, started_at, finished_at)

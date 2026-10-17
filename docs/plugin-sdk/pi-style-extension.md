@@ -65,4 +65,24 @@ registration. Handlers receive `(event, ctx)`; `ctx` exposes workspace/session
 identifiers, timeout budget, and validated registration methods, but not raw host
 IO or arbitrary host actions.
 
+## Hook points and capability gates (as of 2026-10-17)
+
+* Every point in `agent_base::ports::hooks::points::IMPLEMENTED` (33 of them, including
+  `beforeTodoUpdate` / `afterTodoUpdate`) is callable and registrable; a point that is not
+  registered is reported as `no_subscriber` rather than silently skipped.
+* Which **actions** a hook may take is graded per point
+  (`HookLevel` + `allows`): third-party plugins can `Deny` / `Replace` on data-plane points
+  (`beforeToolCall`, `beforeTodoUpdate`) only; control-plane `Deny` is limited to builtin plugins.
+* The user's plugin capability switches gate actions on top of that: with
+  `allowThirdPartyHooks` off, third-party hook declarations are rejected at assembly time
+  (`third_party_hooks_disabled`); `allowTextRewrite` off drops `note` results;
+  `allowThreadDeleteBlock` / `allowCompactionReplace` off make the corresponding
+  deny/replace a no-op. Every such block is recorded with a reason you can read in the
+  diagnostics panel.
+* `ctx.registerTool` / `registerSkill` / `registerSystemPrompt` inside a handler are
+  currently **collected but not applied** (the host does not install them yet); the runtime
+  logs a warning when a handler asks for them. There is **no** `ctx.registerHook`: hooks must
+  be declared at factory time via `ada.on(point, handler)` — runtime hook registration would
+  mutate the hook table mid-turn, which the assembly model forbids.
+
 See [`extension-api.d.ts`](extension-api.d.ts) for the type contract.

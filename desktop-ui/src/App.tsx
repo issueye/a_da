@@ -10,6 +10,7 @@ import { EmptyConversationView } from './components/EmptyConversationView'
 import { SettingsModal } from './components/SettingsModal'
 import { PluginsModal } from './components/PluginsModal'
 import { ChangesPanel } from './components/ChangesPanel'
+import { AgentContextPanel } from './components/AgentContextPanel'
 import { CommandPalette } from './components/CommandPalette'
 import { FilePicker } from './components/FilePicker'
 import { DebugPanel } from './components/DebugPanel'
@@ -661,6 +662,10 @@ export function App() {
             </>
           )}
         </main>
+
+        {/* 右侧「Agent 上下文」：当前 agent 真正加载的插件 / 工具 / 技能。
+            数据来自装配期活体视图（plugin.list），不是静态目录扫描。 */}
+        <AgentContextPanel workspace={activeThread?.workspace || snapshot.activeWorkspace} />
       </div>
 
       {/* 改动审查面板 */}

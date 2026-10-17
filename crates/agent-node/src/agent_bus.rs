@@ -5,7 +5,7 @@
 //! `invoke_subagent` 现在**直接调用** `run_subagent`（进程内、一次性、临时上下文）。
 //! 将来网关要做「管理平台 + agent 间交互平台」，同一件事会变成"经网关调用一个远端
 //! agent 实例"。如果不先把**语义**抽出来，网关就会变成**第二套委派机制**——
-//! 而本仓已经为"两份实现"付过代价（INV-1、`verify-archive` 的第二份引擎断言）。
+//! 而本仓已经为"两份实现"付过代价（INV-1：仓库里只允许存在一份引擎）。
 //!
 //! ```text
 //! invoke_subagent (Tool) ──► AgentBus 端口 ──┬─ LocalAgentBus（进程内，= 今天的 run_subagent）

@@ -2,10 +2,14 @@ pub mod builtins;
 pub mod manager;
 pub mod sandbox;
 pub mod types;
+pub mod view;
 
 pub use manager::PluginManager;
 pub use sandbox::PluginSandbox;
 pub use types::*;
+pub use view::{
+    new_contribution_store, views_from_assembly, PluginContributionStore, PluginContributionView,
+};
 
 /// 一个插件工具是不是**写操作**。
 ///

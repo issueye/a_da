@@ -51,7 +51,9 @@ use agent_base::ports::{ModelClient, Tool};
 use agent_node::approval::{ApprovalManager, HostApprovalGate};
 use agent_rpc::server::{EngineInjection, StateBroadcaster, WsEventSink};
 use agent_rpc::state::AgentStore;
-use agent_runtime::{AgentSpec, CapabilitySpec, IdentitySpec, ProductBuilder, SpecError};
+use agent_runtime::{
+    AgentSpec, AssemblyBuilder, AssemblyPlan, CapabilitySpec, IdentitySpec, ProductBuilder, SpecError,
+};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
@@ -110,6 +112,54 @@ pub struct HostOptions {
     /// 四类贡献**合成一个结构**（而不是四个 setter）：它们出自**同一次**装载，
     /// 分开传就会出现"工具装了、钩子没装"这种半截状态，而且没人说得清哪个是权威。
     pub plugin_contributions: PluginContributions,
+    /// 插件能力开关里**装配面那两位**（P4 · 幽灵开关治理）：
+    /// `allowBuiltinShadow`（插件工具能否顶掉同名内置）与
+    /// `allowSystemPromptReplace`（插件提示词片段能否进系统提示词）。
+    ///
+    /// 传进来而不是在这里读配置：读配置要应用目录（`~/.a-da`），而那是组合根的活。
+    /// 不传 = 逐项放行（[`agent_node::plugins::PluginCapabilities::default`]）。
+    pub plugin_capabilities: agent_node::plugins::PluginCapabilities,
+}
+
+/// 装配面的能力开关判定（P4）：**初装与重装配共用的唯一一处**。
+///
+/// 为什么单独拎出来：这两个位的落点都在装配（同名覆盖判在装配管线、提示词片段直接进
+/// 片段活体），而"初装"（[`run_from_spec`]）与"重装配"（`LivePluginReassembler`）是两条
+/// 路径——各读一次配置、各判一遍，就会出现"初装挡下了、启停一次又放回来"这种半截状态。
+#[derive(Debug, Clone, Copy)]
+pub struct ContributionPolicy {
+    allow_builtin_shadow: bool,
+    allow_system_prompt_replace: bool,
+}
+
+impl ContributionPolicy {
+    pub fn from_capabilities(caps: &agent_node::plugins::PluginCapabilities) -> Self {
+        Self {
+            allow_builtin_shadow: caps.allow_builtin_shadow,
+            allow_system_prompt_replace: caps.allow_system_prompt_replace,
+        }
+    }
+
+    /// 交给 [`agent_runtime::AssemblyBuilder::with_builtin_shadow`]（由装配管线给出跳过理由）。
+    pub fn allow_builtin_shadow(&self) -> bool {
+        self.allow_builtin_shadow
+    }
+
+    /// 按 `allowSystemPromptReplace` 过滤插件提示词片段：
+    /// 返回（留下的片段、被挡下的 `plugin:id` 列表）——被挡的必须报出去，不能静默少一段。
+    pub fn filter_prompt_fragments(
+        &self,
+        fragments: Vec<(String, String, String)>,
+    ) -> (Vec<(String, String, String)>, Vec<String>) {
+        if self.allow_system_prompt_replace {
+            return (fragments, Vec::new());
+        }
+        let blocked = fragments
+            .iter()
+            .map(|(plugin_id, id, _)| format!("{plugin_id}:{id}"))
+            .collect();
+        (Vec::new(), blocked)
+    }
 }
 
 /// 组合根收集好的插件贡献（形状与 [`agent_node::scripts::PluginToolAssembly`] 对齐）。
@@ -142,7 +192,17 @@ impl HostOptions {
             skill_mgr: None,
             approval_mgr: None,
             plugin_contributions: PluginContributions::default(),
+            plugin_capabilities: agent_node::plugins::PluginCapabilities::default(),
         }
+    }
+
+    /// 传入插件能力开关（组合根从 `PluginManager::get_capabilities` 读出来）。
+    pub fn with_plugin_capabilities(
+        mut self,
+        caps: agent_node::plugins::PluginCapabilities,
+    ) -> Self {
+        self.plugin_capabilities = caps;
+        self
     }
 
     /// 传入组合根收集好的插件贡献（工具 / 片段 / 技能 / 钩子句柄）。
@@ -268,6 +328,42 @@ impl HostedProduct {
 }
 
 /// 按产品声明装配一个可运行的宿主产品（**真实端口**，见 crate 文档的表）。
+/// 装配管线（**初装与重装共用**）：内置工具包按声明装 → 插件贡献按来源装 → 出计划。
+///
+/// # 为什么必须共用
+///
+/// `run_from_spec`（初装）与 [`live::LivePluginReassembler::reassemble`]（启停后重装）
+/// 此前各写了一遍"收集 → 装配 → 摘要"。`ContributionPolicy` 已经共用了，但**流程**没有，
+/// 于是错误语义漂移：初装遇到非法工具包直接失败，重装却 `warn` 后放弃。
+/// 后果是"装好、用着正常 → 关一次再开一次"可能得到与初装不同的装配结论，
+/// 而两次装配的"收据"对不上。
+///
+/// 共用之后**处置策略**仍然可以不同（启动期必须炸，运行期只能放弃并如实记账），
+/// 但流程本身不可能再分叉——"初装 = 重装"由结构保证，而不再是注释里的承诺。
+fn assemble(
+    spec: &AgentSpec,
+    workspace: &std::path::Path,
+    allow_builtin_shadow: bool,
+    plugin_tools: &[(String, Arc<dyn Tool>)],
+) -> Result<AssemblyPlan, SpecError> {
+    // P4：`allowBuiltinShadow` —— 关掉之后插件工具不得顶掉同名内置（由管线记跳过理由）
+    let mut assembly = AssemblyBuilder::new().with_builtin_shadow(allow_builtin_shadow);
+
+    for tool in agent_toolkit::tools_for_toolkits(&spec.toolkits, workspace)
+        .map_err(SpecError::Violation)?
+    {
+        assembly
+            .add_builtin_tool(tool)
+            .map_err(|e| SpecError::Violation(e.message))?;
+    }
+
+    for (plugin_id, tool) in plugin_tools.iter().cloned() {
+        assembly.add_plugin_tool(plugin_id, tool);
+    }
+
+    Ok(assembly.build())
+}
+
 pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProduct, HostError> {
     // 提问通道必须**在装配期就装上**，不能等"谁先碰全局单例谁顺手装"。
     //
@@ -356,6 +452,11 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
         hook_runner,
         hook_rejections,
     } = options.plugin_contributions;
+    // P4：装配面的两位能力开关（同名覆盖 / 提示词片段）。重装配走**同一个** `ContributionPolicy`，
+    // 免得"初装挡下了、启停一次又放回来"。
+    let contribution_policy = ContributionPolicy::from_capabilities(&options.plugin_capabilities);
+    let (plugin_prompt_fragments, blocked_prompt_fragments) =
+        contribution_policy.filter_prompt_fragments(plugin_prompt_fragments);
     // P2·SP-45：插件技能在装配期就转成扫描结果的形状（带 plugin_id / plugin_name / scope）——
     // 于是提示词里那条技能片段能标上 `plugin:<id>`，界面列表也认得出它是插件带来的。
     //
@@ -421,18 +522,12 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
     //
     // 工具包工具与插件工具都往同一条管线里加，"同名谁胜出、谁该炸、谁该跳过"由它一处决定
     // （此前这段规则手写在 `agent-host` 里，而提示词/技能各有自己的一套）。
-    let mut assembly = agent_runtime::AssemblyBuilder::new();
-    for tool in
-        agent_toolkit::tools_for_toolkits(&spec.toolkits, &workspace).map_err(SpecError::Violation)?
-    {
-        assembly
-            .add_builtin_tool(tool)
-            .map_err(|e| SpecError::Violation(e.message))?;
-    }
-    for (plugin_id, tool) in plugin_tools.iter().cloned() {
-        assembly.add_plugin_tool(plugin_id, tool);
-    }
-    let plan = assembly.build();
+    let plan = assemble(
+        &spec,
+        &workspace,
+        contribution_policy.allow_builtin_shadow(),
+        &plugin_tools,
+    )?;
     let tools: Vec<Arc<dyn Tool>> = plan.tools.clone();
     let contribution_summary = plan.contributions.len();
 
@@ -498,6 +593,38 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
             skipped.origin.label(),
             skipped.reason
         );
+    }
+    // 被 `allowSystemPromptReplace` 挡下的提示词片段：**必须说出来**。
+    // 少一段提示词是"模型突然不守规矩了"这类最难查的症状，而它的原因在配置里
+    // （用户自己关的开关）——不报出来，插件作者会以为自己的片段从来没生效过。
+    if !blocked_prompt_fragments.is_empty() {
+        use agent_base::domain::{
+            DiagFamily, DiagOutcome, DiagnosticEvent, Origin, POINT_PLUGIN_SKIPPED,
+        };
+        tracing::warn!(
+            "[assembly] allowSystemPromptReplace 已关闭，挡下 {} 条插件提示词片段：{}",
+            blocked_prompt_fragments.len(),
+            blocked_prompt_fragments.join("、")
+        );
+        if let Ok(mut store_w) = store.try_write() {
+            for label in &blocked_prompt_fragments {
+                let plugin_id = label.split(':').next().unwrap_or_default().to_string();
+                agent_rpc::server::diag::project_out_of_turn(
+                    &mut store_w,
+                    &DiagnosticEvent::new(
+                        DiagFamily::Plugin,
+                        POINT_PLUGIN_SKIPPED,
+                        match plugin_id.as_str() {
+                            "" => Origin::Host,
+                            id => Origin::Plugin { id: id.to_string() },
+                        },
+                    )
+                    .with_outcome(DiagOutcome::Skipped)
+                    .with_reason("system_prompt_replace_disabled")
+                    .with_data(serde_json::json!({ "fragment": label })),
+                );
+            }
+        }
     }
 
     // 被拒的**钩子声明**必须报出来（P3a·SP-54 的验收判据）：
@@ -687,16 +814,24 @@ pub fn build_engine_injection(
     let spec_json_string = spec_json.to_string();
     let store_for_factory = store.clone();
     let sessions_root_for_factory = sessions_root_buf;
-    let factory: agent_rpc::server::dispatch::EngineFactory = Arc::new(move |ws_path: &Path| -> Option<Arc<AgentRuntime>> {
-        let spec_dyn = AgentSpec::from_json_str(&spec_json_string).ok()?;
-        let opts = HostOptions::new(ws_path)
-            .with_store(store_for_factory.clone())
-            .with_sessions_root(sessions_root_for_factory.clone());
-        match run_from_spec(spec_dyn, opts) {
-            Ok(h) => Some(Arc::new(h.runtime)),
-            Err(_) => None,
-        }
-    });
+    let factory: agent_rpc::server::dispatch::EngineFactory =
+        Arc::new(move |ws_path: std::path::PathBuf| {
+            let spec_json_string = spec_json_string.clone();
+            let store = store_for_factory.clone();
+            let sessions_root = sessions_root_for_factory.clone();
+            Box::pin(async move {
+                let spec_dyn = AgentSpec::from_json_str(&spec_json_string).ok()?;
+                let opts = HostOptions::new(&ws_path)
+                    .with_store(store)
+                    .with_sessions_root(sessions_root);
+                // 这条便捷路径**不装插件**（没有组合根那一步异步装载，也没有 ScriptHost）；
+                // 需要插件贡献的宿主走产品的 `build_injection`。
+                match run_from_spec(spec_dyn, opts) {
+                    Ok(h) => Some(Arc::new(h.runtime)),
+                    Err(_) => None,
+                }
+            })
+        });
 
     Ok(EngineInjection {
         runtime: Arc::new(runtime),
@@ -710,6 +845,8 @@ pub fn build_engine_injection(
         // 同理：重装配入口与钩子运行时都在组合根（产品 `main`）——这里如实为空
         reassembler: None,
         hook_runner: None,
+        // 贡献视图同理：没有组合根那次装载就没有"实际装上了什么"可报（`plugin.list` 如实为空）
+        plugin_contribution_views: None,
     })
 }
 
@@ -1114,6 +1251,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// P4·幽灵开关：`allowSystemPromptReplace` 关掉时插件的提示词片段**不进**提示词。
+    ///
+    /// 这个位此前只被解析、无人消费——界面却写着"第三方扩展可覆写默认 Prompt 指令"。
+    /// 断言的是**取提示词那条路**（片段活体 → 提示词源），不是某个中间变量。
+    #[test]
+    fn test_plugin_prompt_fragment_is_blocked_when_switch_is_off() {
+        let ws = tmp_ws("blocked_fragment");
+        let home = tmp_ws("blocked_fragment_home");
+        let spec = AgentSpec::from_json_str(SKELETON_SPEC).expect("spec 语法合法");
+        let hosted = run_from_spec(
+            spec,
+            HostOptions::new(&ws)
+                .with_model(scripted())
+                .with_skill_manager(Arc::new(agent_node::skills::SkillManager::with_home(&home)))
+                .with_plugin_capabilities(agent_node::plugins::PluginCapabilities {
+                    allow_system_prompt_replace: false,
+                    ..Default::default()
+                })
+                .with_plugin_contributions(PluginContributions {
+                    prompt_fragments: vec![(
+                        "demo-plugin".to_string(),
+                        "house-style".to_string(),
+                        "本项目一律用 tabs。".to_string(),
+                    )],
+                    ..Default::default()
+                }),
+        )
+        .expect("装配必须成功");
+
+        let prompt = hosted.runtime.prompt.system_prompt();
+        assert!(
+            !prompt.contains("本项目一律用 tabs。"),
+            "开关关掉后片段不得进提示词：{prompt}"
+        );
+        // 关掉的是"插件加片段"，不是"整个插件系统"：引擎照样装好、工具照样在
+        assert!(!hosted.tool_names().is_empty(), "其余装配不受影响");
+
+        let _ = std::fs::remove_dir_all(&ws);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// P2·SP-46 端到端：**停用插件之后，下一轮提示词里就没有它的技能与片段了**。
     ///
     /// 这是"启停真的改变贡献集合"最直白的一条：只看 `apply` 的返回值说明不了什么，
@@ -1344,6 +1522,7 @@ mod tests {
             script_host.clone(),
             agent_base::ports::HookBudget { timeout_ms: 2_000 },
             &collected.handles,
+            agent_node::plugins::PluginCapabilities::default(),
         );
         assert!(rejections.is_empty(), "第三方在数据面上拦下是允许的：{rejections:?}");
         assert_eq!(hook_runtime.len(), 1, "钩子注册要装上");
@@ -1462,6 +1641,7 @@ mod tests {
             script_host.clone(),
             agent_base::ports::HookBudget { timeout_ms: 500 },
             &collected.handles,
+            agent_node::plugins::PluginCapabilities::default(),
         );
         assert_eq!(rejections.len(), 1, "越级声明必须被拒：{rejections:?}");
         assert!(

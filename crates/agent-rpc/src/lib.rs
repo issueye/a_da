@@ -20,4 +20,5 @@
 pub mod gateway_bus;
 pub mod runner;
 pub mod server;
+pub mod seq_guard;
 pub mod state;

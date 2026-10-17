@@ -3,7 +3,6 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -168,7 +167,7 @@ impl CheckpointManager {
             snapshot_files.push(entry);
         }
 
-        let now = now_ms();
+        let now = agent_toolkit::now_ms();
         let record = CheckpointRecord {
             id: format!("ckpt_{}_{}", now, &uuid::Uuid::new_v4().to_string()[..6]),
             thread_id: thread_id.to_string(),
@@ -249,7 +248,7 @@ impl CheckpointManager {
         }
 
         let (restored, deleted, skipped) = self.apply_restore(&record.files);
-        let now = now_ms();
+        let now = agent_toolkit::now_ms();
         let revert = RevertRecord {
             id: format!("rvrt_{}_{}", now, &uuid::Uuid::new_v4().to_string()[..6]),
             at: now,
@@ -312,7 +311,7 @@ impl CheckpointManager {
         let (restored, deleted, skipped) = self.apply_restore(&[target_file.clone()]);
         let invalidated: Vec<String> = active_records.iter().map(|r| r.id.clone()).collect();
 
-        let now = now_ms();
+        let now = agent_toolkit::now_ms();
         let revert = RevertRecord {
             id: format!("rvrt_{}_{}", now, &uuid::Uuid::new_v4().to_string()[..6]),
             at: now,
@@ -366,7 +365,7 @@ impl CheckpointManager {
         let files: Vec<CheckpointFile> = earliest_map.into_values().collect();
         let (restored, deleted, skipped) = self.apply_restore(&files);
 
-        let now = now_ms();
+        let now = agent_toolkit::now_ms();
         let revert = RevertRecord {
             id: format!("rvrt_{}_{}", now, &uuid::Uuid::new_v4().to_string()[..6]),
             at: now,
@@ -395,13 +394,6 @@ impl CheckpointManager {
         }
         Ok(())
     }
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

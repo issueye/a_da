@@ -732,10 +732,13 @@ hooks: {
 }
 ```
 
-> **落地形态（P3a，2026-10-16）**：实际用的是插件侧的 `api.registerHook({ point, actions, order, handler })`
-> （对象形态 `export default { hooks: [...] }` 同效）——上面那个 manifest 块是**声明形状的示意**，
+> **落地形态（P3a，2026-10-16；入口统一于 2026-10-17）**：实际用的是插件侧的
+> `api.on(point, handler, { actions, order })`（对象形态 `export default { hooks: [...] }` 同效）
+> ——上面那个 manifest 块是**声明形状的示意**，
 > 本仓尚未引入独立的 manifest 文件（`LoadedPlugin.manifest` 只描述插件本身）。
 > 语义一样：**声明即授权**（未列出的动作运行期不生效并留痕），越级在装配期被拒并产诊断。
+> `api.registerHook` 已删除：它与 `api.on` 等价但多一个入口，且对象形态的 `handlerExport`
+> 在执行期找不到函数（只认 `handler`），属于"声明了却不跑"的假入口。
 
 ### 5.5 执行语义：顺序、链式、定稿、超时
 

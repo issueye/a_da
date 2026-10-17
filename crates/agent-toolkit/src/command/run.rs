@@ -41,10 +41,7 @@ impl Tool for RunCommandTool {
         ctx: &'a ToolContext<'a>,
     ) -> BoxFuture<'a, ToolReceipt> {
         Box::pin(async move {
-            let started_at = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            let started_at = crate::now_ms();
 
             if ctx.cancel.is_cancelled() {
                 let finished_at = started_at;
@@ -79,10 +76,7 @@ impl Tool for RunCommandTool {
                 }
             };
 
-            let finished_at = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(started_at);
+            let finished_at = crate::now_ms().max(started_at);
 
             // W4-T2：状态来自**结构化原因**，不再解析输出措辞
             // （原实现靠 `output.contains("取消")` / `contains("超时")` 猜——

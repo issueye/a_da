@@ -12,7 +12,7 @@
 //! ```
 //!
 //! 这样"本地委派"与"经网关委派"是**同一语义的两个实现**，而不是两套机制——
-//! 本仓已经为"两份实现"付过代价（INV-1、`verify-archive` 的第二份引擎断言）。
+//! 本仓已经为"两份实现"付过代价（INV-1：仓库里只允许存在一份引擎）。
 //!
 //! # 为什么它不在 `agent-toolkit` 的工具包里
 //!
@@ -35,7 +35,6 @@
 //! 表示"未进入执行"，与"跑了但失败"可区分。
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt, ToolStatus};
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
@@ -91,13 +90,6 @@ impl InvokeSubagentTool {
     }
 }
 
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 fn extract_workspace_from_text(text: &str) -> Option<String> {
     for line in text.lines() {
         for word in line.split_whitespace() {
@@ -131,7 +123,7 @@ impl Tool for InvokeSubagentTool {
         ctx: &'a ToolContext<'a>,
     ) -> BoxFuture<'a, ToolReceipt> {
         Box::pin(async move {
-            let started_at = now_ms();
+            let started_at = agent_toolkit::now_ms();
 
             let subagent_id = call
                 .args
@@ -143,7 +135,7 @@ impl Tool for InvokeSubagentTool {
                 return ToolReceipt::error(
                     "缺少必填参数 `subagent_id` / `task`",
                     started_at,
-                    now_ms(),
+                    agent_toolkit::now_ms(),
                 );
             }
 
@@ -192,7 +184,7 @@ impl Tool for InvokeSubagentTool {
                 })
                 .await;
 
-            let finished_at = now_ms();
+            let finished_at = agent_toolkit::now_ms();
 
             // 未进入执行（目标不存在 / 已禁用 / 没有可用模型）→ 与重构前逐字一致：
             // `ToolReceipt::error(原因)`，`details` 为 None。

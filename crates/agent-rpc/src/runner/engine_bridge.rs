@@ -19,8 +19,7 @@
 //! W3-T2 时期这里还有一个 `A_DA_ENGINE` 开关（默认 legacy、可回滚）。W3-T4 把 legacy
 //! 删掉之后，开关与"降级"语义一并移除——**"没注入引擎"是装配错误，不是运行时可选项**。
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use agent_base::domain::{AgentEvent, AgentEventBody, TurnStopReason};
@@ -28,6 +27,8 @@ use agent_base::engine::{AgentRuntime, TurnRequest};
 use agent_base::ports::EventSink;
 use agent_adapter::cancel::WatchedCancel;
 use thiserror::Error;
+
+use crate::seq_guard::SeqGuard;
 use tokio::sync::{mpsc, watch};
 use tracing::warn;
 
@@ -137,8 +138,8 @@ pub fn stop_reason_name(stop: &TurnStopReason) -> String {
 ///    没有对应物，但界面遥测条依赖 `AssistantStats`，所以在这里补出来。
 pub struct LoopEventBridge {
     tx: mpsc::Sender<AgentLoopEvent>,
-    last_seq: AtomicU64,
-    seq_violations: Mutex<Vec<String>>,
+    /// INV-6 的 `seq` 单调性审计（一处实现，三个出口共用）
+    seq: SeqGuard,
     started: Instant,
 }
 
@@ -146,35 +147,20 @@ impl LoopEventBridge {
     pub fn new(tx: mpsc::Sender<AgentLoopEvent>) -> Self {
         Self {
             tx,
-            last_seq: AtomicU64::new(0),
-            seq_violations: Mutex::new(Vec::new()),
+            seq: SeqGuard::new(),
             started: Instant::now(),
         }
     }
 
     pub fn seq_violations(&self) -> Vec<String> {
-        self.seq_violations.lock().expect("违约账本锁中毒").clone()
+        self.seq.violations()
     }
 }
 
 impl EventSink for LoopEventBridge {
     fn emit(&self, event: AgentEvent) {
         // INV-6：seq 必须严格递增；违约如实记账但**仍然转发**（丢事件会让界面少显示东西）
-        let prev = self.last_seq.load(Ordering::Relaxed);
-        if event.seq <= prev {
-            self.seq_violations
-                .lock()
-                .expect("违约账本锁中毒")
-                .push(format!(
-                    "事件 seq 未严格递增：thread={} prev={} current={} kind={}",
-                    event.thread_id,
-                    prev,
-                    event.seq,
-                    event.body.kind()
-                ));
-        } else {
-            self.last_seq.store(event.seq, Ordering::Relaxed);
-        }
+        self.seq.check(&event);
 
         // 用量事件在 legacy 事件集里没有对应物，单独补成 AssistantStats
         if let AgentEventBody::UsageReported { usage, duration_ms } = &event.body {
@@ -199,8 +185,8 @@ impl EventSink for LoopEventBridge {
 /// 直接通道事件出口（保持 INV-6 的 seq 递增审计）。
 pub struct DirectEventSink {
     tx: mpsc::Sender<AgentEvent>,
-    last_seq: AtomicU64,
-    seq_violations: Mutex<Vec<String>>,
+    /// INV-6 的 `seq` 单调性审计（一处实现，三个出口共用）
+    seq: SeqGuard,
 }
 
 /// **关键事件**：这些事件被丢掉，界面就会"不知道有人在等你/这一轮已经结束"，
@@ -227,33 +213,19 @@ impl DirectEventSink {
     pub fn new(tx: mpsc::Sender<AgentEvent>) -> Self {
         Self {
             tx,
-            last_seq: AtomicU64::new(0),
-            seq_violations: Mutex::new(Vec::new()),
+            seq: SeqGuard::new(),
         }
     }
 
     pub fn seq_violations(&self) -> Vec<String> {
-        self.seq_violations.lock().expect("违约账本锁中毒").clone()
+        self.seq.violations()
     }
 }
 
 impl EventSink for DirectEventSink {
     fn emit(&self, event: AgentEvent) {
-        let prev = self.last_seq.load(Ordering::Relaxed);
-        if event.seq <= prev {
-            self.seq_violations
-                .lock()
-                .expect("违约账本锁中毒")
-                .push(format!(
-                    "事件 seq 未严格递增：thread={} prev={} current={} kind={}",
-                    event.thread_id,
-                    prev,
-                    event.seq,
-                    event.body.kind()
-                ));
-        } else {
-            self.last_seq.store(event.seq, Ordering::Relaxed);
-        }
+        // INV-6：seq 必须严格递增；违约如实记账但**仍然转发**（丢事件会让界面少显示东西）
+        self.seq.check(&event);
         // 🔴 关键事件**绝不静默丢弃**：通道满时做**有界**退避重试（上限约 1 秒）。
         //
         // 丢一条增量只是少刷一帧文字；丢一次 `ApprovalRequested` / `TurnFinished`，

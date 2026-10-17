@@ -118,7 +118,9 @@ impl PluginSandbox {
                             registerSystemPrompt: (prompt) => {{ promptsRaw.push(prompt); }},
                             registerPrompt: (prompt) => {{ promptsRaw.push(prompt); }},
                             registerSkill: (skill) => {{ skillsRaw.push(skill); }},
-                            registerHook: (hook) => {{ hooksRaw.push(hook); }},
+                            // 钩子只有 `on` 一个入口：`registerHook` 曾经与它等价，
+                            // 但多一个入口只会让作者问"用哪个"，而且对象形态里
+                            // `handlerExport` 在执行期根本找不到函数（永远静默跳过）。
                             on: (event, handler, options = {{}}) => {{
                                 const aliases = {{
                                     turn_start: 'beforeTurn', turn_end: 'afterTurn',
@@ -468,20 +470,9 @@ impl PluginSandbox {
                         }});
                         return {{ ok: true }};
                     }};
-                    hookCtx.registerHook = (hook) => {{
-                        const handlerExport = hook && (hook.handlerExport || hook.handler);
-                        if (!hook || typeof hook.point !== 'string' || typeof handlerExport !== 'string') {{
-                            return {{ ok: false, reason: 'registerHook requires point and handlerExport' }};
-                        }}
-                        registrations.push({{
-                            kind: 'hook',
-                            point: hook.point,
-                            actions: Array.isArray(hook.actions) ? hook.actions : [],
-                            order: typeof hook.order === 'number' ? hook.order : 0,
-                            handlerExport,
-                        }});
-                        return {{ ok: true }};
-                    }};
+                    // 钩子内**没有** registerHook：动态注册目前整条链没有消费者
+                    // （`take_registrations` 只被测试调用），留着只会让作者以为注册成功。
+                    // 需要新增钩子请在工厂期用 `ada.on` 声明。
                     let hooksRaw = [];
                     if (typeof desc === 'function') {{
                         const api = {{
@@ -491,7 +482,6 @@ impl PluginSandbox {
                             registerSkill: () => {{}},
                             registerSystemPrompt: () => {{}},
                             registerPrompt: () => {{}},
-                            registerHook: (h) => {{ hooksRaw.push(h); }},
                             on: (event, handler, options = {{}}) => {{
                                 const aliases = {{
                                     turn_start: 'beforeTurn', turn_end: 'afterTurn',
@@ -721,11 +711,10 @@ impl PluginSandbox {
                             // （声明清单在 `__ada_inspect_tools` 那条路上探明并挂在句柄上，
                             // 这里再收一遍只会多一份对不上的副本）。但它们**不能不存在**——
                             // 插件工厂调了任何一个都会抛，工具就再也找不到了
-                            // （实测过一次：少了 `registerHook`，带钩子的插件连工具都调不动）。
+                            // （实测过一次：少了钩子注册入口，带钩子的插件连工具都调不动）。
                             registerSkill: () => {{}},
                             registerSystemPrompt: () => {{}},
                             registerPrompt: () => {{}},
-                            registerHook: () => {{}},
                             on: () => {{}},
                         }};
                         try {{
@@ -1223,7 +1212,7 @@ mod tests {
     ///    会得到 "expected value at line 1 column 2"；
     /// 2. 调度：`const payload = payload || {}` 会在 TDZ 里遮蔽同名参数，Boa 报
     ///    "access of uninitialized binding"；
-    /// 3. **工具调用路径的 api 必须也带 `registerHook`**：插件工厂调了它就抛，
+    /// 3. **工具调用路径的 api 必须也带钩子注册入口**：插件工厂调了它就抛，
     ///    于是"带钩子的插件连工具都调不动"——这条用例的后半段专门守着它。
     #[tokio::test]
     async fn test_sandbox_call_hook_round_trip_and_tool_still_works() {
@@ -1233,15 +1222,11 @@ mod tests {
         std::fs::write(
             &path,
             "export default function (api: any) {\n\
-               api.registerHook({\n\
-                 point: 'beforeToolCall',\n\
-                 actions: ['deny'],\n\
-                 handler: async (payload: any, ctx: any) => {\n\
-                   if (String((payload.args && payload.args.cmd) || '').includes('rm -rf')) {\n\
-                     return { action: 'deny', reason: '会删掉整个工作区' };\n\
-                   }\n\
-                   return { note: String(ctx.point) + ':' + String(ctx.workspace || '') };\n\
-                 },\n\
+               api.on('beforeToolCall', async (payload: any, ctx: any) => {\n\
+                 if (String((payload.args && payload.args.cmd) || '').includes('rm -rf')) {\n\
+                   return { action: 'deny', reason: '会删掉整个工作区' };\n\
+                 }\n\
+                 return { note: String(ctx.point) + ':' + String(ctx.workspace || '') };\n\
                });\n\
                api.registerTool({ name: 'git_status', description: '插件版 git 状态', \
                  execute: async () => ({ ok: true, output: '插件真的跑了' }) });\n\
@@ -1281,7 +1266,7 @@ mod tests {
         .expect("钩子调用不应直接失败");
         assert!(pass.get("action").is_none(), "无意见不该编一个动作出来：{pass}");
 
-        // ③ 同一个插件的**工具**照样能调（少了 `registerHook` 时这一步会红）
+        // ③ 同一个插件的**工具**照样能调（工厂里少了 `on` 时这一步会红）
         assert_eq!(
             pass.get("note").and_then(|v| v.as_str()),
             Some(format!("beforeToolCall:{}", dir.to_string_lossy()).as_str()),
@@ -1309,7 +1294,6 @@ mod tests {
               ctx.registerTool({ name: 'dynamic_tool', description: 'dynamic', parameters: { type: 'object' }, executeExport: 'dynamic_tool' }); \
               ctx.registerSystemPrompt({ id: 'dynamic-prompt', content: 'Use the dynamic prompt.' }); \
               ctx.registerSkill({ name: 'dynamic-skill', description: 'dynamic skill', path: '.ada/agent-coding/skills/dynamic-skill.md' }); \
-              ctx.registerHook({ point: 'afterTurn', actions: ['observe'], order: 5, handlerExport: 'dynamic_hook' }); \
               return { action: 'observe', data: { point: ctx.point } }; } }] };\n",
         )
         .unwrap();
@@ -1327,14 +1311,12 @@ mod tests {
         let registrations = registrations_result["data"]["registrations"]
             .as_array()
             .expect("registration requests should be returned");
-        assert_eq!(registrations.len(), 4);
+        assert_eq!(registrations.len(), 3);
         assert_eq!(registrations[0]["kind"], "tool");
         assert_eq!(registrations[0]["executeExport"], "dynamic_tool");
         assert_eq!(registrations[1]["kind"], "systemPrompt");
         assert_eq!(registrations[2]["kind"], "skill");
         assert_eq!(registrations[2]["path"], ".ada/agent-coding/skills/dynamic-skill.md");
-        assert_eq!(registrations[3]["kind"], "hook");
-        assert_eq!(registrations[3]["handlerExport"], "dynamic_hook");
         let _ = std::fs::remove_dir_all(&registration_dir);
 
         let _ = std::fs::remove_dir_all(&dir);

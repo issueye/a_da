@@ -130,6 +130,10 @@ impl HookLevel {
         use points::*;
         match point {
             BEFORE_TOOL_CALL | AFTER_TOOL_CALL => Some(Self::DataPlane),
+            // 待办清单与工具参数同属**数据面**：载荷是一份能重新校验的清单，
+            // 第三方拦下/改写它并不比拦下 `todo` 这一次工具调用多出任何权力
+            // （`beforeToolCall` 本来就给得出这个），所以分级与工具调用一致。
+            BEFORE_TODO_UPDATE | AFTER_TODO_UPDATE => Some(Self::DataPlane),
             BEFORE_APPROVAL | AFTER_APPROVAL => Some(Self::ControlPlane),
             BEFORE_PLUGIN_TOGGLE | AFTER_PLUGIN_TOGGLE => Some(Self::ControlPlane),
             BEFORE_THREAD_CREATE | AFTER_THREAD_CREATE => Some(Self::ControlPlane),
@@ -395,6 +399,10 @@ pub struct AfterRequest {
 
 /// Registration requests emitted by a hook context. These are data-only
 /// requests; the host decides when and how to apply them.
+///
+/// 只有工具 / 提示词 / 技能三类：钩子**没有**运行期注册入口——
+/// 钩子必须在装配期声明（工厂里的 `ada.on`），否则"轮内改钩子表"会破坏
+/// "装配只发生在启停时"这条约束。
 #[derive(Debug, Clone, PartialEq)]
 pub enum HookRegistration {
     Tool {
@@ -417,13 +425,6 @@ pub enum HookRegistration {
         body: Option<String>,
         when_to_use: Option<String>,
         user_invocable: Option<bool>,
-    },
-    Hook {
-        plugin_id: String,
-        point: String,
-        actions: Vec<String>,
-        order: i32,
-        handler_export: String,
     },
 }
 
@@ -591,4 +592,49 @@ pub trait HookRunner: Send + Sync {
         req: AfterRequest,
         ctx: &'a HookCtx<'a>,
     ) -> BoxFuture<'a, Vec<AfterNote>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **门禁**：`IMPLEMENTED` 里的每个点位都必须在分级表里有归属。
+    ///
+    /// 为什么需要这一条：`register()` 的第一步就是 `HookLevel::of`，返回 `None` 的点位
+    /// 会被以 `unknown_point` **拒收**。于是"列进了 `IMPLEMENTED`、却漏在分级表里"的点位
+    /// 永远注册不上——而它在引擎里可能**已经有调用方**，表现是那条链路静默失效，
+    /// 单测也测不出来（脚本化的钩子运行器直接注入引擎，绕过了注册）。
+    #[test]
+    fn test_every_implemented_point_is_gradable() {
+        let missing: Vec<&str> = points::IMPLEMENTED
+            .iter()
+            .copied()
+            .filter(|point| HookLevel::of(point).is_none())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "这些点位在 IMPLEMENTED 里却不在分级表里（注册期必被拒：unknown_point）：{missing:?}"
+        );
+    }
+
+    /// 点位清单本身不得重复（重复会让后一条注册撞上 `duplicate_hook_point` 的假理由）。
+    #[test]
+    fn test_implemented_points_are_unique() {
+        let mut sorted = points::IMPLEMENTED.to_vec();
+        sorted.sort_unstable();
+        let before = sorted.len();
+        sorted.dedup();
+        assert_eq!(before, sorted.len(), "IMPLEMENTED 里有重复点位：{sorted:?}");
+    }
+
+    /// 开放改写的点位必须是已实现的点位（否则 `REPLACE_SUPPORTED` 是空头授权）。
+    #[test]
+    fn test_replace_supported_points_are_implemented() {
+        for point in points::REPLACE_SUPPORTED {
+            assert!(
+                points::IMPLEMENTED.contains(point),
+                "`{point}` 声明了支持改写，却不在 IMPLEMENTED 里"
+            );
+        }
+    }
 }

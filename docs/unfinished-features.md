@@ -102,33 +102,76 @@
 - **仍不在范围内**：`run_turn_with_images` 的门禁（W5-T4）只在 `agent-host` 直连路径上，
   RPC 生产路径没有二次校验——两份产品声明现在都是 `true`，所以不构成不一致。
 
-### 9. 钩子点位　`已落地（P3a，2026-10-16）`
+### 9. 钩子点位　`已落地（P3a，2026-10-16；P4 复核修正 2026-10-17）`
 
-- **现状（已更新）**：机制与首批点位已接线，`capabilities.hooks` 从声明派生
-  （`ada-coding` / PM 预设为 `true`）。已实现的点位见
-  `agent_base::ports::hooks::points::IMPLEMENTED`：
-  `beforeToolCall` / `afterToolCall`（引擎，拦下 + 旁注）、
-  `beforePluginToggle` / `afterPluginToggle`、`beforeThreadCreate` / `afterThreadCreate`
-  （Dispatcher，管理面）。成对埋点 `hook.entered` / `hook.finished` / `hook.skipped`。
-- **仍未接**（插件声明它们会被**装配期如实拒**，不是静默不生效）：
-  `beforeApproval` / `afterApproval`、`beforeLlmRequest` / `afterLlmResponse`、
-  `beforeSystemPrompt` / `afterSystemPrompt`、`beforeCompaction` / `afterCompaction`、
-  `beforePersist` / `afterCheckpoint`、
-  `beforeSubagentStart` / `afterSubagentEnd`、`beforeSkillLoad` / `afterSkillLoad`、
-  `beforeThreadDelete` / `afterThreadDelete`、`onThreadSwitch`、`beforeTurn` / `afterTurn`。
-- **改写（`Replace`）**：`beforeToolCall` 已开（P3b，2026-10-16），并与"改写后重校验
-  （形状 / schema / 路径沙箱）+ 风险单调性"**同批**落地——改写不是授权，改完还要过同一套闸门。
-  载荷只有 `args`：工具名、读写性、描述符字段都改不动。**其余点位不支持改写**
-  （`points::REPLACE_SUPPORTED` 是单一真源；声明它们会被装配期如实拒），
-  `beforeTodoUpdate` 待接（需把钩子运行时接进 `ToolContext`）。
+- **现状（已按代码复核）**：`agent_base::ports::hooks::points::IMPLEMENTED` 列 **33 个点位**，
+  **全部**都有真实调用方（对照表：`engine/runtime.rs` 轮内、`dispatch.rs` 管理面、
+  `subagents/runner.rs`、`toolkit/core/todo.rs`）：
+  - 工具：`beforeToolCall` / `afterToolCall`（拦下 / 旁注 / 改写）
+  - 审批：`beforeApproval` / `afterApproval`　轮次：`beforeTurn` / `afterTurn`
+  - 会话：`beforeThreadCreate` / `afterThreadCreate` / `beforeThreadDelete` / `afterThreadDelete`
+  - Agent：`beforeAgentStart` / `afterAgentEnd`　压缩：`beforeCompaction` / `afterCompaction`
+  - 模型：`beforeLlmRequest` / `afterLlmResponse` / `beforeProviderRequest` /
+    `beforeProviderHeaders` / `afterProviderResponse`；上下文：`beforeContext` / `afterContext`
+  - 提示词：`beforeSystemPrompt` / `afterSystemPrompt`　只读面：`beforePersist` /
+    `afterCheckpoint` / `beforeSkillLoad` / `afterSkillLoad`
+  - 子智能体：`beforeSubagentStart` / `afterSubagentEnd`　待办：`beforeTodoUpdate` / `afterTodoUpdate`
+  - 插件启停：`beforePluginToggle` / `afterPluginToggle`
+  成对埋点 `hook.entered` / `hook.finished` / `hook.skipped`。
+- ⚠️ **本文此前的"仍未接"清单已过时**（把上表一大半点位列为未接），**已删除**：
+  那些点位既在 `IMPLEMENTED` 里、也都有调用方。判断口径以
+  `points::IMPLEMENTED` + 调用点为准，不要看旧清单。
+- **两处修正（P4，2026-10-17）**：
+  1. **`beforeTodoUpdate` / `afterTodoUpdate` 曾经"可注册不上"**：`HookLevel::of` 漏了这两个
+     分支 → `register()` 一律以 `unknown_point` 拒收，而 `IMPLEMENTED` 与
+     `REPLACE_SUPPORTED` 都声称它们可用、`todo` 工具也真的在发事件——生产链路上永远是
+     `no_subscriber`。**已补分级（数据面）**，并加了门禁测试
+     `test_every_implemented_point_is_gradable`（`IMPLEMENTED ⊆ HookLevel` 值域），
+     同类矛盾不会再静默出现。
+  2. **`onThreadSwitch` 不存在**（旧清单里列着它）：代码里没有这个点位常量，
+     `HookLevel::of` 也没有它。要做请先加常量 + 调用点，别只登记名字。
+- **改写（`Replace`）**：`beforeToolCall` 与 `beforeTodoUpdate`（数据面）已开，
+  与"改写后重校验（形状 / schema / 路径沙箱）+ 风险单调性"同批落地——改写不是授权，
+  改完还要过同一套闸门。载荷只有 `args`：工具名、读写性、描述符字段都改不动。
+  **其余点位不支持改写**（`points::REPLACE_SUPPORTED` 是单一真源，声明会被装配期如实拒）。
 - **"受信"档位不存在**：控制面点位的 `Deny` 因此对第三方一律关闭（只有内置插件能用）。
   将来要放开，应由 manifest 的显式字段驱动，不靠目录猜。
+- **熔断未做**：只有"超时 = 无意见""脚本抛错 = 无意见"两条失败安全口径，
+  没有对反复失败的插件降权/熔断。
 
 ### 10. i18n　`未排期`
 
 - **现状**：文案硬编码中文（部分中英混排）。`grep i18n|useTranslation` 零命中。
 - **注**：产品声明里有 `identity.locale`（W5-T4 已接进系统提示词），
   但**界面文案**仍与 locale 无关。
+
+### 11. 插件能力开关　`已接线（P4，2026-10-17）`
+
+- **背景**：`PluginCapabilities` 的 8 个位被界面渲染成"关掉后会发生什么"的开关，
+  而其中**只有 `hookTimeoutMs` 有真实消费者**——其余 7 位只被解析、无人读取。
+  用户关掉它们**什么都不会发生**，界面还在承诺（7 条用户可见的不实描述）。
+- **现在的处置**：**7 位全部接上判定，1 位删除**：
+
+  | 开关 | 判定点 |
+  |---|---|
+  | `allowBuiltinShadow` | 装配管线 `AssemblyBuilder::with_builtin_shadow`（关掉＝同名插件工具不注册、内置保留，跳过的记 `builtin_shadow_disabled`） |
+  | `allowSystemPromptReplace` | `agent_host::ContributionPolicy::filter_prompt_fragments`（关掉＝插件提示词片段不进系统提示词，被挡的进 `plugin.skipped` 诊断） |
+  | `allowThirdPartyHooks` | `HookRuntime::register`（关掉＝第三方钩子**装配期即拒**，理由 `third_party_hooks_disabled`；内置不受影响） |
+  | `allowTextRewrite` | `HookRuntime::action_disabled_by_capabilities`（关掉＝`note` 旁注不再注入） |
+  | `allowThreadDeleteBlock` | 同上（关掉＝`beforeThreadDelete` 的拦下不生效） |
+  | `allowCompactionReplace` | 同上（关掉＝`beforeCompaction` 的拦下/改写不生效） |
+  | `hookTimeoutMs` | `HookBudget`（单点位预算，早已消费） |
+  | ~~`allowPlanModeHooks`~~ | **已删除**（见下） |
+
+- **门禁**：`cargo xtask verify-wiring` 新增 **check L2** —— 逐个字段要求
+  `PluginCapabilities` 的每一位在**生产代码**里有判定点（判据是读取点写法本身，
+  排除定义处与"只解析不判定"的 `manager.rs`）。新加开关却没人读，会在门禁上直接红。
+- 🔴 **读开关的时机是进程装配期**（与 `hookTimeoutMs` 同源）：改开关要**重启产品**
+  才生效，与"声明式装配只发生在启动/启停"一致。别把它当成热生效。
+- **`allowPlanModeHooks` 为什么删掉**：它的承诺是"plan 模式下不跑钩子"，而 Rust 引擎
+  **不知道会话处于哪个 mode**——`AgentMode` 只被解析、存进 store、投影给界面，
+  执行侧没有任何分支读它。也就是说，它连"要判什么"都不存在。要做得先把 mode 接进引擎，
+  届时连开关一起加（界面文案已同步删除）。
 
 ---
 
@@ -178,10 +221,20 @@
 明细与理由见 `docs/plugin-system-dev-plan.md` 的 M3 完成记录，此处只列条目：
 
 1. `Thread.pluginData` 没有分区大小上限（未决问题，超限行为需先定：截断 / 拒绝 / 诊断）。
-2. 「能力开关」页只编辑全局那份；工作区级覆盖已经能读
-   （`workspacePluginState[ws].capabilities`），界面上还没给"仅本项目"的选择。
-3. 插件卡不列"这个插件注册了哪些钩子点位"——受限原因能说明"哪一步会被忽略"，
-   但"它会动手做哪些事"目前只有 `getLoadedPlugins()` 能查到。
+2. **工作区级的能力开关覆盖在 Rust 后端不存在**（旧文写的"已经能读"是对 TS 时代的描述，**已作废**）：
+   `PluginManager::get_capabilities(_workspace)` 显式忽略工作区参数，`config_path()` 恒为
+   `~/.a-da/config.json`；`pluginCapabilities` / `pluginConfig` 都只写全局那份。
+   要做"仅本项目"得先让配置按工作区分区。
+3. ~~插件卡不列"注册了哪些钩子点位"~~ → **已接线（P4）**：`PluginItem.hooks` 由装配期
+   活体视图填入（只列**真的注册上**的点位），插件卡渲染成钩子胶囊。
+4. **钩子内动态注册（`ctx.registerTool/registerSkill/registerSystemPrompt`）目前只收集、不生效**：
+   沙箱会如实把请求交出来（`HookRuntime::take_registrations` / `data.registrations`），
+   但**没有生产调用方**把它们装进 catalog / 提示词。收集处已打 warn 说清"不会生效"，
+   免得作者以为注册成功了。要做：启停式的重装配已经就位（`LiveContributions`），
+   接法是把这些注册项并进下一次装配，而不是就地改活体（那会在轮内改工具表）。
+   **`ctx.registerHook` 已删除**（2026-10-17）：它与工厂期的 `ada.on` 重复，且
+   `handlerExport` 在执行期根本找不到函数（`call_hook` 只认 `typeof handler === 'function'`），
+   留着等于承诺一个永远不会跑的点位。钩子只能在装配期声明。
 
 ---
 
@@ -240,8 +293,15 @@
 | `plugin.setEnabled` 回执里的 `report`（SP-46 新增） | 插件启停 | 服务端现在会回"这次启停**实际**改变了哪些贡献"（工具/片段/技能的新增与移除、提示词字节变化），界面只刷新开关状态、不显示这份差异——**数据已就位，渲染待做**（P3a 接 `afterPluginToggle` 时一并处理） |
 | `WorkspaceSnapshot.scanning` | 工作区扫描 | 扫描中状态界面不提示 |
 | `SubagentProfile.allowedTools` | 子智能体 | 选子智能体时看不到它的工具白名单（只有 `systemPrompt` 的间接体现） |
-| `PluginToolInfo.isWrite` / `.parameters` | 插件工具 | 插件工具卡不标"写工具"，也不展示参数 schema |
+| `PluginToolInfo.isWrite` / `.parameters` | 插件工具 | 插件工具卡不标"写工具"，也不展示参数 schema（**数据已由 P4 的活体视图填上**，只差渲染） |
 | `FsEntry.mtime` | 文件选择器 | 只有大小没有修改时间 |
+
+> **P4（2026-10-17）已修的两条**：
+> - **插件贡献字段不再是空的**：`plugin.list` / `plugin.load` 读装配期的**活体视图**
+>   （`agent_node::plugins::PluginContributionView`），磁盘插件的工具 / 技能 / 提示词片段 /
+>   钩子点位终于有值——此前静态目录扫描让贡献计数恒为 0、核心工具页的"被插件重实现"永不亮。
+>   启停时由 `LivePluginReassembler` 原地替换（与技能活体同一模式）。
+> - `PluginItem.hooks`（新增字段）：插件卡列出"这个插件会动手做哪些事"。
 
 ### 明确留给别的客户端（不是缺口）
 

@@ -254,18 +254,41 @@ impl std::fmt::Display for AssemblyError {
 impl std::error::Error for AssemblyError {}
 
 /// 装配管线：**收集**（各来源往里加）→ 校验 → 排序 → 产出四项产物。
-#[derive(Default)]
 pub struct AssemblyBuilder {
     builtin_tools: Vec<Arc<dyn Tool>>,
     plugin_tools: Vec<(String, Arc<dyn Tool>)>,
     prompt_fragments: Vec<PromptFragment>,
     skills: Vec<SkillEntry>,
     hooks: Vec<HookRegistration>,
+    /// 能力开关 `allowBuiltinShadow`：关掉之后插件工具**不得顶掉**同名内置工具。
+    ///
+    /// 判在装配期而不是注册处：界面走的是"装配结论"，注册处挡下只会让两边说法不一。
+    allow_builtin_shadow: bool,
+}
+
+impl Default for AssemblyBuilder {
+    /// 与既有行为一致：**默认放行**——没读到配置不是"关掉"，而是"没有额外限制"。
+    fn default() -> Self {
+        Self {
+            builtin_tools: Vec::new(),
+            plugin_tools: Vec::new(),
+            prompt_fragments: Vec::new(),
+            skills: Vec::new(),
+            hooks: Vec::new(),
+            allow_builtin_shadow: true,
+        }
+    }
 }
 
 impl AssemblyBuilder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// `allowBuiltinShadow`（默认 true）。
+    pub fn with_builtin_shadow(mut self, allow: bool) -> Self {
+        self.allow_builtin_shadow = allow;
+        self
     }
 
     /// 加一个**内置**工具（声明打架 = 内置自己的问题 → 立即报错）。
@@ -307,14 +330,13 @@ impl AssemblyBuilder {
         let mut contributions = Vec::new();
 
         // ── 工具：同名时插件胜出（内置让位），插件之间先到先得 ──────────────
+        //
+        // 顺序要紧：**先定下哪些插件工具真的收下**（重名先到先得 + 同名覆盖开关），
+        // 再据此决定哪些内置让位。反过来的话，一个被开关挡下的插件工具
+        // 会先把同名内置挤掉——最后工具表里那个名字**整个消失**。
         let mut replaced_builtins: Vec<String> = Vec::new();
-        let plugin_names: std::collections::BTreeSet<String> = self
-            .plugin_tools
-            .iter()
-            .map(|(_, t)| t.descriptor().name.clone())
-            .collect();
         let mut seen_plugin_names = std::collections::BTreeSet::new();
-        let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
+        let mut accepted_plugins: Vec<(String, Arc<dyn Tool>)> = Vec::new();
 
         for (plugin_id, tool) in self.plugin_tools.drain(..) {
             let name = tool.descriptor().name.clone();
@@ -329,11 +351,38 @@ impl AssemblyBuilder {
                 });
                 continue;
             }
-            if plugin_names.contains(&name)
+            if !self.allow_builtin_shadow
                 && self
                     .builtin_tools
                     .iter()
                     .any(|t| t.descriptor().name == name)
+            {
+                // 能力开关挡下：内置工具保住，插件那条**如实记成跳过**（不静默丢弃）
+                skipped.push(SkippedContribution {
+                    kind: ContributionKind::Tool,
+                    id: name.clone(),
+                    origin: ContributionOrigin::Plugin {
+                        id: plugin_id.clone(),
+                    },
+                    reason: "builtin_shadow_disabled".to_string(),
+                });
+                continue;
+            }
+            accepted_plugins.push((plugin_id, tool));
+        }
+
+        let plugin_names: std::collections::BTreeSet<String> = accepted_plugins
+            .iter()
+            .map(|(_, t)| t.descriptor().name.clone())
+            .collect();
+        let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
+
+        for (plugin_id, tool) in accepted_plugins {
+            let name = tool.descriptor().name.clone();
+            if self
+                .builtin_tools
+                .iter()
+                .any(|t| t.descriptor().name == name)
             {
                 replaced_builtins.push(name.clone());
             }
@@ -510,6 +559,39 @@ mod tests {
         assert_eq!(plan.skipped[0].reason, "duplicate_tool");
         assert_eq!(plan.skipped[0].id, "read_file");
         assert_eq!(plan.catalog.descriptors().len(), 1);
+    }
+
+    /// 能力开关 `allowBuiltinShadow` 关掉 → **内置保住**、插件那条记成跳过。
+    ///
+    /// 这条开关此前是**幽灵开关**：界面写着"关掉后插件同名工具不注册、保留内置"，
+    /// 而装配管线无条件让插件胜出——关掉它什么都不会发生，界面说的还与实际相反。
+    #[test]
+    fn test_builtin_shadow_disabled_keeps_builtin_and_reports_the_skip() {
+        let mut b = AssemblyBuilder::new().with_builtin_shadow(false);
+        b.add_builtin_tool(tool("read_file")).unwrap();
+        b.add_plugin_tool("p1", tool("read_file"));
+        // 不重名的插件工具照常收下（开关只约束"顶掉内置"这一件事）
+        b.add_plugin_tool("p1", tool("web_search"));
+
+        let plan = b.build();
+        assert!(plan.replaced_builtins.is_empty(), "开了开关就不该有替换：{:?}", plan.replaced_builtins);
+        assert_eq!(plan.skipped.len(), 1, "{:?}", plan.skipped);
+        assert_eq!(plan.skipped[0].reason, "builtin_shadow_disabled");
+        assert_eq!(plan.skipped[0].id, "read_file");
+        let names: Vec<String> = plan
+            .catalog
+            .descriptors()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert!(names.contains(&"read_file".to_string()), "内置必须还在：{names:?}");
+        assert!(names.contains(&"web_search".to_string()), "不重名的插件工具照常进来：{names:?}");
+        // 留下来的 `read_file` 必须是**内置**实现（而不是被挡下的插件那条）
+        assert!(plan.contributions.iter().any(|c| {
+            c.kind == ContributionKind::Tool
+                && c.id == "read_file"
+                && matches!(&c.origin, ContributionOrigin::Builtin { .. })
+        }));
     }
 
     /// 排序**必须稳定**：order 升序 → 内置优先 → id 兜底。顺序变了就是行为变更。

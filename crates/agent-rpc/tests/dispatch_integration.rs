@@ -825,6 +825,78 @@ async fn test_config_set_retry_count_is_clamped_and_persisted() {
     let _ = std::fs::remove_dir_all(&test_dir);
 }
 
+/// 设置项「深度档位 / 审批档位」的端到端契约：**改完重启还在**。
+///
+/// 用户报过的真实症状：把"推理力度"设成「中（Medium）」，重启后又变回默认。
+///
+/// 根因不可能在 UI（它每次保存都会发 `config.setEffort`），而在"内存改了、文件没写"：
+/// `save_app_config` 是**手工列字段**的，字段表里少了哪一项，重启就精确地丢哪一项。
+/// 所以这条测试同时钉两件事：
+/// 1. 配置文件里真的出现了这几个键（漏写字段 = 这里红）；
+/// 2. 用同一份 home 重建 store（等价于"重启进程"）能把值读回来（漏读 = 这里红）。
+#[tokio::test]
+async fn test_effort_and_approval_survive_restart() {
+    use agent_base::testing::TempAppHome;
+    use agent_proto::{ApprovalMode, Effort};
+
+    let test_dir = std::env::temp_dir().join(format!("a_da_effort_cfg_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&test_dir);
+    let cfg_path = test_dir.join("config.json");
+    let home = TempAppHome::at(&test_dir).with_config_file(&cfg_path);
+
+    let store = Arc::new(RwLock::new(AgentStore::with_home("E:/test".to_string(), &home)));
+    let dispatcher = Dispatcher::new(
+        store.clone(),
+        Arc::new(SessionManager::new(Some(test_dir.clone()))),
+        Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::with_home(test_home_dir())),
+        Arc::new(SkillManager::with_home(test_home_dir())),
+        None,
+    );
+
+    // 1. 默认档位：深度 = Max（"最大"），审批 = Auto
+    assert_eq!(store.read().await.config.effort, Effort::Max);
+
+    // 2. 改成「中」+「询问确认」
+    dispatcher
+        .dispatch("config.setEffort", serde_json::json!({ "effort": "medium" }))
+        .await
+        .expect("config.setEffort 必须可分发");
+    dispatcher
+        .dispatch("config.setApproval", serde_json::json!({ "mode": "ask" }))
+        .await
+        .expect("config.setApproval 必须可分发");
+    assert_eq!(store.read().await.config.effort, Effort::Medium, "内存态必须立即生效");
+
+    // 3. 真的落盘——这正是不变量所在：手工列字段的写法最容易漏项
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg_path).expect("配置必须已落盘")).unwrap();
+    assert_eq!(
+        written.get("effort").and_then(|v| v.as_str()),
+        Some("medium"),
+        "深度档位必须写进 config.json：{written}"
+    );
+    assert_eq!(
+        written.get("approval").and_then(|v| v.as_str()),
+        Some("ask"),
+        "审批档位必须写进 config.json：{written}"
+    );
+
+    // 4. 重启：同一份 home 重新构造 store，值必须原样回来
+    let reloaded = AgentStore::with_home("E:/test".to_string(), &home);
+    assert_eq!(reloaded.config.effort, Effort::Medium, "重启后深度档位不能回默认");
+    assert_eq!(reloaded.config.approval, ApprovalMode::Ask, "重启后审批档位不能回默认");
+    assert_eq!(
+        reloaded.config.retry_count,
+        agent_base::model::DEFAULT_MODEL_RETRY_COUNT as u32,
+        "别的设置项不该被顺手改掉"
+    );
+
+    let _ = std::fs::remove_dir_all(&test_dir);
+}
+
 /// 端到端守门：**审批请求必须真的能弹到界面上，并被界面放行**。
 ///
 /// 引擎的事件顺序是 `ApprovalRequested` →（等用户）→ `ToolCallStarted`（建卡，且在审批
@@ -1953,4 +2025,92 @@ async fn test_plugin_validate_reports_actionable_problems() {
 
     let _ = std::fs::remove_dir_all(&ws);
     let _ = std::fs::remove_dir_all(&test_dir);
+}
+
+/// P4：`plugin.list` 的贡献字段来自**装配期活体视图**，不再是空数组。
+///
+/// 修之前：`plugin.list` 读 `PluginManager::scan_plugins`（只扫目录、**从不执行插件**），
+/// 于是每个磁盘插件的 `tools` / `skills` / `prompts` 恒为空——插件卡的贡献计数永远 0，
+/// 而引擎里那些工具明明装上了。这条用例钉住"视图并进来"这条线。
+#[tokio::test]
+async fn test_plugin_list_merges_live_contribution_views() {
+    let ws_dir = std::env::temp_dir().join(format!("a_da_ws_plugin_view_{}", uuid::Uuid::new_v4()));
+    write_extension_package(
+        &ws_dir,
+        "hello_view",
+        &["hello_view_tool"],
+        &[],
+        &[],
+        &["afterTurn"],
+        "ada.registerTool({ name: 'hello_view_tool', description: '打招呼', parameters: { type: 'object', properties: {} }, execute: async () => 'hello' });",
+    );
+    let ws = ws_dir.to_string_lossy().to_string();
+    let store = Arc::new(RwLock::new(store_for_test(&ws)));
+    let home = test_home_dir();
+
+    let views = agent_node::plugins::new_contribution_store(vec![
+        agent_node::plugins::PluginContributionView {
+            plugin_id: "workspace:hello_view".to_string(),
+            tools: vec![agent_node::plugins::PluginToolInfo {
+                name: "hello_view_tool".to_string(),
+                description: "打招呼".to_string(),
+                parameters: Some(serde_json::json!({ "type": "object" })),
+                is_write: false,
+            }],
+            prompts: Vec::new(),
+            skills: Vec::new(),
+            hooks: vec!["afterTurn".to_string()],
+        },
+    ]);
+
+    let dispatcher = Dispatcher::new(
+        store.clone(),
+        Arc::new(SessionManager::new(Some(home.clone()))),
+        Arc::new(CheckpointManager::new(Some(home.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::with_home(home.clone())),
+        Arc::new(SkillManager::with_home(home.clone())),
+        None,
+    )
+    .with_plugin_contribution_views(views);
+
+    let listed = dispatcher
+        .dispatch("plugin.list", serde_json::json!({ "workspace": ws }))
+        .await
+        .expect("plugin.list 必须可分发");
+    let items = listed["plugins"].as_array().expect("plugin.list 必须回插件数组");
+    let item = items
+        .iter()
+        .find(|p| p["id"] == "workspace:hello_view")
+        .expect("磁盘插件必须出现在列表里");
+    assert_eq!(
+        item["tools"].as_array().map(|a| a.len()),
+        Some(1),
+        "工具贡献要由活体视图填上（静态扫描恒为空）：{item}"
+    );
+    assert_eq!(
+        item["hooks"].as_array().map(|a| a.len()),
+        Some(1),
+        "钩子点位清单要一起给（'这个插件会动手做哪些事'）：{item}"
+    );
+    assert_eq!(
+        item["plugin"]["contributions"]["tools"]
+            .as_array()
+            .map(|a| a.len()),
+        Some(1),
+        "声明形状也要一起填（核心工具页的'被插件重实现'读它）：{item}"
+    );
+    // 内置插件不受视图影响（它的贡献由 builtins.rs 给全）
+    let builtin = items
+        .iter()
+        .find(|p| p["scope"] == "builtin")
+        .expect("内置插件也在列表里");
+    assert!(
+        builtin["hooks"].as_array().map(|a| a.is_empty()).unwrap_or(true),
+        "内置插件的钩子点位不该被视图改写：{builtin}"
+    );
+
+    let _ = std::fs::remove_dir_all(&ws);
+    let _ = std::fs::remove_dir_all(&home);
 }

@@ -237,10 +237,7 @@ impl Tool for AskUserTool {
         ctx: &'a ToolContext<'a>,
     ) -> BoxFuture<'a, ToolReceipt> {
         Box::pin(async move {
-            let started_at = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            let started_at = crate::now_ms();
 
             // 1. 参数校验与对齐：单题简写（顶层 question/choices）与多题（questions[]）都收
             let questions = match prepare_questions(&call.args) {
@@ -315,10 +312,7 @@ impl Tool for AskUserTool {
                         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     }
                 } => {
-                    let finished_at = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as i64)
-                        .unwrap_or(0);
+                    let finished_at = crate::now_ms();
                     return ToolReceipt::new(
                         ToolStatus::Aborted,
                         "操作在等待提问答复时被中止。",
@@ -328,10 +322,7 @@ impl Tool for AskUserTool {
                 }
             };
 
-            let finished_at = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            let finished_at = crate::now_ms();
 
             match answer {
                 Ok(ans) => {

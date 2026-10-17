@@ -18,10 +18,9 @@
 //! # 时间戳
 //!
 //! 回执要 `started_at` / `finished_at`，而 `ToolContext` 里没有时钟端口——
-//! 与既有工具（`ask_user`）同一约定：用 `SystemTime::now()` 记墙钟毫秒。
+//! 与既有工具（`ask_user`）同一约定：用 `agent_toolkit::now_ms()` 记墙钟毫秒。
 
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use agent_base::domain::{
     Access, ApprovalPolicy, Execution, PathSelector, RollbackPolicy, Termination, ToolCall,
@@ -33,13 +32,6 @@ use agent_base::ports::{
 };
 
 /// 系统时钟毫秒（与既有工具同一约定）。
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 /// 把一次脚本调用的结果翻译成工具回执。**全仓唯一转换点**。
 ///
 /// 为什么强调"唯一"：这套映射是"脚本出错"与"撞预算"对模型含义的唯一定义——
@@ -196,7 +188,7 @@ impl Tool for PluginTool {
         ctx: &'a ToolContext<'a>,
     ) -> BoxFuture<'a, ToolReceipt> {
         Box::pin(async move {
-            let started_at = now_ms();
+            let started_at = agent_toolkit::now_ms();
             let script_ctx = ScriptCtx {
                 budget: self.budget,
                 cancel: ctx.cancel,
@@ -214,7 +206,7 @@ impl Tool for PluginTool {
                     &script_ctx,
                 )
                 .await;
-            outcome_to_receipt(outcome, started_at, now_ms(), &call.name)
+            outcome_to_receipt(outcome, started_at, agent_toolkit::now_ms(), &call.name)
         })
     }
 

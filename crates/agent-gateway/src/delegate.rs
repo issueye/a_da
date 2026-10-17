@@ -41,6 +41,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::info;
 
 use crate::registry::AgentInstance;
+use crate::supervisor::now_ms;
 
 /// 允许的最大委派深度。`depth` 从 1 开始（第一次跨网关派活就是 1 层）。
 ///
@@ -649,13 +650,6 @@ pub fn evaluate_subagent_question(
         task_short, question_text
     );
     (None, Some(decision_text))
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

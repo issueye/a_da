@@ -162,6 +162,9 @@ pub fn get_builtin_plugin_items(disabled_ids: &std::collections::HashSet<String>
                 tools: tools_info,
                 skills: Vec::new(),
                 prompts: Vec::new(),
+                // 内置插件的钩子点位不在这里凭空填：它们由 `HookRuntime` 注册后才有定论，
+                // 静态清单一律为空（界面读装配期的活体视图）
+                hooks: Vec::new(),
                 is_package: Some(false),
                 error: None,
                 size_bytes: 0,

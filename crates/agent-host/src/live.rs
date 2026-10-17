@@ -145,6 +145,8 @@ pub struct LivePluginReassembler {
     /// 与工具/片段/技能一样走活体：引擎持的是 `Arc<dyn HookRunner>`，换不掉，
     /// 只能换它内部那张注册表。
     hook_runtime: Option<Arc<agent_node::hooks::HookRuntime>>,
+    /// 界面读的贡献视图活体（P4）：启停后原地替换，否则"关掉了插件、卡片还列着它的工具"。
+    contribution_views: Option<agent_node::plugins::PluginContributionStore>,
 }
 
 impl LivePluginReassembler {
@@ -163,7 +165,17 @@ impl LivePluginReassembler {
             live,
             budget: agent_base::ports::ScriptBudget::default(),
             hook_runtime: None,
+            contribution_views: None,
         }
+    }
+
+    /// 接上贡献视图活体（P4）：启停后刷新界面读的那份"这个插件带来了什么"。
+    pub fn with_contribution_views(
+        mut self,
+        views: agent_node::plugins::PluginContributionStore,
+    ) -> Self {
+        self.contribution_views = Some(views);
+        self
     }
 
     /// 接上钩子运行时（P3a）：启停时原地重装它的注册表。
@@ -201,37 +213,42 @@ impl agent_rpc::server::dispatch::PluginReassembler for LivePluginReassembler {
             .await;
 
             // 2. 同一条装配管线重建计划：内置工具包按声明来（插件启停不该动内置）
-            let mut assembly = agent_runtime::AssemblyBuilder::new();
-            match agent_toolkit::tools_for_toolkits(&self.spec.toolkits, &self.workspace) {
-                Ok(tools) => {
-                    for tool in tools {
-                        if let Err(e) = assembly.add_builtin_tool(tool) {
-                            // 内置声明打架是**装配期该炸**的问题（同 `run_from_spec`）：
-                            // 这里如实放弃重装配并记一行，绝不假装成功。
-                            tracing::warn!("[reassembly] 放弃重装配（内置工具重名）：{}", e.message);
-                            return None;
-                        }
-                    }
-                }
+            //
+            // P4：装配面的两位能力开关按**当前**配置来判——用户可能刚把开关关掉、
+            // 再启停插件，这时重装配必须跟初装给同一个结论（`ContributionPolicy` 是共用那一处）。
+            let contribution_policy = crate::ContributionPolicy::from_capabilities(
+                &self
+                    .plugin_mgr
+                    .get_capabilities(Some(&self.workspace.to_string_lossy()))
+                    .capabilities,
+            );
+            // 与初装**同一个**装配函数（`crate::assemble`）。差别只在处置：
+            // 启动期装配失败必须炸（`run_from_spec` 里是 `?`），运行期只能放弃并如实记账。
+            let plan = match crate::assemble(
+                &self.spec,
+                &self.workspace,
+                contribution_policy.allow_builtin_shadow(),
+                &collected.tools,
+            ) {
+                Ok(plan) => plan,
                 Err(e) => {
-                    tracing::warn!("[reassembly] 放弃重装配（工具包声明不合法）：{e:?}");
+                    tracing::warn!("[reassembly] 放弃重装配（装配管线拒绝）：{e}");
                     return None;
                 }
-            }
+            };
             let fragments: Vec<(String, String, String)> = collected
                 .prompt_fragments
                 .iter()
                 .map(|(pid, f)| (pid.clone(), f.id.clone(), f.content.clone()))
                 .collect();
+            // P4：`allowSystemPromptReplace` 关掉时片段一律不进提示词，被挡的进收据
+            let (fragments, blocked_fragments) =
+                contribution_policy.filter_prompt_fragments(fragments);
             let skills: Vec<SkillSummary> = collected
                 .skills
                 .iter()
                 .map(|(pid, pname, decl)| decl.to_summary(pid, pname))
                 .collect();
-            for (pid, tool) in collected.tools.iter().cloned() {
-                assembly.add_plugin_tool(pid, tool);
-            }
-            let plan = assembly.build();
 
             // 3. 换进活体（工具集合 + 片段 + 技能），拿差异
             let delta = self.live.apply(&plan, fragments, skills);
@@ -240,6 +257,8 @@ impl agent_rpc::server::dispatch::PluginReassembler for LivePluginReassembler {
             // 少了这一步就会出现"关掉了插件，它的 beforeToolCall 还在拦"——比工具残留更糟，
             // 因为那是**行为面**的残留。
             let mut hook_notes: Vec<String> = Vec::new();
+            let mut hooks_by_plugin: std::collections::BTreeMap<String, Vec<String>> =
+                Default::default();
             if let Some(rt) = &self.hook_runtime {
                 let mut rej = Vec::new();
                 rt.reassemble(&collected.handles, &mut rej);
@@ -247,6 +266,16 @@ impl agent_rpc::server::dispatch::PluginReassembler for LivePluginReassembler {
                     .iter()
                     .map(|r| format!("{}：{}（{}）", r.plugin_id, r.point, r.reason))
                     .collect();
+                // 重新注册之后才知道"现在真的装上了哪些点位"（分级/开关随时可能挡下）
+                hooks_by_plugin = rt.points_by_plugin();
+            }
+
+            // 3.6 刷新界面读的贡献视图（P4）：工具/片段/技能/钩子点位四样一起换。
+            // 与初装走**同一个** `views_from_assembly`，免得两处各算一份、说不一样的话。
+            if let Some(store) = &self.contribution_views {
+                if let Ok(mut views) = store.write() {
+                    *views = agent_node::plugins::views_from_assembly(&collected, &hooks_by_plugin);
+                }
             }
 
             // 4. 收据：装不上的插件**如实报出**（fail-safe，不静默）
@@ -255,6 +284,12 @@ impl agent_rpc::server::dispatch::PluginReassembler for LivePluginReassembler {
                 .iter()
                 .map(|s| format!("{}：{}", s.plugin_id, s.reason))
                 .collect();
+            if !blocked_fragments.is_empty() {
+                skipped.push(format!(
+                    "allowSystemPromptReplace 已关闭：挡下提示词片段 {}",
+                    blocked_fragments.join("、")
+                ));
+            }
             skipped.extend(hook_notes);
             if !skipped.is_empty() {
                 tracing::warn!("[reassembly] 跳过的声明：{}", skipped.join("；"));

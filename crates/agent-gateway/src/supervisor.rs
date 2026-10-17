@@ -433,6 +433,12 @@ pub fn reap_once(registry: &AgentRegistry, policy: &ReapPolicy) -> (usize, usize
     (pruned, reaped, evicted)
 }
 
+/// 当前 Unix 毫秒时间戳（网关内**唯一**实现，`registry` / `delegate` / `relay` 都从这里取）。
+///
+/// 工具/节点侧的同名辅助在 `agent_toolkit::now_ms`。为什么这里不直接用它：网关有
+/// "只依赖 `agent-proto`（线协议）"的硬边界（`lib.rs` + check J），不能为了一个时间戳
+/// 把工具包拉进依赖图。这是**受控**的重复：两份实现必须保持同一语义
+/// （`duration_since` 失败返回 0）。
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

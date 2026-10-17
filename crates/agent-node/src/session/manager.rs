@@ -3,7 +3,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use agent_base::ports::AppHome;
 use anyhow::{Context, Result};
@@ -235,7 +235,7 @@ impl SessionManager {
             }
         }
 
-        let now = now_ms();
+        let now = agent_toolkit::now_ms();
         let header = SessionHeader {
             entry_type: "session".to_string(),
             version: CURRENT_SESSION_VERSION,
@@ -286,7 +286,7 @@ impl SessionManager {
             if let Some(m) = mode {
                 header.mode = Some(mode_to_header(m));
             }
-            header.updated_at = now_ms();
+            header.updated_at = agent_toolkit::now_ms();
         })
     }
 
@@ -339,7 +339,7 @@ impl SessionManager {
         // 行级写入与 id 规则走适配器的**同一份**实现（R2：落盘格式只有一个真源）。
         // 原先这里是内联的 `SessionMessageEntry` 构造 + 追加写，与
         // `agent_adapter::store::fs_store` 各写一份；W1-T2a 收敛掉。
-        let entry = agent_adapter::store::jsonl::new_message_entry(now_ms(), message);
+        let entry = agent_adapter::store::jsonl::new_message_entry(agent_toolkit::now_ms(), message);
         agent_adapter::store::jsonl::append_message(&file_path, &entry)?;
         Ok(())
     }
@@ -374,7 +374,7 @@ impl SessionManager {
         let Some(file_path) = self.resolve_write_path(session_id, workspace)? else {
             return Ok(());
         };
-        let entry = agent_adapter::store::jsonl::new_notice_entry(now_ms(), text, level);
+        let entry = agent_adapter::store::jsonl::new_notice_entry(agent_toolkit::now_ms(), text, level);
         agent_adapter::store::jsonl::append_notice(&file_path, &entry)?;
         Ok(())
     }
@@ -442,7 +442,7 @@ impl SessionManager {
 
         self.update_header(&file_path, |header| {
             header.title = Some(title.to_string());
-            header.updated_at = now_ms();
+            header.updated_at = agent_toolkit::now_ms();
         })
     }
 
@@ -480,7 +480,7 @@ impl SessionManager {
                     current.insert(k, v);
                 }
             }
-            header.updated_at = now_ms();
+            header.updated_at = agent_toolkit::now_ms();
         })
     }
 
@@ -1085,7 +1085,7 @@ impl SessionManager {
                 let _ = self.update_header(&file_path, |h| {
                     h.agent_id = Some("ada-coding".to_string());
                     h.mode = Some(mode_to_header(restored_mode.unwrap_or(AgentMode::Pm)));
-                    h.updated_at = now_ms();
+                    h.updated_at = agent_toolkit::now_ms();
                 });
             }
             // 自愈式回填：老的子会话标题没有唯一短 id（同 profile 连派多个时完全一样，
@@ -1095,7 +1095,7 @@ impl SessionManager {
                 backfill_subagent_title(&raw_title, &header.id, &file_path, |path, new_title| {
                     self.update_header(path, |h| {
                         h.title = Some(new_title.to_string());
-                        h.updated_at = now_ms();
+                        h.updated_at = agent_toolkit::now_ms();
                     })
                 })
             } else {
@@ -1211,13 +1211,6 @@ impl SessionManager {
         }
         Ok(())
     }
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

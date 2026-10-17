@@ -103,7 +103,7 @@ impl PluginSkillDeclaration {
 
 /// 插件声明的一条**钩子注册**（P3a · SP-50）。
 ///
-/// 声明面是 `api.registerHook({ point, actions, order, handler })`（对象形态
+/// 声明面是 `api.on(point, handler, { actions, order })`（对象形态
 /// `export default { hooks: [...] }` 也行）。**声明即授权**：`actions` 里没有的动作，
 /// 运行期即使插件返回了也不生效（并记理由）——否则"我声明了 observe、实际却拦下了"就没法解释。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -173,6 +173,11 @@ pub struct PluginItem {
     pub tools: Vec<PluginToolInfo>,
     pub skills: Vec<crate::skills::SkillSummary>,
     pub prompts: Vec<serde_json::Value>,
+    /// 该插件**真的注册上**的钩子点位（P4）：`plugin.list` 由装配期的活体视图填。
+    ///
+    /// 静态目录扫描给的永远是空——钩子要在注册期过分级/能力开关才有定论。
+    #[serde(default)]
+    pub hooks: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_package: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -181,6 +186,15 @@ pub struct PluginItem {
     pub updated_at: u64,
 }
 
+/// 插件能力开关。
+///
+/// 🔴 **每一位都必须有生产消费者**（`cargo xtask verify-wiring` 的 check L2 盯着它）：
+/// 界面把这些位渲染成"关掉后会发生什么"，没有消费者的位就是一句谎话——
+/// 用户关掉它、什么都不会发生，而界面还在承诺。
+///
+/// 曾经存在的 `allowPlanModeHooks`（"plan 模式下不跑钩子"）**已删**：Rust 引擎不知道
+/// 会话处于哪个 mode（`AgentMode` 只被解析并投影给界面，没有任何执行侧分支），
+/// 所以它连"要判什么"都不存在。要做得先把 mode 接进引擎，届时连开关一起加。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginCapabilities {
@@ -188,7 +202,6 @@ pub struct PluginCapabilities {
     pub allow_text_rewrite: bool,
     pub allow_thread_delete_block: bool,
     pub allow_compaction_replace: bool,
-    pub allow_plan_mode_hooks: bool,
     pub allow_third_party_hooks: bool,
     pub allow_builtin_shadow: bool,
     pub hook_timeout_ms: u64,
@@ -201,7 +214,6 @@ impl Default for PluginCapabilities {
             allow_text_rewrite: true,
             allow_thread_delete_block: true,
             allow_compaction_replace: true,
-            allow_plan_mode_hooks: true,
             allow_third_party_hooks: true,
             allow_builtin_shadow: true,
             hook_timeout_ms: 500,

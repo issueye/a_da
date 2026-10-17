@@ -572,38 +572,33 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
                 {[
                   {
                     key: 'allowSystemPromptReplace',
-                    label: '允许替换系统核心提示词',
-                    desc: '第三方扩展可覆写默认 Prompt 指令',
+                    label: '允许插件向系统提示词加内容',
+                    desc: '插件声明的提示词片段会进入系统提示词；关掉即不注入（被挡的片段会记进诊断）',
                   },
                   {
                     key: 'allowTextRewrite',
-                    label: '允许改写模型最终输出文本',
-                    desc: '通过钩子对输出 Markdown 进行过滤或后处理',
+                    label: '允许钩子追加旁注（note）',
+                    desc: '插件可在工具结果后补一句说明（会进模型上下文）；关掉后这类旁注不再生效',
                   },
                   {
                     key: 'allowThreadDeleteBlock',
-                    label: '允许会话删除拦截保护',
-                    desc: '阻止误删正在执行关键任务的会话',
+                    label: '允许插件拦下会话删除',
+                    desc: '插件可在删除前拦下；关掉后任何人都不能靠插件保住一条会话',
                   },
                   {
                     key: 'allowCompactionReplace',
-                    label: '允许自定义上下文压缩策略',
-                    desc: '用扩展算法替换默认滑动窗口压缩算法',
-                  },
-                  {
-                    key: 'allowPlanModeHooks',
-                    label: '规划模式下执行插件决策钩子',
-                    desc: '在只读 Plan 模式下允许运行安全的逻辑探测钩子',
+                    label: '允许插件定制上下文压缩',
+                    desc: '插件可拦下或改写压缩；关掉后压缩一律走核心默认实现',
                   },
                   {
                     key: 'allowThirdPartyHooks',
-                    label: '放行第三方扩展代码决策点',
-                    desc: '允许外部插件介入控制流重定向',
+                    label: '放行第三方插件的钩子',
+                    desc: '关掉后第三方插件的钩子一条都不装（装配期即拒，理由可见）',
                   },
                   {
                     key: 'allowBuiltinShadow',
                     label: '允许插件同名覆盖内置工具',
-                    desc: '当同名时优先使用工作区或全局自定义工具实现',
+                    desc: '关掉后同名插件工具不注册，保留内置实现（被挡的工具会记进诊断）',
                   },
                 ].map((item) => {
                   const val = Boolean((capsDraft as any)[item.key])
@@ -792,12 +787,28 @@ const PluginDetailCard: React.FC<{
 
       {/* 这个扩展到底带来了什么：工具 / 技能 / 提示词片段三类一起摆出来，
           省得用户去「技能库」「核心工具」两页自己拼。 */}
-      {((item.tools && item.tools.length > 0) || skillCount > 0 || (item.prompts && item.prompts.length > 0)) && (
+      {((item.tools && item.tools.length > 0) || skillCount > 0 || (item.prompts && item.prompts.length > 0) || (item.hooks && item.hooks.length > 0)) && (
         <div className="flex items-center flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-zinc-500 dark:text-zinc-400">
           <span>贡献：</span>
           <span>工具 {item.tools?.length ?? 0}</span>
           <span>技能 {skillCount}</span>
           <span>提示词片段 {item.prompts?.length ?? 0}</span>
+          <span>钩子点位 {item.hooks?.length ?? 0}</span>
+        </div>
+      )}
+
+      {/* P4：这个插件**会动手做哪些事**——只列真的注册上的点位（分级/开关挡下的不在里面） */}
+      {item.hooks && item.hooks.length > 0 && (
+        <div className="flex items-center flex-wrap gap-1.5">
+          <span className="text-[10px] text-zinc-500 dark:text-zinc-400">钩子：</span>
+          {item.hooks.map((point) => (
+            <span
+              key={point}
+              className="px-2 py-0.5 rounded bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-[10px] font-mono text-zinc-700 dark:text-zinc-300 shadow-sm dark:shadow-none"
+            >
+              {point}
+            </span>
+          ))}
         </div>
       )}
 

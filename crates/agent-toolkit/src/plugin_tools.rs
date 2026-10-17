@@ -276,16 +276,9 @@ impl PluginTool {
     }
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 fn to_receipt(res: ToolResult, started_at: i64) -> ToolReceipt {
     let status = if res.ok { ToolStatus::Success } else { ToolStatus::Error };
-    let mut receipt = ToolReceipt::new(status, res.output, started_at, now_ms());
+    let mut receipt = ToolReceipt::new(status, res.output, started_at, crate::now_ms());
     receipt.details = res.details;
     receipt
 }
@@ -297,7 +290,7 @@ impl Tool for PluginTool {
 
     fn execute<'a>(&'a self, call: &'a ToolCall, _ctx: &'a ToolContext<'a>) -> BoxFuture<'a, ToolReceipt> {
         Box::pin(async move {
-            let started_at = now_ms();
+            let started_at = crate::now_ms();
             let args = &call.args;
             let res = match self.kind {
                 Kind::ProjectInspect => project_inspect(&self.workspace).await,

@@ -35,10 +35,7 @@ impl Tool for EditFileTool {
         ctx: &'a ToolContext<'a>,
     ) -> BoxFuture<'a, ToolReceipt> {
         Box::pin(async move {
-            let started_at = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            let started_at = crate::now_ms();
 
             if ctx.cancel.is_cancelled() {
                 let finished_at = started_at;
@@ -63,10 +60,7 @@ impl Tool for EditFileTool {
             });
 
             let res = edit_file(&self.workspace, path, old_string, new_string, edits);
-            let finished_at = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(started_at);
+            let finished_at = crate::now_ms().max(started_at);
 
             if res.ok {
                 ToolReceipt::success(res.output, started_at, finished_at)

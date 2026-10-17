@@ -766,6 +766,16 @@ gate 检查插在 `enabled` 检查（`store.ts:1677-1679`）之后、**构建会
 | `hookTimeoutMs` | 500 | 超时后**放行并记 trace**（不 block——超时不该变成隐式拒绝） |
 | ~~工具集扩张~~ | — | **不可配置**，见 §6.4.3 |
 
+> **⚠️ Rust 侧的现状与本文的差异（P4，2026-10-17 复核）**：
+> 1. **`allowPlanModeHooks` 在 Rust 实现里已删除**：承诺是"plan 模式下不跑钩子"，但引擎
+>    不知道会话处于哪个 mode（`AgentMode` 只被解析并投影给界面，执行侧没有分支读它），
+>    连"要判什么"都不存在。要做得先把 mode 接进引擎。
+> 2. 其余 7 个位的**判定点**已在 Rust 侧接上（装配管线 / `ContributionPolicy` /
+>    `HookRuntime`），并由 `cargo xtask verify-wiring` 的 check L2 守住"每一位都有消费者"；
+>    开关在**进程装配期**读取，改后需重启。
+> 3. `overrides`（按插件/按工作区覆盖）在 Rust 侧**不存在**：
+>    `PluginManager::get_capabilities` 忽略工作区参数，配置只有全局那份。
+
 > **✅ `allowBuiltinShadow` 已实现（2026-09-30 补）。**
 > 它曾在 2026-09 的独立复核里被记为"幽灵开关"：声明了、有默认值、走三层配置解析、
 > UI 甚至写明关掉后的效果，但没有任何代码读它。现状是判定落在

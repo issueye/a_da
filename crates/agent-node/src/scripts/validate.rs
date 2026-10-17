@@ -4,13 +4,18 @@
 //!
 //! 插件作者今天只能"装上去看看"：写错了名字、转译过不去、工具名没登记，
 //! 表现都是"它没生效"——而**为什么**没生效，界面上一句话都没有。
-//! 这个自检把四件事一次性说清楚：**转译过不过 / 装载起不起得来 / 每个工具名在不在注册表 /
-//! 当前权限与预算是什么**。
+//! 这个自检把四件事一次性说清楚：**转译过不过 / 装载起不起得来 / 每个工具是内置实现还是
+//! 自定义工具 / 当前权限与预算是什么**。
 //!
 //! # 与装配共用同一批判据
 //!
 //! 这里用的都是装配期那几步（`transpile` → `ScriptHost::load` → 查注册表），
 //! 不另写一套"看起来像"的检查——两套判据迟早会说不一样的话。
+//!
+//! 🔴 **不在注册表里不再是"问题"**：装配期会把它当**自定义工具**装进去
+//! （`PluginTool::from_declaration`，按写操作归类、每次调用需审批）。
+//! 因此它进 `notes`（提示）而不是 `problems`（阻断）——把"能装上但要审批"
+//! 报成"装不上"，会让作者去改一个本来就没问题的名字。
 
 use std::path::Path;
 use std::sync::Arc;
@@ -24,7 +29,8 @@ use serde::Serialize;
 #[serde(rename_all = "camelCase")]
 pub struct ExportCheck {
     pub name: String,
-    /// 是否在**内置注册表**里（决策 1 的口径：只认注册表才装得进 catalog）
+    /// 名字是否在内置注册表里。`false` = 会按**自定义工具**安装
+    /// （保守描述符：写操作 + 每次调用需审批），不是"装不上"。
     pub registered: bool,
 }
 
@@ -46,6 +52,8 @@ pub struct ValidateReport {
     pub limits: String,
     /// 人话的问题清单：**空数组 = 可以放心启用**
     pub problems: Vec<String>,
+    /// 不阻断启用的提示（例如"这个工具是自定义工具，会按写操作 + 审批安装"）
+    pub notes: Vec<String>,
 }
 
 impl ValidateReport {
@@ -63,6 +71,7 @@ pub async fn validate_plugin(
     budget: ScriptBudget,
 ) -> ValidateReport {
     let mut problems = Vec::new();
+    let mut notes = Vec::new();
 
     // 1) 转译：与装配期同一步骤（读不到 / 语法错都在这里暴露）
     let transpiled = match tokio::fs::read_to_string(path).await {
@@ -105,9 +114,10 @@ pub async fn validate_plugin(
                 for name in host.exports(&handle).unwrap_or_default() {
                     let registered = agent_toolkit::find_tool_descriptor(&name).is_some();
                     if !registered {
-                        problems.push(format!(
-                            "工具 `{name}` 不在内置注册表里——当前口径（决策 1）只认注册表，\
-                             它不会被装进工具目录"
+                        // 能装上，只是按保守描述符装——把话说清，但不阻断启用
+                        notes.push(format!(
+                            "工具 `{name}` 不在内置注册表里：会以**自定义工具**安装\
+                             （按写操作归类，每次调用都需要审批）"
                         ));
                     }
                     exports.push(ExportCheck { name, registered });
@@ -161,6 +171,7 @@ pub async fn validate_plugin(
             limits.recursion_depth
         ),
         problems,
+        notes,
     }
 }
 
@@ -217,7 +228,7 @@ mod tests {
         assert!(!rep.transpiled);
         assert!(rep.problems.iter().any(|p| p.contains("转译失败")), "{:?}", rep.problems);
 
-        // (b) 未注册的工具名 → 明确说"不会被装进工具目录"
+        // (b) 未注册的工具名 → **不是问题**：装配期按自定义工具安装（提示，不阻断）
         let unreg = dir.join("unreg.ts");
         std::fs::write(
             &unreg,
@@ -226,11 +237,11 @@ mod tests {
         )
         .expect("写失败");
         let rep2 = validate_plugin(&host, "p", &unreg, &dir, ScriptBudget::default()).await;
-        assert!(!rep2.is_ok());
+        assert!(rep2.is_ok(), "自定义工具不该阻断启用：{:?}", rep2.problems);
         assert!(
-            rep2.problems.iter().any(|p| p.contains("不在内置注册表里")),
+            rep2.notes.iter().any(|n| n.contains("自定义工具")),
             "{:?}",
-            rep2.problems
+            rep2.notes
         );
         assert_eq!(rep2.exports.len(), 1);
         assert!(!rep2.exports[0].registered);

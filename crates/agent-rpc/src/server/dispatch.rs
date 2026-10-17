@@ -106,6 +106,23 @@ fn save_app_config(store: &AgentStore) -> Result<(), String> {
         obj.insert("supportsImages".to_string(), serde_json::json!(store.config.supports_images));
         // 模型请求重试次数（设置项，默认 5；重试耗尽即断开对话）
         obj.insert("retryCount".to_string(), serde_json::json!(store.config.retry_count));
+        // 审批档位 / 深度档位 / 默认模式 / 外观：启动时都会从这份文件读回来
+        // （`AgentStore` 的加载段），所以**必须写**。
+        // 早先这几项只改内存、字段表里也没有它们，于是每次重启都回到默认值——
+        // 表现就是"改完设置、重启又变回去了"。
+        obj.insert(
+            "approval".to_string(),
+            serde_json::to_value(store.config.approval).unwrap_or(serde_json::json!("ask")),
+        );
+        obj.insert(
+            "effort".to_string(),
+            serde_json::to_value(store.config.effort).unwrap_or(serde_json::json!("medium")),
+        );
+        obj.insert(
+            "mode".to_string(),
+            serde_json::to_value(store.config.mode).unwrap_or(serde_json::json!("code")),
+        );
+        obj.insert("appearance".to_string(), serde_json::json!(store.appearance));
         if let Some(ref ch) = store.provider.custom_headers {
             obj.insert("customHeaders".to_string(), serde_json::json!(ch));
         } else {
@@ -271,7 +288,20 @@ async fn fetch_remote_models(
 }
 
 /// 动态按工作区装配引擎的工厂函数。
-pub type EngineFactory = Arc<dyn Fn(&std::path::Path) -> Option<Arc<agent_base::engine::AgentRuntime>> + Send + Sync>;
+/// 按工作区装配引擎的工厂。
+///
+/// **必须是异步的**：插件工具/技能/提示词要靠 `collect_plugin_tools` 真的执行一遍插件
+/// 才能拿到（Boa 是异步的），同步闭包只能装出一份**没有插件贡献**的孪生引擎——
+/// 那正是"右侧面板列着 weather_query、模型却说没有这个工具"的根因。
+pub type EngineFactory = Arc<
+    dyn Fn(
+            std::path::PathBuf,
+        ) -> agent_base::ports::BoxFuture<
+            'static,
+            Option<Arc<agent_base::engine::AgentRuntime>>,
+        > + Send
+        + Sync,
+>;
 
 /// 轮外钩子点位的取消令牌：**永不取消**。
 ///
@@ -334,6 +364,12 @@ pub struct EngineInjection {
     ///
     /// 与引擎共用同一个实例（注册表是共享的）：装配期装好的钩子，轮内轮外都该看到同一份。
     pub hook_runner: Option<Arc<dyn agent_base::ports::HookRunner>>,
+    /// 插件贡献的**活体视图**（P4）：`plugin.list` 从它取工具 / 片段 / 技能 / 钩子点位。
+    ///
+    /// 为什么必须有：`PluginManager::scan_plugins` 只扫目录、**从不执行插件**，
+    /// 于是每个磁盘插件的贡献计数恒为 0、核心工具页的"被插件重实现"永远不亮。
+    /// 执行过插件的只有组合根，所以结论由它写进这个活体。
+    pub plugin_contribution_views: Option<agent_node::plugins::PluginContributionStore>,
 }
 
 impl EngineInjection {
@@ -350,7 +386,17 @@ impl EngineInjection {
             plugin_skills: None,
             reassembler: None,
             hook_runner: None,
+            plugin_contribution_views: None,
         }
+    }
+
+    /// 带上插件贡献视图（P4）：`plugin.list` 才能列出"实际装上了什么"。
+    pub fn with_plugin_contribution_views(
+        mut self,
+        views: agent_node::plugins::PluginContributionStore,
+    ) -> Self {
+        self.plugin_contribution_views = Some(views);
+        self
     }
 
     pub fn with_factory(mut self, factory: EngineFactory) -> Self {
@@ -479,6 +525,64 @@ pub struct Dispatcher {
     /// 为什么管理面点位不在引擎里：它们发生在**轮外**（没有 turn 上下文），
     /// 而引擎的钩子调用都绑在某一轮上。运行时本身是同一个（共享注册表）。
     hook_runner: Option<Arc<dyn agent_base::ports::HookRunner>>,
+    /// 插件贡献的活体视图（P4）：`plugin.list` / `plugin.load` 从它取"实际装上了什么"。
+    ///
+    /// 与 `plugin_skills` 同一个理由：要执行插件才拿得到结论，而那是组合根的事。
+    /// 区别是这里装了四类（工具 / 片段 / 技能 / 钩子点位），界面据此显示贡献计数、
+    /// 钩子点位清单与"被插件重实现"的交叉引用。
+    plugin_contribution_views: Option<agent_node::plugins::PluginContributionStore>,
+}
+
+/// P4：把"**实际装上了什么**"并进静态扫描结果（`plugin.list` / `plugin.load` 共用）。
+///
+/// 为什么必须有这一步：`PluginManager::scan_plugins` 只扫目录、**从不执行插件**，
+/// 于是每个磁盘插件的 `tools` / `skills` / `prompts` 恒为空数组——插件卡的贡献计数
+/// 永远显示 0，而引擎里那些工具明明装上了。执行过插件的只有组合根（装配期），
+/// 它把结论写进活体视图；两边按 `pluginId` 对齐（同一个 id 规则：`「scope:目录名」`）。
+///
+/// 没注入视图 = 一个字段都不动（如实为空，不是"假装没有插件"）。
+fn merge_contribution_views(
+    store: Option<&agent_node::plugins::PluginContributionStore>,
+    items: &mut [agent_node::plugins::PluginItem],
+) {
+    let Some(store) = store else {
+        return;
+    };
+    let views = match store.read() {
+        Ok(views) => views.clone(),
+        Err(_) => return,
+    };
+    for item in items.iter_mut() {
+        // 内置插件的贡献是编译进来的（`builtins.rs` 自带清单），静态扫描已经给全了
+        if item.scope == "builtin" {
+            continue;
+        }
+        let Some(view) = views.iter().find(|v| v.plugin_id == item.id) else {
+            continue;
+        };
+        item.tools = view.tools.clone();
+        item.skills = view.skills.clone();
+        item.prompts = view
+            .prompts
+            .iter()
+            .map(|p| serde_json::json!({ "id": p.id, "content": p.content }))
+            .collect();
+        item.hooks = view.hooks.clone();
+        // `plugin.contributions.tools` 是声明形状（装配与审计读它），与上面对齐着填
+        item.plugin.contributions.tools = view
+            .tools
+            .iter()
+            .map(|t| agent_node::plugins::PluginToolDeclaration {
+                name: t.name.clone(),
+                label: None,
+                description: t.description.clone(),
+                parameters: t
+                    .parameters
+                    .clone()
+                    .unwrap_or_else(|| serde_json::json!({ "type": "object" })),
+            })
+            .collect();
+    }
 }
 
 /// 把界面传来的图片**归一成可以直接进模型请求的 data URI**。
@@ -532,7 +636,7 @@ async fn resolve_engine_from_cache(
         }
     }
     if let Some(f) = factory {
-        if let Some(eng) = f(&p) {
+        if let Some(eng) = f(p.clone()).await {
             let mut guard = cache.lock().await;
             guard.insert(p, eng.clone());
             return Some(eng);
@@ -1320,6 +1424,7 @@ impl Dispatcher {
             plugin_skills: agent_node::skills::new_skill_store(Vec::new()),
             plugin_reassembler: None,
             hook_runner: None,
+            plugin_contribution_views: None,
         }
     }
 
@@ -1437,6 +1542,13 @@ impl Dispatcher {
         }
     }
 
+    /// P4：把"**实际装上了什么**"并进静态扫描结果（`plugin.list` / `plugin.load` 共用）。
+    ///
+    /// 实现是自由函数 [`merge_contribution_views`]（可单独测，不必造一整个 Dispatcher）。
+    fn merge_contribution_views(&self, items: &mut [agent_node::plugins::PluginItem]) {
+        merge_contribution_views(self.plugin_contribution_views.as_ref(), items);
+    }
+
     /// P2·SP-45：注入插件声明的技能（组合根在装配期收好的那份）。
     ///
     /// 保持 builder 风格的理由同 [`Self::with_engine`]：既有调用点与测试一行不改，
@@ -1452,6 +1564,18 @@ impl Dispatcher {
     /// P2·SP-46：注入重装配入口（组合根实现）。没注入 = `plugin.setEnabled` 只写盘不重装配。
     pub fn with_plugin_reassembler(mut self, r: Arc<dyn PluginReassembler>) -> Self {
         self.plugin_reassembler = Some(r);
+        self
+    }
+
+    /// P4：注入插件贡献的活体视图（组合根在装配期写、启停时原地替换）。
+    ///
+    /// 没注入 = `plugin.list` 的贡献字段如实为空（那是"这台宿主没执行过插件"的真相，
+    /// 而不是"插件没有任何贡献"）。
+    pub fn with_plugin_contribution_views(
+        mut self,
+        views: agent_node::plugins::PluginContributionStore,
+    ) -> Self {
+        self.plugin_contribution_views = Some(views);
         self
     }
 
@@ -2636,9 +2760,20 @@ impl Dispatcher {
                         "auto" => store.config.approval = ApprovalMode::Auto,
                         "ask" => store.config.approval = ApprovalMode::Ask,
                         "readonly" => store.config.approval = ApprovalMode::Readonly,
+                        // P1b 加了第四档，但这里漏了分支：选「完全访问」等于什么都没发生。
+                        "full" => store.config.approval = ApprovalMode::Full,
                         _ => {}
                     }
                 }
+                // **必须落盘**：审批档位是安全设置，重启后悄悄回到"自动执行"比不让改更糟。
+                //
+                // 落盘失败**必须报给界面**：只 `warn!` 一下的话，界面照样弹"保存成功"，
+                // 用户下次启动才发现被回滚——这正是"改了又恢复默认"最难查的成因。
+                save_app_config(&store).map_err(|e| {
+                    ProtocolError::internal_error(format!(
+                        "审批档位已在本次运行中生效，但写入 config.json 失败（重启后会回滚）：{e}"
+                    ))
+                })?;
                 drop(store);
 
                 if let Some(ref bc) = self.broadcaster {
@@ -2659,6 +2794,13 @@ impl Dispatcher {
                         _ => {}
                     }
                 }
+                // **必须落盘**：否则重启就回到默认档（用户看到的就是"改了又恢复"）。
+                // 与审批档位同理：写不进去就如实报错，不许"界面说成功、文件里没有"。
+                save_app_config(&store).map_err(|e| {
+                    ProtocolError::internal_error(format!(
+                        "深度档位已在本次运行中生效，但写入 config.json 失败（重启后会回滚）：{e}"
+                    ))
+                })?;
                 drop(store);
 
                 if let Some(ref bc) = self.broadcaster {
@@ -2680,9 +2822,11 @@ impl Dispatcher {
                 store.config.retry_count =
                     agent_base::model::normalize_model_retry_count(retries as usize) as u32;
                 let saved = store.config.retry_count;
-                if let Err(e) = save_app_config(&store) {
-                    tracing::warn!("保存重试次数失败: {e}");
-                }
+                save_app_config(&store).map_err(|e| {
+                    ProtocolError::internal_error(format!(
+                        "重试次数已在本次运行中生效，但写入 config.json 失败（重启后会回滚）：{e}"
+                    ))
+                })?;
                 drop(store);
 
                 if let Some(ref bc) = self.broadcaster {
@@ -3498,7 +3642,10 @@ impl Dispatcher {
 
             PLUGIN_LIST => {
                 let ws = params.get("workspace").and_then(|v| v.as_str());
-                let plugins = self.plugin_mgr.load_plugins(ws);
+                let mut plugins = self.plugin_mgr.load_plugins(ws);
+                // P4：静态扫描只列包与入口状态，**从不执行插件**——磁盘插件的贡献恒为空。
+                // 装配期执行过的结论在活体视图里，按 pluginId 对齐后并进来。
+                self.merge_contribution_views(&mut plugins);
                 let resolved_caps = self.plugin_mgr.get_capabilities(ws);
                 let configs = self.plugin_mgr.read_configs();
 
@@ -3594,7 +3741,8 @@ impl Dispatcher {
             PLUGIN_LOAD => {
                 let workspace = params.get("workspace").and_then(|v| v.as_str());
                 let plugin_id = params.get("pluginId").and_then(|v| v.as_str());
-                let plugins = self.plugin_mgr.load_plugins(workspace);
+                let mut plugins = self.plugin_mgr.load_plugins(workspace);
+                self.merge_contribution_views(&mut plugins);
                 let plugins: Vec<_> = match plugin_id {
                     Some(id) => plugins.into_iter().filter(|p| p.id == id).collect(),
                     None => plugins,
@@ -3936,6 +4084,119 @@ impl Dispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 造一个最小的 `PluginItem`（静态扫描的形状：贡献字段全空）。
+    fn plugin_item(id: &str, scope: &str) -> agent_node::plugins::PluginItem {
+        agent_node::plugins::PluginItem {
+            plugin: agent_node::plugins::LoadedPlugin {
+                manifest: agent_node::plugins::PluginManifest {
+                    id: id.to_string(),
+                    name: id.to_string(),
+                    description: String::new(),
+                    version: None,
+                    author: None,
+                    scope: None,
+                },
+                contributions: Default::default(),
+                declarative: false,
+                status: "ready".to_string(),
+                diagnostics: Vec::new(),
+            },
+            id: id.to_string(),
+            name: id.to_string(),
+            file_name: id.to_string(),
+            file_path: format!("/tmp/{id}/index.ts"),
+            scope: scope.to_string(),
+            enabled: true,
+            status: "ready".to_string(),
+            version: None,
+            diagnostics: Vec::new(),
+            tools: Vec::new(),
+            skills: Vec::new(),
+            prompts: Vec::new(),
+            hooks: Vec::new(),
+            is_package: Some(true),
+            error: None,
+            size_bytes: 0,
+            updated_at: 0,
+        }
+    }
+
+    /// P4：静态扫描给的贡献恒为空，**装配期的活体视图**才是"实际装上了什么"。
+    ///
+    /// 没有这一步时，插件卡的贡献计数对每个磁盘插件都显示 0（而引擎里工具明明装上了）。
+    #[test]
+    fn test_merge_contribution_views_fills_disk_plugin_contributions() {
+        let store = agent_node::plugins::new_contribution_store(vec![
+            agent_node::plugins::PluginContributionView {
+                plugin_id: "workspace:demo".to_string(),
+                tools: vec![agent_node::plugins::PluginToolInfo {
+                    name: "custom_tool".to_string(),
+                    description: "自定义工具".to_string(),
+                    parameters: None,
+                    is_write: true,
+                }],
+                prompts: vec![agent_node::plugins::PluginPromptDeclaration {
+                    id: "style".to_string(),
+                    content: "一律用 tabs".to_string(),
+                }],
+                skills: Vec::new(),
+                hooks: vec!["beforeToolCall".to_string()],
+            },
+        ]);
+        let mut items = vec![plugin_item("workspace:demo", "workspace")];
+
+        merge_contribution_views(Some(&store), &mut items);
+        assert_eq!(items[0].tools.len(), 1, "工具贡献要填上：{:?}", items[0].tools);
+        assert!(items[0].tools[0].is_write, "读写性如实照抄（界面据此显示写徽章）");
+        assert_eq!(items[0].prompts.len(), 1);
+        assert_eq!(items[0].hooks, vec!["beforeToolCall".to_string()]);
+        assert_eq!(
+            items[0].plugin.contributions.tools.len(),
+            1,
+            "声明形状也要一起填（核心工具页的'被插件重实现'读它）"
+        );
+        assert!(
+            !items[0].plugin.contributions.tools[0].parameters.is_null(),
+            "缺 parameters 时兜成空对象 schema，而不是 null"
+        );
+
+        // 没有视图的插件一个字段都不动（如实为空）
+        let mut untouched = vec![plugin_item("global:other", "global")];
+        merge_contribution_views(Some(&store), &mut untouched);
+        assert!(untouched[0].tools.is_empty() && untouched[0].hooks.is_empty());
+
+        // 没注入视图 → 同样不动（"这台宿主没执行过插件"的真相）
+        let mut no_store = vec![plugin_item("workspace:demo", "workspace")];
+        merge_contribution_views(None, &mut no_store);
+        assert!(no_store[0].tools.is_empty());
+    }
+
+    /// 内置插件的贡献由 `builtins.rs` 给全，**不许被视图覆盖**（视图只讲磁盘插件）。
+    #[test]
+    fn test_merge_contribution_views_never_touches_builtin_items() {
+        let store = agent_node::plugins::new_contribution_store(vec![
+            agent_node::plugins::PluginContributionView {
+                plugin_id: "builtin:approval-guard".to_string(),
+                tools: vec![agent_node::plugins::PluginToolInfo {
+                    name: "should_not_appear".to_string(),
+                    description: String::new(),
+                    parameters: None,
+                    is_write: false,
+                }],
+                prompts: Vec::new(),
+                skills: Vec::new(),
+                hooks: Vec::new(),
+            },
+        ]);
+        let mut items = vec![plugin_item("builtin:approval-guard", "builtin")];
+        merge_contribution_views(Some(&store), &mut items);
+        assert!(
+            items[0].tools.is_empty(),
+            "内置插件的贡献字段不许被视图改写：{:?}",
+            items[0].tools
+        );
+    }
 
     /// 图片归一化：data URI 原样通过。
     #[test]

@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 use agent_base::domain::AgentEvent;
 use agent_base::ports::EventSink;
 
+use crate::seq_guard::SeqGuard;
 use crate::server::emitter::StateBroadcaster;
 
 /// 送往界面的事件出口。
@@ -27,10 +28,8 @@ pub struct WsEventSink {
     broadcaster: Option<Arc<StateBroadcaster>>,
     /// 保序事件账本
     events: Mutex<Vec<AgentEvent>>,
-    /// 已见过的最大 `seq`（用于单调性校验）
-    last_seq: AtomicU64,
-    /// `seq` 违约记录：回退或重复都记在这里，不静默
-    seq_violations: Mutex<Vec<String>>,
+    /// INV-6 的 `seq` 单调性审计（一处实现，三个出口共用）
+    seq: SeqGuard,
     /// 账本上限：超过就丢最旧的（防止长会话把内存吃光），丢弃会记账
     capacity: usize,
     dropped: AtomicU64,
@@ -51,8 +50,7 @@ impl WsEventSink {
         Self {
             broadcaster,
             events: Mutex::new(Vec::new()),
-            last_seq: AtomicU64::new(0),
-            seq_violations: Mutex::new(Vec::new()),
+            seq: SeqGuard::new(),
             capacity: capacity.max(1),
             dropped: AtomicU64::new(0),
         }
@@ -70,7 +68,7 @@ impl WsEventSink {
 
     /// `seq` 违约记录（回退/重复）。**空 = 事件流有序**。
     pub fn seq_violations(&self) -> Vec<String> {
-        self.seq_violations.lock().expect("违约账本锁中毒").clone()
+        self.seq.violations()
     }
 
     /// 因账本上限被丢弃的事件数。
@@ -83,21 +81,7 @@ impl EventSink for WsEventSink {
     fn emit(&self, event: AgentEvent) {
         // 1. INV-6：seq 必须严格递增。违约如实记账，但仍然入队——
         //    丢事件会让界面少显示东西，"记录并继续"比"静默吞掉"更接近可诊断。
-        let prev = self.last_seq.load(Ordering::Relaxed);
-        if event.seq <= prev {
-            self.seq_violations
-                .lock()
-                .expect("违约账本锁中毒")
-                .push(format!(
-                    "事件 seq 未严格递增：thread={} prev={} current={} kind={}",
-                    event.thread_id,
-                    prev,
-                    event.seq,
-                    event.body.kind()
-                ));
-        } else {
-            self.last_seq.store(event.seq, Ordering::Relaxed);
-        }
+        self.seq.check(&event);
 
         // 2. 保序入队（超限丢最旧并记账）
         {

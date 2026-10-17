@@ -111,6 +111,14 @@ impl WsHostServer {
             (_, Some(i)) => i.hook_runner.clone(),
             _ => None,
         };
+        // P4：插件贡献活体——`plugin.list` 才能列出"实际装上了什么"（静态扫描恒为空）
+        let plugin_contribution_views = match (&coding_injection, &pm_injection) {
+            (Some(i), _) if i.plugin_contribution_views.is_some() => {
+                i.plugin_contribution_views.clone()
+            }
+            (_, Some(i)) => i.plugin_contribution_views.clone(),
+            _ => None,
+        };
         let seq = Arc::new(AtomicU64::new(0));
         let broadcaster = crate::server::emitter::StateBroadcaster::new(
             store.clone(),
@@ -139,6 +147,10 @@ impl WsHostServer {
         // P3a·SP-55：钩子运行时（有才接；没有就如实"这些点位不跑"）
         if let Some(r) = hook_runner {
             dispatcher = dispatcher.with_hook_runner(r);
+        }
+        // P4：插件贡献活体（有才接；没有就如实"贡献字段为空"）
+        if let Some(views) = plugin_contribution_views {
+            dispatcher = dispatcher.with_plugin_contribution_views(views);
         }
         let dispatcher = Arc::new(dispatcher);
 

@@ -173,9 +173,6 @@ impl PluginManager {
                         if let Some(v) = pc.get("allowCompactionReplace").and_then(|b| b.as_bool()) {
                             caps.allow_compaction_replace = v;
                         }
-                        if let Some(v) = pc.get("allowPlanModeHooks").and_then(|b| b.as_bool()) {
-                            caps.allow_plan_mode_hooks = v;
-                        }
                         if let Some(v) = pc.get("allowThirdPartyHooks").and_then(|b| b.as_bool()) {
                             caps.allow_third_party_hooks = v;
                         }
@@ -409,8 +406,8 @@ impl PluginManager {
                     diagnostics.push(PluginDiagnostic {
                         plugin_id: id.clone(),
                         level: "info".to_string(),
-                        message: "插件贡献由 Extension Factory 执行后确定；此静态目录仅列包与入口状态".to_string(),
-                        hint: Some("使用 plugin.load 或运行时装配结果查看实际注册项".to_string()),
+                        message: "静态目录只列包与入口状态；实际贡献由 Extension Factory 执行后确定（见工具/技能/钩子计数）".to_string(),
+                        hint: Some("此处的空数组不代表插件没有贡献——贡献计数由装配期执行结果填入".to_string()),
                     });
                 }
 
@@ -452,6 +449,7 @@ impl PluginManager {
                     tools,
                     skills: Vec::new(),
                     prompts: Vec::new(),
+                    hooks: Vec::new(),
                     is_package: Some(true),
                     error: if package_entry_missing {
                         Some("missing index.ts/index.js".to_string())

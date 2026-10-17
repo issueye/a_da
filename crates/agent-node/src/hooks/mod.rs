@@ -27,7 +27,7 @@ use agent_base::ports::{
     BoxFuture, ModuleHandle, ScriptBudget, ScriptCtx, ScriptError, ScriptHost,
 };
 
-use crate::plugins::PluginHookDeclaration;
+use crate::plugins::{PluginCapabilities, PluginHookDeclaration};
 
 /// 一条被接受并已排好序的钩子注册。
 #[derive(Debug, Clone)]
@@ -67,6 +67,13 @@ pub struct HookRuntime {
     registrations: std::sync::RwLock<Vec<RegisteredHook>>,
     pending_registrations: std::sync::Mutex<Vec<HookRegistration>>,
     budget: HookBudget,
+    /// 插件能力开关里**钩子面那几位**（P4：把它们从"幽灵开关"接成真有判定）。
+    ///
+    /// 为什么放在这一层：点位的调用方有三处（引擎轮内、Dispatcher 管理面、
+    /// `todo` 工具内部），开关各判一遍迟早出现"引擎里拦得住、管理面拦不住"。
+    /// 判定入口只有 [`HookRuntime::action_disabled_by_capabilities`] 与
+    /// [`HookRuntime::register`] 两处。
+    capabilities: PluginCapabilities,
 }
 
 impl HookRuntime {
@@ -76,9 +83,25 @@ impl HookRuntime {
             registrations: std::sync::RwLock::new(Vec::new()),
             pending_registrations: std::sync::Mutex::new(Vec::new()),
             budget,
+            capabilities: PluginCapabilities::default(),
         }
     }
 
+    /// 带上插件能力开关（组合根从 `PluginManager::get_capabilities` 读出来后交进来）。
+    ///
+    /// 不带 = 逐项放行（`PluginCapabilities::default()`），与装配期的既有行为一致。
+    pub fn with_capabilities(mut self, capabilities: PluginCapabilities) -> Self {
+        self.capabilities = capabilities;
+        self
+    }
+
+    /// 取走本运行时收集到的动态注册请求。
+    ///
+    /// 🔴 **目前没有生产调用方**：沙箱会如实把 `ctx.registerTool/registerSkill/
+    /// registerSystemPrompt` 收进来，但宿主还没有把 drain 出来的东西装进
+    /// catalog / 提示词。所以现在它是"只收集、不生效"——收集处会打一条 warn 说清这件事
+    /// （`collect_registrations`），免得插件作者以为注册生效了（AGENTS §15 静默失效）。
+    /// 钩子**不在这份清单里**：`ctx.registerHook` 已删除，钩子只能在装配期用 `ada.on` 声明。
     pub fn take_registrations(&self) -> Vec<HookRegistration> {
         self.pending_registrations
             .lock()
@@ -168,6 +191,7 @@ impl HookRuntime {
             registrations: std::sync::RwLock::new(Vec::new()),
             pending_registrations: std::sync::Mutex::new(Vec::new()),
             budget: HookBudget::default(),
+            capabilities: PluginCapabilities::default(),
         }
     }
 
@@ -191,6 +215,15 @@ impl HookRuntime {
                 reason,
             });
         };
+
+        // 能力开关 `allowThirdPartyHooks`：关掉之后**第三方插件的钩子一条都不装**。
+        //
+        // 放在最前面：它否掉的是整个来源，而理由必须说清是"这台机器不许第三方挂钩子"，
+        // 不是"你的点位拼错了"——顺序错了，作者会一直对着自己的声明找问题。
+        if trust == PluginTrust::ThirdParty && !self.capabilities.allow_third_party_hooks {
+            reject(rejections, "third_party_hooks_disabled".to_string());
+            return;
+        }
 
         let level = match HookLevel::of(&point) {
             Some(l) => l,
@@ -351,6 +384,26 @@ impl HookRuntime {
         self.budget
     }
 
+    /// 每个插件**装上**的点位清单（已排序去重）——界面读的"这个插件会动手做哪些事"。
+    ///
+    /// 只报**注册成功**的：被分级、未实现、能力开关挡下的都不在里面。
+    /// 这正是这份清单的意义：它说的是"实际生效",而不是"声明过"。
+    pub fn points_by_plugin(&self) -> std::collections::BTreeMap<String, Vec<String>> {
+        let mut out: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        if let Ok(regs) = self.registrations.read() {
+            for reg in regs.iter() {
+                out.entry(reg.plugin_id.clone())
+                    .or_default()
+                    .push(reg.point.clone());
+            }
+        }
+        for points in out.values_mut() {
+            points.sort();
+            points.dedup();
+        }
+        out
+    }
+
     /// 跑一个点位的一条注册；返回这一条钩子的**完整结果**（含可能的改写）。
     async fn run_one(
         &self,
@@ -405,6 +458,13 @@ impl HookRuntime {
         };
 
         self.collect_registrations(reg, &raw);
+
+        // 能力开关（`PluginCapabilities` 的钩子面几位）：**声明即授权之外的第二道闸**。
+        // 顺序放在 `declares()` 之前，是因为开关否掉的是"这台机器允不允许这类动作"，
+        // 与"这个插件声明了没有"是两件事，理由要分得出来。
+        if let Some(reason) = self.action_disabled_by_capabilities(point, raw.action.as_deref()) {
+            return HookEntryResult::simple(HookEntryOutcome::Passed, &reason);
+        }
 
         match raw.action.as_deref().map(str::trim) {
             None | Some("") => HookEntryResult::simple(HookEntryOutcome::Passed, ""),
@@ -490,6 +550,40 @@ impl HookRuntime {
         }
     }
 
+    /// 能力开关在「点位 + 动作」上的**唯一**判定处（P4：把幽灵开关接成判定）。
+    ///
+    /// 返回 `Some(理由)` = 这个动作被开关挡下：当作"没有意见"照常放行，但**留下理由**
+    /// （进 `hook.skipped` 诊断）——关掉一个开关的用户，必须能从面板上看出"插件提了意见，
+    /// 是这台机器的开关不让它生效"，而不是以为插件坏了。
+    ///
+    /// 判定只此一处：点位的调用方分散在三处（引擎轮内、Dispatcher 管理面、`todo` 工具），
+    /// 各判一遍迟早出现"引擎里拦得住、管理面拦不住"这种自相矛盾。
+    fn action_disabled_by_capabilities(&self, point: &str, action: Option<&str>) -> Option<String> {
+        let action = action?.trim().to_ascii_lowercase();
+        let veto = matches!(action.as_str(), "deny" | "abort" | "abortturn");
+        match action.as_str() {
+            // `allowTextRewrite`：旁注是插件往结果里加的话，关掉即不注入。
+            "note" if !self.capabilities.allow_text_rewrite => {
+                Some("action_disabled:allowTextRewrite".to_string())
+            }
+            // `allowThreadDeleteBlock`：关掉之后谁都不能靠插件保住一条会话。
+            _ if veto
+                && point == points::BEFORE_THREAD_DELETE
+                && !self.capabilities.allow_thread_delete_block =>
+            {
+                Some("action_disabled:allowThreadDeleteBlock".to_string())
+            }
+            // `allowCompactionReplace`：关掉之后压缩一律走核心默认实现。
+            _ if (veto || action == "replace" || action == "replaceargs")
+                && point == points::BEFORE_COMPACTION
+                && !self.capabilities.allow_compaction_replace =>
+            {
+                Some("action_disabled:allowCompactionReplace".to_string())
+            }
+            _ => None,
+        }
+    }
+
     fn collect_registrations(&self, reg: &RegisteredHook, raw: &agent_base::ports::ScriptHookOutcome) {
         let Some(items) = raw
             .data
@@ -504,7 +598,7 @@ impl HookRuntime {
             Ok(pending) => pending,
             Err(_) => return,
         };
-
+        let before = pending.len();
         for item in items {
             let Some(kind) = item.get("kind").and_then(|value| value.as_str()) else {
                 continue;
@@ -576,32 +670,32 @@ impl HookRuntime {
                     });
                 }
                 "hook" => {
-                    let (Some(point), Some(handler_export)) = (
-                        item.get("point").and_then(|value| value.as_str()),
-                        item.get("handlerExport").and_then(|value| value.as_str()),
-                    ) else {
-                        continue;
-                    };
-                    let actions = item
-                        .get("actions")
-                        .and_then(|value| value.as_array())
-                        .map(|values| {
-                            values
-                                .iter()
-                                .filter_map(|value| value.as_str().map(str::to_string))
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    pending.push(HookRegistration::Hook {
-                        plugin_id: reg.plugin_id.clone(),
-                        point: point.to_string(),
-                        actions,
-                        order: item.get("order").and_then(|value| value.as_i64()).unwrap_or(0) as i32,
-                        handler_export: handler_export.to_string(),
-                    });
+                    // `registerHook` 已从插件 API 移除（与 `ada.on` 重复，且
+                    // `handlerExport` 在执行期找不到函数）。旧插件若还在发这条
+                    // 请求，**如实说清它不会生效**，不要静默丢掉。
+                    tracing::warn!(
+                        "[hooks] 插件 `{}` 在 `{}` 上请求 `registerHook`——该入口已移除，\
+                         请改用工厂期的 `ada.on(point, handler)`；本条不会生效",
+                        reg.plugin_id,
+                        reg.point
+                    );
                 }
                 _ => {}
             }
+        }
+        let added = pending.len().saturating_sub(before);
+        drop(pending);
+        if added > 0 {
+            // 🔴 "收下了"≠"生效了"：宿主目前**没有**消费 `take_registrations`（见该方法的注释），
+            // 所以这里必须把话说清——否则插件作者只会看到自己的注册语句跑通，
+            // 然后对着"工具没进模型"百思不得其解（AGENTS §15：声明了却没人调用是静默失效）。
+            tracing::warn!(
+                "[hooks] 插件 `{}` 在 `{}` 上请求动态注册 {} 条（工具/技能/提示词）——\
+                 当前**不会生效**：宿主尚未把 `take_registrations` 的产物装进装配",
+                reg.plugin_id,
+                reg.point,
+                added
+            );
         }
     }
 }
@@ -848,8 +942,9 @@ pub fn collect_hooks(
     budget: HookBudget,
     #[allow(clippy::type_complexity)]
     plugins: &[(String, PluginTrust, ModuleHandle)],
+    capabilities: PluginCapabilities,
 ) -> (HookRuntime, Vec<HookRejection>) {
-    let runtime = HookRuntime::new(script_host, budget);
+    let runtime = HookRuntime::new(script_host, budget).with_capabilities(capabilities);
     let mut rejections = Vec::new();
     for (plugin_id, trust, handle) in plugins {
         let decls = match runtime.script_host.hooks(handle) {
@@ -1029,12 +1124,23 @@ mod tests {
         plugins: &[(&str, PluginTrust, &[(&str, &[&str], i32)])],
         budget_ms: u64,
     ) -> (HookRuntime, Vec<HookRejection>) {
+        runtime_with_caps(host, plugins, budget_ms, PluginCapabilities::default())
+    }
+
+    /// 同上，但带上能力开关（P4：验证"关掉开关"真的有判定）。
+    fn runtime_with_caps(
+        host: Arc<FakeHost>,
+        plugins: &[(&str, PluginTrust, &[(&str, &[&str], i32)])],
+        budget_ms: u64,
+        capabilities: PluginCapabilities,
+    ) -> (HookRuntime, Vec<HookRejection>) {
         let mut runtime = HookRuntime::new(
             host,
             HookBudget {
                 timeout_ms: budget_ms,
             },
-        );
+        )
+        .with_capabilities(capabilities);
         let mut rejections = Vec::new();
         for (pid, trust, points) in plugins {
             for (point, actions, order) in *points {
@@ -1547,8 +1653,7 @@ mod tests {
                     "registrations": [
                         { "kind": "tool", "name": "dynamic_tool", "description": "dynamic", "parameters": { "type": "object" }, "executeExport": "dynamic_tool" },
                         { "kind": "systemPrompt", "id": "dynamic-prompt", "content": "Use dynamic prompt" },
-                        { "kind": "skill", "name": "dynamic-skill", "description": "dynamic skill", "path": ".ada/agent-coding/skills/dynamic-skill.md" },
-                        { "kind": "hook", "point": "afterTurn", "actions": ["observe"], "order": 5, "handlerExport": "dynamic_hook" }
+                        { "kind": "skill", "name": "dynamic-skill", "description": "dynamic skill", "path": ".ada/agent-coding/skills/dynamic-skill.md" }
                     ]
                 }
             }),
@@ -1573,10 +1678,231 @@ mod tests {
             )
             .await;
         let registrations = runtime.take_registrations();
-        assert_eq!(registrations.len(), 4);
+        assert_eq!(registrations.len(), 3);
         assert!(matches!(registrations[0], HookRegistration::Tool { ref name, ref execute_export, .. } if name == "dynamic_tool" && execute_export == "dynamic_tool"));
         assert!(matches!(registrations[1], HookRegistration::SystemPrompt { ref id, .. } if id == "dynamic-prompt"));
         assert!(matches!(registrations[2], HookRegistration::Skill { ref name, ref path, .. } if name == "dynamic-skill" && path.ends_with("dynamic-skill.md")));
-        assert!(matches!(registrations[3], HookRegistration::Hook { ref point, ref handler_export, order, .. } if point == "afterTurn" && handler_export == "dynamic_hook" && order == 5));
+    }
+
+    // ── P4：死点位修复 + 能力开关接线（幽灵开关治理）────────────────────────
+
+    /// `beforeTodoUpdate` / `afterTodoUpdate` 必须**走真实注册路径装得上、且真的会跑**。
+    ///
+    /// 修之前 `HookLevel::of` 漏了这两条分支，`register` 以 `unknown_point` 拒收：
+    /// `IMPLEMENTED` 与 `REPLACE_SUPPORTED` 都声称它们可用、`todo` 工具也真的在发事件，
+    /// 可生产链路上它们**永远是 `no_subscriber`**（且单测测不出来——脚本化的钩子运行器
+    /// 直接注入引擎，绕过了注册）。
+    #[tokio::test]
+    async fn test_todo_points_register_and_fire() {
+        let mut host = FakeHost::default();
+        host.declare("guard", "beforeTodoUpdate", &["deny", "replace"], 0);
+        host.ret(
+            "guard",
+            "beforeTodoUpdate",
+            serde_json::json!({ "action": "deny", "reason": "清单不许动" }),
+        );
+        host.declare("guard", "afterTodoUpdate", &["note"], 0);
+        host.ret(
+            "guard",
+            "afterTodoUpdate",
+            serde_json::json!({ "action": "note", "note": "已记一笔" }),
+        );
+        let host = Arc::new(host);
+
+        let (runtime, rejections) = runtime_with(
+            host,
+            &[(
+                "guard",
+                PluginTrust::ThirdParty,
+                &[
+                    ("beforeTodoUpdate", &["deny", "replace"], 0),
+                    ("afterTodoUpdate", &["note"], 0),
+                ],
+            )],
+            500,
+        );
+        assert!(
+            rejections.is_empty(),
+            "todo 两个点位必须注册得上（修之前是 unknown_point）：{rejections:?}"
+        );
+
+        let obs = Observers::new();
+        let sink = obs.sink();
+        let before = runtime
+            .before(
+                BeforeRequest {
+                    point: "beforeTodoUpdate".to_string(),
+                    subject: Some("todo".to_string()),
+                    payload: serde_json::json!({ "todos": [] }),
+                },
+                &ctx(&sink),
+            )
+            .await;
+        assert!(
+            matches!(before, BeforeOutcome::Deny { .. }),
+            "待办更新在数据面上可被第三方拦下：{before:?}"
+        );
+
+        let notes = runtime
+            .after(
+                AfterRequest {
+                    point: "afterTodoUpdate".to_string(),
+                    subject: Some("todo".to_string()),
+                    payload: serde_json::json!({ "todos": [] }),
+                },
+                &ctx(&sink),
+            )
+            .await;
+        assert_eq!(notes.len(), 1, "事后旁注要收得到：{notes:?}");
+    }
+
+    /// `allowThirdPartyHooks` 关掉 → 第三方钩子**装配期即拒**（理由说清是开关，不是点位写错），
+    /// 且**内置插件不受影响**（开关否的是来源，不是机制）。
+    #[tokio::test]
+    async fn test_allow_third_party_hooks_off_rejects_only_third_party() {
+        let mut host = FakeHost::default();
+        host.declare("builtin-guard", "beforeToolCall", &["deny"], 0);
+        host.declare("third-party", "beforeToolCall", &["deny"], 10);
+        let host = Arc::new(host);
+
+        let caps = PluginCapabilities {
+            allow_third_party_hooks: false,
+            ..Default::default()
+        };
+        let (runtime, rejections) = runtime_with_caps(
+            host,
+            &[
+                ("builtin-guard", PluginTrust::Builtin, &[("beforeToolCall", &["deny"], 0)]),
+                ("third-party", PluginTrust::ThirdParty, &[("beforeToolCall", &["deny"], 10)]),
+            ],
+            500,
+            caps,
+        );
+        assert_eq!(rejections.len(), 1, "只该拒第三方那一条：{rejections:?}");
+        assert_eq!(rejections[0].plugin_id, "third-party");
+        assert_eq!(
+            rejections[0].reason, "third_party_hooks_disabled",
+            "理由要说清是能力开关挡的，不是声明写错了"
+        );
+        assert_eq!(runtime.len(), 1, "内置插件照样装上");
+        assert_eq!(runtime.registrations("beforeToolCall").len(), 1);
+    }
+
+    /// 动作面的三个开关：关掉之后**动作不生效但照常放行**，且理由进观测（面板看得见）。
+    ///
+    /// 注意 `beforeThreadDelete` / `beforeCompaction` 是**控制面**点位，第三方本来就
+    /// 无权拦下（`control_plane_deny_not_permitted`）——所以这两处用**内置**插件验开关：
+    /// 开关约束的是"这台机器允不允许这类动作"，对内置同样有效。
+    #[tokio::test]
+    async fn test_action_capabilities_gate_actions_with_visible_reasons() {
+        let mut host = FakeHost::default();
+        host.declare("notes-plugin", "afterToolCall", &["note"], 0);
+        host.ret(
+            "notes-plugin",
+            "afterToolCall",
+            serde_json::json!({ "action": "note", "note": "旁注" }),
+        );
+        host.declare("builtin-guard", "beforeThreadDelete", &["deny"], 0);
+        host.ret(
+            "builtin-guard",
+            "beforeThreadDelete",
+            serde_json::json!({ "action": "deny", "reason": "别删" }),
+        );
+        host.declare("builtin-guard", "beforeCompaction", &["deny"], 0);
+        host.ret(
+            "builtin-guard",
+            "beforeCompaction",
+            serde_json::json!({ "action": "deny", "reason": "别压" }),
+        );
+        let host = Arc::new(host);
+
+        let plugins: &[(&str, PluginTrust, &[(&str, &[&str], i32)])] = &[
+            (
+                "notes-plugin",
+                PluginTrust::ThirdParty,
+                &[("afterToolCall", &["note"], 0)],
+            ),
+            (
+                "builtin-guard",
+                PluginTrust::Builtin,
+                &[
+                    ("beforeThreadDelete", &["deny"], 0),
+                    ("beforeCompaction", &["deny"], 0),
+                ],
+            ),
+        ];
+
+        // ① 默认（三位全开）：三个动作都生效
+        let (on, rejections) = runtime_with(host.clone(), plugins, 500);
+        assert!(rejections.is_empty(), "{rejections:?}");
+        let obs = Observers::new();
+        let sink = obs.sink();
+        assert_eq!(
+            on.after(
+                AfterRequest {
+                    point: "afterToolCall".to_string(),
+                    subject: None,
+                    payload: serde_json::json!({}),
+                },
+                &ctx(&sink),
+            )
+            .await
+            .len(),
+            1
+        );
+        assert!(matches!(
+            on.before(before_req("beforeThreadDelete"), &ctx(&sink)).await,
+            BeforeOutcome::Deny { .. }
+        ));
+        assert!(matches!(
+            on.before(before_req("beforeCompaction"), &ctx(&sink)).await,
+            BeforeOutcome::Deny { .. }
+        ));
+
+        // ② 关掉三位：旁注不注入、两处拦下都不生效，且**理由留在观测里**
+        let off_caps = PluginCapabilities {
+            allow_text_rewrite: false,
+            allow_thread_delete_block: false,
+            allow_compaction_replace: false,
+            ..Default::default()
+        };
+        let (off, _) = runtime_with_caps(host, plugins, 500, off_caps);
+        let obs_off = Observers::new();
+        let sink_off = obs_off.sink();
+        let notes = off
+            .after(
+                AfterRequest {
+                    point: "afterToolCall".to_string(),
+                    subject: None,
+                    payload: serde_json::json!({}),
+                },
+                &ctx(&sink_off),
+            )
+            .await;
+        assert!(notes.is_empty(), "关掉 allowTextRewrite 之后不再注入旁注：{notes:?}");
+        assert!(off.before(before_req("beforeThreadDelete"), &ctx(&sink_off)).await.is_pass());
+        assert!(off.before(before_req("beforeCompaction"), &ctx(&sink_off)).await.is_pass());
+
+        let reasons: Vec<String> = obs_off
+            .all()
+            .into_iter()
+            .filter_map(|o| o.reason)
+            .collect();
+        assert!(
+            reasons.iter().any(|r| r == "action_disabled:allowTextRewrite"),
+            "关掉开关必须留下可见理由：{reasons:?}"
+        );
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r == "action_disabled:allowThreadDeleteBlock"),
+            "{reasons:?}"
+        );
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r == "action_disabled:allowCompactionReplace"),
+            "{reasons:?}"
+        );
     }
 }

@@ -12,7 +12,6 @@ export interface ExtensionHookContext {
 	registerTool(tool: ToolDefinition): { ok: boolean; reason?: string };
 	registerSystemPrompt(prompt: SystemPromptDefinition): { ok: boolean; reason?: string };
 	registerSkill(skill: SkillDefinition): { ok: boolean; reason?: string };
-	registerHook(hook: HookDefinition): { ok: boolean; reason?: string };
 }
 
 export interface ToolDefinition {
@@ -35,12 +34,12 @@ export interface SkillDefinition {
 	body?: string;
 }
 
+/** Object-form hook declaration (`export default { hooks: [...] }`). */
 export interface HookDefinition {
 	point: string;
 	actions?: HookAction[];
 	order?: number;
-	handlerExport?: string;
-	handler?: (event: Record<string, unknown>, ctx: ExtensionHookContext) => unknown | Promise<unknown>;
+	handler: (event: Record<string, unknown>, ctx: ExtensionHookContext) => unknown | Promise<unknown>;
 }
 
 export interface ExtensionMetadataGroup {
@@ -68,7 +67,7 @@ export interface ExtensionAPI {
 	/** Compatibility alias for registerSystemPrompt. */
 	registerPrompt(prompt: SystemPromptDefinition): void;
 	registerSkill(skill: SkillDefinition): void;
-	registerHook(hook: HookDefinition): void;
+	/** The only hook registration entrypoint; object-form `hooks` also accepted. */
 	on(
 		event: string,
 		handler: (event: Record<string, unknown>, ctx: ExtensionHookContext) => unknown | Promise<unknown>,

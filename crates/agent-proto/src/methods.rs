@@ -78,7 +78,7 @@ pub const PLUGIN_SECRET_SET: &str = "plugin.secret.set";
 pub const PLUGIN_SET_ENABLED: &str = "plugin.setEnabled";
 pub const PLUGIN_DELETE: &str = "plugin.delete";
 pub const PLUGIN_CREATE_TEMPLATE: &str = "plugin.createTemplate";
-/// 自检一个插件：转译 / 装载 / 工具名是否在注册表里 / 当前权限与预算（P1·SP-18）
+/// 自检一个插件：转译 / 装载 / 工具是内置实现还是自定义工具 / 当前权限与预算（P1·SP-18）
 pub const PLUGIN_VALIDATE: &str = "plugin.validate";
 
 // 提示词管理
