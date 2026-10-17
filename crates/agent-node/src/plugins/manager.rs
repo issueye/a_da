@@ -1,14 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
 use super::builtins::get_builtin_plugin_items;
 use super::types::{
     LoadedPlugin, LoadedPluginContributions, PluginCapabilities, PluginDiagnostic, PluginItem,
-    PluginManifest, PluginScope, PluginToolDeclaration, PluginToolInfo,
-    ResolvedPluginCapabilitiesDto,
+    PluginManifest, PluginScope, ResolvedPluginCapabilitiesDto,
 };
 use crate::session::{get_app_home, get_config_path};
 
@@ -358,9 +357,10 @@ impl PluginManager {
 
                 let enabled = !disabled.contains(&id);
 
-                // 智能抽取工具声明（若是代码文件，扫描导出工具名称）
-                let mut tools = Vec::new();
-                let mut tools_decl = Vec::new();
+                // Contributions belong to the extension factory runtime. Do not
+                // infer registrations by grepping JavaScript source here.
+                let tools = Vec::new();
+                let tools_decl = Vec::new();
                 let script_path = if is_package {
                     let index = path.join("index.js");
                     index.exists().then_some(index)
@@ -370,65 +370,7 @@ impl PluginManager {
                     None
                 };
 
-                let mut desc = format!("{} 扩展插件", if scope == "global" { "全局" } else { "工作区" });
-
-                if let Some(ref sp) = script_path {
-                    if let Ok(content) = fs::read_to_string(sp) {
-                        // 快速尝试从注释或 export 中提取说明
-                        for line in content.lines().take(20) {
-                            let trimmed = line.trim();
-                            if trimmed.starts_with("*") || trimmed.starts_with("//") {
-                                let c = trimmed.trim_start_matches(|c| c == '*' || c == '/' || c == ' ');
-                                if !c.is_empty() && !c.starts_with('@') && desc.ends_with("扩展插件") {
-                                    desc = c.to_string();
-                                }
-                            }
-                        }
-
-                        // 探查导出的工具名：优先从源码中匹配 name: 'xxx'，回退到 plugin_name.replace('-', "_")
-                        let tool_name = if let Some(cap) = content.find("name: '").or_else(|| content.find("name: \"")) {
-                            let after = &content[cap + 7..];
-                            if let Some(end) = after.find('\'').or_else(|| after.find('"')) {
-                                after[..end].to_string()
-                            } else {
-                                plugin_name.replace('-', "_")
-                            }
-                        } else {
-                            plugin_name.replace('-', "_")
-                        };
-
-                        let params = if tool_name == "web_search" {
-                            serde_json::json!({
-                                "type": "object",
-                                "properties": {
-                                    "query": { "type": "string", "description": "需要联网检索的关键词或查询语句" }
-                                },
-                                "required": ["query"]
-                            })
-                        } else {
-                            serde_json::json!({ "type": "object", "properties": {} })
-                        };
-
-                        // `is_write` 一律按 `ToolDescriptor` 真源判定，**不信第三方插件自述**
-                        // （W2-T7）：原先这里硬编码 `false`，于是第三方插件的**写工具在界面上
-                        // 被当成只读**，在只读档位/plan 模式/只读子智能体里也可能被放行。
-                        // 未知工具**失败安全地当作写操作**（AGENTS.md §2）。
-                        let is_write = super::plugin_tool_is_write(&tool_name);
-
-                        tools.push(PluginToolInfo {
-                            name: tool_name.clone(),
-                            description: desc.clone(),
-                            parameters: Some(params.clone()),
-                            is_write,
-                        });
-                        tools_decl.push(PluginToolDeclaration {
-                            name: tool_name,
-                            label: Some(plugin_name.clone()),
-                            description: desc.clone(),
-                            parameters: params,
-                        });
-                    }
-                }
+                let desc = format!("{} 扩展插件", if scope == "global" { "全局" } else { "工作区" });
 
                 // 埋点：把"这个插件为什么不会生效"如实写进诊断字段。
                 //
@@ -455,19 +397,12 @@ impl PluginManager {
                         hint: None,
                     });
                 }
-                if !tools.is_empty() {
-                    // 本页（`plugin.list`）是**管理面的清单**，为了不执行代码就列出插件，
-                    // 工具名是从源码文本里猜的；真正生效的贡献由 `ScriptHost::load`
-                    // 执行插件得到，两者可能不同（名字在运行时拼出来、`api.registerTool`
-                    // 写在工厂函数里……）。把口径说清，别让"列出来了"被当成"已经在服务模型"。
+                if script_path.is_some() {
                     diagnostics.push(PluginDiagnostic {
                         plugin_id: id.clone(),
                         level: "info".to_string(),
-                        message: format!(
-                            "本页工具清单由源码文本推断（{} 条）；实际生效的贡献以脚本执行结果为准，两者可能不同",
-                            tools.len()
-                        ),
-                        hint: None,
+                        message: "插件贡献由 Extension Factory 执行后确定；此静态目录仅列包与入口状态".to_string(),
+                        hint: Some("使用 plugin.load 或运行时装配结果查看实际注册项".to_string()),
                     });
                 }
 
@@ -532,6 +467,14 @@ impl PluginManager {
         name: &str,
         code: Option<&str>,
     ) -> Result<String> {
+        let name = name.trim();
+        if name.is_empty()
+            || name == "."
+            || name == ".."
+            || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        {
+            anyhow::bail!("插件包名只能包含字母、数字、点、下划线和连字符");
+        }
         let dir = if scope == "workspace" && workspace.map(|s| !s.trim().is_empty()).unwrap_or(false) {
             Self::agent_extensions_dir(workspace.unwrap())
         } else {
@@ -539,34 +482,30 @@ impl PluginManager {
         };
 
         fs::create_dir_all(&dir)?;
-        let target = dir.join(format!("{}.ts", name));
+        let package_dir = dir.join(name);
+        fs::create_dir(&package_dir)?;
+        let target = package_dir.join("index.js");
 
         let default_code = format!(
-            r#"/**
- * 自定义插件：{}
- */
-export default {{
-  name: '{}',
-  description: '自定义扩展插件',
-  tools: [
-    {{
-      name: '{}_tool',
-      description: '自定义工具示例',
-      parameters: {{
-        type: 'object',
-        properties: {{
-          query: {{ type: 'string', description: '查询内容' }}
-        }},
-        required: ['query']
-      }},
-      async execute(args) {{
-        return {{ output: `已执行: ${{args.query}}`, ok: true }};
-      }}
-    }}
-  ]
+            r#"const metadata = {{
+  name: {name:?},
+  description: '自定义 Agent 扩展',
+  tools: {{ count: 0, names: [] }},
+  systemPrompt: {{ count: 0, names: [] }},
+  skills: {{ count: 0, names: [] }},
+  hooks: {{ count: 0, names: [] }},
 }};
+
+export default function (ada) {{
+  ada.metadata = metadata;
+  // Pi-style registration API:
+  // ada.registerTool({{ name, description, parameters, execute }});
+  // ada.registerSystemPrompt({{ id, content }});
+  // ada.registerSkill({{ name, description, path }});
+  // ada.on('turn_end', async (event, ctx) => {{ ... }});
+}}
 "#,
-            name, name, name
+            name = name
         );
 
         fs::write(&target, code.unwrap_or(&default_code))?;
@@ -578,12 +517,69 @@ export default {{
         let p = PathBuf::from(file_path);
         if p.exists() {
             if p.is_file() {
-                fs::remove_file(&p)?;
+                let is_package_entry = p.file_name().and_then(|name| name.to_str()) == Some("index.js")
+                    && p.parent()
+                        .and_then(|parent| parent.parent())
+                        .and_then(Path::file_name)
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| matches!(name, "extensions" | "plugins"));
+                if is_package_entry {
+                    if let Some(package_dir) = p.parent() {
+                        fs::remove_dir_all(package_dir)?;
+                    }
+                } else {
+                    fs::remove_file(&p)?;
+                }
             } else if p.is_dir() {
                 fs::remove_dir_all(&p)?;
             }
             return Ok(true);
         }
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "a_da_plugin_manager_{tag}_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn template_is_pi_style_package_and_delete_removes_package_root() {
+        let workspace = temp_dir("workspace");
+        let home = temp_dir("home");
+        let manager = PluginManager::with_home(&home);
+        let entry = manager
+            .create_plugin_template(Some(workspace.to_string_lossy().as_ref()), "workspace", "factory-demo", None)
+            .expect("create package template");
+        let entry = PathBuf::from(entry);
+        assert_eq!(entry.file_name().and_then(|name| name.to_str()), Some("index.js"));
+        let source = fs::read_to_string(&entry).unwrap();
+        assert!(source.contains("export default function (ada)"));
+        assert!(source.contains("ada.metadata = metadata"));
+
+        let inspected = crate::plugins::PluginSandbox::inspect_plugin_full(
+            &entry,
+            &workspace,
+            ada_ts_engine::Needs::everything(),
+        )
+        .await
+        .expect("generated package should satisfy the metadata contract");
+        assert_eq!(inspected.metadata.as_ref().and_then(|m| m.get("name")).and_then(|v| v.as_str()), Some("factory-demo"));
+        assert!(inspected.tools.is_empty());
+
+        assert!(manager.delete_plugin(entry.to_string_lossy().as_ref(), None).unwrap());
+        assert!(!entry.parent().unwrap().exists(), "deleting package entry removes its package root");
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(home);
     }
 }

@@ -1635,7 +1635,7 @@ async fn test_plugin_set_enabled_drives_reassembly_and_reports_the_delta() {
 /// 🔴 这条用例改过一次，改的原因值得留着：它原先断言的是"执行面尚未接线"。
 /// P1 把执行面接上了，那句断言就从"如实"变成了"钉住一句假话"——留着它，
 /// 面板会永远对一个正常服务的插件喊"它不会被执行"。现在钉的是**真话**：
-/// 列表不执行代码，所以清单是推断的；以及**不许再出现任何"未接线"的说法**。
+/// 列表只发现 Factory 入口、不执行插件代码；贡献由 Extension Factory 实际注册。
 #[tokio::test]
 async fn test_disk_plugin_is_reported_as_discovered_with_listing_caveat() {
     let ws_dir = std::env::temp_dir().join(format!("a_da_ws_plugin_{}", uuid::Uuid::new_v4()));
@@ -1643,7 +1643,7 @@ async fn test_disk_plugin_is_reported_as_discovered_with_listing_caveat() {
     std::fs::create_dir_all(&plugins_dir).expect("建临时插件目录失败");
     std::fs::write(
         plugins_dir.join("hello.ts"),
-        "export default { tools: [{ name: 'hello_world', description: '打招呼' }] }\n",
+        "export default function (ada) { ada.registerTool({ name: 'hello_world', description: '打招呼', parameters: { type: 'object', properties: {} }, execute: async () => 'hello' }); }\n",
     )
     .expect("写临时插件失败");
 
@@ -1679,8 +1679,8 @@ async fn test_disk_plugin_is_reported_as_discovered_with_listing_caveat() {
     assert!(
         diags
             .iter()
-            .any(|d| d["message"].as_str().unwrap_or("").contains("源码文本推断")),
-        "必须如实告诉用户'这一页的工具清单是推断出来的'：{diags:?}"
+            .any(|d| d["message"].as_str().unwrap_or("").contains("Extension Factory")),
+        "静态插件目录应说明真实贡献由 Extension Factory 注册：{diags:?}"
     );
     assert!(
         !diags

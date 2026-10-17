@@ -69,6 +69,7 @@ impl PluginSandbox {
 
         let plugin_file_json = serde_json::to_string(&plugin_path.to_string_lossy())?;
         let ws_json = serde_json::to_string(&workspace.to_string_lossy())?;
+        let require_factory = plugin_path.file_name().and_then(|name| name.to_str()) == Some("index.js");
 
         // 1. 装载插件模块定义
         // 🔴 **前导脚本压成一行**（P4·SP-73）：插件代码必须从第 1 行开始，
@@ -79,8 +80,6 @@ impl PluginSandbox {
             "(function() {{ const module = {{ exports: {{}} }}; const exports = module.exports; \
              const __filename = {plugin_file}; const __dirname = path.dirname(__filename);{js_code}\n\
              globalThis.__ada_module_metadata = module.exports.metadata || (module.exports.default && module.exports.default.metadata) || null;\n\
-             globalThis.__ada_entry_factory = module.exports.default || module.exports;\n\
-             globalThis.__ada_factory_initialized = false;\n\
              globalThis.__ada_current_plugin = module.exports.default || module.exports;\n}})();",
             plugin_file = plugin_file_json,
             js_code = js_code.trim_start_matches(['\n', '\r'])
@@ -101,6 +100,7 @@ impl PluginSandbox {
                         return JSON.stringify({{ ok: false, error: "插件未导出有效对象或函数 (export default)" }});
                     }}
                     const ws = {ws_json};
+                    const requireFactory = {require_factory};
                     let metadata = globalThis.__ada_module_metadata || (desc && (typeof desc === 'object' || typeof desc === 'function') ? desc.metadata : undefined);
                     let toolsRaw = [];
                     let promptsRaw = [];
@@ -144,11 +144,13 @@ impl PluginSandbox {
                         try {{
                             await desc(api);
                             metadata = api.metadata || metadata;
-                            globalThis.__ada_factory_initialized = true;
                         }} catch (e) {{
                             return JSON.stringify({{ ok: false, error: "插件执行异常: " + (e && e.message ? e.message : e) }});
                         }}
                     }} else if (typeof desc === 'object') {{
+                        if (requireFactory) {{
+                            return JSON.stringify({{ ok: false, error: "插件包 index.js 必须 default export ExtensionAPI factory 函数" }});
+                        }}
                         const raw = desc.tools || [];
                         const rawPrompts = desc.systemPrompts || desc.prompts || [];
                         const rawSkills = desc.skills || [];
@@ -238,7 +240,8 @@ impl PluginSandbox {
                 }}
             }};
             "#,
-            ws_json = ws_json
+            ws_json = ws_json,
+            require_factory = require_factory
         );
 
         if let Err(e) = runtime.eval_ts(inspect_script, Some("ada_inspect.js")).await {
@@ -1386,6 +1389,20 @@ mod tests {
         .await
         .expect_err("metadata count mismatch must fail");
         assert!(error.to_string().contains("metadata `tools.count`"));
+
+        std::fs::write(
+            &index,
+            "export default { metadata: { name: 'legacy', description: 'object form', tools: { count: 0, names: [] }, systemPrompt: { count: 0, names: [] }, skills: { count: 0, names: [] }, hooks: { count: 0, names: [] } }, tools: [] }",
+        )
+        .unwrap();
+        let error = PluginSandbox::inspect_plugin_full(
+            &index,
+            &dir,
+            ada_ts_engine::Needs::everything(),
+        )
+        .await
+        .expect_err("package index must use the pi-style factory export");
+        assert!(error.to_string().contains("ExtensionAPI factory"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
