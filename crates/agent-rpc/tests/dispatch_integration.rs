@@ -40,6 +40,32 @@ fn test_home_dir() -> std::path::PathBuf {
     dir
 }
 
+fn write_extension_package(
+    workspace: &std::path::Path,
+    package: &str,
+    tool_names: &[&str],
+    prompt_ids: &[&str],
+    skill_names: &[&str],
+    hook_points: &[&str],
+    factory_body: &str,
+) -> std::path::PathBuf {
+    let package_root = PluginManager::agent_extensions_dir(&workspace.to_string_lossy()).join(package);
+    std::fs::create_dir_all(&package_root).expect("创建插件包目录");
+    let metadata = serde_json::json!({
+        "name": package, "description": format!("{package} test extension"),
+        "tools": {"count": tool_names.len(), "names": tool_names},
+        "systemPrompt": {"count": prompt_ids.len(), "names": prompt_ids},
+        "skills": {"count": skill_names.len(), "names": skill_names},
+        "hooks": {"count": hook_points.len(), "names": hook_points},
+    });
+    let entry = package_root.join("index.ts");
+    std::fs::write(
+        &entry,
+        format!("const metadata = {}; export default function(ada: any) {{ ada.metadata = metadata; {} }}", metadata, factory_body),
+    ).expect("写插件包入口");
+    entry
+}
+
 #[test]
 fn test_protocol_snapshot_serialization() {
     let store = store_for_test("E:/codes/rust_projects/a_da");
@@ -1639,13 +1665,8 @@ async fn test_plugin_set_enabled_drives_reassembly_and_reports_the_delta() {
 #[tokio::test]
 async fn test_disk_plugin_is_reported_as_discovered_with_listing_caveat() {
     let ws_dir = std::env::temp_dir().join(format!("a_da_ws_plugin_{}", uuid::Uuid::new_v4()));
-    let plugins_dir = ws_dir.join(".ada").join("plugins");
-    std::fs::create_dir_all(&plugins_dir).expect("建临时插件目录失败");
-    std::fs::write(
-        plugins_dir.join("hello.ts"),
-        "export default function (ada) { ada.registerTool({ name: 'hello_world', description: '打招呼', parameters: { type: 'object', properties: {} }, execute: async () => 'hello' }); }\n",
-    )
-    .expect("写临时插件失败");
+    write_extension_package(&ws_dir, "hello", &["hello_world"], &[], &[], &[],
+        "ada.registerTool({ name: 'hello_world', description: '打招呼', parameters: { type: 'object', properties: {} }, execute: async () => 'hello' });");
 
     let ws = ws_dir.to_string_lossy().to_string();
     let store = Arc::new(RwLock::new(store_for_test(&ws)));
@@ -1747,18 +1768,12 @@ async fn test_plugin_tool_is_called_by_the_model_and_returns_success() {
 
     const CALL_ID: &str = "call_plugin_e2e";
 
-    // 1) 临时工作区里的**磁盘插件**：工具名用注册表里已有的 `read_file`
-    //    （决策 1 的口径：只认注册表，所以插件只能重实现已注册的名字）
+    // 1) 临时工作区里的 pi-style extension package，自定义工具由 Factory 注册。
     let ws = std::env::temp_dir().join(format!("a_da_sp20_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(ws.join(".ada").join("plugins")).expect("建临时工作区失败");
-    std::fs::write(
-        ws.join(".ada").join("plugins").join("p.ts"),
-        "export default { tools: [ { name: 'read_file', description: '插件实现', \
-         execute: async (args: any) => ({ ok: true, output: 'plugin-output:' + args.path }) } ] }\n",
-    )
-    .expect("写插件失败");
+    write_extension_package(&ws, "p", &["read_file"], &[], &[], &[],
+        "ada.registerTool({ name: 'read_file', description: '插件实现', parameters: { type: 'object', properties: { path: { type: 'string' } } }, execute: async (args: any) => ({ ok: true, output: 'plugin-output:' + args.path }) });");
 
-    // 2) 真装配（SP-16 的口径）：扫磁盘插件 → 装载 → 只收注册表里有的名字
+    // 2) 真装配：发现 package → 执行 Extension Factory → 注册声明贡献
     let mgr = PluginManager::with_home(test_home_dir());
     let script_host: Arc<dyn ScriptHost> = Arc::new(agent_node::scripts::TsScriptHost::new());
     let asm = agent_node::scripts::collect_plugin_tools(
@@ -1869,16 +1884,14 @@ async fn test_plugin_tool_is_called_by_the_model_and_returns_success() {
 #[tokio::test]
 async fn test_plugin_validate_reports_actionable_problems() {
     let ws = std::env::temp_dir().join(format!("a_da_sp18_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(ws.join(".ada").join("plugins")).expect("建临时工作区失败");
-    let good = ws.join(".ada").join("plugins").join("good.ts");
-    let bad = ws.join(".ada").join("plugins").join("bad.ts");
-    std::fs::write(
-        &good,
-        "export default { tools: [ { name: 'read_file', description: 'x', \
-         execute: async () => ({ ok: true, output: 'ok' }) } ] }\n",
-    )
-    .expect("写好插件失败");
-    std::fs::write(&bad, "export default { tools: [ \n").expect("写坏插件失败");
+    let good = write_extension_package(
+        &ws, "good", &["read_file"], &[], &[], &[],
+        "ada.registerTool({ name: 'read_file', description: 'x', parameters: { type: 'object', properties: {} }, execute: async () => ({ ok: true, output: 'ok' }) });",
+    );
+    let bad_root = PluginManager::agent_extensions_dir(&ws.to_string_lossy()).join("bad");
+    std::fs::create_dir_all(&bad_root).expect("建坏插件目录失败");
+    let bad = bad_root.join("index.ts");
+    std::fs::write(&bad, "export default function (ada: any) { ").expect("写坏插件失败");
 
     let store = Arc::new(RwLock::new(store_for_test(&ws.to_string_lossy())));
     let test_dir = std::env::temp_dir().join(format!("a_da_sp18_home_{}", uuid::Uuid::new_v4()));

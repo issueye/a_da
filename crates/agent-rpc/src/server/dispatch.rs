@@ -3473,9 +3473,15 @@ impl Dispatcher {
                 }
 
                 let workspace = ws
+                    .as_deref()
                     .map(std::path::PathBuf::from)
                     .or_else(|| std::env::current_dir().ok())
                     .unwrap_or_else(|| std::path::PathBuf::from("."));
+                if !self.plugin_mgr.is_extension_entry(ws.as_deref(), Path::new(&file_path)) {
+                    return Err(ProtocolError::invalid_params(
+                        "插件入口必须是 agent-coding/extensions/<package>/index.ts 或 index.js；不再支持旧式单文件插件",
+                    ));
+                }
                 let host: std::sync::Arc<dyn agent_base::ports::ScriptHost> =
                     std::sync::Arc::new(agent_node::scripts::TsScriptHost::new());
                 let report = agent_node::scripts::validate_plugin(

@@ -69,7 +69,10 @@ impl PluginSandbox {
 
         let plugin_file_json = serde_json::to_string(&plugin_path.to_string_lossy())?;
         let ws_json = serde_json::to_string(&workspace.to_string_lossy())?;
-        let require_factory = plugin_path.file_name().and_then(|name| name.to_str()) == Some("index.js");
+        let require_factory = plugin_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| matches!(name, "index.ts" | "index.js"));
 
         // 1. 装载插件模块定义
         // 🔴 **前导脚本压成一行**（P4·SP-73）：插件代码必须从第 1 行开始，
@@ -130,7 +133,7 @@ impl PluginSandbox {
                                 const point = aliases[event] || event;
                                 if (typeof handler !== 'function') throw new Error('ada.on requires a handler');
                                 const inferredActions = point === 'beforeToolCall'
-                                    ? ['observe', 'note', 'deny', 'abort', 'replace']
+                                    ? ['observe', 'note', 'deny', 'replace']
                                     : ['observe', 'note'];
                                 hooksRaw.push({{
                                     point,
@@ -147,24 +150,21 @@ impl PluginSandbox {
                         }} catch (e) {{
                             return JSON.stringify({{ ok: false, error: "插件执行异常: " + (e && e.message ? e.message : e) }});
                         }}
-                    }} else if (typeof desc === 'object') {{
-                        if (requireFactory) {{
-                            return JSON.stringify({{ ok: false, error: "插件包 index.js 必须 default export ExtensionAPI factory 函数" }});
-                        }}
+                    }} else if (typeof desc === 'object' && !requireFactory) {{
                         const raw = desc.tools || [];
                         const rawPrompts = desc.systemPrompts || desc.prompts || [];
                         const rawSkills = desc.skills || [];
                         const rawHooks = desc.hooks || [];
-                        for (let i = 0; i < rawPrompts.length; i++) {{ promptsRaw.push(rawPrompts[i]); }}
-                        for (let i = 0; i < rawSkills.length; i++) {{ skillsRaw.push(rawSkills[i]); }}
-                        for (let i = 0; i < rawHooks.length; i++) {{ hooksRaw.push(rawHooks[i]); }}
+                        for (let i = 0; i < rawPrompts.length; i++) promptsRaw.push(rawPrompts[i]);
+                        for (let i = 0; i < rawSkills.length; i++) skillsRaw.push(rawSkills[i]);
+                        for (let i = 0; i < rawHooks.length; i++) hooksRaw.push(rawHooks[i]);
                         for (let i = 0; i < raw.length; i++) {{
-                            const t = raw[i];
-                            const inst = typeof t === 'function' ? await t(ws || process.cwd()) : t;
-                            if (inst) toolsRaw.push(inst);
+                            const item = raw[i];
+                            const tool = typeof item === 'function' ? await item(ws || process.cwd()) : item;
+                            if (tool) toolsRaw.push(tool);
                         }}
                     }} else {{
-                        return JSON.stringify({{ ok: false, error: "插件导出类型不支持" }});
+                        return JSON.stringify({{ ok: false, error: "Extension Factory must be a default-exported function" }});
                     }}
 
                     const tools = [];
@@ -286,11 +286,11 @@ impl PluginSandbox {
             if plugin_path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name == "index.js")
+                .is_some_and(|name| matches!(name, "index.ts" | "index.js"))
             {
                 let metadata = metadata
                     .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("插件包 index.js 缺少 metadata 对象"))?;
+                    .ok_or_else(|| anyhow::anyhow!("插件包入口缺少 metadata 对象"))?;
                 Self::validate_package_metadata(metadata, &tools, &prompts, &skills, &hooks)?;
             }
             Ok(PluginInspection {
@@ -391,6 +391,10 @@ impl PluginSandbox {
         let plugin_file_json = serde_json::to_string(&plugin_path.to_string_lossy())?;
         let ws_json = serde_json::to_string(&workspace.to_string_lossy())?;
         let point_json = serde_json::to_string(point)?;
+        let require_factory = plugin_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| matches!(name, "index.ts" | "index.js"));
 
         // 1. 装载插件模块定义
         // 🔴 **前导脚本压成一行**（P4·SP-73）：插件代码必须从第 1 行开始，
@@ -420,6 +424,7 @@ impl PluginSandbox {
                     }}
                     const ws = {ws_json};
                     const targetPoint = {point_json};
+                    const requireFactory = {require_factory};
                     const eventPayload = payload && payload.__ada_hook_event !== undefined
                         ? payload.__ada_hook_event
                         : payload;
@@ -500,7 +505,7 @@ impl PluginSandbox {
                                 const point = aliases[event] || event;
                                 if (typeof handler === 'function') hooksRaw.push({{
                                     point, apiEvent: event, handler,
-                                    actions: Array.isArray(options.actions) ? options.actions : (point === 'beforeToolCall' ? ['observe', 'note', 'deny', 'abort', 'replace'] : ['observe', 'note']),
+                                    actions: Array.isArray(options.actions) ? options.actions : (point === 'beforeToolCall' ? ['observe', 'note', 'deny', 'replace'] : ['observe', 'note']),
                                     order: typeof options.order === 'number' ? options.order : 0,
                                 }});
                             }},
@@ -510,9 +515,10 @@ impl PluginSandbox {
                         }} catch (e) {{
                             return JSON.stringify({{ error: "插件初始化执行异常: " + (e && e.message ? e.message : e) }});
                         }}
-                    }} else if (typeof desc === 'object') {{
-                        const raw = desc.hooks || [];
-                        for (let i = 0; i < raw.length; i++) {{ hooksRaw.push(raw[i]); }}
+                    }} else if (typeof desc === 'object' && !requireFactory) {{
+                        for (const hook of (desc.hooks || [])) hooksRaw.push(hook);
+                    }} else {{
+                        return JSON.stringify({{ error: "Extension Factory must be a default-exported function" }});
                     }}
 
                     const targets = hooksRaw.filter((h) => h && h.point === targetPoint)
@@ -572,7 +578,8 @@ impl PluginSandbox {
             }};
             "#,
             ws_json = ws_json,
-            point_json = point_json
+            point_json = point_json,
+            require_factory = require_factory
         );
         if let Err(e) = runtime.eval_ts(call_setup, Some("ada_hook_caller.js")).await {
             runtime.terminate();
@@ -669,6 +676,10 @@ impl PluginSandbox {
         let plugin_file_json = serde_json::to_string(&plugin_path.to_string_lossy())?;
         let ws_json = serde_json::to_string(&workspace.to_string_lossy())?;
         let tool_name_json = serde_json::to_string(tool_name)?;
+        let require_factory = plugin_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| matches!(name, "index.ts" | "index.js"));
 
         // 1. 装载插件模块定义
         // 🔴 **前导脚本压成一行**（P4·SP-73）：插件代码必须从第 1 行开始，
@@ -699,6 +710,7 @@ impl PluginSandbox {
                     }}
                     const ws = {ws_json};
                     const targetName = {tool_name_json};
+                    const requireFactory = {require_factory};
                     let toolsRaw = [];
                     if (typeof desc === 'function') {{
                         const api = {{
@@ -721,13 +733,15 @@ impl PluginSandbox {
                         }} catch (e) {{
                             return JSON.stringify({{ ok: false, output: "插件初始化执行异常: " + (e && e.message ? e.message : e) }});
                         }}
-                    }} else if (typeof desc === 'object') {{
+                    }} else if (typeof desc === 'object' && !requireFactory) {{
                         const raw = desc.tools || [];
                         for (let i = 0; i < raw.length; i++) {{
-                            const t = raw[i];
-                            const inst = typeof t === 'function' ? await t(ws || process.cwd()) : t;
-                            if (inst) toolsRaw.push(inst);
+                            const item = raw[i];
+                            const tool = typeof item === 'function' ? await item(ws || process.cwd()) : item;
+                            if (tool) toolsRaw.push(tool);
                         }}
+                    }} else {{
+                        return JSON.stringify({{ ok: false, output: "Extension Factory must be a default-exported function" }});
                     }}
 
                     let toolInst = null;
@@ -787,7 +801,8 @@ impl PluginSandbox {
             }};
             "#,
             ws_json = ws_json,
-            tool_name_json = tool_name_json
+            tool_name_json = tool_name_json,
+            require_factory = require_factory
         );
 
         if let Err(e) = runtime.eval_ts(call_setup, Some("ada_caller.js")).await {
@@ -1329,7 +1344,7 @@ mod tests {
     async fn test_package_index_requires_matching_metadata() {
         let dir = std::env::temp_dir().join(format!("a_da_metadata_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let index = dir.join("index.js");
+        let index = dir.join("index.ts");
         std::fs::write(
             &index,
             r#"const metadata = {
@@ -1402,7 +1417,7 @@ mod tests {
         )
         .await
         .expect_err("package index must use the pi-style factory export");
-        assert!(error.to_string().contains("ExtensionAPI factory"), "{error}");
+        assert!(error.to_string().contains("Extension Factory"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

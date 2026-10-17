@@ -1,9 +1,9 @@
 # pi-style a-da Extension API
 
-Plugin packages use a single factory entrypoint, matching pi's extension pattern.
-In a TypeScript-authored source this is `export default function (ada: ExtensionAPI) {}`;
-the required packaged `index.js` is the same factory after type erasure. A JSDoc variant
-keeps editor types in plain JavaScript:
+Plugin packages use a single factory entrypoint, matching pi's extension pattern:
+`export default function (ada: ExtensionAPI) {}` in the package's `index.ts`.
+`index.js` is accepted for precompiled JavaScript packages. A JSDoc variant
+keeps editor types in JavaScript:
 
 ```js
 /** @typedef {import('./extension-api').ExtensionAPI} ExtensionAPI */
@@ -47,10 +47,6 @@ export default function (ada) {
 }
 ```
 
-For TypeScript source, the same entry can be written as
-`export default function (ada: ExtensionAPI) { ... }`; emit/keep the package entry as
-`index.js` for the current loader.
-
 `registerTool` declarations are collected during isolated inspection and installed in the
 runtime catalog. Built-in names keep their canonical descriptor. New third-party tool
 names receive a conservative descriptor (write-classified and approval-required), and
@@ -58,10 +54,10 @@ their `execute` factory closure is recreated inside the script sandbox for each 
 Thus package-defined tools are not limited to names already present in the built-in
 registry; unknown plugin tools fail safe as writes and must pass approval.
 
-The package entrypoint must be `<package-root>/index.js`. For TypeScript authoring,
-keep `index.js` as the required runtime entry and provide/build the factory source
-into it; Node-style relative module loading is not currently supported inside the
-Boa sandbox.
+The package entrypoint must be `<package-root>/index.ts` or `<package-root>/index.js`.
+Node-style relative module loading is not currently supported inside the Boa sandbox.
+Loose single-file plugins and object-style default exports are no longer discovered or
+accepted by `plugin.validate`.
 
 `metadata` counts and required `names` arrays are checked against the declarations
 collected by the isolated inspector. `ada.on(event, handler)` is an alias for hook

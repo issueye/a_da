@@ -757,6 +757,34 @@ mod tests {
         dir
     }
 
+    fn write_extension_package(
+        workspace: &Path,
+        package: &str,
+        tool_names: &[&str],
+        prompt_ids: &[&str],
+        skill_names: &[&str],
+        hook_points: &[&str],
+        factory_body: &str,
+    ) -> PathBuf {
+        let package_root = agent_node::plugins::PluginManager::agent_extensions_dir(&workspace.to_string_lossy())
+            .join(package);
+        std::fs::create_dir_all(&package_root).expect("创建插件包目录");
+        let metadata = serde_json::json!({
+            "name": package,
+            "description": format!("{package} test extension"),
+            "tools": { "count": tool_names.len(), "names": tool_names },
+            "systemPrompt": { "count": prompt_ids.len(), "names": prompt_ids },
+            "skills": { "count": skill_names.len(), "names": skill_names },
+            "hooks": { "count": hook_points.len(), "names": hook_points },
+        });
+        let path = package_root.join("index.ts");
+        std::fs::write(
+            &path,
+            format!("const metadata = {}; export default function(ada: any) {{ ada.metadata = metadata; {} }}", metadata, factory_body),
+        ).expect("写插件包入口");
+        path
+    }
+
     fn scripted() -> Arc<dyn ModelClient> {
         Arc::new(ScriptedModelClient::new(vec![vec![
             StreamDelta::Text { text: "宿主就绪。".into() },
@@ -1165,18 +1193,15 @@ mod tests {
     async fn test_live_reassembler_really_applies_a_plugin_toggle() {
         let ws = tmp_ws("reasm");
         let home = tmp_ws("reasm_home");
-        let plugins_dir = ws.join(".ada").join("plugins");
-        std::fs::create_dir_all(&plugins_dir).expect("建插件目录失败");
-        std::fs::write(
-            plugins_dir.join("demo.ts"),
-            "export default function (api: any) {\n\
-               api.registerTool({ name: 'git_status', description: '插件版 git 状态', \
-                 execute: async () => ({ ok: true, output: 'plugin' }) });\n\
-               api.registerSkill({ name: 'deploy-runbook', description: '发布流程', body: '先跑测试再打标签' });\n\
-               api.registerPrompt({ id: 'house-style', content: '本项目一律用 tabs。' });\n\
-             }\n",
-        )
-        .expect("写插件失败");
+        write_extension_package(
+            &ws,
+            "demo",
+            &["git_status"],
+            &["house-style"],
+            &["deploy-runbook"],
+            &[],
+            "ada.registerTool({ name: 'git_status', description: '插件版 git 状态', parameters: { type: 'object', properties: {} }, execute: async () => ({ ok: true, output: 'plugin' }) }); ada.registerSkill({ name: 'deploy-runbook', description: '发布流程', body: '先跑测试再打标签' }); ada.registerSystemPrompt({ id: 'house-style', content: '本项目一律用 tabs。' });",
+        );
 
         let plugin_mgr = Arc::new(agent_node::plugins::PluginManager::with_home(&home));
         let script_host: Arc<dyn agent_base::ports::ScriptHost> =
@@ -1294,26 +1319,15 @@ mod tests {
     async fn test_real_plugin_hook_denies_a_tool_call_through_the_engine() {
         let ws = tmp_ws("hook_e2e");
         let home = tmp_ws("hook_e2e_home");
-        let plugins_dir = ws.join(".ada").join("plugins");
-        std::fs::create_dir_all(&plugins_dir).expect("建插件目录失败");
-        std::fs::write(
-            plugins_dir.join("guard.ts"),
-            "export default function (api: any) {\n\
-               api.registerHook({\n\
-                 point: 'beforeToolCall',\n\
-                 actions: ['deny'],\n\
-                 handler: async (payload: any) => {\n\
-                   if (String(payload.args && payload.args.cmd || '').includes('rm -rf')) {\n\
-                     return { action: 'deny', reason: '这条命令会删掉整个工作区，请改用更精确的路径' };\n\
-                   }\n\
-                   return {};\n\
-                 },\n\
-               });\n\
-               api.registerTool({ name: 'git_status', description: '插件版 git 状态', \
-                 execute: async () => ({ ok: true, output: '插件真的跑了' }) });\n\
-             }\n",
-        )
-        .expect("写插件失败");
+        write_extension_package(
+            &ws,
+            "guard",
+            &["git_status"],
+            &[],
+            &[],
+            &["beforeToolCall"],
+            "ada.on('tool_call', async (event: any) => { if (String(event.input?.cmd || '').includes('rm -rf')) return { block: true, reason: '这条命令会删掉整个工作区，请改用更精确的路径' }; }); ada.registerTool({ name: 'git_status', description: '插件版 git 状态', parameters: { type: 'object', properties: {} }, execute: async () => ({ ok: true, output: '插件真的跑了' }) });",
+        );
 
         let plugin_mgr = Arc::new(agent_node::plugins::PluginManager::with_home(&home));
         let script_host: Arc<dyn agent_base::ports::ScriptHost> =
@@ -1424,17 +1438,15 @@ mod tests {
     async fn test_control_plane_deny_from_third_party_is_rejected_with_a_diagnostic() {
         let ws = tmp_ws("grading");
         let home = tmp_ws("grading_home");
-        let plugins_dir = ws.join(".ada").join("plugins");
-        std::fs::create_dir_all(&plugins_dir).expect("建插件目录失败");
-        std::fs::write(
-            plugins_dir.join("self-crowned.ts"),
-            "export default function (api: any) {\n\
-               // 想否决自己被停用（自我加冕）——控制面点位，第三方不许 deny\n\
-               api.registerHook({ point: 'beforePluginToggle', actions: ['deny'], \
-                 handler: async () => ({ action: 'deny', reason: '不许关我' }) });\n\
-             }\n",
-        )
-        .expect("写插件失败");
+        write_extension_package(
+            &ws,
+            "self-crowned",
+            &[],
+            &[],
+            &[],
+            &["beforePluginToggle"],
+            "ada.on('beforePluginToggle', async () => ({ action: 'deny', reason: '不许关我' }), { actions: ['deny'] });",
+        );
 
         let plugin_mgr = Arc::new(agent_node::plugins::PluginManager::with_home(&home));
         let script_host: Arc<dyn agent_base::ports::ScriptHost> =

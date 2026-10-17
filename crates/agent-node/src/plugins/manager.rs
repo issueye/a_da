@@ -61,9 +61,30 @@ impl PluginManager {
         PathBuf::from(workspace).join(".ada").join("agent-coding").join("extensions")
     }
 
-    /// Load the current plugin view from the canonical agent directory and
-    /// compatible legacy directories. The manager is intentionally stateless;
-    /// each call is a fresh load.
+    /// Validate an explicit plugin entry: only canonical package-root
+    /// `index.ts` / `index.js` files are accepted, never loose legacy scripts.
+    pub fn is_extension_entry(&self, workspace: Option<&str>, entry: &Path) -> bool {
+        if !entry.is_file()
+            || !entry
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| matches!(name, "index.ts" | "index.js"))
+        {
+            return false;
+        }
+        let Ok(entry) = fs::canonicalize(entry) else { return false };
+        let mut roots = vec![self.app_home().join("agent-coding").join("extensions")];
+        if let Some(workspace) = workspace.filter(|workspace| !workspace.trim().is_empty()) {
+            roots.push(Self::agent_extensions_dir(workspace));
+        }
+        roots.into_iter().any(|root| {
+            fs::canonicalize(root)
+                .ok()
+                .is_some_and(|root| entry.parent().and_then(Path::parent) == Some(root.as_path()))
+        })
+    }
+
+    /// Load the current plugin view from the canonical agent directory.
     pub fn load_plugins(&self, workspace: Option<&str>) -> Vec<PluginItem> {
         self.scan_plugins(workspace)
     }
@@ -291,24 +312,18 @@ impl PluginManager {
             items.push(item);
         }
 
-        // 2. 扫描待探测的目录集合：(目录路径, 作用域)
+        // 2. Scan canonical package roots only. The Extension Factory is the
+        // source of truth; loose files and alternate folders are not discovered.
         let mut scan_dirs: Vec<(PathBuf, &'static str)> = Vec::new();
 
-        // 工作区扩展目录：<workspace>/.ada/extensions 与 <workspace>/.ada/plugins
         if let Some(ws) = workspace {
-            let ws_path = PathBuf::from(ws);
             if !ws.trim().is_empty() {
                 scan_dirs.push((Self::agent_extensions_dir(ws), "workspace"));
-                scan_dirs.push((ws_path.join(".ada").join("extensions"), "workspace"));
-                scan_dirs.push((ws_path.join(".ada").join("plugins"), "workspace"));
             }
         }
 
-        // 全局扩展目录：~/.a-da/extensions 与 ~/.a-da/plugins
         let app_home = self.app_home();
         scan_dirs.push((app_home.join("agent-coding").join("extensions"), "global"));
-        scan_dirs.push((app_home.join("extensions"), "global"));
-        scan_dirs.push((app_home.join("plugins"), "global"));
 
         for (dir_path, scope) in scan_dirs {
             if !dir_path.exists() {
@@ -330,6 +345,9 @@ impl PluginManager {
                 if file_name.starts_with('.') || file_name == "node_modules" || file_name == "target" {
                     continue;
                 }
+                if !path.is_dir() {
+                    continue;
+                }
 
                 let id = format!("{}:{}", scope, file_name.trim_end_matches(".ts").trim_end_matches(".js"));
                 if seen_ids.contains(&id) {
@@ -348,12 +366,7 @@ impl PluginManager {
                     }
                 }
 
-                let is_package = path.is_dir();
-                let plugin_name = if is_package {
-                    file_name.to_string()
-                } else {
-                    path.file_stem().and_then(|s| s.to_str()).unwrap_or(file_name).to_string()
-                };
+                let plugin_name = file_name.to_string();
 
                 let enabled = !disabled.contains(&id);
 
@@ -361,14 +374,9 @@ impl PluginManager {
                 // infer registrations by grepping JavaScript source here.
                 let tools = Vec::new();
                 let tools_decl = Vec::new();
-                let script_path = if is_package {
-                    let index = path.join("index.js");
-                    index.exists().then_some(index)
-                } else if file_name.ends_with(".ts") || file_name.ends_with(".js") {
-                    Some(path.clone())
-                } else {
-                    None
-                };
+                let script_path = [path.join("index.ts"), path.join("index.js")]
+                    .into_iter()
+                    .find(|index| index.is_file());
 
                 let desc = format!("{} 扩展插件", if scope == "global" { "全局" } else { "工作区" });
 
@@ -379,14 +387,14 @@ impl PluginManager {
                 // （`ScriptHost::load` 会真的执行一遍插件，贡献进装配），
                 // 那条诊断等于对着已经生效的插件喊"不生效"，已删除。
                 let mut diagnostics: Vec<PluginDiagnostic> = Vec::new();
-                let package_entry_missing = is_package && script_path.is_none();
+                let package_entry_missing = script_path.is_none();
                 let plugin_status = if package_entry_missing { "broken" } else { "ready" };
                 if package_entry_missing {
                     diagnostics.push(PluginDiagnostic {
                         plugin_id: id.clone(),
                         level: "error".to_string(),
-                        message: "插件包根目录必须包含 index.js".to_string(),
-                        hint: Some("请将插件入口放在包根目录 index.js，并导出 metadata 对象".to_string()),
+                        message: "插件包根目录必须包含 index.ts 或 index.js".to_string(),
+                        hint: Some("请将 pi-style Extension Factory 放在包根 index.ts（或编译后的 index.js）".to_string()),
                     });
                 }
                 if !enabled {
@@ -444,9 +452,9 @@ impl PluginManager {
                     tools,
                     skills: Vec::new(),
                     prompts: Vec::new(),
-                    is_package: Some(is_package),
+                    is_package: Some(true),
                     error: if package_entry_missing {
-                        Some("missing index.js".to_string())
+                        Some("missing index.ts/index.js".to_string())
                     } else {
                         None
                     },
@@ -484,7 +492,7 @@ impl PluginManager {
         fs::create_dir_all(&dir)?;
         let package_dir = dir.join(name);
         fs::create_dir(&package_dir)?;
-        let target = package_dir.join("index.js");
+        let target = package_dir.join("index.ts");
 
         let default_code = format!(
             r#"const metadata = {{
@@ -517,12 +525,12 @@ export default function (ada) {{
         let p = PathBuf::from(file_path);
         if p.exists() {
             if p.is_file() {
-                let is_package_entry = p.file_name().and_then(|name| name.to_str()) == Some("index.js")
+                let is_package_entry = p.file_name().and_then(|name| name.to_str()).is_some_and(|name| matches!(name, "index.ts" | "index.js"))
                     && p.parent()
                         .and_then(|parent| parent.parent())
                         .and_then(Path::file_name)
                         .and_then(|name| name.to_str())
-                        .is_some_and(|name| matches!(name, "extensions" | "plugins"));
+                        .is_some_and(|name| name == "extensions");
                 if is_package_entry {
                     if let Some(package_dir) = p.parent() {
                         fs::remove_dir_all(package_dir)?;
@@ -553,6 +561,23 @@ mod tests {
         path
     }
 
+    #[test]
+    fn scanner_ignores_legacy_loose_files_and_alternate_plugin_directory() {
+        let workspace = temp_dir("legacy_scan");
+        let canonical = PluginManager::agent_extensions_dir(&workspace.to_string_lossy());
+        fs::create_dir_all(&canonical).unwrap();
+        fs::write(canonical.join("loose.ts"), "export default function (ada) {} ").unwrap();
+        let alternate = workspace.join(".ada").join("plugins");
+        fs::create_dir_all(&alternate).unwrap();
+        fs::write(alternate.join("old.ts"), "export default function (ada) {} ").unwrap();
+
+        let manager = PluginManager::with_home(temp_dir("legacy_scan_home"));
+        let plugins = manager.scan_plugins(Some(&workspace.to_string_lossy()));
+        assert!(plugins.iter().all(|plugin| plugin.scope == "builtin"));
+        assert!(!manager.is_extension_entry(Some(&workspace.to_string_lossy()), &canonical.join("loose.ts")));
+        let _ = fs::remove_dir_all(workspace);
+    }
+
     #[tokio::test]
     async fn template_is_pi_style_package_and_delete_removes_package_root() {
         let workspace = temp_dir("workspace");
@@ -562,7 +587,7 @@ mod tests {
             .create_plugin_template(Some(workspace.to_string_lossy().as_ref()), "workspace", "factory-demo", None)
             .expect("create package template");
         let entry = PathBuf::from(entry);
-        assert_eq!(entry.file_name().and_then(|name| name.to_str()), Some("index.js"));
+        assert_eq!(entry.file_name().and_then(|name| name.to_str()), Some("index.ts"));
         let source = fs::read_to_string(&entry).unwrap();
         assert!(source.contains("export default function (ada)"));
         assert!(source.contains("ada.metadata = metadata"));

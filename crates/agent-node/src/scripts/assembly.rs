@@ -209,8 +209,38 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let dir = std::env::temp_dir().join(format!("a_da_asm_{tag}_{}_{}", std::process::id(), nanos));
-        std::fs::create_dir_all(dir.join(".ada").join("plugins")).expect("建临时工作区失败");
+        std::fs::create_dir_all(crate::plugins::PluginManager::agent_extensions_dir(&dir.to_string_lossy()))
+            .expect("建临时工作区失败");
         dir
+    }
+
+    fn write_package(
+        workspace: &std::path::Path,
+        package: &str,
+        tools: &[&str],
+        prompts: &[&str],
+        skills: &[&str],
+        hooks: &[&str],
+        factory_body: &str,
+    ) -> std::path::PathBuf {
+        let package_root = crate::plugins::PluginManager::agent_extensions_dir(&workspace.to_string_lossy())
+            .join(package);
+        std::fs::create_dir_all(&package_root).expect("创建插件包目录失败");
+        let metadata = serde_json::json!({
+            "name": package,
+            "description": format!("{package} extension"),
+            "tools": { "count": tools.len(), "names": tools },
+            "systemPrompt": { "count": prompts.len(), "names": prompts },
+            "skills": { "count": skills.len(), "names": skills },
+            "hooks": { "count": hooks.len(), "names": hooks },
+        });
+        let source = format!(
+            "const metadata = {}; export default function(ada: any) {{ ada.metadata = metadata; {} }}",
+            metadata, factory_body
+        );
+        let entry = package_root.join("index.ts");
+        std::fs::write(&entry, source).expect("写插件包入口失败");
+        entry
     }
 
     fn temp_home(tag: &str) -> std::path::PathBuf {
@@ -223,9 +253,14 @@ mod tests {
     #[tokio::test]
     async fn test_collects_only_registered_names_and_reports_the_rest() {
         let ws = temp_ws("mix");
-        std::fs::write(
-            ws.join(".ada").join("plugins").join("p.ts"),
-            r#"export default function (ada: any) {
+        write_package(
+            &ws,
+            "p",
+            &["read_file", "my_custom_tool"],
+            &["factory-prompt"],
+            &["factory-skill"],
+            &["afterTurn"],
+            r#"
               ada.registerTool({
                 name: 'read_file', description: '注册表里有', parameters: { type: 'object', properties: {} },
                 execute: async () => ({ ok: true, output: 'from-plugin' })
@@ -237,10 +272,8 @@ mod tests {
               ada.registerSystemPrompt({ id: 'factory-prompt', content: 'factory prompt fragment' });
               ada.registerSkill({ name: 'factory-skill', description: 'factory skill', body: 'factory skill body' });
               ada.on('turn_end', async (event: any, ctx: any) => ({ action: 'note', note: `${ctx.point}:${event.step}` }));
-            }
-"#,
-        )
-        .expect("写插件失败");
+            "#,
+        );
 
         let mgr = PluginManager::with_home(temp_home("mix"));
         let host: Arc<dyn ScriptHost> = Arc::new(TsScriptHost::new());
@@ -282,15 +315,19 @@ mod tests {
     #[tokio::test]
     async fn test_broken_plugin_is_skipped_without_breaking_assembly() {
         let ws = temp_ws("broken");
-        let dir = ws.join(".ada").join("plugins");
-        std::fs::write(dir.join("bad.ts"), "export default { tools: [ \n")
-            .expect("写坏插件失败");
-        std::fs::write(
-            dir.join("good.ts"),
-            "export default { tools: [ { name: 'write_file', description: 'ok', \
-             execute: async () => ({ ok: true, output: 'ok' }) } ] }\n",
-        )
-        .expect("写好插件失败");
+        let dir = crate::plugins::PluginManager::agent_extensions_dir(&ws.to_string_lossy());
+        let bad_dir = dir.join("bad");
+        std::fs::create_dir_all(&bad_dir).expect("建坏插件目录失败");
+        std::fs::write(bad_dir.join("index.ts"), "export default function(ada: any) {\n").expect("写坏插件失败");
+        write_package(
+            &ws,
+            "good",
+            &["write_file"],
+            &[],
+            &[],
+            &[],
+            "ada.registerTool({ name: 'write_file', description: 'ok', parameters: { type: 'object', properties: {} }, execute: async () => ({ ok: true, output: 'ok' }) });",
+        );
 
         let mgr = PluginManager::with_home(temp_home("broken"));
         let host: Arc<dyn ScriptHost> = Arc::new(TsScriptHost::new());
@@ -325,14 +362,10 @@ mod tests {
 #[tokio::test]
 async fn test_plugin_prompt_fragments_are_collected_with_plugin_id() {
     let ws = temp_ws("prompts");
-    std::fs::write(
-        ws.join(".ada").join("plugins").join("p.ts"),
-        "export default { \
-         prompts: [ { id: 'house-style', content: '本项目一律用 tabs。' } ], \
-         tools: [ { name: 'read_file', description: 'x', \
-           execute: async () => ({ ok: true, output: 'ok' }) } ] }\n",
-    )
-    .expect("写插件失败");
+    write_package(
+        &ws, "p", &["read_file"], &["house-style"], &[], &[],
+        "ada.registerSystemPrompt({ id: 'house-style', content: '本项目一律用 tabs。' }); ada.registerTool({ name: 'read_file', description: 'x', parameters: { type: 'object', properties: {} }, execute: async () => ({ ok: true, output: 'ok' }) });",
+    );
 
     let mgr = PluginManager::with_home(temp_home("prompts"));
     let host: Arc<dyn ScriptHost> = Arc::new(TsScriptHost::new());
@@ -355,12 +388,10 @@ async fn test_plugin_prompt_fragments_are_collected_with_plugin_id() {
 #[tokio::test]
 async fn test_plugin_without_prompts_yields_no_fragments() {
     let ws = temp_ws("noprompts");
-    std::fs::write(
-        ws.join(".ada").join("plugins").join("p.ts"),
-        "export default { tools: [ { name: 'read_file', description: 'x', \
-         execute: async () => ({ ok: true, output: 'ok' }) } ] }\n",
-    )
-    .expect("写插件失败");
+    write_package(
+        &ws, "p", &["read_file"], &[], &[], &[],
+        "ada.registerTool({ name: 'read_file', description: 'x', parameters: { type: 'object', properties: {} }, execute: async () => ({ ok: true, output: 'ok' }) });",
+    );
 
     let mgr = PluginManager::with_home(temp_home("noprompts"));
     let host: Arc<dyn ScriptHost> = Arc::new(TsScriptHost::new());
@@ -375,14 +406,10 @@ async fn test_plugin_without_prompts_yields_no_fragments() {
 #[tokio::test]
 async fn test_plugin_skills_are_collected_with_plugin_id() {
     let ws = temp_ws("skills");
-    std::fs::write(
-        ws.join(".ada").join("plugins").join("p.ts"),
-        "export default function (api: any) { \
-         api.registerSkill({ name: 'deploy', description: '发布', body: '先跑测试', whenToUse: '发布时' }); \
-         api.registerTool({ name: 'read_file', description: 'x', \
-           execute: async () => ({ ok: true, output: 'ok' }) }); }\n",
-    )
-    .expect("写插件失败");
+    write_package(
+        &ws, "p", &["read_file"], &[], &["deploy"], &[],
+        "ada.registerSkill({ name: 'deploy', description: '发布', body: '先跑测试', whenToUse: '发布时' }); ada.registerTool({ name: 'read_file', description: 'x', parameters: { type: 'object', properties: {} }, execute: async () => ({ ok: true, output: 'ok' }) });",
+    );
 
     let mgr = PluginManager::with_home(temp_home("skills"));
     let host: Arc<dyn ScriptHost> = Arc::new(TsScriptHost::new());
@@ -409,12 +436,10 @@ async fn test_plugin_skills_are_collected_with_plugin_id() {
 #[tokio::test]
 async fn test_plugin_without_skills_yields_no_skills() {
     let ws = temp_ws("npskills");
-    std::fs::write(
-        ws.join(".ada").join("plugins").join("p.ts"),
-        "export default { tools: [ { name: 'read_file', description: 'x', \
-         execute: async () => ({ ok: true, output: 'ok' }) } ] }\n",
-    )
-    .expect("写插件失败");
+    write_package(
+        &ws, "p", &["read_file"], &[], &[], &[],
+        "ada.registerTool({ name: 'read_file', description: 'x', parameters: { type: 'object', properties: {} }, execute: async () => ({ ok: true, output: 'ok' }) });",
+    );
 
     let mgr = PluginManager::with_home(temp_home("npskills"));
     let host: Arc<dyn ScriptHost> = Arc::new(TsScriptHost::new());
