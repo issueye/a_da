@@ -17,7 +17,10 @@ use std::sync::Arc;
 use agent_base::ports::Tool;
 
 /// 已知工具包名（**唯一真源**）。
-pub const TOOLKIT_NAMES: &[&str] = &["core", "fs", "command", "decision", "git", "project"];
+///
+/// `decision` 已于 2026-10-18 整体下线（`decide` / `check_gate` 两个工具 + 实现模块一起删），
+/// 产品声明里再出现它会在装配期直接报错——这正是这张表存在的意义。
+pub const TOOLKIT_NAMES: &[&str] = &["core", "fs", "command", "git", "project", "forge"];
 
 /// 该名字是否是已知工具包。
 pub fn is_known_toolkit(name: &str) -> bool {
@@ -30,7 +33,8 @@ pub fn tools_for_toolkit(name: &str, workspace: &Path) -> Option<Vec<Arc<dyn Too
         "core" => Some(crate::core::core_tools()),
         "fs" => Some(crate::fs::fs_tools(workspace)),
         "command" => Some(crate::command::command_tools(workspace)),
-        "decision" => Some(crate::decision::decision_tools(workspace)),
+        // 插件包脚手架：生成可加载的最小插件包（`create_plugin`）
+        "forge" => Some(crate::forge::forge_tools(workspace)),
         // W2-T2：原先只在 `execute_builtin_plugin_tool` 字符串分派里的插件工具
         "git" => Some(crate::plugin_tools::git_tools(workspace)),
         "project" => Some(crate::plugin_tools::project_tools(workspace)),
@@ -124,7 +128,7 @@ mod tests {
     #[test]
     fn test_all_toolkit_tool_names_covers_the_expected_core_tools() {
         let names = all_toolkit_tool_names(ws());
-        for expect in ["read_file", "write_file", "run_command", "ask_user", "todo", "finish", "decide", "check_gate"] {
+        for expect in ["read_file", "write_file", "run_command", "ask_user", "todo", "finish", "project_inspect", "create_plugin"] {
             assert!(names.contains(expect), "`{expect}` 应来自某个工具包：{names:?}");
         }
     }

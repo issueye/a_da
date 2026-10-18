@@ -94,10 +94,10 @@ agent-base  →  agent-proto / agent-adapter / agent-toolkit / agent-runtime  �
 | `run_command` | 工作区内执行 shell（默认超时；**超时/中止杀整棵进程树**，输出截断） |
 | `run_background` / `check_task` / `kill_task` | dev server、watcher 这类长命令：后台启动返回任务 id，轮询状态，按需整树终止 |
 | `todo` | 多步骤任务规划 |
-| `project_inspect` / `inspect_project` | 项目结构与依赖概览 |
+| `project_inspect` | 项目结构与依赖概览 |
+| `create_plugin` | 生成可加载的插件包骨架（Extension Factory + 技能 + 说明） |
 | `git_status` / `git_diff` / `git_log` | Git 只读查询 |
 | `run_tests` | 跑项目测试 |
-| `decide` / `check_gate` | 确定性决策路由与验收门禁判定 |
 | `ask_user` | 向用户提问（选项 + 自定义答复） |
 | `finish` | 声明任务完成（终止整轮） |
 | `invoke_subagent` | 委派给隔离运行的子智能体 |

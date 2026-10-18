@@ -1402,4 +1402,60 @@ mod tests {
         assert!(error.to_string().contains("Extension Factory"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// 守门：`create_plugin`（插件工坊）生成的骨架必须**真的能装载**。
+    ///
+    /// 这条比"文件写出来了"强得多：它走的是包根路径（`index.ts`），会执行
+    /// `validate_package_metadata`——模板里 metadata 与注册项一旦漂移（count/names 对不上、
+    /// 工厂不是 default 导出、技能没有正文），这里直接红，而不是等用户在插件中心看到 broken。
+    #[tokio::test]
+    async fn test_plugin_forge_scaffold_loads_and_runs() {
+        let dir = std::env::temp_dir().join(format!("a_da_forge_e2e_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let res = agent_toolkit::forge::scaffold_plugin(
+            &dir,
+            agent_toolkit::forge::ScaffoldRequest {
+                id: "demo-guard",
+                name: Some("演示守卫"),
+                description: Some("演示用：拦住没有验收标准的提交"),
+                tool: None,
+                overwrite: false,
+            },
+        );
+        assert!(res.ok, "{}", res.output);
+
+        let entry = agent_toolkit::forge::workspace_extensions_dir(&dir)
+            .join("demo-guard")
+            .join("index.ts");
+        assert!(entry.is_file(), "包根入口必须叫 index.ts：{}", entry.display());
+
+        let insp = PluginSandbox::inspect_plugin_full(&entry, &dir, ada_ts_engine::Needs::everything())
+            .await
+            .expect("生成的插件必须通过装载期 metadata 校验");
+        assert_eq!(insp.tools.len(), 1);
+        assert_eq!(insp.tools[0].name, "demo_guard_hello");
+        assert_eq!(insp.prompts.len(), 1);
+        assert_eq!(insp.prompts[0].id, "demo-guard-usage");
+        assert_eq!(insp.skills.len(), 1);
+        assert!(
+            insp.hooks.is_empty(),
+            "骨架不该偷偷注册钩子（metadata 里写的就是 0）"
+        );
+
+        // 示例工具真的能跑（工具名/参数 schema/execute 约定任何一处写错，这里就挂）
+        let out = PluginSandbox::call_tool(
+            &entry,
+            "demo_guard_hello",
+            serde_json::json!({ "text": "你好" }),
+            &dir,
+            10,
+        )
+        .await
+        .expect("示例工具必须能执行");
+        assert!(out.ok, "{}", out.output);
+        assert!(out.output.contains("收到：你好"), "{}", out.output);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

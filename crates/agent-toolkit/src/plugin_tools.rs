@@ -328,12 +328,11 @@ pub fn git_tools(workspace: &Path) -> Vec<Arc<dyn Tool>> {
 
 /// `project` 工具包：项目诊断与代码结构提取。
 ///
-/// 含 `inspect_project` 这个**别名**（与 `project_inspect` 同一实现）——
-/// 注册表里两个名字都在，装配时就必须两个都可解析，否则界面/模型看到的清单与真源不一致。
+/// 只保留 `project_inspect` 一个名字（2026-10-18 合并）：早先它还有 `inspect_project`
+/// 这个**同一实现的别名**，同一个能力在界面与模型清单里各出现两次，纯粹是噪声。
 pub fn project_tools(workspace: &Path) -> Vec<Arc<dyn Tool>> {
     vec![
         Arc::new(PluginTool::new("project_inspect", workspace, Kind::ProjectInspect)),
-        Arc::new(PluginTool::new("inspect_project", workspace, Kind::ProjectInspect)),
         Arc::new(PluginTool::new("code_outline", workspace, Kind::CodeOutline)),
     ]
 }
@@ -357,7 +356,7 @@ mod tests {
 
     #[test]
     fn test_every_wrapped_tool_has_a_registry_descriptor() {
-        // 描述符来自注册表：这 7 个名字都必须存在（否则 new() 会 panic）
+        // 描述符来自注册表：这 6 个名字都必须存在（否则 new() 会 panic）
         let all: Vec<Arc<dyn Tool>> = git_tools(&ws())
             .into_iter()
             .chain(project_tools(&ws()))
@@ -371,10 +370,10 @@ mod tests {
                 "git_diff",
                 "git_log",
                 "project_inspect",
-                "inspect_project",
                 "code_outline",
                 "run_tests"
-            ]
+            ],
+            "项目诊断只保留一个名字：`inspect_project` 别名已合并进 `project_inspect`"
         );
         for t in &all {
             let d = crate::registry::find_tool_descriptor(&t.descriptor().name)

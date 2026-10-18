@@ -674,7 +674,6 @@ mod tests {
             "core".to_string(),
             "git".to_string(),
             "project".to_string(),
-            "decision".to_string(),
         ];
 
         // 1) 只读档位：能读，绝不拿到写/命令

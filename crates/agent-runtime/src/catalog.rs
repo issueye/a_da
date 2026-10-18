@@ -204,3 +204,51 @@ impl ToolCatalog for CompositeToolCatalog {
         violations
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_base::domain::{ToolCall, ToolReceipt};
+    use agent_base::ports::{BoxFuture, ToolContext};
+
+    /// 只带描述符、不做实事的工具：契约校验只看描述符，执行体无关。
+    struct DescriptorOnly(ToolDescriptor);
+
+    impl Tool for DescriptorOnly {
+        fn descriptor(&self) -> &ToolDescriptor {
+            &self.0
+        }
+
+        fn execute<'a>(
+            &'a self,
+            _call: &'a ToolCall,
+            _ctx: &'a ToolContext<'a>,
+        ) -> BoxFuture<'a, ToolReceipt> {
+            Box::pin(async move { ToolReceipt::success("ok", 0, 0) })
+        }
+    }
+
+    /// 🔴 全量契约守门：**注册表里每一个工具**都必须通过全部消费者契约。
+    ///
+    /// 2026-10-18 真事故：`create_plugin` 声明了 `Access::Mutates` + `RollbackPolicy::None`。
+    /// 这类违约只在**引擎装配期**（`EngineFactory` 调 `catalog.validate`）才被发现，
+    /// 于是产品引擎整个装不上——界面上的表现是"发消息没有任何反应"（1 轮 / 0 tok / 0s），
+    /// 而 `cargo test`、`xtask verify-spec`、`verify-wiring` 当时全绿：没人把**整张注册表**
+    /// 喂给 `validate`。这条用例补的就是这个缺口——新增工具时第一时间红，而不是等用户发消息。
+    #[test]
+    fn test_every_registered_tool_passes_all_consumer_contracts() {
+        let tools: Vec<Arc<dyn Tool>> = agent_toolkit::registry::standard_tool_descriptors()
+            .iter()
+            .cloned()
+            .map(|d| Arc::new(DescriptorOnly(d)) as Arc<dyn Tool>)
+            .collect();
+        assert!(!tools.is_empty(), "注册表不能为空");
+
+        let catalog = CompositeToolCatalog::new(tools, None);
+        let violations = catalog.validate(&Consumer::ALL);
+        assert!(
+            violations.is_empty(),
+            "注册表里有工具违反消费者契约（装配期才会炸，界面表现是「发消息没反应」）：\n{violations:#?}"
+        );
+    }
+}

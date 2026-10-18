@@ -15,16 +15,12 @@ use serde_json::json;
 /// 这份名单是**唯一真源**：每个工具的 `Tool::long_running()` 必须与它一致，
 /// `test_long_running_set_matches_tool_declarations` 机械守门（漂移就红）。
 pub const LONG_RUNNING_TOOLS: &[&str] = &[
-    // 等用户点"批准/拒绝"（工具名是 `check_gate`，实现文件叫 gate_tool.rs）
-    "check_gate",
     // 等用户回答问题
     "ask_user",
     // 等子智能体跑完（分钟级）
     "invoke_subagent",
     // 命令执行自带超时（默认 120s、上限 600s），不该被策略超时二次截断
     "run_command",
-    // 决策插件的判定等待（TS 插件执行，最长按插件自己的超时）
-    "decide",
 ];
 
 /// 是否属于上面那份豁免名单。
@@ -185,6 +181,31 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                 access: Access::Mutates { paths: PathSelector::Batch("files") },
                 approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::PerTargetInBatch,
+                execution: Execution::Sequential,
+                termination: Termination::ContinueTurn,
+            },
+            ToolDescriptor {
+                name: "create_plugin".to_string(),
+                summary: "在工作区生成可加载的插件包骨架（Extension Factory + 技能 + 说明）。".to_string(),
+                schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "插件标识，同时是目录名（kebab-case，如 todo-guard）" },
+                        "name": { "type": "string", "description": "显示名（默认与 id 相同）" },
+                        "description": { "type": "string", "description": "一句话说明这个插件做什么" },
+                        "tool": { "type": "string", "description": "示例工具名（默认 <id>_hello）" },
+                        "overwrite": { "type": "boolean", "description": "目录已存在时是否覆盖生成的文件（默认 false）" }
+                    },
+                    "required": ["id"]
+                }),
+                // `id` 不是路径字段，但落点由它派生（<ws>/.ada/agent-coding/extensions/<id>）：
+                // 把它交给 PathSelector 是为了让钩子/回滚能看到"这次动了哪个插件"。
+                access: Access::Mutates { paths: PathSelector::Single("id") },
+                approval: ApprovalPolicy::Named("approval-guard"),
+                // 一次只动一个目标（一个插件目录）→ SingleTarget。
+                // 🔴 不能写 `None`：变更类工具声明 None 会被 catalog 契约判违约，
+                // 而那是**装配期**才炸的——表现是"引擎没注入"→发消息毫无反应（2026-10-18 真事故）。
+                rollback: RollbackPolicy::SingleTarget,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
             },
@@ -352,16 +373,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                 termination: Termination::ContinueTurn,
             },
             ToolDescriptor {
-                name: "inspect_project".to_string(),
-                summary: "项目工程与环境诊断报告（别名）。".to_string(),
-                schema: json!({ "type": "object" }),
-                access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
-                rollback: RollbackPolicy::None,
-                execution: Execution::ParallelSafe,
-                termination: Termination::ContinueTurn,
-            },
-            ToolDescriptor {
                 name: "git_status".to_string(),
                 summary: "查看工作区 Git 仓库工作区状态。".to_string(),
                 schema: json!({ "type": "object" }),
@@ -457,82 +468,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                 termination: Termination::ContinueTurn,
             },
             ToolDescriptor {
-                name: "decide".to_string(),
-                summary: "对给定材料进行结构化判断，支持 choice（多选一）、noul（是否概率）与 score（档位评分）三种类型。".to_string(),
-                schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "state": {
-                            "description": "被判断的材料（文本或结构化对象），必须自包含",
-                            "type": ["string", "object"]
-                        },
-                        "questions": {
-                            "type": "object",
-                            "description": "问题映射：id -> 问题定义。包含 type（choice/noul/score）、instructions 与可选的 criteria",
-                            "additionalProperties": {
-                                "type": "object",
-                                "properties": {
-                                    "type": { "type": "string", "enum": ["choice", "noul", "score"] },
-                                    "instructions": { "type": "string" },
-                                    "criteria": { "description": "choice 为对象，score 为数组，noul 无需传递" }
-                                },
-                                "required": ["type", "instructions"]
-                            }
-                        },
-                        "threshold": {
-                            "type": "number",
-                            "description": "覆盖默认判定阈值（默认 0.65）"
-                        }
-                    },
-                    "required": ["state", "questions"]
-                }),
-                access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
-                rollback: RollbackPolicy::None,
-                execution: Execution::Sequential,
-                termination: Termination::ContinueTurn,
-            },
-            ToolDescriptor {
-                name: "check_gate".to_string(),
-                summary: "对当前工作区改动、指定文件或文本依据验收标准执行门禁判定（fail-close 安全默认）。".to_string(),
-                schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "criteria": {
-                            "type": "string",
-                            "description": "具体的验收标准，如「所有新增函数必须包含单元测试」"
-                        },
-                        "source": {
-                            "type": "string",
-                            "enum": ["diff", "file", "text"],
-                            "description": "门禁材料来源，默认为 diff（当前 git 未提交改动）"
-                        },
-                        "file": {
-                            "type": "string",
-                            "description": "当 source 为 file 时指定的工作区文件相对路径"
-                        },
-                        "text": {
-                            "type": "string",
-                            "description": "当 source 为 text 时直接传入的文本内容"
-                        },
-                        "threshold": {
-                            "type": "number",
-                            "description": "门禁通过阈值（0.0 ~ 1.0，默认 0.7）"
-                        },
-                        "fail_open": {
-                            "type": "boolean",
-                            "description": "引擎不可用时是否放行（默认 false，fail-close 安全默认）"
-                        }
-                    },
-                    "required": ["criteria"]
-                }),
-                access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
-                rollback: RollbackPolicy::None,
-                execution: Execution::Sequential,
-                termination: Termination::ContinueTurn,
-            },
-            ToolDescriptor {
                 name: "invoke_subagent".to_string(),
                 summary: "把专项任务委派给隔离运行的子智能体，完成后取回结论摘要。".to_string(),
                 schema: json!({
@@ -598,7 +533,7 @@ mod tests {
     #[test]
     fn test_standard_tool_descriptors_are_valid_and_unique() {
         let list = standard_tool_descriptors();
-        assert_eq!(list.len(), 24, "必须声明全部 24 个标准内置工具描述符");
+        assert_eq!(list.len(), 22, "必须声明全部 22 个标准内置工具描述符");
 
         let mut seen = HashSet::new();
         for desc in list {

@@ -22,8 +22,6 @@ export const TOOL_LABEL: Record<string, string> = {
   todo: '任务规划',
   invoke_subagent: '委派子智能体',
   ask_user: '向用户提问',
-  decide: '结构化决策',
-  check_gate: '验收门禁',
   git_status: 'Git 状态',
   git_diff: 'Git 变更',
   git_log: 'Git 历史',
@@ -32,7 +30,6 @@ export const TOOL_LABEL: Record<string, string> = {
   batch_write: '批量写入',
   batch_replace: '批量替换',
   project_inspect: '项目诊断',
-  // 与 project_inspect 同一实现的别名（见 plugin_tools.rs）
-  inspect_project: '项目诊断',
+  create_plugin: '创建插件',
   finish: '结束回合',
 }

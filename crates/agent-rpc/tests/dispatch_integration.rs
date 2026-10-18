@@ -269,7 +269,8 @@ async fn test_dispatcher_extension_methods() {
         .expect("plugin.list 分发失败");
     assert!(plugins.get("plugins").is_some());
     let plugins_arr = plugins.get("plugins").unwrap().as_array().unwrap();
-    assert!(plugins_arr.len() >= 9);
+    // 8 个内置插件（`decision` 已于 2026-10-18 随 `decide`/`check_gate` 一并下线）
+    assert!(plugins_arr.len() >= 8);
     assert!(plugins_arr.iter().any(|p| p.get("id").and_then(|v| v.as_str()) == Some("builtin:git-tools")));
     assert!(plugins.get("capabilities").is_some());
 
@@ -446,16 +447,15 @@ async fn test_plugin_and_skill_lifecycle() {
         "enabled": true
     })).await.unwrap();
 
-    // 3. 测试 9 大内置插件
+    // 3. 测试 8 大内置插件（`decision` 已于 2026-10-18 下线）
     let plugins = plugin_mgr.scan_plugins(None);
-    assert!(plugins.len() >= 9);
+    assert!(plugins.len() >= 8);
     let plugin_ids: Vec<String> = plugins.iter().map(|p| p.id.clone()).collect();
     assert!(plugin_ids.contains(&"builtin:git-tools".to_string()));
     assert!(plugin_ids.contains(&"builtin:code-outline".to_string()));
     assert!(plugin_ids.contains(&"builtin:project-inspector".to_string()));
     assert!(plugin_ids.contains(&"builtin:test-runner".to_string()));
     assert!(plugin_ids.contains(&"builtin:batch-ops".to_string()));
-    assert!(plugin_ids.contains(&"builtin:decision".to_string()));
     assert!(plugin_ids.contains(&"builtin:approval-guard".to_string()));
     assert!(plugin_ids.contains(&"builtin:ask-user".to_string()));
     assert!(plugin_ids.contains(&"builtin:ponytail".to_string()));
