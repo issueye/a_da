@@ -2114,3 +2114,59 @@ async fn test_plugin_list_merges_live_contribution_views() {
     let _ = std::fs::remove_dir_all(&ws);
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// 守门：**引擎没注入**时，用户必须看到一张提示卡。
+///
+/// 2026-10-18 真事故：`create_plugin` 声明了 `RollbackPolicy::None`，装配期契约违约 →
+/// 产品引擎整个装不上 → 每轮在 `run_agent_turn` 里静默返回 Err（只写日志）。
+/// 界面上的表现是「1 轮 / 0 tok / 0s」加一句自己的提问，用户完全不知道发生了什么。
+/// 这条用例钉住：这种"一个 AgentEvent 都不会产生"的失败，宿主必须自己补卡片。
+#[tokio::test]
+async fn test_turn_without_engine_leaves_a_visible_notice() {
+    let store = Arc::new(RwLock::new(store_for_test("E:/codes/rust_projects/a_da")));
+    let test_dir = std::env::temp_dir().join(format!("a_da_noengine_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&test_dir);
+    let session_mgr = Arc::new(SessionManager::new(Some(test_dir.clone())));
+    let dispatcher = Dispatcher::new(
+        store.clone(),
+        session_mgr.clone(),
+        Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::with_home(test_home_dir())),
+        Arc::new(SkillManager::with_home(test_home_dir())),
+        None, // 故意不注入引擎
+    );
+
+    let created = dispatcher
+        .dispatch("thread.create", serde_json::json!({ "title": "无引擎" }))
+        .await
+        .unwrap();
+    let tid = created.get("threadId").and_then(|v| v.as_str()).unwrap().to_string();
+
+    dispatcher
+        .dispatch("thread.send", serde_json::json!({ "threadId": tid, "text": "你好" }))
+        .await
+        .unwrap();
+
+    // 回合在后台任务里跑，卡片是异步落进来的
+    let mut notice: Option<String> = None;
+    for _ in 0..100 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let s = store.read().await;
+        if let Some(t) = s.threads.iter().find(|t| t.id == tid) {
+            if let Some(Item::Notice { text, .. }) =
+                t.items.iter().find(|i| matches!(i, Item::Notice { .. }))
+            {
+                notice = Some(text.clone());
+                break;
+            }
+        }
+    }
+
+    let notice = notice.expect("引擎没注入时必须落一张提示卡，否则界面就是「发了消息没反应」");
+    assert!(
+        notice.contains("本轮未能开始"),
+        "提示卡要说清这轮为什么没开始：{notice}"
+    );
+}

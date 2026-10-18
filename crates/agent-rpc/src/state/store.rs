@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use agent_proto::*;
 use agent_base::ports::{AppHome, Clock};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -82,6 +84,13 @@ pub struct AgentStore {
     pub log: Vec<DebugEntry>,
     pub workspace: WorkspaceSnapshot,
     pub config: ConfigSnapshot,
+    /// 审批档位的**无锁镜像**（见 [`Self::set_approval_mode`]）。
+    ///
+    /// 为什么需要它：档位的读者在审批闸门里、而且是**同步**接口，拿不到 `store` 的
+    /// 写锁就可能恰好撞上"后台磁盘同步"或"事件泵"正握着它（实测那次同步是秒级），
+    /// 于是读不到只能回落 `Ask` —— 表现是"明明开着完全访问，还是弹审批框"。
+    /// 字段在 `AgentStore` 里（不额外传参），写入方**握着写锁时顺手刷新**，读者不用抢锁。
+    pub approval_mode_shared: Arc<std::sync::atomic::AtomicU8>,
     pub provider: agent_base::model::ProviderConfig,
     pub providers: Vec<agent_base::model::ProviderEntry>,
     pub active_provider_id: String,
@@ -97,6 +106,27 @@ pub struct AgentStore {
     pub config_path: std::path::PathBuf,
 }
 
+
+/// 审批档位 ↔ `u8`（无锁镜像用）。`0` = **未设置**（冷启动还没读到过）。
+pub fn approval_mode_code(mode: ApprovalMode) -> u8 {
+    match mode {
+        ApprovalMode::Auto => 1,
+        ApprovalMode::Ask => 2,
+        ApprovalMode::Readonly => 3,
+        ApprovalMode::Full => 4,
+    }
+}
+
+/// 反解；`0`（未设置）返回 `None`，由调用方决定失败方向。
+pub fn approval_mode_from_code(code: u8) -> Option<ApprovalMode> {
+    match code {
+        1 => Some(ApprovalMode::Auto),
+        2 => Some(ApprovalMode::Ask),
+        3 => Some(ApprovalMode::Readonly),
+        4 => Some(ApprovalMode::Full),
+        _ => None,
+    }
+}
 
 impl Default for AgentStore {
     fn default() -> Self {
@@ -364,6 +394,9 @@ impl AgentStore {
                 scanning: false,
                 entries: Vec::new(),
             },
+            approval_mode_shared: Arc::new(std::sync::atomic::AtomicU8::new(
+                approval_mode_code(config_snapshot.approval),
+            )),
             config: config_snapshot,
             provider: prov,
             providers: providers_list,
@@ -385,6 +418,21 @@ impl AgentStore {
             },
             config_path: cfg_file.clone(),
         }
+    }
+
+    /// 改审批档位：**字段与无锁镜像一起改**。
+    ///
+    /// 只改字段会出现"界面上是完全访问、闸门读到的是 Ask"——两处不一样时，界面那句
+    /// "不再询问"就是一句谎话（2026-10-18 真事故）。
+    pub fn set_approval_mode(&mut self, mode: ApprovalMode) {
+        self.config.approval = mode;
+        self.approval_mode_shared
+            .store(approval_mode_code(mode), std::sync::atomic::Ordering::Release);
+    }
+
+    /// 取无锁镜像的句柄（供桥接层在自己构造时抓一份，不必每次抢锁）。
+    pub fn approval_mode_shared_handle(&self) -> Arc<std::sync::atomic::AtomicU8> {
+        Arc::clone(&self.approval_mode_shared)
     }
 
     /// 设置活动会话

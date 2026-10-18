@@ -942,6 +942,11 @@ impl Dispatcher {
                     ).await
                 };
 
+                // 失败卡片要用的句柄：这一支**不产生任何 AgentEvent**（引擎根本没起来），
+                // 所以提示只能由宿主自己补，否则用户那边就是"发了消息毫无反应"。
+                let fail_mgr = session_mgr_clone.clone();
+                let fail_store = std::sync::Arc::clone(&store_clone);
+                let fail_tid = tid.clone();
                 let loop_handle = tokio::spawn(async move {
                     // W3-T2：统一入口——按是否注入引擎决定执行。
                     if let Err(e) = run_agent_turn(
@@ -956,6 +961,15 @@ impl Dispatcher {
                         Some(abort_rx),
                     ).await {
                         tracing::warn!("轮次执行失败: {e}");
+                        // 2026-10-18 真事故：`create_plugin` 声明了 `RollbackPolicy::None`，
+                        // 引擎装配期契约违约 → 引擎没注入 → 每轮在这里静默失败，
+                        // 界面上是「1 轮 / 0 tok / 0s」，用户只看到自己的提问孤零零挂着。
+                        // 这类失败不会有 AgentEvent，所以提示卡必须在这里补。
+                        let notice = format!("本轮未能开始：{e}");
+                        persist_failure_notice(&fail_mgr, &fail_tid, &notice);
+                        let mut store = fail_store.write().await;
+                        store.add_notice(&fail_tid, &notice, "error");
+                        store.push_log("error", notice, None);
                     }
                 });
 
@@ -2756,12 +2770,14 @@ impl Dispatcher {
             CONFIG_SET_APPROVAL => {
                 let mut store = self.store.write().await;
                 if let Some(mode) = params.get("mode").and_then(|v| v.as_str()) {
+                    // 走 `set_approval_mode`：字段与无锁镜像一起改。直接写字段的话，
+                    // 闸门在锁被占时读到的是镜像（还是旧值）→ 改档位"看起来没生效"。
                     match mode {
-                        "auto" => store.config.approval = ApprovalMode::Auto,
-                        "ask" => store.config.approval = ApprovalMode::Ask,
-                        "readonly" => store.config.approval = ApprovalMode::Readonly,
+                        "auto" => store.set_approval_mode(ApprovalMode::Auto),
+                        "ask" => store.set_approval_mode(ApprovalMode::Ask),
+                        "readonly" => store.set_approval_mode(ApprovalMode::Readonly),
                         // P1b 加了第四档，但这里漏了分支：选「完全访问」等于什么都没发生。
-                        "full" => store.config.approval = ApprovalMode::Full,
+                        "full" => store.set_approval_mode(ApprovalMode::Full),
                         _ => {}
                     }
                 }

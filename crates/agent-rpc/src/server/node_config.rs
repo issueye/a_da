@@ -19,11 +19,35 @@ use crate::state::AgentStore;
 /// 运行时可变值，界面改完必须立刻生效。
 pub struct StoreBackedNodeConfig {
     store: Arc<RwLock<AgentStore>>,
+    /// 审批档位的**无锁镜像**（构造时从 store 抓一份句柄）。
+    ///
+    /// 拿不到它才会退化成"抢锁读"；有了它，锁被占着也能读到**真实档位**
+    /// （2026-10-18 真事故：后台磁盘同步握着写锁几秒，那几秒里读不到 → 回落 `Ask`
+    ///  → 明明开着完全访问却弹出审批框）。
+    approval_shared: Option<Arc<std::sync::atomic::AtomicU8>>,
+    /// 回落路径只警告一次（否则每次工具调用刷一行日志）
+    warned_lock_contention: std::sync::atomic::AtomicBool,
 }
 
 impl StoreBackedNodeConfig {
     pub fn new(store: Arc<RwLock<AgentStore>>) -> Self {
-        Self { store }
+        // 构造期抢一次锁拿镜像句柄；抢不到不算失败（后面每次读还会刷新它）
+        let approval_shared = {
+            let mut shared = None;
+            for _ in 0..50 {
+                if let Ok(s) = store.try_read() {
+                    shared = Some(s.approval_mode_shared_handle());
+                    break;
+                }
+                std::thread::yield_now();
+            }
+            shared
+        };
+        Self {
+            store,
+            approval_shared,
+            warned_lock_contention: std::sync::atomic::AtomicBool::new(false),
+        }
     }
 }
 
@@ -54,12 +78,41 @@ impl NodeConfigSource for StoreBackedNodeConfig {
     }
 
     fn approval_mode(&self) -> agent_proto::ApprovalMode {
-        match self.store.try_read() {
-            Ok(s) => s.config.approval,
-            // 读不到档位时**倒向更安全的一侧**：`Ask`（每次都问）而不是 `Auto`（自动放行）。
-            // 与 `FailDirection::Closed` 同一原则——拿不到依据时不放开。
-            Err(_) => agent_proto::ApprovalMode::Ask,
+        use std::sync::atomic::Ordering;
+
+        if let Ok(s) = self.store.try_read() {
+            let mode = s.config.approval;
+            if let Some(shared) = &self.approval_shared {
+                shared.store(crate::state::store::approval_mode_code(mode), Ordering::Release);
+            }
+            return mode;
         }
+
+        // 锁被占着（后台磁盘同步 / 事件泵都可能持有它）：读**无锁镜像**，而不是"读不到就当 Ask"。
+        //
+        // 🔴 为什么不能回落 `Ask`：那等于把"我没能确认档位"变成"更严格地打扰用户"，
+        // 而表现是**随机**的——同样开着完全访问，十次里弹一次框，没人能复现。
+        // 真正的失败方向仍保留：镜像里**确实什么都没读到**（冷启动）才回落 `Ask`。
+        if let Some(mode) = self
+            .approval_shared
+            .as_ref()
+            .and_then(|shared| {
+                crate::state::store::approval_mode_from_code(shared.load(Ordering::Acquire))
+            })
+        {
+            if !self
+                .warned_lock_contention
+                .swap(true, Ordering::Relaxed)
+            {
+                tracing::warn!(
+                    "[approval] 读档位时 store 写锁被占用，已改用无锁镜像（档位：{mode:?}）"
+                );
+            }
+            return mode;
+        }
+
+        self.warned_lock_contention.store(true, Ordering::Relaxed);
+        agent_proto::ApprovalMode::Ask
     }
 
     /// 上下文窗口上限：读界面配置里的 `contextWindow`（运行时可改，实时读）。
@@ -88,7 +141,7 @@ mod tests {
 
     fn store_with(mode: agent_proto::ApprovalMode) -> Arc<RwLock<AgentStore>> {
         let mut st = AgentStore::new("E:/node_config_test".to_string());
-        st.config.approval = mode;
+        st.set_approval_mode(mode);
         st.provider.base_url = "https://example.invalid/v1".to_string();
         Arc::new(RwLock::new(st))
     }
@@ -103,7 +156,7 @@ mod tests {
         assert_eq!(cfg.provider().base_url, "https://example.invalid/v1");
 
         // 改档位后立刻可见
-        store.write().await.config.approval = agent_proto::ApprovalMode::Readonly;
+        store.write().await.set_approval_mode(agent_proto::ApprovalMode::Readonly);
         assert_eq!(
             cfg.approval_mode(),
             agent_proto::ApprovalMode::Readonly,
@@ -111,18 +164,43 @@ mod tests {
         );
     }
 
-    /// 拿不到锁时**倒向安全侧**：档位回 `Ask`（每次都问），不放开。
+    /// 🔴 2026-10-18 真事故：锁被占着时读档位**不再**回落 `Ask`。
+    ///
+    /// 早先这里是"读不到 → 倒向 Ask（更安全的一侧）"。可"读不到"根本不是罕见分支：
+    /// 后台磁盘同步（实测一次几秒，代码里自己写着它握着写锁）和事件泵都会长时间占着锁。
+    /// 于是开着**完全访问**也会随机弹审批框——同一次操作十次里弹一次，没人能复现，
+    /// 而用户看到的只是"完全访问好像不太管用"。
+    ///
+    /// 现在锁被占时改读**无锁镜像**，拿到的是真实档位；只有"镜像里也确实什么都没读到"
+    /// （冷启动）才回落 `Ask`，那才是真正没有依据的时候。
     #[test]
-    fn test_store_backed_config_fails_safe_when_locked() {
-        let store = store_with(agent_proto::ApprovalMode::Auto);
+    fn test_store_backed_config_reads_real_mode_when_locked() {
+        let store = store_with(agent_proto::ApprovalMode::Full);
         let cfg = StoreBackedNodeConfig::new(store.clone());
 
-        // 占住写锁，让 try_read 失败
+        // 占住写锁，让 try_read 失败（模拟后台同步/事件泵正在跑）
         let _guard = store.blocking_write();
         assert_eq!(
             cfg.approval_mode(),
+            agent_proto::ApprovalMode::Full,
+            "锁被占着也必须读到真实档位，不能把『没读到』变成『更严格地打扰用户』"
+        );
+    }
+
+    /// 镜像不是陈旧快照：改档位的同一时刻它就得跟着变。
+    ///
+    /// 反过来做的话就是"刚点回『每次都问』，工具还在自动放行"——那比多问一次危险得多。
+    #[test]
+    fn test_store_backed_config_mirror_follows_the_latest_switch() {
+        let store = store_with(agent_proto::ApprovalMode::Full);
+        let cfg = StoreBackedNodeConfig::new(store.clone());
+
+        let mut guard = store.blocking_write();
+        guard.set_approval_mode(agent_proto::ApprovalMode::Ask);
+        assert_eq!(
+            cfg.approval_mode(),
             agent_proto::ApprovalMode::Ask,
-            "读不到档位时必须倒向 Ask（更安全的一侧），而不是 Auto（自动放行）"
+            "镜像必须与写入同步，否则收紧档位会不生效"
         );
     }
 }
