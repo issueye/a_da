@@ -74,6 +74,11 @@ pub async fn collect_plugin_tools(
     let mut out = PluginToolAssembly::default();
     let ws_str = workspace.to_string_lossy().to_string();
 
+    // 内置插件没有脚本可装载（下面按 `scope == "builtin"` 全跳过），但它们的**技能**
+    // 必须和磁盘插件技能一起进装配——否则插件卡上写着"1 个技能"，模型那边一个字都看不到。
+    // 启停口径同磁盘插件：停用的插件连技能一起不装。
+    out.skills = crate::plugins::builtins::builtin_plugin_skills(&plugin_mgr.load_disabled_plugins());
+
     for item in plugin_mgr.load_plugins(Some(&ws_str)) {
         if item.scope == "builtin" {
             continue;
@@ -200,6 +205,16 @@ pub async fn collect_plugin_tools(
 
 #[cfg(test)]
 mod tests {
+        // 内置插件（插件工坊）的技能是常驻的，别混进"这条插件声明了几条"的断言
+        fn plugin_only(
+            asm: &PluginToolAssembly,
+        ) -> Vec<&(String, String, crate::plugins::PluginSkillDeclaration)> {
+            asm.skills
+                .iter()
+                .filter(|(id, _, _)| !id.starts_with("builtin:"))
+                .collect()
+        }
+
     use super::*;
     use crate::scripts::TsScriptHost;
 
@@ -283,7 +298,7 @@ mod tests {
         assert_eq!(names, vec!["read_file".to_string(), "my_custom_tool".to_string()]);
         assert_eq!(asm.plugins_loaded, 1);
         assert_eq!(asm.prompt_fragments.len(), 1, "factory system prompt registration should be assembled");
-        assert_eq!(asm.skills.len(), 1, "factory skill registration should be assembled");
+        assert_eq!(plugin_only(&asm).len(), 1, "factory skill registration should be assembled");
         assert_eq!(asm.handles.len(), 1, "factory ada.on should be collected as a hook declaration");
         let custom = asm.tools.iter().find(|(_, tool)| tool.descriptor().name == "my_custom_tool").unwrap();
         assert!(!custom.1.descriptor().is_readonly(), "unknown plugin tools fail closed as write tools");
@@ -416,8 +431,9 @@ async fn test_plugin_skills_are_collected_with_plugin_id() {
     let asm = collect_plugin_tools(&mgr, &host, &ws, ScriptBudget::default()).await;
 
     assert_eq!(asm.tools.len(), 1, "工具照装：{:?}", asm.skipped);
-    assert_eq!(asm.skills.len(), 1, "技能必须被收下：{:?}", asm.skills);
-    let (plugin_id, plugin_name, decl) = &asm.skills[0];
+    let from_plugins = plugin_only(&asm);
+    assert_eq!(from_plugins.len(), 1, "技能必须被收下：{:?}", asm.skills);
+    let (plugin_id, plugin_name, decl) = from_plugins[0];
     assert!(!plugin_id.is_empty(), "必须带得住 plugin_id（否则无法归因）");
     assert!(!plugin_name.is_empty(), "界面要显示是哪个插件带来的");
     assert_eq!(decl.name, "deploy");
@@ -444,7 +460,14 @@ async fn test_plugin_without_skills_yields_no_skills() {
     let mgr = PluginManager::with_home(temp_home("npskills"));
     let host: Arc<dyn ScriptHost> = Arc::new(TsScriptHost::new());
     let asm = collect_plugin_tools(&mgr, &host, &ws, ScriptBudget::default()).await;
-    assert!(asm.skills.is_empty());
+    assert!(
+        plugin_only(&asm).is_empty(),
+        "这条插件没声明技能，就一条都不该有：{:?}",
+        asm.skills
+    );
+    // 唯一那条来自内置插件工坊（它自带"怎么写插件"的技能，与本条插件无关）
+    assert_eq!(asm.skills.len(), 1, "应只剩内置插件工坊的技能：{:?}", asm.skills);
+    assert!(asm.skills[0].0.starts_with("builtin:"));
     assert_eq!(asm.tools.len(), 1, "没有技能声明不影响工具照装");
     let _ = std::fs::remove_dir_all(&ws);
 }

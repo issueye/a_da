@@ -1,13 +1,42 @@
 use super::types::{
     LoadedPlugin, LoadedPluginContributions, PluginItem, PluginManifest, PluginScope,
-    PluginToolDeclaration, PluginToolInfo,
+    PluginSkillDeclaration, PluginToolDeclaration, PluginToolInfo,
 };
+
+/// 内置插件的一条**技能**声明。
+///
+/// 为什么内置插件也需要它：内置插件没有 `index.ts`，跑不了沙箱，也就没法自己
+/// `ada.registerSkill(...)`。而技能是"教模型什么时候用这个插件、怎么写不踩坑"的唯一载体——
+/// 缺了它，插件卡上只剩几个工具名。于是像 `tools` 一样在定义里静态声明一份**单一真源**：
+/// 卡片（[`get_builtin_plugin_items`]）与装配（`scripts::collect_plugin_tools`）都读它。
+pub struct BuiltinPluginSkill {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub when_to_use: Option<&'static str>,
+    pub body: &'static str,
+}
+
+impl BuiltinPluginSkill {
+    /// 转成插件技能声明——与磁盘插件 `api.registerSkill({...})` 收下的是同一个形状。
+    pub fn declaration(&self) -> PluginSkillDeclaration {
+        PluginSkillDeclaration {
+            name: self.name.to_string(),
+            path: None,
+            description: self.description.to_string(),
+            body: self.body.to_string(),
+            when_to_use: self.when_to_use.map(str::to_string),
+            user_invocable: Some(true),
+        }
+    }
+}
 
 pub struct BuiltinPluginDefinition {
     pub id: &'static str,
     pub name: &'static str,
     pub description: &'static str,
     pub tools: &'static [(&'static str, &'static str)], // (name, description)
+    /// 该插件自带的技能（内置插件没有脚本，只能在这里声明）
+    pub skills: &'static [BuiltinPluginSkill],
 }
 
 pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
@@ -20,6 +49,7 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
             ("git_diff", "获取工作区或特定文件的 Git Diff 变更内容。"),
             ("git_log", "获取近期提交历史列表与简要描述。"),
         ],
+        skills: &[],
     },
     BuiltinPluginDefinition {
         id: "code-outline",
@@ -28,6 +58,7 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
         tools: &[
             ("code_outline", "提取代码文件中的关键类、函数、接口骨架签名及行号索引。"),
         ],
+        skills: &[],
     },
     BuiltinPluginDefinition {
         id: "project-inspector",
@@ -36,6 +67,7 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
         tools: &[
             ("project_inspect", "探测当前工作区的技术栈类型、构建工具与关键配置文件路径。"),
         ],
+        skills: &[],
     },
     BuiltinPluginDefinition {
         id: "test-runner",
@@ -44,6 +76,7 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
         tools: &[
             ("run_tests", "自动化运行项目测试用例，解析测试通过率与失败错误栈。"),
         ],
+        skills: &[],
     },
     BuiltinPluginDefinition {
         id: "batch-ops",
@@ -53,21 +86,80 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
             ("batch_replace", "在多个指定文件中按统一规则执行模式搜索与文本批量替换。"),
             ("batch_write", "一次性原子写入或更新多个目标代码文件。"),
         ],
+        skills: &[],
     },
     BuiltinPluginDefinition {
-        id: "decision",
-        name: "决策评估与准入门禁 (decision)",
-        description: "提供结构化概率决策自评与基于 diff/文件/文本的代码变动准入门禁评估能力。",
+        id: "plugin-forge",
+        name: "插件工坊 (plugin-forge)",
+        description: "在工作区里直接生成可加载的插件包骨架，并附一份「怎么写插件」的技能。",
         tools: &[
-            ("decide", "基于加权规则与线索对二选一、多选或评分问题进行结构化决策判断。"),
-            ("check_gate", "对工作区 git diff、指定文件或文本内容执行严格准入门禁规则检查。"),
+            ("create_plugin", "生成可加载的插件包骨架（index.ts + README + 技能），metadata 已按注册项对齐。"),
         ],
+        skills: &[BuiltinPluginSkill {
+            name: "plugin-forge",
+            description: "a-da 插件怎么写：包结构、四类贡献、metadata 对齐、能力声明与常见失败",
+            when_to_use: Some("新增插件、修改已有插件、或排查「插件写了却不生效」时"),
+            body: r#"# 插件工坊（plugin-forge）
+
+## 什么时候读它
+- 要**新增**一个插件能力（工具 / 提示词 / 技能 / 钩子）：先用 `create_plugin` 生成骨架，再只改 `execute`。
+- 要**改**已有插件、或排查「插件没生效」：对照下面「metadata」「常见失败」两节。
+
+## 目录与发现规则
+- 只认包根：`<root>/<id>/index.ts`（或 `index.js`），且必须 `export default` 一个工厂函数。
+  `<root>` 是工作区 `<ws>/.ada/agent-coding/extensions`，或全局 `~/.a-da/agent-coding/extensions`。
+- 插件标识就是目录名：工作区插件是 `workspace:<id>`，全局是 `global:<id>`。改目录名 = 换一个插件。
+- 散落的 `foo.ts`、更深的 `src/index.ts` 都不会被发现（扫描只看包根）。
+
+## 生成骨架
+`create_plugin({ id: "todo-guard", name: "待办守卫", description: "拦截没有验收标准的 todo" })`
+`id` 只允许小写字母 / 数字 / 连字符；目录已存在必须显式 `overwrite: true` 才覆盖。
+生成后在「插件与能力中心」确认启用——贡献在**装配期**结算，改完要重新加载插件才生效。
+
+## 四类贡献（都在工厂里注册）
+- `ada.registerTool({ name, label?, description, parameters, execute })` —— 给模型一个工具。
+- `ada.registerSystemPrompt({ id, content })` —— 加一段系统提示词（带 `plugin:<id>` 归因）；正文为空会被丢掉。
+- `ada.registerSkill({ name, description, body, path?, whenToUse?, userInvocable? })` —— 加一条技能；空正文不装。
+- `ada.on(point, handler, { actions, order })` —— 注册钩子。**声明即授权**：`actions` 里没有的动作运行期不生效。
+  点位：`beforeToolCall`（可用 observe/note/deny/replace）、`afterToolCall`、`beforeTurn`、`afterTurn`、
+  `beforeContext`、`beforeProviderRequest`、`beforeProviderHeaders`、`afterProviderResponse`。
+
+## metadata：要让宿主看见，且与注册逐项对齐
+- 写法是**工厂里第一句** `ada.metadata = { ... }`：宿主在 `await desc(api)` 之后读 `api.metadata`。
+- 写成 `export const metadata` 无效：转译把 `export default fn` 译成
+  `module.exports = exports.default = fn`，挂在 exports 上的东西一起被换掉 →
+  装载期报「插件包入口缺少 metadata 对象」。
+- `tools` / `systemPrompt` / `skills` / `hooks` 的 `count` 与 `names` 是**量出来的**：
+  必须与注册**逐项、按顺序**一致；多注册一条就要同步改，否则装载期直接拒。
+
+## execute 的两个坑
+- 形参：**一个**形参是 `(args)`，**两个**形参是 `(callId, args)`。别按习惯写 `(args, ctx)`。
+- 返回值：字符串 / `{ ok, output, details }` / 抛异常，三种都认；抛异常时错误文案带文件与行号。
+
+## 能力声明（源码首部 40 行内的注释）
+`// @ada-needs fs,net`
+- **有指令就只有列出的那些**（`net` 不附带 `fs`）；没有指令则按宿主地板（fs 开、net 关）。
+- 可用值：`fs`（读写）、`fs=read`、`fs=write`、`net`（或 `fetch`）、`none`。
+- 认不出的 token 不授予，并在装配期报 `unknown_need:<token>`。
+
+## 常见失败
+- 「缺少 metadata 对象」→ 没在工厂里写 `ada.metadata = ...`。
+- 「metadata tools.count=N，实际为 M」→ 注册项与 metadata 不同步。
+- 插件在、模型看不到工具 → 插件被停用，或贡献还没重载。
+- 工具永远调不到 → 名字含空格 / 中文（`create_plugin` 会当场拒），或 `execute` 形参写错。
+- 改了 `index.ts` 没变化 → 贡献是装配期结算的：重新加载插件 / 新开一轮。
+
+## 别做的事
+- 别在插件里直接用 `fs` / `fetch` 却漏了 `@ada-needs`——沙箱里它们是 undefined。
+- 别为「看起来完整」给 `hooks.count` 写 1；它是量出来的。"#,
+        }],
     },
     BuiltinPluginDefinition {
         id: "approval-guard",
         name: "审批安全守卫 (approval-guard)",
         description: "提供前置操作拦截、高危指令阻断与审批策略管控。",
         tools: &[],
+        skills: &[],
     },
     BuiltinPluginDefinition {
         id: "ask-user",
@@ -76,12 +168,14 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
         tools: &[
             ("ask_user", "在交互界面向用户发起单选选择或补充说明提问并阻塞等待答复。"),
         ],
+        skills: &[],
     },
     BuiltinPluginDefinition {
         id: "ponytail",
         name: "马尾调度管理器 (ponytail)",
         description: "提示词、技能生命周期管理与上下文任务调度。",
         tools: &[],
+        skills: &[],
     },
 ];
 
@@ -160,7 +254,18 @@ pub fn get_builtin_plugin_items(disabled_ids: &std::collections::HashSet<String>
                 version: Some("1.0.0".to_string()),
                 diagnostics: Vec::new(),
                 tools: tools_info,
-                skills: Vec::new(),
+                // 内置插件没有脚本，技能只能来自静态声明——卡片与装配读的是同一份
+                // （`PluginSkillDeclaration::to_summary` 会给它 `plugin:<full_id>:<name>` 的 id，
+                //  于是界面能标出"这条技能是哪个插件带来的"）
+                skills: if enabled {
+                    def.skills
+                        .iter()
+                        .map(|s| s.declaration().to_summary(&full_id, def.name))
+                        .collect()
+                } else {
+                    // 停用 = 贡献一条都不参与装配，卡片上也别挂着"看起来还在生效"的技能
+                    Vec::new()
+                },
                 prompts: Vec::new(),
                 // 内置插件的钩子点位不在这里凭空填：它们由 `HookRuntime` 注册后才有定论，
                 // 静态清单一律为空（界面读装配期的活体视图）
@@ -172,4 +277,93 @@ pub fn get_builtin_plugin_items(disabled_ids: &std::collections::HashSet<String>
             }
         })
         .collect()
+}
+
+/// 内置插件声明的技能（**已按启停过滤**），供装配期与磁盘插件技能合流。
+///
+/// 为什么必须有这一步：`scripts::collect_plugin_tools` 会跳过所有 `scope == "builtin"` 的条目
+/// （内置插件没有脚本可装载），于是它们的技能会**永远进不了提示词**——
+/// 界面上插件卡写着"1 个技能"，模型那边一个字都看不到。这条函数就是补上那一段的真源出口。
+///
+/// 顺序与 `BUILTIN_PLUGINS` 一致（官方技能排在第三方插件技能之前），便于 prompt 字节报表对账。
+pub fn builtin_plugin_skills(
+    disabled_ids: &std::collections::HashSet<String>,
+) -> Vec<(String, String, PluginSkillDeclaration)> {
+    let mut out = Vec::new();
+    for def in BUILTIN_PLUGINS {
+        let full_id = format!("builtin:{}", def.id);
+        if disabled_ids.contains(&full_id) || disabled_ids.contains(def.id) {
+            continue;
+        }
+        for skill in def.skills {
+            out.push((full_id.clone(), def.name.to_string(), skill.declaration()));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// 插件工坊必须自带技能：没有它，模型只知道有个 `create_plugin` 工具，
+    /// 不知道插件怎么写（包结构 / metadata / 能力声明 / execute 形参）。
+    #[test]
+    fn test_plugin_forge_ships_a_usable_skill() {
+        let items = get_builtin_plugin_items(&HashSet::new());
+        let forge = items
+            .iter()
+            .find(|i| i.id == "builtin:plugin-forge")
+            .expect("插件工坊必须在内置插件清单里");
+
+        assert_eq!(forge.skills.len(), 1, "插件工坊应带且仅带 1 条技能");
+        let skill = &forge.skills[0];
+        assert_eq!(skill.name, "plugin-forge");
+        assert_eq!(skill.scope, "plugin", "插件技能要能被界面单独标出来");
+        assert_eq!(skill.plugin_id.as_deref(), Some("builtin:plugin-forge"));
+        assert_eq!(skill.plugin_name.as_deref(), Some(forge.name.as_str()));
+
+        // 技能正文要覆盖真正会踩的坑（少一条，模型就会照着猜）
+        for expect in [
+            "create_plugin",
+            "ada.metadata",
+            "@ada-needs",
+            "count",
+            "execute",
+            "index.ts",
+        ] {
+            assert!(
+                skill.body.contains(expect),
+                "技能正文缺少关键点 `{expect}`：\n{}",
+                skill.body
+            );
+        }
+        assert!(
+            skill.when_to_use.is_some(),
+            "技能要写清「什么时候用」，否则模型不知道该不该翻它"
+        );
+    }
+
+    /// 停用插件 → 它的技能一起下线（界面与提示词同口径，不能一边显示一边还在花字节）。
+    #[test]
+    fn test_disabled_builtin_plugin_loses_its_skill() {
+        let mut disabled = HashSet::new();
+        disabled.insert("builtin:plugin-forge".to_string());
+
+        let items = get_builtin_plugin_items(&disabled);
+        let forge = items.iter().find(|i| i.id == "builtin:plugin-forge").unwrap();
+        assert!(!forge.enabled);
+        assert!(forge.skills.is_empty(), "停用的插件不该还挂着技能在卡片上");
+
+        assert!(
+            builtin_plugin_skills(&disabled).is_empty(),
+            "停用的插件技能也不许进装配"
+        );
+        assert_eq!(
+            builtin_plugin_skills(&HashSet::new()).len(),
+            1,
+            "启用时应恰好 1 条（插件工坊的唯一技能）"
+        );
+    }
 }

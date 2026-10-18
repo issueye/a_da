@@ -1392,7 +1392,14 @@ mod tests {
         )
         .await;
         assert_eq!(collected.tools.len(), 1, "插件工具要被收下：{:?}", collected.skipped);
-        assert_eq!(collected.skills.len(), 1, "插件技能要被收下");
+        // 技能会带两条：磁盘插件声明的那条 + 内置插件工坊自带的（它常驻，与本用例无关）
+        let from_plugins = |skills: &Vec<(String, String, agent_node::plugins::PluginSkillDeclaration)>| {
+            skills
+                .iter()
+                .filter(|(id, _, _)| !id.starts_with("builtin:"))
+                .count()
+        };
+        assert_eq!(from_plugins(&collected.skills), 1, "插件技能要被收下：{:?}", collected.skills);
         assert_eq!(collected.prompt_fragments.len(), 1, "插件片段要被收下");
         // 🔴 取**磁盘插件**的 id，不能取 `first()`：`scan_plugins` 也会列出 9 个内置插件，
         // 拿错 id 就会去停用一个内置插件（demo 照旧在跑，而用例会以为停用没生效）。
