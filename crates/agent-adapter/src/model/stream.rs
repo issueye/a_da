@@ -266,12 +266,52 @@ fn anthropic_image_block(uri: &str) -> Value {
 // 请求准备（三家协议共用）
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// 建连超时（只覆盖 TCP/TLS 握手，不覆盖读响应体）。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 流式读取的**空闲**超时：多久没收到任何字节就判定为死流。
+///
+/// 🔴 这里刻意**不设总时限**。早先用的是
+/// `reqwest::Client::builder().timeout(Duration::from_secs(120))`，而 reqwest 的
+/// `timeout` 覆盖"建连 → 响应体读完"的**全过程**——SSE 是一条长连接，
+/// 思考型模型一条回答跑两三分钟是常态，于是 120 秒一到就被从中间切断。
+/// 真事故（2026-10-18）：`durationMs=120008`、思考流了 58k 字符后正文停在半句。
+///
+/// 空闲超时只掐"确实没有数据进来"的死流：只要还在吐字节，跑多久都不会被打断。
+/// 运维可用 `A_DA_STREAM_IDLE_SECS` 调整（本地慢模型可能单块间隔很久）。
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// 测试用的空闲超时覆盖（秒，`0` = 不覆盖）。
+///
+/// 用静态量而不是 `set_var`：本仓测试串行跑，但 `set_var` 在 edition 2024 是 `unsafe`，
+/// 而且环境变量会漏到同进程的其它用例里（AGENTS.md 对 `set_var` 的告诫同理）。
+#[cfg(test)]
+pub(crate) static TEST_IDLE_OVERRIDE_SECS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// 判定死流用的空闲超时（测试覆盖 > 环境变量 > 常量）。
+fn stream_idle_timeout() -> Duration {
+    #[cfg(test)]
+    {
+        let secs = TEST_IDLE_OVERRIDE_SECS.load(std::sync::atomic::Ordering::Relaxed);
+        if secs > 0 {
+            return Duration::from_secs(secs);
+        }
+    }
+    std::env::var("A_DA_STREAM_IDLE_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(STREAM_IDLE_TIMEOUT)
+}
+
 /// 建 HTTP 客户端：代理 + 超时。
 ///
 /// 抽出来的理由不是"省行数"，而是这两项是**运维配置**：改一次超时或代理语义就得三处同改，
 /// 漏一处会变成"只有某个协议不走代理"这类极难复现的故障（用户配了代理，偏偏某一家的流断）。
 fn build_http_client(config: &ProviderConfig) -> Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(120));
+    let mut builder = reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT);
 
     if let Some(ref proxy_str) = config.proxy_url {
         let trimmed = proxy_str.trim();
@@ -405,10 +445,21 @@ async fn run_stream_openai_chat(
     let mut think_filter = ThinkTagFilter::new();
     let mut active_tool_calls: HashMap<usize, ToolCallInfo> = HashMap::new();
     let mut final_stop_reason = "stop".to_string();
+    let idle = stream_idle_timeout();
+    // 是否见过**终止信号**（`[DONE]` / `finish_reason`）。只有它出现，EOF 才算正常收尾。
+    let mut saw_terminator = false;
 
     'stream_loop: loop {
         tokio::select! {
-            chunk_opt = byte_stream.next() => {
+            chunk_opt = tokio::time::timeout(idle, byte_stream.next()) => {
+                let chunk_opt = match chunk_opt {
+                    // 空闲超时：不是"总时限"，只掐确实不再吐字节的死流
+                    Err(_) => anyhow::bail!(
+                        "流式响应 {} 秒内没有新数据（判定为死流），本轮中止",
+                        idle.as_secs()
+                    ),
+                    Ok(v) => v,
+                };
                 match chunk_opt {
                     Some(Ok(bytes)) => {
                         let text = String::from_utf8_lossy(&bytes);
@@ -425,6 +476,7 @@ async fn run_stream_openai_chat(
                             if let Some(data_str) = line.strip_prefix("data:") {
                                 let trimmed_data = data_str.trim();
                                 if trimmed_data == "[DONE]" {
+                                    saw_terminator = true;
                                     break 'stream_loop;
                                 }
 
@@ -459,6 +511,7 @@ async fn run_stream_openai_chat(
                                     if let Some(choices) = val.get("choices").and_then(|c| c.as_array()) {
                                         if let Some(first_choice) = choices.first() {
                                             if let Some(reason) = first_choice.get("finish_reason").and_then(|r| r.as_str()) {
+                                                saw_terminator = true;
                                                 if reason == "tool_calls" || reason == "function_call" {
                                                     final_stop_reason = "tool_calls".to_string();
                                                 } else if reason == "length" {
@@ -544,6 +597,16 @@ async fn run_stream_openai_chat(
                 return Ok(());
             }
         }
+    }
+
+    // 🔴 EOF 不等于完成：只有见过终止信号（`[DONE]` / `finish_reason` / `message_stop`
+    // / `response.completed`）才算正常收尾。早先这里默认 `final_stop_reason = "stop"`，
+    // 于是一次被上游掐断的回答会被当成**正常完成**——没有错误卡、没有 Notice，
+    // 界面只是停在半句话上（真事故 2026-10-18：usage 全 0、正文 0 字符、thinking 17k 字符）。
+    if !saw_terminator {
+        anyhow::bail!(
+            "流式响应在收到终止信号前就结束了（上游或代理中断），本轮按失败处理，请重试"
+        );
     }
 
     // 结算残余 ThinkFilter 内容
@@ -740,10 +803,21 @@ async fn run_stream_anthropic(
     let mut current_block_index = 0usize;
     let mut final_stop_reason = "stop".to_string();
     let mut prompt_tokens = 0u64;
+    let idle = stream_idle_timeout();
+    // 是否见过终止信号（`message_stop` / `message_delta.stop_reason`）
+    let mut saw_terminator = false;
 
     'stream_loop: loop {
         tokio::select! {
-            chunk_opt = byte_stream.next() => {
+            chunk_opt = tokio::time::timeout(idle, byte_stream.next()) => {
+                let chunk_opt = match chunk_opt {
+                    // 空闲超时：不是"总时限"，只掐确实不再吐字节的死流
+                    Err(_) => anyhow::bail!(
+                        "流式响应 {} 秒内没有新数据（判定为死流），本轮中止",
+                        idle.as_secs()
+                    ),
+                    Ok(v) => v,
+                };
                 match chunk_opt {
                     Some(Ok(bytes)) => {
                         let text = String::from_utf8_lossy(&bytes);
@@ -760,6 +834,7 @@ async fn run_stream_anthropic(
                             if let Some(data_str) = line.strip_prefix("data:") {
                                 let trimmed_data = data_str.trim();
                                 if trimmed_data == "[DONE]" {
+                                    saw_terminator = true;
                                     break 'stream_loop;
                                 }
 
@@ -826,6 +901,7 @@ async fn run_stream_anthropic(
                                         "message_delta" => {
                                             if let Some(delta) = val.get("delta") {
                                                 if let Some(sr) = delta.get("stop_reason").and_then(|v| v.as_str()) {
+                                                    saw_terminator = true;
                                                     final_stop_reason = match sr {
                                                         "tool_use" => "tool_calls".to_string(),
                                                         "max_tokens" => "length".to_string(),
@@ -846,6 +922,7 @@ async fn run_stream_anthropic(
                                             }
                                         }
                                         "message_stop" => {
+                                            saw_terminator = true;
                                             break 'stream_loop;
                                         }
                                         _ => {}
@@ -863,6 +940,16 @@ async fn run_stream_anthropic(
                 return Ok(());
             }
         }
+    }
+
+    // 🔴 EOF 不等于完成：只有见过终止信号（`[DONE]` / `finish_reason` / `message_stop`
+    // / `response.completed`）才算正常收尾。早先这里默认 `final_stop_reason = "stop"`，
+    // 于是一次被上游掐断的回答会被当成**正常完成**——没有错误卡、没有 Notice，
+    // 界面只是停在半句话上（真事故 2026-10-18：usage 全 0、正文 0 字符、thinking 17k 字符）。
+    if !saw_terminator {
+        anyhow::bail!(
+            "流式响应在收到终止信号前就结束了（上游或代理中断），本轮按失败处理，请重试"
+        );
     }
 
     for part in think_filter.flush() {
@@ -1018,10 +1105,21 @@ async fn run_stream_openai_responses(
     let mut think_filter = ThinkTagFilter::new();
     let mut active_tool_calls: HashMap<String, ToolCallInfo> = HashMap::new();
     let mut final_stop_reason = "stop".to_string();
+    let idle = stream_idle_timeout();
+    // 是否见过终止信号（`response.completed` / `response.incomplete`）
+    let mut saw_terminator = false;
 
     'stream_loop: loop {
         tokio::select! {
-            chunk_opt = byte_stream.next() => {
+            chunk_opt = tokio::time::timeout(idle, byte_stream.next()) => {
+                let chunk_opt = match chunk_opt {
+                    // 空闲超时：不是"总时限"，只掐确实不再吐字节的死流
+                    Err(_) => anyhow::bail!(
+                        "流式响应 {} 秒内没有新数据（判定为死流），本轮中止",
+                        idle.as_secs()
+                    ),
+                    Ok(v) => v,
+                };
                 match chunk_opt {
                     Some(Ok(bytes)) => {
                         let text = String::from_utf8_lossy(&bytes);
@@ -1038,6 +1136,7 @@ async fn run_stream_openai_responses(
                             if let Some(data_str) = line.strip_prefix("data:") {
                                 let trimmed_data = data_str.trim();
                                 if trimmed_data == "[DONE]" {
+                                    saw_terminator = true;
                                     break 'stream_loop;
                                 }
 
@@ -1092,6 +1191,7 @@ async fn run_stream_openai_responses(
                                             }
                                         }
                                         "response.completed" => {
+                                            saw_terminator = true;
                                             if let Some(resp) = val.get("response") {
                                                 if let Some(st) = resp.get("status").and_then(|v| v.as_str()) {
                                                     final_stop_reason = st.to_string();
@@ -1109,6 +1209,20 @@ async fn run_stream_openai_responses(
                                             }
                                             break 'stream_loop;
                                         }
+                                        "response.incomplete" => {
+                                            saw_terminator = true;
+                                            final_stop_reason = "length".to_string();
+                                            break 'stream_loop;
+                                        }
+                                        "response.failed" => {
+                                            let detail = val
+                                                .get("response")
+                                                .and_then(|r| r.get("error"))
+                                                .and_then(|e| e.get("message"))
+                                                .and_then(|m| m.as_str())
+                                                .unwrap_or("上游未给出错误详情");
+                                            anyhow::bail!("OpenAI Responses 返回 response.failed：{}", detail);
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -1124,6 +1238,16 @@ async fn run_stream_openai_responses(
                 return Ok(());
             }
         }
+    }
+
+    // 🔴 EOF 不等于完成：只有见过终止信号（`[DONE]` / `finish_reason` / `message_stop`
+    // / `response.completed`）才算正常收尾。早先这里默认 `final_stop_reason = "stop"`，
+    // 于是一次被上游掐断的回答会被当成**正常完成**——没有错误卡、没有 Notice，
+    // 界面只是停在半句话上（真事故 2026-10-18：usage 全 0、正文 0 字符、thinking 17k 字符）。
+    if !saw_terminator {
+        anyhow::bail!(
+            "流式响应在收到终止信号前就结束了（上游或代理中断），本轮按失败处理，请重试"
+        );
     }
 
     for part in think_filter.flush() {
@@ -1466,5 +1590,114 @@ mod tests {
         assert_eq!(url["source"]["type"], "url");
         assert_eq!(url["source"]["url"], "https://example.com/a.png");
     }
-}
 
+    // ── 流收尾的两种"不告而别"（2026-10-18 真事故的两条回归） ────────────────
+
+    /// 起一个只吐一段 SSE 文本、然后**直接关连接**的假上游。
+    ///
+    /// `body` 原样写进响应体，`hold_secs` > 0 时写完不关连接（用来触发空闲超时）。
+    async fn spawn_sse_server(body: String, hold_secs: u64) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = socket.read(&mut buf).await;
+                let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+                let _ = socket.write_all(head.as_bytes()).await;
+                let _ = socket.write_all(body.as_bytes()).await;
+                let _ = socket.flush().await;
+                if hold_secs > 0 {
+                    tokio::time::sleep(Duration::from_secs(hold_secs)).await;
+                }
+                let _ = socket.shutdown().await;
+            }
+        });
+        format!("http://127.0.0.1:{port}/v1/chat/completions")
+    }
+
+    fn chat_config(base_url: String) -> ProviderConfig {
+        ProviderConfig {
+            id: "test".to_string(),
+            name: "TestProvider".to_string(),
+            protocol: ModelProtocol::OpenAiChat,
+            base_url,
+            api_key: "sk-test".to_string(),
+            model: "test-model".to_string(),
+            max_output_tokens: None,
+            custom_headers: None,
+            proxy_url: None,
+        }
+    }
+
+
+    async fn collect(rx: &mut mpsc::Receiver<StreamDelta>) -> (Option<String>, Option<String>, bool) {
+        let mut error = None;
+        let mut stop = None;
+        let mut saw_text = false;
+        while let Some(delta) = rx.recv().await {
+            match delta {
+                StreamDelta::Error { error: e } => error = Some(e),
+                StreamDelta::Done { stop_reason } => stop = Some(stop_reason),
+                StreamDelta::Text { .. } => saw_text = true,
+                _ => {}
+            }
+        }
+        (error, stop, saw_text)
+    }
+
+    /// 上游没发 `[DONE]` 也没发 `finish_reason` 就断开 → 必须报错，**不许**当正常结束。
+    ///
+    /// 早先这里 EOF 直接落到 `final_stop_reason = "stop"`，界面上表现为"回答停在半句话、
+    /// 没有错误卡、没有重试"，用户只能看到一次莫名其妙的"会话断开"。
+    #[tokio::test]
+    async fn test_stream_truncated_without_terminator_is_an_error() {
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"半截回答\"}}]}\n\n".to_string();
+        let url = spawn_sse_server(body, 0).await;
+
+        let mut rx = stream_model_chat(chat_config(url), vec![user_msg(Some("hi"), None)], ModelChatOptions::default(), None).await;
+        let (error, stop, saw_text) = collect(&mut rx).await;
+
+        assert!(saw_text, "半截正文应照常推到界面（不吞已收到的内容）");
+        assert!(stop.is_none(), "截断的流不许报 Done，实际 stop={stop:?}");
+        let err = error.expect("截断必须给出错误");
+        assert!(err.contains("终止信号"), "错误要说清原因，实际：{err}");
+    }
+
+    /// `[DONE]` 之后正常结束 → 不许被新校验误判成失败。
+    #[tokio::test]
+    async fn test_stream_with_done_terminator_completes_normally() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"完整回答\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        )
+        .to_string();
+        let url = spawn_sse_server(body, 0).await;
+
+        let mut rx = stream_model_chat(chat_config(url), vec![user_msg(Some("hi"), None)], ModelChatOptions::default(), None).await;
+        let (error, stop, _) = collect(&mut rx).await;
+
+        assert!(error.is_none(), "正常结束不该报错：{error:?}");
+        assert_eq!(stop.as_deref(), Some("stop"));
+    }
+
+    /// 上游连着头却不吐字节 → 空闲超时掐掉（而不是永远挂着）。
+    ///
+    /// 注意这是**空闲**超时：只要还在吐字节，跑多久都不该被打断（所以没有总时限）。
+    #[tokio::test]
+    async fn test_stream_idle_timeout_reports_dead_stream() {
+        // 把 90s 压到 1s，免得用例真等一分半（串行跑，用完复位）
+        TEST_IDLE_OVERRIDE_SECS.store(1, Ordering::SeqCst);
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"开头\"}}]}\n\n".to_string();
+        let url = spawn_sse_server(body, 5).await;
+
+        let mut rx = stream_model_chat(chat_config(url), vec![user_msg(Some("hi"), None)], ModelChatOptions::default(), None).await;
+        let (error, stop, _) = collect(&mut rx).await;
+        TEST_IDLE_OVERRIDE_SECS.store(0, Ordering::SeqCst);
+
+        assert!(stop.is_none(), "死流不许报 Done，实际 stop={stop:?}");
+        let err = error.expect("死流必须报错");
+        assert!(err.contains("没有新数据"), "错误要说清是空闲超时，实际：{err}");
+    }
+}
