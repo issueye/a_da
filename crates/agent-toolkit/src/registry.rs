@@ -62,7 +62,7 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "description": "要写入的目标文件相对路径" },
-                        "content": { "type": "string", "description": "要写入的完整文本内容" }
+                        "content": { "type": "string", "description": "要写入的完整文本内容。覆写已存在文件时换行会跟随该文件原有约定" }
                     },
                     "required": ["path", "content"]
                 }),
@@ -74,13 +74,13 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
             },
             ToolDescriptor {
                 name: "edit_file".to_string(),
-                summary: "通过严格文本匹配替换文件中的指定片段，支持单块与多块替换。".to_string(),
+                summary: "通过文本匹配替换文件中的指定片段，支持单块与多块替换（换行 CRLF/LF 自动归一化）。".to_string(),
                 schema: json!({
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "description": "要编辑的目标文件相对路径" },
-                        "old_string": { "type": "string", "description": "被替换的原始内容块（单块替换模式）" },
-                        "new_string": { "type": "string", "description": "替换后的新内容块（单块替换模式）" },
+                        "old_string": { "type": "string", "description": "被替换的原始内容块（单块替换模式）。换行写 LF 或 CRLF 均可，工具会按文件实际换行归一化匹配" },
+                        "new_string": { "type": "string", "description": "替换后的新内容块（单块替换模式）。写回时换行会还原成文件原有约定" },
                         "edits": {
                             "type": "array",
                             "description": "多处批量替换列表（批量模式）",

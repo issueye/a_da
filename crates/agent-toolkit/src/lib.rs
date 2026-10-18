@@ -6,6 +6,7 @@ pub mod decision;
 pub mod diff;
 pub mod fs;
 pub mod fs_tools;
+pub mod newline;
 pub mod plugin_tools;
 pub mod registry;
 pub mod sandbox;

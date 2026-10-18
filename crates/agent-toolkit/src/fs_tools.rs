@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 
 use super::diff::unified_diff;
 use super::sandbox::{check_workspace_sandbox, resolve_real_path, should_skip_dir};
-
+use crate::newline::{
+    apply_eol, dominant_eol, expand_newline_escapes, follow_eol, looks_newline_escaped, to_lf,
+    LfView, CRLF,
+};
 
 const MAX_FILE_BYTES: u64 = 512 * 1024;
 const DEFAULT_LIMIT: usize = 400;
@@ -176,6 +179,9 @@ pub fn read_file(
 }
 
 /// 2. write_file
+///
+/// 覆写一个**已存在**的文件时，内容换行会跟随该文件原有的约定（见 [`follow_eol`]）：
+/// 否则模型给一串 LF 就能把一个 CRLF 文件整体改成 LF，diff 变成"每行都动了"。
 pub fn write_file(workspace: &Path, path: &str, content: &str) -> ToolResult {
     let full = match check_workspace_sandbox(workspace, path) {
         Ok(p) => p,
@@ -183,6 +189,8 @@ pub fn write_file(workspace: &Path, path: &str, content: &str) -> ToolResult {
     };
 
     let before = fs::read_to_string(&full).unwrap_or_default();
+    let content = follow_eol(content, &before);
+    let content = content.as_ref();
 
     if let Some(parent) = full.parent() {
         if !parent.exists() {
@@ -210,6 +218,11 @@ pub fn write_file(workspace: &Path, path: &str, content: &str) -> ToolResult {
 }
 
 /// 3. edit_file
+///
+/// 匹配策略见 [`crate::newline`]：**按 LF 归一化后定位，写回按文件原有 EOL 还原**。
+///
+/// 直白的 `after.find(&old_s)` 是行不通的：`read_file` 用 `str::lines()` 输出，CRLF 文件的
+/// `\r` 不会出现在工具输出里，模型抄回来的 `old_string` 只带 LF，跨行匹配就必然失败。
 pub fn edit_file(
     workspace: &Path,
     path: &str,
@@ -244,30 +257,63 @@ pub fn edit_file(
         return ToolResult::error("必须提供 old_string 与 new_string，或提供 edits 替换列表。");
     }
 
+    let eol = dominant_eol(&before);
     let mut after = before.clone();
-    for (old_s, new_s) in edit_list {
-        let first_idx = match after.find(&old_s) {
-            Some(idx) => idx,
-            None => {
+    // 这次编辑有没有动用"换行容忍"，用于回执里如实告知（不静默改口径）
+    let mut tolerated = false;
+
+    for (old_raw, new_raw) in edit_list {
+        // 空 old_string 早先会命中下标 0（"插到文件最前面"），这既不是谁的意图也不好排查
+        if old_raw.is_empty() {
+            return ToolResult::error(
+                "old_string 不能为空：要新增内容请把它并入 new_string，并带上足够定位的上下文。",
+            );
+        }
+
+        let view = LfView::new(&after);
+        let mut needle = to_lf(&old_raw).into_owned();
+        let mut replacement_src = new_raw;
+        let mut hits = view.occurrences(&needle);
+        let mut escaped_fix = false;
+
+        // 二级兜底：old_string 把换行写成了字面 `\r\n`（模型自己转义过头）。
+        // 只在"精确匹配落空 + 整段没有真实换行"时才这样解读，见 `looks_newline_escaped`。
+        if hits.is_empty() && looks_newline_escaped(&old_raw) {
+            let alt = to_lf(&expand_newline_escapes(&old_raw)).into_owned();
+            let alt_hits = view.occurrences(&alt);
+            if !alt_hits.is_empty() {
+                needle = alt;
+                hits = alt_hits;
+                replacement_src = expand_newline_escapes(&replacement_src);
+                escaped_fix = true;
+            }
+        }
+
+        let (start, end) = match hits.len() {
+            0 => return ToolResult::error(not_found_message(path, &old_raw, &after, eol)),
+            1 => hits[0],
+            n => {
                 return ToolResult::error(format!(
-                    "未能替换：原文本在 {} 中不存在。请确认代码上下文。",
-                    path
-                ));
+                    "未能替换：old_string 在 {} 中出现了 {} 次（已按换行归一化统计），请扩大上下文使其唯一。",
+                    path, n
+                ))
             }
         };
 
-        let second_search_start = first_idx + old_s.len();
-        if after[second_search_start..].contains(&old_s) {
-            return ToolResult::error(format!(
-                "未能替换：原文本在 {} 中出现了多次，请扩大上下文使其唯一。",
-                path
-            ));
-        }
+        // 命中区间来自归一化视图，长度可能和 needle 不同（原文是 CRLF）
+        let raw_matched = &after[start..end];
+        let matched_lf = to_lf(raw_matched).into_owned();
+        debug_assert_eq!(matched_lf, needle, "归一化视图的命中必须与 needle 等值");
 
-        let mut replaced = String::with_capacity(after.len() + new_s.len());
-        replaced.push_str(&after[..first_idx]);
-        replaced.push_str(&new_s);
-        replaced.push_str(&after[first_idx + old_s.len()..]);
+        // 替换文本按文件原有换行还原，避免"改一行、整个文件换行全变"的巨型 diff
+        let replacement = apply_eol(&replacement_src, eol);
+        if escaped_fix || raw_matched != old_raw.as_str() || replacement != replacement_src {
+            tolerated = true;
+        }
+        let mut replaced = String::with_capacity(after.len() + replacement.len());
+        replaced.push_str(&after[..start]);
+        replaced.push_str(&replacement);
+        replaced.push_str(&after[end..]);
         after = replaced;
     }
 
@@ -276,14 +322,62 @@ pub fn edit_file(
     }
 
     let patch = unified_diff(path, &before, &after);
+    let suffix = if tolerated {
+        format!("（换行已按文件实际的 {} 归一化）", eol_name(eol))
+    } else {
+        String::new()
+    };
+
     ToolResult {
         ok: true,
-        output: format!("已成功修改 {}", path),
+        output: format!("已成功修改 {}{}", path, suffix),
         patch: if patch.is_empty() { None } else { Some(patch) },
         details: None,
         terminate: None,
         failure: None,
     }
+}
+
+/// 换行的可读名，用于回执与报错文案
+fn eol_name(eol: &str) -> &'static str {
+    if eol == CRLF {
+        "CRLF"
+    } else {
+        "LF"
+    }
+}
+
+/// 匹配落空时的报错：说清**试过什么**、文件实际是什么，并给一条可执行的下一步。
+///
+/// 早先只说"原文本不存在"，模型只能盲试（实测两次尝试才命中一次）。
+fn not_found_message(path: &str, old_raw: &str, text: &str, eol: &str) -> String {
+    let normalized = to_lf(text);
+    let mut msg = format!(
+        "未能替换：old_string 在 {} 中不存在（已按 LF 归一化匹配，文件实际换行为 {}）。",
+        path,
+        eol_name(eol)
+    );
+
+    if looks_newline_escaped(old_raw) {
+        msg.push_str("注意：old_string 里的换行写成了字面转义序列 `\\r\\n` / `\\n`，请改用真实换行。");
+    }
+
+    // 首个像样的行是否出现过：能区分"上下文完全不对"和"只是首尾边界没对齐"
+    if let Some(first_line) = old_raw
+        .lines()
+        .map(str::trim)
+        .find(|line| line.chars().count() >= 6)
+    {
+        if let Some(pos) = normalized.find(first_line) {
+            let line_no = normalized[..pos].matches('\n').count() + 1;
+            msg.push_str(&format!(
+                "提示：old_string 的首个非空行出现在第 {} 行，请据此核对上下文边界（可先用 read_file 取回原文片段）。",
+                line_no
+            ));
+        }
+    }
+
+    msg
 }
 
 /// 4. list_files
@@ -602,5 +696,198 @@ mod tests {
         // 6. 清理
         let _ = fs::remove_dir_all(temp_dir);
         Ok(())
+    }
+
+    fn temp_ws() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("a_da_crlf_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_edit_file_matches_lf_needle_on_crlf_file() {
+        let ws = temp_ws();
+        fs::write(ws.join("win.rs"), "fn a() {\r\n    let x = 1;\r\n}\r\n").unwrap();
+
+        // 模型只会给出 LF（read_file 的输出里没有 \r）
+        let res = edit_file(
+            &ws,
+            "win.rs",
+            Some("let x = 1;\n}"),
+            Some("let x = 2;\n}"),
+            None,
+        );
+        assert!(res.ok, "LF 片段必须能匹配 CRLF 文件：{}", res.output);
+        assert!(res.output.contains("CRLF"), "回执要说明用了换行归一化");
+
+        let after = fs::read_to_string(ws.join("win.rs")).unwrap();
+        // 关键：不能因为这次编辑把文件改成 LF
+        assert_eq!(after, "fn a() {\r\n    let x = 2;\r\n}\r\n");
+        assert!(!after.contains("\n\n"), "不得产生混合换行");
+
+        let _ = fs::remove_dir_all(ws);
+    }
+
+    #[test]
+    fn test_edit_file_matches_crlf_needle_on_lf_file() {
+        let ws = temp_ws();
+        fs::write(ws.join("unix.rs"), "fn a() {\n    let x = 1;\n}\n").unwrap();
+
+        let res = edit_file(
+            &ws,
+            "unix.rs",
+            Some("let x = 1;\r\n}"),
+            Some("let x = 3;\r\n}"),
+            None,
+        );
+        assert!(res.ok, "CRLF 片段必须能匹配 LF 文件：{}", res.output);
+
+        let after = fs::read_to_string(ws.join("unix.rs")).unwrap();
+        assert_eq!(after, "fn a() {\n    let x = 3;\n}\n");
+
+        let _ = fs::remove_dir_all(ws);
+    }
+
+    #[test]
+    fn test_edit_file_multiline_and_chinese_text_across_crlf() {
+        let ws = temp_ws();
+        fs::write(
+            ws.join("cn.txt"),
+            "第一行\r\n第二行\r\n第三行\r\n",
+        )
+        .unwrap();
+
+        let res = edit_file(
+            &ws,
+            "cn.txt",
+            Some("第一行\n第二行"),
+            Some("第一行改\n第二行改"),
+            None,
+        );
+        assert!(res.ok, "多字节 + CRLF 跨行必须能匹配：{}", res.output);
+        assert_eq!(
+            fs::read_to_string(ws.join("cn.txt")).unwrap(),
+            "第一行改\r\n第二行改\r\n第三行\r\n"
+        );
+
+        let _ = fs::remove_dir_all(ws);
+    }
+
+    #[test]
+    fn test_edit_file_expands_literal_crlf_escape_in_needle() {
+        let ws = temp_ws();
+        fs::write(ws.join("win.rs"), "a();\r\nb();\r\n").unwrap();
+
+        // 模型把换行写成了字面 `\r\n`（四个字符），整段没有真实换行 → 允许按转义解读
+        let res = edit_file(
+            &ws,
+            "win.rs",
+            Some(r"a();\r\nb();"),
+            Some(r"a();\r\nc();"),
+            None,
+        );
+        assert!(res.ok, "字面转义应被还原后匹配：{}", res.output);
+
+        let after = fs::read_to_string(ws.join("win.rs")).unwrap();
+        assert_eq!(after, "a();\r\nc();\r\n", "不能把字面 \\r\\n 写进文件");
+
+        let _ = fs::remove_dir_all(ws);
+    }
+
+    #[test]
+    fn test_edit_file_reports_multiple_matches_with_count() {
+        let ws = temp_ws();
+        fs::write(ws.join("dup.txt"), "x\r\nsame\r\ny\r\nsame\r\n").unwrap();
+
+        let res = edit_file(&ws, "dup.txt", Some("same"), Some("other"), None);
+        assert!(!res.ok);
+        assert!(res.output.contains("2 次"), "报错要说清命中次数：{}", res.output);
+
+        let _ = fs::remove_dir_all(ws);
+    }
+
+    #[test]
+    fn test_edit_file_not_found_gives_line_hint() {
+        let ws = temp_ws();
+        fs::write(
+            ws.join("hint.txt"),
+            "line one\r\nlet target = 42;\r\nline three\r\n",
+        )
+        .unwrap();
+
+        let res = edit_file(
+            &ws,
+            "hint.txt",
+            Some("let target = 42;\nline four"),
+            Some("nope"),
+            None,
+        );
+        assert!(!res.ok);
+        assert!(
+            res.output.contains("第 2 行"),
+            "落空时应指出首行出现过的地方：{}",
+            res.output
+        );
+
+        let _ = fs::remove_dir_all(ws);
+    }
+
+    #[test]
+    fn test_edit_file_batch_edits_on_crlf_file() {
+        let ws = temp_ws();
+        fs::write(ws.join("b.rs"), "one\r\ntwo\r\nthree\r\n").unwrap();
+
+        let edits = vec![
+            EditPair {
+                old_string: "one".into(),
+                new_string: "ONE".into(),
+            },
+            EditPair {
+                old_string: "two\nthree".into(),
+                new_string: "TWO\nTHREE".into(),
+            },
+        ];
+        let res = edit_file(&ws, "b.rs", None, None, Some(edits));
+        assert!(res.ok, "{}", res.output);
+        assert_eq!(
+            fs::read_to_string(ws.join("b.rs")).unwrap(),
+            "ONE\r\nTWO\r\nTHREE\r\n"
+        );
+
+        let _ = fs::remove_dir_all(ws);
+    }
+
+    #[test]
+    fn test_edit_file_rejects_empty_old_string() {
+        let ws = temp_ws();
+        fs::write(ws.join("e.txt"), "abc\n").unwrap();
+
+        let res = edit_file(&ws, "e.txt", Some(""), Some("prefix\n"), None);
+        assert!(!res.ok);
+        assert!(res.output.contains("不能为空"), "{}", res.output);
+        assert_eq!(fs::read_to_string(ws.join("e.txt")).unwrap(), "abc\n");
+
+        let _ = fs::remove_dir_all(ws);
+    }
+
+    #[test]
+    fn test_write_file_keeps_existing_crlf_convention() {
+        let ws = temp_ws();
+        fs::write(ws.join("keep.rs"), "a\r\nb\r\n").unwrap();
+
+        let res = write_file(&ws, "keep.rs", "a\nb\nc\n");
+        assert!(res.ok);
+        assert_eq!(
+            fs::read_to_string(ws.join("keep.rs")).unwrap(),
+            "a\r\nb\r\nc\r\n",
+            "覆写 CRLF 文件时不得整体退化为 LF"
+        );
+
+        // 新文件不猜换行：给什么写什么
+        let res_new = write_file(&ws, "new.rs", "x\ny\n");
+        assert!(res_new.ok);
+        assert_eq!(fs::read_to_string(ws.join("new.rs")).unwrap(), "x\ny\n");
+
+        let _ = fs::remove_dir_all(ws);
     }
 }
