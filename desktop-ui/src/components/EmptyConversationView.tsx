@@ -1,5 +1,5 @@
 import React from 'react'
-import { Sparkles, Terminal, ShieldAlert, CheckCircle2, Search, ListTodo, GitPullRequest, Layers, AlertCircle, Code2 } from 'lucide-react'
+import { Sparkles, Terminal, CheckCircle2, Search, ListTodo, GitPullRequest, Layers, AlertCircle, Code2 } from 'lucide-react'
 import type { AgentMode, ProviderConfig, ApprovalMode, Effort, Thread, QueuedItem } from '../types'
 import { WorkspaceSelector } from './WorkspaceSelector'
 import { Composer } from './Composer'
@@ -23,9 +23,9 @@ const QUICK_CODING_PROMPTS = [
     prompt: '请检查工作区当前的 Git 改动与状态，评估变更风险。',
   },
   {
-    icon: ShieldAlert,
-    title: '执行准入门禁检查',
-    prompt: '请依据代码质量与测试覆盖标准，对当前工作区改动执行 check_gate 门禁判定。',
+    icon: Code2,
+    title: '梳理代码结构与调用链',
+    prompt: '请用 code_outline 梳理核心模块的函数与结构体骨架，并说明主要调用链。',
   },
 ]
 
@@ -125,8 +125,12 @@ export const EmptyConversationView: React.FC<EmptyConversationViewProps> = ({
   const quickPrompts = isPm ? QUICK_PM_PROMPTS : QUICK_CODING_PROMPTS
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center px-4 md:px-8 py-6 select-none overflow-y-auto min-h-0 bg-white dark:bg-[#18181b]">
-      <div className="w-full max-w-2xl flex flex-col items-center space-y-5 -translate-y-6 transition-all duration-300">
+    // 🔴 UI-15：用 `my-auto` 做垂直居中，不再用 `justify-center` + `-translate-y-6`——
+    // 负位移是"往上抬一点"的视觉补偿，但窗口变矮时它会把顶部内容顶出可滚动区域
+    // （`overflow-y-auto` 裁掉的是**位移后**的位置，滚动条救不回来）。
+    // 同时去掉整页的 `select-none`：persona 描述是可读正文，用户该能选中复制。
+    <div className="flex-1 flex flex-col items-center px-4 md:px-8 py-6 overflow-y-auto min-h-0 bg-white dark:bg-[#18181b]">
+      <div className="w-full max-w-2xl flex flex-col items-center space-y-5 my-auto transition-all duration-300">
         {/* 1. 标题与徽标 */}
         <div className="flex flex-col items-center text-center space-y-2">
           <div className={`w-12 h-12 rounded-2xl ${

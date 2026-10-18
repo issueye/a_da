@@ -467,8 +467,10 @@ export const Composer: React.FC<ComposerProps> = ({
   if (thread?.isSubagent) {
     return (
       <div className="px-3 py-2 border-t border-zinc-200 dark:border-[#27272a] bg-zinc-50 dark:bg-[#141416] flex flex-col space-y-1.5 select-none relative transition-colors">
-        {/* 审批浮窗：子智能体会话没有输入框，但审批照样得有人点——挂在同一个顶部位置 */}
-        <ApprovalFloatingPanel approvals={pendingApprovals} onDecide={onDecideApproval} />
+        {/* 审批浮窗：子智能体会话没有输入框，但审批照样得有人点——挂在同一个浮层栈里 */}
+        <div className="absolute bottom-full inset-x-3 mb-2 z-40 flex flex-col gap-2 pointer-events-none">
+          <ApprovalFloatingPanel approvals={pendingApprovals} onDecide={onDecideApproval} />
+        </div>
 
         <div className="flex items-center justify-between p-2.5 bg-white dark:bg-[#1a1a1e] border border-purple-200/80 dark:border-purple-900/40 rounded-xl shadow-xs">
           <div className="flex items-center space-x-2.5 min-w-0 flex-1">
@@ -660,11 +662,18 @@ export const Composer: React.FC<ComposerProps> = ({
         </div>
       )}
 
-      {/* 1. 待回答提问：**浮动**在输入框上方（覆盖层，不占布局空间）——与审批浮窗同形态。
-              早先这块是流里的面板，一出现就把输入框顶下去；多题还纵向平铺、能长到半屏。 */}
-      <AskUserFloatingPanel question={pendingQuestion} onAnswer={onAnswerQuestion} />
+      {/* 1+2. 阻塞项浮层栈（UI-02）：提问与审批**共用同一列**，纵向排列、不占布局。
+          🔴 以前两者各自 `absolute bottom-full inset-x-3`，锚点完全相同、只靠 z 值分先后
+          （提问 30 / 审批 40）。同时挂起时提问被整块盖住——用户只看见审批，
+          不知道还有个问题在等。现在由这个栈统一排版：
+          栈本身 `pointer-events-none`（空白处可穿透到对话），卡片各自 `pointer-events-auto`。
+          顺序：提问在上、审批在下——审批有超时自动拒绝，离输入框更近更容易被看见。 */}
+      <div className="absolute bottom-full inset-x-3 mb-2 z-40 flex flex-col gap-2 pointer-events-none">
+        <AskUserFloatingPanel question={pendingQuestion} onAnswer={onAnswerQuestion} />
+        <ApprovalFloatingPanel approvals={pendingApprovals} onDecide={onDecideApproval} />
+      </div>
 
-      {/* 2. 待发送图片预览条 */}
+      {/* 3. 待发送图片预览条（在流里：它是本次输入的附件，跟着输入框走） */}
       {images.length > 0 && (
         <div className="flex items-center space-x-2 pb-0.5 overflow-x-auto">
           {images.map((img, idx) => (
@@ -685,10 +694,7 @@ export const Composer: React.FC<ComposerProps> = ({
         </div>
       )}
 
-      {/* 审批浮窗：紧贴输入框正上方浮动展示（批准后才继续执行，不批就等超时） */}
-      <ApprovalFloatingPanel approvals={pendingApprovals} onDecide={onDecideApproval} />
-
-      {/* 3. 主输入卡片容器 */}
+      {/* 4. 主输入卡片容器 */}
       <div
         className={`relative flex flex-col bg-white dark:bg-[#1c1c20] border transition-all ${
           centered

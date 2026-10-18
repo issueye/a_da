@@ -41,7 +41,9 @@ function createCustomMarked() {
 
       paragraph(this: any, token: any) {
         const text = this.parser.parseInline(token.tokens)
-        return `<p class="my-1 leading-relaxed text-zinc-800 dark:text-zinc-200 text-xs">${text}</p>`
+        // `my-1.5`：段落之间要能看出是两段（`my-1` 时上下两段几乎贴在一起）；
+        // `break-words`：路径 / 长标识符不许把整行撑破（撑破会横向溢出，右侧被裁掉）
+        return `<p class="my-1.5 break-words leading-relaxed text-zinc-800 dark:text-zinc-200 text-xs">${text}</p>`
       },
 
       list(this: any, token: any) {

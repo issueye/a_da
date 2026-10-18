@@ -11,6 +11,8 @@ import {
 } from 'lucide-react'
 import type { BuiltinToolInfo, PluginItem, SkillSummary } from '../types'
 import { agentClient } from '../client/ws-client'
+import { RAIL_WIDTH, RIGHT_DOCK_BREAKPOINT, RIGHT_DOCK_WIDTH } from '../utils/layout'
+import { useMediaQuery } from '../utils/use-media-query'
 
 /**
  * 右侧「Agent 上下文」面板：当前 agent 真正加载的插件 / 工具 / 技能。
@@ -23,6 +25,17 @@ import { agentClient } from '../client/ws-client'
  *
  * 🔴 口径：**插件工具优先于同名内置工具**（装配期就是"插件胜出"），
  * 所以内置那一栏要先把被插件重实现的同名工具摘掉，否则同一行会出现两次。
+ *
+ * # 宽度与形态（UI-06）
+ *
+ * 这块面板曾经无条件占 264px：窗口缩到最小（860）时，侧边栏 + 它一共吃掉 534px，
+ * 对话主区只剩 326px。现在分两态：
+ * - **宽窗口**（> `RIGHT_DOCK_BREAKPOINT`）：并排 dock，占位 264，收起时留 48 图标栏；
+ * - **窄窗口**：收起态仍是 48 图标栏；展开时改为**覆盖式抽屉**（`absolute`，压在对话上），
+ *   不再挤压主区——想看就盖上来，看完收起，主区宽度始终够用。
+ *
+ * 用户手动的展开/收起偏好照旧存 `localStorage`，但"窄窗口下不并排"是**推导出来的**，
+ * 不落盘：窗口拉宽后自动回到用户上次选择的那一态。
  */
 
 const STORAGE_KEY = 'a_da_agent_context_open'
@@ -44,6 +57,8 @@ const sectionTitle = 'flex items-center justify-between w-full px-3 py-1.5 text-
 
 const AgentContextPanel: React.FC<AgentContextPanelProps> = ({ workspace }) => {
   const [open, setOpen] = useState(() => localStorage.getItem(STORAGE_KEY) !== '0')
+  // 只在**跨越断点**时触发一次重排（不是每帧 resize）
+  const narrow = useMediaQuery(`(max-width: ${RIGHT_DOCK_BREAKPOINT - 1}px)`)
   const [snap, setSnap] = useState<Snapshot | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -115,7 +130,10 @@ const AgentContextPanel: React.FC<AgentContextPanelProps> = ({ workspace }) => {
 
   if (!open) {
     return (
-      <aside className="w-12 bg-zinc-50 dark:bg-[#121214] border-l border-zinc-200 dark:border-[#27272a] flex flex-col items-center py-2.5 gap-3 flex-shrink-0 select-none">
+      <aside
+        style={{ width: `${RAIL_WIDTH}px` }}
+        className="bg-zinc-50 dark:bg-[#121214] border-l border-zinc-200 dark:border-[#27272a] flex flex-col items-center py-2.5 gap-3 flex-shrink-0 select-none"
+      >
         <button
           type="button"
           onClick={toggleOpen}
@@ -132,7 +150,13 @@ const AgentContextPanel: React.FC<AgentContextPanelProps> = ({ workspace }) => {
   }
 
   return (
-    <aside className="w-[264px] bg-zinc-50 dark:bg-[#121214] border-l border-zinc-200 dark:border-[#27272a] flex flex-col flex-shrink-0 select-none transition-colors duration-150">
+    <aside
+      style={{ width: `${RIGHT_DOCK_WIDTH}px` }}
+      className={`bg-zinc-50 dark:bg-[#121214] border-l border-zinc-200 dark:border-[#27272a] flex flex-col select-none transition-colors duration-150 ${
+        // 窄窗口：覆盖式抽屉（不占 flex 宽度），否则并排 dock
+        narrow ? 'absolute right-0 top-0 bottom-0 z-40 shadow-2xl' : 'flex-shrink-0'
+      }`}
+    >
       <div className="h-9 px-2.5 border-b border-zinc-200 dark:border-[#27272a] flex items-center justify-between flex-shrink-0">
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="text-[11.5px] font-medium text-zinc-700 dark:text-zinc-200 truncate">

@@ -92,7 +92,7 @@ export const ContextUsagePopover: React.FC<ContextUsagePopoverProps> = ({
     <div
       ref={popoverRef}
       data-testid="context-usage-popover"
-      className="absolute bottom-full left-0 mb-2 w-[360px] max-w-[90vw] bg-white dark:bg-[#1a1a1e] border border-zinc-200 dark:border-[#2d2d32] rounded-xl shadow-2xl p-3.5 flex flex-col space-y-2.5 z-50 select-none animate-in fade-in slide-in-from-bottom-2 duration-150 text-zinc-800 dark:text-zinc-200 text-xs"
+      className="absolute bottom-full left-0 mb-2 w-[360px] max-w-[90vw] bg-white dark:bg-[#1a1a1e] border border-zinc-200 dark:border-[#2d2d32] rounded-xl shadow-2xl p-3.5 flex flex-col space-y-2.5 z-30 select-none animate-in fade-in slide-in-from-bottom-2 duration-150 text-zinc-800 dark:text-zinc-200 text-xs"
       onClick={(e) => e.stopPropagation()}
     >
       {/* 1. 头部标题与关闭按钮 */}

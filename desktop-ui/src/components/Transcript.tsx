@@ -30,6 +30,7 @@ import {
   RotateCcw,
   RotateCw,
   Edit3,
+  PackagePlus,
   AlertTriangle,
   X,
   ChevronDown,
@@ -41,7 +42,6 @@ import {
   ArrowUp,
   ArrowDown,
   Circle,
-  Compass,
   ExternalLink,
 } from 'lucide-react'
 import type { Item, ToolCallItem, QuestionData, AgentMode } from '../types'
@@ -53,6 +53,7 @@ import { TodoFloatingPanel } from './TodoFloatingPanel'
 import { TOOL_LABEL } from '../utils/tool-labels'
 import { approvalPreviewOf } from '../utils/pending-approvals'
 import { notify } from './ToastHost'
+import { TRANSCRIPT_MAX_WIDTH } from '../utils/layout'
 
 // 一次渲染多少个 item（长会话按窗口渲染，更早的折在"显示更早"后面）。
 // 依据：实测一条长会话 822 个 item → 单帧快照 1.85 MB、渲染进程堆 1.5 GB。
@@ -87,6 +88,8 @@ function renderToolIcon(name: string, size = 13, className = '') {
     case 'search_files':
     case 'project_inspect':
       return <Search size={size} className={className} />
+    case 'create_plugin':
+      return <PackagePlus size={size} className={className} />
     case 'find_symbol':
       return <Code size={size} className={className} />
     case 'run_command':
@@ -105,10 +108,6 @@ function renderToolIcon(name: string, size = 13, className = '') {
       return <Bot size={size} className={className} />
     case 'ask_user':
       return <Sparkles size={size} className={className} />
-    case 'check_gate':
-      return <ShieldAlert size={size} className={className} />
-    case 'decide':
-      return <Compass size={size} className={className} />
     case 'git_status':
       return <FolderGit2 size={size} className={className} />
     case 'git_diff':
@@ -125,19 +124,12 @@ const PATH_TOOLS = new Set(['read_file', 'write_file', 'edit_file', 'list_files'
 
 /** 智能拆分目标路径：文件名是正文，目录是暗色小字 */
 function toolTarget(name: string, args: any): { target: string; dir: string } {
-  if (name === 'check_gate') {
-    const crit = args?.criteria || ''
-    return { target: crit ? `标准: ${crit}` : '验收门禁检查', dir: '' }
-  }
-  if (name === 'decide') {
-    const qCount = args?.questions ? Object.keys(args.questions).length : 0
-    return { target: qCount > 0 ? `${qCount} 个判断问题` : '结构化决策', dir: '' }
-  }
   if (name === 'git_status') return { target: '检查仓库工作区改动', dir: '' }
   if (name === 'git_diff') return { target: args?.file || args?.path || '工作区未暂存差异', dir: '' }
   if (name === 'git_log') return { target: `近期 ${args?.limit || 10} 次提交`, dir: '' }
   if (name === 'run_tests') return { target: '执行测试套件', dir: '' }
   if (name === 'project_inspect') return { target: '探测技术栈与项目环境', dir: '' }
+  if (name === 'create_plugin') return { target: args?.id ? `插件 ${args.id}` : '生成插件骨架', dir: '' }
   if (name === 'batch_write') {
     const count = Array.isArray(args?.files) ? args.files.length : 0
     return { target: `写入 ${count} 个文件`, dir: '' }
@@ -357,49 +349,58 @@ export const Transcript: React.FC<TranscriptProps> = ({
       <div
         ref={containerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-3 md:px-6 py-2.5 space-y-1.5 select-text relative [scrollbar-gutter:stable]"
+        className="flex-1 overflow-y-auto px-3 md:px-6 py-2.5 select-text relative [scrollbar-gutter:stable]"
       >
-        {hiddenCount > 0 && (
-          <div className="flex items-center justify-center gap-2 py-1.5">
-            <button
-              type="button"
-              onClick={expandOlderItems}
-              className="px-2.5 py-1 rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300 text-[11px] transition-colors"
-            >
-              显示更早的 {Math.min(TRANSCRIPT_WINDOW, hiddenCount)} 条
-            </button>
-            <span className="text-[11px] text-zinc-500 dark:text-zinc-500">
-              还有 {hiddenCount} 条更早的内容未渲染（不影响会话本身）
-            </span>
-            <button
-              type="button"
-              onClick={showAllItems}
-              className="px-2.5 py-1 rounded-lg border border-transparent hover:border-zinc-300 dark:hover:border-zinc-600 text-zinc-500 dark:text-zinc-400 text-[11px] transition-colors"
-            >
-              全部显示
-            </button>
-          </div>
-        )}
+        {/* 🔴 **阅读列**：所有条目统一收在一条居中的最大宽度里。
+            没有它时助手正文会顶到容器右边缘（窗口一宽就成了 90+ 字一行的"横条"），
+            右上角的待办浮层还会压在这段超宽文字上。收窄后两侧留白，
+            浮卡落在留白里，正文也不再横跨整屏。 */}
+        <div
+          className="mx-auto w-full space-y-1.5"
+          style={{ maxWidth: `${TRANSCRIPT_MAX_WIDTH}px` }}
+        >
+          {hiddenCount > 0 && (
+            <div className="flex items-center justify-center gap-2 py-1.5">
+              <button
+                type="button"
+                onClick={expandOlderItems}
+                className="px-2.5 py-1 rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300 text-[11px] transition-colors"
+              >
+                显示更早的 {Math.min(TRANSCRIPT_WINDOW, hiddenCount)} 条
+              </button>
+              <span className="text-[11px] text-zinc-500 dark:text-zinc-500">
+                还有 {hiddenCount} 条更早的内容未渲染（不影响会话本身）
+              </span>
+              <button
+                type="button"
+                onClick={showAllItems}
+                className="px-2.5 py-1 rounded-lg border border-transparent hover:border-zinc-300 dark:hover:border-zinc-600 text-zinc-500 dark:text-zinc-400 text-[11px] transition-colors"
+              >
+                全部显示
+              </button>
+            </div>
+          )}
 
-        {rows.map((item, index) => (
-          <TranscriptItemRow
-            key={item.id || index}
-            item={item}
-            running={running}
-            threadId={threadId}
-            onRetry={onRetry}
-            onSelectThread={onSelectThread}
-          />
-        ))}
+          {rows.map((item, index) => (
+            <TranscriptItemRow
+              key={item.id || index}
+              item={item}
+              running={running}
+              threadId={threadId}
+              onRetry={onRetry}
+              onSelectThread={onSelectThread}
+            />
+          ))}
 
-        {running && (
-          <div className="flex items-center space-x-2 text-zinc-600 dark:text-zinc-400 text-xs py-1.5 px-3 bg-zinc-100 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700/60 rounded-full w-fit animate-pulse shadow-sm">
-            <div className="w-2 h-2 rounded-full bg-blue-500 animate-ping" />
-            <span>正在分析并执行操作...</span>
-          </div>
-        )}
+          {running && (
+            <div className="flex items-center space-x-2 text-zinc-600 dark:text-zinc-400 text-xs py-1.5 px-3 bg-zinc-100 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700/60 rounded-full w-fit animate-pulse shadow-sm">
+              <div className="w-2 h-2 rounded-full bg-blue-500 animate-ping" />
+              <span>正在分析并执行操作...</span>
+            </div>
+          )}
 
-        <div ref={bottomRef} className="h-1" />
+          <div ref={bottomRef} className="h-1" />
+        </div>
       </div>
 
       {/* 悬浮的快速跳至底部按钮 */}
@@ -1051,15 +1052,6 @@ const ToolCard: React.FC<{
       return { label: '等待批准', color: 'text-amber-500/90 bg-amber-500/10 border-amber-500/20' }
     }
     if (isRunning) return { label: '执行中', color: 'text-blue-500/90 bg-blue-500/10 border-blue-500/20' }
-    if (toolName === 'check_gate') {
-      const outputText = typeof item.output === 'string' ? item.output : String((item.result as any)?.output || '')
-      if (outputText.includes('通过 [PASS]') || structuredData?.passed === true) {
-        return { label: '门禁通过', color: 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/20' }
-      }
-      if (outputText.includes('未通过 [BLOCKED]') || structuredData?.passed === false) {
-        return { label: '门禁未通过', color: 'text-rose-600 dark:text-rose-400 bg-rose-500/10 border-rose-500/20' }
-      }
-    }
     if (isError) return { label: '失败', color: 'text-rose-500/90 bg-rose-500/10 border-rose-500/20' }
     return null
   })()

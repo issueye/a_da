@@ -14,8 +14,10 @@
  *
  * 对话流里的提问卡退化成**只读记录**（`AskUserQuestionRecord`）——按钮只在这一处。
  *
- * 与审批浮窗同为 `bottom-full` 定位，但**两者不会同时出现**：引擎一次只阻塞在一件事上
- * （要么等审批、要么等提问）。层级上提问给 z-30，让审批的 z-40 在极端情况下压在上面。
+ * 🔴 定位由 `Composer` 里的**浮层栈**统一负责（UI-02），本组件只画卡片。
+ * 以前它与审批浮窗各自 `absolute bottom-full inset-x-3`、只靠 z 值（30 vs 40）分先后：
+ * 引擎通常一次只阻塞一件事，但旧卡未清理/跨轮次残留时两者会并存，那一刻**提问被审批盖住**。
+ * 现在同列纵向排列，两个都在。
  */
 
 import React, { useEffect, useState } from 'react'
@@ -66,7 +68,7 @@ export const AskUserFloatingPanel: React.FC<AskUserFloatingPanelProps> = ({
       data-testid="ask-user-floating-panel"
       role="dialog"
       aria-label={items > 1 ? `智能体提问：${items} 个问题待回答` : '智能体提问'}
-      className={`absolute bottom-full inset-x-3 mb-2 z-30 rounded-xl border border-amber-300/90 dark:border-amber-600/50 bg-white/95 dark:bg-[#1f1a14]/95 shadow-xl backdrop-blur-md overflow-hidden select-none animate-in fade-in slide-in-from-bottom-2 duration-150 ${
+      className={`pointer-events-auto rounded-xl border border-amber-300/90 dark:border-amber-600/50 bg-white/95 dark:bg-[#1f1a14]/95 shadow-xl backdrop-blur-md overflow-hidden select-none animate-in fade-in slide-in-from-bottom-2 duration-150 ${
         className || ''
       }`}
     >

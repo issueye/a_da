@@ -132,6 +132,9 @@ export function getLatestTodoItem(items: Item[]): {
   return null
 }
 
+/** 展开/收起偏好（`'0'` = 用户要它保持展开）。 */
+const COLLAPSED_STORAGE_KEY = 'a_da_todo_panel_collapsed'
+
 export interface TodoFloatingPanelProps {
   items: Item[]
 }
@@ -141,8 +144,18 @@ export interface TodoFloatingPanelProps {
  * 悬浮在会话区右上角，不在主消息流中穿插，保持会话区整洁。
  */
 export const TodoFloatingPanel: React.FC<TodoFloatingPanelProps> = ({ items }) => {
-  const [collapsed, setCollapsed] = useState(false)
+  /// 🔴 默认**收起**：展开态是一张 320px 宽的卡片，固定在右上角会压住对话正文
+  /// （正文原本还一路顶到右边缘，两者叠在一起就是"字被卡片盖住"）。
+  /// 收起后只剩一枚胶囊，进度照样看得见；用户主动展开的选择会被记住。
+  const [collapsed, setCollapsed] = useState(
+    () => localStorage.getItem(COLLAPSED_STORAGE_KEY) !== '0'
+  )
   const [copied, setCopied] = useState(false)
+
+  const setCollapsedPersist = (next: boolean) => {
+    setCollapsed(next)
+    localStorage.setItem(COLLAPSED_STORAGE_KEY, next ? '1' : '0')
+  }
 
   // 计划必须**按动作推演**（set 替换 / update 增量 / get 只读），而不是"倒序找第一个能
   // 解析出 items 的卡片"——后者会把 update 的子集、get 回的旧快照当成最新计划，
@@ -177,7 +190,7 @@ export const TodoFloatingPanel: React.FC<TodoFloatingPanelProps> = ({ items }) =
       <div
         role="button"
         tabIndex={0}
-        onClick={() => setCollapsed(false)}
+        onClick={() => setCollapsedPersist(false)}
         className="absolute top-2.5 right-4 z-30 flex items-center space-x-2 h-7 px-2.5 rounded-full bg-white/95 dark:bg-[#1f1f23]/95 hover:bg-zinc-100 dark:hover:bg-zinc-800 border border-zinc-200 dark:border-zinc-700/80 shadow-md backdrop-blur-md cursor-pointer transition-all animate-in fade-in zoom-in-95 duration-150 select-none"
         title="点击展开任务规划卡片"
       >
@@ -241,7 +254,7 @@ export const TodoFloatingPanel: React.FC<TodoFloatingPanelProps> = ({ items }) =
 
           <button
             type="button"
-            onClick={() => setCollapsed(true)}
+            onClick={() => setCollapsedPersist(true)}
             className="flex items-center space-x-0.5 px-1.5 py-0.5 rounded text-[11px] hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-500 dark:text-zinc-400 transition-colors cursor-pointer"
             title="收起为悬浮药丸"
           >

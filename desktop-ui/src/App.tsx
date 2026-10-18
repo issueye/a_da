@@ -26,7 +26,11 @@ export function App() {
   const [connected, setConnected] = useState(agentClient.connected)
   const [isDark, setIsDark] = useState<boolean>(() => {
     const saved = localStorage.getItem('a_da_theme')
-    return saved !== null ? saved === 'dark' : true
+    // 有存储就以存储为准；没有则**跟随系统**——无条件默认深色会让亮色用户
+    // 每次重装/清缓存后都被闪一下深色（UI-13）。
+    if (saved === 'dark') return true
+    if (saved === 'light') return false
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? true
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [pluginsOpen, setPluginsOpen] = useState(false)
@@ -550,7 +554,8 @@ export function App() {
       )}
 
       {/* 主体工作区（左右分栏） */}
-      <div className="flex-1 flex overflow-hidden">
+      {/* `relative`：窄窗口下右侧 Agent 面板改为覆盖式抽屉（absolute），需要这个定位上下文 */}
+      <div className="flex-1 flex overflow-hidden relative">
         {/* 左侧会话与工作区侧边栏 */}
         <Sidebar
           threads={snapshot.threads}
@@ -661,19 +666,21 @@ export function App() {
               />
             </>
           )}
+
+          {/* 改动审查面板：🔴 挂在 `main` 里而不是整窗 `fixed`——
+              它原本定位在 `fixed top-12 right-4`，正好压在右侧 Agent 面板上（UI-03）。
+              放进主区后它只覆盖对话列，右栏始终可点。 */}
+          <ChangesPanel
+            thread={activeThread}
+            isOpen={changesOpen}
+            onClose={() => setChangesOpen(false)}
+          />
         </main>
 
         {/* 右侧「Agent 上下文」：当前 agent 真正加载的插件 / 工具 / 技能。
             数据来自装配期活体视图（plugin.list），不是静态目录扫描。 */}
         <AgentContextPanel workspace={activeThread?.workspace || snapshot.activeWorkspace} />
       </div>
-
-      {/* 改动审查面板 */}
-      <ChangesPanel
-        thread={activeThread}
-        isOpen={changesOpen}
-        onClose={() => setChangesOpen(false)}
-      />
 
       {/* 命令面板 (Ctrl+K) */}
       <CommandPalette

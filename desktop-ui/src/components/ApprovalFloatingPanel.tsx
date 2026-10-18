@@ -98,15 +98,17 @@ export const ApprovalFloatingPanel: React.FC<ApprovalFloatingPanelProps> = ({
     }, 8000)
   }
 
-  // 绝对定位：贴在所在容器**之上**覆盖对话内容，且**不占布局空间**。
-  // `bottom-full` 把整个面板抬到容器顶边以上；左右各留 3 与下方输入框对齐。
-  // 所在的 Composer 容器是 `relative`，所以这里是相对它定位。
+  // 🔴 定位由 `Composer` 里的**浮层栈**负责（UI-02）：这里只画卡片本身。
+  //
+  // 以前本组件自带 `absolute bottom-full inset-x-3 z-40`，提问浮窗也自带同一套锚点
+  // （`z-30`）——两者同时挂起时，提问被整块压在审批下面，用户看不见它。
+  // 现在同一列里纵向排列，`pointer-events-auto` 让卡片可点、栈的空白处可穿透到对话。
   return (
     <div
       data-testid="approval-floating-panel"
       role="alertdialog"
       aria-label={`审批请求：${approvals.length} 项等待批准`}
-      className={`absolute bottom-full inset-x-3 mb-2 z-40 rounded-xl border border-amber-300/90 dark:border-amber-600/50 bg-white/95 dark:bg-[#1f1a14]/95 shadow-xl backdrop-blur-md overflow-hidden select-none animate-in fade-in slide-in-from-bottom-2 duration-150 ${
+      className={`pointer-events-auto rounded-xl border border-amber-300/90 dark:border-amber-600/50 bg-white/95 dark:bg-[#1f1a14]/95 shadow-xl backdrop-blur-md overflow-hidden select-none animate-in fade-in slide-in-from-bottom-2 duration-150 ${
         className || ''
       }`}
     >

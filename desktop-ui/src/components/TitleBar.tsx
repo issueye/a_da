@@ -151,10 +151,14 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       </div>
 
       {/* 中间：连接状态与运行模式（点击打开进程管理或重试） */}
-      <div
+      {/* 🔴 UI-08：这里原本是 `<div onClick>`——键盘聚焦不到、读屏也认不出它是按钮。
+          连接态是可以点的入口（打开进程管理 / 重连），必须是真 button。 */}
+      <button
+        type="button"
         // 标题栏是 deep 拖拽区，这里必须显式退出拖拽，否则 mousedown 被拖拽吃掉、点不动
         data-app-drag-region="false"
         className="flex items-center space-x-1.5 px-2.5 py-1 rounded-md transition-all cursor-pointer hover:bg-zinc-200/80 dark:hover:bg-zinc-800 border border-transparent hover:border-zinc-300 dark:hover:border-zinc-700 pointer-events-auto group"
+        aria-label={connected ? '网关在线，打开进程管理' : '未连接，打开进程管理'}
         onClick={() => {
           if (onOpenProcesses) {
             onOpenProcesses()
@@ -176,7 +180,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
           {connected ? '网关在线' : '未连接 (点击查看进程)'}
         </span>
         <Activity size={12} className="text-zinc-400 group-hover:text-blue-500 transition-colors ml-0.5" />
-      </div>
+      </button>
 
       {/* 右侧：按钮群组 */}
       <div className="flex items-center space-x-1" data-app-drag-region={false}>
@@ -184,6 +188,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
           <button
             onClick={onOpenCommandPalette}
             title="命令面板 (Ctrl+K)"
+            aria-label="命令面板"
             className="flex items-center space-x-1 px-2 py-1 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200/70 dark:hover:bg-zinc-800 rounded transition-colors text-[11px] font-medium"
           >
             <Command size={12} />
@@ -195,6 +200,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
           <button
             onClick={onOpenChanges}
             title="改动审查面板 (Ctrl+Shift+C)"
+            aria-label={`改动审查${activeChangeCount > 0 ? `，${activeChangeCount} 个文件待处理` : ''}`}
             className={`flex items-center space-x-1 px-1.5 py-1 rounded transition-colors text-[11px] font-medium ${
               activeChangeCount > 0
                 ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:bg-blue-500/20'
@@ -209,6 +215,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         <button
           onClick={onOpenPlugins}
           title="插件与技能扩展 (Ctrl+Shift+X)"
+          aria-label="插件与技能扩展"
           className="p-1.5 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200/70 dark:hover:bg-zinc-800 rounded transition-colors"
         >
           <Puzzle size={14} />
@@ -218,6 +225,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
           <button
             onClick={onOpenProcesses}
             title="进程管理与服务监控"
+            aria-label="进程管理与服务监控"
             className="p-1.5 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200/70 dark:hover:bg-zinc-800 rounded transition-colors"
           >
             <Activity size={14} />
@@ -227,6 +235,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         <button
           onClick={onOpenSettings}
           title="设置中心"
+          aria-label="设置中心"
           className="p-1.5 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200/70 dark:hover:bg-zinc-800 rounded transition-colors"
         >
           <Settings size={14} />
@@ -235,6 +244,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         <button
           onClick={onToggleTheme}
           title={isDark ? '切换至亮色模式' : '切换至暗色模式'}
+          aria-label={isDark ? '切换至亮色模式' : '切换至暗色模式'}
           className="p-1.5 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200/70 dark:hover:bg-zinc-800 rounded transition-colors"
         >
           {isDark ? <Sun size={14} /> : <Moon size={14} />}
@@ -247,6 +257,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
           onClick={handleMinimize}
           className="p-1.5 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200/70 dark:hover:bg-zinc-800 rounded transition-colors"
           title="最小化"
+          aria-label="最小化"
         >
           <Minus size={13} />
         </button>
@@ -254,13 +265,15 @@ export const TitleBar: React.FC<TitleBarProps> = ({
           onClick={handleMaximize}
           className="p-1.5 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200/70 dark:hover:bg-zinc-800 rounded transition-colors"
           title={isMax ? '向下还原' : '最大化'}
+          aria-label={isMax ? '向下还原' : '最大化'}
         >
           {isMax ? <Copy size={12} className="rotate-180" /> : <Square size={12} />}
         </button>
         <button
           onClick={handleClose}
           className="p-1.5 text-zinc-600 dark:text-zinc-400 hover:text-white hover:bg-rose-600 rounded transition-colors"
-          title="关闭"
+          title="关闭窗口"
+          aria-label="关闭窗口"
         >
           <X size={14} />
         </button>

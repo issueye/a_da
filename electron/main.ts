@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, screen } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
 import { spawn, execSync, type ChildProcess } from 'child_process'
@@ -475,6 +475,43 @@ function checkDevServer(url: string, timeoutMs = 800): Promise<boolean> {
   })
 }
 
+/**
+ * 窗口尺寸的**下限**（与桌面端 `utils/layout.ts` 的 `WINDOW_MIN_WIDTH` 同值）。
+ *
+ * 这三列布局在 860 宽时已经是最紧的合法状态：侧边栏 392 + 主区 420 + 右栏图标栏 48。
+ * 再窄就只能靠右栏变抽屉 + 侧栏折叠来撑，不值得。
+ */
+const WINDOW_MIN_WIDTH = 860
+const WINDOW_MIN_HEIGHT = 620
+
+/**
+ * 初始窗口大小：按主屏**工作区**推算，而不是写死一组像素。
+ *
+ * 为什么改：原来固定 `1120x780`。这个值在 1080p 上凑合，但在 2K/4K 屏上开局就占不到
+ * 半屏（右侧 Agent 面板一展开，主区只剩 586px）；在 1366x768 的小屏上又贴着边。
+ *
+ * 规则（三步，都可预测）：
+ * 1. 目标 = 工作区宽的 72% / 高的 78%（"留出桌面感"，不铺满）；
+ * 2. 夹在 `1120..1360` × `720..900` 之间（小于 1120 时三列已经很挤，大于 1360 时
+ *    对话行宽会超过舒适阅读区）；
+ * 3. 最后再夹一次"不超出工作区"（小屏兜底，留 40px 边距）。
+ *
+ * 注意：这里只决定**首次**大小。用户拖过窗口之后不记忆（Electron 不会自动保存），
+ * 想要"记得上次大小"需要额外持久化，属另一件事。
+ */
+function resolveInitialWindowSize(): { width: number; height: number } {
+  const clamp = (value: number, lo: number, hi: number) => Math.min(Math.max(value, lo), hi)
+  const { width: areaWidth, height: areaHeight } = screen.getPrimaryDisplay().workAreaSize
+
+  const preferredWidth = Math.round(clamp(areaWidth * 0.72, 1120, 1360))
+  const preferredHeight = Math.round(clamp(areaHeight * 0.78, 720, 900))
+
+  return {
+    width: Math.min(preferredWidth, Math.max(WINDOW_MIN_WIDTH, areaWidth - 40)),
+    height: Math.min(preferredHeight, Math.max(WINDOW_MIN_HEIGHT, areaHeight - 40)),
+  }
+}
+
 async function createMainWindow(): Promise<BrowserWindow> {
   // preload 是**宿主能力的唯一入口**（网关发现 / 窗口控制 / 配置 / 进程管理全靠它注入的
   // `window.electronAPI`）。路径解析失败 = 整个壳子哑掉，必须当场喊出来，不能静默降级。
@@ -489,12 +526,17 @@ async function createMainWindow(): Promise<BrowserWindow> {
     appendLauncherLog(`preload 路径: ${preloadPath}`)
   }
 
+  const initial = resolveInitialWindowSize()
+  appendLauncherLog(
+    `初始窗口: ${initial.width}x${initial.height}（工作区 ${screen.getPrimaryDisplay().workAreaSize.width}x${screen.getPrimaryDisplay().workAreaSize.height}）`
+  )
+
   mainWindow = new BrowserWindow({
     title: 'a_da',
-    width: 1120,
-    height: 780,
-    minWidth: 860,
-    minHeight: 620,
+    width: initial.width,
+    height: initial.height,
+    minWidth: WINDOW_MIN_WIDTH,
+    minHeight: WINDOW_MIN_HEIGHT,
     center: true,
     frame: false,
     backgroundColor: '#18181b',

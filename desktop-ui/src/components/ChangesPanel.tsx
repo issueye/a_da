@@ -81,7 +81,13 @@ export const ChangesPanel: React.FC<ChangesPanelProps> = ({ thread, isOpen, onCl
   }
 
   return (
-    <div className="fixed top-12 right-4 w-96 max-h-[85vh] bg-white dark:bg-[#1c1c20] border border-zinc-200 dark:border-[#2f2f35] rounded-2xl shadow-2xl z-40 flex flex-col overflow-hidden select-none animate-in fade-in slide-in-from-top-2 duration-150">
+    // 🔴 UI-03：定位从 `fixed top-12 right-4` 改为**相对主区**的右上角浮卡。
+    //
+    // 原来它固定贴整窗右上，落点正好是右侧 Agent 面板（264px）那一块——打开改动审查时
+    // 右栏的标题、刷新/收起按钮、前几条插件全被盖住，而两者同为 z-40，谁在上面纯看渲染顺序。
+    // 现在它是 `main` 的子节点（`absolute`）：只覆盖对话列，右栏始终可点。
+    // 高度改为撑满主区（`top-2 bottom-2`），不再用 `85vh` 赌窗口高度。
+    <div className="absolute top-2 right-2 bottom-2 z-40 w-[min(24rem,calc(100%_-_1rem))] bg-white dark:bg-[#1c1c20] border border-zinc-200 dark:border-[#2f2f35] rounded-2xl shadow-2xl flex flex-col overflow-hidden select-none animate-in fade-in slide-in-from-top-2 duration-150">
       {/* 头部标题与全部恢复栏 */}
       <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-zinc-200 dark:border-[#2b2b30] bg-zinc-50 dark:bg-[#18181c]">
         <div className="flex items-center space-x-2">

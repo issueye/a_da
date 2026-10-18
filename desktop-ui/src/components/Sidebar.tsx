@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, memo } from 'react'
+import React, { useState, useMemo, useEffect, useRef, memo } from 'react'
 import {
   Plus,
   MessageSquare,
@@ -18,6 +18,7 @@ import {
   Loader2,
 } from 'lucide-react'
 import type { Thread, AgentMode } from '../types'
+import { RAIL_WIDTH, SIDEBAR_DEFAULT_WIDTH, clampSidebarWidth } from '../utils/layout'
 import { agentClient } from '../client/ws-client'
 import { getDesktopPlatform } from '../client/desktop-bridge'
 import { notify } from './ToastHost'
@@ -473,10 +474,6 @@ const SidebarTreeItem: React.FC<SidebarTreeItemProps> = ({
   )
 }
 
-const DEFAULT_SIDEBAR_WIDTH = 270
-const MIN_SIDEBAR_WIDTH = 180
-const MAX_SIDEBAR_WIDTH = 560
-
 const SidebarComponent: React.FC<SidebarProps> = ({
   threads,
   activeThreadId,
@@ -496,13 +493,12 @@ const SidebarComponent: React.FC<SidebarProps> = ({
   // 侧边栏宽度支持拖拽缩放与持久化
   const [width, setWidth] = useState<number>(() => {
     const saved = localStorage.getItem('a_da_sidebar_width')
-    if (saved) {
-      const parsed = parseInt(saved, 10)
-      if (!isNaN(parsed) && parsed >= MIN_SIDEBAR_WIDTH && parsed <= MAX_SIDEBAR_WIDTH) {
-        return parsed
-      }
-    }
-    return DEFAULT_SIDEBAR_WIDTH
+    const parsed = saved ? parseInt(saved, 10) : NaN
+    // 读进来就要夹：上次的宽度可能是在大窗口下拉的，这次窗口更窄
+    return clampSidebarWidth(
+      isNaN(parsed) ? SIDEBAR_DEFAULT_WIDTH : parsed,
+      window.innerWidth
+    )
   })
   const [isResizing, setIsResizing] = useState(false)
 
@@ -521,6 +517,31 @@ const SidebarComponent: React.FC<SidebarProps> = ({
     }
   }, [isResizing])
 
+  /// 窗口变窄时重夹侧边栏（🔴 UI-01）。
+  ///
+  /// 以前上限只在**拖动那一刻**算一次：拖到 560 之后再缩小窗口，宽度就不动了，
+  /// 而两侧栏都是 `flex-shrink-0`，被压扁的只有对话主区（最小窗口下仅剩 36px）。
+  /// 监听 `resize` 重夹并回写，缩窗口时"侧边栏让位"而不是"主区消失"。
+  // 宽度镜像是为了在 resize 回调里读到**最新**宽度（effect 是空依赖，闭包里的是初值）。
+  // 不用 `setWidth(prev => ...)` 里写 localStorage 的写法：那会把副作用塞进 updater，
+  // StrictMode 下会被调用两次。
+  const widthRef = useRef(width)
+  useEffect(() => {
+    widthRef.current = width
+  }, [width])
+
+  useEffect(() => {
+    const onViewportResize = () => {
+      const next = clampSidebarWidth(widthRef.current, window.innerWidth)
+      if (next === widthRef.current) return
+      widthRef.current = next
+      setWidth(next)
+      localStorage.setItem('a_da_sidebar_width', String(next))
+    }
+    window.addEventListener('resize', onViewportResize)
+    return () => window.removeEventListener('resize', onViewportResize)
+  }, [])
+
   // 处理拖动调整侧边栏宽度
   const handleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault()
@@ -531,12 +552,8 @@ const SidebarComponent: React.FC<SidebarProps> = ({
 
     const handleMouseMove = (moveEvent: MouseEvent) => {
       const deltaX = moveEvent.clientX - startX
-      const maxAllowed = Math.min(MAX_SIDEBAR_WIDTH, Math.floor(window.innerWidth * 0.6))
-      const nextWidth = Math.min(
-        Math.max(startWidth + deltaX, MIN_SIDEBAR_WIDTH),
-        maxAllowed
-      )
-      setWidth(nextWidth)
+      // 上限由 `utils/layout` 统一算：保证右侧栏与本栏加起来之后，主区仍有余量
+      setWidth(clampSidebarWidth(startWidth + deltaX, window.innerWidth))
     }
 
     const handleMouseUp = (upEvent: MouseEvent) => {
@@ -545,12 +562,9 @@ const SidebarComponent: React.FC<SidebarProps> = ({
       window.removeEventListener('mouseup', handleMouseUp)
 
       const finalDeltaX = upEvent.clientX - startX
-      const maxAllowed = Math.min(MAX_SIDEBAR_WIDTH, Math.floor(window.innerWidth * 0.6))
-      const finalWidth = Math.min(
-        Math.max(startWidth + finalDeltaX, MIN_SIDEBAR_WIDTH),
-        maxAllowed
-      )
-      localStorage.setItem('a_da_sidebar_width', String(Math.round(finalWidth)))
+      const finalWidth = clampSidebarWidth(startWidth + finalDeltaX, window.innerWidth)
+      setWidth(finalWidth)
+      localStorage.setItem('a_da_sidebar_width', String(finalWidth))
     }
 
     window.addEventListener('mousemove', handleMouseMove)
@@ -559,8 +573,9 @@ const SidebarComponent: React.FC<SidebarProps> = ({
 
   // 双击分隔线恢复默认宽度
   const handleResetWidth = () => {
-    setWidth(DEFAULT_SIDEBAR_WIDTH)
-    localStorage.setItem('a_da_sidebar_width', String(DEFAULT_SIDEBAR_WIDTH))
+    const next = clampSidebarWidth(SIDEBAR_DEFAULT_WIDTH, window.innerWidth)
+    setWidth(next)
+    localStorage.setItem('a_da_sidebar_width', String(next))
   }
 
   useEffect(() => {
@@ -741,7 +756,10 @@ const SidebarComponent: React.FC<SidebarProps> = ({
   // 极简折叠模式
   if (collapsed) {
     return (
-      <aside className="w-12 bg-zinc-50 dark:bg-[#121214] border-r border-zinc-200 dark:border-[#27272a] flex flex-col items-center py-2.5 flex-shrink-0 select-none transition-colors duration-100">
+      <aside
+        style={{ width: `${RAIL_WIDTH}px` }}
+        className="bg-zinc-50 dark:bg-[#121214] border-r border-zinc-200 dark:border-[#27272a] flex flex-col items-center py-2.5 flex-shrink-0 select-none transition-colors duration-100"
+      >
         <button
           onClick={() => setCollapsed(false)}
           className="p-1.5 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200 hover:bg-zinc-200/70 dark:hover:bg-zinc-800 rounded-lg transition-colors mb-2.5 cursor-pointer"
