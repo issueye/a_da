@@ -3,27 +3,27 @@
 > **维护约定**：每条写清「现状证据（`file:line` 或 grep 判据）／影响／最小实现路径／状态」。
 > 状态取值：`未排期`（没人做）、`待拍板`（缺一个产品决定）、`明确不做`（设计上划出去了）。
 >
-> **最后核对**：2026-10-14。核对方式＝全仓 grep + 跑六条门禁，**不是凭印象**。
+> **最后核对**：2026-10-18（文档整理时重核）。核对方式＝全仓 grep + 跑门禁，**不是凭印象**。
 > 改动功能后请顺手更新本文件。
 >
 > **注意**：本文件只写"**功能缺口**"。接线类问题（"看起来装上了其实没接线"）
-> 的唯一口径在 [`docs/agent-base-wiring-plan.md`](agent-base-wiring-plan.md)——
+> 的唯一口径在 [`docs/plans/wiring.md`](../plans/wiring.md)——
 > 那里有逐条证据与处置状态，不要在这里重复。
 
 ## 门禁基线（核对时）
 
 | 命令 | 结果 |
 |---|---|
-| `cargo test --workspace -- --test-threads=1` | **430 passed / 0 failed** |
-| `cargo xtask verify` | ✔ 全仓 Verify 通过（6 阶段全绿） |
-| `cargo xtask verify-wiring` | ✔ 无违约（协议方法 74 / match 臂 74；端口 11 个全有生产实现） |
+| `cargo test --workspace -- --test-threads=1` | **637 passed / 0 failed**（35 个套件；本次整理时实测，须串行，见 §四） |
+| `cargo xtask verify` | ✔ 五阶段静态门 + 全量测试 |
 | `cargo xtask verify-spec` | ✔ 无违约 |
+| `cargo xtask verify-wiring` | ✔ 无违约（协议方法 **77** 个都有 `dispatch` 臂；端口 **13** 个都有生产实现） |
 | `cargo xtask compat` | ✔ 无违约 |
-| `cargo xtask verify-archive` | ✔ 全绿（8 条断言） |
+| `cargo xtask verify-docs` | ✔ 无违约 |
 | `bun run typecheck` | ✔ exit 0 |
 
-> `cargo xtask verify-docs` 的**红例基线已清零**（W6-T7）：README / 本文件 / `feature-catalog.md`
-> 不再把归档布局当现行路径描述。
+> `verify-archive` 门已随 TS 归档**一并删除**（2026-10-17）；"仓库里没有第二份引擎"
+> 现在由 `verify-wiring` 的端口实现与依赖方向断言继续守着。
 
 ---
 
@@ -173,12 +173,34 @@
   执行侧没有任何分支读它。也就是说，它连"要判什么"都不存在。要做得先把 mode 接进引擎，
   届时连开关一起加（界面文案已同步删除）。
 
+### 12. 事件变体的发射者缺口（3 个豁免，其中 1 个口径不一致）　`部分已闭、口径待定`
+
+- **现状**：`cargo xtask verify-wiring` 的 `check_event_emitters` 要求每个 `AgentEventBody`
+  变体都在 `crates/agent-base/src/engine/**` 的生产段里有发射者。当前明细：
+  **13 个变体、10 个有发射者、3 个无**（`QuestionAsked` / `SubagentStarted` /
+  `SubagentFinished`），三者登记在 `UNEMITTED_EVENT_ALLOW` 豁免表里。
+- **2026-10-18 复核（本条是复核后新登记的，别再照抄旧叙述）**：
+  - `QuestionAsked` **已经有生产发射者**，只是它在**工具层**：
+    `crates/agent-toolkit/src/core/ask_user.rs:301`（同文件 `:749-751` 断言事件真的落进事件池）。
+    门禁只扫引擎层，于是它仍留在豁免表里。**这不是功能缺口，是口径不一致**：
+    INV-6 的原话是"引擎是 `AgentEvent` 的唯一生产者"。二选一——把发射收回引擎，
+    或承认工具层是合法发射方并改判据；**别让豁免表变成没人再看的假条**
+    （`crates/agent-rpc/src/runner/mod.rs` 的模块注释此前也在照抄"`AskUserTool` 直接返回错误"，
+    已同批更正）。
+  - `SubagentStarted` / `SubagentFinished` **仍然没有任何生产发射者**
+    （`engine_bridge` 把它们映射成 `None`）——**子智能体生命周期确实没有上报**：
+    界面看不到"谁在跑、跑到哪了"。
+- **最小实现路径**：在子智能体运行器的起止处发这两个事件
+  （`crates/agent-node/src/subagents/runner.rs` 有天然落点）；补完**必须删掉对应豁免**，
+  否则门会报"陈旧豁免"。
+
 ---
 
 ## 二、明确不做的（设计上划出去了，别当缺口）
 
 - **第三优先钩子点位**：模型选择、上下文超限前的主动裁剪、并发批次控制、错误 / 重试、
-  用户输入改写（见 `docs/plugin-system-design.md` §6.6.2 与 §6.8）。
+  用户输入改写。**判据**：这些点位不在 `points::IMPLEMENTED` 与 `HookLevel::of` 的值域内——
+  要做请先加常量 + 调用点 + 分级，别只登记名字（旧清单里那个 `onThreadSwitch` 就是这么被删掉的）。
 - **`casual` 惰性工具档位**：契约里保留了该取值，运行层**明确拒绝并记 trace**，
   不会假装降级成功。开发计划里标注为"不在 MVP"。
 - **决策插件的引擎驱动"自动模式"**：每轮多一次引擎调用（成本与延迟翻倍），
@@ -188,7 +210,7 @@
   "向已结束会话追加旁注"的交付通道，声明它们只会变成静默失效，所以契约里没有这两个字段
   （原因写在 `AGENTS.md` §12）。
 - **`cargo xtask gen`（协议四产物生成）**：W5-T1 判定不划算，**正式降级**为
-  "手写 + 三对副本双向校验"（决策与依据见 `docs/agent-base-design.md` §6.2）。
+  "手写 + 三对副本双向校验"（决策与依据见 `docs/architecture/kernel-design.md` §6.2）。
 - **`enum` 化协议方法常量 + 编译器穷尽性**：同上，降级为散装 `&str` + 机械校验。
 
 > **P4 之后仍然缺的（2026-10-16 记）**：
@@ -218,7 +240,8 @@
 
 ## 三、插件系统的小尾巴（不影响使用）
 
-明细与理由见 `docs/plugin-system-dev-plan.md` 的 M3 完成记录，此处只列条目：
+专题理由：罗列的是**经核实仍然成立**的条目（原插件系统开发计划的 M3 记录
+随 2026-10-18 文档整理删除，需要时从 git 历史取回）：
 
 1. `Thread.pluginData` 没有分区大小上限（未决问题，超限行为需先定：截断 / 拒绝 / 诊断）。
 2. **工作区级的能力开关覆盖在 Rust 后端不存在**（旧文写的"已经能读"是对 TS 时代的描述，**已作废**）：
@@ -249,7 +272,7 @@
 - **TS 测试已整体冻结**：`bunfig.toml` 已把旧实现排除在测试发现之外，
   跑 TS 测试只会得到 "No tests found"。**门就是 `cargo test` 与 `bun run typecheck`。**
 - **打包产物检查**：产物是 GUI 子系统（无控制台），自动化通道到不了管道，
-  所以二进制检查只能用应用自己的启动日志当证据（详见 `docs/agent-conventions.md` §17）。
+  所以二进制检查只能用应用自己的启动日志当证据（详见 `docs/architecture/conventions.md` §17）。
 - **冷启动退化未测量**：打包形态多了"spawn 主机 + 握手 + 首帧快照"三步，
   只验过"能画出首帧"，没有与进程内形态对比过数字。
 - **前端重连**：W6-T6 已改为指数退避（500ms 起 / 30s 封顶 / ±20% 抖动）+ 代次保护 +
@@ -321,8 +344,9 @@
 
 | 文档 | 用途 |
 |---|---|
-| [`docs/agent-base-wiring-plan.md`](agent-base-wiring-plan.md) | **接线类问题的唯一口径**：缺口台账、任务表、执行记录、断言变更 |
-| [`docs/agent-base-design.md`](agent-base-design.md) | 设计口径（分层、端口、协议单源、装配） |
-| [`AGENTS.md`](../AGENTS.md) | 接手须知与 § 索引 |
-| [`docs/protocol/README.md`](protocol/README.md) | 线协议总览 |
-| [`docs/feature-catalog.md`](feature-catalog.md) | 已实现功能清单 |
+| [`docs/plans/wiring.md`](../plans/wiring.md) | **接线类问题的唯一口径**：缺口台账、任务表、执行记录、断言变更 |
+| [`docs/architecture/kernel-design.md`](../architecture/kernel-design.md) | 设计口径（分层、端口、协议单源、装配） |
+| [`AGENTS.md`](../../AGENTS.md) | 接手须知与 § 索引 |
+| [`docs/protocol/README.md`](../protocol/README.md) | 线协议总览 |
+| [`docs/plugins/README.md`](../plugins/README.md) | 插件平台现状（贡献模型、点位、能力开关、排错） |
+| [`docs/quality/feature-catalog.md`](feature-catalog.md) | 已实现功能清单 |

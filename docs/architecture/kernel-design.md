@@ -1,9 +1,12 @@
 # AGENT BASE：Rust-only Agent 基座与产品线规范（设计 v0.2）
 
+> 本文原名 `docs/agent-base-design.md`，文档整理时移入 `docs/architecture/`。
+> 现行文档索引见 [`../README.md`](../README.md)。
+
 > 🔴 **2026-10-17 更新**：TS 时代的实现目录（`archive/ts-legacy/`）**已删除**，
 > `verify-archive` 门与 `bunfig.toml` 一并移除。本文中出现的 `archive/...`、
 > `verify-archive`、"归档"等字样均为**历史记录**（迁移过程与决策依据），
-> 不再是现行路径或门禁。现行门禁清单见 [README.md](../README.md) 与 [AGENTS.md](../AGENTS.md)。
+> 不再是现行路径或门禁。现行门禁清单见 [README.md](../../README.md) 与 [AGENTS.md](../../AGENTS.md)。
 
 > 状态：**设计草案 v0.2，只定设计与规范，不动代码**。
 > **v0.2 的定位变更（相对 v0.1）**：① **只考虑 Rust**——TS 那套 agent 实现（`src/agent/**` 的循环/宿主/工具）
@@ -112,7 +115,7 @@ cargo xtask verify-wiring                                   # 7 没有第二份�
 | `ada-ts-engine` + `plugins/sandbox.rs` | **保留为可选适配器**（插件代码运行时），但插件**契约**由 Rust 侧的 `PluginHost` 端口定义 | 插件生态是资产；契约必须单源 |
 | `src/shared/protocol/*.ts` | 改为**生成物**（客户端类型），不再手写 | 治 §1.1 的第三份 DTO |
 | `kernel/`、`compiler/` shim（`kernel/mod.rs:1-6`、`compiler/mod.rs:1-2`） | 删除（`ada-ts-engine` 直接依赖） | 纯转发，无消费者 |
-| `docs/jsonrpc-protocol.md` 中描述 TS 形态的段落（§0.1 客户端是 GPUIX、§16.2 jiti） | 重写为 Rust-only 口径 | 文档与实现必须同代 |
+| 协议草案（原 `jsonrpc-protocol.md`，TS 时代文档，已随 2026-10-18 整理删除）中描述 TS 形态的段落 | 已由 `spec/proto/` 登记表与 [`../protocol/README.md`](../protocol/README.md) 取代 | 文档与实现必须同代 |
 
 ---
 
@@ -532,7 +535,7 @@ tools/xtask/           new-agent | gen | verify | verify-spec | verify-wiring | 
 | 3 | **GPUIX 客户端** | 冻结在"必须搭档 `agent_core.exe`"（现状默认路径）；新功能只投 `desktop-ui` | 删掉 legacy 兜底，减少一条并行路径 |
 | 4 | **首个第二产品** | `ada-life`（与 coding 差异最大，最能暴露内核里的产品假设） | 这是设计的真正验收 |
 | 5 | **协议扩展命名** | 统一 `x.<product>.*`，现有 `fs/change/plugin/provider/debug` 归入 `x.coding.*`（保留旧名做别名一个版本） | 老客户端平滑 |
-| 6 | **文档处置** | `docs/jsonrpc-protocol.md` 重写为 Rust-only 口径，表格块改为生成物；`docs/agent-base-design.md`（本文）作为设计源 | 文档与实现同代 |
+| 6 | **文档处置** | 协议草案（TS 时代文档，已删除）；现行口径＝`spec/proto/` 登记表 + [`../protocol/README.md`](../protocol/README.md)；本文作为设计源 | 文档与实现同代 |
 
 ---
 
@@ -561,7 +564,7 @@ tools/xtask/           new-agent | gen | verify | verify-spec | verify-wiring | 
 | 事件被两份手写 match 消费 | `server/dispatch.rs:542-600`、`:1570-1600` |
 | 合帧与 seq | `server/emitter.rs:33-72`；每命令后广播 `ws.rs:226-228`；种子快照 `seq:0` `ws.rs:146-161` |
 | 死 shim | `kernel/mod.rs:1-6`、`compiler/mod.rs:1-2`、`agent_core/Cargo.toml:28` |
-| 协议文档自述的未实现项 | `docs/jsonrpc-protocol.md:106-117`、`:139-142`、`:148-149`、`:547-560`、`:603-615` |
+| 协议草案自述的未实现项 | 原文 `jsonrpc-protocol.md:106-117`、`:139-142`、`:148-149`、`:547-560`、`:603-615`（该文档已删除，需要时从 git 历史取回） |
 
 ## 附录 B：`spec/proto/base.json` 草案（片段）
 

@@ -1,6 +1,11 @@
 # AGENT BASE 开发计划（含 MVP 与 TS 归档降级）
 
-> 依据：[docs/agent-base-design.md](agent-base-design.md) v0.2（Rust-only、产品线基座）。
+> 本文原名 `docs/agent-base-plan.md`，文档整理时移入 `plans/` 并改名为 `milestones.md`。
+> 它是**分期与执行记录**（里程碑口径、任务清单、验收基线），不是现状说明——
+> 现状看 [`../quality/feature-catalog.md`](../quality/feature-catalog.md)，
+> 缺口看 [`../quality/unfinished-features.md`](../quality/unfinished-features.md)。
+>
+> 依据：[docs/architecture/kernel-design.md](../architecture/kernel-design.md) v0.2（Rust-only、产品线基座）。
 > 本文只给**开发计划**：MVP 边界、里程碑、任务清单、验收门、TS 归档的文件夹降级处理、排期与风险。
 > 所有现状数字均为实测（命令与结果在文内标注）。
 >
@@ -244,8 +249,8 @@ archive/
 即：**插件是"单文件 + 注入 API"**（仓库内置插件因 `import '../../core/events'` 等深度耦合，**本来也无法被沙箱执行**，
 Rust 侧对它们有原生替代）。因此归档前必须：
 
-1. 把插件契约冻结为**语言中立文档 + 版本号**：`docs/plugin-sdk/v1.md`（导出形态、注入 API、工具/技能/提示词声明、钩子形态与超时语义、能力位）。
-2. 提供 SDK 类型包 `plugin-sdk/`（纯类型，无 agent 实现依赖），第三方插件可 import。
+1. 把插件契约冻结为**语言中立文档 + 版本号**（导出形态、注入 API、工具/技能/提示词声明、钩子形态与超时语义、能力位）——现行契约文档是 [`../plugins/extension-factory.md`](../plugins/extension-factory.md)。
+2. 提供 SDK 类型声明（纯类型，无 agent 实现依赖），第三方插件可 import——现行版本是 [`../plugins/extension-api.d.ts`](../plugins/extension-api.d.ts)。
 3. 更新 `plugin.createTemplate`：生成的模板**只依赖注入 API + SDK 类型**，不再 import `src/agent/**`。
 4. 归档前跑一次"工作区插件冒烟"：临时目录放一个模板插件 → Rust 沙箱 `inspect_plugin` + `call_tool` 通过。
 
@@ -287,7 +292,7 @@ CI | 门二从 `bun test`（**归档后为 0 文件**）整体切到 `cargo test
 依赖 | 根 `dependencies`（`eventsource-parser`、`jiti`）与 devDeps（`@types/react`、`typescript`）确认在 `desktop-ui/` 与 `archive/` 之外无引用后删除；`bun run link`（连 `../gpuix`）不再是克隆后必做步骤 → 更新 `AGENTS.md` 与 `README.md`
 `scripts/build.ts` | 归档；新出包走 `xtask ship`（复用其 PE 子系统补丁逻辑）
 `scripts/binary-check.ts` | 归档；替代品：Rust 侧 `xtask smoke --product ada-coding`（用应用日志当证据，AGENTS.md §17 的约束继续适用）
-文档 | `README.md` 重写运行段（去掉 `app.tsx`/GPUIX/Hermes）；`AGENTS.md` 更新项目速览与「开发与验证」（去掉 GPUIX/Hermes/`bun run link`，§16/§17 改为 Rust 口径）；`docs/feature-catalog.md` 的 `src/ui` 列删掉
+文档 | `README.md` 重写运行段（去掉 `app.tsx`/GPUIX/Hermes）；`AGENTS.md` 更新项目速览与「开发与验证」（去掉 GPUIX/Hermes/`bun run link`，§16/§17 改为 Rust 口径）；`docs/quality/feature-catalog.md` 的 `src/ui` 列删掉
 
 ### 5.7 卫星脚本处置表（18 个 + 其余）
 
@@ -369,7 +374,7 @@ archive/
 | 根配置 | 删 `tsconfig.json`（归档代码的解析入口）、旧 `bunfig.toml`；`package.json` 收敛为 `typecheck`/`test`/`verify:archive`/`tauri:*`，**deps 与 devDeps 清空** |
 | 锁文件 | 根 `bun.lock` 被 `bun install` 判为空并删除（无依赖）；`desktop-ui` 继续用 `package-lock.json` |
 | 新门 | `tools/verify-archive.ts`（`bun run verify:archive`）实现 §5.8 的断言，**当前全绿**；M0 并入 `cargo xtask verify-archive` |
-| 插件契约 | [docs/plugin-sdk/v1.md](plugin-sdk/v1.md) 冻结（形态、注入 API、工具与返回值契约、沙箱限制、v1 缺口）——先写文档后归档，顺序与 §5.4 相反但结果一致 |
+| 插件契约 | [`../plugins/extension-factory.md`](../plugins/extension-factory.md) 冻结（形态、注入 API、工具与返回值契约、沙箱限制、v1 缺口）——先写文档后归档，顺序与 §5.4 相反但结果一致 |
 | 文档 | `AGENTS.md`（速览/开发与验证/代码结构/三条规矩 + §索引归档说明）、`README.md`（顶部过期横幅）已改；README 正文重写留 M5 |
 
 **未做（按计划留在后续里程碑）**：`src-tauri`/`desktop-ui` 的依赖改指向 `agent-runtime`（M1）、客户端类型生成（M3-T3）、
@@ -687,7 +692,7 @@ archive/
 ## 附录 B：MVP 之后的路线（M6+）
 
 1. **钩子全量**：补齐 25 个点位（含成对约束与超时/熔断），逐个"副作用断言"；把 `PluginCapabilities` 的能力位真正消费起来。
-2. **decision 引擎移植（已下线，2026-10-18）**：曾把 `decide`/`check_gate` 从 TS 移植为 Rust 原生实现（`crates/agent-toolkit/src/decision/`，17 项测试），但两个工具在真实产品里没有消费者，已于 2026-10-18 连同 `decision` 工具包与内置插件一并删除；只保留「绝不捏造确定性」与「门禁 fail-close」两条原则（见 docs/agent-conventions.md §9），供未来同类能力复用。
+2. **decision 引擎移植（已下线，2026-10-18）**：曾把 `decide`/`check_gate` 从 TS 移植为 Rust 原生实现（`crates/agent-toolkit/src/decision/`，17 项测试），但两个工具在真实产品里没有消费者，已于 2026-10-18 连同 `decision` 工具包与内置插件一并删除；只保留「绝不捏造确定性」与「门禁 fail-close」两条原则（见 docs/architecture/conventions.md §9），供未来同类能力复用。
 3. **细粒度事件**：拆 `evt.item.*`/`evt.card.updated` 等，补 `session.resync`/`ping`/多客户端抢答。
 4. **图片与多模态**：`ContentPart::Image` 打通到三家 provider。
 5. **第二真实产品 `ada-life`**：`calendar`/`reminder`/`notes`/`web` 工具包 + `user-data` scope —— 验证多产品声明式开发。

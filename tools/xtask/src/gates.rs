@@ -1,6 +1,6 @@
 //! W0 接线审计闸：`verify-spec` / `compat` / `verify-wiring`。
 //!
-//! 口径见 `docs/agent-base-wiring-plan.md` §5 W0。三条设计约束：
+//! 口径见 `docs/plans/wiring.md` §5 W0。三条设计约束：
 //!
 //! 1. **故意不放进 `cargo test`**：这些闸当前**预期为红**（红例基线）。写成单测会让主门禁
 //!    长期变红、掩盖其它信号；因此它们是独立的 xtask 子命令，由 W1–W6 的任务逐个转绿。
@@ -161,7 +161,7 @@ impl Report {
                 println!("  \x1b[31m✘\x1b[0m {v}");
             }
             println!(
-                "  \x1b[31m{} 条违约（红例基线；处置任务见 docs/agent-base-wiring-plan.md §5）\x1b[0m",
+                "  \x1b[31m{} 条违约（红例基线；处置任务见 docs/plans/wiring.md §5）\x1b[0m",
                 self.violations.len()
             );
         }
@@ -370,11 +370,11 @@ const CAPABILITY_FIELDS: &[(&str, &[&str])] = &[
 ];
 
 /// 「只声明、不消费」的能力位白名单：每条必须写明理由，且该位名必须出现在
-/// `docs/unfinished-features.md` 里（否则它就是一个没人知道的空壳声明）。
+/// `docs/quality/unfinished-features.md` 里（否则它就是一个没人知道的空壳声明）。
 const CAPABILITY_INFORMATIONAL: &[(&str, &str)] = &[(
     "streaming",
     "引擎恒定流式：该位只用于向客户端表达“本产品支持流式”，没有分支消费点；\
-     已在 docs/unfinished-features.md 的信息性字段清单里登记",
+     已在 docs/quality/unfinished-features.md 的信息性字段清单里登记",
 )];
 
 /// 对账：`AgentSpec` 的顶层字段 ⊆ [`SPEC_FIELDS`]。
@@ -1488,9 +1488,10 @@ fn check_port_impls(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
 
 /// 主干 markdown 不得把归档时代的布局当作**现行**路径来描述。
 ///
-/// 背景：README 正文、`unfinished-features.md`、`feature-catalog.md` 仍在用
-/// `src/agent/**`、`src/ui/**`、`../gpuix`、`bun test` 描述当前架构，
-/// 与它们自己的顶部横幅（纯 Rust 微内核 + Electron + TS 已归档）自相矛盾。
+/// 背景：TS 时代（Bun 宿主 + GPUIX 客户端 + TS 侧 agent）实现已整体删除，
+/// 但历史记录类文档里仍会引用那时的路径（`src/agent/**`、`src/ui/**`、`../gpuix`、
+/// `bun test` 等）。这类引用**允许存在于明确标注为历史记录的文档里**，
+/// 不允许出现在描述现状的文档里——否则读者会照着不存在的路径去找代码。
 ///
 /// 判据：命中任一模式的文件必须出现在 [`DOC_ALLOW`] 里。白名单**逐项写明理由**，
 /// 只放"用途就是描述归档时代或定义归档规矩"的文档——所以这份名单本身是可审阅的。
@@ -1514,23 +1515,15 @@ pub fn verify_docs() -> anyhow::Result<Report> {
     ];
 
     /// 允许提到归档路径的文件：其用途就是描述归档时代或定义归档规矩。
-    const DOC_ALLOW: [(&str, &str); 16] = [
-        ("AGENTS.md", "定义归档规矩本身（\"别跑 bun test\"、§ 索引声明 §1–§15 描述归档实现）"),
-        ("docs/agent-base-plan.md", "历史执行记录（§5 归档范围分类表、附录 A 文件级迁移映射）"),
-        ("docs/agent-base-design.md", "§10 迁移路径与附录迁移表"),
-        ("docs/agent-conventions.md", "文件头声明 §1–§15 正文描述已归档的 TS 实现"),
-        ("docs/plugin-system-design.md", "TS 时代插件系统设计文档"),
-        ("docs/plugin-system-dev-plan.md", "TS 时代插件系统开发计划"),
-        ("docs/core-extension-capabilities-design.md", "TS 时代扩展能力设计文档"),
-        ("docs/decision-plugin-design.md", "TS 时代决策插件设计文档"),
-        ("docs/ui-host-split-dev-plan.md", "UI/宿主拆分开发计划（TS 时代）"),
-        ("docs/pure-rust-ts-microkernel-design.md", "从 TS 迁往纯 Rust 的过渡设计"),
-        ("docs/memory-optimization-plan.md", "TS 时代内存优化计划"),
-        ("docs/pure-rust-backend-dev-plan.md", "后端纯 Rust 化开发计划（含 TS 侧对照）"),
-        ("docs/rust-backend-refactor-design.md", "Rust 后端重构设计（含 TS 侧对照）"),
-        ("docs/jsonrpc-protocol.md", "协议文档（含 TS 客户端章节）"),
-        ("docs/plugin-sdk/v1.md", "插件 SDK 契约（对照 TS 时代的 25 个钩子点位）"),
-        ("docs/agent-base-wiring-plan.md", "接线收口计划自身在\"防漂移规则\"里引用这些路径"),
+    ///
+    /// 2026-10-18 文档整理：11 条指向**已删除文档**的旧条目随文档一并移除
+    /// （TS 时代的设计/计划/审计/提案文档）；`AGENTS.md` 不再需要豁免——它现在**不含**
+    /// 任何归档布局字样，真需要时再加回来（豁免越少，这份名单越可信）。
+    const DOC_ALLOW: [(&str, &str); 4] = [
+        ("docs/plans/milestones.md", "历史执行记录（§5 归档范围分类表、附录 A 文件级迁移映射）"),
+        ("docs/plans/wiring.md", "接线收口计划自身在\"防漂移规则\"里引用这些路径"),
+        ("docs/architecture/kernel-design.md", "§10 迁移路径与附录迁移表"),
+        ("docs/architecture/conventions.md", "文件头声明 §1–§15 正文描述已归档的 TS 实现"),
     ];
 
     // `.workbuddy-ai` / `.workbuddy`：AI 协作者的工作区记忆与本地工具目录，不是项目文档；
@@ -1909,7 +1902,7 @@ fn capability_declarations(
 /// 2. 每个 `POINT_*` 常量都必须在 `DIAG_POINTS` 里（孤儿常量 → 报红）；
 /// 3. 每个 `POINT_*` 常量都必须在**生产代码**里被引用（= 真有发射方）。
 ///
-/// **豁免表刻意不存在**：新点位不许先声明后实现（同 `plugin-sdk/v1.md` §6 的规矩）。
+/// **豁免表刻意不存在**：新点位不许先声明后实现（同 `docs/plugins/README.md` §1 的能力声明规矩）。
 fn check_diag_points(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
     const DIAG_PATH: &str = "crates/agent-base/src/domain/diag.rs";
     let src = read(root, DIAG_PATH)?;
@@ -1981,7 +1974,7 @@ fn check_diag_points(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
 ///
 /// 为什么需要它：`verify_spec` 的"声明字段必须有生产消费者"只到 `capabilities` 这一层
 /// （它查的是 `CapabilitySpec` 这个**符号**出现过没有），于是 `streaming` 这种
-/// "位声明了、没人读"的情况一路绿灯（见 `docs/unfinished-features.md` 的信息性字段条目）。
+/// "位声明了、没人读"的情况一路绿灯（见 `docs/quality/unfinished-features.md` 的信息性字段条目）。
 /// 这里下沉一层：逐个能力位判"有没有消费者"。
 fn check_capability_bits(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
     let spec_src = read(root, "crates/agent-runtime/src/spec.rs")?;
@@ -2014,7 +2007,7 @@ fn check_capability_bits(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
     }
 
     let promised = capability_declarations(root, &declared)?;
-    let gap_doc = fs::read_to_string(root.join("docs/unfinished-features.md")).unwrap_or_default();
+    let gap_doc = fs::read_to_string(root.join("docs/quality/unfinished-features.md")).unwrap_or_default();
     let mut skipped = BTreeSet::new();
 
     for (bit, needles) in CAPABILITY_FIELDS {
@@ -2035,7 +2028,7 @@ fn check_capability_bits(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
             }
             if !gap_doc.contains(*bit) {
                 rep.violations.push(format!(
-                    "信息性能力位 `{bit}` 未在 `docs/unfinished-features.md` 登记——\
+                    "信息性能力位 `{bit}` 未在 `docs/quality/unfinished-features.md` 登记——\
                      空壳声明不许静默存在"
                 ));
             }
@@ -2101,8 +2094,12 @@ const PLUGIN_CAPABILITY_FIELDS: &[(&str, &[&str])] = &[
         "allow_compaction_replace",
         &["capabilities.allow_compaction_replace"],
     ),
-    // 钩子预算（组合根读出来交给 `HookBudget`）
-    ("hook_timeout_ms", &["plugin_caps.hook_timeout_ms"]),
+    // 钩子预算（组合根 `products/ada-coding/src/main.rs` 读出来交给 `HookBudget`）
+    //
+    // 判据串原先写作 `plugin_caps.hook_timeout_ms`——那是个不存在的变量名，
+    // 于是这一位**常年假红**：消费者在组合根上，写法是 `out.caps.hook_timeout_ms`。
+    // 2026-10-18 文档整理时按真实读点改正（判据串写错 = 门禁在测一个幻觉）。
+    ("hook_timeout_ms", &["caps.hook_timeout_ms"]),
 ];
 
 /// L2. **插件能力开关必须有生产消费者**（P4 · 幽灵开关治理）。

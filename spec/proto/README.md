@@ -3,7 +3,7 @@
 本目录是 **INV-11「协议单源」**的落地处：线协议方法、事件主题与错误码在这里登记，
 其他副本（Rust 常量、client-ts 常量、dispatch 臂）都是**手写副本 + 机械校验**。
 
-> **为什么不生成**：见 `docs/agent-base-design.md` §6.2 的决策记录（W5-T1）。
+> **为什么不生成**：见 `docs/architecture/kernel-design.md` §6.2 的决策记录（W5-T1）。
 > 一句话：方法集合变更频率极低，而生成器本身也要被校验——**防漂移靠校验，不靠生成**。
 
 ## 文件
@@ -69,7 +69,8 @@
 
 ## 相关
 
-- 设计口径：`docs/agent-base-design.md` §6
+- 设计口径：`docs/architecture/kernel-design.md` §6
 - 协议总览与客户端用法：`docs/protocol/README.md`
 - 产品声明（工具包/能力位）：`products/<id>/agent.spec.json`（与线协议是**两件事**：
   前者是装配期声明，后者是运行期线协议）
+- 目录索引（按功能域找文档）：`docs/README.md`

@@ -1,7 +1,10 @@
 # AGENTS.md
 
 给在本仓库工作的 AI 智能体与协作者的注意事项。**本文件会被自动注入系统提示词**，因此只留
-「接手就必须知道的事」；深度约定全文已迁至 **[docs/agent-conventions.md](docs/agent-conventions.md)**。
+「接手就必须知道的事」；深度约定全文已迁至 **[docs/architecture/conventions.md](docs/architecture/conventions.md)**
+（开头有一张「§1–§15 现行对照表」，告诉你哪些章节的正文已经是历史）。
+
+**文档按功能域组织，入口是 [docs/README.md](docs/README.md)**。
 
 项目速览：**纯 Rust 微内核**（`crates/agent-base/`：零 IO 的领域层 + 11 个端口 + **唯一**多轮引擎 `run_turn`）
 + **两层拆包**（S4）：`crates/agent-node/`（节点：会话 / 审批 / 检查点 / 委派 / 插件 / 技能）
@@ -11,11 +14,12 @@
 `crates/ts-engine/` 是独立的 TS 执行引擎，只作插件运行时。
 **TypeScript 时代的实现（Bun + GPUIX 客户端 + TS 侧 agent/宿主）已于 2026-10-17 整体删除**
 （原 `archive/ts-legacy/`，可从 git 历史取回）：它不再是参考设计、不参与构建与测试。
-设计与计划的唯一口径是 [docs/agent-base-design.md](docs/agent-base-design.md) 与
-[docs/agent-base-plan.md](docs/agent-base-plan.md)（含"看起来装上了其实没接线"的逐条处置表）。
-**功能缺口清单在 [docs/unfinished-features.md](docs/unfinished-features.md)**：接活前先看一眼，
+设计与约定的唯一口径是 [docs/architecture/kernel-design.md](docs/architecture/kernel-design.md)（设计）
+与 [docs/architecture/conventions.md](docs/architecture/conventions.md)（约定）；
+分期与执行记录在 [docs/plans/milestones.md](docs/plans/milestones.md)。
+**功能缺口清单在 [docs/quality/unfinished-features.md](docs/quality/unfinished-features.md)**：接活前先看一眼，
 别把"已知未做"当成 bug 去修；做完一项顺手划掉。
-**分层与重构的执行记录在 [docs/agent-base-wiring-plan.md](docs/agent-base-wiring-plan.md)**（§13 逐条）。
+**分层与重构的执行记录在 [docs/plans/wiring.md](docs/plans/wiring.md)**（§13 逐条）。
 
 ## 开发与验证
 
@@ -25,6 +29,8 @@ cargo test --workspace -- --test-threads=1     # 门二（必须串行：有共�
 bun run typecheck                             # 门一：desktop-ui 的 tsc --noEmit
 cargo xtask verify-wiring                     # 接线门：方法覆盖 / 描述符单源 / 端口实现 / 依赖方向
 cargo xtask verify-spec                       # 声明门：产品/预设 spec 校验
+cargo xtask verify-docs                       # 文档门：归档布局字样只在白名单文档里 + 协议文档与事件主题同步
+cargo xtask verify --fast                     # 上面四道静态门一次跑完（跳过全量单测）
 bun run electron:dev                          # Electron 桌面端开发（前端热重载 + 网关监督）
 bun run electron:pack                         # 打包 Electron 免安装版 (dist/electron/win-unpacked)
 pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面壳验收（Electron 交付形态）
@@ -152,7 +158,7 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
   （内存卡片被磁盘回填整份换掉、id 全变，那一帧按 id 字典序落位）。
   只读 `session.snapshot` 是**看不出**这个问题的——服务端数组一直是对的，被换乱的是界面拼出来的那份；
   实机验收用 `bun tools/verify-card-order-e2e.mjs [--with-tool]`（本地假模型 + 真协议，
-  比较收尾前后**界面上**的顺序），契约见 `docs/state-patch-plan.md` 的"顺序"一节。
+  比较收尾前后**界面上**的顺序），契约见 `docs/protocol/state-patch.md` 的"顺序"一节。
 - 🔴 **Electron 宿主里 `__dirname` 不可信**：`bun run electron:build:main`（`bun build --target node
   --format cjs`）会把 `__dirname` **硬编码成构建机的源码目录**。用
   `path.join(__dirname, 'preload.cjs')` 当 preload 路径 → preload 静默加载失败 →
@@ -178,16 +184,16 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
 
 ## 代码结构
 
-**目录结构按设计落地中**（`docs/agent-base-design.md` v0.2 §3；已搬批次见 `docs/agent-base-plan.md` §8）：
+**目录结构按设计落地**（`docs/architecture/kernel-design.md` v0.2 §3；已搬批次见 `docs/plans/milestones.md` §8）：
 
-- `crates/agent-base` 基座内核（零 IO、零产品名词）：`model/`（模型面类型）、`domain/`（消息·工具描述符与回执·事件·错误与失败方向）、`ports/`（11 个端口，**无默认实现**）、`engine/`（**唯一**多轮循环 `run_turn`）、`testing/`（FixedClock/RecordingSink/TempAppHome）
+- `crates/agent-base` 基座内核（零 IO、零产品名词）：`model/`（模型面类型）、`domain/`（消息·工具描述符与回执·事件·错误与失败方向·诊断点位）、`ports/`（**13 个端口**，**无默认实现**：AppHome / ApprovalGate / CancelToken / Clock / EventSink / HookRunner / ModelClient / PromptSource / Scope / ScriptHost / SessionStore / Tool / ToolCatalog）、`engine/`（**唯一**多轮循环 `run_turn` + 钩子编排）、`testing/`（FixedClock/RecordingSink/TempAppHome）
 - `crates/agent-proto` 线协议：JSON-RPC 帧、方法常量、线上 DTO、错误码
 - `crates/agent-adapter` 适配器：`model/`（三家协议 SSE + 中止）、`app_home.rs`（**全仓唯一**读 `A_DA_HOME`/`USERPROFILE` 的地方）、`clock.rs`（**全仓唯一**读系统时间的地方）
-- `crates/agent-toolkit` 工具包：文件读写、路径沙箱、命令执行、文本 diff、决策与门禁判定；`registry.rs` 是**工具元数据与描述符单一真源**
+- `crates/agent-toolkit` 工具包：文件读写、路径沙箱、命令执行、文本 diff、Git/项目查询、插件包脚手架；`registry.rs` 是**工具元数据与描述符单一真源**（22 个描述符），`toolkits.rs` 是工具包名单单一真源（`core`/`fs`/`command`/`git`/`project`/`forge`）
 - **`crates/agent-node`（S4 拆出，5.9k 行 / 34 文件）** —— 节点：`session` / `approval` / `checkpoint` / `subagents`（含 `agent_bus.rs` 委派总线端口与 `local_bus.rs` 本地实现；端口支持**多轮续跑** `thread_id`，本地总线对它是**如实拒绝**——一次性子智能体没有可续线程）/ `plugins` / `skills` / `node_config.rs`（节点配置端口）/ `delegation_depth.rs`（委派深度端口：被派活的节点靠它知道自己「在第几层」）。**不含协议管道**（不依赖 `tokio-tungstenite`）、**不含 UI 投影**（不依赖 `AgentStore`）。`AgentBus` 的网关实现（`GatewayAgentBus`）在 **`agent-rpc`**——跨进程委派需要 WS 客户端，那属于桥接面，节点只保留端口
 - **`crates/agent-rpc`（S4 拆出，5.3k 行 / 18 文件）** —— 桥接面：`server/`（`dispatch.rs` 72 个方法的 JSON-RPC 分发、`ws.rs` 宿主、`emitter.rs` 快照合帧、`fs_service.rs`）、`state/`（`AgentStore`，**给界面看的投影**）、`runner/`（引擎调用 + 基座一等事件 `AgentEventBody` 直连投影至 UI store，废除中间桥接 `AgentLoopEvent`）。**依赖方向单向：`agent-rpc → agent-node`**
 - **`crates/agent-gateway`（S5 新建）** —— a-da 网关，三合一：**AGENT 管理平台**（`registry.rs` 实例注册表 / `supervisor.rs` 生命周期）+ **交互平台**（S6：`delegate.rs` 派活/**多轮续跑**/取消跨网关）+ **桥接平台**（`relay.rs` 路由与透传）+ **WEB 接入面**（S7：`auth.rs` token/作用域/Origin/**配对码**）。二进制 `ada-gateway`（打印 `A_DA_GATEWAY_READY {port}`）。**只依赖线协议 `agent-proto`**——不含引擎（INV-1）、不缓存会话状态（INV-8），由 `verify-wiring` check J 守着。🔴 **非回环 `--host` 必须配 `--token`，且必须显式 `--allow-plaintext`**（网关只提供明文 `ws://`，明文上的 token 可嗅探；反代终止 TLS 时由人确认）。两条都**拒绝启动**而不是警告——失败安全
-- `crates/ts-engine` 插件运行时（Boa + oxc）；插件契约见 [docs/plugin-sdk/v1.md](docs/plugin-sdk/v1.md)
+- `crates/ts-engine` 插件运行时（Boa + oxc）；插件契约与平台说明见 [docs/plugins/README.md](docs/plugins/README.md)
 - `products/ada-coding` 产品二进制（`--host/--port/--token/--parent-pid/--workspace`）
 - **PM 不是第二个产品**（2026-10-11 降级）：它是 `products/ada-coding` 的**模式预设**
   （`products/ada-coding/modes/pm.agent.spec.json`）——同一个二进制、同一处装配函数
@@ -204,7 +210,7 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
 ## 核心红线与防踩坑规矩
 
 - **不要复活 TS 时代的实现**：它已于 2026-10-17 整体删除（可从 git 历史取回）。仓库里只保留 Rust 这一份引擎/宿主；新增代码不得引入第二套多轮循环。
-- **改 Rust 核心前先看 [docs/agent-base-plan.md](docs/agent-base-plan.md) §1.3**：审批闸门、取消贯穿、`terminate`、插件 `enabled`、空壳工具等**目前多数是"看起来装上了、其实没接线"**，那里逐条写明了处置口径（补实现 / 删声明）。
+- **改 Rust 核心前先看 [docs/plans/milestones.md](docs/plans/milestones.md) §1.3**：审批闸门、取消贯穿、`terminate`、插件 `enabled`、空壳工具等曾被列为"看起来装上了、其实没接线"，那里逐条写明了处置口径（补实现 / 删声明）。**注**：该表是历史记录，其中大部分已收口——判断现状请以代码与 [docs/quality/feature-catalog.md](docs/quality/feature-catalog.md) 为准。
 - **工具描述符与元数据单一真源**（W2-T2 + 单源化收敛）：读写性（`is_write`）、审批要求、
   检查点回滚策略（`rollback`）、终止语义，以及全部 24 个内置工具的标准描述符与参数 Schema，
   均收敛于 `crates/agent-toolkit/src/registry.rs`；具体实现统一调用 `descriptor()` 构造，严禁内联手写；
@@ -216,13 +222,14 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
   **只登记真有发射方的点位**，由 `verify-wiring` check K 盯着），
   `agent-rpc` 桥接层直接订阅并投影到 UI，严禁在桥接层私造二等中间事件流（历史 `AgentLoopEvent` 已废除）。
 
-## § 索引（`AGENTS.md §N` 一律指下表第 N 条，正文见 docs/agent-conventions.md）
+## § 索引（`AGENTS.md §N` 一律指下表第 N 条，正文见 [docs/architecture/conventions.md](docs/architecture/conventions.md)）
 
-> ⚠️ **历史说明（2026-10-17 更新）**：§1–§15 的正文描述的是**TS 时代**的实现机制
-> （该实现已删除，可从 git 历史取回），它们在 Rust 权威路径上多数**尚未落地**——逐条处置
-> （补实现 / 删声明）见 [docs/agent-base-plan.md](docs/agent-base-plan.md) §1.3。
-> §16（协议方法多端同步）与 §18（工具结构化回执）按原样继续生效；
-> §17 的"用应用日志当证据"仍然有效，但那条 `console.log` 劫持链路本身已随 TS 实现删除。
+> ⚠️ **历史说明（2026-10-18 更新）**：下表与 conventions 的 §1–§15 写于 **TS 时代**
+> （那套实现已删除，可从 git 历史取回），命名与路径可能已对不上代码。
+> **`conventions.md` 开头有一张「现行对照表」**，逐条给出当前落点（例如 §2 的只读判定
+> 现在是 `ToolDescriptor.access` + `plugin_tool_is_write`，§4 的检查点名单现在是描述符的
+> `RollbackPolicy`）——接手时先看那张表。
+> §16（协议方法多端同步）与 §18（工具结构化回执）按原样继续生效。
 
 | § | 一句话警告 |
 |---|---|
@@ -234,7 +241,7 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
 | 6 | 全局 sequential，但整批都声明 `executionMode: 'parallel'` 时会重叠执行 |
 | 7 | 子智能体收尾的 `wakeParent()` 必须在 `runningThreadIds.delete()` 之后；离线兜底单独补 |
 | 8 | 别轮询 `check_subagent`，用 `await_subagents` 挂起等待 |
-| 9 | 决策插件**绝不捏造确定性**：拿不到就失败，`calibrated` 仅 Jev 引擎为 true |
+| 9 | 决策插件**绝不捏造确定性**：拿不到就失败（**`decide` / `check_gate` 已于 2026-10-18 下线**，原则保留） |
 | 10 | 插件生效需**多处同时登记**（READ_ONLY／目录／allowedTools），各有守门测试 |
 | 11 | `LoadedPlugin` 是唯一产物；第三方插件 id 由加载器定为「scope:文件名」 |
 | 12 | 钩子**成对**是硬约束，工具集**只能收窄**；两处刻意偏差别当 bug 修 |

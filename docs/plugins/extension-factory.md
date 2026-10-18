@@ -1,5 +1,9 @@
 # pi-style a-da Extension API
 
+> 本文原名 `docs/plugin-sdk/pi-style-extension.md`，文档整理时移入 `plugins/` 并改名为
+> `extension-factory.md`（旧 SDK 形态的 `plugin-sdk/v1.md` 已删除）。
+> 平台层面的说明（发现规则、贡献模型、能力开关、排错）见 [README.md](README.md)。
+
 Plugin packages use a single factory entrypoint, matching pi's extension pattern:
 `export default function (ada: ExtensionAPI) {}` in the package's `index.ts`.
 `index.js` is accepted for precompiled JavaScript packages. A JSDoc variant

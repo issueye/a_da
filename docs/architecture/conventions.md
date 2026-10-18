@@ -3,7 +3,33 @@
 > 本文件是根目录 `AGENTS.md` 的**深度约定全文**。为照顾 `docs/` 与源码注释里既有的
 > `AGENTS.md §N` 引用，这里**原样保留了 AGENTS.md 的章节编号**（§1–§15 与一/二/三节）。
 > 历史上被引作「AGENTS.md 第 N 节」的地方，指的都是本文件对应章节。
-> 根 `AGENTS.md` 是 ≤60 行的导航版，会被自动注入系统提示词；细节按需来本文件查。
+> 根 `AGENTS.md` 是导航版，会被自动注入系统提示词；细节按需来本文件查。
+
+> ### ⚠️ 现行对照（文档整理时补，2026-10-18）
+>
+> 下面 §1–§15 的正文写于 **TS 时代**，其中的文件路径与函数名**多数已不存在**
+> （那套实现已整体删除）；仍然有效的是**约束本身**。要改代码时以右侧为准：
+>
+> | § | 约束（仍然有效） | 现行落点 |
+> |---|---|---|
+> | 1 | 子智能体的工具表要与工具目录同源，别写死白名单 | `agent_toolkit::registry::standard_tool_descriptors` + `filter_subagent_tools`（`crates/agent-node/src/subagents/`） |
+> | 2 | 工具读写性**失败安全**：认不出的一律按写处理 | `agent_node::plugins::plugin_tool_is_write`（未知 → `true`）；元数据真源是 `ToolDescriptor.access` |
+> | 3 | 子智能体只拿 `profile.system_prompt`，不拿主线程提示词 | `ProfilePrompt`（`agent-base` 端口 + `agent-node` 实现） |
+> | 4 | 新写工具要能被检查点覆盖 | 描述符的 `RollbackPolicy`（不再有手写的 `CHECKPOINT_TOOLS` 名单） |
+> | 5 | `terminate` 结束的是**整轮**，不是这一批 | 描述符的 `Termination` |
+> | 6 | 并行工具会重叠执行 | `RunPolicy.max_parallel_tools`（默认顺序执行：审批一次只该问一件事） |
+> | 7 / 8 | 委派与等待：别轮询，用挂起等待 | `AgentBus` 端口（`crates/agent-node/src/subagents/agent_bus.rs`；网关实现 `GatewayAgentBus` 在 `agent-rpc`） |
+> | 9 | 决策：拿不到就失败，**绝不捏造确定性** | 决策插件已于 **2026-10-18 整体下线**（`decide` / `check_gate` / 工具包 / 实现一并删除）；只保留这条原则 |
+> | 10 / 11 | 插件生效要"多处同时登记"；`LoadedPlugin` 是唯一产物 | 现行口径：贡献在**装配期结算**（工具 / 提示词 / 技能 / 钩子），见 [`../plugins/README.md`](../plugins/README.md) |
+> | 12 | 钩子**成对**是硬约束；钩子不得扩张工具集 | `crates/agent-base/src/ports/hooks.rs`（`points::IMPLEMENTED`、`HookLevel`、`allows`） |
+> | 13 | 审批与压缩的效力**刻意不对称** | 压缩点位 `beforeCompaction` / `afterCompaction`；审批见 §14 |
+> | 14 | 审批：**策略**归插件 `approval-guard`、**执行**归核心 | `agent-node/src/plugins/builtins.rs`（`approval-guard`）+ 引擎 `ApprovalGate` |
+> | 15 | 陷阱：断言**副作用**，别断言钩子被调用 | 现行诊断 `hook.entered` / `hook.finished` / `hook.skipped`（成对、缺席可见） |
+> | 16 | 加 / 删协议方法要同步多处 | 现在是**四处**：`spec/proto/*.json` → `methods.rs` → `dispatch.rs` → `client-ts/methods.ts`（见 [`../../spec/proto/README.md`](../../spec/proto/README.md)） |
+> | 17 | 打包后的 exe 用**应用日志**当证据 | 仍是现行口径（`launcher.log`，见 `electron/`） |
+> | 18 | 工具结果是**结构化回执** | `status` / `duration_ms` / `started_at` / `finished_at`（界面耗时与状态徽章依赖它） |
+>
+> 编号**原样保留**（它们被源码注释大量引用），即使某条的正文已经是历史。
 
 ---
 
@@ -139,7 +165,8 @@ git-tools / code-outline / project-inspector / test-runner 四个官方插件也
 - 两条加载路径（内置 `BUILTIN_PLUGINS` 数组、工作区/全局的 jiti 扫描）都必须产出
   `LoadedPlugin`（`plugins/types.ts`）。新增能力字段时同步改 `PluginContributions`
   **和** `loader.ts` 的 `parseExtensionModule` / `finalizePlugins`，并考虑
-  `plugin-system-dev-plan.md` 里的下一个里程碑是否已有约定。
+  `plugin_tool_is_write` 与装配期的贡献结算——现行口径见
+  [`../plugins/README.md`](../plugins/README.md)（贡献在装配期结算，改完要重新加载）。
 - 第三方插件的 `manifest.id` **一律由加载器按「scope:文件名」生成**，插件自报的 id 会被覆盖
   ——id 是启停表、诊断、工具溯源的键，允许自报会让它们对不上。
 - 状态判定集中在 `finalizePlugins`：依赖缺失/初始化抛错 → `broken`、缺必填配置 → `not-ready`
@@ -250,7 +277,8 @@ git-tools / code-outline / project-inspector / test-runner 四个官方插件也
 
 ### 16. 界面只认 `ui/client` 的四条通道；加协议方法要**同步三处**
 
-M0–M3 把界面与 agent 侧拆开了（真拆：打包形态是两个进程，见 `docs/ui-host-split-dev-plan.md`）。
+界面与 agent 侧是**真拆**：打包形态下 Electron 宿主监督 `ada-gateway`，
+网关按工作区拉起 `ada-coding` 实例（见 [`../gateway/README.md`](../gateway/README.md)）。
 规矩只有一条，但它是硬的：**`src/ui/**`（非测试）不许 import agent 侧的实现**。
 
 四条通道（界面做什么都从这四个里选一个）：
@@ -274,8 +302,10 @@ M0–M3 把界面与 agent 侧拆开了（真拆：打包形态是两个进程�
 2. `src/agent/host/dispatch.ts` —— 主机侧实现（**唯一**允许直接调 store 与管理器的地方）；
 3. 界面调用点 —— 走 `client.request`。
 
-新方法**必须**在 `docs/jsonrpc-protocol.md` 里有对应条目；实现期发现偏差就回写文档
-（协议 §2 的"实现状态"块就是这个用途，别让文档承诺 A、实现是 B）。
+新方法**必须**在 `spec/proto/*.json` 里有登记条目，并在
+[`../protocol/README.md`](../protocol/README.md) 里说清怎么用；实现期发现偏差就回写文档
+（字段口径见 [`../../spec/proto/README.md`](../../spec/proto/README.md)，
+别让文档承诺 A、实现是 B）。
 
 还有两条拆分后新增的"会咬人"的点：
 
@@ -317,8 +347,8 @@ M3 之后打包形态是**两个进程**（UI + 自己 spawn 的 `--host`）。�
 两条实测出来的坑，一条都不能踩：
 
 1. **jiti 在编译产物里必崩**：`bun build --compile` 的单文件里它会去
-   `require('../dist/babel.cjs')`——那是它自己的懒加载依赖，打进单文件后这个相对路径不存在，
-   于是**每个工作区插件都变成 `未生效（broken）：Cannot find module '../dist/babel.cjs'`**
+   `require('../../dist/babel.cjs')`——那是它自己的懒加载依赖，打进单文件后这个相对路径不存在，
+   于是**每个工作区插件都变成 `未生效（broken）：Cannot find module '../../dist/babel.cjs'`**
    （现象是"插件启停报错/不生效"，真正原因只在主机进程的 stderr 上）。
 2. **Bun 的 `import()` 缓存按解析后的路径**：`?v=` 查询串、`./` 与 `../` 的等价写法**都不认**
    （实测），所以 `import()` 永远拿到第一次那份代码——"改写插件再刷新"会静默跑旧代码。

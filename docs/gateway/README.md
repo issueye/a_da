@@ -1,5 +1,10 @@
 # 基于网关的工作区选择与极限瘦客户端架构设计
 
+> 本文原名 `docs/gateway-workspace-and-thin-client-design.md`，文档整理时移入 `gateway/`
+> 并成为本目录的 README。现状（网关三合一职责、一工作区一进程、实例回收、
+> `gateway.*` 协议面）以 [`../quality/feature-catalog.md`](../quality/feature-catalog.md)
+> 与 [`../protocol/README.md`](../protocol/README.md) 为准；本文给的是**设计意图与取舍**。
+>
 > 状态：**设计草案（v1.0）**  
 > 目标：**彻底废弃桌面端原生文件/文件夹选择弹窗，将工作区与文件目录浏览能力完全收拢至网关（`ada-gateway`），桌面端彻底退化为极限瘦客户端（Extreme Thin Client），实现桌面与 Web 浏览器 100% 同构。**
 
@@ -7,9 +12,9 @@
 
 ## 0. 一页结论
 
-1. **废弃 Native Dialog**：系统不保留任何操作系统原生文件/文件夹选择弹窗（如 Electron Dialog、Win32/Cocoa/GTK 原生选择器）。所有目录树与文件选择统一通过前端内置的 Web 原生模态框 [`FilePicker.tsx`](file:///E:/codes/rust_projects/a_da/desktop-ui/src/components/FilePicker.tsx) 实现。
+1. **废弃 Native Dialog**：系统不保留任何操作系统原生文件/文件夹选择弹窗（如 Electron Dialog、Win32/Cocoa/GTK 原生选择器）。所有目录树与文件选择统一通过前端内置的 Web 原生模态框 [`FilePicker.tsx`](../../desktop-ui/src/components/FilePicker.tsx) 实现。
 2. **网关作为文件系统与工作区门户**：工作区根目录选择、目录树遍历、历史工作区记录统一由网关管理面（`gateway.fs.*` 与 `gateway.workspaces.*`）提供。无工作区、冷启动、多实例切换及远程访问场景下，客户端均直面网关获取统一视图。
-3. **桌面端蜕化为极限瘦壳**：桌面宿主（[`electron`](file:///E:/codes/rust_projects/a_da/electron)）彻底移除业务逻辑、文件操作以及复杂的多子进程管理，仅保留最基础的原生窗口外壳（Frame、无边框缩放、拖拽）和 WebView 宿主，以及针对本地单机部署的网关守护自启能力。
+3. **桌面端蜕化为极限瘦壳**：桌面宿主（[`electron`](../../electron)）彻底移除业务逻辑、文件操作以及复杂的多子进程管理，仅保留最基础的原生窗口外壳（Frame、无边框缩放、拖拽）和 WebView 宿主，以及针对本地单机部署的网关守护自启能力。
 4. **全平台 100% 同构体验**：无论运行于 Electron 桌面壳、普通 Chrome/Safari 浏览器、平板设备还是远程云端开发环境，UI 交互、工作区管理和文件浏览行为逐像素一致，没有任何平台特化分支。
 
 ```
@@ -43,7 +48,7 @@
 > `products/ada-coding/modes/pm.agent.spec.json` 这份声明（persona + 不含 `fs`/`command`
 > 的工具包 + 委派配置），与产品共用同一个二进制、同一处装配函数（`build_injection`）。
 > 会话是 coding 还是 pm 由 **`mode`** 表达，`agent_id` 恒为 `ada-coding`。
-> 详见 [AGENTS.md](../AGENTS.md) 的代码结构一节。
+> 详见 [AGENTS.md](../../AGENTS.md) 的代码结构一节。
 
 ---
 
@@ -73,7 +78,7 @@
 
 ### 1.3 桌面端蜕变：极限瘦客户端（Extreme Thin Client）
 
-桌面端（[`electron`](file:///E:/codes/rust_projects/a_da/electron)）原先承载了较多职能：检查并启动多个子进程（`ada-coding`、`ada-gateway`）、读取本地配置文件、维护进程存活列表等。
+桌面端（[`electron`](../../electron)）原先承载了较多职能：检查并启动多个子进程（`ada-coding`、`ada-gateway`）、读取本地配置文件、维护进程存活列表等。
 
 重构后的定位是**极限瘦客户端**：
 - **除原生窗口生命周期外，不编写任何业务与存储逻辑**；
@@ -326,10 +331,10 @@ sequenceDiagram
 
 ### 5.1 数据源平滑切换
 
-目前前端的 [`FilePicker.tsx`](file:///E:/codes/rust_projects/a_da/desktop-ui/src/components/FilePicker.tsx) 组件已经具备完善的 UI 交互（驱动器切换、搜索、新建文件夹、面包屑导航、文件类型过滤等），但原本调用的底层方法是直连的 `fs.roots` / `fs.list`。
+目前前端的 [`FilePicker.tsx`](../../desktop-ui/src/components/FilePicker.tsx) 组件已经具备完善的 UI 交互（驱动器切换、搜索、新建文件夹、面包屑导航、文件类型过滤等），但原本调用的底层方法是直连的 `fs.roots` / `fs.list`。
 
 **前端改造要点**：
-1. **客户端方法映射升级**（在 [`desktop-ui/src/client/ws-client.ts`](file:///E:/codes/rust_projects/a_da/desktop-ui/src/client/ws-client.ts) 中）：
+1. **客户端方法映射升级**（在 [`desktop-ui/src/client/ws-client.ts`](../../desktop-ui/src/client/ws-client.ts) 中）：
    ```typescript
    // 统一使用网关方法
    public fetchRoots(): Promise<FsRoot[]> {
@@ -413,15 +418,15 @@ flowchart TD
 ```
 
 - **阶段一：网关接口补齐（`agent-gateway`）**
-  - 在 [`crates/agent-gateway/src/relay.rs`](file:///E:/codes/rust_projects/a_da/crates/agent-gateway/src/relay.rs) 增加 `gateway.fs.roots`、`gateway.fs.listDirectory`、`gateway.fs.makeDirectory` 的处理臂；
+  - 在 [`crates/agent-gateway/src/relay.rs`](../../crates/agent-gateway/src/relay.rs) 增加 `gateway.fs.roots`、`gateway.fs.listDirectory`、`gateway.fs.makeDirectory` 的处理臂；
   - 增加历史工作区管理存储 `crates/agent-gateway/src/workspaces.rs`；
   - 编写网关文件系统单元测试（测试路径遍历防护、隐藏文件过滤等）。
 - **阶段二：前端无感切换（`desktop-ui`）**
-  - 在 [`desktop-ui/src/client/ws-client.ts`](file:///E:/codes/rust_projects/a_da/desktop-ui/src/client/ws-client.ts) 中将目录请求改为 `gateway.fs.*`；
+  - 在 [`desktop-ui/src/client/ws-client.ts`](../../desktop-ui/src/client/ws-client.ts) 中将目录请求改为 `gateway.fs.*`；
   - 验证空工作区启动下直接打开 `FilePicker` 选取新目录全流程；
   - 确认浏览器端与桌面端体验 100% 同构无差别。
 - **阶段三：桌面端代码瘦身（`electron`）**
-  - 重构 [`electron/main.ts`](file:///E:/codes/rust_projects/a_da/electron/main.ts)，删除冗余的进程监控与重复的命令处理器；
+  - 重构 [`electron/main.ts`](../../electron/main.ts)，删除冗余的进程监控与重复的命令处理器；
   - 保留干净的窗口基础控制器。
 - **阶段四：门禁集成**
   - 跑通 `bun run typecheck` 与 `cargo test --workspace -- --test-threads=1`；

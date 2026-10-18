@@ -1,4 +1,11 @@
-# 增量状态帧（`evt.state.patch`）与 item 分页 —— 实施计划
+# 增量状态帧（`evt.state.patch`）与 item 分页
+
+> 本文原名 `docs/protocol/state-patch.md`。计划**已落地**（宿主按指纹推增量、客户端合并、
+> `thread.items.page` 分页、卡片顺序双守），现作为**帧与顺序的契约**保留——
+> 特别是末尾那节"`upserted` 按 id 排序，所以定位只能按 `at`"，改状态投影前必读。
+>
+> 相关：[README.md](README.md) §3.2（事件主题总览）、
+> [../architecture/conventions.md](../architecture/conventions.md) §16（加协议方法要同步三处）。
 
 > 背景：一条长会话（实测 **822 个 item / 一帧 1852 KB**；合成负载 **800 item / 3705 KB**）时，
 > `evt.state.snapshot` 是**全量**帧，16ms 一帧（大帧已降到 100ms）→ 每秒几十 MB 的

@@ -1,13 +1,21 @@
 # AGENT BASE 接线收口开发计划（W0–W6）
 
-> **依据**：[docs/agent-base-design.md](agent-base-design.md) v0.2 的不变量表（INV-1…INV-12）、
-> [docs/agent-base-plan.md](agent-base-plan.md) 的里程碑口径、[AGENTS.md](../AGENTS.md) 的三条硬规矩。
+> 本文原名 `docs/agent-base-wiring-plan.md`，文档整理时移入 `plans/` 并改名为 `wiring.md`。
+>
+> ⚠️ **本文是执行记录，不是现状说明**：里面的 `file:line` 证据写于 2026-10 上旬，
+> 其中 `crates/agent-core/**`（已拆成 `agent-node` + `agent-rpc`）、`src-tauri/**`、
+> `archive/ts-legacy/**` 等路径**已不存在**，链接可能指向空处。
+> 查现状请以仓库实际结构 + [`../quality/feature-catalog.md`](../quality/feature-catalog.md) 为准；
+> 其中**仍然生效**的是每条的"处置结论"（补实现 / 删声明）与断言变更记录。
+>
+> **依据**：[docs/architecture/kernel-design.md](../architecture/kernel-design.md) v0.2 的不变量表（INV-1…INV-12）、
+> [docs/plans/milestones.md](milestones.md) 的里程碑口径、[AGENTS.md](../../AGENTS.md) 的三条硬规矩。
 > **触发**：2026-10-09 的代码级缺口审计（全仓 grep + `file:line` 取证 + 实跑门禁）。
-> **与既有文档的关系**：本文**不改写** `agent-base-plan.md` 的历史记录；它只针对"计划声称已完成、
-> 但**运行路径上未接线**"的那批缺口，给出可执行的收口计划。冲突时以本文为准，并回写 `agent-base-plan.md`。
+> **与既有文档的关系**：本文**不改写** `milestones.md` 的历史记录；它只针对"计划声称已完成、
+> 但**运行路径上未接线**"的那批缺口，给出可执行的收口计划。冲突时以本文为准，并回写 `milestones.md`。
 >
 > **状态列取值**：`未开始` / `进行中` / `已完成` / `已放弃（须写理由）`。
-> 每完成一个任务，**必须**同步改本文件的状态列与 [docs/unfinished-features.md](unfinished-features.md)。
+> 每完成一个任务，**必须**同步改本文件的状态列与 [docs/quality/unfinished-features.md](../quality/unfinished-features.md)。
 
 ---
 
@@ -28,9 +36,9 @@
 
 | # | 事实 | 证据 |
 |---|---|---|
-| A | **产品入口不起基座引擎** | [products/ada-coding/src/main.rs:75](../products/ada-coding/src/main.rs#L75) 只 `WsHostServer::bind`；`AgentSpec` 仅在 `#[cfg(test)]`（[:121-137](../products/ada-coding/src/main.rs#L121-L137)） |
-| B | **真实路径跑 legacy 循环** | [dispatch.rs:534](../crates/agent-core/src/server/dispatch.rs#L534)、[:1476](../crates/agent-core/src/server/dispatch.rs#L1476)、[:1562](../crates/agent-core/src/server/dispatch.rs#L1562) 调 [agent_loop.rs:39](../crates/agent-core/src/runner/agent_loop.rs#L39) 的 `run_agent_loop` |
-| C | **`AgentRuntime` 只在测试与演示品里跑** | 调用者 = 自身单测 + [inv1](../crates/agent-conformance/src/invariants/inv1_single_engine.rs#L47)/[inv2](../crates/agent-conformance/src/invariants/inv2_no_global_state.rs#L80)/[inv8](../crates/agent-conformance/src/invariants/inv8_cancellation_penetration.rs#L57) + [ada-skeleton](../products/ada-skeleton/src/main.rs#L66)（`ScriptedModelClient`） |
+| A | **产品入口不起基座引擎** | [products/ada-coding/src/main.rs:75](../../products/ada-coding/src/main.rs#L75) 只 `WsHostServer::bind`；`AgentSpec` 仅在 `#[cfg(test)]`（[:121-137](../../products/ada-coding/src/main.rs#L121-L137)） |
+| B | **真实路径跑 legacy 循环** | [dispatch.rs:534](../../crates/agent-core/src/server/dispatch.rs#L534)、[:1476](../../crates/agent-core/src/server/dispatch.rs#L1476)、[:1562](../../crates/agent-core/src/server/dispatch.rs#L1562) 调 [agent_loop.rs:39](../../crates/agent-core/src/runner/agent_loop.rs#L39) 的 `run_agent_loop` |
+| C | **`AgentRuntime` 只在测试与演示品里跑** | 调用者 = 自身单测 + [inv1](../../crates/agent-conformance/src/invariants/inv1_single_engine.rs#L47)/[inv2](../../crates/agent-conformance/src/invariants/inv2_no_global_state.rs#L80)/[inv8](../../crates/agent-conformance/src/invariants/inv8_cancellation_penetration.rs#L57) + [ada-skeleton](../../products/ada-skeleton/src/main.rs#L66)（`ScriptedModelClient`） |
 
 由此，**INV-1「单一引擎」在运行时是两份实现并存**。`verify-archive` 的"引擎入口恰好一处"
 断言查的是 `fn run_agent_loop` 这个 legacy 符号，所以它绿了也不代表新引擎在跑。
@@ -77,31 +85,31 @@ bun run typecheck
 |---|---|---|---|
 | P0-1 | 产品运行路径仍是 legacy 引擎；`AgentRuntime` 只被测试用 | 事实 A/B/C | **✅ W3 完成**：legacy 主循环已删除，产品运行时**只跑** `AgentRuntime::run_turn`；`verify-archive` 断言主干无 `fn run_agent_loop` |
 | P0-2 | 6 个端口**无生产实现**（Scope/SessionStore/ApprovalGate/EventSink/PromptSource/CancelToken） | `impl … for` 只有 Clock/AppHome/ModelClient/ToolCatalog | **W1 ✅ 已清零（10/10 端口有生产实现）** |
-| P0-3 | 审批闸门在真实路径**不存在**；三档策略无消费者 | [guard.rs:43](../crates/agent-core/src/approval/guard.rs#L43) 唯一调用者在 [mod.rs:23-92](../crates/agent-core/src/approval/mod.rs#L23-L92) `#[cfg(test)]`；[manager.rs:18](../crates/agent-core/src/approval/manager.rs#L18) `register_waiter` 无生产调用点；`ApprovalMode` 只写不读 | W1-T6 ✅（实现+契约）/ **W3-T2 ✅ 执行侧已接入真引擎**（`EngineInjection` 强制共用 waiter 表，UI 的批准能落到闸门）/ **⚠️ 界面提示通道属 W3-T3**（见 P1-14） |
-| P0-4 | 取消链到子进程/子智能体全断（含**假接线**） | [command/run.rs:83-86](../crates/agent-toolkit/src/command/run.rs#L83-L86) `abort_tx` 只在执行前发一次；[executor.rs:149](../crates/agent-core/src/runner/executor.rs#L149) 传 `None`；[:189](../crates/agent-core/src/runner/executor.rs#L189) `abort_rx: None` | **✅ W4 完成**：主循环侧 W4-T1/T2/T4（执行中取消真杀进程树 + 状态结构化 + INV-8 强化）；子智能体侧 W4-T3/T6（取消连穿三层：父会话 → 子智能体引擎 → 命令进程树） |
+| P0-3 | 审批闸门在真实路径**不存在**；三档策略无消费者 | [guard.rs:43](../../crates/agent-core/src/approval/guard.rs#L43) 唯一调用者在 [mod.rs:23-92](../../crates/agent-core/src/approval/mod.rs#L23-L92) `#[cfg(test)]`；[manager.rs:18](../../crates/agent-core/src/approval/manager.rs#L18) `register_waiter` 无生产调用点；`ApprovalMode` 只写不读 | W1-T6 ✅（实现+契约）/ **W3-T2 ✅ 执行侧已接入真引擎**（`EngineInjection` 强制共用 waiter 表，UI 的批准能落到闸门）/ **⚠️ 界面提示通道属 W3-T3**（见 P1-14） |
+| P0-4 | 取消链到子进程/子智能体全断（含**假接线**） | [command/run.rs:83-86](../../crates/agent-toolkit/src/command/run.rs#L83-L86) `abort_tx` 只在执行前发一次；[executor.rs:149](../../crates/agent-core/src/runner/executor.rs#L149) 传 `None`；[:189](../../crates/agent-core/src/runner/executor.rs#L189) `abort_rx: None` | **✅ W4 完成**：主循环侧 W4-T1/T2/T4（执行中取消真杀进程树 + 状态结构化 + INV-8 强化）；子智能体侧 W4-T3/T6（取消连穿三层：父会话 → 子智能体引擎 → 命令进程树） |
 | P0-5 | 三个工具包工厂零调用者 → 13 个 `Tool` 实现是死代码 | `fs/mod.rs:20` / `core/mod.rs:13` / `command/mod.rs:10` | **W2-T1 ✅ 已接线**（`toolkits.rs` 真源 + `ProductBuilder::with_declared_toolkits`） |
-| P1-1 | **第 6 张硬编码名单**：`PLUGIN_BUILTIN_CATALOG` 与真源不符 | [dispatch.rs:898-922](../crates/agent-core/src/server/dispatch.rs#L898-L922) 写死 21 个（广告 12 个不存在、漏 13 个真实） | **W2-T5 ✅ 已消除**（改为注册表投影；结构断言 + 行为断言双守门） |
+| P1-1 | **第 6 张硬编码名单**：`PLUGIN_BUILTIN_CATALOG` 与真源不符 | [dispatch.rs:898-922](../../crates/agent-core/src/server/dispatch.rs#L898-L922) 写死 21 个（广告 12 个不存在、漏 13 个真实） | **W2-T5 ✅ 已消除**（改为注册表投影；结构断言 + 行为断言双守门） |
 | P1-2 | 2 个孤儿协议方法 + 无覆盖性守门测试 | `WORKSPACE_SET` / `CONFIG_UPDATE` 无 dispatch 臂（grep 已证） | **W5-T2 ✅ 已处置**（两者**无实现、前端也从未调用** → 按 R3 删声明：`spec/proto` + `methods.rs` + `client-ts` 三处同步；覆盖性守门由 W0-T3 提供） |
-| P1-3 | 插件钩子**整套 25 点位 0 接线**；8 个能力开关无消费者 | `hooks: false`（[dto.rs:79](../crates/agent-proto/src/dto.rs#L79)）；`approval-guard` 插件 [builtins.rs:66-71](../crates/agent-core/src/plugins/builtins.rs#L66-L71) `tools: &[]` | W5-T5（先如实降级）+ 附录 B |
+| P1-3 | 插件钩子**整套 25 点位 0 接线**；8 个能力开关无消费者 | `hooks: false`（[dto.rs:79](../../crates/agent-proto/src/dto.rs#L79)）；`approval-guard` 插件 [builtins.rs:66-71](../../crates/agent-core/src/plugins/builtins.rs#L66-L71) `tools: &[]` | W5-T5（先如实降级）+ 附录 B |
 | P1-4 | 子智能体白名单硬编码，含 8 个不存在的工具名；`NEVER_FOR_SUBAGENT` 5 个里 4 个是幽灵 | `subagents/builtins.rs`、`subagents/runner.rs:28-34` | **W2-T6 ✅ 已修复**（删幽灵名 + 新增"名字必须真实存在"守门断言） |
 | P1-5 | 插件 `is_write` 三处残留；第三方写工具被当只读 | `plugins/types.rs:44`；`plugins/builtins.rs:10`；`plugins/manager.rs:363` | **W2-T7 ✅ 已修复**（死字段删除；第三方改为按描述符派生、未知失败安全当写） |
 | P1-6 | `run_background` / `read_url_content` 有描述符无执行器（`todo`/`finish` 已由 W2-T1 转绿） | `registry.rs:95/205` | **W2-T3 ✅ 已处置**（后台任务族补实现；`read_url_content` 删声明并登记 M6） |
-| P1-7 | `AgentSpec` 的 `toolkits`/`capabilities`/`identity` 解析后无人读 | [builder.rs:113-117](../crates/agent-runtime/src/builder.rs#L113-L117) 只用 `policies` | **W5-T4 ✅ 已修复**（`toolkits`→工具装配 + 子智能体装配；`identity`→系统提示词；`capabilities.subagents`→是否装配委派工具；`capabilities.images`→是否接受图片输入。`verify-spec` 已全绿） |
-| P1-8 | `xtask verify-spec` / `compat` / `gen` 三个子命令**不存在**；golden 夹具 / `spec/proto/README.md` / `docs/protocol/*.md` 缺失 | [xtask/main.rs:15-35](../tools/xtask/src/main.rs#L15-L35)；`crates/agent-conformance/golden/` 不存在 | W0-T1/T2 + W3-T5 + W5-T1/T3 |
+| P1-7 | `AgentSpec` 的 `toolkits`/`capabilities`/`identity` 解析后无人读 | [builder.rs:113-117](../../crates/agent-runtime/src/builder.rs#L113-L117) 只用 `policies` | **W5-T4 ✅ 已修复**（`toolkits`→工具装配 + 子智能体装配；`identity`→系统提示词；`capabilities.subagents`→是否装配委派工具；`capabilities.images`→是否接受图片输入。`verify-spec` 已全绿） |
+| P1-8 | `xtask verify-spec` / `compat` / `gen` 三个子命令**不存在**；golden 夹具 / `spec/proto/README.md` / `docs/protocol/*.md` 缺失 | [xtask/main.rs:15-35](../../tools/xtask/src/main.rs#L15-L35)；`crates/agent-conformance/golden/` 不存在 | W0-T1/T2 + W3-T5 + W5-T1/T3 |
 | P1-9 | **toolkit 声明与实现不一致**：`ada-coding` 声明 `patch` 但 `crates/agent-toolkit/src` 下无该模块；`decision` 有模块却未在任何 spec 里声明 | W0-T1 实测（`cargo xtask verify-spec` 第 1 条违约） | **W2-T1 ✅ 已修复**（`patch` 删声明、`decision` 补声明、判定改查 `TOOLKIT_NAMES` 真源） |
 | P1-10 | **插件工具不是一等 `Tool`**：`git_*` / `project_inspect` / `code_outline` / `run_tests` 的实现只存在于 `execute_builtin_plugin_tool` 的字符串分派里，虽有 `ToolDescriptor` 却进不了 catalog | W2-T2 实测（7 个描述符只靠 legacy 分派才算"可达"） | **W2-T2 ✅ 已修复**（逻辑搬进 `agent-toolkit::plugin_tools` + `git`/`project` 工具包；legacy 侧改为委派） |
 | P1-11 | 🔴 **`code_outline` 静默失效**：它用 `starts_with("pub fn ")` 匹配 `read_file` 的输出，而后者每行都带「行号 + 竖线 + 空格」前缀 → **永远提取不到任何签名**，每次都返回"未提取到显著大纲" | W2-T2 搬运时补单测才暴露 | **W2-T2 ✅ 已修复**（剥掉行号前缀；`test_code_outline_extracts_rust_signatures` 钉住） |
-| P1-12 | 🔴 **引擎步数预算 off-by-one**：`max_steps=1` 报 `steps_taken=2`——被预算拒绝的那次尝试也算进了"已执行步数" | [runtime.rs:137-144](../crates/agent-base/src/engine/runtime.rs#L137-L144) 先自增后判断 | **W3-T5 ✅ 已修复**（先判预算后自增；补 `steps_taken == 1` 断言） |
+| P1-12 | 🔴 **引擎步数预算 off-by-one**：`max_steps=1` 报 `steps_taken=2`——被预算拒绝的那次尝试也算进了"已执行步数" | [runtime.rs:137-144](../../crates/agent-base/src/engine/runtime.rs#L137-L144) 先自增后判断 | **W3-T5 ✅ 已修复**（先判预算后自增；补 `steps_taken == 1` 断言） |
 | P1-13 | 🔴 **`provider.delete` 用例偶发红**：删共享配置里的 `providers[0]`，当列表只剩 1 个时按规则被拒 | `agent-core/src/lib.rs` 的 `test_dispatcher_provider_management` | **W3-T5 ✅ 已修复**（改为自造专用供应商再删；连跑 3 次 + 全量跑 2 次稳定绿） |
-| P1-14 | 🔴 **新引擎的审批提示没有界面通道**：引擎会发 `ApprovalRequested` 领域事件，但 legacy 事件集（`AgentLoopEvent`）**没有对应变体**，桥接时被丢弃 → 走 `A_DA_ENGINE=runtime` 且处于"询问档"时，工具调用会**静默等满 300s 超时**，界面不显示任何批准按钮 | W3-T2 实测（[engine_bridge.rs](../crates/agent-core/src/runner/engine_bridge.rs) 的差集分支） | **W3-T3 ✅ 已修复**（新增 `AgentLoopEvent::ApprovalRequested` + `store.set_tool_waiting_approval`；端到端断言：审批请求到达界面通道且批准后闸门被唤醒） |
+| P1-14 | 🔴 **新引擎的审批提示没有界面通道**：引擎会发 `ApprovalRequested` 领域事件，但 legacy 事件集（`AgentLoopEvent`）**没有对应变体**，桥接时被丢弃 → 走 `A_DA_ENGINE=runtime` 且处于"询问档"时，工具调用会**静默等满 300s 超时**，界面不显示任何批准按钮 | W3-T2 实测（[engine_bridge.rs](../../crates/agent-core/src/runner/engine_bridge.rs) 的差集分支） | **W3-T3 ✅ 已修复**（新增 `AgentLoopEvent::ApprovalRequested` + `store.set_tool_waiting_approval`；端到端断言：审批请求到达界面通道且批准后闸门被唤醒） |
 | P1-15 | 🔴 **子智能体委派能力随 legacy 消失**：`invoke_subagent` 只在 legacy 字符串分派里，新引擎的 catalog **没有**它 → 主循环再也无法委派子智能体 | W3-T4 删除时实测（`executor.rs` 的 `invoke_subagent` 分支被删） | **W4-T5 ✅ 已修复**（描述符进注册表 + `agent-core` 的 `impl Tool` + `agent-host` 按 `capabilities.subagents` 注入 catalog；产品冒烟：24 个工具） |
 | P1-16 | 🔴 **第二份多轮引擎**：`subagents/runner.rs` 的独立多轮循环 + legacy `execute_tool_call`；INV-1 在子智能体侧仍未成立 | W3-T4 测绘时发现（删 `run_agent_loop` 后它成了唯一残留） | **W4-T6 ✅ 已修复**（并入 `AgentRuntime::run_turn`；隔离性由 5 个端口实现保证；`verify-archive` 增断言"主干不存在第二份多轮引擎"） |
 | P2-1 | 3 个 dispatch 桩：`SUBAGENT_RESUME` / `STATS_PROMPT_CHARS` / `WORKSPACE_RESCAN` | dispatch.rs 三处桩 | **✅ W6-T1/T2 已处置**：`subagent.resume` 删声明（前端"恢复执行"死按钮一并删）；`workspace.rescan` 删声明；`stats.promptChars` **真实现**（实测提示词与工具规格字符数，不再返回 1200/800） |
-| P2-2 | CLI `a-da run` 未实现 | [src-tauri/src/main.rs:239-248](../src-tauri/src/main.rs#L239-L248) | W6-T3 |
+| P2-2 | CLI `a-da run` 未实现 | [src-tauri/src/main.rs:239-248](../../src-tauri/src/main.rs#L239-L248) | W6-T3 |
 | P2-3 | 三处 `revert_*` 返回值被丢弃；`THREAD_EDIT_AND_RESEND` 吞错 + 丢事件流 + 不可 abort | dispatch.rs 三处 revert + resend 臂 | **✅ W6-T4 已修复**：回执带回恢复/删除清单；resend 与 `thread.start` 共用**同一条执行泵**（事件写 store + 广播、错误进 `Error` 事件、`abort_tx` 注册可停） |
 | P2-4 | 合规套件两处空壳（INV-7 空函数、`ports/model.rs` 自比）；"8 端口"名不副实 | `inv7:5-8`；`ports/model.rs:43-44` | W6-T5 |
 | P2-5 | 前端重连无退避/无上限/竞态；`onclose` 不清 `pendingRequests` | `desktop-ui/src/client/ws-client.ts:290-312` | W6-T6 |
-| P2-6 | README 正文仍是 TS/GPUIX 时代；`unfinished-features.md` / `feature-catalog.md` 过期 | README 656 行 + 另两份文档共 60 条归档引用 | **✅ W6-T7 已修复**：三份文档按当前实现重写，`verify-docs` **60 → 0** |
+| P2-6 | README 正文仍是 TS/GPUIX 时代；`../quality/unfinished-features.md` / `../quality/feature-catalog.md` 过期 | README 656 行 + 另两份文档共 60 条归档引用 | **✅ W6-T7 已修复**：三份文档按当前实现重写，`verify-docs` **60 → 0** |
 | **P0-6** | 🔴 **`ask_user` 在新引擎上不可用**：工具在 catalog 里、UI 卡片组件也在，但链路永远不触发 | `AskUserTool::execute` 直接返回错误（`agent-toolkit/src/core/ask_user.rs`）；`AgentEventBody::QuestionAsked` **全仓无发射者**；唯一会注册 waiter 的 legacy `execute_ask_user` 已随 S1 删除 | **S1a**（提问端口化 + 真实现；门禁已用 `UNEMITTED_EVENT_ALLOW` 钉住） |
 | **P1-17** | 🔴 **子智能体生命周期未上报**：`SubagentStarted` / `SubagentFinished` 定义了却无发射者，`engine_bridge` 把两者映射为 `None` | `crates/agent-base/src/domain/event.rs:32-33`；`engine_bridge.rs:94-95`；进度通道 `SubagentStepUpdate` 在 `InvokeSubagentTool` 里被置 `None`（`subagents/tool.rs:167`） | **S6**（交互平台一并解决：进度/生命周期上报是 agent 间交互的一部分） |
 | P2-7 | `runner/` 遗留 991 行死代码，被 `pub use` 遮蔽 `dead_code` 检测 | `runner/{builtin_tools,executor,prompt}.rs` = 436+253+302 行 | **✅ S1 已删除** + 防复活断言（`test_legacy_runner_residue_must_not_come_back`） |
@@ -133,7 +141,7 @@ bun run typecheck
 
 ### R3 补实现或删声明（二选一，不许留半吊子）
 每个缺口只能有两种终局：**真实现**，或**从声明里删除**（并从能力位如实降级）。
-"声明留着、实现空着、测试绕开"是禁止状态。参照 [agent-base-plan.md §1.3](agent-base-plan.md) 的处置表口径。
+"声明留着、实现空着、测试绕开"是禁止状态。参照 [milestones.md §1.3](milestones.md) 的处置表口径。
 
 ### R4 不许放宽断言
 合规套件与 conformance 的断言**只允许加强**。确需放宽（例如语义确实变了）必须：
@@ -147,7 +155,7 @@ bun run typecheck
 
 ### R6 搬运用兼容 shim，调用点不动
 把实现从 `agent-core` 搬去 `agent-adapter` 时，**必须**在原位置留 `pub use` 兼容 shim
-（沿用 [agent-core/src/tools/mod.rs](../crates/agent-core/src/tools/mod.rs) 的既有模式），
+（沿用 [agent-core/src/tools/mod.rs](../../crates/agent-core/src/tools/mod.rs) 的既有模式），
 让调用点零改动。shim 的删除单独排一个任务，**且必须在所有调用点迁移完成后**。
 
 ### R7 前端零改动（事件与负载兼容）
@@ -163,7 +171,7 @@ W3 切引擎时**前端 `desktop-ui` 不许改**（除 W6-T6 明确列出的重�
 一个提交里出现两个任务 ID 说明拆分失败。
 
 ### R10 完成即登记
-任务完成时**同一个提交**里更新：本文件状态列、[unfinished-features.md](unfinished-features.md) 对应条目。
+任务完成时**同一个提交**里更新：本文件状态列、[../quality/unfinished-features.md](../quality/unfinished-features.md) 对应条目。
 "改完功能不更新文档"视为未完成。
 
 ---
@@ -237,7 +245,7 @@ W3 切引擎时**前端 `desktop-ui` 不许改**（除 W6-T6 明确列出的重�
 - ⚠️ **防抓错**：`crates/ts-engine/src/sandbox/mod.rs:83` 有一个**同名**函数，那是插件运行时的沙箱，
   与工作区作用域无关。W1-T1 只复用 `agent-toolkit` 那一个。
 - 产出：`crates/agent-adapter/src/scope/workspace.rs`；`id()` = 规范化后的工作区路径。
-- 守门：conformance 补 `verify_scope_contract` 对**真实** `WorkspaceScope` 跑（当前 [ports/scope.rs](crates/agent-conformance/src/ports/scope.rs) 只测 double）；
+- 守门：conformance 补 `verify_scope_contract` 对**真实** `WorkspaceScope` 跑（当前 [ports/scope.rs](../../crates/agent-conformance/src/ports/scope.rs) 只测 double）；
   必须覆盖 `..` 穿越、工作区内 symlink 指向外部、Windows junction 三种越界。
 
 **W1-T2a / W1-T2b `FsSessionStore`（搬运 + 实现，必须分两个提交）**
@@ -246,7 +254,7 @@ W3 切引擎时**前端 `desktop-ui` 不许改**（除 W6-T6 明确列出的重�
     原位置留 `pub use` shim（**R6**），调用点零改动。`agent_core::session::types` 已 re-export 领域类型，
     搬运后 `AgentMessage` 仍只有一份（✅ 已确认，[types.rs:11](crates/agent-core/src/session/types.rs)）。
   - **W1-T2b 实现**：`FsSessionStore` 实现 `SessionStore`；`thread_id` ↔ `(workspace, session_id)` 的映射
-    在适配器内部解决（端口签名只有 `thread_id`，[store.rs:11-21](crates/agent-base/src/ports/store.rs)）。
+    在适配器内部解决（端口签名只有 `thread_id`，[store.rs:11-21](../../crates/agent-base/src/ports/store.rs)）。
 - 守门：conformance `verify_session_store_contract` 对**真实** `FsSessionStore` 跑 append→load 往返等价
   （当前只测 `InMemorySessionStore`），并补"旧蛇形键会话文件仍可加载"的兼容用例。
 
@@ -264,7 +272,7 @@ W3 切引擎时**前端 `desktop-ui` 不许改**（除 W6-T6 明确列出的重�
 - 守门：conformance 补 `verify_cancel_contract`（当前**完全没有** CancelToken 套件）。
 
 **W1-T5 `WsEventSink`**
-- 把 `AgentEvent`（[domain/event.rs](crates/agent-base/src/domain/event.rs)）接到现有快照/广播通道
+- 把 `AgentEvent`（[domain/event.rs](../../crates/agent-base/src/domain/event.rs)）接到现有快照/广播通道
   （`agent-core/src/server/emitter.rs`），保证 `seq` 单调（INV-6）。
 - 守门：conformance 补 `verify_event_sink_contract` 对**真实** sink 跑；断言 `seq` 严格递增 + `TurnStarted/TurnFinished` 成对。
 
@@ -278,10 +286,10 @@ W3 切引擎时**前端 `desktop-ui` 不许改**（除 W6-T6 明确列出的重�
     命中策略时 `register_waiter(call_id)` → emit `ApprovalRequested` → 等 `approval.decide` →
     `ApprovalOutcome { approved, by: AnsweredBy::{User,Policy,Timeout,Aborted} }`。
 - 必须同时修的三件事（否则仍是半吊子）：
-  1. `ApprovalRequest.mode` 现在被 [runtime.rs:353](crates/agent-base/src/engine/runtime.rs#L353) **硬编码成 `"auto"`** → 改为从 gate 取真实档位；
-  2. [runtime.rs:335](crates/agent-base/src/engine/runtime.rs#L335) 的 `ApprovalPolicy::Named(_) => true` 是"名字当永远要问" → 改为**解析命名策略**（`Named("approval-guard")` → 调策略函数）；
+  1. `ApprovalRequest.mode` 现在被 [runtime.rs:353](../../crates/agent-base/src/engine/runtime.rs#L353) **硬编码成 `"auto"`** → 改为从 gate 取真实档位；
+  2. [runtime.rs:335](../../crates/agent-base/src/engine/runtime.rs#L335) 的 `ApprovalPolicy::Named(_) => true` 是"名字当永远要问" → 改为**解析命名策略**（`Named("approval-guard")` → 调策略函数）；
   3. `AnsweredBy::Timeout` / `Aborted` 必须有真实来源（超时与取消分支），不能只写常量。
-- 守门：conformance `ports/approval.rs` 的契约对**真实 gate** 跑（当前只对 `RecordingApprovalGate` double 跑，[approval.rs:46-52](crates/agent-conformance/src/ports/approval.rs)）；
+- 守门：conformance `ports/approval.rs` 的契约对**真实 gate** 跑（当前只对 `RecordingApprovalGate` double 跑，[approval.rs:46-52](../../crates/agent-conformance/src/ports/approval.rs)）；
   新增"三档模式 × 读写工具"矩阵用例；新增"前端答复如实标 `AnsweredBy::User`"用例。
 
 | ID | 任务 | write scope | 守门测试 | 依赖 | 人日 | 状态 |
@@ -307,9 +315,9 @@ W3 切引擎时**前端 `desktop-ui` 不许改**（除 W6-T6 明确列出的重�
 |---|---|---|---|---|---|---|---|
 | W2-T1 | 工具包**真源**（名字→工具） + 三包工厂接线进 `CompositeToolCatalog` | 工厂 `fs_tools()`/`core_tools()`/`command_tools()` 零调用者 | `crates/agent-toolkit/src/toolkits.rs`（新）、`decision/mod.rs`、`crates/agent-runtime/src/builder.rs`、`products/*/agent.spec.json` | `verify-wiring` 可达 18→20；`verify-spec` 7→4；骨架产品端到端装配 | W1 | 3 | ✅ 已完成 |
 | W2-T2 | 内置插件工具改 `Tool` 并进 catalog | `execute_builtin_plugin_tool` 是字符串分派 | `crates/agent-toolkit/src/plugin_tools.rs`（新）、`toolkits.rs`、`crates/agent-core/src/runner/builtin_tools.rs` | 23/23 描述符来自工具包工厂；产品级装配断言 | W2-T1 | 2 | ✅ 已完成 |
-| W2-T3 | `run_background` / `read_url_content` **补实现或删声明**（R3 二选一，先出结论再动手） | [registry.rs:95](../crates/agent-toolkit/src/registry.rs#L95) / [:205](../crates/agent-toolkit/src/registry.rs#L205) 无执行器 | `crates/agent-toolkit/src/background.rs`（新）、`registry.rs`、`command/mod.rs` | `verify-wiring` 不可达 2 → **0** | W2-T1 | 1.5 | ✅ 已完成 |
+| W2-T3 | `run_background` / `read_url_content` **补实现或删声明**（R3 二选一，先出结论再动手） | [registry.rs:95](../../crates/agent-toolkit/src/registry.rs#L95) / [:205](../../crates/agent-toolkit/src/registry.rs#L205) 无执行器 | `crates/agent-toolkit/src/background.rs`（新）、`registry.rs`、`command/mod.rs` | `verify-wiring` 不可达 2 → **0** | W2-T1 | 1.5 | ✅ 已完成 |
 | W2-T4 | `inspect_project` 别名可见性 | 别名不在任何插件清单，模型看不到 | — | **✅ 已由 W2-T2 覆盖**（它现在是 `project` 工具包里的真实 `Tool`，与 `project_inspect` 同一实现、各有注册表描述符） | W2-T2 | 0.5 | ✅ 已完成 |
-| W2-T5 | **消除第 6 张名单**：`PLUGIN_BUILTIN_CATALOG` 改为从 registry 派生 | [dispatch.rs:898-922](../crates/agent-core/src/server/dispatch.rs#L898-L922) 写死 21 个 | `crates/agent-core/src/server/dispatch.rs`、`tools/xtask/src/gates.rs` | 结构断言（派生 + 无内联字面量）+ 行为断言（逐名相等） | W2-T1 | 1 | ✅ 已完成 |
+| W2-T5 | **消除第 6 张名单**：`PLUGIN_BUILTIN_CATALOG` 改为从 registry 派生 | [dispatch.rs:898-922](../../crates/agent-core/src/server/dispatch.rs#L898-L922) 写死 21 个 | `crates/agent-core/src/server/dispatch.rs`、`tools/xtask/src/gates.rs` | 结构断言（派生 + 无内联字面量）+ 行为断言（逐名相等） | W2-T1 | 1 | ✅ 已完成 |
 | W2-T6 | 子智能体白名单/黑名单清理：删掉 8 个幽灵工具名 | `subagents/builtins.rs`；`NEVER_FOR_SUBAGENT` 5 个里 4 个是幽灵 | `crates/agent-core/src/subagents/**` | 新增断言：名单里的名字必须真实存在（注册表 ∪ legacy 显式名单） | W2-T1 | 1 | ✅ 已完成 |
 | W2-T7 | 插件 `is_write` 清理：字段由 descriptor 派生，第三方插件不再恒 `false` | `plugins/types.rs:44`；`builtins.rs:10` 死数据；`manager.rs:363` 硬编码 | `crates/agent-core/src/plugins/**` | 新增断言：未知工具 `is_write == true`（失败安全）+ 内置插件与描述符一致 | W2-T1 | 0.5 | ✅ 已完成 |
 
@@ -328,8 +336,8 @@ W3 切引擎时**前端 `desktop-ui` 不许改**（除 W6-T6 明确列出的重�
 | ID | 任务 | 现状证据 | 产出（write scope） | 守门测试 | 依赖 | 人日 | 状态 |
 |---|---|---|---|---|---|---|---|
 | W3-T1 | `agent-host`：`run_from_spec(spec)` 装配真实端口 + ws 传输挂钩 | 设计 §9 要求 `agent-host`；当前不存在 | `crates/agent-host/**`（新建）、workspace `Cargo.toml`、`products/ada-skeleton/**` | 单测：从 spec 到 `AgentRuntime` 全链路；骨架产品端到端走宿主层 | W1、W2 | 3 | ✅ 已完成 |
-| W3-T2 | 3 处 `run_agent_loop` 调用点切到 `AgentRuntime::run_turn`（**先加开关**） | [dispatch.rs:534](../crates/agent-core/src/server/dispatch.rs#L534)/[:1476](../crates/agent-core/src/server/dispatch.rs#L1476)/[:1562](../crates/agent-core/src/server/dispatch.rs#L1562) | `crates/agent-core/src/runner/engine_bridge.rs`（新）、`server/dispatch.rs`、`server/ws.rs`、`crates/agent-adapter/src/cancel.rs`、`products/ada-coding/**` | 选择矩阵（含降级）+ **真引擎实跑**集成断言 + 产品冒烟 | W3-T1 | 3 | ✅ 已完成（默认仍 legacy，见 P1-14） |
-| W3-T3 | 事件投影：`AgentEvent` → 现有 UI 事件/快照（**前端零改动**，R7） | legacy `AgentLoopEvent` 与领域事件形状不同（[agent_loop.rs:17-36](../crates/agent-core/src/runner/agent_loop.rs#L17-L36)） | `crates/agent-core/src/runner/engine_bridge.rs`、`server/dispatch.rs`、`state/store.rs` | 投影表**覆盖全部 12 种领域事件**；审批通道端到端；`desktop-ui` 无 diff | W3-T2 | 2 | ✅ 已完成 |
+| W3-T2 | 3 处 `run_agent_loop` 调用点切到 `AgentRuntime::run_turn`（**先加开关**） | [dispatch.rs:534](../../crates/agent-core/src/server/dispatch.rs#L534)/[:1476](../../crates/agent-core/src/server/dispatch.rs#L1476)/[:1562](../../crates/agent-core/src/server/dispatch.rs#L1562) | `crates/agent-core/src/runner/engine_bridge.rs`（新）、`server/dispatch.rs`、`server/ws.rs`、`crates/agent-adapter/src/cancel.rs`、`products/ada-coding/**` | 选择矩阵（含降级）+ **真引擎实跑**集成断言 + 产品冒烟 | W3-T1 | 3 | ✅ 已完成（默认仍 legacy，见 P1-14） |
+| W3-T3 | 事件投影：`AgentEvent` → 现有 UI 事件/快照（**前端零改动**，R7） | legacy `AgentLoopEvent` 与领域事件形状不同（[agent_loop.rs:17-36](../../crates/agent-core/src/runner/agent_loop.rs#L17-L36)） | `crates/agent-core/src/runner/engine_bridge.rs`、`server/dispatch.rs`、`state/store.rs` | 投影表**覆盖全部 12 种领域事件**；审批通道端到端；`desktop-ui` 无 diff | W3-T2 | 2 | ✅ 已完成 |
 | W3-T4 | **删除 legacy**：`run_agent_loop`、`executor::execute_tool_call_extended`、legacy 工具分派 | 事实 B | `crates/agent-core/src/runner/**`、`server/dispatch.rs`、`server/ws.rs`、`src-tauri/**`、`tools/verify-archive.ts` | `verify-archive`：主干**无** `fn run_agent_loop`；无引擎注入 = 硬失败 | W3-T2/T3 | 2 | ✅ 已完成 |
 | W3-T5 | **golden 回放夹具**（M0-T3 补课）：脚本化模型 → 冻结事件序列 JSON | `crates/agent-conformance/golden/` 不存在 | `crates/agent-conformance/golden/**`、`crates/agent-conformance/src/golden.rs`（新） | 夹具跑通且与冻结产物逐字段相等；篡改期望必须被检出 | W3-T1 | 1.5 | ✅ 已完成 |
 | W3-T6 | 握手能力位与产品身份**从声明派生**（不再硬编码） | `session.initialize` 回 `ServerCapabilities::default()` + 硬编码的 `ada-coding` 产品信息 | `crates/agent-core/src/server/dispatch.rs`、`crates/agent-host/src/lib.rs`、`products/ada-coding/src/main.rs` | 断言：声明 `rollback=false`/无 `plugins` 的产品 → 握手回 `false`（default 是 `true`，两者结果不同）；产品 id/name/archetype 来自声明 | W3-T1 | 1 | ✅ 已完成 |
@@ -362,10 +370,10 @@ W4-T4 强化 INV-8 断言；**W4-T5/T6 是 W3-T4 的欠账**（委派能力 + �
 
 | ID | 任务 | 现状证据 | 产出（write scope） | 守门测试 | 依赖 | 人日 | 状态 |
 |---|---|---|---|---|---|---|---|
-| W4-T1 | **修假接线**：`RunCommandTool` 把 `CancelToken` 接到 `abort_tx`（执行中轮询转发） | [command/run.rs:83-86](../crates/agent-toolkit/src/command/run.rs#L83-L86)：只在"已取消"时发一次，而那之前已 return → **死代码**；[cmd_tools.rs](../crates/agent-toolkit/src/cmd_tools.rs) 的 abort 分支因此不可达 | `crates/agent-toolkit/src/command/run.rs` | 断言：执行中翻转取消 → 命令被真的杀掉且**立刻**返回 | W1-T4 | 1 | ✅ 已完成 |
-| W4-T2 | 状态判定改为结构化，不再靠输出子串猜 `"取消"`/`"超时"` | [run.rs:102-110](../crates/agent-toolkit/src/command/run.rs#L102-L110) | `crates/agent-toolkit/src/{fs_tools,cmd_tools,command/run}.rs` | 断言：输出含 `aborted` 的**成功**命令仍判 `Success` | W4-T1 | 1 | ✅ 已完成 |
+| W4-T1 | **修假接线**：`RunCommandTool` 把 `CancelToken` 接到 `abort_tx`（执行中轮询转发） | [command/run.rs:83-86](../../crates/agent-toolkit/src/command/run.rs#L83-L86)：只在"已取消"时发一次，而那之前已 return → **死代码**；[cmd_tools.rs](../../crates/agent-toolkit/src/cmd_tools.rs) 的 abort 分支因此不可达 | `crates/agent-toolkit/src/command/run.rs` | 断言：执行中翻转取消 → 命令被真的杀掉且**立刻**返回 | W1-T4 | 1 | ✅ 已完成 |
+| W4-T2 | 状态判定改为结构化，不再靠输出子串猜 `"取消"`/`"超时"` | [run.rs:102-110](../../crates/agent-toolkit/src/command/run.rs#L102-L110) | `crates/agent-toolkit/src/{fs_tools,cmd_tools,command/run}.rs` | 断言：输出含 `aborted` 的**成功**命令仍判 `Success` | W4-T1 | 1 | ✅ 已完成 |
 | W4-T3 | 子智能体取消透传（`cancel.child_token()` → 子体执行循环内检查） | legacy 侧 `abort_rx: None`；子体循环不检查取消 | `crates/agent-core/src/subagents/tool.rs`、`runner.rs` | 断言：取消后子智能体停止产出且报告取消（连穿三层） | W4-T1 | 1 | ✅ 已完成 |
-| W4-T4 | **强化 INV-8 断言**：从"启动前已取消"改为"运行中取消穿透到工具" | [inv8:23-24](../crates/agent-conformance/src/invariants/inv8_cancellation_penetration.rs#L23-L24) 只测启动前（引擎没走到 `Tool::execute`） | `crates/agent-conformance/src/invariants/inv8_cancellation_penetration.rs` | 断言：工具执行中取消 → 工具**观察到**取消 → 停机 `Aborted` → 回执 `Aborted` | W4-T1 | 1 | ✅ 已完成 |
+| W4-T4 | **强化 INV-8 断言**：从"启动前已取消"改为"运行中取消穿透到工具" | [inv8:23-24](../../crates/agent-conformance/src/invariants/inv8_cancellation_penetration.rs#L23-L24) 只测启动前（引擎没走到 `Tool::execute`） | `crates/agent-conformance/src/invariants/inv8_cancellation_penetration.rs` | 断言：工具执行中取消 → 工具**观察到**取消 → 停机 `Aborted` → 回执 `Aborted` | W4-T1 | 1 | ✅ 已完成 |
 | W4-T5 | **补回子智能体委派**：`invoke_subagent` 端口化为一等 `Tool` 进 catalog（W3-T4 删 legacy 时它随之消失，见 §2 P1-15） | `executor.rs` 的 `invoke_subagent` 分支已删；catalog 里无该工具 | `crates/agent-core/src/subagents/tool.rs`（新）、`crates/agent-toolkit/src/registry.rs`、`crates/agent-host/src/lib.rs`、`tools/xtask/src/gates.rs` | 断言：`capabilities.subagents=true` → catalog 含 `invoke_subagent` 且描述符来自注册表 | W4-T3 | 2 | ✅ 已完成 |
 | W4-T6 | **消除第二份引擎**：子智能体执行循环并入 `AgentRuntime::run_turn` | `run_subagent` 自带多轮循环 + 用 legacy `execute_tool_call` | `crates/agent-core/src/subagents/{runner,ports,tool}.rs`、`crates/agent-host/src/lib.rs`、`tools/verify-archive.ts` | `verify-archive` 增断言"主干不存在第二份多轮引擎"；取消穿透断言 | W4-T5 | 3 | ✅ 已完成 |
 
@@ -386,10 +394,10 @@ W5-T5 `hooks` 如实降级。W5 完成后 `verify-wiring` 的 2 条孤儿方法�
 
 | ID | 任务 | 现状证据 | 产出（write scope） | 守门测试 | 依赖 | 人日 | 状态 |
 |---|---|---|---|---|---|---|---|
-| W5-T1 | `xtask gen`：四产物生成（Rust 常量 / client-ts / dispatch 臂 / 文档表）。**若判定不划算，则正式降级为"手写 + 双向校验"并改设计文档 §6.2**（R3） | 无 `gen`；`client-ts/*.ts` 手写维护 | `docs/agent-base-design.md` §6.2/§6.3、`crates/agent-proto/src/methods.rs` | 三对副本**双向**校验齐备且**能红**（3 种故障注入） | W0 | 2.5 | ✅ 已完成（**判定降级**） |
+| W5-T1 | `xtask gen`：四产物生成（Rust 常量 / client-ts / dispatch 臂 / 文档表）。**若判定不划算，则正式降级为"手写 + 双向校验"并改设计文档 §6.2**（R3） | 无 `gen`；`client-ts/*.ts` 手写维护 | `docs/architecture/kernel-design.md` §6.2/§6.3、`crates/agent-proto/src/methods.rs` | 三对副本**双向**校验齐备且**能红**（3 种故障注入） | W0 | 2.5 | ✅ 已完成（**判定降级**） |
 | W5-T2 | 孤儿方法处置：`WORKSPACE_SET` / `CONFIG_UPDATE` **补臂或从 spec 删除** | 无 dispatch 臂 | `crates/agent-proto/src/methods.rs`、`crates/agent-proto/client-ts/methods.ts`、`spec/proto/ada-coding.ext.json` | `verify-wiring` 孤儿=0 | W0-T3 | 1 | ✅ 已完成 |
 | W5-T3 | `spec/proto/README.md`（命名规则与 `x.<product>.*` 约定）+ `docs/protocol/*.md` | 两者均不存在 | `spec/proto/README.md`、`docs/protocol/README.md`、`tools/xtask/src/gates.rs` | 文档存在且与登记表一致（`verify-docs` 新增守门） | W5-T1 | 1 | ✅ 已完成 |
-| W5-T4 | **能力位与 spec 声明脱钩**：`Spec.capabilities`/`toolkits`/`identity` 必须有真实消费者 | [builder.rs:113-117](../crates/agent-runtime/src/builder.rs#L113-L117) 只用 `policies` | `crates/agent-adapter/src/prompt/coding.rs`、`crates/agent-host/src/lib.rs` | `verify-spec` 全绿；断言：身份进提示词、`images=false` 拒图片 | W1、W3 | 1.5 | ✅ 已完成 |
+| W5-T4 | **能力位与 spec 声明脱钩**：`Spec.capabilities`/`toolkits`/`identity` 必须有真实消费者 | [builder.rs:113-117](../../crates/agent-runtime/src/builder.rs#L113-L117) 只用 `policies` | `crates/agent-adapter/src/prompt/coding.rs`、`crates/agent-host/src/lib.rs` | `verify-spec` 全绿；断言：身份进提示词、`images=false` 拒图片 | W1、W3 | 1.5 | ✅ 已完成 |
 | W5-T5 | `FailDirection` 真实消费：`ApprovalGate::direction()` 接进判定；`Scope` 失败方向**如实定为固定拒绝** | 全仓无 `.direction()` 调用（3 处实现、0 处调用） | `crates/agent-base/src/engine/runtime.rs`、`crates/agent-base/src/ports/scope.rs`、`crates/agent-conformance/src/invariants/inv4_fail_direction.rs`、`tools/xtask/src/gates.rs` | 断言：无判定依据时按 `Closed` 拒绝、按 `Open` 放行、确定答案不被覆盖；`verify-wiring` 新门 | W1-T6 | 1 | ✅ 已完成 |
 
 **W5 进度（2026-10-09）：5/5 ✅ 里程碑完成**。
@@ -427,10 +435,10 @@ CLI `a-da run`、`revert_*` 返回值与 `THREAD_EDIT_AND_RESEND`、INV-7 模型
 `cargo xtask verify` 系列是日常入口；新增功能请顺手更新 §5 状态列与 §13 执行记录。
 
 > **遗留（不在本次范围）**：`hooks` 点位仍为 **0 个**——`dto.rs` 声明 `hooks: false`，
-> 而 `docs/plugin-sdk/v1.md` 声称 25 个点位由 Rust 引擎调用，两者需对齐（实现 3 个点位，
+> 而 `docs/plugins/README.md` 声称 25 个点位由 Rust 引擎调用，两者需对齐（实现 3 个点位，
 > 或把文档与 SDK 契约改为"未实现"）。已登记在
-> [docs/unfinished-features.md](unfinished-features.md) §一.9；
-> 全量 25 点位归 `agent-base-plan.md` 附录 B 的 M6。
+> [docs/quality/unfinished-features.md](../quality/unfinished-features.md) §一.9；
+> 全量 25 点位归 `milestones.md` 附录 B 的 M6。
 
 ---
 
@@ -444,7 +452,7 @@ CLI `a-da run`、`revert_*` 返回值与 `THREAD_EDIT_AND_RESEND`、INV-7 模型
 | W6-T4 | `revert_*` 返回值回传前端；`THREAD_EDIT_AND_RESEND` 不再吞错/丢事件/可 abort | 三个 revert 臂丢弃 `_outcome` 回 `{ok:true}`；resend 另 spawn 空循环把事件抽干丢弃、只 `warn` 错误、`abort_rx: None` | `crates/agent-core/src/server/dispatch.rs` | 断言：回执含恢复/删除清单（`None` → `ok:false`）；resend 与 `thread.start` **共用执行泵**；抗体测试钉住"抽干丢弃"形态 | W3 | 1.5 | ✅ 已完成 |
 | W6-T5 | 清掉两处空壳：`inv7` 真断言；`ports/model.rs` 自比断言 | `inv7:5-8`；`ports/model.rs:43-44` | `crates/agent-conformance/src/**`、`tools/xtask/src/gates.rs` | 两处都有真实断言且**能红**；端口清单**从 trait 派生**（11 个，缺实现 0） | W1 | 1 | ✅ 已完成 |
 | W6-T6 | 前端重连：指数退避 + 上限 + generation guard + `onclose` 清 `pendingRequests` | 固定 2s 重连；无代次保护（旧回调覆盖新连接）；`onclose` 不清在途请求 | `desktop-ui/src/client/{ws-client.ts,reconnect-policy.ts}`、`tools/xtask/src/gates.rs` | `verify-wiring` 新门（四项结构性断言）+ 3 种故障注入证明能红；退避策略独立脚本验证 | — | 1.5 | ✅ 已完成 |
-| W6-T7 | 文档收口：README 正文重写、`unfinished-features.md` 重写、`feature-catalog.md` 更新路径、本文件状态列 | README 656 行几乎全是 TS/GPUIX 时代内容；另两份文档 19 条引用归档路径 | `README.md`、`docs/unfinished-features.md`、`docs/feature-catalog.md`、本文件 | `verify-docs` **60 → 0**；新文档零新增违约 | 全部 | 2 | ✅ 已完成 |
+| W6-T7 | 文档收口：README 正文重写、`../quality/unfinished-features.md` 重写、`../quality/feature-catalog.md` 更新路径、本文件状态列 | README 656 行几乎全是 TS/GPUIX 时代内容；另两份文档 19 条引用归档路径 | `README.md`、`docs/quality/unfinished-features.md`、`docs/quality/feature-catalog.md`、本文件 | `verify-docs` **60 → 0**；新文档零新增违约 | 全部 | 2 | ✅ 已完成 |
 
 ---
 
@@ -515,7 +523,7 @@ CLI `a-da run`、`revert_*` 返回值与 `THREAD_EDIT_AND_RESEND`、INV-7 模型
 ## 9. `archive/ts-legacy` 处置
 
 **不许复活**（INV-12）。本计划所有任务都**不得**引用 `archive/**` 作为参考实现；
-需要 TS 时代的行为口径时，读 `docs/agent-conventions.md` 的 §N 表格，而不是读归档代码。
+需要 TS 时代的行为口径时，读 `docs/architecture/conventions.md` 的 §N 表格，而不是读归档代码。
 `verify-archive` 已锁定这一点，W0-T7 只增加"文档不得把归档路径当现行路径"这一条。
 
 ---
@@ -600,7 +608,7 @@ W5-T2/T4、W6-T1/T2/T4 共用 → **这些任务必须串行**，不得并行改
 [ ] 搬运留了兼容 shim，调用点零改动（R6）
 [ ] 前端无 diff，或属于 W6-T6（R7）
 [ ] 里程碑可独立回退（R8）；W3 用运行时开关双跑
-[ ] 同一提交更新了本文件状态列 + unfinished-features.md（R10）
+[ ] 同一提交更新了本文件状态列 + ../quality/unfinished-features.md（R10）
 [ ] cargo xtask verify / cargo test --workspace -- --test-threads=1 / bun run typecheck 全绿
 ```
 
@@ -624,7 +632,7 @@ W5-T2/T4、W6-T1/T2/T4 共用 → **这些任务必须串行**，不得并行改
 |---|---|---|
 | `cargo xtask verify-wiring` | **37** | 方法缺臂 2（`workspace.set`/`config.update`）；内置目录多 12 漏 13；描述符不可达 4（`todo`/`finish`/`run_background`/`read_url_content`）；端口缺生产实现 6 |
 | `cargo xtask verify-spec` | **7** | `patch` toolkit 无模块 1；`identity`/`capabilities`/`toolkits` 无生产消费者 6（两个产品各 3） |
-| `cargo xtask verify-docs` | **60** | README 41 + `unfinished-features.md` 13 + `feature-catalog.md` 6 |
+| `cargo xtask verify-docs` | **60** | README 41 + `../quality/unfinished-features.md` 13 + `../quality/feature-catalog.md` 6 |
 | `cargo xtask compat` | **0（绿）** | base 24 方法、`ada-coding.ext.json` 52 方法、base ∪ ext 无交集 |
 
 **既有门禁复核（W0 改动后实跑，全绿）**：`cargo build --workspace` exit 0；
@@ -640,7 +648,7 @@ W5-T2/T4、W6-T1/T2/T4 共用 → **这些任务必须串行**，不得并行改
    理由：归档门的语义是"主干没有第二份实现"，文档时效性是另一件事；混在一起会让
    主门禁 `cargo xtask verify` 长期变红。断言未削弱（仍逐文件逐行报告，白名单逐项写明理由）。
 3. **T1 不跑 `ProductBuilder::validate`，改为"解析 + toolkit 模块存在性 + 字段生产消费者"。**
-   理由：实测 `CompositeToolCatalog::validate`（[catalog.rs:102-106](../crates/agent-runtime/src/catalog.rs#L102-L106)）
+   理由：实测 `CompositeToolCatalog::validate`（[catalog.rs:102-106](../../crates/agent-runtime/src/catalog.rs#L102-L106)）
    只遍历**已注入的工具**，未注入时恒返回空 → 对空 catalog 跑 validate 是**空断言**
    （正是 W6-T5 要清理的那类"看起来有断言其实没有"）。等 W2-T1 有了 toolkit→tools 映射后再补真实装配校验。
 4. **`--all` 参数没有实现**：`verify-spec`/`compat` 无条件全扫，不需要 `--all`。
@@ -649,8 +657,8 @@ W5-T2/T4、W6-T1/T2/T4 共用 → **这些任务必须串行**，不得并行改
 **检查器实现注记（供后续任务参考，避免踩同一个坑）**：
 
 - `#[cfg(test)]` 截断启发式（判定"生产段"）在 **2 个文件**上不适用，检查器**如实跳过并记 note**、
-  不猜：[`crates/agent-adapter/src/model/stream.rs`](../crates/agent-adapter/src/model/stream.rs)、
-  [`crates/agent-core/src/session/manager.rs`](../crates/agent-core/src/session/manager.rs)（各含 2–3 处 `#[cfg(test)]`）。
+  不猜：[`crates/agent-adapter/src/model/stream.rs`](../../crates/agent-adapter/src/model/stream.rs)、
+  [`crates/agent-core/src/session/manager.rs`](../../crates/agent-core/src/session/manager.rs)（各含 2–3 处 `#[cfg(test)]`）。
 - **`pub use` 再导出不算消费者**：`crates/agent-runtime/src/lib.rs` 的
   `pub use spec::{AgentSpec, CapabilitySpec, IdentitySpec, PolicySpec}` 曾让 `identity`/`capabilities`
   被误判为"有消费者"（假阴性）。`uses_symbol()` 现在会跳过再导出行（含跨行块）。
@@ -822,8 +830,8 @@ W5-T2/T4、W6-T1/T2/T4 共用 → **这些任务必须串行**，不得并行改
 
 **顺带产生的下游影响**（都已登记归属，不遗漏）：
 `read_url_content` 从注册表删除后，两处"引用它"的地方变成悬空引用——
-`PLUGIN_BUILTIN_CATALOG`（[dispatch.rs:904](../crates/agent-core/src/server/dispatch.rs#L904)）归 **W2-T5**，
-子智能体白名单（[subagents/builtins.rs:66](../crates/agent-core/src/subagents/builtins.rs#L66)）归 **W2-T6**。
+`PLUGIN_BUILTIN_CATALOG`（[dispatch.rs:904](../../crates/agent-core/src/server/dispatch.rs#L904)）归 **W2-T5**，
+子智能体白名单（[subagents/builtins.rs:66](../../crates/agent-core/src/subagents/builtins.rs#L66)）归 **W2-T6**。
 `verify-wiring` 现在会如实报出前者（"广告了注册表里不存在的工具 `read_url_content`"）。
 
 ---
@@ -990,7 +998,7 @@ W5-T2/T4、W6-T1/T2/T4 共用 → **这些任务必须串行**，不得并行改
 **🔴 W3-T5 立刻抓到两个真 bug**（这正是"先有尺子再切引擎"的价值）：
 
 1. **引擎步数预算 off-by-one**（P1-12）。夹具 `budget_exhausted` 显示 `maxSteps=1` 却
-   `stepsTaken=2`。根因：[runtime.rs:137-144](../crates/agent-base/src/engine/runtime.rs#L137-L144)
+   `stepsTaken=2`。根因：[runtime.rs:137-144](../../crates/agent-base/src/engine/runtime.rs#L137-L144)
    **先 `step_index += 1`、后判 `step_index > max_steps`**，于是被预算**拒绝的那次尝试**
    也被算进了"已执行步数"。
    既有单测只断言了 `stop_reason`，**没断言步数**，所以这个 off-by-one 一直没被发现。
@@ -1155,7 +1163,7 @@ W5-T2/T4、W6-T1/T2/T4 共用 → **这些任务必须串行**，不得并行改
 4. **两个宿主的装配必须收敛到一处**。`ada-coding` 与 `src-tauri`（headless + 同进程）需要
    完全一样的装配逻辑（复用 store、会话落 app home、把 `ApprovalManager` 带出去共用）。
    把 `build_engine_injection` 放进 `agent-host` 而不是各写一份——这正是 W2-T1 假声明的教训。
-   另外 `src-tauri` 的 spec 用 `include_str!("../../products/ada-coding/agent.spec.json")`
+   另外 `src-tauri` 的 spec 用 `include_str!("../../../products/ada-coding/agent.spec.json")`
    **引用同一份文件**，不另写。
 
 ### 13.13 W4-T1 / W4-T2 / W4-T4 取消贯穿主循环侧收口（2026-10-09，已完成）
@@ -1360,7 +1368,7 @@ W5-T2/T4、W6-T1/T2/T4 共用 → **这些任务必须串行**，不得并行改
 
 | 文件 | 内容 |
 |---|---|
-| `docs/agent-base-design.md` §6.2/§6.3 | 重写：记录降级决策与依据；如实登记两项**明确不做**（`gen` 四产物、`enum` 化常量 + 编译器穷尽性） |
+| `docs/architecture/kernel-design.md` §6.2/§6.3 | 重写：记录降级决策与依据；如实登记两项**明确不做**（`gen` 四产物、`enum` 化常量 + 编译器穷尽性） |
 | `crates/agent-proto/src/methods.rs` | 副本校验 #3 从**假校验**升级为 `name → value` **双向**映射比对（含 `parse_rust_consts` / `parse_ts_consts`） |
 | `spec/proto/README.md`（新） | 登记表真源说明：命名规则、`x.<product>.*` 约定、字段表、四处同步、三对副本校验 |
 | `docs/protocol/README.md`（新） | 协议总览：握手鉴权、三层协议、帧类型、错误码全表、审批/提问通道、客户端用法 |
@@ -1713,16 +1721,16 @@ a-da 命令行任务执行器，工作区: <tmp>
 | 文件 | 条数 | 主因 |
 |---|---|---|
 | `README.md` | 41 | 全文是 TS/GPUIX 时代：`src/agent/`（22）、`src/ui/`（4）、`../gpuix`（3）、`app.tsx`（3）、`src/platform/`（3）、`bun test`（3）… |
-| `docs/unfinished-features.md` | 13 | 逐条现状写的是 TS 侧文件 |
-| `docs/feature-catalog.md` | 6 | 一整节"两套 UI 实现对比表 (GPUIX vs Tauri)" |
+| `docs/quality/unfinished-features.md` | 13 | 逐条现状写的是 TS 侧文件 |
+| `docs/quality/feature-catalog.md` | 6 | 一整节"两套 UI 实现对比表 (GPUIX vs Tauri)" |
 
 **修法**：
 
 | 文件 | 处置 |
 |---|---|
 | `README.md` | **按当前实现重写**（656 → 约 330 行）：架构与依赖方向、产品声明式装配、24 个工具、一轮对话的流程、审批与取消（含 `FailDirection` 表）、子智能体隔离、检查点回滚、运行与 CLI（含 `run --dry-run` 与退出码）、代码结构、**唯一真源清单**、六条门禁、已知限制 |
-| `docs/unfinished-features.md` | **重写**为 10 条**经核实**的缺口 + 明确不做项 + 工程注意 |
-| `docs/feature-catalog.md` | 第四节"两套 UI 对比表"改为**单列**的 `desktop-ui` 功能清单（含实现位置）；第五节 CLI 补上 `run --dry-run` 与退出码 |
+| `docs/quality/unfinished-features.md` | **重写**为 10 条**经核实**的缺口 + 明确不做项 + 工程注意 |
+| `docs/quality/feature-catalog.md` | 第四节"两套 UI 对比表"改为**单列**的 `desktop-ui` 功能清单（含实现位置）；第五节 CLI 补上 `run --dry-run` 与退出码 |
 
 **顺带纠正的三处过时口径**（旧文档说反了）：
 
@@ -1744,7 +1752,7 @@ a-da 命令行任务执行器，工作区: <tmp>
 
 **W6-T7 期间的三条记录**：
 
-1. **"文档重写"也要按证据写**。`unfinished-features.md` 的新版本里每条缺口都带
+1. **"文档重写"也要按证据写**。`../quality/unfinished-features.md` 的新版本里每条缺口都带
    **可复现的判据**（`grep mcp` 零命中、`with_images` 零消费者、`auto_approve` 零消费者…）。
    凭印象写的缺口清单会立刻过期——旧版就是证据。
 2. 🔴 **重写时最容易引入"新的假话"**。旧 README 说"只有 OpenAI 兼容协议"，
@@ -2628,6 +2636,45 @@ a-da-gateway --host 0.0.0.0 --token <t> --allow-plaintext
 - **配对码**：token 目前由部署侧（命令行/配置）注入。浏览器拿 token 的路径还没做
   （`gateway.info` 只说"要不要 token"，不给 token）。
 
+
+### 13.37 文档按功能域重组 + 一条门禁判据串修正（2026-10-18，已完成）
+
+**背景**：`docs/` 下 25 份文档平铺，其中约三分之一描述的是**已经不在仓库里**的实现
+（Bun 宿主、GPUIX 客户端、TS 侧 agent、Deno/V8 方案、decision 插件、HTTP API 提案…），
+README 仍在用 `crates/agent-core`（该目录早已拆成 `agent-node` + `agent-rpc`）与
+"钩子点位 = 0"（实际 33 个）描述现状。本次整理**以代码为准**重排文档。
+
+**做了什么**
+
+| 项 | 内容 |
+|---|---|
+| 目录重组 | 按功能域分目录：`architecture/`（设计+约定）、`protocol/`（协议总览+状态帧契约）、`plugins/`（平台现状+契约）、`gateway/`、`quality/`（现状清单+缺口清单）、`plans/`（里程碑+接线记录）；新增 `docs/README.md` 索引 |
+| 删除 | **18 份**历史文档（TS/Bun 时代设计、已被取代的设计、未落地提案、一次性审计）+ 4 张孤儿截图（TS 时代界面截图）。需要考古：`git log --diff-filter=D --name-only -- docs/` |
+| 重写 | `README.md`（crate 表、22 个工具、13 个端口、77 个方法、门禁清单、已知限制全部按码核对）、`docs/quality/feature-catalog.md`（整篇按现行实现重写）、`docs/plugins/README.md`（新增：平台现状与排错）、`docs/quality/unfinished-features.md`（门禁基线与失效引用） |
+| 引用收敛 | 全仓 **39 个文件**的文档引用改写（代码注释 33 个 + 文档 6 个），死链扫描后逐条修正；`AGENTS.md`、`spec/proto/README.md` 同步 |
+| 门禁同步 | `DOC_ALLOW` 从 **16 条缩到 4 条**（删掉指向已删文档的 11 条；`AGENTS.md` 不再需要豁免——它现在不含归档布局字样）。`verify-docs` 转绿：实扫 11 个 markdown、白名单 4 个 |
+
+**顺带修掉一条假红**（`verify-wiring` check L2）：
+
+`PLUGIN_CAPABILITY_FIELDS` 里 `hook_timeout_ms` 的判据串写作 `plugin_caps.hook_timeout_ms`
+——**那个变量名不存在**。真实消费者在组合根：`products/ada-coding/src/main.rs:371`
+读 `out.caps.hook_timeout_ms` 并交给 `HookBudget`。于是这一位**常年假红**，
+`cargo xtask verify` 在第 2 阶段就中断（后面的 `compat` / `verify-docs` **根本没跑**）。
+
+判据串改为 `caps.hook_timeout_ms` 后转绿（`hook_timeout_ms → products/ada-coding/src/main.rs`）。
+
+> **教训**：门禁的判据串是**代码的引用**，代码改了名它不会自己跟着改；
+> 一条假红会连带**掩盖后面所有阶段**的信号（这次就盖住了 `verify-docs` 的结果）。
+> 假红与假绿同样危险——遇到红先问"判据本身还对吗"。
+
+**转绿证据（本次实测）**
+
+| 证据 | 结果 |
+|---|---|
+| `cargo xtask verify --fast` | **四阶段全绿**：verify-spec ✔ / verify-wiring ✔（端口 13 个全有实现、描述符 22 个全可达、插件开关 7 个全有判定点）/ compat ✔ / verify-docs ✔ |
+| `verify-docs` 明细 | 白名单 4 个文件、实扫 11 个 markdown、协议文档覆盖全部 3 个事件主题 |
+| 全仓引用扫描 | 无残留旧文档名（除"原路径"注记与"已删除"说明） |
+| markdown 链接解析 | 除本文历史证据里的 `crates/agent-core/**`、`src-tauri/**`（已在文首横幅声明）外全部可解析 |
 
 ## 附录 A：缺口 → 任务反查表
 
