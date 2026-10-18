@@ -1,3 +1,8 @@
+> ⚠️ **已下线（2026-10-18）**：`decide` / `check_gate` 两个工具、内置 `decision` 插件、
+> `decision` 工具包与 `crates/agent-toolkit/src/decision/` 的所有实现已整体移除。
+> 本文保留为**历史设计记录**（TS 时代的目录结构与 API 均已不存在），
+> 其中的"失败安全方向"与"校准性"结论仍适用于未来的同类能力。
+
 # 决策插件（decision）设计文档
 
 > 参考项目：[`E:\code\github\pi-jev`](E:/code/github/pi-jev)（pi-jev v0.6.0，2304 行）

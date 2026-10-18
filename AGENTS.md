@@ -78,6 +78,14 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
   🔴 **子进程的 stdin 一律 `Stdio::null()`**（`cmd_tools::run_command` 与 `background`）：
   继承 stdin 时，一条等输入的命令（npm 确认、git 凭据、忘了 `--yes` 的安装器）会**卡满整个超时**，
   界面上的表现正是"工具卡片卡住 → 智能体停止 → 过一会儿才继续"。给空设备它会立刻 EOF 退出。
+- 🔴 **文件编辑的换行：匹配按 LF 归一化，写回按文件 EOL 还原**（`agent-toolkit/src/newline.rs`）。
+  `read_file` 用 `str::lines()` 输出，**CRLF 文件的 `\r` 不出现在工具输出里**，模型抄回来的
+  `old_string` 只带 LF——早先 `after.find(&old_s)` 让跨行片段必然匹配失败（"原文本不存在"，
+  模型只能盲试）。现在定位走 `LfView`（折成 LF 再找，带"归一化位置 → 原文位置"映射表，
+  命中区间映射回原文切，不能按长度加减），替换文本按文件主导换行还原（否则一次小改把整份
+  CRLF 变 LF，diff 全是噪声）；`write_file` 覆写已存在文件时同样跟随其原换行。
+  字面 `\r\n` 转义只在"整段没有真实换行"时才当换行解读（有真实换行就不猜，免得改坏
+  `println!("a\nb")`）。新增"按文本匹配再写回"的工具都走这套，别自己再写一遍 `find`。
 - **别让 `Gateway::new` 有落盘副作用**：它以前在构造时就往工作区存储里记默认工作区，
   而 `WorkspacesStore::new(None)` 指用户真实的 `~/.a-da/gateway_workspaces.json`——
   于是**任何构造 Gateway 的测试都会写用户的真实工作区列表**（历史事故：用户列表里出现
@@ -110,6 +118,17 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
   「请求重试」按钮随之从助手错误卡搬到了这里——那是重试的唯一入口，别只删不搬。
   实机回归：`pwsh -NoProfile -File tools/verify-retry-and-disconnect.ps1`
   （起真产品、走真 JSON-RPC、改用户配置前先备份后还原）。
+- 🔴 **流式请求不许设"总时限"，流结束必须验终止信号**（`agent-adapter/src/model/stream.rs`）。
+  2026-10-18 真事故：`reqwest::Client::builder().timeout(120s)` 覆盖的是**建连到响应体读完**的
+  全过程，而 SSE 是长连接——思考型模型一条回答跑两三分钟是常态，于是 120 秒一到就被从中间切断
+  （`durationMs=120008`、thinking 流了 58k 字符后正文停在半句）。现在只留
+  `connect_timeout(10s)` + **空闲**超时（`A_DA_STREAM_IDLE_SECS`，默认 90 秒没有新字节才判死流）。
+  另一半同样致命：EOF **不等于**完成。三套协议都必须见过终止信号（`[DONE]` / `finish_reason` /
+  `message_stop` / `response.completed`）才算正常收尾，否则 `bail!` 走失败路径（落 Notice 卡 + 可重试）。
+  早先 EOF 直接落到 `final_stop_reason = "stop"`，于是一次被掐断的回答会被当成正常完成——
+  没有错误卡、没有重试，界面只是停在半句话上，用户看到的就是"会话突然断开"。
+  守门用例：`test_stream_truncated_without_terminator_is_an_error` /
+  `test_stream_with_done_terminator_completes_normally` / `test_stream_idle_timeout_reports_dead_stream`。
 - **图片输入（多模态）这条链也要一起改才生效**：`thread.send` / `thread.editAndResend` 的
   `images`（**data URI**）→ `dispatch::normalize_images`（**全仓唯一的图片 IO 边界**：
   裸路径在这里读盘转 base64，读不到就丢弃并记日志）→ `spawn_thread_loop` 的 `current_images`

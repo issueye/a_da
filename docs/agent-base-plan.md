@@ -687,7 +687,7 @@ archive/
 ## 附录 B：MVP 之后的路线（M6+）
 
 1. **钩子全量**：补齐 25 个点位（含成对约束与超时/熔断），逐个"副作用断言"；把 `PluginCapabilities` 的能力位真正消费起来。
-2. **decision 引擎移植（已完成）**：把 `archive/ts-legacy/agent/tools/builtin-plugins/decision/**` 的 `decide`/`check_gate` 移植为纯 Rust 原生实现（位于 `crates/agent-toolkit/src/decision/`），接入内置 `decision` 插件与 `ToolDescriptor` 真源。严格遵守"绝不捏造确定性"（AGENTS.md §9，启发式 `calibrated: false`）与"门禁 fail-close 安全默认"原则。包含 17 项全绿测试。
+2. **decision 引擎移植（已下线，2026-10-18）**：曾把 `decide`/`check_gate` 从 TS 移植为 Rust 原生实现（`crates/agent-toolkit/src/decision/`，17 项测试），但两个工具在真实产品里没有消费者，已于 2026-10-18 连同 `decision` 工具包与内置插件一并删除；只保留「绝不捏造确定性」与「门禁 fail-close」两条原则（见 docs/agent-conventions.md §9），供未来同类能力复用。
 3. **细粒度事件**：拆 `evt.item.*`/`evt.card.updated` 等，补 `session.resync`/`ping`/多客户端抢答。
 4. **图片与多模态**：`ContentPart::Image` 打通到三家 provider。
 5. **第二真实产品 `ada-life`**：`calendar`/`reminder`/`notes`/`web` 工具包 + `user-data` scope —— 验证多产品声明式开发。
