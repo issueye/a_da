@@ -16,7 +16,7 @@
 //! # 点位词汇表随**实现**增长，不许先声明后实现
 //!
 //! [`DIAG_POINTS`] 只登记**当天真的有发射方**的点位。这是把"未实现的能力位不得声明为 true"
-//! （`docs/plugin-sdk/v1.md` §6）同一条规矩用在埋点词汇表上：先有发射方，再登记点位；
+//! （`docs/plugins/README.md` §1 的能力声明规矩）同一条规矩用在埋点词汇表上：先有发射方，再登记点位；
 //! `cargo xtask verify-wiring` 的 check K 会盯着"登记了的点位必须有生产引用"。
 
 use crate::domain::trace::Origin;

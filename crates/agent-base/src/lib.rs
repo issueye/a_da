@@ -1,4 +1,4 @@
-//! AGENT BASE 内核（`docs/agent-base-design.md` v0.2）
+//! AGENT BASE 内核（`docs/architecture/kernel-design.md` v0.2）
 //!
 //! 约束（设计 §3、INV-8）：
 //! - **零 IO**：不得出现 `std::fs` / `std::env` / `std::process` / `reqwest` / `tokio::net`；
@@ -13,7 +13,7 @@
 //! - [`model`] —— 模型面类型：对话消息、流式增量、用量、供应商配置
 //! - [`testing`] —— 测试替身：FixedClock / RecordingSink / TempAppHome / NeverCancel
 //!
-//! 当前落地进度见 `docs/agent-base-plan.md` §8、§10。
+//! 当前落地进度见 `docs/plans/milestones.md` §8、§10。
 
 pub mod domain;
 pub mod engine;

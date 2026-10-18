@@ -1,4 +1,4 @@
-//! AGENT HOST：**宿主装配层**（`docs/agent-base-design.md` v0.2 §9）。
+//! AGENT HOST：**宿主装配层**（`docs/architecture/kernel-design.md` v0.2 §9）。
 //!
 //! # 它解决什么问题
 //!

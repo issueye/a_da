@@ -14,7 +14,7 @@
 //! **它不做内存限额**。给子进程设 RSS 上限要看平台（Windows Job Object / Linux rlimit），
 //! 本档没有做。所以"内存暴涨的插件"表现为：宿主在超时到点时**把它杀掉**并如实回报
 //! ——进程死掉这件事被隔离住了，但"它在死之前能把机器内存吃多少"没有被限制。
-//! 这条限制写在 `docs/unfinished-features.md`。
+//! 这条限制写在 `docs/quality/unfinished-features.md`。
 //!
 //! # 代价
 //!

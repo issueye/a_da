@@ -1,6 +1,6 @@
 //! `EventSink` 端口的真实实现（`agent_base::ports::EventSink`）。
 //!
-//! 设计口径（`docs/agent-base-wiring-plan.md` §5 W1-T5）：
+//! 设计口径（`docs/plans/wiring.md` §5 W1-T5）：
 //! 引擎产出的领域事件**只有这一条出口**（INV-6）。当前传输层（`WsHostServer`）
 //! 的粒度是**粗快照**（16ms 合帧的 `evt.state.snapshot`），细粒度 `evt.item.*`
 //! 属计划附录 B 的 M6。所以这一版的真实 sink 做三件事：

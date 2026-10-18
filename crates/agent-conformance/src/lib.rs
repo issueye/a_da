@@ -1,4 +1,4 @@
-//! AGENT CONFORMANCE 合规套件（`docs/agent-base-design.md` v0.2 §8）
+//! AGENT CONFORMANCE 合规套件（`docs/architecture/kernel-design.md` v0.2 §8）
 //!
 //! 提供：
 //! 1. [`ports`] —— 端口契约断言集合。

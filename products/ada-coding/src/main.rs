@@ -484,7 +484,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let script_host: std::sync::Arc<dyn agent_base::ports::ScriptHost> =
         match args.script_sandbox.as_str() {
             "inprocess" => {
-                info!("插件脚本档位：进程内（Boa）。**无内存护栏**，见 docs/unfinished-features.md");
+                info!("插件脚本档位：进程内（Boa）。**无内存护栏**，见 docs/quality/unfinished-features.md");
                 std::sync::Arc::new(agent_node::scripts::TsScriptHost::new())
             }
             "subprocess" => {

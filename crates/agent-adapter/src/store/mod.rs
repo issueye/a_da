@@ -8,7 +8,7 @@
 //! - [`checkpoint_types`]：检查点落盘类型
 //! - [`fs_store`]：`SessionStore` 端口的真实实现
 //!
-//! 搬运口径见 `docs/agent-base-wiring-plan.md` §5 W1-T2a；`agent-core` 侧保留
+//! 搬运口径见 `docs/plans/wiring.md` §5 W1-T2a；`agent-core` 侧保留
 //! `pub use` 兼容 shim（R6），调用点零改动。
 
 pub mod checkpoint_types;

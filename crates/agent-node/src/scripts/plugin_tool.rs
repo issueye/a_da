@@ -4,7 +4,7 @@
 //!
 //! 到 SP-15 之前，插件脚本已经能被装载与调用（[`ScriptHost`]），但**引擎不认识它**：
 //! 引擎只认 [`Tool`]。这一层就是把两者接起来的那一小段——顺带把"脚本结果"翻译成
-//! "工具回执"（**全仓唯一转换点**，见 `docs/script-plugin-system-design.md` §3.6）。
+//! "工具回执"（**全仓唯一转换点**，见 `docs/plugins/README.md` §2 "四类贡献"）。
 //!
 //! # 描述符从注册表来（决策 1：只认注册表）
 //!
@@ -118,7 +118,7 @@ impl PluginTool {
             format!(
                 "插件工具 `{tool_name}` 不在内置注册表里——当前口径（决策 1）只认注册表：\
                  插件工具必须先用已注册的工具名，自述的描述符不予采信。\
-                 若要支持插件自带 schema，需先拍板放开（见 docs/script-plugin-system-dev-plan.md §9 决策 1）"
+                 若要支持插件自带 schema，需先拍板放开（见 docs/plugins/README.md §2 四类贡献）"
             )
         })?;
         Ok(Self {

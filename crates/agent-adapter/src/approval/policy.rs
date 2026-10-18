@@ -1,7 +1,7 @@
 //! 审批**策略**（纯函数，无 IO、无单例）。
 //!
 //! 设计口径（AGENTS.md §14：**策略**归插件 `approval-guard`、**执行**归核心 `askUser`；
-//! `docs/agent-base-wiring-plan.md` §5 W1-T6）：
+//! `docs/plans/wiring.md` §5 W1-T6）：
 //! 档位解释、危险命令二次确认、免问白名单都是**纯判定**，因此放在适配器；
 //! "问用户"的执行侧（注册 waiter、等 `approval.decide`、超时/取消）需要前端通道，留在宿主。
 //!

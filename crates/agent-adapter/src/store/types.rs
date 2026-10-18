@@ -1,7 +1,7 @@
 //! 会话**落盘格式**（不是领域模型）。
 //!
 //! 领域模型 [`AgentMessage`] / [`ToolCallBlock`] 已按设计搬到 `agent-base::domain`
-//! （`docs/agent-base-plan.md` §8.2）；这里只留"会话文件长什么样"：
+//! （`docs/plans/milestones.md` §8.2）；这里只留"会话文件长什么样"：
 //! `SessionHeader` / `SessionEntry*` / `SessionSummary`。
 //! 下一步（M1）这些类型连同 `SessionManager` 一起搬进 `agent-adapter` 的 store 适配器。
 

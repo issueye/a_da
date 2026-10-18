@@ -356,7 +356,7 @@ fn inject_common(ctx: &mut Context, workspace: Option<&Path>, needs: Needs) -> R
                 }
                 throw new Error(
                     "微内核沙箱里没有模块: '" + modName + "'" +
-                    "（该能力未注入——插件需要在 needs 里声明它，见 docs/plugin-sdk/v1.md）"
+                    "（该能力未注入——插件需要在 needs 里声明它，见 docs/plugins/README.md §1 的包形态与发现规则）"
                 );
             };
 

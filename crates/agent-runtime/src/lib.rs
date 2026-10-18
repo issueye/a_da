@@ -1,4 +1,4 @@
-//! AGENT RUNTIME 组合根（`docs/agent-base-design.md` v0.2 §7）。
+//! AGENT RUNTIME 组合根（`docs/architecture/kernel-design.md` v0.2 §7）。
 //!
 //! 职责：
 //! 1. [`spec`] —— 产品规格（`agent.spec.json`）数据结构

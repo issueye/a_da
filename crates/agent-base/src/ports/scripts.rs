@@ -7,7 +7,7 @@
 //! **端口**的形式被引擎认识，实现在 `agent-node`（[`crate::ports::Tool`] 之外的第二个
 //! "引擎调外部能力"的口子）。
 //!
-//! # 三条硬约束（见 `docs/script-plugin-system-design.md` §3.2）
+//! # 三条硬约束（见 `docs/plugins/README.md` §5 "沙箱与运行时"）
 //!
 //! 1. **预算归端口**：`timeout` / 指令上限 / 输出上限由调用方给，宿主执行，**只有一处判定超时**。
 //!    现状是三套互不相干的超时（沙箱 `inspect` 硬编码 15s、`call_tool` 由调用方给、

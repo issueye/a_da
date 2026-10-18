@@ -1050,7 +1050,7 @@ mod tests {
     ///
     /// 🔴 这里刻意**不**断言行号等于源文件的行号：那需要 source map（转译后的 JS 与
     /// 原 TS 的行并非一一对应，oxc 的 codegen 会重排），属 SP-73 未做的另一半，见
-    /// `docs/unfinished-features.md`。今天能保证的是"文件 + 位置 + 栈"都在，
+    /// `docs/quality/unfinished-features.md`。今天能保证的是"文件 + 位置 + 栈"都在，
     /// 而且**不再被压成一句没有出处的消息**（那才是作者最抓瞎的形态）。
     #[tokio::test]
     async fn test_runtime_error_points_at_the_plugin_file() {

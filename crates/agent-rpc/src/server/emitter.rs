@@ -301,7 +301,7 @@ mod tests {
         );
     }
 
-    /// 🔴 增量帧的验收断言（docs/state-patch-plan.md）：**没变过的 item 不许出现在 `upserted`**。
+    /// 🔴 增量帧的验收断言（docs/protocol/state-patch.md）：**没变过的 item 不许出现在 `upserted`**。
     ///
     /// 这是整个增量方案省字节的地方：一条长会话 822 个 item、全量帧 1.85 MB，
     /// 而稳态下一帧只有"正在流式的那一个 item + 小 meta"——从 MB 级降到几十 KB。

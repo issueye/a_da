@@ -1,4 +1,4 @@
-//! 8 条跨端口不变量合规套件（`docs/agent-base-design.md` v0.2 §8.2）
+//! 8 条跨端口不变量合规套件（`docs/architecture/kernel-design.md` v0.2 §8.2）
 
 pub mod inv1_single_engine;
 pub mod inv2_no_global_state;

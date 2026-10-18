@@ -1,7 +1,7 @@
 //! `FsSessionStore`：`SessionStore` 端口的真实实现（JSONL 落盘）。
 //!
-//! 设计口径（`docs/agent-base-design.md` §9：`store-fs` 属适配器；
-//! `docs/agent-base-wiring-plan.md` §5 W1-T2b）：
+//! 设计口径（`docs/architecture/kernel-design.md` §9：`store-fs` 属适配器；
+//! `docs/plans/wiring.md` §5 W1-T2b）：
 //!
 //! - 端口的签名只有 `thread_id`（[`agent_base::ports::SessionStore`]），而落盘布局是
 //!   `sessions/<workspace 散列>/<session id>.jsonl`。这层映射**在适配器内部解决**：

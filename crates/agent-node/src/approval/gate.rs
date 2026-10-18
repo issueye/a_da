@@ -1,6 +1,6 @@
 //! `ApprovalGate` 的**生产实现**（执行侧）。
 //!
-//! 分工（AGENTS.md §14、`docs/agent-base-wiring-plan.md` §5 W1-T6）：
+//! 分工（AGENTS.md §14、`docs/plans/wiring.md` §5 W1-T6）：
 //! - **策略**在适配器（[`agent_adapter::approval::policy`]）：档位解释、危险命令二次确认、
 //!   免问白名单，纯函数、无 IO；
 //! - **执行**在这里：读权威档位 → 注册等待通道 → 等前端 `approval.decide` → 超时/取消兜底。

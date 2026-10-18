@@ -1,6 +1,6 @@
 //! 系统提示词适配器：把"人格文本怎么排版"收敛到唯一真源。
 //!
-//! 设计口径（`docs/agent-base-wiring-plan.md` §5 W1-T3）：
+//! 设计口径（`docs/plans/wiring.md` §5 W1-T3）：
 //! 人格文本原先硬编码在 `agent_core::runner::prompt::build_system_prompt`，
 //! 且**与插件扫描纠缠在一起**——直接整段搬进适配器会形成
 //! `agent-core → agent-adapter → agent-core` 的循环依赖。

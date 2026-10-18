@@ -1,4 +1,4 @@
-//! 端口契约合规套件（`docs/agent-base-design.md` v0.2 §8.1）
+//! 端口契约合规套件（`docs/architecture/kernel-design.md` v0.2 §8.1）
 //!
 //! 端口清单以 `crates/agent-base/src/ports/` 的 `pub trait` 为**唯一真源**；
 //! `cargo xtask verify-wiring` 会从 trait 定义派生清单、逐个要求有生产实现。

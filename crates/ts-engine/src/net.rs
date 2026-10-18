@@ -55,7 +55,7 @@ impl NetPolicy {
     ///
     /// 为什么先用环境变量而不是配置文件：这两个值是**部署决定**（"这台机器上的插件只准访问
     /// 内网"），由拉起进程的人设置最自然；配置文件 + 界面的图形化留给后续
-    /// （见 `docs/unfinished-features.md`）。读不到就用默认值——**默认值本身就是安全的那一端**
+    /// （见 `docs/quality/unfinished-features.md`）。读不到就用默认值——**默认值本身就是安全的那一端**
     /// （超时有限、域名不额外收窄），所以"没配"不等于"没护栏"。
     pub fn from_env() -> Self {
         let mut policy = Self::default();
