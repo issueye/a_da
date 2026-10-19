@@ -1,0 +1,113 @@
+{% extends "layout.html" %}
+{% block title %}{{ org.display_name }} · a_da 插件库{% endblock %}
+{% block content %}
+<div class="rounded-2xl border border-slate-200 bg-white p-6">
+  <div class="flex flex-wrap items-start justify-between gap-4">
+    <div>
+      <p class="text-xs text-slate-400">组织 · @{{ org.name }}</p>
+      <h1 class="mt-1 text-2xl font-semibold">{{ org.display_name }}</h1>
+      <p class="mt-2 max-w-2xl text-sm text-slate-600">{{ org.description }}</p>
+    </div>
+    <div class="text-right text-xs text-slate-500">
+      <div>创建于 {{ org.created_text() }}</div>
+      {% if !my_role.is_empty() %}<div class="mt-1">我的角色：<span class="font-medium text-slate-800">{{ my_role }}</span></div>{% endif %}
+    </div>
+  </div>
+</div>
+
+<h2 class="mt-8 text-lg font-semibold">插件</h2>
+{% if plugins.is_empty() %}
+<p class="mt-3 text-sm text-slate-500">这个组织还没有发布插件。</p>
+{% else %}
+<div class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+  {% for p in plugins %}
+  {% include "partials/plugin_card.html" %}
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="mt-10 grid gap-6 lg:grid-cols-2">
+  <section class="rounded-2xl border border-slate-200 bg-white p-5">
+    <div class="flex items-center justify-between">
+      <h2 class="text-sm font-semibold">成员（{{ members.len() }}）</h2>
+    </div>
+    <div class="mt-3 divide-y divide-slate-100">
+      {% for m in members %}
+      <div class="flex items-center justify-between gap-2 py-2">
+        <div class="min-w-0">
+          <a href="/u/{{ m.username }}" class="truncate text-sm font-medium hover:text-blue-700">@{{ m.username }}</a>
+          <span class="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">{{ m.role }}</span>
+        </div>
+        {% if can_manage && m.user_id != org.owner_id %}
+        <form method="post" action="/orgs/{{ org.name }}/members/{{ m.user_id }}/remove">
+          <input type="hidden" name="_csrf" value="{{ common.csrf }}">
+          <button class="text-[11px] text-rose-600 hover:underline" type="submit">移除</button>
+        </form>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% if can_manage %}
+    <form method="post" action="/orgs/{{ org.name }}/members" class="mt-4 flex flex-wrap items-end gap-2 border-t border-slate-100 pt-4">
+      <input type="hidden" name="_csrf" value="{{ common.csrf }}">
+      <label class="flex-1 text-xs text-slate-500">用户名
+        <input name="username" required class="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm">
+      </label>
+      <label class="text-xs text-slate-500">角色
+        <select name="role" class="mt-1 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm">
+          <option value="member">member</option>
+          <option value="admin">admin</option>
+          {% if my_role == "owner" %}<option value="owner">owner</option>{% endif %}
+        </select>
+      </label>
+      <button class="rounded-lg bg-slate-900 px-3 py-1.5 text-sm text-white hover:bg-slate-700" type="submit">添加成员</button>
+    </form>
+    {% endif %}
+  </section>
+
+  <section class="rounded-2xl border border-slate-200 bg-white p-5">
+    <h2 class="text-sm font-semibold">团队（{{ teams.len() }}）</h2>
+    <div class="mt-3 space-y-3">
+      {% for tv in teams %}
+      <div class="rounded-xl border border-slate-100 bg-slate-50/60 p-3">
+        <div class="flex items-center justify-between">
+          <span class="text-sm font-medium">{{ tv.team.name }}</span>
+          <span class="text-[11px] text-slate-500">{{ tv.members.len() }} 人</span>
+        </div>
+        {% if !tv.team.description.is_empty() %}<p class="mt-1 text-xs text-slate-500">{{ tv.team.description }}</p>{% endif %}
+        <div class="mt-2 flex flex-wrap gap-1.5">
+          {% for m in tv.members %}
+          <span class="rounded-md bg-white px-1.5 py-0.5 text-[10px] text-slate-600 ring-1 ring-slate-200">@{{ m.username }} · {{ m.role }}</span>
+          {% endfor %}
+          {% if tv.members.is_empty() %}<span class="text-[11px] text-slate-400">暂无成员</span>{% endif %}
+        </div>
+        {% if can_manage %}
+        <form method="post" action="/orgs/{{ org.name }}/teams/{{ tv.team.id }}/members" class="mt-2 flex items-center gap-2">
+          <input type="hidden" name="_csrf" value="{{ common.csrf }}">
+          <input name="username" required placeholder="用户名" class="min-w-0 flex-1 rounded-lg border border-slate-300 px-2 py-1 text-xs">
+          <select name="role" class="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs">
+            <option value="member">member</option>
+            <option value="maintainer">maintainer</option>
+          </select>
+          <button class="rounded-lg bg-slate-900 px-2 py-1 text-xs text-white" type="submit">加入</button>
+        </form>
+        {% endif %}
+      </div>
+      {% endfor %}
+      {% if teams.is_empty() %}<p class="text-xs text-slate-500">还没有团队。</p>{% endif %}
+    </div>
+    {% if can_manage %}
+    <form method="post" action="/orgs/{{ org.name }}/teams" class="mt-4 flex flex-wrap items-end gap-2 border-t border-slate-100 pt-4">
+      <input type="hidden" name="_csrf" value="{{ common.csrf }}">
+      <label class="flex-1 text-xs text-slate-500">团队名
+        <input name="name" required class="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm">
+      </label>
+      <label class="flex-1 text-xs text-slate-500">描述
+        <input name="description" class="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm">
+      </label>
+      <button class="rounded-lg bg-slate-900 px-3 py-1.5 text-sm text-white hover:bg-slate-700" type="submit">创建团队</button>
+    </form>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

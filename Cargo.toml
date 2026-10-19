@@ -20,6 +20,8 @@ members = [
     # S5 网关：AGENT 管理平台 + 桥接面
     "crates/agent-gateway",
     "crates/ts-engine",
+    # 插件库平台（独立于 agent 运行时）
+    "crates/plugin-hub",
 ]
 resolver = "2"
 
@@ -46,7 +48,21 @@ sha2 = "0.10"
 base64 = "0.22"
 
 # HTTP 与 WebSocket 服务端（网关：静态托管 + /rpc 统一在一个 Router 里）
-axum = { version = "0.8", features = ["ws"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
+axum-extra = { version = "0.10", features = ["cookie", "cookie-signed", "multipart"] }
+tower-http = { version = "0.6", features = ["trace", "compression-gzip", "fs", "limit"] }
+
+# 插件库平台：SQLite + SSR 模板 + 上传
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
+askama = "0.12"
+argon2 = "0.5"
+rand = "0.8"
+hex = "0.4"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+pulldown-cmark = "0.12"
+ammonia = "4"
+urlencoding = "2"
+hmac = "0.12"
 
 # 日志与错误处理
 tracing = "0.1"

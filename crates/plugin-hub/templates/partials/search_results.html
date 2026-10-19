@@ -1,0 +1,9 @@
+{% if plugins.is_empty() %}
+<p class="p-3 text-sm text-slate-500">没有匹配「{{ q }}」的插件。</p>
+{% else %}
+<div class="grid gap-3 sm:grid-cols-2">
+  {% for p in plugins %}
+  {% include "partials/plugin_card.html" %}
+  {% endfor %}
+</div>
+{% endif %}

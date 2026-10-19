@@ -198,6 +198,7 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
 - **`crates/agent-rpc`（S4 拆出，src 20 文件 / 约 9.5k 行）** —— 桥接面：`server/`（`dispatch/` 77 个方法的 JSON-RPC 分发、`ws.rs` 宿主、`emitter.rs` 快照合帧、`fs_service.rs`）、`state/`（`AgentStore`，**给界面看的投影**）、`runner/`（引擎调用 + 基座一等事件 `AgentEventBody` 直连投影至 UI store）。**依赖方向单向：`agent-rpc → agent-node`**
 - **`crates/agent-gateway`（S5 新建）** —— a-da 网关，三合一：**AGENT 管理平台**（`registry.rs` 实例注册表 / `supervisor.rs` 生命周期）+ **交互平台**（S6：`delegate.rs` 派活/**多轮续跑**/取消跨网关）+ **桥接平台**（`relay.rs` 路由与透传）+ **WEB 接入面**（S7：`auth.rs` token/作用域/Origin/**配对码**）。二进制 `ada-gateway`（打印 `A_DA_GATEWAY_READY {port}`）。**只依赖线协议 `agent-proto`**——不含引擎（INV-1）、不缓存会话状态（INV-8），由 `verify-wiring` check J 守着。🔴 **非回环 `--host` 必须配 `--token`，且必须显式 `--allow-plaintext`**（网关只提供明文 `ws://`，明文上的 token 可嗅探；反代终止 TLS 时由人确认）。两条都**拒绝启动**而不是警告——失败安全
 - `crates/ts-engine` 插件运行时（Boa + oxc）；插件契约与平台说明见 [docs/plugins/README.md](docs/plugins/README.md)
+- `crates/plugin-hub` **插件库平台**（独立于 agent）：Axum MVC + SQLx(SQLite) + Askama SSR + HTMX/Alpine/Tailwind；入口见 [crates/plugin-hub/README.md](crates/plugin-hub/README.md)
 - `products/ada-coding` 产品二进制（`--host/--port/--token/--parent-pid/--workspace`）
 - **PM 不是第二个产品**（2026-10-11 降级）：它是 `products/ada-coding` 的**模式预设**
   （`products/ada-coding/modes/pm.agent.spec.json`）——同一个二进制、同一处装配函数

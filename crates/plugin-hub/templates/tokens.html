@@ -1,0 +1,69 @@
+{% extends "layout.html" %}
+{% block title %}API Token · a_da 插件库{% endblock %}
+{% block content %}
+<div class="mx-auto max-w-3xl">
+  <h1 class="text-2xl font-semibold">API Token</h1>
+  <p class="mt-1 text-sm text-slate-500">用于脚本/CI 调用只读或读写 API。Token 只显示一次。</p>
+  {% if let Some(token) = new_token.as_ref() %}
+  <div class="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4" x-data="{copied:false}">
+    <p class="text-xs font-medium text-emerald-800">新 Token（只显示这一次，请立即保存）</p>
+    <div class="mt-2 flex items-center gap-2">
+      <code class="min-w-0 flex-1 break-all rounded-lg bg-white px-3 py-2 text-xs">{{ token }}</code>
+      <button type="button" class="rounded-lg border border-emerald-300 bg-white px-2.5 py-1.5 text-xs text-emerald-800"
+              @click="navigator.clipboard.writeText('{{ token }}'); copied=true; setTimeout(()=>copied=false,1500)"
+              x-text="copied ? '已复制' : '复制'">复制</button>
+    </div>
+  </div>
+  {% endif %}
+  {% if let Some(error) = error.as_ref() %}
+  <div class="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{{ error }}</div>
+  {% endif %}
+
+  <form method="post" action="/settings/tokens" class="mt-6 space-y-4 rounded-2xl border border-slate-200 bg-white p-5">
+    <input type="hidden" name="_csrf" value="{{ common.csrf }}">
+    <label class="block">
+      <span class="text-sm font-medium">名称</span>
+      <input name="name" required maxlength="60" placeholder="CI / local script"
+             class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
+    </label>
+    <div>
+      <span class="text-sm font-medium">作用域</span>
+      <div class="mt-2 flex gap-4 text-sm text-slate-600">
+        <label class="flex items-center gap-1.5"><input type="checkbox" name="read" value="1" checked> 只读（read）</label>
+        <label class="flex items-center gap-1.5"><input type="checkbox" name="write" value="1"> 读写（write）</label>
+      </div>
+      <p class="mt-1 text-xs text-slate-500">只读用于列表/详情；读写额外允许创建插件、发布版本与 Star。</p>
+    </div>
+    <button type="submit" class="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700">创建 Token</button>
+  </form>
+
+  <h2 class="mt-8 text-lg font-semibold">已有 Token</h2>
+  <div class="mt-3 divide-y divide-slate-100 rounded-2xl border border-slate-200 bg-white">
+    {% for t in tokens %}
+    <div class="flex flex-wrap items-center justify-between gap-3 p-4">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="text-sm font-medium">{{ t.name }}</span>
+          {% if t.revoked() %}<span class="rounded bg-rose-50 px-1.5 py-0.5 text-[10px] text-rose-700">已撤销</span>{% endif %}
+        </div>
+        <code class="mt-1 block truncate text-xs text-slate-500">{{ t.prefix }}</code>
+        <div class="mt-1 text-[11px] text-slate-400">作用域：{{ t.scopes }} · 创建 {{ t.created_text() }} · 最近使用 {{ t.last_used_text() }}</div>
+      </div>
+      {% if !t.revoked() %}
+      <form method="post" action="/settings/tokens/{{ t.id }}/revoke">
+        <input type="hidden" name="_csrf" value="{{ common.csrf }}">
+        <button class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs text-rose-700 hover:bg-rose-100" type="submit">撤销</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endfor %}
+    {% if tokens.is_empty() %}<p class="p-4 text-sm text-slate-500">还没有 Token。</p>{% endif %}
+  </div>
+
+  <div class="mt-6 rounded-2xl border border-slate-200 bg-white p-5 text-xs text-slate-600">
+    <p class="font-medium text-slate-800">使用方式</p>
+    <pre class="mt-2 overflow-x-auto rounded-lg bg-slate-950 p-3 text-[11px] text-slate-100">curl -H "Authorization: Bearer ada_pat_..." \
+  http://127.0.0.1:8787/api/v1/plugins</pre>
+  </div>
+</div>
+{% endblock %}

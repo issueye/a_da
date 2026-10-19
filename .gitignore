@@ -29,3 +29,6 @@ desktop-ui/bun.lock
 # 用户本地配置临时目录
 .a-da/
 
+# 插件库平台运行时（SQLite 库 + 上传的 ZIP 资产）
+/data/
+

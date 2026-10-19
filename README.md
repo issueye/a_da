@@ -264,6 +264,20 @@ bun run electron:pack            # → dist/electron/win-unpacked
 `--script-sandbox inprocess|subprocess`（插件脚本的执行档位）；通常由网关或 Electron 宿主注入，
 不需要手敲。
 
+### 插件库平台（Plugin Hub）
+
+类似 GitHub 的插件发布/下载平台，独立于 agent 运行时：
+
+```bash
+cargo run -p plugin-hub
+# 打开 http://127.0.0.1:8787
+```
+
+技术栈：Rust + Axum MVC + SQLx(SQLite) + Askama SSR + **本地静态** HTMX / Alpine.js / Tailwind CSS。
+支持注册登录、组织/团队、GitHub OAuth、API Token、Webhook、创建插件、README、标签、
+版本 ZIP 上传/下载、搜索与 Star。
+配置项与路由清单见 [crates/plugin-hub/README.md](crates/plugin-hub/README.md)。
+
 **数据目录**：配置、会话流水、插件、调试日志都在 `~/.a-da` 下；
 `A_DA_HOME` 可以换掉这个目录，`A_DA_CONFIG` 可以换掉配置文件路径。
 
@@ -299,6 +313,7 @@ crates/
   agent-gateway/       网关：注册表 / 监督 / 委派 / 路由 / 鉴权 / 工作区门户
   agent-conformance/   端口契约 + 不变量 + golden 夹具
   ts-engine/           插件运行时（Boa + oxc）
+  plugin-hub/          插件库平台：Axum + SQLx(SQLite) + Askama SSR + 本地 HTMX/Alpine/Tailwind
 products/
   ada-coding/          产品声明 + modes/pm.agent.spec.json（PM 模式预设）+ 极小 main
   ada-skeleton/        极简骨架（用于验证"产品只是一份声明"）

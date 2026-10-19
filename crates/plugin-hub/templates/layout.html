@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}a_da 插件库{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/alpine.min.js" defer></script>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-900 antialiased">
+  <header class="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur">
+    <div class="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3">
+      <a href="/" class="flex items-center gap-2 font-semibold tracking-tight">
+        <span class="grid h-8 w-8 place-items-center rounded-lg bg-slate-900 text-sm text-white">a_da</span>
+        <span class="hidden sm:inline">插件库</span>
+      </a>
+      <nav class="flex items-center gap-1 text-sm text-slate-600">
+        <a class="rounded-md px-2.5 py-1.5 hover:bg-slate-100" href="/plugins">浏览</a>
+        <a class="rounded-md px-2.5 py-1.5 hover:bg-slate-100" href="/orgs">组织</a>
+        {% if common.current_user.is_some() %}
+        <a class="rounded-md px-2.5 py-1.5 hover:bg-slate-100" href="/plugins/new">发布</a>
+        {% endif %}
+      </nav>
+      <form class="ml-auto hidden flex-1 max-w-md items-center sm:flex" action="/plugins" method="get">
+        <div class="relative w-full">
+          <input name="q" value="{{ common.query }}" placeholder="搜索插件、作者、标签…"
+                 class="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 pr-9 text-sm outline-none focus:border-slate-500">
+          <button class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400" title="搜索">⌕</button>
+        </div>
+      </form>
+      <div class="ml-auto flex items-center gap-2 text-sm sm:ml-0">
+        {% if let Some(u) = common.current_user.as_ref() %}
+        <div class="relative" x-data="{open:false}">
+          <button @click="open=!open" class="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-slate-100">
+            <span class="grid h-6 w-6 place-items-center rounded-full bg-blue-100 text-xs font-semibold text-blue-700">{{ u.username.chars().next().unwrap_or('?') }}</span>
+            <span class="hidden max-w-32 truncate md:inline">@{{ u.username }}</span>
+          </button>
+          <div x-show="open" @click.outside="open=false" x-cloak
+               class="absolute right-0 mt-1 w-44 rounded-xl border border-slate-200 bg-white p-1 shadow-lg">
+            <a class="block rounded-lg px-3 py-2 hover:bg-slate-50" href="/u/{{ u.username }}">我的主页</a>
+            <a class="block rounded-lg px-3 py-2 hover:bg-slate-50" href="/plugins/new">发布插件</a>
+            <a class="block rounded-lg px-3 py-2 hover:bg-slate-50" href="/settings/tokens">API Token</a>
+            <a class="block rounded-lg px-3 py-2 hover:bg-slate-50" href="/settings/webhooks">Webhook</a>
+            <form method="post" action="/logout">
+              <input type="hidden" name="_csrf" value="{{ common.csrf }}">
+              <button class="block w-full rounded-lg px-3 py-2 text-left text-rose-600 hover:bg-rose-50" type="submit">退出登录</button>
+            </form>
+          </div>
+        </div>
+        {% else %}
+        <a class="rounded-lg px-2.5 py-1.5 hover:bg-slate-100" href="/login">登录</a>
+        <a class="rounded-lg bg-slate-900 px-3 py-1.5 text-white hover:bg-slate-700" href="/register">注册</a>
+        {% endif %}
+      </div>
+    </div>
+    <div class="px-4 pb-3 sm:hidden">
+      <form action="/plugins" method="get">
+        <input name="q" value="{{ common.query }}" placeholder="搜索插件…"
+               class="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-slate-500">
+      </form>
+    </div>
+  </header>
+
+  {% if let Some(f) = common.flash.as_ref() %}
+  <div class="mx-auto mt-4 max-w-6xl px-4">
+    <div class="rounded-xl border px-4 py-3 text-sm {% if f.kind == "success" %}border-emerald-200 bg-emerald-50 text-emerald-800{% else %}border-rose-200 bg-rose-50 text-rose-800{% endif %}">
+      {{ f.message }}
+    </div>
+  </div>
+  {% endif %}
+
+  <main class="mx-auto max-w-6xl px-4 py-8">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="mx-auto max-w-6xl px-4 py-10 text-xs text-slate-500">
+    <div class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-5">
+      <span>a_da 插件库 · 本地优先的插件分发平台</span>
+      <span class="font-mono">Axum · SQLx · Askama · HTMX</span>
+    </div>
+  </footer>
+</body>
+</html>

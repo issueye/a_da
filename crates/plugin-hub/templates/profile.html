@@ -1,0 +1,21 @@
+{% extends "layout.html" %}
+{% block title %}@{{ profile.username }} · a_da 插件库{% endblock %}
+{% block content %}
+<div class="flex flex-wrap items-center gap-5 rounded-2xl border border-slate-200 bg-white p-6">
+  <div class="grid h-16 w-16 place-items-center rounded-2xl bg-blue-100 text-2xl font-semibold text-blue-700">{{ profile.username.chars().next().unwrap_or('?') }}</div>
+  <div>
+    <h1 class="text-xl font-semibold">@{{ profile.username }}</h1>
+    <p class="mt-1 text-sm text-slate-500">加入于 {{ profile.joined }} · {{ profile.plugin_count }} 个插件</p>
+  </div>
+</div>
+<h2 class="mt-8 text-lg font-semibold">插件</h2>
+{% if plugins.is_empty() %}
+<p class="mt-3 text-sm text-slate-500">这个作者还没有发布插件。</p>
+{% else %}
+<div class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+  {% for p in plugins %}
+  {% include "partials/plugin_card.html" %}
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

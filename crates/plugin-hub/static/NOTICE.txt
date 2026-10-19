@@ -1,0 +1,8 @@
+Vendored frontend assets
+========================
+
+- htmx 2.0.4 — MIT — https://htmx.org/
+- Alpine.js 3.14.8 — MIT — https://alpinejs.dev/
+- Tailwind CSS 3.4.19 (generated app.css) — MIT — https://tailwindcss.com/
+
+app.css is generated from templates/**/*.html + static/input.css; see README for the command.
