@@ -178,6 +178,30 @@ function findBinary(baseName: string, customBin?: string | null): string | null 
   return null
 }
 
+/**
+ * 前端产物目录（供网关 `--ui-dir` 使用）。
+ *
+ * 打包后网关读不到 asar 里的资源，所以 electron-builder 把 `desktop-ui/dist`
+ * 额外复制到了 `resources/bin/ui`；开发时直接用仓库里的 dist。
+ * 只认**含 index.html** 的目录，与网关侧 `StaticSite::resolve` 的判据保持一致。
+ */
+function findUiDir(): string | null {
+  const candidates = [
+    process.resourcesPath ? path.join(process.resourcesPath, 'bin', 'ui') : '',
+    resolveAppPath('desktop-ui', 'dist') ?? '',
+    path.resolve(app.getAppPath(), '../desktop-ui/dist'),
+  ].filter(Boolean) as string[]
+
+  for (const dir of candidates) {
+    try {
+      if (fs.existsSync(path.join(dir, 'index.html'))) return dir
+    } catch {
+      /* 路径不可读就试下一个 */
+    }
+  }
+  return null
+}
+
 // 6. 进程状态与看门狗
 interface CoreState {
   alive: boolean
@@ -301,8 +325,21 @@ async function startGatewaySupervisor(): Promise<void> {
 
   appendLauncherLog(`正在拉起网关进程: ${gatewayBin}`)
 
-  const args = ['--port', '0', '--allow-origin', '*']
+  // 🔴 **固定端口**：网页访问要"打开就能用"，端口就不能是随机的（以前是 `--port 0`，
+  // 浏览器根本猜不到桌面端把网关起在哪个端口）。被占用时网关自己会顺延，实际端口
+  // 从 READY 行里拿，界面上的"浏览器打开"按钮据此拼地址。
+  const args = ['--port', '52353', '--allow-origin', '*']
   const effectiveWorkspace = cli.workspace.trim()
+
+  // 前端产物目录：网关是独立的 Rust 进程，**读不到 asar 里的文件**。
+  // 打包时它被复制到 `resources/bin/ui`（electron-builder.json 的 extraResources），
+  // 开发时指向仓库里的 desktop-ui/dist。
+  const uiDir = findUiDir()
+  if (uiDir) {
+    args.push('--ui-dir', uiDir)
+  } else {
+    appendLauncherLog('[警告] 未找到前端产物（desktop-ui/dist），网页访问只会看到一页提示')
+  }
 
   if (effectiveWorkspace) {
     args.push('--workspace', effectiveWorkspace)
@@ -353,6 +390,9 @@ async function startGatewaySupervisor(): Promise<void> {
               : `ws://127.0.0.1:${port}/rpc`
             coreState.error = null
             appendLauncherLog(`ada-gateway 网关就绪: ${coreState.url}`)
+            appendLauncherLog(
+              `网页访问: http://127.0.0.1:${port}/（页面与 /rpc 同端口，可直接在浏览器打开）`
+            )
             resolveReadySignal()
           }
         } catch (e) {

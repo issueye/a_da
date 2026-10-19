@@ -34,9 +34,10 @@
 use std::sync::Arc;
 
 use agent_gateway::auth::{is_loopback, AuthConfig};
-use agent_gateway::static_ui::{self, StaticSite};
+use agent_gateway::relay::AppState;
+use agent_gateway::static_ui::StaticSite;
 use agent_gateway::supervisor::ReapPolicy;
-use agent_gateway::{relay::serve_client, Gateway};
+use agent_gateway::Gateway;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 
@@ -115,8 +116,7 @@ async fn main() -> anyhow::Result<()> {
         gateway.workspaces.record(&workspace, Some(&args.product));
     }
 
-    let listener = TcpListener::bind((args.host.as_str(), args.port)).await?;
-    let port = listener.local_addr()?.port();
+    let (listener, port) = bind_listener(&args.host, args.port).await?;
     let pid = std::process::id();
 
     println!(
@@ -193,44 +193,104 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    loop {
-        let (stream, peer) = match listener.accept().await {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("接受连接失败：{e}");
-                continue;
-            }
-        };
-        let gw = gateway.clone();
-        let default_ws = workspace.clone();
-        let site = site.clone();
-        tokio::spawn(async move {
-            // 🔴 先分流，再交给任何一方。
-            //
-            // `peek_head` **只读不消费**：WS 升级请求被识别出来之后，`stream` 里一个字节
-            // 都没少，`serve_client` 照旧自己完成握手；普通 HTTP 请求则由静态托管响应。
-            // 反过来（先交给 tungstenite）不行——它对非升级请求直接断连，
-            // 浏览器会看到一个空白页而不是"这里是网关"。
-            let head = match static_ui::peek_head(&stream).await {
-                Ok(head) => head,
-                Err(e) => {
-                    warn!("读取请求头失败（{peer}）：{e}");
-                    return;
-                }
-            };
-
-            if static_ui::is_websocket_upgrade(&head) {
-                // S7：`?workspace=` 与 `?token=` 都在**握手里**解析（`serve_client` 内），
-                // 这里只把网关默认工作区作为兜底传进去。
-                // 这让"一个网关管多个工作区"在不改协议的前提下可用。
-                if let Err(e) = serve_client(gw, stream, Some(default_ws)).await {
-                    warn!("客户端连接结束（{}）：{e}", peer);
-                }
-            } else if let Err(e) = static_ui::respond(stream, &head, site.as_ref()).await {
-                warn!("HTTP 响应失败（{peer}）：{e}");
-            }
-        });
+    // ── 路由：页面与 WebSocket 在同一个 axum Router 里 ──────────────────────
+    //
+    // 以前这里是"裸 TCP 监听 + 手写 HTTP 状态行 + tungstenite 握手"三套东西拼在一起，
+    // 还得先 peek 请求头再分流。现在 `/rpc` 与静态资源是同一个 service 的两条路由：
+    // 升级、校验、连接收尾全部由 hyper 负责，没有"我们绕过它自己 close"的路径
+    // （那个路径正是之前 RST/白屏的来源）。
+    if let Err(e) = write_endpoint_file(port, pid, &workspace, auth_required) {
+        warn!("写入网关发现文件失败（不影响服务）：{e}");
     }
+
+    let state = AppState {
+        gateway: gateway.clone(),
+        default_workspace: workspace.clone(),
+        site: site.map(Arc::new),
+    };
+    let app = agent_gateway::router::router(state);
+
+    info!("HTTP 已就绪（axum）：页面 / 与 WebSocket /rpc 共用端口 {port}");
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+/// 绑定监听端口。
+///
+/// 🔴 桌面端会**固定**传 52353：浏览器要"打开就能用"，端口就不能是随机的。
+/// 端口被占用时顺延（52353 → 52363），只有显式 `--port 0` 才让内核分配。
+/// 实际端口会写进发现文件（`gateway_endpoint.json`），界面据此给出可点击的地址。
+async fn bind_listener(host: &str, port: u16) -> anyhow::Result<(TcpListener, u16)> {
+    if port == 0 {
+        let listener = TcpListener::bind((host, 0)).await?;
+        let actual = listener.local_addr()?.port();
+        return Ok((listener, actual));
+    }
+
+    let mut last_err = None;
+    for candidate in port..=port.saturating_add(10) {
+        match TcpListener::bind((host, candidate)).await {
+            Ok(listener) => {
+                if candidate != port {
+                    warn!("端口 {port} 被占用，顺延到 {candidate}（地址见 gateway_endpoint.json）");
+                }
+                return Ok((listener, candidate));
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "无法绑定 {host}:{port}..{}：{}",
+        port.saturating_add(10),
+        last_err.map(|e| e.to_string()).unwrap_or_default()
+    ))
+}
+
+/// 应用目录（`A_DA_HOME` 优先，否则 `~/.a-da`）。
+fn app_home() -> std::path::PathBuf {
+    if let Ok(home) = std::env::var("A_DA_HOME") {
+        if !home.trim().is_empty() {
+            return std::path::PathBuf::from(home.trim());
+        }
+    }
+    let user = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    if user.is_empty() {
+        std::path::PathBuf::from(".a-da")
+    } else {
+        std::path::PathBuf::from(user).join(".a-da")
+    }
+}
+
+/// 写一份端点发现文件：`<app_home>/gateway_endpoint.json`。
+///
+/// 浏览器与外部工具都不知道"这次网关起在哪个端口"（桌面端会顺延），文件就是答案。
+/// **不写 token**：凭据只从启动参数或 `gateway.pair` 配对码来，不落在磁盘上等人捡。
+fn write_endpoint_file(
+    port: u16,
+    pid: u32,
+    workspace: &str,
+    auth_required: bool,
+) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let home = app_home();
+    std::fs::create_dir_all(&home)?;
+    let payload = serde_json::json!({
+        "port": port,
+        "pid": pid,
+        "workspace": workspace,
+        "url": format!("http://127.0.0.1:{port}/"),
+        "rpc": format!("ws://127.0.0.1:{port}/rpc"),
+        "authRequired": auth_required,
+    });
+
+    let mut file = std::fs::File::create(home.join("gateway_endpoint.json"))?;
+    let text = serde_json::to_string_pretty(&payload)
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    file.write_all(text.as_bytes())
 }
 
 struct Args {

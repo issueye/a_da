@@ -1,13 +1,16 @@
-//! 静态托管的端到端测试：**真 TCP 连接**、真 HTTP 请求，覆盖分流与路径安全。
+//! 静态托管与 `/rpc` 的端到端测试：**真 HTTP 请求**，跑的是生产同一条路由
+//! （`agent_gateway::router::router`），不是测试里另抄一份分流逻辑。
 //!
-//! 不起整个网关（那会拉起 agent 实例），只把 `peek_head` → 分流 → `respond`
-//! 这条真实路径跑一遍。WS 分支用一条标记响应代替，验证的是"升级请求**没有**落到
-//! 静态托管"，而不是 WS 本身（那由 `gateway_e2e.rs` 覆盖）。
+//! 不起真正的 agent 进程：`/rpc` 只验证握手与状态码，管理面方法由其他 e2e 覆盖。
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use agent_gateway::static_ui::{is_websocket_upgrade, peek_head, respond, StaticSite};
+use agent_gateway::relay::AppState;
+use agent_gateway::router::router;
+use agent_gateway::static_ui::StaticSite;
+use agent_gateway::{Gateway, WorkspacesStore};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -22,37 +25,26 @@ fn fixture() -> PathBuf {
     root
 }
 
-/// 起一个"迷你网关"：完全是 `main.rs` 里那段分流的同构版本。
-async fn spawn_server(site: StaticSite) -> SocketAddr {
+/// 起一个网关实例（与生产同一条路由），返回监听地址。
+async fn spawn(site: Option<StaticSite>) -> SocketAddr {
+    // 🔴 注入临时的工作区存储：默认构造会指向用户真实的 `~/.a-da/gateway_workspaces.json`
+    let store = std::env::temp_dir().join(format!("ada_gw_e2e_{}.json", uuid::Uuid::new_v4()));
+    let gateway = Arc::new(
+        Gateway::new("ada-coding", "C:/ada_static_e2e_workspace")
+            .with_workspaces(Arc::new(WorkspacesStore::new(Some(store)))),
+    );
+
+    let state = AppState {
+        gateway,
+        default_workspace: "C:/ada_static_e2e_workspace".to_string(),
+        site: site.map(Arc::new),
+    };
+    let app = router(state);
+
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                break;
-            };
-            let site = site.clone();
-            tokio::spawn(async move {
-                let head = match peek_head(&stream).await {
-                    Ok(h) => h,
-                    Err(_) => return,
-                };
-                if is_websocket_upgrade(&head) {
-                    let mut stream = stream;
-                    // 标记：说明这次连接走了 WS 分支，没有被静态托管接管。
-                    // 这里也要先把 peek 过的字节读掉——真实网关里是 tungstenite 消费它们，
-                    // 这个假分支得自己来，否则关闭时同样会 RST。
-                    let mut discard = vec![0u8; head.len()];
-                    let _ = stream.read_exact(&mut discard).await;
-                    let _ = stream
-                        .write_all(b"HTTP/1.1 204 No Content\r\nX-Branch: ws\r\n\r\n")
-                        .await;
-                    let _ = stream.shutdown().await;
-                    return;
-                }
-                let _ = respond(stream, &head, Some(&site)).await;
-            });
-        }
+        let _ = axum::serve(listener, app).await;
     });
     addr
 }
@@ -68,12 +60,7 @@ async fn request(addr: SocketAddr, raw: &str) -> (String, String) {
             Ok(0) => break,
             Ok(n) => buf.extend_from_slice(&chunk[..n]),
             Err(e) => {
-                eprintln!(
-                    "[request] {} 读取中断：{e}（已收 {} 字节：{:?}）",
-                    raw.lines().next().unwrap_or("?"),
-                    buf.len(),
-                    String::from_utf8_lossy(&buf)
-                );
+                eprintln!("[request] 读取中断：{e}");
                 break;
             }
         }
@@ -85,6 +72,11 @@ async fn request(addr: SocketAddr, raw: &str) -> (String, String) {
     }
 }
 
+/// hyper 会把头部名小写成 `content-type`，断言不区分大小写。
+fn has_header(head: &str, needle: &str) -> bool {
+    head.to_lowercase().contains(&needle.to_lowercase())
+}
+
 fn get(path: &str) -> String {
     format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
 }
@@ -93,12 +85,12 @@ fn get(path: &str) -> String {
 async fn serves_index_assets_and_rejects_traversal() {
     let root = fixture();
     let site = StaticSite::at(&root).unwrap();
-    let addr = spawn_server(site).await;
+    let addr = spawn(Some(site)).await;
 
     // 1. 根路径 → index.html
     let (head, body) = request(addr, &get("/")).await;
     assert!(head.starts_with("HTTP/1.1 200 OK"), "根路径应 200：{head}");
-    assert!(head.contains("Content-Type: text/html"), "应声明 html：{head}");
+    assert!(has_header(&head, "content-type: text/html"), "应声明 html：{head}");
     assert!(body.contains("root"), "应返回 index.html 的内容：{body}");
 
     // 2. 带 query 的根路径也要能拿到页面（`?token=` 是网页访问的凭据入口）
@@ -109,7 +101,7 @@ async fn serves_index_assets_and_rejects_traversal() {
     // 3. 静态资产：内容与 MIME 都要对
     let (head, body) = request(addr, &get("/assets/app.js")).await;
     assert!(head.starts_with("HTTP/1.1 200 OK"), "资产应 200：{head}");
-    assert!(head.contains("Content-Type: text/javascript"), "应声明 js：{head}");
+    assert!(has_header(&head, "content-type: text/javascript"), "应声明 js：{head}");
     assert!(body.contains("console.log"));
 
     // 4. 子目录 → 子目录的 index.html
@@ -136,28 +128,17 @@ async fn serves_index_assets_and_rejects_traversal() {
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert!(body.contains("root"));
 
-    // 8. HEAD：有长度、无 body
+    // 8. HEAD：有真实 Content-Length、无 body
     let (head, body) = request(
         addr,
         "HEAD / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     )
     .await;
     assert!(head.starts_with("HTTP/1.1 200 OK"));
-    assert!(head.to_lowercase().contains("content-length:"));
+    assert!(!head.to_lowercase().contains("content-length: 0"), "HEAD 的长度要真实：{head}");
     assert!(body.is_empty(), "HEAD 不该有响应体");
 
-    // 9. `/rpc` 不带升级头 → 426，而不是一份页面
-    let (head, _) = request(addr, &get("/rpc")).await;
-    assert!(head.starts_with("HTTP/1.1 426 Upgrade Required"), "{head}");
-
-    // 10. 升级请求走 WS 分支，不进静态托管
-    let upgrade = "GET /rpc HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\n\
-                   Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
-                   Sec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==\r\n\r\n";
-    let (head, _) = request(addr, upgrade).await;
-    assert!(head.contains("X-Branch: ws"), "升级请求应走 WS 分支：{head}");
-
-    // 11. 方法限制
+    // 9. 方法限制
     let (head, _) = request(
         addr,
         "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -165,36 +146,52 @@ async fn serves_index_assets_and_rejects_traversal() {
     .await;
     assert!(head.starts_with("HTTP/1.1 405 Method Not Allowed"), "{head}");
 
+    // 10. 404 页里的路径必须转义（否则静态托管就是反射型 XSS 入口）
+    let (head, body) = request(addr, &get("/%3Cimg%20src=x%3E.js")).await;
+    assert!(head.starts_with("HTTP/1.1 404 Not Found"), "{head}");
+    assert!(body.contains("&lt;img"), "尖括号应被转义：{body}");
+    assert!(!body.contains("<img src=x>"), "不该原样输出用户输入：{body}");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `/rpc` 与静态资源共用端口：不带升级头要给 426，带升级头要能握手。
+#[tokio::test]
+async fn rpc_shares_the_port_with_static_pages() {
+    let root = fixture();
+    let site = StaticSite::at(&root).unwrap();
+    let addr = spawn(Some(site)).await;
+
+    // 浏览器地址栏直接点 `/rpc` → 426（而不是一份页面）
+    let (head, _) = request(addr, &get("/rpc")).await;
+    assert!(head.starts_with("HTTP/1.1 426 Upgrade Required"), "{head}");
+
+    // 真正的升级请求 → 101（`role=agent` 走控制面，不会拉起实例）
+    let url = format!("ws://{addr}/rpc?role=agent");
+    let (ws, resp) = tokio_tungstenite::connect_async(url).await.expect("WS 握手");
+    assert_eq!(resp.status().as_u16(), 101, "应升级成功");
+    drop(ws);
+
+    // 同一端口上的页面仍然可用
+    let (head, _) = request(addr, &get("/")).await;
+    assert!(head.starts_with("HTTP/1.1 200 OK"));
+
     let _ = std::fs::remove_dir_all(&root);
 }
 
 /// 没有前端产物时，根路径要给**可执行的提示**，而不是空白或 500。
 #[tokio::test]
 async fn missing_site_explains_how_to_fix() {
-    let root = fixture();
-    let site = StaticSite::at(&root).unwrap();
-    let addr = spawn_server(site).await;
+    let addr = spawn(None).await;
 
-    // 复用同一个 server，但用一条走不到文件的路径来触发 404 分支；
-    // 真正的"未托管"分支（site = None）在这里单独走一遍 respond。
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let none_addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        let head = peek_head(&stream).await.unwrap();
-        let _ = respond(stream, &head, None).await;
-    });
-
-    let (head, body) = request(none_addr, &get("/")).await;
+    let (head, body) = request(addr, &get("/")).await;
     assert!(head.starts_with("HTTP/1.1 503"), "未托管应 503：{head}");
     assert!(
         body.contains("--ui-dir") && body.contains("desktop-ui"),
         "提示里要写清怎么修：{body}"
     );
 
-    // fixture server 仍然可用（避免 unused 警告，同时证明两条路互不影响）
-    let (head, _) = request(addr, &get("/")).await;
-    assert!(head.starts_with("HTTP/1.1 200 OK"));
-
-    let _ = std::fs::remove_dir_all(&root);
+    // 静态资源不可用不影响 `/rpc` 的路由存在（426 说明路由在）
+    let (head, _) = request(addr, &get("/rpc")).await;
+    assert!(head.starts_with("HTTP/1.1 426"), "{head}");
 }

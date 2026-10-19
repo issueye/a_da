@@ -298,51 +298,75 @@ ada-gateway --port 52353 --workspace E:/proj
 # 浏览器打开 http://127.0.0.1:52353/
 ```
 
-### 3.5.1 分流规则
+### 3.5.1 路由：axum 统一
 
-同一个监听端口上按请求头分流，**两条路互不影响**：
+页面与 WebSocket 在**同一个 axum Router** 里，只有两条路由：
 
 | 请求 | 去向 |
 |---|---|
-| `GET /rpc` + `Upgrade: websocket` | 原有 WS 通道（`serve_client`，鉴权/Origin 规则不变） |
-| `GET /`、`GET /assets/*` | 静态产物（`desktop-ui/dist`，目录 → `index.html`） |
+| `GET /rpc` + `Upgrade: websocket` | `relay::ws_handler`：先鉴权（Origin / token）再升级 |
+| `GET /`、`GET /assets/*` | `static_ui::static_handler`：前端产物（目录 → `index.html`） |
 | `GET /rpc`（无升级头） | `426 Upgrade Required` |
 | `POST` 等非 GET/HEAD | `405 Method Not Allowed` |
 
-实现要点：先用 `TcpStream::peek` **只读不消费**地看一眼前 16 KB，认出升级请求就原样交给
-tungstenite（字节一个不少）；否则由静态托管写 HTTP 响应。**不能反过来**——`accept_hdr_async`
-对非升级请求直接断连，浏览器只会看到空白页。
+组装点是 `crates/agent-gateway/src/router.rs` 的 `router(state)`：**生产与集成测试共用同一份**，
+测试不会因为"另抄了一段分流"而只覆盖到其中一条路。
 
-🔴 看过之后必须真正把字节读走（`consume_peeked` + 收尾 `drain_input`）：接收缓冲里有未读数据时
-`close` 发的是 **RST 而不是 FIN**，客户端会 `ConnectionReset`（Windows `os error 10054`），
-表现是"页面偶尔白屏"。这一条是端到端测试抓出来的，不是理论。
+为什么不再手写 HTTP：早先为了在一个端口上分流，用的是"`TcpStream::peek` 读一眼 → 非升级请求
+自己写状态行"。它踩过一个很实的坑——`peek` 不消费请求字节，响应写完直接 `close` 时接收缓冲里
+还有未读数据，内核发的是 **RST 而不是 FIN**，客户端拿到 `ConnectionReset`（Windows `os error 10054`，
+表现为页面偶尔白屏）。换成 axum 后这条路径**结构性消失**：响应与连接都由 hyper 收尾，
+没有"绕过它自己 close"的地方。
 
-### 3.5.2 产物目录怎么找
+### 3.5.2 鉴权位置
+
+- **静态资源不需要 token**——页面只是 JS/CSS，不含任何用户数据；要 token 才能打开"输入 token 的页面"是死锁。
+- **`/rpc` 在升级之前鉴权**：Origin 不合法 → `403`，token 不对 → `401`（都是普通 HTTP 状态码，
+  浏览器与 curl 直接看得到）。未认证连接只能调 `gateway.info` / `gateway.pair`，
+  而且**不绑定 agent 实例**——先升级再鉴权，会让一个不带 token 的连接也能触发 `ensure_agent` 起进程。
+- 回环来源（`http://127.0.0.1:*` / `http://localhost:*`）默认放行；网页访问要带凭据时用
+  `?token=<t>`（前端从 `location.search` 读取）。
+
+对外部署仍然遵守第 4 节的硬规则：非回环必须 `--token` + `--allow-origin`，
+且明文 `ws://` 要 `--allow-plaintext` 显式承认。
+
+### 3.5.3 产物目录怎么找
 
 `--ui-dir <p>` → `A_DA_UI_DIR` → 可执行文件旁 `ui/` → 可执行文件旁 `../desktop-ui/dist` →
 当前目录 `desktop-ui/dist`。**只认含 `index.html` 的目录**；一个都找不到时网关照常启动，
 根路径返回 `503` 并说明怎么修——网页访问是可选能力，不做成启动前置条件。
 
-### 3.5.3 端点与凭据
+### 3.5.4 桌面端拉起的网关同样可访问
 
-前端在浏览器里**不再写死端口**：页面若来自 `http(s)://host:port`，WS 端点直接推导为
-`ws://host:port/rpc`（https → `wss`）。所以换端口、反向代理、加 TLS 都不用改前端。
+桌面端不再用 `--port 0`（随机端口，浏览器根本猜不到），改为**固定 52353**：
+被占用时网关顺延（52353 → 52363），实际端口从 READY 行里拿。每次启动都写一份发现文件
+`<A_DA_HOME>/gateway_endpoint.json`：
 
-鉴权分两层，别混：
+```json
+{
+  "port": 52353,
+  "pid": 1234,
+  "workspace": "E:/proj",
+  "url": "http://127.0.0.1:52353/",
+  "rpc": "ws://127.0.0.1:52353/rpc",
+  "authRequired": false
+}
+```
 
-- **静态资源不需要 token**——页面只是 JS/CSS，不含任何用户数据；要 token 才能打开"输入 token 的页面"是死锁。
-- **`/rpc` 照旧鉴权**。回环来源（`http://127.0.0.1:*` / `http://localhost:*`）默认放行；
-  网页访问要带凭据时用 `?token=<t>`（前端从 `location.search` 读取）。
+**不写 token**：凭据只从启动参数或 `gateway.pair` 配对码来，不落到磁盘上等人捡。
+界面「进程管理 → 浏览器打开」会拼出带 token 的地址（token 从 `core_url` 原样取，不二次编码）。
 
-对外部署仍然遵守第 4 节的硬规则：非回环必须 `--token` + `--allow-origin`，
-且明文 `ws://` 要 `--allow-plaintext` 显式承认。
+打包形态还有一个前提：网关是普通 Rust 进程，**读不到 asar 里的文件**——所以
+`electron-builder.json` 把 `desktop-ui/dist` 额外复制到 `resources/bin/ui`，
+Electron 再通过 `--ui-dir` 显式传给网关（见 `electron/main.ts` 的 `findUiDir`）。
 
-### 3.5.4 路径安全
+### 3.5.5 路径安全
 
 三道闸，任一不过一律 403：段级黑名单（`..`、反斜杠、冒号、NUL，含百分号编码后的形态）、
 `canonicalize` 后必须仍在站点根内（拦符号链接穿透）、必须指向普通文件。
 不存在的路径按"有扩展名 = 404 / 无扩展名 = 回 index.html（客户端路由兜底）"区分——
 否则 `/assets/missing.js` 会拿到一份 HTML，报出来的是 MIME 错误而不是真正的原因。
+错误页里的路径会先解码再 **HTML 转义**（`/<img src=x>.js` 不能变成标签）。
 
 ---
 

@@ -23,7 +23,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_gateway::registry::{AgentInstance, AgentStatus};
-use agent_gateway::relay::serve_client;
 use agent_gateway::Gateway;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
@@ -103,18 +102,17 @@ async fn gateway_with_stub_agent(workspace: &str) -> (Arc<Gateway>, u16) {
         last_active_ms: 1,
     });
 
+    // 与生产同一条路由（`router::router` 是唯一组装点），只是端口交给内核挑
+    let state = agent_gateway::relay::AppState {
+        gateway: gateway.clone(),
+        default_workspace: workspace.to_string(),
+        site: None,
+    };
+    let app = agent_gateway::router::router(state);
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("网关绑定");
     let gw_port = listener.local_addr().unwrap().port();
-    let gw = gateway.clone();
-    let ws = workspace.to_string();
     tokio::spawn(async move {
-        while let Ok((stream, _)) = listener.accept().await {
-            let g = gw.clone();
-            let w = ws.clone();
-            tokio::spawn(async move {
-                let _ = serve_client(g, stream, Some(w)).await;
-            });
-        }
+        let _ = axum::serve(listener, app).await;
     });
 
     (gateway, gw_port)

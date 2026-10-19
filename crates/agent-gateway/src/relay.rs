@@ -25,16 +25,23 @@
 //! 会话亲和放在**连接级**而不是帧级：帧级路由需要解析每个方法的参数去猜目标，
 //! 而连接级路由只需要一次决定——更少的状态、更少的出错面。
 
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
-use futures_util::{SinkExt, StreamExt};
-use tokio::net::TcpStream;
+use axum::extract::ws::{CloseFrame as AxCloseFrame, Message as AxMessage, WebSocket};
+use axum::extract::{OriginalUri, State, WebSocketUpgrade};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
-use crate::auth::{query_param, AuthError, AuthOutcome};
+use crate::auth::{query_param, AuthError, AuthOutcome, TokenScope};
 use crate::delegate::{
     delegate, DelegateError, DelegateOutcome, DelegationRegistry, DEFAULT_DELEGATION_TIMEOUT,
 };
@@ -378,92 +385,177 @@ impl Gateway {
     }
 }
 
-/// 处理一条客户端连接：先绑实例，再双向透传。
-pub async fn serve_client(
+/// axum 路由的共享状态。
+///
+/// `site` 是网页访问用的前端产物；`None` 时 `/` 返回一页说明，`/rpc` 完全不受影响。
+#[derive(Clone)]
+pub struct AppState {
+    pub gateway: Arc<Gateway>,
+    pub default_workspace: String,
+    pub site: Option<Arc<crate::static_ui::StaticSite>>,
+}
+
+/// 已升级连接的**适配层**：对外保持 `tungstenite::Message` 语义。
+///
+/// 为什么不在 relay 内部直接换成 axum 的消息类型：这条链条的另一头（连 agent 实例）
+/// 本来就是 `tokio_tungstenite`，而且两个方向都是**原样转发**（不解析、不改写）。
+/// 两端用同一种消息类型，转发路径才不需要来回转换；转换只发生在这层薄薄的边界上。
+pub struct ClientSocket {
+    inner: WebSocket,
+}
+
+impl ClientSocket {
+    pub fn new(inner: WebSocket) -> Self {
+        Self { inner }
+    }
+}
+
+fn ax_to_wire(msg: AxMessage) -> Message {
+    match msg {
+        AxMessage::Text(t) => Message::Text(t.as_str().to_string().into()),
+        AxMessage::Binary(b) => Message::Binary(b),
+        AxMessage::Ping(p) => Message::Ping(p),
+        AxMessage::Pong(p) => Message::Pong(p),
+        AxMessage::Close(c) => Message::Close(c.map(|f| CloseFrame {
+            code: CloseCode::from(f.code),
+            reason: f.reason.as_str().to_string().into(),
+        })),
+    }
+}
+
+fn wire_to_ax(msg: Message) -> AxMessage {
+    match msg {
+        Message::Text(t) => AxMessage::Text(t.as_str().to_string().into()),
+        Message::Binary(b) => AxMessage::Binary(b.into()),
+        Message::Ping(p) => AxMessage::Ping(p.into()),
+        Message::Pong(p) => AxMessage::Pong(p.into()),
+        Message::Close(c) => AxMessage::Close(c.map(|f| AxCloseFrame {
+            code: u16::from(f.code),
+            reason: f.reason.as_str().to_string().into(),
+        })),
+        // 低层帧（只有 `Message::Frame` 构造 API 会产生，relay 不走这条路）：
+        // 转成空二进制而不是 panic——对端应当看到"这条帧没内容"，而不是连接被炸掉。
+        Message::Frame(_) => AxMessage::Binary(Vec::new().into()),
+    }
+}
+
+impl Stream for ClientSocket {
+    type Item = Result<Message, axum::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.inner).poll_next(cx) {
+            Poll::Ready(Some(Ok(msg))) => Poll::Ready(Some(Ok(ax_to_wire(msg)))),
+            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Sink<Message> for ClientSocket {
+    type Error = axum::Error;
+
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Pin::new(&mut self.get_mut().inner).poll_ready(cx)
+    }
+
+    fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+        Pin::new(&mut self.get_mut().inner).start_send(wire_to_ax(item))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Pin::new(&mut self.get_mut().inner).poll_close(cx)
+    }
+}
+
+/// `/rpc` 的 handler：**先鉴权，再升级**。
+///
+/// 与旧实现（`accept_hdr_async` 的握手回调）的区别只有位置：拒绝现在是一个普通的
+/// HTTP 状态码（403/401），浏览器和 curl 都能直接看到原因，也不必为了拒绝去造一个空响应。
+/// 鉴权顺序保持不变，而且都在 `on_upgrade` **之前**——先升级再鉴权会让一个不带 token 的
+/// 连接也能触发 `ensure_agent`（真的把 agent 进程拉起来）。
+pub async fn ws_handler(
+    State(state): State<AppState>,
+    ws: Result<WebSocketUpgrade, axum::extract::ws::rejection::WebSocketUpgradeRejection>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Response {
+    // 不是升级请求：这是浏览器地址栏直接点了 `/rpc`，给 426 比 400 更能说明问题
+    let Ok(ws) = ws else {
+        return (
+            StatusCode::UPGRADE_REQUIRED,
+            "该路径是 WebSocket 端点（/rpc）；浏览页面请访问 /",
+        )
+            .into_response();
+    };
+
+    let gateway = state.gateway.clone();
+    let uri_text = uri.to_string();
+    let token = query_param(&uri_text, "token");
+    let workspace = query_param(&uri_text, "workspace");
+    let role = query_param(&uri_text, "role");
+    let product = query_param(&uri_text, "product");
+
+    let origin = headers.get("origin").and_then(|v| v.to_str().ok());
+    if let Err(e) = gateway.auth.check_origin(origin) {
+        warn!("拒绝接入：{e}");
+        return (StatusCode::FORBIDDEN, e.to_string()).into_response();
+    }
+    // 坏 token 直接拒（**不退化成 Anonymous**——那是静默降级）
+    let outcome = match gateway.auth.authorize(token.as_deref()) {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            warn!("拒绝接入：{e}");
+            return (StatusCode::UNAUTHORIZED, e.to_string()).into_response();
+        }
+    };
+
+    let default_workspace = state.default_workspace.clone();
+    ws.on_upgrade(move |socket| async move {
+        let socket = ClientSocket::new(socket);
+        let result = match outcome {
+            // **未认证连接不绑定任何 agent**：它只能发现，不能触达。
+            AuthOutcome::Anonymous => {
+                info!("未认证连接接入（只允许 gateway.info 发现）");
+                serve_anonymous(gateway, socket).await
+            }
+            AuthOutcome::Scoped(scope) => {
+                // **Agent / 控制面专用连接**：不触发 ensure_agent，直接进自注册通道
+                if matches!(role.as_deref(), Some("agent") | Some("control")) {
+                    info!("Agent / 控制面专用连接已接入");
+                    serve_agent_control(gateway, socket).await
+                } else {
+                    bind_and_relay(gateway, socket, workspace, product, default_workspace, scope)
+                        .await
+                }
+            }
+        };
+        if let Err(e) = result {
+            warn!("客户端连接结束：{e}");
+        }
+    })
+}
+
+/// 绑定实例并把这条连接交给它（原 `serve_client` 的后半段）。
+async fn bind_and_relay(
     gateway: Arc<Gateway>,
-    stream: TcpStream,
-    requested_workspace: Option<String>,
+    socket: ClientSocket,
+    uri_workspace: Option<String>,
+    uri_product: Option<String>,
+    default_workspace: String,
+    scope: TokenScope,
 ) -> Result<(), anyhow::Error> {
-
-    // 1. 握手时就地鉴权 + Origin 策略。
-    //
-    // 为什么在 `accept_hdr_async` 的回调里做而不是握手后：
-    // 回调可以返回 `ErrorResponse`，于是拒绝表现为**一个 HTTP 状态码**
-    // （401/403）——浏览器与 curl 都能直接看到原因，而不是"连上了又莫名其妙断开"。
-    let auth = gateway.auth.clone();
-    // 刻意用 `std::sync::Mutex`：这里的临界区**不含 await**（只是拷四个 Option），
-    // 用异步锁反而要求跨 await 持锁。与 `Gateway` 里那个 tokio 锁不是一回事。
-    let captured: Arc<std::sync::Mutex<(Option<String>, Option<String>, Option<String>, Option<String>)>> =
-        Arc::new(std::sync::Mutex::new((None, None, None, None)));
-    let cap = captured.clone();
-
-    let client_ws = tokio_tungstenite::accept_hdr_async(
-        stream,
-        move |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
-              resp: tokio_tungstenite::tungstenite::handshake::server::Response| {
-            let uri = req.uri().to_string();
-            let token = query_param(&uri, "token");
-            let workspace = query_param(&uri, "workspace");
-            let role = query_param(&uri, "role");
-            let product = query_param(&uri, "product");
-            let origin = req
-                .headers()
-                .get("origin")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-
-            if let Err(e) = auth.check_origin(origin.as_deref()) {
-                warn!("拒绝接入：{e}");
-                return Err(handshake_error(403, &e.to_string()));
-            }
-            // 坏 token 直接拒（**不退化成 Anonymous**——那是静默降级）
-            if let Err(e) = auth.authorize(token.as_deref()) {
-                warn!("拒绝接入：{e}");
-                return Err(handshake_error(401, &e.to_string()));
-            }
-
-            *cap.lock().expect("captured 锁") = (token, workspace, role, product);
-            Ok(resp)
-        },
-    )
-    .await?;
-
-    let (token, uri_workspace, uri_role, uri_product) = {
-        let g = captured.lock().expect("captured 锁");
-        g.clone()
-    };
-
-    let outcome = gateway
-        .auth
-        .authorize(token.as_deref())
-        .map_err(|e| anyhow::anyhow!("鉴权失败：{e}"))?;
-
-    // 2. **未认证连接不绑定任何 agent**：它只能发现，不能触达。
-    //
-    // 顺序很要紧：绑定实例会**真的把 agent 进程拉起来**。
-    // 先绑定再鉴权的话，一个不带 token 的连接就能让网关起进程（放大攻击面）。
-    if matches!(outcome, AuthOutcome::Anonymous) {
-        info!("未认证连接接入（只允许 gateway.info 发现）");
-        return serve_anonymous(gateway, client_ws).await;
-    }
-    let AuthOutcome::Scoped(scope) = outcome else {
-        unreachable!("Anonymous 已在上面返回");
-    };
-
-    // 2.5 **Agent / 控制面专用连接**：如果连接声明了 role=agent 或 role=control，
-    // 不需要也不应当触发 ensure_agent 去启动实例，直接进入 Agent 控制与自注册通道。
-    if uri_role.as_deref() == Some("agent") || uri_role.as_deref() == Some("control") {
-        info!("Agent / 控制面专用连接已接入");
-        return serve_agent_control(gateway, client_ws).await;
-    }
-
-    // 3. 工作区：URL 上的 `?workspace=` 优先，其次调用方给的默认值
+    // 工作区：URL 上的 `?workspace=` 优先，其次网关默认值
     let ws = uri_workspace
-        .or(requested_workspace)
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| gateway.default_workspace.clone());
+        .unwrap_or(default_workspace);
 
-    // 4. 作用域检查：token 只能碰自己那几个工作区
+    // 作用域检查：token 只能碰自己那几个工作区
     if !scope.allows(&ws) {
         return Err(anyhow::anyhow!(
             "{}",
@@ -481,7 +573,7 @@ pub async fn serve_client(
         .map_err(|e| anyhow::anyhow!("绑定 agent 失败：{e}"))?;
     info!("客户端已接入网关，绑定实例 {}", instance.id);
 
-    relay(gateway, client_ws, instance).await
+    relay(gateway, socket, instance).await
 }
 
 /// `gateway.register` 的**唯一**实现。
@@ -562,7 +654,7 @@ impl Drop for RegisteredAgentGuard {
 /// Agent 控制与自注册通道：专用于 Agent 进程向网关自报家门与保活。
 async fn serve_agent_control(
     gateway: Arc<Gateway>,
-    client_ws: tokio_tungstenite::WebSocketStream<TcpStream>,
+    client_ws: ClientSocket,
 ) -> Result<(), anyhow::Error> {
     let (mut tx, mut rx) = client_ws.split();
     let mut registered_agent_id: Option<String> = None;
@@ -623,27 +715,13 @@ async fn serve_agent_control(
     Ok(())
 }
 
-/// 造一个握手期的 HTTP 错误响应。
-fn handshake_error(
-    status: u16,
-    msg: &str,
-) -> tokio_tungstenite::tungstenite::handshake::server::ErrorResponse {
-    // 这个版本的 tungstenite 没有 `ErrorResponse::builder`，
-    // `ErrorResponse` 就是 `http::Response<Option<String>>`，直接构造。
-    let mut resp =
-        tokio_tungstenite::tungstenite::handshake::server::ErrorResponse::new(Some(msg.to_string()));
-    *resp.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::from_u16(status)
-        .unwrap_or(tokio_tungstenite::tungstenite::http::StatusCode::BAD_REQUEST);
-    resp
-}
-
 /// 未认证连接：**只答 `gateway.info`**，其余一律拒绝。
 ///
 /// 为什么不直接断开：浏览器要能先问"这是不是网关、要不要 token"。
 /// 但发现响应里**不得有任何秘密**（无 token、无 agent 端点）。
 async fn serve_anonymous(
     gateway: Arc<Gateway>,
-    client_ws: tokio_tungstenite::WebSocketStream<TcpStream>,
+    client_ws: ClientSocket,
 ) -> Result<(), anyhow::Error> {
     let (mut tx, mut rx) = client_ws.split();
     while let Some(msg) = rx.next().await {
@@ -711,7 +789,7 @@ async fn serve_anonymous(
 /// 双向透传。
 async fn relay(
     gateway: Arc<Gateway>,
-    client_ws: tokio_tungstenite::WebSocketStream<TcpStream>,
+    client_ws: ClientSocket,
     instance: AgentInstance,
 ) -> Result<(), anyhow::Error> {
     // 🔴 记账：这条实例现在挂着几个客户端。有连接就不许回收

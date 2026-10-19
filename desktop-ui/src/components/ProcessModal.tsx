@@ -11,6 +11,7 @@ import {
   Info,
   Copy,
   Check,
+  Globe,
 } from 'lucide-react'
 import { agentClient } from '../client/ws-client'
 import {
@@ -174,6 +175,17 @@ export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose, onR
   const [lastUpdated, setLastUpdated] = useState('')
 
   const hasDesktopHost = isDesktop()
+
+  /// 网页访问地址：页面与 `/rpc` 在**同一个端口**上，所以用 `core_port` 拼即可。
+  ///
+  /// token 从 `core_url` 里原样取出（它已经编码过一次），不要在这里重新编码——
+  /// 否则 `%` 会被二次转义，带 token 的网关就登不上。
+  const webUrl = React.useMemo(() => {
+    const port = report?.core_port || 0
+    if (!report?.core_alive || port <= 0) return ''
+    const token = report.core_url?.match(/[?&]token=([^&]+)/)?.[1]
+    return `http://127.0.0.1:${port}/${token ? `?token=${token}` : ''}`
+  }, [report])
 
   /// `silent` = 后台轮询：**不点亮刷新按钮**。
   ///
@@ -567,6 +579,18 @@ export const ProcessModal: React.FC<ProcessModalProps> = ({ isOpen, onClose, onR
           </p>
 
           <div className="flex items-center justify-end gap-2 flex-shrink-0">
+            {webUrl && (
+              <a
+                href={webUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium whitespace-nowrap bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-200 rounded-lg transition-colors"
+                title="在系统浏览器里打开同一个界面（网页访问）"
+              >
+                <Globe size={13} />
+                <span>浏览器打开</span>
+              </a>
+            )}
             {isDesktop() && (
               <button
                 onClick={handleRestartGateway}
