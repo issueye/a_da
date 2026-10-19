@@ -687,6 +687,137 @@ async fn test_dispatcher_provider_management() {
     let _ = std::fs::remove_dir_all(&test_dir);
 }
 
+/// 多供应商的模型列表必须**按供应商各自落盘、重启后原样回来**。
+///
+/// 用户报过的真实症状：重启后「可用模型列表 (0)」、切换供应商时模型列表不变。
+/// 直接原因是前端加载表单时漏掉了 `setEditModels`（见
+/// `desktop-ui/src/components/SettingsModal.tsx` 的 `loadProviderIntoForm`）；
+/// 但落盘这一层也必须同时守住：`providers` 是手工写进 `config.json` 的，
+/// 序列化/反序列化漏掉 `models` 同样会让模型「重启即丢」。
+/// 这里用同一份 home 重建 store（等价于重启进程）。
+#[tokio::test]
+async fn test_provider_models_stay_bound_and_survive_restart() {
+    use agent_base::testing::TempAppHome;
+
+    let test_dir = std::env::temp_dir().join(format!(
+        "a_da_provider_reload_{}",
+        uuid::Uuid::new_v4()
+    ));
+    let _ = std::fs::create_dir_all(&test_dir);
+    let cfg_path = test_dir.join("config.json");
+    let home = TempAppHome::at(&test_dir).with_config_file(&cfg_path);
+
+    let store = Arc::new(RwLock::new(AgentStore::with_home(
+        "E:/test".to_string(),
+        &home,
+    )));
+    let dispatcher = Dispatcher::new(
+        store.clone(),
+        Arc::new(SessionManager::new(Some(test_dir.clone()))),
+        Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::with_home(test_home_dir())),
+        Arc::new(SkillManager::with_home(test_home_dir())),
+        None,
+    );
+
+    let alpha = serde_json::json!({
+        "id": "prov_alpha",
+        "name": "Alpha",
+        "protocol": "openai_chat",
+        "baseUrl": "https://alpha.example/v1",
+        "apiKey": "sk-alpha",
+        "models": [
+            { "id": "alpha-1", "name": "Alpha One", "contextWindow": 128000 },
+            { "id": "alpha-2", "name": "Alpha Two", "contextWindow": 200000 }
+        ]
+    });
+    let beta = serde_json::json!({
+        "id": "prov_beta",
+        "name": "Beta",
+        "protocol": "anthropic",
+        "baseUrl": "https://beta.example",
+        "apiKey": "sk-beta",
+        "models": [
+            { "id": "beta-1", "name": "Beta One", "contextWindow": 65536 },
+            { "id": "beta-2", "name": "Beta Two", "contextWindow": 1000000 }
+        ]
+    });
+
+    for provider in [alpha, beta] {
+        dispatcher
+            .dispatch("provider.save", serde_json::json!({ "provider": provider }))
+            .await
+            .expect("provider.save 失败");
+    }
+
+    // 先选 Alpha 的第二个模型，再切到 Beta 的第一个模型（不是同一个模型 ID）。
+    dispatcher
+        .dispatch(
+            "provider.setActive",
+            serde_json::json!({ "id": "prov_alpha", "model": "alpha-2" }),
+        )
+        .await
+        .expect("激活 Alpha 失败");
+    dispatcher
+        .dispatch(
+            "provider.setActive",
+            serde_json::json!({ "id": "prov_beta", "model": "beta-1" }),
+        )
+        .await
+        .expect("激活 Beta 失败");
+
+    // 落盘内容：每个供应商只带自己的模型，不能串味、也不能被写空。
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg_path).expect("配置必须已落盘"))
+            .expect("config.json 必须是合法 JSON");
+    let written_providers = written["providers"].as_array().expect("providers 必须是数组");
+    let written_model_ids = |id: &str| -> Vec<String> {
+        written_providers
+            .iter()
+            .find(|p| p["id"] == id)
+            .unwrap_or_else(|| panic!("config.json 里缺少供应商 {id}"))["models"]
+            .as_array()
+            .unwrap_or_else(|| panic!("供应商 {id} 的 models 必须是数组"))
+            .iter()
+            .map(|m| m["id"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    assert_eq!(
+        written_model_ids("prov_alpha"),
+        vec!["alpha-1", "alpha-2"],
+        "Alpha 的模型列表必须原样落盘"
+    );
+    assert_eq!(
+        written_model_ids("prov_beta"),
+        vec!["beta-1", "beta-2"],
+        "Beta 的模型列表必须原样落盘"
+    );
+
+    // 重启：同一份 home 重建 store，供应商 / 模型 / 激活项都要原样回来。
+    let reloaded = AgentStore::with_home("E:/test".to_string(), &home);
+    assert_eq!(reloaded.active_provider_id, "prov_beta");
+    assert_eq!(reloaded.provider.model, "beta-1", "重启后必须回到 Beta 选中的模型");
+    assert_eq!(reloaded.provider.base_url, "https://beta.example");
+
+    let reloaded_model_ids = |id: &str| -> Vec<String> {
+        reloaded
+            .providers
+            .iter()
+            .find(|p| p.id == id)
+            .unwrap_or_else(|| panic!("重启后缺少供应商 {id}"))
+            .models
+            .iter()
+            .map(|m| m.id.clone())
+            .collect()
+    };
+    assert_eq!(reloaded_model_ids("prov_alpha"), vec!["alpha-1", "alpha-2"]);
+    assert_eq!(reloaded_model_ids("prov_beta"), vec!["beta-1", "beta-2"]);
+
+    let _ = std::fs::remove_dir_all(&test_dir);
+}
+
 #[tokio::test]
 async fn test_conversation_queue_lifecycle() {
     let store = Arc::new(RwLock::new(store_for_test("E:/codes/rust_projects/a_da")));

@@ -171,6 +171,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setEditApiKey(p.apiKey)
     setEditProxyUrl(p.proxyUrl || '')
     setEditCustomHeadersText(formatHeaders(p.customHeaders))
+    // 🔴 必须把**这个供应商自己的**模型列表灌进表单（2026-10-19 回归）：
+    // 漏掉这一行后右侧「可用模型列表」永远是空列表/上一个供应商的列表——
+    // 左侧明明写着「3 个模型」，右侧却是「可用模型列表 (0)」；
+    // 此时点保存会拿这份空列表覆盖落盘数据，表现就是「重启后模型丢了」；
+    // 切换供应商时列表也不变，因为表单根本没有从被选中的供应商里取过模型。
+    setEditModels(p.models || [])
+    // 本供应商含有当前激活模型时把它标记为默认；否则退回该供应商的首个模型
+    // （各供应商的模型集合相互独立，不能无条件沿用全局模型）。
     const currentModelId =
       p.models?.find((m) => m.id === config?.model)?.id ||
       p.models?.[0]?.id ||
@@ -251,6 +259,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       cancelled = true
     }
   }, [isOpen, loadProviderIntoForm])
+
+  // 🔴 弹窗是**常驻挂载**的（关闭时只是 `return null`），上面三个 `useState(initialX)`
+  // 只取组件**第一次渲染**时的 props。首次渲染时快照往往还没到，本地状态就被永久钉在
+  // 客户端默认值（auto / medium / 5）——用户看到的就是"执行策略与推演力度重启后重置"，
+  // 更糟的是点保存会把这三个默认值写回 config.json、覆盖磁盘上的真实设置。
+  // 所以每次打开弹窗都要从最新 props（即服务端快照）重新同步一次。
+  useEffect(() => {
+    if (!isOpen) return
+    setApprovalMode(initialApprovalMode)
+    setEffort(initialEffort)
+    setRetryCount(Number.isFinite(initialRetryCount) ? initialRetryCount : 5)
+  }, [isOpen, initialApprovalMode, initialEffort, initialRetryCount])
 
   // 保存桌面端网关连接配置
   const handleSaveModeConfig = async (restartAfter: boolean = false) => {
