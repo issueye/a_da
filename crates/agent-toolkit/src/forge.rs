@@ -627,7 +627,13 @@ mod tests {
         assert!(index.contains("'拦截没有验收标准的 todo'"));
 
         assert!(read(&ws, &format!("{base}/README.md")).contains("workspace:todo-guard"));
-        assert!(read(&ws, &format!("{base}/skills/todo-guard.md")).contains("# 待办守卫"));
+        // 技能是**目录 + SKILL.md**（2026-10-19 起的 Agent Skills 规范），不是裸 .md
+        let skill = read(&ws, &format!("{base}/skills/todo-guard/SKILL.md"));
+        assert!(
+            skill.contains("name: todo-guard"),
+            "frontmatter 的 name 必须等于目录名：{skill}"
+        );
+        assert!(skill.contains("# 待办守卫"));
 
         // 回执说清落点与下一步（模型据此继续，而不是再猜一遍）
         assert!(res.output.contains("workspace:todo-guard"));
