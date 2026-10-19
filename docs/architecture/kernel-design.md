@@ -334,7 +334,7 @@ pub trait Toolkit: Send + Sync {
 | `core` | `todo`、`ask_user`、`finish` | 无 | 所有产品必带；`ask_user` 的 schema 必须与 handler 对齐（现状 `plugins/builtins.rs:104` 是空对象） |
 | `fs` | `read_file`/`write_file`/`edit_file`/`list_files`/`search_files` | `ScopePolicy=workspace`、`RollbackPolicy∈{SingleTarget,PerTargetInBatch}` | 现 `tools/fs_tools.rs` 整体搬迁 |
 | `command` | `run_command` | `ScopePolicy`、审批 `DangerScan`、**必须接 `CancelToken`** | 现 `cmd_tools.rs`；治 §1.2 取消断链 |
-| `git` | `git_status/diff/log`（+ 可选写操作） | `command` | 现内置插件 `plugins/builtins.rs:19-21` |
+| `git` | `git`（`action`：status/diff/log/show/blame + add/commit/checkout/restore/reset/stash/branch/merge/push/pull） | `command`、`DangerScan`（危险动作） | 原 `git_status`/`git_diff`/`git_log` 三工具，2026-10-19 合并为单工具 |
 | `patch` | `apply_patch`/`batch_write`/`batch_replace` | `fs` + `RollbackStore` | 现 `builtin_tools.rs:201-240`（当前**不拍快照**，迁移必修） |
 | `web` | `web_search`/`fetch_url` | 出网策略 | 通用/生活类主力 |
 | `calendar`/`reminder`/`notes` | 各自的读写工具 | `ScopePolicy=user-data` | 生活类主力；与 coding 完全无关，验证内核中性 |

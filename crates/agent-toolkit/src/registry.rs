@@ -186,17 +186,25 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
             },
             ToolDescriptor {
                 name: "create_plugin".to_string(),
-                summary: "在工作区生成可加载的插件包骨架（Extension Factory + 技能 + 说明）。".to_string(),
+                summary: "生成可加载的插件包骨架（Extension Factory + 技能 + 说明）。**scope 必填**：\
+                          用户没明确说装在工作区还是全局时，先用 ask_user 问清楚，不要自己猜。"
+                    .to_string(),
                 schema: json!({
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "插件标识，同时是目录名（kebab-case，如 todo-guard）" },
+                        "scope": {
+                            "type": "string",
+                            "enum": ["workspace", "global"],
+                            "description": "装在哪：workspace=只在本工程生效（目录随项目版本库走）；global=对本机所有工程生效。用户没明确说时**先问**，不要默认。"
+                        },
                         "name": { "type": "string", "description": "显示名（默认与 id 相同）" },
                         "description": { "type": "string", "description": "一句话说明这个插件做什么" },
                         "tool": { "type": "string", "description": "示例工具名（默认 <id>_hello）" },
                         "overwrite": { "type": "boolean", "description": "目录已存在时是否覆盖生成的文件（默认 false）" }
                     },
-                    "required": ["id"]
+                    // scope 必填：缺了工具会拒绝执行并让模型先去问用户（而不是默默装进工作区）
+                    "required": ["id", "scope"]
                 }),
                 // `id` 不是路径字段，但落点由它派生（<ws>/.ada/agent-coding/extensions/<id>）：
                 // 把它交给 PathSelector 是为了让钩子/回滚能看到"这次动了哪个插件"。
@@ -373,44 +381,66 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                 termination: Termination::ContinueTurn,
             },
             ToolDescriptor {
-                name: "git_status".to_string(),
-                summary: "查看工作区 Git 仓库工作区状态。".to_string(),
-                schema: json!({ "type": "object" }),
-                access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
-                rollback: RollbackPolicy::None,
-                execution: Execution::ParallelSafe,
-                termination: Termination::ContinueTurn,
-            },
-            ToolDescriptor {
-                name: "git_diff".to_string(),
-                summary: "查看工作区 Git diff 变更。".to_string(),
+                name: "git".to_string(),
+                summary: "查看与操作 Git 版本库（action 选动作：status/diff/log/show/blame 只读；\
+                          add/commit/checkout/restore/reset/stash/branch/merge/push/pull 会改仓库）。"
+                    .to_string(),
                 schema: json!({
                     "type": "object",
                     "properties": {
-                        "file": { "type": "string", "description": "查看特定文件的变更（可选，支持 path 别名）" },
-                        "path": { "type": "string", "description": "查看特定文件的变更（别名）" }
-                    }
+                        "action": {
+                            "type": "string",
+                            "enum": [
+                                "status", "diff", "log", "show", "blame",
+                                "add", "commit", "checkout", "restore", "reset",
+                                "stash", "branch", "merge", "push", "pull"
+                            ],
+                            "description": "要执行的 Git 动作。只读：status/diff/log/show/blame；写入：add/commit/checkout/restore/reset/stash/branch/merge/push/pull"
+                        },
+                        "file": { "type": "string", "description": "单个文件（工作区内相对路径）；diff/log/show/add/restore/blame 用，path 是别名" },
+                        "path": { "type": "string", "description": "file 的别名" },
+                        "files": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "多个文件（add/restore/commit 用，工作区内相对路径）"
+                        },
+                        "ref": { "type": "string", "description": "提交/分支/标签引用（diff/log/show/reset/checkout/merge/push/pull 用；默认 HEAD）" },
+                        "branch": { "type": "string", "description": "分支名（branch 创建/删除、checkout 目标、push/pull 目标分支）" },
+                        "message": { "type": "string", "description": "提交信息（commit 必填；stash push 可选，不能含换行）" },
+                        "limit": { "type": "integer", "description": "log 返回条数（默认 10，上限 200）" },
+                        "staged": { "type": "boolean", "description": "diff: 看暂存区（--cached）；restore: 从暂存区恢复（--staged）" },
+                        "all": { "type": "boolean", "description": "commit: 先暂存已跟踪文件的改动（-a）" },
+                        "mode": { "type": "string", "enum": ["soft", "mixed", "hard"], "description": "reset 模式（默认 mixed；hard 会丢弃工作区改动，需要审批）" },
+                        "sub": { "type": "string", "enum": ["list", "push", "pop", "apply", "drop", "show"], "description": "stash 子操作（默认 list）" },
+                        "remote": { "type": "string", "description": "push/pull 的远端名（默认 origin）" },
+                        "create": { "type": "boolean", "description": "checkout: 创建并切换到新分支（-b）" },
+                        "delete": { "type": "boolean", "description": "branch: 删除分支（-d）" },
+                        "force": { "type": "boolean", "description": "push: 使用 --force-with-lease 强推（需要审批）" }
+                    },
+                    "required": ["action"]
                 }),
-                access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
+                // 会真的执行 git 子进程（argv 直传，不经 shell），按"命令型工具"记账。
+                access: Access::Executes { command_arg: "action" },
+                // 只读动作不打扰用户；危险动作必问——**即使开了自动批准**。
+                // 匹配串是序列化后的 JSON 片段（`"action":"reset"` 这种），比裸词
+                // `reset` 精确：提交信息里写 "reset cache" 不该触发审批。
+                approval: ApprovalPolicy::DangerScan {
+                    patterns: vec![
+                        "\"action\":\"reset\"".to_string(),
+                        "\"action\":\"checkout\"".to_string(),
+                        "\"action\":\"restore\"".to_string(),
+                        "\"action\":\"merge\"".to_string(),
+                        "\"action\":\"push\"".to_string(),
+                        "\"sub\":\"drop\"".to_string(),
+                        "\"force\":true".to_string(),
+                        "\"mode\":\"hard\"".to_string(),
+                    ],
+                },
+                // git 自己管自己的历史：这里的"回滚"指工作区文件，工具不参与 checkpoint。
                 rollback: RollbackPolicy::None,
-                execution: Execution::ParallelSafe,
-                termination: Termination::ContinueTurn,
-            },
-            ToolDescriptor {
-                name: "git_log".to_string(),
-                summary: "查看工作区 Git 提交历史。".to_string(),
-                schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "limit": { "type": "integer", "description": "返回提交记录上限（默认 10）" }
-                    }
-                }),
-                access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
-                rollback: RollbackPolicy::None,
-                execution: Execution::ParallelSafe,
+                // 读写混在一个工具里：并行跑两条 git 命令（一条 reset 一条 diff）
+                // 会让第二个读到半截状态，串行是唯一安全的语义。
+                execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
             },
             ToolDescriptor {
@@ -533,7 +563,8 @@ mod tests {
     #[test]
     fn test_standard_tool_descriptors_are_valid_and_unique() {
         let list = standard_tool_descriptors();
-        assert_eq!(list.len(), 22, "必须声明全部 22 个标准内置工具描述符");
+        // 2026-10-19：`git_status` / `git_diff` / `git_log` 合并为一个 `git`（22 → 20）。
+        assert_eq!(list.len(), 20, "必须声明全部 20 个标准内置工具描述符");
 
         let mut seen = HashSet::new();
         for desc in list {

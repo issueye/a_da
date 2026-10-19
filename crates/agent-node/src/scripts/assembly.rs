@@ -160,20 +160,32 @@ pub async fn collect_plugin_tools(
             out.prompt_fragments.push((item.id.clone(), f));
         }
 
-        // P2·SP-45：插件声明的技能同理（带 plugin_id + 插件名，合并进技能扫描结果时贴归因）
-        for s in host.skills(&handle).unwrap_or_default() {
-            out.skills.push((
-                item.id.clone(),
-                item.name.clone(),
-                PluginSkillDeclaration {
-                    name: s.name,
-                    description: s.description,
-                    path: s.path,
-                    body: s.body,
-                    when_to_use: s.when_to_use,
-                    user_invocable: s.user_invocable,
-                },
-            ));
+        // 技能：**目录约定** `skills/<name>/SKILL.md`（docs/SKILL_SPEC.md）。
+        //
+        // 🔴 不再从脚本 `registerSkill` 收技能（那是 2026-10-19 之前的形态）。三个理由：
+        // 1. 规范里 Skill 是"目录 + SKILL.md"，`references/` 这类配套文件的相对根是**技能目录**，
+        //    内联 body 根本没有根，相对引用无处落地；
+        // 2. 宿主直接读盘就能校验 name/description/正文，不需要先执行一遍插件脚本；
+        // 3. 脚本声明与磁盘文件可能不一致（声明 1 个、目录 2 个），而"技能是文件"这件事
+        //    应该只有一个真源。
+        //
+        // 旧形态（`skills/<name>.md` 裸文件 / 内联 body）不会被静默忽略：以
+        // `skill_spec_violation:*` 进诊断，作者能在插件面板看到"为什么这个技能没生效"。
+        let plugin_root = std::path::Path::new(&item.file_path)
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default();
+        let (plugin_skills, skill_problems) =
+            crate::skills::spec::discover_plugin_skills(&plugin_root);
+        for skill in plugin_skills {
+            out.skills.push((item.id.clone(), item.name.clone(), skill));
+        }
+        for problem in skill_problems {
+            out.skipped.push(SkippedPluginTool {
+                plugin_id: item.id.clone(),
+                export: String::new(),
+                reason: format!("skill_spec_violation:{problem}"),
+            });
         }
 
         for declaration in host.tool_declarations(&handle).unwrap_or_default() {
@@ -255,6 +267,20 @@ mod tests {
         );
         let entry = package_root.join("index.ts");
         std::fs::write(&entry, source).expect("写插件包入口失败");
+
+        // 技能是**目录 + SKILL.md**（docs/SKILL_SPEC.md）：按 `skills` 参数落盘。
+        // 不再写 `registerSkill`——那个 API 已移除，调用只会被记成诊断。
+        for skill in skills {
+            let dir = package_root.join("skills").join(skill);
+            std::fs::create_dir_all(&dir).expect("建技能目录失败");
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!(
+                    "---\nname: {skill}\ndescription: {skill} 的用法说明（测试夹具）\n---\n\n# {skill}\n\n正文：按步骤执行。\n"
+                ),
+            )
+            .expect("写 SKILL.md 失败");
+        }
         entry
     }
 
@@ -285,7 +311,6 @@ mod tests {
                 execute: async () => ({ ok: true, output: 'custom-output' })
               });
               ada.registerSystemPrompt({ id: 'factory-prompt', content: 'factory prompt fragment' });
-              ada.registerSkill({ name: 'factory-skill', description: 'factory skill', body: 'factory skill body' });
               ada.on('turn_end', async (event: any, ctx: any) => ({ action: 'note', note: `${ctx.point}:${event.step}` }));
             "#,
         );
@@ -416,14 +441,16 @@ async fn test_plugin_without_prompts_yields_no_fragments() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// SP-45：插件声明的**技能**必须被收下，并带住 `plugin_id` / 插件名（合并进技能扫描
-/// 结果时贴归因）。工具与技能出自**同一次装载**，所以不会出现"工具装了、技能没装"。
+/// SP-45 / 2026-10-19：插件技能来自**磁盘目录** `skills/<name>/SKILL.md`，
+/// 收下时必须带住 `plugin_id` / 插件名（合并进技能扫描结果时贴归因）。
+///
+/// 工具与技能都出自**同一次装配**，所以不会出现"工具装了、技能没装"。
 #[tokio::test]
-async fn test_plugin_skills_are_collected_with_plugin_id() {
+async fn test_plugin_skills_are_collected_from_skill_md() {
     let ws = temp_ws("skills");
     write_package(
         &ws, "p", &["read_file"], &[], &["deploy"], &[],
-        "ada.registerSkill({ name: 'deploy', description: '发布', body: '先跑测试', whenToUse: '发布时' }); ada.registerTool({ name: 'read_file', description: 'x', parameters: { type: 'object', properties: {} }, execute: async () => ({ ok: true, output: 'ok' }) });",
+        "ada.registerTool({ name: 'read_file', description: 'x', parameters: { type: 'object', properties: {} }, execute: async () => ({ ok: true, output: 'ok' }) });",
     );
 
     let mgr = PluginManager::with_home(temp_home("skills"));
@@ -437,13 +464,61 @@ async fn test_plugin_skills_are_collected_with_plugin_id() {
     assert!(!plugin_id.is_empty(), "必须带得住 plugin_id（否则无法归因）");
     assert!(!plugin_name.is_empty(), "界面要显示是哪个插件带来的");
     assert_eq!(decl.name, "deploy");
-    assert_eq!(decl.when_to_use.as_deref(), Some("发布时"));
+    assert!(
+        decl.path.as_deref().unwrap_or("").ends_with("SKILL.md"),
+        "技能正文来自 SKILL.md：{:?}",
+        decl.path
+    );
+    assert!(decl.body.contains("正文"), "frontmatter 已剥离、正文保留了：{:?}", decl.body);
+    assert!(
+        !decl.body.contains("---"),
+        "frontmatter 不能跟着正文进提示词：{:?}",
+        decl.body
+    );
 
     // 转成扫描结果的形状：id 带插件前缀、来源标 plugin（界面据此分流显示）
     let summary = decl.to_summary(plugin_id, plugin_name);
     assert_eq!(summary.id, format!("plugin:{plugin_id}:deploy"));
     assert_eq!(summary.scope, "plugin");
     assert_eq!(summary.plugin_id.as_deref(), Some(plugin_id.as_str()));
+    assert_eq!(summary.is_file_skill, Some(false), "目录技能不是散装文件");
+    assert!(
+        summary.base_directory.ends_with(&format!("skills{}deploy", std::path::MAIN_SEPARATOR))
+            || summary.base_directory.ends_with("skills/deploy"),
+        "base_directory 必须是技能目录（references/ 的相对根）：{}",
+        summary.base_directory
+    );
+
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// 旧形态（`skills/<name>.md` 裸文件）**不再支持**，但必须**报出来**：
+/// 作者要能看到"为什么这个技能没生效"，而不是对着磁盘上还在的文件发呆。
+#[tokio::test]
+async fn test_legacy_loose_skill_file_is_reported_not_silently_ignored() {
+    let ws = temp_ws("legacy_skill");
+    write_package(
+        &ws, "p", &["read_file"], &[], &[], &[],
+        "ada.registerTool({ name: 'read_file', description: 'x', parameters: { type: 'object', properties: {} }, execute: async () => ({ ok: true, output: 'ok' }) });",
+    );
+    let skills_dir = crate::plugins::PluginManager::agent_extensions_dir(&ws.to_string_lossy())
+        .join("p")
+        .join("skills");
+    std::fs::create_dir_all(&skills_dir).expect("建 skills 目录");
+    std::fs::write(skills_dir.join("old-style.md"), "# 旧格式").expect("写旧格式技能");
+
+    let mgr = PluginManager::with_home(temp_home("legacy_skill"));
+    let host: Arc<dyn ScriptHost> = Arc::new(TsScriptHost::new());
+    let asm = collect_plugin_tools(&mgr, &host, &ws, ScriptBudget::default()).await;
+
+    assert!(plugin_only(&asm).is_empty(), "旧格式不再被当成技能");
+    let diag = asm
+        .skipped
+        .iter()
+        .find(|s| s.reason.contains("skill_spec_violation"))
+        .expect("旧格式必须进诊断");
+    assert!(diag.reason.contains("旧格式"), "理由要给人看：{}", diag.reason);
+    assert!(diag.reason.contains("old-style.md"), "{}", diag.reason);
 
     let _ = std::fs::remove_dir_all(&ws);
 }

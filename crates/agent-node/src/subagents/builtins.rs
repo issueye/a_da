@@ -53,9 +53,9 @@ pub fn builtin_subagents() -> Vec<SubagentProfile> {
                 "search_files".to_string(),
                 // `code_outline` 是 `get_outline` 的真实名字（W2-T6：幽灵名清理）
                 "code_outline".to_string(),
-                "git_status".to_string(),
-                "git_diff".to_string(),
-                "git_log".to_string(),
+                // 2026-10-19：`git` 合并了 git_status/diff/log 并新增写动作，声明为**命令型**
+                // 工具（`Access::Executes`）。只读 profile 的白名单里放它会被 Readonly 过滤器
+                // 剔除，等于白写——所以这里不列，调研专员改用 read_file / search_files。
                 "project_inspect".to_string(),
                 "todo".to_string(),
             ],
@@ -92,9 +92,7 @@ pub fn builtin_subagents() -> Vec<SubagentProfile> {
                 "read_file".to_string(),
                 "search_files".to_string(),
                 "code_outline".to_string(),
-                "git_status".to_string(),
-                "git_diff".to_string(),
-                "git_log".to_string(),
+                // 同上：`git` 是命令型工具，只读 profile 拿不到，不列以免白名单撒谎。
                 "todo".to_string(),
             ],
             disallowed_tools: None,
@@ -131,8 +129,8 @@ pub fn builtin_subagents() -> Vec<SubagentProfile> {
                 "search_files".to_string(),
                 "code_outline".to_string(),
                 "run_command".to_string(),
-                "git_status".to_string(),
-                "git_diff".to_string(),
+                // 读写 profile：`git` 的读写动作都能用（危险动作仍走审批）。
+                "git".to_string(),
                 "todo".to_string(),
             ],
             disallowed_tools: None,

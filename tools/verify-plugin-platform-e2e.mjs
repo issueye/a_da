@@ -62,9 +62,30 @@ export default function (ada) {
     execute: async () => ({ ok: true, output: 'plugin-ran' }),
   });
   ada.registerSystemPrompt({ id: 'house-style', content: '本项目一律用 tabs。' });
-  ada.registerSkill({ name: 'deploy-runbook', description: '发布流程', body: '先跑测试再打标签' });
   ada.on('beforeToolCall', async () => ({ action: 'deny', reason: '测试用：拦下' }));
 }
+`,
+)
+
+// 技能按 Agent Skills 规范落成**目录 + SKILL.md**（docs/SKILL_SPEC.md）。
+// 脚本里的 `registerSkill` 已移除；技能只能来自 `skills/<name>/SKILL.md`。
+const skillDir = join(pkgDir, 'skills', 'deploy-runbook')
+mkdirSync(skillDir, { recursive: true })
+writeFileSync(
+  join(skillDir, 'SKILL.md'),
+  `---
+name: deploy-runbook
+description: 发布流程：先跑测试再打标签。Use when the user asks to release.
+---
+
+# 发布流程
+
+1. 跑测试（\`cargo test\` / \`bun test\`）。
+2. 打标签并推送。
+
+## 边缘情况
+
+- 测试失败 → 停下来报告，不要带着红灯发布。
 `,
 )
 
@@ -187,6 +208,92 @@ try {
   )
   const on = await call('plugin.setEnabled', { pluginId: 'workspace:demo', enabled: true })
   check(on?.applied === true, '再启用同样回报已生效')
+
+  // ⑥ 2026-10-19 实机回归：**新建插件不用重启程序就生效**。
+  //
+  // 早先 `createTemplate` 只往磁盘写文件、不重装配：界面刷新一百次也只是重扫目录，
+  // 引擎手里那份工具集合一字未动，用户只能重启程序（反馈原文）。现在建完立刻重装配——
+  // `applied` 必须为 true，且新插件的工具要出现在 `plugin.list` 的**贡献视图**里。
+  const freshCode = `const metadata = {
+  name: 'fresh-one',
+  description: 'e2e 新建插件',
+  tools: { count: 1, names: ['fresh_probe'] },
+  systemPrompt: { count: 0, names: [] },
+  skills: { count: 0, names: [] },
+  hooks: { count: 0, names: [] },
+};
+export default function (ada) {
+  ada.metadata = metadata;
+  ada.registerTool({
+    name: 'fresh_probe',
+    description: '新建后立刻可用的工具',
+    parameters: { type: 'object', properties: {} },
+    execute: async () => ({ ok: true, output: 'fresh-ran' }),
+  });
+}
+`
+  const created = await call('plugin.createTemplate', {
+    workspace: wsDir,
+    scope: 'workspace',
+    name: 'fresh-one',
+    code: freshCode,
+  })
+  check(
+    created?.applied === true,
+    'createTemplate 建完立刻重装配（applied=true）',
+    JSON.stringify(created).slice(0, 300),
+  )
+  const listedFresh = await call('plugin.list', { workspace: wsDir })
+  const fresh = (listedFresh?.plugins || []).find((p) => p.id === 'workspace:fresh-one')
+  check(
+    (fresh?.tools || []).some((t) => t.name === 'fresh_probe'),
+    '新建插件的工具已进入装配（不必重启程序）',
+    JSON.stringify(fresh?.tools),
+  )
+  // 删除同样要即时卸下：删除后它的工具不能再出现在贡献视图里
+  const removedFresh = await call('plugin.delete', {
+    workspace: wsDir,
+    filePath: created?.filePath || '',
+  })
+  check(removedFresh?.applied === true, 'delete 也立刻重装配（applied=true）', JSON.stringify(removedFresh).slice(0, 300))
+  const listedGone = await call('plugin.list', { workspace: wsDir })
+  const gone = (listedGone?.plugins || []).find((p) => p.id === 'workspace:fresh-one')
+  check(!gone, '删除后插件不再出现在列表里', JSON.stringify(gone))
+
+  // ⑦ 用户技能只从 `<ws>/.ada/agent-coding/skills/` 扫描（2026-10-19 收敛了四个旧根）。
+  // 旧目录（`.ada/skills`、`.agents/skills`）不再被扫描——放进去必须查不到。
+  const userSkillDir = join(wsDir, '.ada', 'agent-coding', 'skills', 'workspace-skill')
+  mkdirSync(userSkillDir, { recursive: true })
+  writeFileSync(
+    join(userSkillDir, 'SKILL.md'),
+    `---
+name: workspace-skill
+description: 工作区技能（e2e）：验证统一技能目录被扫描。
+---
+
+# 工作区技能
+
+按步骤执行。
+`,
+  )
+  const legacySkillDir = join(wsDir, '.ada', 'skills', 'legacy-skill')
+  mkdirSync(legacySkillDir, { recursive: true })
+  writeFileSync(
+    join(legacySkillDir, 'SKILL.md'),
+    `---\nname: legacy-skill\ndescription: 旧目录技能\n---\n\n正文\n`,
+  )
+
+  const skillsUnified = await call('skill.list', { workspace: wsDir })
+  const unified = (skillsUnified || []).find((s) => s.name === 'workspace-skill')
+  check(
+    unified?.scope === 'workspace',
+    '工作区技能从 .ada/agent-coding/skills/ 被扫描到',
+    JSON.stringify(unified),
+  )
+  check(
+    !(skillsUnified || []).some((s) => s.name === 'legacy-skill'),
+    '旧的 .ada/skills/ 不再被扫描（目录已统一）',
+  )
 } finally {
   try {
     socket.close()

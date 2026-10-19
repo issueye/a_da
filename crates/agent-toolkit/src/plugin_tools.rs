@@ -173,19 +173,19 @@ pub async fn code_outline(workspace: &Path, file_path: &str) -> ToolResult {
     }
 }
 
-/// `git diff` 的**单次输出上限**（字节）。
+/// `git` 的**单次输出上限**（字节）。
 ///
-/// `git diff` 一次吐整仓改动动辄几百 KB，直接塞进上下文会把模型窗口撑爆——
-/// 实测一次子智能体就是靠反复 `git_diff` 冲到 445k tokens，最后请求被网关掐断、
+/// 整仓 diff 一次动辄几百 KB，直接塞进上下文会把模型窗口撑爆——
+/// 实测一次子智能体就是靠反复读整仓 diff 冲到 445k tokens，最后请求被网关掐断、
 /// 报告只写了一半。截断时**明确告诉模型怎么拿全文**，而不是静默丢内容。
-const MAX_DIFF_BYTES: usize = 48 * 1024;
+const MAX_GIT_BYTES: usize = 48 * 1024;
 
 /// 按 UTF-8 字符边界截断，并附上"怎么拿全文"的指引。
-fn truncate_diff_output(mut res: ToolResult) -> ToolResult {
-    if res.output.len() <= MAX_DIFF_BYTES {
+fn truncate_git_output(mut res: ToolResult, action: &str) -> ToolResult {
+    if res.output.len() <= MAX_GIT_BYTES {
         return res;
     }
-    let mut cut = MAX_DIFF_BYTES;
+    let mut cut = MAX_GIT_BYTES;
     while cut > 0 && !res.output.is_char_boundary(cut) {
         cut -= 1;
     }
@@ -193,39 +193,455 @@ fn truncate_diff_output(mut res: ToolResult) -> ToolResult {
     let kept_kb = cut / 1024;
     let head = res.output[..cut].to_string();
     res.output = format!(
-        "{head}\n\n……（diff 已截断：原始约 {orig_kb} KB，仅保留前 {kept_kb} KB。\
-         需要全文请用 `git_diff` 指定单个文件，或直接用 `read_file` 读该文件；\
-         整仓 diff 不要一次性读入。）"
+        "{head}\n\n……（输出已截断：原始约 {orig_kb} KB，仅保留前 {kept_kb} KB。\
+         需要全文请缩小范围：`action:\"diff\"` 指定单个 file、`action:\"log\"` 调低 limit、\
+         或改用 `read_file` 读具体文件；整仓 {action} 不要一次性读入。）"
     );
     res
 }
 
-/// `git status --porcelain=v1 -b`。
-pub async fn git_status(workspace: &Path) -> ToolResult {
-    let res = run_command(workspace, "git status --porcelain=v1 -b", None, Some(10), None).await;
-    if !res.ok && res.output.contains("not a git repository") {
-        ToolResult::error("当前目录不是一个有效的 Git 仓库。")
-    } else {
-        res
-    }
-}
+/// 支持的 `git` 动作（**单一真源**：描述符的 enum 与这里必须一致）。
+pub const GIT_ACTIONS: &[&str] = &[
+    "status", "diff", "log", "show", "blame", "add", "commit", "checkout", "restore",
+    "reset", "stash", "branch", "merge", "push", "pull",
+];
 
-/// `git diff`（可限定单个文件）。
+/// 统一的 `git` 工具入口。
 ///
-/// 整仓 diff 会被**限幅**（见 [`MAX_DIFF_BYTES`]）：它是把上下文撑爆的头号来源。
-pub async fn git_diff(workspace: &Path, file: Option<&str>) -> ToolResult {
-    let cmd = match file {
-        Some(f) if !f.trim().is_empty() => format!("git diff -- {}", f.trim()),
-        _ => "git diff".to_string(),
+/// # 为什么把 status / diff / log 合成一个（2026-10-19）
+///
+/// 它们是**同一件事的三个动作**（看版本库），却各占一条清单：模型要先读三份高度相似的
+/// 描述才能选对，而清单每长一条，选错的概率就多一点；用户侧看到的是"查个状态调了三个工具"。
+/// 现在 `action` 选动作，其余参数按动作解释，另外把常用写操作（add / commit / checkout /
+/// restore / reset / stash / branch / merge / push / pull）一起收进来——
+/// 早先这些只能让模型拼 `run_command`，既没有审批保护也没有输出限幅。
+///
+/// 🔴 **参数一律走 argv，不经 shell**：git 的参数里到处是用户输入（提交信息、路径、ref），
+/// 拼成命令行再交给 `cmd /c` 会把 `%VAR%` 展开、把 `&` 当命令分隔符。这里直接 spawn 子进程，
+/// 没有任何一处转义需要被"猜对"。路径另外做"不得越出工作区"的校验。
+pub async fn git(workspace: &Path, args: &serde_json::Value) -> ToolResult {
+    let (action, argv) = match git_argv(args) {
+        Ok(v) => v,
+        Err(e) => return ToolResult::error(e),
     };
-    let res = run_command(workspace, &cmd, None, Some(15), None).await;
-    truncate_diff_output(res)
+    let res = run_git(workspace, &argv).await;
+    if !res.ok && res.output.contains("not a git repository") {
+        return ToolResult::error("当前目录不是一个有效的 Git 仓库。");
+    }
+    truncate_git_output(res, &action)
 }
 
-/// `git log -n <limit> --oneline`。
-pub async fn git_log(workspace: &Path, limit: u64) -> ToolResult {
-    let cmd = format!("git log -n {} --oneline", limit);
-    run_command(workspace, &cmd, None, Some(10), None).await
+/// 把工具入参翻译成 `git` 的 argv（`argv[0]` 之外的部分）。
+///
+/// 校验一律**失败即拒**：宁可让模型改参数重试，也不要把可疑字符串交给 git
+/// （`--upload-pack=...` 这类"看着像值、其实是选项"的输入只能靠拒绝 `-` 开头挡住）。
+fn git_argv(args: &serde_json::Value) -> Result<(String, Vec<String>), String> {
+    let raw_action = args
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("status")
+        .trim()
+        .to_lowercase();
+    let action = GIT_ACTIONS
+        .iter()
+        .find(|a| **a == raw_action)
+        .map(|a| a.to_string())
+        .ok_or_else(|| {
+            format!(
+                "未知 git action `{raw_action}`（可用：{}）",
+                GIT_ACTIONS.join(" / ")
+            )
+        })?;
+
+    // 文件集合：`file`/`path` 单值 + `files` 数组，一起去重
+    let mut files: Vec<String> = Vec::new();
+    if let Some(f) = args
+        .get("file")
+        .or_else(|| args.get("path"))
+        .and_then(|v| v.as_str())
+    {
+        if !f.trim().is_empty() {
+            files.push(repo_path(f)?);
+        }
+    }
+    if let Some(arr) = args.get("files").and_then(|v| v.as_array()) {
+        for v in arr {
+            if let Some(s) = v.as_str() {
+                if !s.trim().is_empty() {
+                    files.push(repo_path(s)?);
+                }
+            }
+        }
+    }
+    files.dedup();
+
+    let reference = args
+        .get("ref")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(git_ref)
+        .transpose()?;
+    let branch = args
+        .get("branch")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(git_ref)
+        .transpose()?;
+    let staged = args.get("staged").and_then(|v| v.as_bool()).unwrap_or(false);
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(10)
+        .clamp(1, 200);
+
+    let need_files = |files: &Vec<String>, what: &str| -> Result<(), String> {
+        if files.is_empty() {
+            return Err(format!("`{what}` 需要指定文件：传 file / path，或 files 数组。"));
+        }
+        Ok(())
+    };
+
+    let argv: Vec<String> = match action.as_str() {
+        "status" => vec!["status".into(), "--porcelain=v1".into(), "-b".into()],
+        "diff" => {
+            let mut a: Vec<String> = vec!["diff".into()];
+            if staged {
+                a.push("--cached".into());
+            }
+            if let Some(r) = &reference {
+                a.push(r.clone());
+            }
+            a.push("--".into());
+            a.extend(files.iter().cloned());
+            a
+        }
+        "log" => {
+            let mut a: Vec<String> = vec![
+                "log".into(),
+                "-n".into(),
+                limit.to_string(),
+                "--oneline".into(),
+                "--decorate".into(),
+            ];
+            if let Some(r) = &reference {
+                a.push(r.clone());
+            }
+            if !files.is_empty() {
+                a.push("--".into());
+                a.extend(files.iter().cloned());
+            }
+            a
+        }
+        "show" => {
+            let mut a: Vec<String> = vec![
+                "show".into(),
+                reference.clone().unwrap_or_else(|| "HEAD".to_string()),
+                "--stat".into(),
+                "--patch".into(),
+            ];
+            if !files.is_empty() {
+                a.push("--".into());
+                a.extend(files.iter().cloned());
+            }
+            a
+        }
+        "blame" => {
+            need_files(&files, "blame")?;
+            vec!["blame".into(), "--date=short".into(), files[0].clone()]
+        }
+        "add" => {
+            if files.is_empty() {
+                // 不指定文件 = 暂存全部改动（含新增与删除），这是 git add -A 的语义
+                vec!["add".into(), "-A".into()]
+            } else {
+                let mut a: Vec<String> = vec!["add".into(), "--".into()];
+                a.extend(files.iter().cloned());
+                a
+            }
+        }
+        "commit" => {
+            let message = args
+                .get("message")
+                .and_then(|v| v.as_str())
+                .map(commit_message)
+                .transpose()?
+                .ok_or_else(|| "`commit` 需要 message（提交信息）。".to_string())?;
+            let mut a: Vec<String> = vec!["commit".into(), "-m".into(), message];
+            if args.get("all").and_then(|v| v.as_bool()).unwrap_or(false) {
+                a.push("-a".into());
+            }
+            if !files.is_empty() {
+                a.push("--".into());
+                a.extend(files.iter().cloned());
+            }
+            a
+        }
+        "checkout" => {
+            if args.get("create").and_then(|v| v.as_bool()).unwrap_or(false) {
+                let name = branch
+                    .clone()
+                    .or_else(|| reference.clone())
+                    .ok_or_else(|| "`checkout` 创建分支需要 branch（新分支名）。".to_string())?;
+                vec!["checkout".into(), "-b".into(), name]
+            } else {
+                let target = reference
+                    .clone()
+                    .or_else(|| branch.clone())
+                    .ok_or_else(|| "`checkout` 需要 ref 或 branch。".to_string())?;
+                vec!["checkout".into(), target]
+            }
+        }
+        "restore" => {
+            need_files(&files, "restore")?;
+            let mut a: Vec<String> = vec!["restore".into()];
+            if staged {
+                a.push("--staged".into());
+            }
+            a.push("--".into());
+            a.extend(files.iter().cloned());
+            a
+        }
+        "reset" => {
+            let mode = args
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .unwrap_or("mixed")
+                .trim()
+                .to_lowercase();
+            let mode = match mode.as_str() {
+                "soft" | "mixed" | "hard" => mode,
+                other => {
+                    return Err(format!(
+                        "未知 reset mode `{other}`（可用：soft / mixed / hard）"
+                    ))
+                }
+            };
+            vec![
+                "reset".into(),
+                format!("--{mode}"),
+                reference.unwrap_or_else(|| "HEAD".to_string()),
+            ]
+        }
+        "stash" => {
+            let sub = args
+                .get("sub")
+                .and_then(|v| v.as_str())
+                .unwrap_or("list")
+                .trim()
+                .to_lowercase();
+            match sub.as_str() {
+                "list" | "pop" | "apply" | "drop" | "show" => vec!["stash".into(), sub],
+                "push" | "save" => {
+                    let mut a: Vec<String> = vec!["stash".into(), "push".into()];
+                    if let Some(msg) = args.get("message").and_then(|v| v.as_str()) {
+                        a.push("-m".into());
+                        a.push(commit_message(msg)?);
+                    }
+                    a
+                }
+                other => {
+                    return Err(format!(
+                        "未知 stash sub `{other}`（可用：list / push / pop / apply / drop / show）"
+                    ))
+                }
+            }
+        }
+        "branch" => {
+            if args.get("delete").and_then(|v| v.as_bool()).unwrap_or(false) {
+                let name = branch
+                    .ok_or_else(|| "`branch` 删除分支需要 branch（分支名）。".to_string())?;
+                vec!["branch".into(), "-d".into(), name]
+            } else if let Some(name) = branch {
+                vec!["branch".into(), name]
+            } else {
+                // 不传 branch = 列本地分支（带上游与最后提交）
+                vec!["branch".into(), "-vv".into()]
+            }
+        }
+        "merge" => {
+            let target = reference
+                .clone()
+                .or_else(|| branch.clone())
+                .ok_or_else(|| "`merge` 需要 ref 或 branch。".to_string())?;
+            vec!["merge".into(), "--no-edit".into(), target]
+        }
+        "push" | "pull" => {
+            let remote = args
+                .get("remote")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(git_ref)
+                .transpose()?
+                .unwrap_or_else(|| "origin".to_string());
+            let mut a: Vec<String> = vec![action.clone(), remote];
+            if let Some(r) = reference.or(branch) {
+                a.push(r);
+            }
+            if args.get("force").and_then(|v| v.as_bool()).unwrap_or(false) && action == "push" {
+                a.push("--force-with-lease".into());
+            }
+            a
+        }
+        _ => unreachable!("动作已在 GIT_ACTIONS 里校验过"),
+    };
+
+    Ok((action, argv))
+}
+
+/// 仓库内的相对路径：拒绝绝对路径与 `..` 段（越出工作区的 git 操作没有意义，
+/// 而 `git restore -- ../outside` 会真的改到工作区外的文件）。
+fn repo_path(raw: &str) -> Result<String, String> {
+    let p = raw.trim();
+    if p.is_empty() {
+        return Err("文件路径不能为空。".to_string());
+    }
+    if p.chars().any(|c| c.is_control()) {
+        return Err("文件路径里不能有控制字符（换行等）。".to_string());
+    }
+    let normalized = p.replace('\\', "/");
+    let is_absolute = normalized.starts_with('/')
+        || normalized.starts_with("//")
+        || normalized.as_bytes().get(1) == Some(&b':');
+    if is_absolute {
+        return Err(format!("`{p}` 是绝对路径：git 工具只接受工作区内的相对路径。"));
+    }
+    if normalized.split('/').any(|seg| seg == "..") {
+        return Err(format!("`{p}` 含 `..`：不允许越出工作区。"));
+    }
+    Ok(p.to_string())
+}
+
+/// ref / 分支 / 远端名。
+///
+/// 以 `-` 开头的一律拒：git 会把它们当选项（`--exec=`、`-c core.pager=...`），
+/// 而这些不是"引用名"，是执行入口。
+fn git_ref(raw: &str) -> Result<String, String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Err("引用名不能为空。".to_string());
+    }
+    if s.starts_with('-') {
+        return Err(format!("`{s}` 以 `-` 开头：引用名不允许像选项一样书写。"));
+    }
+    if s.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err(format!("`{s}` 含空白或控制字符：不是合法的引用名。"));
+    }
+    if s.len() > 200 {
+        return Err("引用名过长（上限 200 字符）。".to_string());
+    }
+    Ok(s.to_string())
+}
+
+/// 提交信息：允许中文与标点，拒绝换行（多人多行用 `-m` 重复传会改变语义）与超长正文。
+fn commit_message(raw: &str) -> Result<String, String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Err("提交信息不能为空。".to_string());
+    }
+    if s.chars().any(|c| c == '\n' || c == '\r') {
+        return Err("提交信息不能含换行：需要多段请分行写成 `；`，或改用 run_command 走 git commit -F。".to_string());
+    }
+    if s.chars().count() > 2000 {
+        return Err("提交信息过长（上限 2000 字符）。".to_string());
+    }
+    Ok(s.to_string())
+}
+
+/// 直接 spawn `git`（不经 shell），带超时与输出上限。
+///
+/// 并发读 stdout/stderr：只读一路时，另一路写满管道缓冲会**双双卡死**，
+/// 最后表现为"git 工具超时"——而 git 其实早就干完了。
+async fn run_git(workspace: &Path, argv: &[String]) -> ToolResult {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.args(argv)
+        .current_dir(workspace)
+        .env("A_DA_AGENT", "1")
+        .env("GIT_TERMINAL_PROMPT", "0") // 要凭据时立刻失败，而不是等满超时
+        .env("GIT_PAGER", "cat")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        // tokio::process::Command 自带 `creation_flags`（不需要 std 的 CommandExt）
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            return ToolResult::error(format!(
+                "启动 git 失败（未安装或不在 PATH 上）：{e}"
+            ))
+        }
+    };
+    let mut out_pipe = child.stdout.take();
+    let mut err_pipe = child.stderr.take();
+
+    let read_out = async {
+        let mut buf = Vec::new();
+        if let Some(p) = out_pipe.as_mut() {
+            let _ = p.read_to_end(&mut buf).await;
+        }
+        buf
+    };
+    let read_err = async {
+        let mut buf = Vec::new();
+        if let Some(p) = err_pipe.as_mut() {
+            let _ = p.read_to_end(&mut buf).await;
+        }
+        buf
+    };
+
+    let timeout = std::time::Duration::from_secs(30);
+    match tokio::time::timeout(timeout, async {
+        tokio::join!(read_out, read_err, child.wait())
+    })
+    .await
+    {
+        Ok((out, err, status)) => {
+            let stdout = String::from_utf8_lossy(&out).trim_end().to_string();
+            let stderr = String::from_utf8_lossy(&err).trim_end().to_string();
+            // `tokio::join!` 把 `child.wait()` 的 `Result` 原样交出来：取不到退出状态
+            // 说明子进程被外部杀掉或句柄失效，如实报错，不要假装成功。
+            let status = match status {
+                Ok(s) => s,
+                Err(e) => return ToolResult::error(format!("等待 git 进程结束失败：{e}")),
+            };
+            let code = status.code().unwrap_or(-1);
+            if status.success() {
+                let body = if stdout.is_empty() {
+                    "（命令成功，无输出）".to_string()
+                } else {
+                    stdout
+                };
+                ToolResult::success(body)
+            } else {
+                let mut msg = format!("git 执行失败（退出码 {code}）");
+                if !stderr.is_empty() {
+                    msg.push_str(&format!("：\n{stderr}"));
+                }
+                if !stdout.is_empty() {
+                    msg.push_str(&format!("\n{stdout}"));
+                }
+                ToolResult::error(msg)
+            }
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            ToolResult::error(format!(
+                "git 执行超时（{} 秒）已终止：`{}`。交互式操作（rebase -i、要输密码的 push）在这里跑不了，请改用非交互参数。",
+                timeout.as_secs(),
+                argv.join(" ")
+            ))
+        }
+    }
 }
 
 /// 自动探测并执行项目测试。
@@ -250,9 +666,7 @@ pub async fn run_tests(workspace: &Path) -> ToolResult {
 enum Kind {
     ProjectInspect,
     CodeOutline,
-    GitStatus,
-    GitDiff,
-    GitLog,
+    Git,
     RunTests,
 }
 
@@ -298,18 +712,7 @@ impl Tool for PluginTool {
                     let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
                     code_outline(&self.workspace, path).await
                 }
-                Kind::GitStatus => git_status(&self.workspace).await,
-                Kind::GitDiff => {
-                    let file = args
-                        .get("file")
-                        .or_else(|| args.get("path"))
-                        .and_then(|v| v.as_str());
-                    git_diff(&self.workspace, file).await
-                }
-                Kind::GitLog => {
-                    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10);
-                    git_log(&self.workspace, limit).await
-                }
+                Kind::Git => git(&self.workspace, args).await,
                 Kind::RunTests => run_tests(&self.workspace).await,
             };
             to_receipt(res, started_at)
@@ -317,13 +720,12 @@ impl Tool for PluginTool {
     }
 }
 
-/// `git` 工具包：版本库状态、diff 与提交历史。
+/// `git` 工具包：**一个**工具承载全部版本库动作（`action` 选动作）。
+///
+/// 合并前是 `git_status` / `git_diff` / `git_log` 三个名字（2026-10-19 合并）：
+/// 同一件事的三个动作各占一条清单，模型要在三份相似描述里挑，用户看到的是"查状态调了三次"。
 pub fn git_tools(workspace: &Path) -> Vec<Arc<dyn Tool>> {
-    vec![
-        Arc::new(PluginTool::new("git_status", workspace, Kind::GitStatus)),
-        Arc::new(PluginTool::new("git_diff", workspace, Kind::GitDiff)),
-        Arc::new(PluginTool::new("git_log", workspace, Kind::GitLog)),
-    ]
+    vec![Arc::new(PluginTool::new("git", workspace, Kind::Git))]
 }
 
 /// `project` 工具包：项目诊断与代码结构提取。
@@ -356,7 +758,8 @@ mod tests {
 
     #[test]
     fn test_every_wrapped_tool_has_a_registry_descriptor() {
-        // 描述符来自注册表：这 6 个名字都必须存在（否则 new() 会 panic）
+        // 描述符来自注册表：这 4 个名字都必须存在（否则 new() 会 panic）
+        // 2026-10-19：git 三兄弟（status/diff/log）合并为一个 `git`，由 action 区分。
         let all: Vec<Arc<dyn Tool>> = git_tools(&ws())
             .into_iter()
             .chain(project_tools(&ws()))
@@ -365,14 +768,7 @@ mod tests {
         let names: Vec<String> = all.iter().map(|t| t.descriptor().name.clone()).collect();
         assert_eq!(
             names,
-            vec![
-                "git_status",
-                "git_diff",
-                "git_log",
-                "project_inspect",
-                "code_outline",
-                "run_tests"
-            ],
+            vec!["git", "project_inspect", "code_outline", "run_tests"],
             "项目诊断只保留一个名字：`inspect_project` 别名已合并进 `project_inspect`"
         );
         for t in &all {
@@ -412,28 +808,100 @@ mod tests {
 
     /// 守门：整仓 diff 必须**限幅**，且截断时明确告诉模型怎么拿全文。
     ///
-    /// 实测教训：子智能体靠反复 `git_diff` 把上下文冲到 445k tokens，请求被网关掐断。
+    /// 实测教训：子智能体靠反复读整仓 diff 把上下文冲到 445k tokens，请求被网关掐断。
     #[test]
     fn test_git_diff_output_is_truncated_with_guidance() {
-        let huge = "x".repeat(MAX_DIFF_BYTES + 4096);
-        let res = truncate_diff_output(ToolResult::success(huge));
+        let huge = "x".repeat(MAX_GIT_BYTES + 4096);
+        let res = truncate_git_output(ToolResult::success(huge), "diff");
         assert!(
-            res.output.len() < MAX_DIFF_BYTES + 1024,
+            res.output.len() < MAX_GIT_BYTES + 1024,
             "超限的 diff 必须被截断（实际 {} 字节）",
             res.output.len()
         );
-        assert!(res.output.contains("diff 已截断"), "{}", &res.output[..120.min(res.output.len())]);
+        assert!(
+            res.output.contains("输出已截断"),
+            "{}",
+            &res.output[..120.min(res.output.len())]
+        );
         assert!(res.output.contains("read_file"), "截断时必须指路怎么拿全文");
 
         // 没超限的原样返回
         let small = "small diff".to_string();
-        let res = truncate_diff_output(ToolResult::success(small.clone()));
+        let res = truncate_git_output(ToolResult::success(small.clone()), "diff");
         assert_eq!(res.output, small);
 
         // 多字节字符边界不能切坏（按 char boundary 回退）
-        let cjk = "改".repeat(MAX_DIFF_BYTES); // 每字 3 字节
-        let res = truncate_diff_output(ToolResult::success(cjk));
-        assert!(res.output.contains("diff 已截断"));
+        let cjk = "改".repeat(MAX_GIT_BYTES);
+        let res = truncate_git_output(ToolResult::success(cjk), "diff");
+        assert!(res.output.contains("输出已截断"));
+    }
+
+    #[tokio::test]
+    async fn test_git_status_runs_in_this_repo() {
+        let res = git(&ws(), &serde_json::json!({ "action": "status" })).await;
+        assert!(res.ok, "本仓是 git 仓库：{}", res.output);
+    }
+
+    /// 参数校验是**安全边界**，不是文案：越界路径、像选项的 ref、缺必填项都必须拒。
+    #[test]
+    fn test_git_argv_rejects_dangerous_or_incomplete_args() {
+        // 未知 action
+        let err = git_argv(&serde_json::json!({ "action": "rm-rf" })).unwrap_err();
+        assert!(err.contains("未知 git action"), "{err}");
+
+        // 绝对路径：git 工具只管工作区内
+        let err = git_argv(&serde_json::json!({
+            "action": "diff", "file": "C:/Windows/win.ini"
+        }))
+        .unwrap_err();
+        assert!(err.contains("绝对路径"), "{err}");
+
+        // 越出工作区
+        let err = git_argv(&serde_json::json!({
+            "action": "restore", "file": "../outside.txt"
+        }))
+        .unwrap_err();
+        assert!(err.contains("不允许越出工作区"), "{err}");
+
+        // ref 长得像选项（git 会当参数执行）
+        let err = git_argv(&serde_json::json!({
+            "action": "show", "ref": "--upload-pack=calc"
+        }))
+        .unwrap_err();
+        assert!(err.contains("以 `-` 开头"), "{err}");
+
+        // 缺必填：commit 没 message、blame 没文件
+        assert!(git_argv(&serde_json::json!({ "action": "commit" })).is_err());
+        assert!(git_argv(&serde_json::json!({ "action": "blame" })).is_err());
+    }
+
+    /// 常用动作的 argv 形状：钉住"参数都在正确位置"，避免以后加字段时错位。
+    #[test]
+    fn test_git_argv_shapes_for_common_actions() {
+        let (_, a) = git_argv(&serde_json::json!({
+            "action": "diff", "staged": true, "file": "src/lib.rs"
+        }))
+        .unwrap();
+        assert_eq!(a, vec!["diff", "--cached", "--", "src/lib.rs"]);
+
+        let (_, a) = git_argv(&serde_json::json!({ "action": "log", "limit": 3 })).unwrap();
+        assert_eq!(a[0], "log");
+        assert!(a.contains(&"3".to_string()));
+
+        let (_, a) = git_argv(&serde_json::json!({
+            "action": "commit", "message": "fix: 中文提交信息", "all": true
+        }))
+        .unwrap();
+        assert_eq!(a, vec!["commit", "-m", "fix: 中文提交信息", "-a"]);
+
+        let (_, a) = git_argv(&serde_json::json!({
+            "action": "checkout", "branch": "feat/x", "create": true
+        }))
+        .unwrap();
+        assert_eq!(a, vec!["checkout", "-b", "feat/x"]);
+
+        let (_, a) = git_argv(&serde_json::json!({ "action": "add" })).unwrap();
+        assert_eq!(a, vec!["add", "-A"]);
     }
 
     /// 守门：**Go 文件必须能提取出声明**，且提取不到时要如实说明工具边界。
@@ -475,16 +943,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_git_status_runs_in_this_repo() {
-        let res = git_status(&ws()).await;
-        assert!(res.ok, "本仓是 git 仓库：{}", res.output);
-    }
-
-    #[tokio::test]
     async fn test_run_tests_detects_cargo() {
         // 只验证"命令探测 + 真的跑起来"这件事；测试套件本身跑得久，
-        // 所以这里用一个短超时的等价断言：git_log 走同一条 run_command 通路。
-        let res = git_log(&ws(), 1).await;
+        // 所以这里用一条最短的 git 调用作等价断言（同一条 spawn/超时通路）。
+        let res = git(&ws(), &serde_json::json!({ "action": "log", "limit": 1 })).await;
         assert!(res.ok, "{}", res.output);
     }
 }

@@ -60,13 +60,16 @@ git-tools / code-outline / project-inspector / test-runner 四个官方插件也
   因为 `READ_ONLY` 是名字级的名单，而插件可以借走内置名字（`allowBuiltinShadow` 默认开）：
   一个叫 `read_file` 的插件工具若继承只读身份，plan 模式会放行、readonly 审批档不会问、
   只读子智能体也拿得到——审批闸门的依据（设计文档 §6.4.3）与 `effectiveToolNames` 回执一起失真。
-  官方内置插件的只读工具（`git_status` / `get_outline` 等）scope 是 `builtin`，不受影响。
+  官方内置插件的只读工具（`git` 的只读动作、`code_outline` 等）scope 是 `builtin`，不受影响。
+  （`git` 于 2026-10-19 合并了 `git_status`/`git_diff`/`git_log`：它现在声明为命令型工具，
+  只读与写入由 `action` 区分，**不再**凭工具名判定只读。）
 
 改动要点仍然是"失败安全"：
 
 - 新增**只读**工具却忘了加进 `READ_ONLY` → 它会被当成写工具，**只读子智能体与 plan 模式
-  都拿不到**（mode 过滤器会把它剔除）。官方插件里真正只读的 `git_status`/`git_diff`/`git_log`/
-  `get_outline`/`inspect_project` 就踩过这个。
+  都拿不到**（mode 过滤器会把它剔除）。官方插件里真正只读的 `code_outline`/`inspect_project`
+  就踩过这个。（`git` 现在是命令型工具——它的只读动作也过不了 `READ_ONLY` 名单，
+  这正是"单工具覆盖读写"的代价，见上一条。）
 - 反过来，把有副作用的工具错列进 `READ_ONLY` 会让只读模式形同虚设。判据是「是否改动工作区或
   系统状态」：`run_test_focused` 执行测试命令（可能产生构建产物），因此**算写工具**；
   `read_url_content` 只发网络请求，算只读。

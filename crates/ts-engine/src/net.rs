@@ -21,6 +21,26 @@
 
 use std::time::Duration;
 
+/// 把用户写的代理地址归一化。
+///
+/// 为什么需要：从 curl / 浏览器插件 / 内部文档抄过来的地址几乎都是
+/// `127.0.0.1:7897` 这种**不带 scheme** 的写法，而 `reqwest::Proxy::all` 要求合法 URL，
+/// 直接吃这种字符串会失败。这里补 `http://`（最常见的本地 HTTP CONNECT 代理），
+/// `socks5://` / `https://` 等带 scheme 的原样保留。
+///
+/// 空串返回 `None`（"没配代理"），而不是 `Some("")`——后者会在 `Proxy::all` 那里炸。
+pub fn normalize_proxy_url(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if s.contains("://") {
+        Some(s.to_string())
+    } else {
+        Some(format!("http://{s}"))
+    }
+}
+
 /// 插件联网策略（宿主级）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetPolicy {
@@ -202,5 +222,22 @@ mod tests {
             Duration::from_secs(1),
             "0 必须被抬到 1 秒（否则变成无限等）"
         );
+    }
+
+    /// 代理地址：常见的"只有 host:port"写法要能直接用；带 scheme 的原样保留。
+    #[test]
+    fn test_proxy_url_normalization() {
+        assert_eq!(
+            normalize_proxy_url("127.0.0.1:7897").as_deref(),
+            Some("http://127.0.0.1:7897"),
+            "不带 scheme 是最常见的写法：补 http://（HTTP CONNECT 代理）"
+        );
+        assert_eq!(
+            normalize_proxy_url("  socks5://127.0.0.1:1080  ").as_deref(),
+            Some("socks5://127.0.0.1:1080"),
+            "带 scheme 的原样保留（含 socks5），只去首尾空白"
+        );
+        assert_eq!(normalize_proxy_url("http://proxy.corp:8080").as_deref(), Some("http://proxy.corp:8080"));
+        assert_eq!(normalize_proxy_url("   "), None, "空串 = 没配代理，不许变成 \"\" 去炸 Proxy::all");
     }
 }

@@ -15,6 +15,7 @@ import {
   Clock,
   Eye,
   Edit3,
+  RefreshCw,
 } from 'lucide-react'
 import type {
   PluginItem,
@@ -60,7 +61,14 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
   const [loading, setLoading] = useState(false)
   const [actionNotice, setActionNotice] = useState<string | null>(null)
   const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<PluginItem | null>(null)
-  const [createTemplateScope, setCreateTemplateScope] = useState<'workspace' | 'global' | null>(null)
+  /**
+   * 新建插件草稿：**作用域在弹窗里选**（不再让用户在工具栏上先挑按钮再输名字）。
+   *
+   * 默认工作区：插件通常随项目走（`.ada/agent-coding/extensions`），要全局通用再切。
+   */
+  const [createDraft, setCreateDraft] = useState<{ scope: 'workspace' | 'global'; name: string } | null>(
+    null,
+  )
 
   // 插件配置编辑状态：pluginId -> { [key]: value }
   const [configDrafts, setConfigDrafts] = useState<Record<string, Record<string, string>>>({})
@@ -162,9 +170,15 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
   const handleDeletePluginConfirm = async () => {
     if (!deleteConfirmTarget) return
     try {
-      await agentClient.deletePlugin(deleteConfirmTarget.filePath)
-      showNotice(`插件 ${deleteConfirmTarget.name} 已成功删除`)
-      loadData()
+      const res = await agentClient.deletePlugin(deleteConfirmTarget.filePath)
+      showNotice(
+        res?.applied === true
+          ? `插件 ${deleteConfirmTarget.name} 已删除并卸下`
+          : res?.applied === false
+            ? `插件 ${deleteConfirmTarget.name} 已删除，但重装配被拒：见「插件诊断」`
+            : `插件 ${deleteConfirmTarget.name} 已删除（当前宿主未接重装配，重启后彻底卸下）`,
+      )
+      await loadData()
     } catch (err: any) {
       showNotice(`删除失败: ${err.message}`)
     } finally {
@@ -172,25 +186,50 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
     }
   }
 
-  // 新建插件模板
-  const handleCreateTemplate = (scope: 'workspace' | 'global') => {
-    setCreateTemplateScope(scope)
+  // 新建插件：打开草稿弹窗（作用域在弹窗里选）
+  const handleCreateTemplate = (scope: 'workspace' | 'global' = 'workspace') => {
+    setCreateDraft({ scope, name: 'custom-tool' })
   }
 
-  const handleCreateTemplateConfirm = async (nameVal?: string) => {
-    const scope = createTemplateScope
-    if (!scope || !nameVal || !nameVal.trim()) return
+  const handleCreateTemplateConfirm = async () => {
+    const draft = createDraft
+    const name = draft?.name.trim()
+    if (!draft || !name) return
     try {
-      const res = await agentClient.createPluginTemplate({
-        scope,
-        name: nameVal.trim(),
-      })
-      showNotice(`创建插件模板成功: ${res?.filePath}`)
-      loadData()
+      const res = await agentClient.createPluginTemplate({ scope: draft.scope, name })
+      // applied 是"引擎侧真的换了"的唯一凭据：不给它下结论，用户就只能靠"重启试试"判断
+      showNotice(
+        res?.applied === true
+          ? `已创建并生效：${res?.filePath}`
+          : res?.applied === false
+            ? `已创建，但装配被拒（见「插件诊断」）：${res?.filePath}`
+            : `已创建：${res?.filePath}（当前宿主未接重装配，重启后生效）`,
+      )
+      await loadData()
     } catch (err: any) {
       showNotice(`创建模板失败: ${err.message}`)
     } finally {
-      setCreateTemplateScope(null)
+      setCreateDraft(null)
+    }
+  }
+
+  /**
+   * 手动"重新加载"：重新扫盘 **+ 重装配**。
+   *
+   * 手改过 `index.ts` 的插件（或者从外部拖进目录的包）只能靠这个让引擎重新执行它；
+   * 早先它只重扫目录，工具集合纹丝不动，于是"刷新了但没生效"。
+   */
+  const handleReloadPlugins = async () => {
+    try {
+      const res = await agentClient.reloadPlugins()
+      showNotice(
+        res?.applied === true
+          ? `已重新加载 ${res?.plugins?.length || 0} 个扩展并生效`
+          : `已重新扫描 ${res?.plugins?.length || 0} 个扩展（引擎侧未重装配，需重启）`,
+      )
+      await loadData()
+    } catch (err: any) {
+      showNotice(`重新加载失败: ${err.message}`)
     }
   }
 
@@ -317,25 +356,26 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
                   {scopeFilter === 'builtin'
                     ? '系统官方内置的标准辅助插件，提供版本控制、代码大纲分析、项目探查与准入门禁等开箱即用能力。'
                     : scopeFilter === 'workspace'
-                      ? '当前工作区专属插件，存放于 .ada/extensions/（或 .ada/plugins/），随项目版本库管理。'
+                      ? '当前工作区专属插件，存放于 .ada/agent-coding/extensions/，随项目版本库管理。'
                       : scopeFilter === 'global'
-                        ? '用户级全局扩展，存放于 ~/.a-da/extensions/（或 ~/.a-da/plugins/），对所有工程通用。'
+                        ? '用户级全局扩展，存放于 ~/.a-da/agent-coding/extensions/，对所有工程通用。'
                         : '插件按来源分三类：内置（编译进来）、工作区（随项目走）、全局（对所有工程通用）。同一个工具名被插件重实现时，插件胜出。'}
                 </div>
                 <div className="flex items-center space-x-1.5">
+                  <button
+                    onClick={handleReloadPlugins}
+                    title="重新扫描扩展目录，并让引擎重新装配贡献（手改过 index.ts 后点这个）"
+                    className="flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 font-medium text-[11px] border border-zinc-300 dark:border-zinc-700 transition-colors"
+                  >
+                    <RefreshCw size={12} />
+                    <span>重新加载</span>
+                  </button>
                   <button
                     onClick={() => handleCreateTemplate('workspace')}
                     className="flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium text-[11px] shadow-sm transition-colors"
                   >
                     <Plus size={12} />
-                    <span>新建工作区插件</span>
-                  </button>
-                  <button
-                    onClick={() => handleCreateTemplate('global')}
-                    className="flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 font-medium text-[11px] border border-zinc-300 dark:border-zinc-700 transition-colors"
-                  >
-                    <Plus size={12} />
-                    <span>新建全局插件</span>
+                    <span>新建插件</span>
                   </button>
                 </div>
               </div>
@@ -410,8 +450,11 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
           {activeTab === 'skills' && (
             <div className="space-y-3">
               <div className="text-[11px] text-zinc-600 dark:text-zinc-400">
-                标准化专业技能与操作指引规范 (SKILL.md)。技能正文**全量进系统提示词**，
-                所以下面那行字节数就是"每轮固定开销"的一部分——停用不用的技能能省回来。
+                标准化专业技能与操作指引规范（SKILL.md）。技能只从<span className="font-semibold">两处</span>目录扫描：
+                <code className="mx-1 font-mono text-[10px]">.ada/agent-coding/skills/</code>（工作区，随项目走）与
+                <code className="mx-1 font-mono text-[10px]">~/.a-da/agent-coding/skills/</code>（全局）；
+                插件自带的技能在插件包的 <code className="font-mono text-[10px]">skills/&lt;name&gt;/SKILL.md</code>。
+                技能正文**全量进系统提示词**，所以下面那行字节数就是"每轮固定开销"的一部分——停用不用的技能能省回来。
               </div>
 
               {/* 来源筛选与「扩展」页同口径（目录 / 插件 / 内置）；插件技能另有插件名徽标 */}
@@ -687,20 +730,103 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
         onCancel={() => setDeleteConfirmTarget(null)}
       />
 
-      {/* 新建插件模板输入弹窗 */}
-      <ConfirmModal
-        isOpen={Boolean(createTemplateScope)}
-        title="新建插件模板"
-        message="请输入新插件名称（仅支持英文字母、数字与横线）："
-        promptMode={true}
-        promptDefaultValue="custom-tool"
-        promptPlaceholder="custom-tool"
-        confirmText="创建"
-        cancelText="取消"
-        variant="primary"
-        onConfirm={handleCreateTemplateConfirm}
-        onCancel={() => setCreateTemplateScope(null)}
-      />
+      {/* 新建插件弹窗：**作用域在这里选**（不再让用户先挑一个按钮再输名字） */}
+      {createDraft && (
+        <div
+          className="fixed inset-0 bg-black/40 dark:bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4 select-none"
+          onClick={() => setCreateDraft(null)}
+        >
+          <div
+            className="w-full max-w-[440px] bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-[#2e2e33] rounded-2xl shadow-2xl overflow-hidden flex flex-col text-xs"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 pt-4 pb-2">
+              <div className="flex items-center space-x-2.5">
+                <div className="p-1.5 rounded-xl border bg-blue-50 dark:bg-blue-950/40 border-blue-200/80 dark:border-blue-900/40">
+                  <Puzzle size={18} className="text-blue-500 dark:text-blue-400" />
+                </div>
+                <h3 className="font-semibold text-zinc-900 dark:text-zinc-100 text-sm">新建插件</h3>
+              </div>
+              <button
+                onClick={() => setCreateDraft(null)}
+                className="p-1 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 rounded-lg transition-colors"
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            <div className="px-5 py-3 space-y-3">
+              <div>
+                <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mb-1.5">
+                  插件名称（字母、数字、点、下划线、连字符；目录名就是插件标识）
+                </div>
+                <input
+                  autoFocus
+                  value={createDraft.name}
+                  onChange={(e) => setCreateDraft({ ...createDraft, name: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleCreateTemplateConfirm()
+                  }}
+                  placeholder="custom-tool"
+                  className="w-full px-3 py-2 bg-zinc-50 dark:bg-zinc-900/70 border border-zinc-200 dark:border-[#2e2e33] rounded-xl text-xs text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mb-1.5">创建位置</div>
+                <div className="grid grid-cols-2 gap-2">
+                  {(
+                    [
+                      ['workspace', '当前工作区', '.ada/agent-coding/extensions/', '随项目版本库管理'],
+                      ['global', '全局', '~/.a-da/agent-coding/extensions/', '对所有工程通用'],
+                    ] as const
+                  ).map(([value, label, path, hint]) => (
+                    <button
+                      key={value}
+                      onClick={() => setCreateDraft({ ...createDraft, scope: value })}
+                      className={`text-left p-2.5 rounded-xl border transition-colors ${
+                        createDraft.scope === value
+                          ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30'
+                          : 'border-zinc-200 dark:border-[#2e2e33] bg-zinc-50 dark:bg-[#141416] hover:border-zinc-300 dark:hover:border-zinc-700'
+                      }`}
+                    >
+                      <div className="font-medium text-zinc-900 dark:text-zinc-200 flex items-center justify-between">
+                        <span>{label}</span>
+                        {createDraft.scope === value && <Check size={12} className="text-blue-500" />}
+                      </div>
+                      <div className="text-[10px] text-zinc-500 dark:text-zinc-400 font-mono mt-0.5 break-all">
+                        {path}
+                      </div>
+                      <div className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-0.5">{hint}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="text-[10px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
+                创建后宿主会<span className="font-semibold">立刻重装配</span>，新插件的工具与技能无需重启即可生效；
+                之后手改 <code className="font-mono">index.ts</code> 请点「重新加载」。
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end space-x-2 px-5 py-3.5 bg-zinc-50/70 dark:bg-[#151518] border-t border-zinc-100 dark:border-[#232326]">
+              <button
+                onClick={() => setCreateDraft(null)}
+                className="px-3.5 py-1.5 rounded-xl border border-zinc-200 dark:border-[#2e2e33] text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-xs font-medium transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleCreateTemplateConfirm}
+                disabled={!createDraft.name.trim()}
+                className="px-4 py-1.5 rounded-xl text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-blue-600 hover:bg-blue-700 text-white shadow-sm"
+              >
+                创建
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

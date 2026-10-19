@@ -272,18 +272,13 @@ impl ScriptHost for SubprocessScriptHost {
                 resp.get("prompts").cloned().unwrap_or(serde_json::json!([])),
             )
             .unwrap_or_default();
-            let skills: Vec<crate::plugins::PluginSkillDeclaration> = serde_json::from_value(
-                resp.get("skills").cloned().unwrap_or(serde_json::json!([])),
-            )
-            .unwrap_or_default();
             let hooks: Vec<crate::plugins::PluginHookDeclaration> = serde_json::from_value(
                 resp.get("hooks").cloned().unwrap_or(serde_json::json!([])),
             )
             .unwrap_or_default();
-            let mut resolved_skills = Vec::new();
-            for skill in skills {
-                resolved_skills.push(crate::scripts::load_skill_declaration(&path, &workspace, skill).await?);
-            }
+            // 技能不再来自脚本声明（2026-10-19）：目录约定 `skills/<name>/SKILL.md`
+            // 由装配层扫描；子进程只负责工具/提示词/钩子。
+            let resolved_skills: Vec<agent_base::ports::ScriptSkillDeclaration> = Vec::new();
 
             self.registry.insert(LoadedScript {
                 path,

@@ -1,9 +1,13 @@
 pub mod builtins;
 pub mod manager;
+pub mod spec;
 pub mod types;
 
 pub use builtins::{get_builtin_skills, BUILTIN_SKILLS};
 pub use manager::SkillManager;
+pub use spec::{
+    discover_plugin_skills, load_skill_package, parse_skill_md, validate_skill_name, SkillManifest,
+};
 pub use types::SkillSummary;
 
 /// 插件技能的**共享活体**（P2·SP-45 起；SP-46 的启停重装配原地换它）。

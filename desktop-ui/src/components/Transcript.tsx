@@ -108,12 +108,8 @@ function renderToolIcon(name: string, size = 13, className = '') {
       return <Bot size={size} className={className} />
     case 'ask_user':
       return <Sparkles size={size} className={className} />
-    case 'git_status':
+    case 'git':
       return <FolderGit2 size={size} className={className} />
-    case 'git_diff':
-      return <Code size={size} className={className} />
-    case 'git_log':
-      return <Clock size={size} className={className} />
     default:
       return <Terminal size={size} className={className} />
   }
@@ -124,9 +120,32 @@ const PATH_TOOLS = new Set(['read_file', 'write_file', 'edit_file', 'list_files'
 
 /** 智能拆分目标路径：文件名是正文，目录是暗色小字 */
 function toolTarget(name: string, args: any): { target: string; dir: string } {
-  if (name === 'git_status') return { target: '检查仓库工作区改动', dir: '' }
-  if (name === 'git_diff') return { target: args?.file || args?.path || '工作区未暂存差异', dir: '' }
-  if (name === 'git_log') return { target: `近期 ${args?.limit || 10} 次提交`, dir: '' }
+  // git 是**一个**工具，读哪一行取决于 `action`：卡片上写"git"等于什么都没说，
+  // 用户要看到的是"它在看状态、还是要把我的改动提交掉"。
+  if (name === 'git') {
+    const action = String(args?.action || 'status').toLowerCase()
+    const file = args?.file || args?.path
+    const ref = args?.ref || args?.branch || ''
+    const message = String(args?.message || '').slice(0, 40)
+    const label: Record<string, string> = {
+      status: '查看仓库改动',
+      diff: file ? `查看 ${file} 的改动` : '查看未暂存差异',
+      log: `近期 ${args?.limit || 10} 次提交`,
+      show: `查看提交 ${ref || 'HEAD'}`,
+      blame: `追溯 ${file || '文件'} 的逐行作者`,
+      add: file ? `暂存 ${file}` : '暂存全部改动',
+      commit: message ? `提交：${message}` : '创建提交',
+      checkout: `切换到 ${ref || '分支'}`,
+      restore: `恢复 ${file || '文件'}`,
+      reset: `重置到 ${ref || 'HEAD'}`,
+      stash: `stash ${args?.sub || 'list'}`,
+      branch: ref ? `分支 ${ref}` : '列出分支',
+      merge: `合并 ${ref}`,
+      push: `推送到 ${args?.remote || 'origin'}`,
+      pull: `拉取 ${args?.remote || 'origin'}`,
+    }
+    return { target: label[action] || `git ${action}`, dir: '' }
+  }
   if (name === 'run_tests') return { target: '执行测试套件', dir: '' }
   if (name === 'project_inspect') return { target: '探测技术栈与项目环境', dir: '' }
   if (name === 'create_plugin') return { target: args?.id ? `插件 ${args.id}` : '生成插件骨架', dir: '' }

@@ -194,11 +194,18 @@ impl LivePluginReassembler {
     }
 }
 
-impl agent_rpc::server::dispatch::PluginReassembler for LivePluginReassembler {
-    fn reassemble<'a>(
+impl LivePluginReassembler {
+    /// 重装配的**唯一实现**：启停 / 新建 / 删除 / 重载四条路都从这里过。
+    ///
+    /// 为什么不再各写一份：这几十行是"按最新磁盘 + 最新启停状态重建贡献集合"的全部逻辑，
+    /// 复制一份给 `refresh` 就等于给"新建插件后生不生效"开了一条**行为不同**的岔路——
+    /// 而它恰恰是最容易被忘的那条（2026-10-19：新建插件要重启程序才生效）。
+    fn rebuild<'a>(
         &'a self,
-        plugin_id: &'a str,
-        enabled: bool,
+        plugin_id: String,
+        scope: &'static str,
+        from_enabled: bool,
+        to_enabled: bool,
     ) -> agent_base::ports::BoxFuture<'a, Option<agent_runtime::ReassemblyReport>> {
         Box::pin(async move {
             let before = self.live.digest();
@@ -224,9 +231,14 @@ impl agent_rpc::server::dispatch::PluginReassembler for LivePluginReassembler {
             );
             // 与初装**同一个**装配函数（`crate::assemble`）。差别只在处置：
             // 启动期装配失败必须炸（`run_from_spec` 里是 `?`），运行期只能放弃并如实记账。
+            //
+            // `app_home` 从插件管理器取（它持有应用目录端口）：重装配同样要能装配出
+            // `forge` 的全局作用域能力，否则"初装能用、启停一次就没了"。
+            let app_home = self.plugin_mgr.app_home_dir();
             let plan = match crate::assemble(
                 &self.spec,
                 &self.workspace,
+                Some(app_home.as_path()),
                 contribution_policy.allow_builtin_shadow(),
                 &collected.tools,
             ) {
@@ -297,10 +309,10 @@ impl agent_rpc::server::dispatch::PluginReassembler for LivePluginReassembler {
 
             Some(agent_runtime::ReassemblyReport {
                 request: agent_runtime::PluginToggleRequest {
-                    plugin_id: plugin_id.to_string(),
-                    scope: "plugin".to_string(),
-                    from_enabled: !enabled,
-                    to_enabled: enabled,
+                    plugin_id,
+                    scope: scope.to_string(),
+                    from_enabled,
+                    to_enabled,
                 },
                 before,
                 after: self.live.digest(),
@@ -309,6 +321,27 @@ impl agent_rpc::server::dispatch::PluginReassembler for LivePluginReassembler {
                 applied: true,
             })
         })
+    }
+}
+
+impl agent_rpc::server::dispatch::PluginReassembler for LivePluginReassembler {
+    fn reassemble<'a>(
+        &'a self,
+        plugin_id: &'a str,
+        enabled: bool,
+    ) -> agent_base::ports::BoxFuture<'a, Option<agent_runtime::ReassemblyReport>> {
+        self.rebuild(plugin_id.to_string(), "plugin", !enabled, enabled)
+    }
+
+    /// 磁盘变了（新建 / 删除 / 重载）：档位没变，收据如实写 `true → true`。
+    ///
+    /// 不把 `reason` 当"被启停的插件"来编 `from_enabled = false`：新建的插件从来没被关过，
+    /// 界面若按这个渲染就会说"它从关闭变成启用"，而用户根本没做过这个动作。
+    fn refresh<'a>(
+        &'a self,
+        reason: &'a str,
+    ) -> agent_base::ports::BoxFuture<'a, Option<agent_runtime::ReassemblyReport>> {
+        self.rebuild(reason.to_string(), "refresh", true, true)
     }
 }
 

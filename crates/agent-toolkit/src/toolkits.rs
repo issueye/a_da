@@ -27,14 +27,42 @@ pub fn is_known_toolkit(name: &str) -> bool {
     TOOLKIT_NAMES.contains(&name)
 }
 
+/// 装配工具包时需要知道的**环境**。
+///
+/// 为什么不是"再传一个参数"：工具工厂（`forge`）要用应用目录决定插件落到工作区还是全局，
+/// 而工作区之外的一切都必须由**组合根注入**——工具层自己读 `USERPROFILE` 或
+/// `A_DA_HOME` 就会在测试里写到用户真实目录（本项目为这类污染出过事故）。
+#[derive(Debug, Clone, Copy)]
+pub struct ToolkitEnv<'a> {
+    pub workspace: &'a Path,
+    /// 应用目录（`~/.a-da`）。`None` = 这个装配面没有应用目录概念
+    /// （测试 / 子体 / 合规套件）——需要它的能力会**如实报错**，而不是猜一个路径。
+    pub app_home: Option<&'a Path>,
+}
+
+impl<'a> ToolkitEnv<'a> {
+    /// 只给工作区（不需要应用目录的装配面用这个）。
+    pub fn workspace_only(workspace: &'a Path) -> Self {
+        Self { workspace, app_home: None }
+    }
+}
+
 /// 取一个工具包的全部工具实例。未知名返回 `None`。
 pub fn tools_for_toolkit(name: &str, workspace: &Path) -> Option<Vec<Arc<dyn Tool>>> {
+    tools_for_toolkit_in(name, ToolkitEnv::workspace_only(workspace))
+}
+
+/// 带环境取一个工具包的全部工具实例。
+pub fn tools_for_toolkit_in(name: &str, env: ToolkitEnv<'_>) -> Option<Vec<Arc<dyn Tool>>> {
+    let workspace = env.workspace;
     match name {
         "core" => Some(crate::core::core_tools()),
         "fs" => Some(crate::fs::fs_tools(workspace)),
         "command" => Some(crate::command::command_tools(workspace)),
-        // 插件包脚手架：生成可加载的最小插件包（`create_plugin`）
-        "forge" => Some(crate::forge::forge_tools(workspace)),
+        // 插件包脚手架：生成可加载的最小插件包（`create_plugin`）。
+        // 它需要应用目录：用户没指定工作区还是全局时，工具要**先问**；
+        // 指定全局时得知道 `~/.a-da/agent-coding/extensions` 在哪。
+        "forge" => Some(crate::forge::forge_tools_in(workspace, env.app_home)),
         // W2-T2：原先只在 `execute_builtin_plugin_tool` 字符串分派里的插件工具
         "git" => Some(crate::plugin_tools::git_tools(workspace)),
         "project" => Some(crate::plugin_tools::project_tools(workspace)),
@@ -52,9 +80,17 @@ pub fn tools_for_toolkits(
     names: &[String],
     workspace: &Path,
 ) -> Result<Vec<Arc<dyn Tool>>, String> {
+    tools_for_toolkits_in(names, ToolkitEnv::workspace_only(workspace))
+}
+
+/// 带环境装配多个工具包（组合根走这个：它要注入应用目录给 `forge`）。
+pub fn tools_for_toolkits_in(
+    names: &[String],
+    env: ToolkitEnv<'_>,
+) -> Result<Vec<Arc<dyn Tool>>, String> {
     let mut out: Vec<Arc<dyn Tool>> = Vec::new();
     for name in names {
-        let tools = tools_for_toolkit(name, workspace).ok_or_else(|| {
+        let tools = tools_for_toolkit_in(name, env).ok_or_else(|| {
             format!(
                 "未知工具包 `{name}`（已知：{}）",
                 TOOLKIT_NAMES.join(", ")

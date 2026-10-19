@@ -198,6 +198,44 @@ impl SkillManager {
         )
     }
 
+    /// 旧技能目录**不再扫描**，但存在时要提醒迁移（每个进程只提示一次）。
+    ///
+    /// 为什么不是静默丢弃：用户看到"技能明明在 `.ada/skills/` 里"，界面却一条都没有，
+    /// 只会怀疑功能坏了。一条带**目标路径**的告警能让他 10 秒内完成迁移。
+    fn warn_about_legacy_skill_dirs(&self, workspace: Option<&str>) {
+        use std::sync::OnceLock;
+        static WARNED: OnceLock<()> = OnceLock::new();
+        if WARNED.get().is_some() {
+            return;
+        }
+
+        let mut legacy: Vec<PathBuf> = Vec::new();
+        if let Some(ws) = workspace.filter(|s| !s.trim().is_empty()) {
+            legacy.push(PathBuf::from(ws).join(".ada").join("skills"));
+            legacy.push(PathBuf::from(ws).join(".agents").join("skills"));
+        }
+        let home = self.app_home();
+        legacy.push(home.join("skills"));
+        if let Some(parent) = home.parent() {
+            legacy.push(parent.join(".agents").join("skills"));
+        }
+
+        let hits: Vec<String> = legacy
+            .iter()
+            .filter(|p| p.is_dir() && dir_contains_markdown(p))
+            .map(|p| p.display().to_string())
+            .collect();
+        if hits.is_empty() {
+            return;
+        }
+        WARNED.set(()).ok();
+        tracing::warn!(
+            "[skills] 这些旧技能目录已不再扫描：{}。请把技能（含 SKILL.md 的目录）移到 \
+             `<ws>/.ada/agent-coding/skills/` 或 `~/.a-da/agent-coding/skills/`",
+            hits.join("、")
+        );
+    }
+
     /// 扫描并汇集工作区、全局与系统内置的所有技能
     pub fn scan_skills(&self, workspace: Option<&str>) -> Vec<SkillSummary> {
         self.scan_skills_with(workspace, &[])
@@ -228,21 +266,25 @@ impl SkillManager {
 
         let mut roots: Vec<(PathBuf, &'static str)> = Vec::new();
 
-        // 1. 工作区专属技能目录：<workspace>/.ada/skills 与 <workspace>/.agents/skills
+        // 1. 工作区技能目录：**只有一处** `<ws>/.ada/agent-coding/skills`
+        //
+        // 2026-10-19：此前还扫 `.ada/skills` 与 `.agents/skills`，同一台机器上技能散在
+        // 四个根里（工作区两个 + 全局两个），"我把技能放哪了"成了常见问题。
+        // 现在统一到 `agent-coding/skills` 一处：与插件技能（`<plugin>/skills/<name>/SKILL.md`）
+        // 的目录名一致，界面上「新建技能」也落在这里——**位置唯一**，别再猜。
         if let Some(ws) = workspace {
             let ws_path = PathBuf::from(ws);
             if !ws.trim().is_empty() {
-                roots.push((ws_path.join(".ada").join("skills"), "workspace"));
-                roots.push((ws_path.join(".agents").join("skills"), "workspace"));
+                roots.push((ws_path.join(".ada").join("agent-coding").join("skills"), "workspace"));
             }
         }
 
-        // 2. 用户全局技能目录：~/.a-da/skills 与 ~/.agents/skills
+        // 2. 用户全局技能目录：**只有一处** `~/.a-da/agent-coding/skills`
         let app_home = self.app_home();
-        roots.push((app_home.join("skills"), "global"));
-        if let Some(parent) = app_home.parent() {
-            roots.push((parent.join(".agents").join("skills"), "global"));
-        }
+        roots.push((app_home.join("agent-coding").join("skills"), "global"));
+
+        // 旧根只用来**提示迁移**（不再扫描）：静默忽略会让用户对着"技能明明在磁盘上"发呆。
+        self.warn_about_legacy_skill_dirs(workspace);
 
         // 3. 扫描文件系统技能
         for (root_dir, scope) in roots {
@@ -332,10 +374,21 @@ impl SkillManager {
         description: &str,
         body: Option<&str>,
     ) -> Result<String> {
+        // 落点与扫描根**必须同一处**（2026-10-19 统一）：
+        //   工作区 `<ws>/.ada/agent-coding/skills/<name>/SKILL.md`
+        //   全局   `~/.a-da/agent-coding/skills/<name>/SKILL.md`
+        // 早先写的是 `.ada/skills` 与 `~/.a-da/skills`，与新的扫描根分叉过一次。
         let dir = if scope == "workspace" && workspace.map(|s| !s.trim().is_empty()).unwrap_or(false) {
-            PathBuf::from(workspace.unwrap()).join(".ada").join("skills").join(name)
+            PathBuf::from(workspace.unwrap())
+                .join(".ada")
+                .join("agent-coding")
+                .join("skills")
+                .join(name)
         } else {
-            self.app_home().join("skills").join(name)
+            self.app_home()
+                .join("agent-coding")
+                .join("skills")
+                .join(name)
         };
 
         fs::create_dir_all(&dir)?;
@@ -372,6 +425,29 @@ impl SkillManager {
     }
 }
 
+/// 目录里（两层内）是否存在 `.md` 文件——用来判断"旧目录里是不是真放了技能"。
+fn dir_contains_markdown(dir: &Path) -> bool {
+    fn walk(dir: &Path, depth: usize) -> bool {
+        if depth > 2 {
+            return false;
+        }
+        let Ok(entries) = fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
+                return true;
+            }
+            if path.is_dir() && walk(&path, depth + 1) {
+                return true;
+            }
+        }
+        false
+    }
+    walk(dir, 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,12 +469,12 @@ mod tests {
         let home = base.join("home");
         let ws = base.join("ws");
         fs::create_dir_all(&home).expect("建临时应用目录失败");
-        fs::create_dir_all(ws.join(".ada").join("skills")).expect("建临时工作区失败");
+        fs::create_dir_all(ws.join(".ada").join("agent-coding").join("skills")).expect("建临时工作区失败");
         (home, ws)
     }
 
     fn write_workspace_skill(ws: &Path, dir: &str, content: &str) {
-        let dir = ws.join(".ada").join("skills").join(dir);
+        let dir = ws.join(".ada").join("agent-coding").join("skills").join(dir);
         fs::create_dir_all(&dir).expect("建技能目录失败");
         fs::write(dir.join("SKILL.md"), content).expect("写技能失败");
     }

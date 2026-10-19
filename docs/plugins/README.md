@@ -29,23 +29,70 @@
 | 能力声明 | 源码前 40 行内的注释 `// @ada-needs fs,net`；识别 `fs` / `fs=read` / `fs=write` / `net`(=`fetch`) / `none`。**没有指令时按地板给权限（fs 开、net 关）**；认不出的 token 不授予，并在装配期报 `unknown_need:<token>` |
 
 生成一个正确的骨架用内置工具 [`create_plugin`](../quality/feature-catalog.md)（插件 `plugin-forge` 提供）。
+它的 `scope` **必填**（`workspace` / `global`）：用户没说清装在哪时，工具**拒绝执行**并让模型
+先用 `ask_user` 问用户——插件装在哪决定了它的生命周期（工作区插件随项目走、全局插件对所有工程生效），
+猜错的代价是"同一个行为在一个工程里有、另一个工程里没有"，而用户不知道是哪次操作造成的。
+（界面上「新建插件」弹窗里选作用域，同一个决定。）
+
+**联网与代理**：声明 `net` 之后沙箱里才有 `fetch`（否则连 `globalThis.__native_fetch_async`
+都不注册）。它支持 HTTP / SOCKS5 代理，两种写法：请求级
+`fetch(url, { proxy: 'http://127.0.0.1:7897' })`（`127.0.0.1:7897` 这种不带 scheme 的也认），
+或宿主进程的 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`（大小写都认）。
+🔴 **代理配错会直接报错，不会静默直连**——设了代理就意味着流量必须走代理，
+悄悄发到目标站比请求失败严重得多。域名白名单（`A_DA_PLUGIN_NET_ALLOW`）在**建连之前**生效，
+代理绕不过去。这些说明也会由 `create_plugin` 写进生成的技能正文与 `README.md`。
 
 ---
 
-## 2. 四类贡献
+## 2. 三类脚本贡献 + 一类磁盘贡献（技能）
 
-工厂函数里注册，全部**在装配期结算**：
+工厂函数里注册的贡献**在装配期结算**；技能则来自磁盘目录：
 
 | 贡献 | 注册方式 | 落地位置 |
 |---|---|---|
 | 工具 | `ada.registerTool({ name, description, parameters, execute })` | 工具目录（`ToolCatalog`） |
 | 系统提示词片段 | `ada.registerSystemPrompt({ id, content })` | 系统提示词，带 `plugin:<id>` 归因 |
-| 技能 | `ada.registerSkill({ name, description, path?, body, whenToUse? })` | 技能三来源之一（目录 / 插件 / 内置）；**空正文不装** |
+| 技能 | **磁盘目录** `skills/<name>/SKILL.md`（见 §2.1） | 技能三来源之一（目录 / 插件 / 内置） |
 | 钩子 | `ada.on(point, handler, { actions, order })` | 扩展点运行时（见 §3） |
 
 ⚠️ **必须写 `ada.metadata`**（工厂里**第一句**）：宿主在装配后读它，且
-`tools` / `systemPrompt` / `skills` / `hooks` 的 `count` 与 `names` 会**逐项、按顺序**
+`tools` / `systemPrompt` / `hooks` 的 `count` 与 `names` 会**逐项、按顺序**
 与实际注册比对——多注册一条忘了同步，装载期直接拒。
+`skills` 是**声明性**字段（宿主以目录扫描为准），不参与这条校验。
+
+工具的写入性**不由插件自述**：内置工具名走描述符（`registry.rs`），
+第三方新工具名一律**按写操作 + 需要审批**处理（失败安全，`AGENTS.md` §2）。
+
+### 2.1 技能：目录 + `SKILL.md`（Agent Skills 规范）
+
+技能**不是**一个散装 `.md` 文件，而是一个目录：
+
+```
+skills/
+└── <name>/
+    ├── SKILL.md          # 必需：YAML frontmatter + Markdown 正文
+    ├── references/       # 可选：按需读取的详细资料
+    ├── scripts/          # 可选：可执行脚本
+    └── assets/           # 可选：模板 / 图片 / 数据
+```
+
+Frontmatter 必填：
+
+```yaml
+---
+name: deploy-runbook          # 必须等于目录名；1-64，仅 a-z / 0-9 / -，不以 - 起止，无 --
+description: 发布流程：先跑测试再打标签。Use when the user asks to release.
+---
+```
+
+- `description` 1-1024 字符，写清"做什么 + 什么时候用"——模型据此决定要不要激活它；
+- 可选 `license`、`compatibility`（≤500）、`metadata`（字符串键值映射）、`allowed-tools`；
+- 正文在技能激活时**整份加载**（建议 < 500 行）；更长的参考资料放 `references/`，按需读取；
+- frontmatter 里的**未定义字段会报错**（拼错的键不会静默变成"已声明"）。
+
+🔴 **2026-10-19 起不兼容旧形态**：`skills/<name>.md` 裸文件与脚本里
+`ada.registerSkill({ body })` 都不再生效。旧形态以 `skill_spec_violation:*` 进插件诊断
+（面板可见），不会静默消失。完整规范见 [`docs/SKILL_SPEC.md`](../SKILL_SPEC.md)。
 
 工具的写入性**不由插件自述**：内置工具名走描述符（`registry.rs`），
 第三方新工具名一律**按写操作 + 需要审批**处理（失败安全，`AGENTS.md` §2）。
@@ -83,7 +130,8 @@
 ## 4. 用户能决定什么（能力开关）
 
 `PluginCapabilities`（全局配置，`plugin.capabilities.set` 可改）。
-🔴 **读取时机是装配期**：改开关要**重启产品**才生效。
+**改完立刻重装配**（2026-10-19）：保存能力开关后宿主会重建贡献集合，不需要重启产品。
+（插件包本身的增删与 `index.ts` 改动同样即时生效——新建/删除/`plugin.reload` 都会触发重装配。）
 
 | 开关 | 关掉之后 |
 |---|---|

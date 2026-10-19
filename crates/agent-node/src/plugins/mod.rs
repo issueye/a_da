@@ -34,12 +34,15 @@ mod tests {
     #[test]
     fn test_is_write_follows_descriptor() {
         // 只读工具
-        assert!(!plugin_tool_is_write("git_status"));
         assert!(!plugin_tool_is_write("read_file"));
+        assert!(!plugin_tool_is_write("code_outline"));
         // 写/执行工具
         assert!(plugin_tool_is_write("write_file"));
         assert!(plugin_tool_is_write("run_tests"));
         assert!(plugin_tool_is_write("kill_task"));
+        // 2026-10-19：`git` 合并了只读三件套并新增写动作，按**执行型**工具记账——
+        // 合成一个工具之后无法再凭名字区分"只看"与"会改"，一律按写处理才是失败安全。
+        assert!(plugin_tool_is_write("git"));
     }
 
     /// W2-T7 守门：**未知工具（第三方插件）必须被当作写操作**。

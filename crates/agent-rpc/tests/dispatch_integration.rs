@@ -63,6 +63,19 @@ fn write_extension_package(
         &entry,
         format!("const metadata = {}; export default function(ada: any) {{ ada.metadata = metadata; {} }}", metadata, factory_body),
     ).expect("写插件包入口");
+
+    // 技能是**目录 + SKILL.md**（docs/SKILL_SPEC.md）；脚本里的 registerSkill 已移除
+    for skill in skill_names {
+        let dir = package_root.join("skills").join(skill);
+        std::fs::create_dir_all(&dir).expect("建技能目录");
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!(
+                "---\nname: {skill}\ndescription: {skill} 的用法（测试夹具）\n---\n\n# {skill}\n\n按步骤执行。\n"
+            ),
+        )
+        .expect("写 SKILL.md");
+    }
     entry
 }
 
@@ -1427,9 +1440,14 @@ async fn test_plugin_and_skill_scan_diagnostics_with_absence_signal() {
 /// 2. frontmatter 里认不出的键要报出来（`skill.invalid`）——以前是静默忽略。
 #[tokio::test]
 async fn test_skill_list_reports_plugin_skills_and_invalid_frontmatter() {
-    // 工作区里放一个**写错了键名**的技能：它必须进列表（照旧可用）**且**留下诊断
+    // 工作区里放一个**写错了键名**的技能：它必须进列表（照旧可用）**且**留下诊断。
+    // 落点是统一的技能目录 `<ws>/.ada/agent-coding/skills/`（2026-10-19 收敛了四个旧根）。
     let ws_dir = std::env::temp_dir().join(format!("a_da_ws_skill_{}", uuid::Uuid::new_v4()));
-    let skill_dir = ws_dir.join(".ada").join("skills").join("typo");
+    let skill_dir = ws_dir
+        .join(".ada")
+        .join("agent-coding")
+        .join("skills")
+        .join("typo");
     std::fs::create_dir_all(&skill_dir).expect("建技能目录失败");
     std::fs::write(
         skill_dir.join("SKILL.md"),
@@ -1722,6 +1740,84 @@ async fn test_plugin_set_enabled_drives_reassembly_and_reports_the_delta() {
         "没有重装配入口时必须如实回报（否则界面会以为关掉就生效了）：{res:?}"
     );
     assert!(res["report"].is_null(), "{res:?}");
+}
+
+/// 2026-10-19 实机反馈：**新建插件之后"刷新"没用，必须重启程序**才生效。
+///
+/// 根因：`plugin.createTemplate` 只往磁盘写文件，而插件的工具/技能是**装配期**结算的；
+/// 不重装配，引擎手里那份贡献集合一字未动——界面刷新一百次也只是重扫目录。
+/// 这条钉住"建完必须重装配"：计数器为 0 就是 bug 复发。
+#[tokio::test]
+async fn test_plugin_create_template_triggers_reassembly() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// 只数次数的最小替身：本用例断言的是"有没有被调"，不是差异内容。
+    struct CountingReassembler(Arc<AtomicUsize>);
+
+    impl agent_rpc::server::dispatch::PluginReassembler for CountingReassembler {
+        fn reassemble<'a>(
+            &'a self,
+            plugin_id: &'a str,
+            enabled: bool,
+        ) -> agent_base::ports::BoxFuture<'a, Option<agent_runtime::ReassemblyReport>> {
+            let counter = self.0.clone();
+            Box::pin(async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let empty = agent_runtime::ContributionDigest::default();
+                Some(agent_runtime::ReassemblyReport {
+                    request: agent_runtime::PluginToggleRequest {
+                        plugin_id: plugin_id.to_string(),
+                        scope: "refresh".to_string(),
+                        from_enabled: !enabled,
+                        to_enabled: enabled,
+                    },
+                    before: empty.clone(),
+                    after: empty.clone(),
+                    delta: agent_runtime::ContributionDelta::default(),
+                    skipped: Vec::new(),
+                    applied: true,
+                })
+            })
+        }
+    }
+
+    let home = test_home_dir();
+    let ws = home.join("ws-create-template");
+    std::fs::create_dir_all(&ws).expect("建临时工作区");
+    let ws_s = ws.to_string_lossy().to_string();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let dispatcher = Dispatcher::new(
+        Arc::new(RwLock::new(store_for_test(&ws_s))),
+        Arc::new(SessionManager::new(Some(home.clone()))),
+        Arc::new(CheckpointManager::new(Some(home.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::with_home(home.clone())),
+        Arc::new(SkillManager::with_home(home.clone())),
+        None,
+    )
+    .with_plugin_reassembler(Arc::new(CountingReassembler(calls.clone())));
+
+    let res = dispatcher
+        .dispatch(
+            "plugin.createTemplate",
+            serde_json::json!({
+                "workspace": ws_s,
+                "scope": "workspace",
+                "name": "fresh-plugin",
+            }),
+        )
+        .await
+        .expect("plugin.createTemplate 必须可分发");
+
+    let fp = res["filePath"].as_str().unwrap_or("");
+    assert!(std::path::Path::new(fp).is_file(), "模板要真的写到磁盘：{res:?}");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "建完必须重装配一次（否则界面刷新没用、只能重启程序）：{res:?}"
+    );
+    assert_eq!(res["applied"], true, "回执要如实带 applied：{res:?}");
 }
 
 /// SP-08 契约（正向）：磁盘上真有一个插件时，诊断必须**如实**说明两件事——

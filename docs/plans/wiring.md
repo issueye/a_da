@@ -873,7 +873,7 @@ W5-T2/T4、W6-T1/T2/T4 共用 → **这些任务必须串行**，不得并行改
 
 | 文件 | 内容 |
 |---|---|
-| `crates/agent-toolkit/src/plugin_tools.rs`（新） | 6 个**自由函数**（逻辑真源：`project_inspect` / `code_outline` / `git_status` / `git_diff` / `git_log` / `run_tests`）+ `PluginTool`（描述符**取自注册表**，不另写 schema）+ `git_tools` / `project_tools` / `test_tools` 工厂 |
+| `crates/agent-toolkit/src/plugin_tools.rs`（新） | **自由函数**（逻辑真源：`project_inspect` / `code_outline` / `git` / `run_tests`）+ `PluginTool`（描述符**取自注册表**，不另写 schema）+ `git_tools` / `project_tools` / `test_tools` 工厂。⚠️ 2026-10-19：`git_status`/`git_diff`/`git_log` 三个自由函数已合并为一个 `git(workspace, args)`，`action` 分派 |
 | `crates/agent-toolkit/src/toolkits.rs` | `TOOLKIT_NAMES` 增加 `git`、`project`（`git` 与设计 §9 的工具包列表一致） |
 | `crates/agent-toolkit/src/command/mod.rs` | `command` 工具包纳入 `run_tests`（它本质就是"跑一条探测出来的命令"） |
 | `crates/agent-core/src/runner/builtin_tools.rs` | 6 个分支改为**委派** `agent_toolkit::plugin_tools::*`；删除已搬走的 `execute_project_inspect` / `execute_code_outline` 及其测试 |

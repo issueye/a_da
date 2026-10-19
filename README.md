@@ -98,9 +98,9 @@ agent-base ─► agent-proto / agent-adapter / agent-toolkit / agent-runtime �
 | `core` | `ask_user`（向用户提问：选项 + 自定义答复）、`todo`（多步骤任务规划）、`finish`（声明任务完成，终止整轮） |
 | `fs` | `read_file`（支持 `offset`/`limit` 按行段读）、`write_file` / `batch_write`（新建或整体覆盖，返回 unified diff）、`edit_file` / `batch_replace`（精确替换，要求唯一匹配，可一次多组）、`list_files`（跳过 `node_modules`/`.git`/`dist` 等）、`search_files`（正则搜索，支持上下文行与子目录限定） |
 | `command` | `run_command`（**超时/中止杀整棵进程树**，输出截断）、`run_background` / `check_task` / `kill_task`（dev server、watcher 这类长命令：后台启动返回任务 id，按需整树终止） |
-| `git` | `git_status` / `git_diff` / `git_log`（只读查询） |
+| `git` | `git`（**一个工具，`action` 选动作**）：只读 `status`/`diff`/`log`/`show`/`blame`；写入 `add`/`commit`/`checkout`/`restore`/`reset`/`stash`/`branch`/`merge`/`push`/`pull`（危险动作需审批） |
 | `project` | `project_inspect`（项目结构与依赖概览）、`code_outline`（按名字查定义位置与签名）、`run_tests`（跑项目测试） |
-| `forge` | `create_plugin`（生成可加载的插件包骨架） |
+| `forge` | `create_plugin`（生成插件包骨架；`scope=workspace|global` **必填**，用户没说清时先问） |
 | （能力位） | `invoke_subagent`（委派给隔离运行的子智能体） |
 
 这份表**不是写死的清单**：`ToolDescriptor` 注册表（`agent-toolkit/src/registry.rs`）是唯一真源，
@@ -205,10 +205,12 @@ export default function (ada) {
   ada.metadata = { name: "todo-guard", description: "…", tools: { count: 0, names: [] }, /* … */ };
   ada.registerTool({ name: "my_tool", description: "…", parameters: {…}, execute: (args) => ({ ok: true }) });
   ada.registerSystemPrompt({ id: "extra-rule", content: "…" });
-  ada.registerSkill({ name: "my-skill", description: "…", path: "skills/my.md" });
   ada.on("beforeToolCall", (event, ctx) => ({ action: "note", note: "…" }), { actions: ["observe", "note"] });
 }
 ```
+
+技能**不在工厂里注册**：它是一个目录 `skills/<name>/SKILL.md`（Agent Skills 规范，
+`docs/SKILL_SPEC.md`），由宿主在装配期扫描；`name` 必须等于目录名。
 
 - **发现**：`<工作区>/.ada/agent-coding/extensions/<id>/`（工作区）与
   `~/.a-da/agent-coding/extensions/<id>/`（全局）；**贡献在装配期结算**，改完要重新加载。

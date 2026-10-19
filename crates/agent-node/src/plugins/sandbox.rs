@@ -15,8 +15,15 @@ pub struct PluginInspection {
     pub metadata: Option<serde_json::Value>,
     pub tools: Vec<PluginToolDeclaration>,
     pub prompts: Vec<PluginPromptDeclaration>,
-    /// P2·SP-45：插件声明的技能（没声明就是空数组——**空不是错误**）
+    /// **恒为空**（2026-10-19 起技能改为 `skills/<name>/SKILL.md` 目录约定，不再由脚本声明）。
+    ///
+    /// 保留字段是为了兼容既有反序列化路径与测试；新代码不要往里填。
     pub skills: Vec<PluginSkillDeclaration>,
+    /// 被忽略的 `registerSkill(...)` 调用（技能名）。
+    ///
+    /// 旧 API 已移除：这里如实记下来，装配层据此报 `skill_spec_violation:*`——
+    /// 静默忽略会让作者以为"技能声明成功了"，而界面上根本没有它。
+    pub ignored_skills: Vec<String>,
     /// P3a·SP-50：插件声明的钩子注册（同上）
     pub hooks: Vec<PluginHookDeclaration>,
 }
@@ -107,7 +114,7 @@ impl PluginSandbox {
                     let metadata = globalThis.__ada_module_metadata || (desc && (typeof desc === 'object' || typeof desc === 'function') ? desc.metadata : undefined);
                     let toolsRaw = [];
                     let promptsRaw = [];
-                    let skillsRaw = [];
+                    let ignoredSkills = [];
                     let hooksRaw = [];
                     if (typeof desc === 'function') {{
                         const api = {{
@@ -117,7 +124,12 @@ impl PluginSandbox {
                             registerTool: (tool) => {{ toolsRaw.push(tool); }},
                             registerSystemPrompt: (prompt) => {{ promptsRaw.push(prompt); }},
                             registerPrompt: (prompt) => {{ promptsRaw.push(prompt); }},
-                            registerSkill: (skill) => {{ skillsRaw.push(skill); }},
+                            // 🔴 技能不再"由脚本注册"：Skill 是**目录 + SKILL.md**
+                            // （docs/SKILL_SPEC.md），由宿主直接扫 `skills/<name>/SKILL.md`。
+                            // 这里保留入口只为**给出明确诊断**——静默忽略会让作者一直以为装上了。
+                            registerSkill: (skill) => {{
+                                ignoredSkills.push(skill && skill.name ? String(skill.name) : '<unnamed>');
+                            }},
                             // 钩子只有 `on` 一个入口：`registerHook` 曾经与它等价，
                             // 但多一个入口只会让作者问"用哪个"，而且对象形态里
                             // `handlerExport` 在执行期根本找不到函数（永远静默跳过）。
@@ -158,7 +170,10 @@ impl PluginSandbox {
                         const rawSkills = desc.skills || [];
                         const rawHooks = desc.hooks || [];
                         for (let i = 0; i < rawPrompts.length; i++) promptsRaw.push(rawPrompts[i]);
-                        for (let i = 0; i < rawSkills.length; i++) skillsRaw.push(rawSkills[i]);
+                        // 对象形态的 `skills` 数组也是旧 API：记下来报诊断，不再收
+                        for (let i = 0; i < rawSkills.length; i++) {{
+                            ignoredSkills.push(rawSkills[i] && rawSkills[i].name ? String(rawSkills[i].name) : '<unnamed>');
+                        }}
                         for (let i = 0; i < rawHooks.length; i++) hooksRaw.push(rawHooks[i]);
                         for (let i = 0; i < raw.length; i++) {{
                             const item = raw[i];
@@ -187,27 +202,9 @@ impl PluginSandbox {
                         if (typeof p.content !== 'string' || !p.content.trim()) continue;
                         prompts.push({{ id: String(p.id || ('prompt_' + i)), content: p.content }});
                     }}
-                    // P2·SP-45：技能声明。**没有名字或没有正文的丢掉**——它们进提示词
-                    // 只会白占字节（技能的意义就是那段正文），留着反而让界面出现空壳条目。
+                    // 2026-10-19：技能改为目录约定（`skills/<name>/SKILL.md`），
+                    // 沙箱**不再产出技能声明**——目录扫描在装配层做（`skills::spec`）。
                     const skills = [];
-                    for (let i = 0; i < skillsRaw.length; i++) {{
-                        const s = skillsRaw[i];
-                        if (!s || typeof s !== 'object') continue;
-                        const name = typeof s.name === 'string' ? s.name.trim() : '';
-                        const body = typeof s.body === 'string' ? s.body.trim() : '';
-                        const skillPath = typeof s.path === 'string' ? s.path.trim() : '';
-                        if (!name || (!body && !skillPath)) continue;
-                        skills.push({{
-                            name: name,
-                            description: typeof s.description === 'string' ? s.description : '',
-                            body: body,
-                            path: skillPath,
-                            whenToUse: typeof s.whenToUse === 'string' ? s.whenToUse
-                                : (typeof s.when_to_use === 'string' ? s.when_to_use : null),
-                            userInvocable: typeof s.userInvocable === 'boolean' ? s.userInvocable
-                                : (typeof s.user_invocable === 'boolean' ? s.user_invocable : null),
-                        }});
-                    }}
                     // P3a·SP-50：钩子注册的**声明**（处理器是函数，不进 JSON——
                     // 它在调用期按点位名重新找出来执行）。
                     const hooks = [];
@@ -234,7 +231,7 @@ impl PluginSandbox {
                             hooks.push(declaration);
                         }}
                     }}
-                    return JSON.stringify({{ ok: true, metadata: metadata || null, tools: tools, prompts: prompts, skills: skills, hooks: hooks }});
+                    return JSON.stringify({{ ok: true, metadata: metadata || null, tools: tools, prompts: prompts, skills: skills, ignoredSkills: ignoredSkills, hooks: hooks }});
                 }} catch (err) {{
                     // 🔴 带上 `stack`（P4·SP-73）：只拿 `err.message` 的话，报错不带文件与行号。
                     const detail = err && err.stack ? String(err.stack) : String(err);
@@ -279,6 +276,16 @@ impl PluginSandbox {
                 resp.get("skills").cloned().unwrap_or(serde_json::json!([])),
             )
             .unwrap_or_default();
+            // 旧的 `registerSkill` 调用：记下来，交给装配层报诊断
+            let ignored_skills: Vec<String> = resp
+                .get("ignoredSkills")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
             // P3a·SP-50：钩子注册同理
             let hooks: Vec<PluginHookDeclaration> = serde_json::from_value(
                 resp.get("hooks").cloned().unwrap_or(serde_json::json!([])),
@@ -300,6 +307,7 @@ impl PluginSandbox {
                 tools,
                 prompts,
                 skills,
+                ignored_skills,
                 hooks,
             })
         } else {
@@ -318,7 +326,7 @@ impl PluginSandbox {
         metadata: &serde_json::Value,
         tools: &[PluginToolDeclaration],
         prompts: &[PluginPromptDeclaration],
-        skills: &[PluginSkillDeclaration],
+        _skills: &[PluginSkillDeclaration],
         hooks: &[PluginHookDeclaration],
     ) -> Result<()> {
         let object = metadata
@@ -337,7 +345,15 @@ impl PluginSandbox {
         }
         Self::validate_metadata_group(metadata, "tools", tools.len(), tools.iter().map(|v| v.name.as_str()))?;
         Self::validate_metadata_group(metadata, "systemPrompt", prompts.len(), prompts.iter().map(|v| v.id.as_str()))?;
-        Self::validate_metadata_group(metadata, "skills", skills.len(), skills.iter().map(|v| v.name.as_str()))?;
+        // `skills` **不再参与一致性校验**（2026-10-19）：技能是磁盘约定
+        // `skills/<name>/SKILL.md`，而这里跑在沙箱里、看不到目录——拿"脚本声明的技能数"
+        // （现在恒为 0）去比，只会把每个带技能的插件判成 broken。
+        // 真正的对账在装配层：目录扫描结果 + `skill_spec_violation:*` 诊断。
+        if let Some(group) = metadata.get("skills") {
+            if !group.is_object() {
+                anyhow::bail!("插件 metadata `skills` 必须是对象（可省略）");
+            }
+        }
         Self::validate_metadata_group(metadata, "hooks", hooks.len(), hooks.iter().map(|v| v.point.as_str()))?;
         Ok(())
     }
@@ -912,12 +928,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(temp_dir);
     }
 
-    /// SP-45：技能声明**两条写法都要收下**（功能式 `registerSkill` / 对象式 `skills`）。
+    /// 2026-10-19：`registerSkill` 已移除（技能改为 `skills/<name>/SKILL.md` 目录约定）。
     ///
-    /// 顺带钉住"空壳不算技能"：没有正文或没有名字的声明被丢掉——留着只会让界面
-    /// 出现一条占着位置却什么也不说的技能。
+    /// 这里钉住**新的**行为：脚本里的注册调用**不产出技能**，但必须被**记下来**
+    /// （`ignoredSkills`）——静默忽略会让作者以为技能声明成功了。
     #[tokio::test]
-    async fn test_sandbox_inspect_collects_skill_declarations() {
+    async fn test_sandbox_inspect_reports_removed_register_skill_calls() {
         let temp_dir = std::env::temp_dir().join(format!("a_da_skill_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let plugin_file = temp_dir.join("skill_plugin.ts");
@@ -930,8 +946,7 @@ mod tests {
                     whenToUse: "当用户要发布时",
                     body: "1. 跑测试\n2. 打标签"
                 });
-                api.registerSkill({ name: "no-body", description: "没有正文，应被丢掉" });
-                api.registerSkill({ body: "没有名字，应被丢掉" });
+                api.registerSkill({ name: "another" });
             }
         "#;
 
@@ -945,19 +960,20 @@ mod tests {
         .await
         .expect("inspect 应成功");
 
-        assert_eq!(inspected.skills.len(), 1, "只该留下那一条完整声明：{:?}", inspected.skills);
-        let s = &inspected.skills[0];
-        assert_eq!(s.name, "deploy-runbook");
-        assert_eq!(s.when_to_use.as_deref(), Some("当用户要发布时"));
-        assert!(s.body.contains("跑测试"));
+        assert!(inspected.skills.is_empty(), "技能不再从脚本声明：{:?}", inspected.skills);
+        assert_eq!(
+            inspected.ignored_skills,
+            vec!["deploy-runbook".to_string(), "another".to_string()],
+            "旧的 registerSkill 调用要被如实记下来（装配层据此报诊断）"
+        );
         assert!(inspected.tools.is_empty(), "这个插件没有工具");
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }
 
-    /// 对象式写法（`export default { skills: [...] }`）同样要收下。
+    /// 对象式写法（`export default { skills: [...] }`）同样是旧 API：不产出技能，只记名字。
     #[tokio::test]
-    async fn test_sandbox_inspect_collects_object_form_skills() {
+    async fn test_sandbox_inspect_reports_removed_object_form_skills() {
         let temp_dir = std::env::temp_dir().join(format!("a_da_skill_obj_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let plugin_file = temp_dir.join("obj_skill_plugin.ts");
@@ -976,9 +992,8 @@ mod tests {
         .await
         .expect("inspect 应成功");
 
-        assert_eq!(inspected.skills.len(), 1);
-        assert_eq!(inspected.skills[0].name, "style");
-        assert_eq!(inspected.skills[0].body, "一律用 tabs");
+        assert!(inspected.skills.is_empty());
+        assert_eq!(inspected.ignored_skills, vec!["style".to_string()]);
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }
@@ -1356,7 +1371,9 @@ mod tests {
         assert_eq!(inspected.metadata.as_ref().and_then(|m| m.get("name")).and_then(|v| v.as_str()), Some("test"));
         assert_eq!(inspected.tools[0].name, "test_tool");
         assert_eq!(inspected.prompts[0].id, "增强命中");
-        assert_eq!(inspected.skills[0].path.as_deref(), Some("skills/test_skill.md"));
+        // 技能不再由脚本声明（目录约定），旧的 registerSkill 只被记名字
+        assert!(inspected.skills.is_empty());
+        assert_eq!(inspected.ignored_skills, vec!["test_skill".to_string()]);
         assert_eq!(inspected.hooks[0].point, "afterTurn");
 
         let hook_result = PluginSandbox::call_hook_budgeted(
@@ -1415,8 +1432,10 @@ mod tests {
 
         let res = agent_toolkit::forge::scaffold_plugin(
             &dir,
+            None,
             agent_toolkit::forge::ScaffoldRequest {
                 id: "demo-guard",
+                scope: "workspace",
                 name: Some("演示守卫"),
                 description: Some("演示用：拦住没有验收标准的提交"),
                 tool: None,
@@ -1437,7 +1456,20 @@ mod tests {
         assert_eq!(insp.tools[0].name, "demo_guard_hello");
         assert_eq!(insp.prompts.len(), 1);
         assert_eq!(insp.prompts[0].id, "demo-guard-usage");
-        assert_eq!(insp.skills.len(), 1);
+        // 技能不再由脚本注册（2026-10-19）：它在磁盘上 `skills/<name>/SKILL.md`，
+        // 由装配层扫描（`skills::spec`）。
+        assert!(insp.skills.is_empty(), "脚本里不该再注册技能：{:?}", insp.skills);
+        assert!(insp.ignored_skills.is_empty(), "骨架不该调用已移除的 registerSkill");
+        let skill_md = agent_toolkit::forge::workspace_extensions_dir(&dir)
+            .join("demo-guard")
+            .join("skills")
+            .join("demo-guard")
+            .join("SKILL.md");
+        assert!(skill_md.is_file(), "技能必须是 skills/<name>/SKILL.md：{}", skill_md.display());
+        let manifest = crate::skills::spec::load_skill_package(&skill_md)
+            .expect("生成的 SKILL.md 必须通过 SKILL_SPEC 校验");
+        assert_eq!(manifest.name, "demo-guard", "frontmatter 的 name 必须等于目录名");
+        assert!(!manifest.body.is_empty(), "正文不能为空");
         assert!(
             insp.hooks.is_empty(),
             "骨架不该偷偷注册钩子（metadata 里写的就是 0）"

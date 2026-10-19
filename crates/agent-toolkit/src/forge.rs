@@ -13,10 +13,13 @@
 //! 所以这里给的不是"空模板"，而是**已经通过装载期校验的骨架**：一个工具、一段提示词、
 //! 一个技能，metadata 与之逐项对齐，作者只需要替换 `execute` 里的逻辑。
 //!
-//! 落点是**工作区**的插件根（`<ws>/.ada/agent-coding/extensions/<id>/`）：
-//! 它和 `PluginManager::agent_extensions_dir` 同一口径，于是"改完就能在这个工作区里
-//! 看到"；要全局生效，把整个目录复制到 `~/.a-da/agent-coding/extensions/` 即可
-//! （回执里会明说这一步——工具不越权去写应用目录）。
+//! 落点由 `scope` 决定（**必填**，见 [`ASK_SCOPE_MESSAGE`]）：
+//! - `workspace` → `<ws>/.ada/agent-coding/extensions/<id>/`（与
+//!   `PluginManager::agent_extensions_dir` 同一口径）；
+//! - `global` → `<app_home>/agent-coding/extensions/<id>/`（对所有工程生效）。
+//!
+//! 应用目录由**组合根注入**（`ToolkitEnv::app_home`），工具自己不读环境变量：
+//! 自己读就会在测试里写到用户真实目录（本项目为这类污染出过事故）。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,6 +28,18 @@ use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt, ToolStatus};
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
 
 use crate::fs_tools::ToolResult;
+
+/// 用户没说清楚要装在哪儿时，工具**不做猜测**给出的回复。
+///
+/// 为什么是"拒绝 + 指路"而不是默认工作区：插件装到哪儿决定了它的**生命周期**
+/// （工作区插件随项目走、全局插件对所有工程生效）。猜错的代价是用户在一个工程里
+/// 调好的 AI 行为，在另一个工程里莫名其妙地出现/消失——而且他根本不知道是哪次操作造成的。
+pub const ASK_SCOPE_MESSAGE: &str =
+    "⚠️ 还没确定这个插件装在哪，**不要自己猜**。请先用 `ask_user` 工具问用户：\n\
+     · **工作区插件**（scope=\"workspace\"）——只在这个工程生效，目录随项目版本库走；\n\
+     · **全局插件**（scope=\"global\"）——对本机**所有**工程生效。\n\
+     拿到用户的选择后，再调用 `create_plugin` 并带上 scope。\n\
+     （如果用户在这条消息里已经明确说了\"全局\"或\"这个项目/工作区\"，直接带上对应 scope 调用即可。）";
 
 /// 工作区内的插件根。口径必须与 `PluginManager::agent_extensions_dir` 一致。
 pub fn workspace_extensions_dir(workspace: &Path) -> PathBuf {
@@ -37,6 +52,8 @@ pub fn workspace_extensions_dir(workspace: &Path) -> PathBuf {
 /// `create_plugin` 的入参。
 pub struct ScaffoldRequest<'a> {
     pub id: &'a str,
+    /// `workspace` / `global`（**必填**，缺了就回 [`ASK_SCOPE_MESSAGE`]）。
+    pub scope: &'a str,
     pub name: Option<&'a str>,
     pub description: Option<&'a str>,
     /// 示例工具名（默认 `<id>_hello`）
@@ -44,13 +61,40 @@ pub struct ScaffoldRequest<'a> {
     pub overwrite: bool,
 }
 
-/// 生成插件包。返回的相对路径都相对工作区（便于直读）。
-pub fn scaffold_plugin(workspace: &Path, req: ScaffoldRequest<'_>) -> ToolResult {
+/// 生成插件包。
+///
+/// `app_home` 只在 `scope = "global"` 时用；`None` 表示这个装配面没有应用目录
+/// （测试 / 子体 / 合规套件），此时全局插件**拒绝创建**并说明原因，绝不猜路径。
+pub fn scaffold_plugin(
+    workspace: &Path,
+    app_home: Option<&Path>,
+    req: ScaffoldRequest<'_>,
+) -> ToolResult {
     let id = req.id.trim();
     if let Err(e) = validate_id(id) {
         return ToolResult::error(e);
     }
 
+    // 🔴 作用域是**必填**：用户没说清就先问，不要替他把插件装到某个地方。
+    let (root, scope) = match req.scope.trim() {
+        "" => return ToolResult::error(ASK_SCOPE_MESSAGE),
+        "workspace" => (workspace_extensions_dir(workspace), "workspace"),
+        "global" => match app_home {
+            Some(home) => (home.join("agent-coding").join("extensions"), "global"),
+            None => {
+                return ToolResult::error(
+                    "当前装配面没有注入应用目录（`~/.a-da`），无法创建全局插件。\
+                     请改用 scope=\"workspace\"，或让宿主在装配工具包时注入应用目录。",
+                )
+            }
+        },
+        other => {
+            return ToolResult::error(format!(
+                "scope `{other}` 不合法：只能是 \"workspace\"（只在本工程生效）或 \
+                 \"global\"（对本机所有工程生效）。"
+            ))
+        }
+    };
     let display = req.name.map(str::trim).filter(|s| !s.is_empty()).unwrap_or(id);
     let desc = req
         .description
@@ -65,7 +109,6 @@ pub fn scaffold_plugin(workspace: &Path, req: ScaffoldRequest<'_>) -> ToolResult
         return ToolResult::error(e);
     }
 
-    let root = workspace_extensions_dir(workspace);
     let dir = root.join(id);
     if dir.exists() && !req.overwrite {
         return ToolResult::error(format!(
@@ -74,16 +117,16 @@ pub fn scaffold_plugin(workspace: &Path, req: ScaffoldRequest<'_>) -> ToolResult
         ));
     }
 
-    let skills_dir = dir.join("skills");
-    if let Err(e) = fs::create_dir_all(&skills_dir) {
-        return ToolResult::error(format!("创建插件目录失败（{}）：{}", skills_dir.display(), e));
+    // 技能目录：`skills/<name>/`（规范：一个 Skill = 一个目录 + SKILL.md）
+    let skill_dir = dir.join("skills").join(id);
+    if let Err(e) = fs::create_dir_all(&skill_dir) {
+        return ToolResult::error(format!("创建插件目录失败（{}）：{}", skill_dir.display(), e));
     }
 
-    let skill_body = skill_body(display, desc);
     let files: Vec<(PathBuf, String)> = vec![
-        (dir.join("index.ts"), render_index_ts(id, display, desc, &tool, &skill_body)),
-        (dir.join("README.md"), render_readme(id, display, desc)),
-        (skills_dir.join(format!("{id}.md")), format!("{skill_body}\n")),
+        (dir.join("index.ts"), render_index_ts(id, display, desc, &tool)),
+        (dir.join("README.md"), render_readme(id, scope, display, desc)),
+        (skill_dir.join("SKILL.md"), render_skill_md(id, display, desc)),
     ];
 
     let mut written = Vec::new();
@@ -94,18 +137,27 @@ pub fn scaffold_plugin(workspace: &Path, req: ScaffoldRequest<'_>) -> ToolResult
         written.push(rel(workspace, &path));
     }
 
-    let mut output = format!("已生成插件 `{id}`（{} 个文件）：\n", written.len());
+    let mut output = format!("已生成插件 `{id}`（{} 个文件，{scope} 作用域）：\n", written.len());
     for p in &written {
         output.push_str(&format!("  {p}\n"));
     }
     output.push_str(&format!(
-        "\n插件标识：`workspace:{id}`（目录名就是标识，重命名目录会变成另一个插件）\n\
+        "\n插件标识：`{scope}:{id}`（目录名就是标识，重命名目录会变成另一个插件）\n\
          \n下一步：\n\
          1. 在「插件与能力中心」确认它处于启用状态（新建插件默认启用）；\n\
-         2. 贡献在**装配期**结算：改完 index.ts 要重新加载插件 / 新开一轮才会生效；\n\
-         3. 增删注册项要同步 metadata 的 count/names，否则装载期会拒（卡片显示 broken + 原因）；\n\
-         4. 要对该工作区之外也生效：把整个目录复制到 ~/.a-da/agent-coding/extensions/{id}/。\n\
-         \n示例工具：`{tool}` —— 现在只会回显入参，把 execute 换成你的逻辑即可。"
+         2. 宿主会在增删后**立刻重装配**；如果这是手改 index.ts / SKILL.md，点插件页的「重新加载」即可生效；\n\
+         3. 增删工具/提示词/钩子要同步 metadata 的 count/names，否则装载期会拒（卡片显示 broken + 原因）；\n\
+         4. 技能正文在 `skills/{id}/SKILL.md`：frontmatter 的 `name` 必须等于目录名 `{id}`，\
+         `description` 要写清「做什么 + 什么时候用」（Agent Skills 规范见 docs/SKILL_SPEC.md）。"
+    ));
+    if scope == "workspace" {
+        output.push_str(&format!(
+            "\n         5. 想让它对本机所有工程生效：改用 scope=\"global\" 重新生成，\
+             或把整个目录复制到 ~/.a-da/agent-coding/extensions/{id}/。"
+        ));
+    }
+    output.push_str(&format!(
+        "\n\n示例工具：`{tool}` —— 现在只会回显入参，把 execute 换成你的逻辑即可。"
     ));
 
     ToolResult {
@@ -114,7 +166,8 @@ pub fn scaffold_plugin(workspace: &Path, req: ScaffoldRequest<'_>) -> ToolResult
         patch: None,
         details: Some(serde_json::json!({
             "id": id,
-            "pluginId": format!("workspace:{id}"),
+            "scope": scope,
+            "pluginId": format!("{scope}:{id}"),
             "dir": dir.to_string_lossy(),
             "tool": tool,
             "files": written,
@@ -183,18 +236,89 @@ fn ts_str(text: &str) -> String {
     out
 }
 
-fn skill_body(display: &str, desc: &str) -> String {
+/// 生成 `skills/<id>/SKILL.md`（Agent Skills 规范：`docs/SKILL_SPEC.md`）。
+///
+/// # 为什么技能是"目录 + SKILL.md"
+///
+/// 规范定死了一件事：一个 Skill 是一个**目录**，入口必须是 `SKILL.md`，frontmatter 里
+/// `name` 必须等于目录名。这不是排版偏好——`references/`、`scripts/`、`assets/` 的
+/// 相对根就是技能目录；技能一旦变成"一个散装 .md"，这些配套文件就没有确定位置了。
+///
+/// 2026-10-19 起插件技能统一走这个形态，旧的 `registerSkill({ body })` 已移除。
+fn render_skill_md(id: &str, display: &str, desc: &str) -> String {
     format!(
-        "# {display}\n\n\
-         - 做什么：{desc}\n\
-         - 什么时候用：<写清可判定的触发条件；「需要时」这种话等于没写>\n\
-         - 不要用它做什么：<最容易误用的场景>\n\
+        "---\n\
+         name: {id}\n\
+         description: {desc_yaml}\n\
+         ---\n\
          \n\
-         > 这段正文会进系统提示词，每一行都在花字节：删掉不成立的，补上最容易踩错的那条。"
+         # {display}\n\
+         \n\
+         ## 什么时候用\n\
+         \n\
+         <写清**可判定**的触发条件：用户说什么、代码里出现什么，才该用这个插件。「需要时」这种话等于没写>\n\
+         \n\
+         ## 步骤\n\
+         \n\
+         1. 先确认输入：<需要哪些参数、从哪来>\n\
+         2. 调用 `{id}_hello` 完成主流程（或换成你自己的工具名）\n\
+         3. 校验返回值，再把结果交给用户\n\
+         \n\
+         ## 示例\n\
+         \n\
+         ```text\n\
+         输入：text = \"ping\"\n\
+         输出：收到：ping\n\
+         ```\n\
+         \n\
+         ## 边缘情况\n\
+         \n\
+         - 输入为空 → 返回明确的失败说明，不要猜一个默认值。\n\
+         - 调用失败 → 如实报错（带上错误原文），不要静默重试超过一次。\n\
+         \n\
+         ## 联网与代理（用到 fetch 时）\n\
+         \n\
+         - 先在 `index.ts` 首部声明 `// @ada-needs net`，否则沙箱里没有 `fetch`。\n\
+         - 请求级代理：`fetch(url, {{ proxy: 'http://127.0.0.1:7897' }})`（`127.0.0.1:7897` 不带 scheme 也认）。\n\
+         - 进程级代理：宿主设 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`（大小写都认）。\n\
+         - 代理配错会**直接报错**，不会静默改直连。\n\
+         \n\
+         > 这段正文会在技能被激活时整份加载（建议 < 500 行）。较长的参考资料放到\n\
+         > `references/` 下按需读取，不要全塞进来。\n",
+        id = id,
+        display = display,
+        desc_yaml = yaml_scalar(&skill_description(display, desc)),
     )
 }
 
-fn render_index_ts(id: &str, display: &str, desc: &str, tool: &str, body: &str) -> String {
+/// 技能 `description`：规范要求 1-1024 字符，写清"做什么 + 什么时候用"。
+fn skill_description(display: &str, desc: &str) -> String {
+    let base = desc.trim().trim_end_matches('。');
+    let text = format!(
+        "{base}。用于「{display}」插件：说明什么时候该用它、按什么步骤做、失败时怎么办。"
+    );
+    let mut out: String = text.chars().take(900).collect();
+    if text.chars().count() > 900 {
+        out.push('…');
+    }
+    out
+}
+
+/// YAML 标量：整体加双引号，内部换行压成空格、双引号改单引号。
+///
+/// 为什么不用 YAML 库：frontmatter 只写一个 `description`，而引入完整 YAML 依赖
+/// 只为了转义一行字符串不划算。这里的输出由同仓的 `skills::spec` 解析器读取，
+/// 两边口径一致（都只认"一层键值 + 双引号去壳"）。
+fn yaml_scalar(s: &str) -> String {
+    let cleaned = s
+        .replace(['\n', '\r'], " ")
+        .replace('"', "'")
+        .trim()
+        .to_string();
+    format!("\"{cleaned}\"")
+}
+
+fn render_index_ts(id: &str, display: &str, desc: &str, tool: &str) -> String {
     let template = r#"// @ada-needs none
 //
 // @@ID@@ —— @@DESC_RAW@@
@@ -202,19 +326,23 @@ fn render_index_ts(id: &str, display: &str, desc: &str, tool: &str, body: &str) 
 // 由 create_plugin 生成的**最小可加载插件包**。四类贡献各留了一处示例：
 //   · 工具    @@TOOL@@       —— 模型可调用，execute 的返回值就是回执
 //   · 提示词  @@ID@@-usage   —— 进系统提示词，带 plugin:<id> 归因
-//   · 技能    @@ID@@         —— 进技能列表（正文也落了一份在 skills/@@ID@@.md）
+//   · 技能    @@ID@@         —— **不在脚本里注册**：技能是目录 skills/@@ID@@/SKILL.md
+//                              （docs/SKILL_SPEC.md），宿主装配期直接扫描
 //   · 钩子    无（count 必须是量出来的 0，别为了"看起来完整"写 1）
 //
 // 🔴 metadata 要让宿主**看得见**：工厂里第一句 `ada.metadata = metadata;`。
 //    宿主在 `await desc(api)` 之后读 `api.metadata`；写成 `export const metadata`
 //    没用——转译把 `export default fn` 译成 `module.exports = exports.default = fn`，
 //    整个 module.exports 被换成函数，先前挂在 exports 上的东西全丢（真踩过）。
-// 🔴 metadata 的 count / names 必须与下面的注册**逐项、按顺序**一致，否则装载期
-//    直接拒（agent-node/src/plugins/sandbox.rs::validate_package_metadata）。
-//    增删一条注册就要同步改 metadata，否则插件会变成 broken。
+// 🔴 metadata 的 count / names 必须与实际的工具/提示词/钩子注册**逐项、按顺序**一致，
+//    否则装载期直接拒（agent-node/src/plugins/sandbox.rs::validate_package_metadata）。
+//    `skills` 是**声明性**的（宿主以目录扫描为准），不参与那条一致性校验。
 // 🔴 能力声明 `// @ada-needs`：**有指令就是指令里列的那些**，不再叠加宿主地板。
 //    本骨架是纯计算（none）。要读文件写 `fs`（或 `fs=read` / `fs=write`）、
 //    要联网写 `net`，逗号或空格分隔，例如 `// @ada-needs fs,net`。
+//    联网后 `fetch` 支持代理：`fetch(url, { proxy: 'http://127.0.0.1:7897' })`
+//    （不带 scheme 的 `127.0.0.1:7897` 也认），或由宿主进程设
+//    `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`。代理配错会直接报错，**不会静默直连**。
 
 const metadata = {
   name: '@@ID@@',
@@ -261,38 +389,45 @@ export default function (ada) {
     content: @@PROMPT_TS@@,
   });
 
-  ada.registerSkill({
-    name: '@@ID@@',
-    description: @@SKILL_DESC_TS@@,
-    path: 'skills/@@ID@@.md',
-    body: @@BODY_TS@@,
-  });
+  // 技能**不在这里注册**：它是一个目录 + SKILL.md（docs/SKILL_SPEC.md），
+  // 宿主在装配期扫 `skills/<name>/SKILL.md`。旧的 `ada.registerSkill({...})`
+  // 已于 2026-10-19 移除（调用会被忽略并记一条诊断）。
 };
 "#;
 
     let prompt = format!(
         "本工作区装有 {id} 插件（{desc}）。需要相关能力时调用 {tool}，不要凭记忆编造结果。"
     );
-    let skill_desc = format!("{display} 的用法说明");
 
     template
         .replace("@@DESC_TS@@", &ts_str(desc))
         .replace("@@DESC_RAW@@", &desc.replace(['\n', '\r'], " "))
         .replace("@@NAME_TS@@", &ts_str(display))
         .replace("@@PROMPT_TS@@", &ts_str(&prompt))
-        .replace("@@SKILL_DESC_TS@@", &ts_str(&skill_desc))
-        .replace("@@BODY_TS@@", &ts_str(body))
         .replace("@@TOOL@@", tool)
         .replace("@@ID@@", id)
 }
 
-fn render_readme(id: &str, display: &str, desc: &str) -> String {
+fn render_readme(id: &str, scope: &str, display: &str, desc: &str) -> String {
+    let scope_section = if scope == "workspace" {
+        format!(
+            "## 想变成全局插件\n\n\
+             用 `create_plugin` 带 `scope=\"global\"` 重新生成，或把整个目录复制到\n\
+             `~/.a-da/agent-coding/extensions/{id}/`，它就对所有工作区可见。\n"
+        )
+    } else {
+        format!(
+            "## 作用域\n\n\
+             这是**全局插件**（`global:{id}`），对本机所有工作区生效。\n\
+             只想让它在一个工程里生效时，改用 `scope=\"workspace\"` 生成。\n"
+        )
+    };
     format!(
         r#"# {display}
 
 {desc}
 
-> 由 `create_plugin` 生成。**目录名就是插件标识**：`workspace:{id}`。
+> 由 `create_plugin` 生成。**目录名就是插件标识**：`{scope}:{id}`。
 
 ## 布局
 
@@ -300,27 +435,72 @@ fn render_readme(id: &str, display: &str, desc: &str) -> String {
 |---|---|
 | `index.ts` | Extension Factory：`export default function (ada) {{ ... }}`，声明工具 / 提示词 / 技能 / 钩子 |
 | `README.md` | 这份说明 |
-| `skills/{id}.md` | 技能正文（与 index.ts 里 `body` 同源，改正文记得两处都改） |
+| `skills/{id}/SKILL.md` | 技能（Agent Skills 规范）：YAML frontmatter + Markdown 正文；`name` 必须等于目录名 |
 
 ## 让它生效
 
-1. 「插件与能力中心」里确认 `workspace:{id}` 已启用（新建默认启用）；
-2. 贡献在**装配期**结算——改完 `index.ts` 要重新加载插件 / 新开一轮才会用上；
+1. 「插件与能力中心」里确认 `{scope}:{id}` 已启用（新建默认启用）；
+2. 增删插件或保存能力开关后宿主会**立刻重装配**；手改 `index.ts` 则点「重新加载」；
 3. 装载失败会在卡片上给出诊断（broken + 原因），原始报错带文件与行号。
+
+## 技能：目录 + SKILL.md（Agent Skills 规范）
+
+技能**不是**一个散装 `.md`，而是一个目录：
+
+```
+skills/
+└── {id}/
+    ├── SKILL.md          # 必需：YAML frontmatter + Markdown 正文
+    ├── references/       # 可选：按需读取的详细资料
+    ├── scripts/          # 可选：可执行脚本
+    └── assets/           # 可选：模板 / 图片 / 数据
+```
+
+frontmatter 必填两项：
+
+- `name`：**必须等于目录名**，1-64 个字符，只允许小写字母、数字与连字符，不能以 `-` 起止、不能出现 `--`；
+- `description`：1-1024 个字符，写清"做什么 + 什么时候用"（这是模型决定要不要激活它的唯一依据）。
+
+可选：`license`、`compatibility`（≤500）、`metadata`（字符串键值映射）、`allowed-tools`（空格分隔，实验性）。
+完整规范见 `docs/SKILL_SPEC.md`。
+
+🔴 **旧的 `ada.registerSkill({{ ... }})` 已移除**（2026-10-19）：技能只能来自磁盘目录，
+脚本里调用会被忽略并记一条 `skill_spec_violation:*` 诊断——静默忽略会让作者以为技能装上了。
 
 ## 三条容易踩的规矩
 
-1. **metadata 必须与注册一致**：`tools` / `systemPrompt` / `skills` / `hooks` 的
+1. **metadata 必须与实际注册一致**：`tools` / `systemPrompt` / `hooks` 的
    `count` 与 `names` 是量出来的，改注册就要同步改它，否则装载期直接拒。
+   （`skills` 是声明性的：宿主以目录扫描为准。）
 2. **能力声明写在首部注释**：`// @ada-needs fs,net`。有指令就**只有**指令里列的那些
    （`net` 不附带 `fs`）；没有指令则按宿主地板（`fs` 开、`net` 关）。拼错的 token
    不会静默变成"已声明"，会进诊断。
 3. **工具返回值就是回执**：字符串 / `{{ ok, output, details }}` / 抛异常，三种都认。
 
-## 想变成全局插件
+## 联网与代理
 
-把整个目录复制到 `~/.a-da/agent-coding/extensions/{id}/`，它就对所有工作区可见。
-"#
+`fetch` 只在声明了 `// @ada-needs net` 时才存在（否则 `typeof fetch === 'undefined'`，
+连 `globalThis.__native_fetch_async` 也不会注册）。它支持 HTTP / SOCKS5 代理，两种方式：
+
+```ts
+// ① 请求级：只让这一次请求走代理
+await fetch('https://api.example.com/x', {{ proxy: 'http://127.0.0.1:7897' }});
+// 不带 scheme 也认（按 http 处理）：
+await fetch('https://api.example.com/x', {{ proxy: '127.0.0.1:7897' }});
+
+// ② 进程级：宿主启动前设环境变量，插件里所有 fetch 自动走代理
+//    HTTPS_PROXY / HTTP_PROXY / ALL_PROXY（大小写都认）
+```
+
+规则：
+
+- **代理配错会直接报错**，不会静默直连——设了代理就意味着流量必须走代理，
+  悄悄直连比请求失败严重得多；
+- 单次请求有超时（默认 30s，宿主 `A_DA_PLUGIN_NET_TIMEOUT_SECS` 可调）；
+- 宿主可配域名白名单（`A_DA_PLUGIN_NET_ALLOW=a.example,b.example`），白名单之外
+  的连接**在建立之前**就被拒，代理也绕不过去。
+
+{scope_section}"#
     )
 }
 
@@ -328,21 +508,30 @@ fn render_readme(id: &str, display: &str, desc: &str) -> String {
 pub struct CreatePluginTool {
     descriptor: ToolDescriptor,
     workspace: PathBuf,
+    /// 应用目录（`~/.a-da`）：`scope = "global"` 时插件落在这里。
+    /// `None` = 装配面没注入（测试 / 子体），全局插件会被拒绝并说明原因。
+    app_home: Option<PathBuf>,
 }
 
-/// `forge` 工具包：插件包脚手架。
+/// `forge` 工具包：插件包脚手架（不带应用目录——全局作用域会如实拒绝）。
 pub fn forge_tools(workspace: &Path) -> Vec<std::sync::Arc<dyn Tool>> {
-    vec![std::sync::Arc::new(CreatePluginTool::new(workspace))]
+    forge_tools_in(workspace, None)
+}
+
+/// 带应用目录的 `forge` 装配（生产组合根走这个）。
+pub fn forge_tools_in(workspace: &Path, app_home: Option<&Path>) -> Vec<std::sync::Arc<dyn Tool>> {
+    vec![std::sync::Arc::new(CreatePluginTool::new(workspace, app_home))]
 }
 
 impl CreatePluginTool {
-    pub fn new(workspace: impl Into<PathBuf>) -> Self {
+    pub fn new(workspace: impl Into<PathBuf>, app_home: Option<&Path>) -> Self {
         let descriptor = crate::registry::find_tool_descriptor("create_plugin")
             .expect("`create_plugin` 必须在 ToolDescriptor 注册表里（INV-3）")
             .clone();
         Self {
             descriptor,
             workspace: workspace.into(),
+            app_home: app_home.map(Path::to_path_buf),
         }
     }
 }
@@ -367,8 +556,10 @@ impl Tool for CreatePluginTool {
             let text = |key: &str| call.args.get(key).and_then(|v| v.as_str());
             let res = scaffold_plugin(
                 &self.workspace,
+                self.app_home.as_deref(),
                 ScaffoldRequest {
                     id: text("id").unwrap_or(""),
+                    scope: text("scope").unwrap_or(""),
                     name: text("name"),
                     description: text("description"),
                     tool: text("tool"),
@@ -408,7 +599,9 @@ mod tests {
         let ws = temp_ws();
         let res = scaffold_plugin(
             &ws,
+            None,
             ScaffoldRequest {
+                scope: "workspace",
                 id: "todo-guard",
                 name: Some("待办守卫"),
                 description: Some("拦截没有验收标准的 todo"),
@@ -448,7 +641,9 @@ mod tests {
         let ws = temp_ws();
         let res = scaffold_plugin(
             &ws,
+            None,
             ScaffoldRequest {
+                scope: "workspace",
                 id: "quoted",
                 name: None,
                 description: Some("别让 'go test' 跑偏"),
@@ -470,7 +665,9 @@ mod tests {
         let ws = temp_ws();
         let first = scaffold_plugin(
             &ws,
+            None,
             ScaffoldRequest {
+                scope: "workspace",
                 id: "dup",
                 name: None,
                 description: None,
@@ -482,7 +679,9 @@ mod tests {
 
         let second = scaffold_plugin(
             &ws,
+            None,
             ScaffoldRequest {
+                scope: "workspace",
                 id: "dup",
                 name: None,
                 description: None,
@@ -496,7 +695,9 @@ mod tests {
         // 显式覆盖才放行
         let third = scaffold_plugin(
             &ws,
+            None,
             ScaffoldRequest {
+                scope: "workspace",
                 id: "dup",
                 name: Some("覆盖"),
                 description: None,
@@ -514,7 +715,9 @@ mod tests {
             let ws = temp_ws();
             let res = scaffold_plugin(
                 &ws,
+                None,
                 ScaffoldRequest {
+                    scope: "workspace",
                     id: bad,
                     name: None,
                     description: None,
@@ -529,7 +732,9 @@ mod tests {
         let ws = temp_ws();
         let res = scaffold_plugin(
             &ws,
+            None,
             ScaffoldRequest {
+                scope: "workspace",
                 id: "ok-id",
                 name: None,
                 description: None,
@@ -541,5 +746,111 @@ mod tests {
         assert!(!res.ok);
         assert!(res.output.contains("工具名"), "{}", res.output);
         let _ = fs::remove_dir_all(ws);
+    }
+
+    /// 2026-10-19 需求：**用户没说清装在哪时，工具不许猜**。
+    ///
+    /// 猜错的代价不是"多一个目录"，而是插件在两个工程里的行为不一致，而用户
+    /// 根本不知道是哪次操作造成的。所以缺 `scope` 时返回的是"去问用户"的指引。
+    #[test]
+    fn test_missing_scope_asks_the_user_instead_of_guessing() {
+        let ws = temp_ws();
+        let res = scaffold_plugin(
+            &ws,
+            None,
+            ScaffoldRequest {
+                id: "no-scope",
+                scope: "",
+                name: None,
+                description: None,
+                tool: None,
+                overwrite: false,
+            },
+        );
+        assert!(!res.ok, "缺 scope 必须拒绝，而不是默认装进工作区");
+        assert!(res.output.contains("ask_user"), "要明确让模型去问用户：{}", res.output);
+        assert!(
+            res.output.contains("workspace") && res.output.contains("global"),
+            "两个选项都要讲清楚：{}",
+            res.output
+        );
+        assert!(
+            !ws.join(".ada/agent-coding/extensions/no-scope").exists(),
+            "拒绝时不许留下任何目录"
+        );
+        let _ = fs::remove_dir_all(ws);
+    }
+
+    #[test]
+    fn test_bad_scope_is_rejected_with_the_allowed_values() {
+        let ws = temp_ws();
+        let res = scaffold_plugin(
+            &ws,
+            None,
+            ScaffoldRequest {
+                id: "bad-scope",
+                scope: "somewhere",
+                name: None,
+                description: None,
+                tool: None,
+                overwrite: false,
+            },
+        );
+        assert!(!res.ok);
+        assert!(res.output.contains("不合法"), "{}", res.output);
+        let _ = fs::remove_dir_all(ws);
+    }
+
+    /// 全局插件要写应用目录：装配面没注入 `~/.a-da` 时必须**如实拒绝**，
+    /// 而不是悄悄装进工作区（那会让用户以为"全局生效了"）。
+    #[test]
+    fn test_global_scope_requires_injected_app_home() {
+        let ws = temp_ws();
+        let res = scaffold_plugin(
+            &ws,
+            None,
+            ScaffoldRequest {
+                id: "glb",
+                scope: "global",
+                name: None,
+                description: None,
+                tool: None,
+                overwrite: false,
+            },
+        );
+        assert!(!res.ok);
+        assert!(res.output.contains("应用目录"), "{}", res.output);
+        assert!(!ws.join(".ada").exists(), "不许退化成写工作区");
+        let _ = fs::remove_dir_all(ws);
+    }
+
+    #[test]
+    fn test_global_scope_writes_into_app_home() {
+        let ws = temp_ws();
+        let home = temp_ws();
+        let res = scaffold_plugin(
+            &ws,
+            Some(&home),
+            ScaffoldRequest {
+                id: "glb-one",
+                scope: "global",
+                name: Some("全局插件"),
+                description: None,
+                tool: None,
+                overwrite: false,
+            },
+        );
+        assert!(res.ok, "{}", res.output);
+        assert!(
+            home.join("agent-coding").join("extensions").join("glb-one").join("index.ts").is_file(),
+            "全局插件要落在 <app_home>/agent-coding/extensions/<id>/index.ts"
+        );
+        assert!(!ws.join(".ada").exists(), "全局插件不该落到工作区");
+        let details = res.details.expect("回执要带 details");
+        assert_eq!(details["pluginId"], "global:glb-one");
+        assert_eq!(details["scope"], "global");
+
+        let _ = fs::remove_dir_all(ws);
+        let _ = fs::remove_dir_all(home);
     }
 }

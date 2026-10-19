@@ -119,6 +119,13 @@ pub struct HostOptions {
     /// 传进来而不是在这里读配置：读配置要应用目录（`~/.a-da`），而那是组合根的活。
     /// 不传 = 逐项放行（[`agent_node::plugins::PluginCapabilities::default`]）。
     pub plugin_capabilities: agent_node::plugins::PluginCapabilities,
+    /// 应用目录（`~/.a-da`）——装配工具包时给 `forge` 用（`create_plugin` 的
+    /// `scope="global"` 要落到 `<app_home>/agent-coding/extensions`）。
+    ///
+    /// 同样由组合根注入：工具层自己读环境变量在测试里就会写到用户真实目录。
+    /// `None` = 这个宿主没有应用目录概念（离线/测试），`create_plugin` 遇到
+    /// `scope="global"` 会**如实拒绝**并说明原因。
+    pub app_home: Option<PathBuf>,
 }
 
 /// 装配面的能力开关判定（P4）：**初装与重装配共用的唯一一处**。
@@ -193,7 +200,16 @@ impl HostOptions {
             approval_mgr: None,
             plugin_contributions: PluginContributions::default(),
             plugin_capabilities: agent_node::plugins::PluginCapabilities::default(),
+            app_home: None,
         }
+    }
+
+    /// 注入应用目录（组合根：`agent_node::session::get_app_home()`）。
+    ///
+    /// 不给 = `create_plugin` 无法创建全局插件（会如实拒绝，而不是猜路径）。
+    pub fn with_app_home(mut self, home: impl Into<PathBuf>) -> Self {
+        self.app_home = Some(home.into());
+        self
     }
 
     /// 传入插件能力开关（组合根从 `PluginManager::get_capabilities` 读出来）。
@@ -343,14 +359,20 @@ impl HostedProduct {
 fn assemble(
     spec: &AgentSpec,
     workspace: &std::path::Path,
+    app_home: Option<&std::path::Path>,
     allow_builtin_shadow: bool,
     plugin_tools: &[(String, Arc<dyn Tool>)],
 ) -> Result<AssemblyPlan, SpecError> {
     // P4：`allowBuiltinShadow` —— 关掉之后插件工具不得顶掉同名内置（由管线记跳过理由）
     let mut assembly = AssemblyBuilder::new().with_builtin_shadow(allow_builtin_shadow);
 
-    for tool in agent_toolkit::tools_for_toolkits(&spec.toolkits, workspace)
-        .map_err(SpecError::Violation)?
+    // `app_home` 只给需要它的工具（`forge` 的 global 作用域）：组合根注入了才有全局插件，
+    // 没注入时 `create_plugin` 会如实拒绝，而不是猜一个路径。
+    for tool in agent_toolkit::tools_for_toolkits_in(
+        &spec.toolkits,
+        agent_toolkit::toolkits::ToolkitEnv { workspace, app_home },
+    )
+    .map_err(SpecError::Violation)?
     {
         assembly
             .add_builtin_tool(tool)
@@ -525,6 +547,7 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
     let plan = assemble(
         &spec,
         &workspace,
+        options.app_home.as_deref(),
         contribution_policy.allow_builtin_shadow(),
         &plugin_tools,
     )?;
@@ -919,6 +942,19 @@ mod tests {
             &path,
             format!("const metadata = {}; export default function(ada: any) {{ ada.metadata = metadata; {} }}", metadata, factory_body),
         ).expect("写插件包入口");
+
+        // 技能按 SKILL_SPEC 落成**目录 + SKILL.md**（脚本里的 registerSkill 已移除）
+        for skill in skill_names {
+            let dir = package_root.join("skills").join(skill);
+            std::fs::create_dir_all(&dir).expect("建技能目录");
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!(
+                    "---\nname: {skill}\ndescription: {skill} 的用法（测试夹具）\n---\n\n# {skill}\n\n先跑测试再打标签。\n"
+                ),
+            )
+            .expect("写 SKILL.md");
+        }
         path
     }
 
@@ -1378,7 +1414,7 @@ mod tests {
             &["house-style"],
             &["deploy-runbook"],
             &[],
-            "ada.registerTool({ name: 'git_status', description: '插件版 git 状态', parameters: { type: 'object', properties: {} }, execute: async () => ({ ok: true, output: 'plugin' }) }); ada.registerSkill({ name: 'deploy-runbook', description: '发布流程', body: '先跑测试再打标签' }); ada.registerSystemPrompt({ id: 'house-style', content: '本项目一律用 tabs。' });",
+            "ada.registerTool({ name: 'git_status', description: '插件版 git 状态', parameters: { type: 'object', properties: {} }, execute: async () => ({ ok: true, output: 'plugin' }) }); ada.registerSystemPrompt({ id: 'house-style', content: '本项目一律用 tabs。' });",
         );
 
         let plugin_mgr = Arc::new(agent_node::plugins::PluginManager::with_home(&home));

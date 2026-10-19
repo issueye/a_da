@@ -5,10 +5,13 @@ use super::types::{
 
 /// 内置插件的一条**技能**声明。
 ///
-/// 为什么内置插件也需要它：内置插件没有 `index.ts`，跑不了沙箱，也就没法自己
-/// `ada.registerSkill(...)`。而技能是"教模型什么时候用这个插件、怎么写不踩坑"的唯一载体——
+/// 为什么内置插件也需要它：内置插件没有 `index.ts`，跑不了沙箱，也没有磁盘上的
+/// `skills/<name>/SKILL.md`。而技能是"教模型什么时候用这个插件、怎么写不踩坑"的唯一载体——
 /// 缺了它，插件卡上只剩几个工具名。于是像 `tools` 一样在定义里静态声明一份**单一真源**：
 /// 卡片（[`get_builtin_plugin_items`]）与装配（`scripts::collect_plugin_tools`）都读它。
+///
+/// ⚠️ 这**不是**给磁盘插件用的形态：第三方插件的技能必须走
+/// `skills/<name>/SKILL.md`（`docs/SKILL_SPEC.md`），脚本里 `registerSkill` 已移除。
 pub struct BuiltinPluginSkill {
     pub name: &'static str,
     pub description: &'static str,
@@ -17,7 +20,7 @@ pub struct BuiltinPluginSkill {
 }
 
 impl BuiltinPluginSkill {
-    /// 转成插件技能声明——与磁盘插件 `api.registerSkill({...})` 收下的是同一个形状。
+    /// 转成插件技能声明（与磁盘插件 `skills/<name>/SKILL.md` 解析出来的结构一致）。
     pub fn declaration(&self) -> PluginSkillDeclaration {
         PluginSkillDeclaration {
             name: self.name.to_string(),
@@ -43,11 +46,9 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
     BuiltinPluginDefinition {
         id: "git-tools",
         name: "Git 变更与协作工具 (git-tools)",
-        description: "提供结构化 Git 状态、安全限长 Diff 提取与近期提交历史检索能力，辅助精准掌握版本改动。",
+        description: "一个 git 工具覆盖版本库读写：状态、限长 diff、提交历史、blame 查询，以及 add/commit/checkout/restore/reset/stash/branch/merge/push/pull。",
         tools: &[
-            ("git_status", "获取当前 Git 工作区的状态信息，包含当前分支、暂存修改、未暂存修改与未跟踪文件。"),
-            ("git_diff", "获取工作区或特定文件的 Git Diff 变更内容。"),
-            ("git_log", "获取近期提交历史列表与简要描述。"),
+            ("git", "按 action 执行 Git 动作：只读（status/diff/log/show/blame）直接返回；写入（add/commit/checkout/restore/reset/stash/branch/merge/push/pull）会改仓库，危险动作需审批。"),
         ],
         skills: &[],
     },
@@ -116,21 +117,27 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
 `id` 只允许小写字母 / 数字 / 连字符；目录已存在必须显式 `overwrite: true` 才覆盖。
 生成后在「插件与能力中心」确认启用——贡献在**装配期**结算，改完要重新加载插件才生效。
 
-## 四类贡献（都在工厂里注册）
+## 三类脚本贡献 + 一类磁盘贡献（技能）
 - `ada.registerTool({ name, label?, description, parameters, execute })` —— 给模型一个工具。
 - `ada.registerSystemPrompt({ id, content })` —— 加一段系统提示词（带 `plugin:<id>` 归因）；正文为空会被丢掉。
-- `ada.registerSkill({ name, description, body, path?, whenToUse?, userInvocable? })` —— 加一条技能；空正文不装。
 - `ada.on(point, handler, { actions, order })` —— 注册钩子。**声明即授权**：`actions` 里没有的动作运行期不生效。
   点位：`beforeToolCall`（可用 observe/note/deny/replace）、`afterToolCall`、`beforeTurn`、`afterTurn`、
   `beforeContext`、`beforeProviderRequest`、`beforeProviderHeaders`、`afterProviderResponse`。
+- **技能不在脚本里注册**：它是磁盘上的目录 `skills/<name>/SKILL.md`（Agent Skills 规范，
+  见 `docs/SKILL_SPEC.md`），宿主装配期直接扫描。frontmatter 必须有 `name`（**等于目录名**，
+  1-64 个小写字母/数字/连字符）与 `description`（1-1024，写清"做什么 + 什么时候用"）；
+  可选 `license` / `compatibility` / `metadata` / `allowed-tools`。技能目录下可放
+  `references/`、`scripts/`、`assets/`，相对路径以技能目录为根。
+  ⚠️ 旧的 `ada.registerSkill({...})` 已移除：调用会被忽略并记 `skill_spec_violation:*` 诊断。
 
-## metadata：要让宿主看见，且与注册逐项对齐
+## metadata：要让宿主看见，且与脚本注册逐项对齐
 - 写法是**工厂里第一句** `ada.metadata = { ... }`：宿主在 `await desc(api)` 之后读 `api.metadata`。
 - 写成 `export const metadata` 无效：转译把 `export default fn` 译成
   `module.exports = exports.default = fn`，挂在 exports 上的东西一起被换掉 →
   装载期报「插件包入口缺少 metadata 对象」。
-- `tools` / `systemPrompt` / `skills` / `hooks` 的 `count` 与 `names` 是**量出来的**：
+- `tools` / `systemPrompt` / `hooks` 的 `count` 与 `names` 是**量出来的**：
   必须与注册**逐项、按顺序**一致；多注册一条就要同步改，否则装载期直接拒。
+- `skills` 是**声明性**的（宿主以目录扫描为准），不参与上面那条一致性校验。
 
 ## execute 的两个坑
 - 形参：**一个**形参是 `(args)`，**两个**形参是 `(callId, args)`。别按习惯写 `(args, ctx)`。
@@ -147,6 +154,9 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
 - 「metadata tools.count=N，实际为 M」→ 注册项与 metadata 不同步。
 - 插件在、模型看不到工具 → 插件被停用，或贡献还没重载。
 - 工具永远调不到 → 名字含空格 / 中文（`create_plugin` 会当场拒），或 `execute` 形参写错。
+- 技能没生效（诊断里 `skill_spec_violation:*`）→ 检查三件事：入口是不是
+  `skills/<name>/SKILL.md`（不是散装 `.md`）、frontmatter 的 `name` 是否**等于目录名**、
+  `description` 是否非空且 ≤1024。
 - 改了 `index.ts` 没变化 → 贡献是装配期结算的：重新加载插件 / 新开一轮。
 
 ## 别做的事

@@ -743,31 +743,33 @@ impl PureTsRuntime {
                     ("GET".to_string(), std::collections::HashMap::new(), None, None)
                 };
 
-                // 获取代理设置：优先使用请求显式指定的 proxy，其次读取环境变量
-                let effective_proxy = proxy_str.or_else(|| {
-                    std::env::var("HTTPS_PROXY")
-                        .or_else(|_| std::env::var("https_proxy"))
-                        .or_else(|_| std::env::var("HTTP_PROXY"))
-                        .or_else(|_| std::env::var("http_proxy"))
-                        .or_else(|_| std::env::var("ALL_PROXY"))
-                        .or_else(|_| std::env::var("all_proxy"))
-                        .ok()
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                });
+                // 获取代理设置：优先使用请求显式指定的 proxy，其次读取环境变量。
+                //
+                // 两种写法都认（`fetch(url, { proxy })` 与宿主进程的 `HTTPS_PROXY` 等）：
+                // 插件作者改不了宿主环境，运维也改不了插件源码，两边都得有入口。
+                // 地址统一归一化：`127.0.0.1:7897` 这种没有 scheme 的写法最常见。
+                let effective_proxy = proxy_str
+                    .or_else(|| {
+                        std::env::var("HTTPS_PROXY")
+                            .or_else(|_| std::env::var("https_proxy"))
+                            .or_else(|_| std::env::var("HTTP_PROXY"))
+                            .or_else(|_| std::env::var("http_proxy"))
+                            .or_else(|_| std::env::var("ALL_PROXY"))
+                            .or_else(|_| std::env::var("all_proxy"))
+                            .ok()
+                    })
+                    .and_then(|p| crate::net::normalize_proxy_url(&p));
 
                 // 超时来自宿主策略（此前是硬编码 30s）
                 let mut client_builder = reqwest::Client::builder().timeout(policy.timeout);
 
                 if let Some(ref proxy_url) = effective_proxy {
-                    match reqwest::Proxy::all(proxy_url) {
-                        Ok(p) => {
-                            client_builder = client_builder.proxy(p);
-                        }
-                        Err(e) => {
-                            tracing::warn!("配置 HTTP 代理 '{}' 失败: {}", proxy_url, e);
-                        }
-                    }
+                    // 🔴 配错就**报错**，不能 warn 完偷偷直连：用户设代理意味着"流量必须走代理"，
+                    // 静默直连会让插件以为自己走了代理，实际把请求直接发到了目标站
+                    // （隐私/合规上比"请求失败"严重得多）。
+                    let p = reqwest::Proxy::all(proxy_url)
+                        .map_err(|e| format!("代理配置无效（{proxy_url}）：{e}"))?;
+                    client_builder = client_builder.proxy(p);
                 }
 
                 let client = client_builder
@@ -1356,6 +1358,70 @@ mod tests {
         assert_eq!(parsed["ok"], true);
         assert_eq!(parsed["code"], 200);
         assert!(parsed["text"].as_str().unwrap().contains("Hello from Mock Server!"));
+    }
+
+    /// 代理**真的生效**：目标端口必然拒绝连接，只有经过代理才可能拿到响应。
+    ///
+    /// 顺带钉住两件事：
+    /// - `proxy` 选项**不带 scheme** 也能用（`127.0.0.1:port`，从 curl/浏览器插件抄来的
+    ///   最常见写法）；
+    /// - 走 HTTP 代理时请求行是**绝对 URI**（`GET http://host/path HTTP/1.1`），
+    ///   这是"真的走了代理"而不是"直连成功"的证据。
+    #[tokio::test]
+    async fn test_fetch_routes_through_explicit_proxy() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+
+        // mock HTTP 代理：收到请求就回一个固定 JSON，并把请求行交回来
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                let req_line = String::from_utf8_lossy(&buf[..n])
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                let _ = tx.send(req_line);
+                let body = r#"{"via":"proxy"}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+        });
+
+        let runtime = PureTsRuntime::new();
+        // 端口 1：直连必然 connection refused，只有经过代理才可能成功
+        let ts_code = format!(r#"
+            globalThis.proxyFetch = async function(): Promise<string> {{
+                const res = await fetch("http://127.0.0.1:1/ping", {{ proxy: "127.0.0.1:{proxy_port}" }});
+                return await res.text();
+            }};
+        "#);
+        runtime
+            .eval_ts(ts_code, Some("proxy_fetch.ts"))
+            .await
+            .expect("加载代理测试脚本失败");
+
+        let out = runtime
+            .call_async_fn("proxyFetch", "{}")
+            .await
+            .expect("带 proxy 的 fetch 失败");
+        assert!(out.contains("via"), "响应应当来自 mock 代理：{out}");
+
+        let req_line = rx.await.expect("代理没收到请求");
+        assert!(
+            req_line.starts_with("GET http://127.0.0.1:1/ping"),
+            "HTTP 代理必须收到**绝对 URI** 的请求行（这才是真的走了代理）：{req_line}"
+        );
     }
 
     #[tokio::test]

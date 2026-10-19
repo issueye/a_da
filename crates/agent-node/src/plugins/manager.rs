@@ -49,6 +49,15 @@ impl PluginManager {
     }
 
     /// 应用目录根
+    /// 应用目录（`~/.a-da`）——**对外只读视图**，给工具装配用。
+    ///
+    /// `create_plugin` 的 `scope="global"` 要落到 `<app_home>/agent-coding/extensions`，
+    /// 而这个路径只能由持有应用目录端口的一方给出：`with_home` 注入的实例（测试）返回
+    /// 临时目录，生产返回真实的 `~/.a-da`——工具层因此不需要、也不许自己读环境变量。
+    pub fn app_home_dir(&self) -> PathBuf {
+        self.app_home()
+    }
+
     fn app_home(&self) -> PathBuf {
         match &self.home {
             Some(h) => h.clone(),

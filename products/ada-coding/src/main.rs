@@ -173,6 +173,9 @@ async fn build_injection(
         .with_plugin_contributions(contributions)
         // P4：装配面的两位能力开关（同名覆盖 / 提示词片段）——由宿主在装配管线里判
         .with_plugin_capabilities(plugin_caps.clone())
+        // 应用目录：`create_plugin` 的 `scope="global"` 要靠它落到
+        // `<app_home>/agent-coding/extensions`（工具层自己不读环境变量）。
+        .with_app_home(agent_node::session::get_app_home())
         .with_prompt_extensions(prompt_extensions);
 
     match agent_host::run_from_spec(spec, options) {
@@ -259,6 +262,8 @@ async fn build_injection(
                             .with_approval_manager(approval)
                             .with_plugin_contributions(collected.contributions)
                             .with_plugin_capabilities(collected.caps)
+                            // 动态装配同样要能创建全局插件（同一条组合根口径）
+                            .with_app_home(agent_node::session::get_app_home())
                             .with_prompt_extensions(collected.prompt_extensions);
                         match agent_host::run_from_spec(spec_dyn, opts) {
                             Ok(h) => {
@@ -779,8 +784,8 @@ mod tests {
         );
 
         assert!(
-            assembled.contains("git_status") && assembled.contains("project_inspect"),
-            "W2-T2 的插件工具应已进 catalog：{assembled:?}"
+            assembled.contains("git") && assembled.contains("project_inspect"),
+            "W2-T2 的插件工具应已进 catalog（`git` 于 2026-10-19 合并了 status/diff/log）：{assembled:?}"
         );
     }
 

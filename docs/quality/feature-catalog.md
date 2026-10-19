@@ -37,9 +37,9 @@
 | `core` | `ask_user`、`todo`、`finish` | 提问、多步规划、终止整轮 |
 | `fs` | `read_file`、`write_file`、`edit_file`、`list_files`、`search_files`、`batch_write`、`batch_replace` | 编辑按文本匹配，**匹配按 LF 归一化、写回按文件原换行还原**（`agent-toolkit/src/newline.rs`） |
 | `command` | `run_command`、`run_background`、`check_task`、`kill_task` | **超时/中止杀整棵进程树**；子进程 stdin 一律空设备（否则一条等输入的命令会卡满超时） |
-| `git` | `git_status`、`git_diff`、`git_log` | 只读 |
+| `git` | `git`（单工具，15 个 `action`） | 只读动作（status/diff/log/show/blame）不问、危险动作（reset/checkout/restore/merge/push、stash drop、force、hard）走 `DangerScan` 必审批；参数经 argv 直传，不经 shell |
 | `project` | `project_inspect`、`code_outline`、`run_tests` | `run_tests` 会执行命令，按**写工具**处理 |
-| `forge` | `create_plugin` | 生成可加载的插件包骨架 |
+| `forge` | `create_plugin` | 生成可加载的插件包骨架；`scope` **必填**（workspace/global），缺了会让模型先 `ask_user` 问用户 |
 | 能力位装配 | `invoke_subagent` | 由 `capabilities.subagents` 决定是否装配 |
 
 - **路径沙箱**：所有路径解析回会话工作区根；越界拒绝（含 `run_command` 的 `cwd`）；

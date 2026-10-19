@@ -38,11 +38,6 @@ export default function (ada) {
   });
 
   ada.registerSystemPrompt({ id: "增强命中", content: "Prefer precise matches." });
-  ada.registerSkill({
-    name: "test_skill",
-    description: "A package skill",
-    path: "skills/test_skill.md",
-  });
 
   ada.on("turn_end", async (event, ctx) => {
     ada.trace(`${ctx.point} ${ctx.threadId}`);
@@ -68,6 +63,13 @@ collected by the isolated inspector. `ada.on(event, handler)` is an alias for ho
 registration. Handlers receive `(event, ctx)`; `ctx` exposes workspace/session
 identifiers, timeout budget, and validated registration methods, but not raw host
 IO or arbitrary host actions.
+
+**Skills are directories, not declarations.** Put `skills/<name>/SKILL.md` next to
+`index.ts`; the host scans it during assembly and reads the YAML frontmatter
+(`name` must equal the directory name, `description` 1-1024 chars — see
+[`docs/SKILL_SPEC.md`](../SKILL_SPEC.md)). `ada.registerSkill(...)` was removed on
+2026-10-19: calling it is ignored and reported as a `skill_spec_violation:*` diagnostic.
+`metadata.skills` is declarative only and is not checked for consistency.
 
 ## Hook points and capability gates (as of 2026-10-17)
 

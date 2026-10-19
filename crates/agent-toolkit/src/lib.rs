@@ -25,6 +25,6 @@ pub use registry::{
 pub use sandbox::{check_workspace_sandbox, resolve_real_path, should_skip_dir, SKIP_DIRS};
 pub use time::now_ms;
 pub use toolkits::{
-    all_toolkit_tool_names, is_known_toolkit, tools_for_toolkit, tools_for_toolkits,
-    TOOLKIT_NAMES,
+    all_toolkit_tool_names, is_known_toolkit, tools_for_toolkit, tools_for_toolkit_in,
+    tools_for_toolkits, tools_for_toolkits_in, ToolkitEnv, TOOLKIT_NAMES,
 };

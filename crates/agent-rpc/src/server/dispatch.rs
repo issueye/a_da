@@ -332,6 +332,24 @@ pub trait PluginReassembler: Send + Sync {
         plugin_id: &'a str,
         enabled: bool,
     ) -> agent_base::ports::BoxFuture<'a, Option<agent_runtime::ReassemblyReport>>;
+
+    /// 磁盘侧变了（新建插件包 / 删除插件包 / 外部改了 `index.ts`）之后重建贡献集合。
+    ///
+    /// # 为什么需要单独一个入口，而不是复用 `reassemble`
+    ///
+    /// `reassemble` 的语义是"某个插件的**启停档位**变了"（收据里 `fromEnabled → toEnabled`
+    /// 是要给用户看的事实）。而"新建一个插件"没有旧档位：它一开始就是启用的，讲
+    /// "关闭 → 启用"是假话。两者**走同一条装配管线**，但收据的措辞必须各说各的，
+    /// 否则界面按 `fromEnabled` 渲染时会出现"我没关过它"的困惑。
+    ///
+    /// 默认实现退回启停路径（`reason` 当插件标识）：只有启停一种触发源时语义仍然正确，
+    /// 组合根按需覆写成 `scope: "refresh"`。
+    fn refresh<'a>(
+        &'a self,
+        reason: &'a str,
+    ) -> agent_base::ports::BoxFuture<'a, Option<agent_runtime::ReassemblyReport>> {
+        self.reassemble(reason, true)
+    }
 }
 
 /// W3-T2：宿主注入的**真引擎**及其**必须共用**的单例。
@@ -3768,8 +3786,20 @@ impl Dispatcher {
 
             PLUGIN_RELOAD => {
                 let workspace = params.get("workspace").and_then(|v| v.as_str());
-                let plugins = self.plugin_mgr.reload_plugins(workspace);
-                Ok(serde_json::json!({ "ok": true, "plugins": plugins }))
+                let mut plugins = self.plugin_mgr.reload_plugins(workspace);
+                self.merge_contribution_views(&mut plugins);
+                // "重新加载插件"对用户的意思就是"我刚改了 index.ts，让它现在就生效"。
+                // 只重新扫目录（上一行）只能刷新**列表**，引擎里跑的还是旧贡献集合。
+                let report = match &self.plugin_reassembler {
+                    Some(r) => r.refresh("reload").await,
+                    None => None,
+                };
+                Ok(serde_json::json!({
+                    "ok": true,
+                    "plugins": plugins,
+                    "applied": report.as_ref().map(|r| r.applied),
+                    "report": report,
+                }))
             }
 
             PLUGIN_CAPABILITIES_SET => {
@@ -3777,7 +3807,17 @@ impl Dispatcher {
                     self.plugin_mgr.save_capabilities(patch)
                         .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
                 }
-                Ok(serde_json::Value::Null)
+                // 能力开关是**装配期**读的（`allowBuiltinShadow` / `allowSystemPromptReplace`
+                // 决定插件贡献收不收）。只写盘不重装配，界面上的勾已经打上了、引擎还在按
+                // 旧策略跑——用户以为"关掉了同名覆盖"，实际什么都没关。
+                let report = match &self.plugin_reassembler {
+                    Some(r) => r.refresh("capabilities").await,
+                    None => None,
+                };
+                Ok(serde_json::json!({
+                    "applied": report.as_ref().map(|r| r.applied),
+                    "report": report,
+                }))
             }
 
             PLUGIN_CONFIG_SET => {
@@ -3899,7 +3939,17 @@ impl Dispatcher {
                 let fp = params.get("filePath").and_then(|v| v.as_str()).unwrap_or("");
                 let ok = self.plugin_mgr.delete_plugin(fp, ws)
                     .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
-                Ok(serde_json::json!({ "ok": ok }))
+                // 删了也要重装配：不重装配的话，那个插件注册的工具还在引擎的注册表里
+                // 活着（磁盘上已经没有这个包了），模型照样会调到"已经不存在的工具"。
+                let report = match &self.plugin_reassembler {
+                    Some(r) => r.refresh("delete").await,
+                    None => None,
+                };
+                Ok(serde_json::json!({
+                    "ok": ok,
+                    "applied": report.as_ref().map(|r| r.applied),
+                    "report": report,
+                }))
             }
 
             PLUGIN_CREATE_TEMPLATE => {
@@ -3909,7 +3959,19 @@ impl Dispatcher {
                 let code = params.get("code").and_then(|v| v.as_str());
                 let fp = self.plugin_mgr.create_plugin_template(ws, scope, name, code)
                     .map_err(|e| ProtocolError::internal_error(e.to_string()))?;
-                Ok(serde_json::json!({ "filePath": fp }))
+                // 🔴 建完必须**立刻重装配**：插件贡献（工具/片段/技能/钩子）是在装配期
+                // 结算的，这里只写了文件就返回，界面上"刷新"十次也没用——用户只能重启程序
+                // （2026-10-19 实机反馈的就是这个）。`applied` 如实回报"引擎侧确实换了"，
+                // 没注入重装配入口时给 `null`，不撒谎说已生效。
+                let report = match &self.plugin_reassembler {
+                    Some(r) => r.refresh("createTemplate").await,
+                    None => None,
+                };
+                Ok(serde_json::json!({
+                    "filePath": fp,
+                    "applied": report.as_ref().map(|r| r.applied),
+                    "report": report,
+                }))
             }
 
             SKILL_LIST => {
