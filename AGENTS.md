@@ -33,6 +33,7 @@ cargo xtask verify-docs                       # 文档门：归档布局字样�
 cargo xtask verify --fast                     # 上面四道静态门一次跑完（跳过全量单测）
 bun run electron:dev                          # Electron 桌面端开发（前端热重载 + 网关监督）
 bun run electron:pack                         # 打包 Electron 免安装版 (dist/electron/win-unpacked)
+cargo run -p agent-gateway -- --port 52353    # 网页访问：页面与 /rpc 同端口（浏览器开 http://127.0.0.1:52353/）
 pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面壳验收（Electron 交付形态）
 ```
 

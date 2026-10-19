@@ -81,6 +81,35 @@ export type { DesktopMode, DesktopConfig, CoreInfo }
 export { getDesktopConfig, setDesktopConfig, restartDesktopApp }
 
 /**
+ * 浏览器里从**同源**推导网关端点。
+ *
+ * 网关用 `--ui-dir` 托管前端产物时（S8），页面与 `/rpc` 在**同一个端口**上，
+ * 所以 `ws://<location.host>/rpc` 必然正确：换端口、反向代理、https（`wss`）都不用改代码。
+ *
+ * `file://` 打开时（Electron 生产形态）没有 `http(s)` 协议，返回 `null`——
+ * 那条路的端点由宿主 preload 注入，不该被这里覆盖。
+ */
+function sameOriginRpcUrl(): string | null {
+  if (typeof window === 'undefined' || !window.location) return null
+  const { protocol, host } = window.location
+  if (protocol !== 'http:' && protocol !== 'https:') return null
+  if (!host) return null
+  return `${protocol === 'https:' ? 'wss:' : 'ws:'}//${host}/rpc`
+}
+
+/**
+ * 页面 URL 上的 `?token=`。
+ *
+ * 网页访问时浏览器没有"配置文件"可读，这是唯一能带凭据的入口（回环场景够用）。
+ * 桌面端永远走宿主注入的 token，这里返回 null 不会影响它。
+ */
+function tokenFromLocation(): string | null {
+  if (typeof window === 'undefined' || !window.location?.search) return null
+  const token = new URLSearchParams(window.location.search).get('token')
+  return token && token.trim() ? token.trim() : null
+}
+
+/**
  * 探测并获取本地核心服务的连接配置
  */
 async function resolveCoreConnection(
@@ -104,9 +133,12 @@ async function resolveCoreConnection(
   } catch (err) {
     console.warn('[AgentWS] 获取桌面端核心服务信息失败，回退到默认端口:', err)
   }
+  // 没有宿主（浏览器直连网关）：同源优先。写死的 52353 只在"页面不是网关托管"时兜底
+  // （比如本地 `vite dev` 的 1420 页面去连默认端口的网关）。
+  const sameOrigin = sameOriginRpcUrl()
   return {
-    url: defaultUrl,
-    token: defaultToken,
+    url: sameOrigin || defaultUrl,
+    token: tokenFromLocation() || defaultToken,
   }
 }
 
@@ -1370,8 +1402,14 @@ export class AgentWebSocketClient {
     })
   }
 
+  /** 重新扫描 + **重装配**：`applied` 为 true 才代表引擎侧真的换了贡献集合。 */
   public reloadPlugins(workspace?: string) {
-    return this.request<{ ok: boolean; plugins: PluginListResponse['plugins'] }>('plugin.reload', {
+    return this.request<{
+      ok: boolean
+      plugins: PluginListResponse['plugins']
+      applied?: boolean | null
+      report?: unknown
+    }>('plugin.reload', {
       workspace: workspace || this.snapshot.activeWorkspace,
     })
   }
@@ -1396,20 +1434,36 @@ export class AgentWebSocketClient {
     return this.request('plugin.capabilities.set', { patch })
   }
 
+  /**
+   * 删除插件。
+   *
+   * `applied` 是**引擎侧**的真相：删除后宿主会立刻重装配，`true` = 那个插件的工具
+   * 已经从注册表里下去了；`false` = 重装配被拒（看插件诊断）；`null` = 当前宿主没接
+   * 重装配入口，重启前它注册的工具还会在。
+   */
   public deletePlugin(filePath: string, workspace?: string) {
-    return this.request<{ ok: boolean }>('plugin.delete', {
+    return this.request<{ ok: boolean; applied?: boolean | null; report?: unknown }>('plugin.delete', {
       filePath,
       workspace: workspace || this.snapshot.activeWorkspace,
     })
   }
 
+  /**
+   * 新建插件包模板。
+   *
+   * 🔴 后端在建完文件后**立刻重装配**（`applied` 即其结果）：早先它只写盘不重装，
+   * 用户点"刷新"甚至重开弹窗都没用，只能重启程序才看到新插件——这是实机反馈的 bug。
+   */
   public createPluginTemplate(params: { scope?: string; name: string; workspace?: string; code?: string }) {
-    return this.request<{ filePath: string }>('plugin.createTemplate', {
-      scope: params.scope || 'global',
-      name: params.name,
-      workspace: params.workspace || this.snapshot.activeWorkspace,
-      code: params.code,
-    })
+    return this.request<{ filePath: string; applied?: boolean | null; report?: unknown }>(
+      'plugin.createTemplate',
+      {
+        scope: params.scope || 'global',
+        name: params.name,
+        workspace: params.workspace || this.snapshot.activeWorkspace,
+        code: params.code,
+      },
+    )
   }
 
   public fetchSkills(workspace?: string) {

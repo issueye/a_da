@@ -22,6 +22,10 @@
         "ada-coding.exe",
         "runner.exe"
       ]
+    },
+    {
+      "from": "desktop-ui/dist",
+      "to": "bin/ui"
     }
   ],
   "win": {

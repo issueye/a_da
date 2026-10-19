@@ -29,6 +29,7 @@ pub mod delegate;
 pub mod fs_service;
 pub mod registry;
 pub mod relay;
+pub mod static_ui;
 pub mod supervisor;
 pub mod workspaces;
 

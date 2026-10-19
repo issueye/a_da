@@ -34,6 +34,7 @@
 use std::sync::Arc;
 
 use agent_gateway::auth::{is_loopback, AuthConfig};
+use agent_gateway::static_ui::{self, StaticSite};
 use agent_gateway::supervisor::ReapPolicy;
 use agent_gateway::{relay::serve_client, Gateway};
 use tokio::net::TcpListener;
@@ -138,6 +139,24 @@ async fn main() -> anyhow::Result<()> {
         args.host, port, pid, auth_summary
     );
 
+    // 前端产物的托管目录（S8 · 网页访问）。
+    //
+    // 没找到不算错：桌面端走 file://，`/rpc` 也照常可用，只是浏览器打开根路径会拿到
+    // 一页说明。所以这里是 warn 而不是退出——**别把一个可选能力做成启动前置条件**。
+    let site = StaticSite::resolve(args.ui_dir.as_deref());
+    match site.as_ref() {
+        Some(site) => info!(
+            "网页访问：http://{}:{}/（前端产物 {}）",
+            if is_loopback(&args.host) { "127.0.0.1" } else { args.host.as_str() },
+            port,
+            site.display_root()
+        ),
+        None => warn!(
+            "未找到前端产物（desktop-ui/dist），浏览器访问根路径只会得到一页说明；\
+             可先 `npm --prefix desktop-ui run build`，或用 --ui-dir 指定目录"
+        ),
+    }
+
     // 实例回收：没有它，访问过 N 个工作区就常驻 N 个 ada-coding 进程。
     // 策略可用环境变量微调（默认：空闲 15 分钟回收、最多 6 个实例、每分钟扫一次）
     let policy = ReapPolicy {
@@ -184,12 +203,31 @@ async fn main() -> anyhow::Result<()> {
         };
         let gw = gateway.clone();
         let default_ws = workspace.clone();
+        let site = site.clone();
         tokio::spawn(async move {
-            // S7：`?workspace=` 与 `?token=` 都在**握手里**解析（`serve_client` 内），
-            // 这里只把网关默认工作区作为兜底传进去。
-            // 这让"一个网关管多个工作区"在不改协议的前提下可用。
-            if let Err(e) = serve_client(gw, stream, Some(default_ws)).await {
-                warn!("客户端连接结束（{}）：{e}", peer);
+            // 🔴 先分流，再交给任何一方。
+            //
+            // `peek_head` **只读不消费**：WS 升级请求被识别出来之后，`stream` 里一个字节
+            // 都没少，`serve_client` 照旧自己完成握手；普通 HTTP 请求则由静态托管响应。
+            // 反过来（先交给 tungstenite）不行——它对非升级请求直接断连，
+            // 浏览器会看到一个空白页而不是"这里是网关"。
+            let head = match static_ui::peek_head(&stream).await {
+                Ok(head) => head,
+                Err(e) => {
+                    warn!("读取请求头失败（{peer}）：{e}");
+                    return;
+                }
+            };
+
+            if static_ui::is_websocket_upgrade(&head) {
+                // S7：`?workspace=` 与 `?token=` 都在**握手里**解析（`serve_client` 内），
+                // 这里只把网关默认工作区作为兜底传进去。
+                // 这让"一个网关管多个工作区"在不改协议的前提下可用。
+                if let Err(e) = serve_client(gw, stream, Some(default_ws)).await {
+                    warn!("客户端连接结束（{}）：{e}", peer);
+                }
+            } else if let Err(e) = static_ui::respond(stream, &head, site.as_ref()).await {
+                warn!("HTTP 响应失败（{peer}）：{e}");
             }
         });
     }
@@ -205,6 +243,8 @@ struct Args {
     token_count: usize,
     /// 显式承认"非回环 + 明文"（典型：反向代理终止 TLS）
     allow_plaintext: bool,
+    /// 前端产物目录（`--ui-dir`；不传则自动探测）
+    ui_dir: Option<String>,
 }
 
 fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
@@ -215,6 +255,7 @@ fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
     let mut tokens: Vec<String> = Vec::new();
     let mut origins: Vec<String> = Vec::new();
     let mut allow_plaintext = false;
+    let mut ui_dir: Option<String> = None;
     let mut it = argv.into_iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -237,6 +278,12 @@ fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
             "--allow-plaintext" => {
                 allow_plaintext = true;
             }
+            "--ui-dir" => {
+                ui_dir = Some(
+                    it.next()
+                        .ok_or_else(|| anyhow::anyhow!("--ui-dir 需要一个值"))?,
+                );
+            }
             "--allow-origin" => {
                 origins.push(
                     it.next()
@@ -252,7 +299,8 @@ fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
                      --host <h>        监听地址（默认 127.0.0.1；非回环**必须**给 --token）\n\
                      --token <t>       接入令牌；`<t>` 或不限制工作区，`<t>=<ws1>|<ws2>` 限定；可重复\n\
                      --allow-origin <o>  放行的浏览器来源（可重复；默认**拒绝**任何带 Origin 的请求）\n\
-                     --allow-plaintext   显式承认「非回环 + 明文 ws」（典型：反向代理终止 TLS）\n"
+                     --allow-plaintext   显式承认「非回环 + 明文 ws」（典型：反向代理终止 TLS）\n\
+                     --ui-dir <p>      前端产物目录（默认自动探测 desktop-ui/dist；给了就用它托管网页）\n"
                 );
                 std::process::exit(0);
             }
@@ -269,5 +317,6 @@ fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
         auth,
         token_count,
         allow_plaintext,
+        ui_dir,
     })
 }

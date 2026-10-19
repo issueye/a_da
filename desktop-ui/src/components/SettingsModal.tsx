@@ -40,6 +40,7 @@ import {
 } from '../client/ws-client'
 import { notify } from './ToastHost'
 import { ConfirmModal } from './ConfirmModal'
+import { getDesktopPlatform } from '../client/desktop-bridge'
 
 interface SettingsModalProps {
   isOpen: boolean
@@ -1625,6 +1626,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               {/* 高级连接参数配置（只有网关相关项） */}
               <div className="bg-zinc-50 dark:bg-zinc-900/40 border border-zinc-200 dark:border-zinc-800/80 rounded-xl p-4 space-y-4">
                 <h4 className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">网关模式参数</h4>
+
+                {/* 浏览器里这些字段写的是 `desktop_launcher.json`，只有 Electron 主进程会读；
+                    网页访问时端点由页面地址推导。不写清楚，用户会以为"填了没生效"是 bug。 */}
+                {getDesktopPlatform() === 'web' && (
+                  <p className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-lg p-2.5">
+                    当前是网页访问：下列字段不生效。连接端点由页面地址推导（
+                    <code className="font-mono">ws(s)://当前host/rpc</code>），
+                    凭据用页面 URL 上的 <code className="font-mono">?token=</code>。
+                  </p>
+                )}
 
                 <div className="space-y-3">
                   <div>

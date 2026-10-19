@@ -287,6 +287,65 @@ sequenceDiagram
 
 ---
 
+## 3.5 网页访问：网关直接托管前端产物（S8）
+
+目标是一句话：**一个 `ada-gateway` 二进制 + 一个端口 = 整站**，浏览器打开就能用，
+不再需要另起 `vite preview`/`http.server` 之类的静态服务器。
+
+```bash
+npm --prefix desktop-ui run build          # 产出 desktop-ui/dist
+ada-gateway --port 52353 --workspace E:/proj
+# 浏览器打开 http://127.0.0.1:52353/
+```
+
+### 3.5.1 分流规则
+
+同一个监听端口上按请求头分流，**两条路互不影响**：
+
+| 请求 | 去向 |
+|---|---|
+| `GET /rpc` + `Upgrade: websocket` | 原有 WS 通道（`serve_client`，鉴权/Origin 规则不变） |
+| `GET /`、`GET /assets/*` | 静态产物（`desktop-ui/dist`，目录 → `index.html`） |
+| `GET /rpc`（无升级头） | `426 Upgrade Required` |
+| `POST` 等非 GET/HEAD | `405 Method Not Allowed` |
+
+实现要点：先用 `TcpStream::peek` **只读不消费**地看一眼前 16 KB，认出升级请求就原样交给
+tungstenite（字节一个不少）；否则由静态托管写 HTTP 响应。**不能反过来**——`accept_hdr_async`
+对非升级请求直接断连，浏览器只会看到空白页。
+
+🔴 看过之后必须真正把字节读走（`consume_peeked` + 收尾 `drain_input`）：接收缓冲里有未读数据时
+`close` 发的是 **RST 而不是 FIN**，客户端会 `ConnectionReset`（Windows `os error 10054`），
+表现是"页面偶尔白屏"。这一条是端到端测试抓出来的，不是理论。
+
+### 3.5.2 产物目录怎么找
+
+`--ui-dir <p>` → `A_DA_UI_DIR` → 可执行文件旁 `ui/` → 可执行文件旁 `../desktop-ui/dist` →
+当前目录 `desktop-ui/dist`。**只认含 `index.html` 的目录**；一个都找不到时网关照常启动，
+根路径返回 `503` 并说明怎么修——网页访问是可选能力，不做成启动前置条件。
+
+### 3.5.3 端点与凭据
+
+前端在浏览器里**不再写死端口**：页面若来自 `http(s)://host:port`，WS 端点直接推导为
+`ws://host:port/rpc`（https → `wss`）。所以换端口、反向代理、加 TLS 都不用改前端。
+
+鉴权分两层，别混：
+
+- **静态资源不需要 token**——页面只是 JS/CSS，不含任何用户数据；要 token 才能打开"输入 token 的页面"是死锁。
+- **`/rpc` 照旧鉴权**。回环来源（`http://127.0.0.1:*` / `http://localhost:*`）默认放行；
+  网页访问要带凭据时用 `?token=<t>`（前端从 `location.search` 读取）。
+
+对外部署仍然遵守第 4 节的硬规则：非回环必须 `--token` + `--allow-origin`，
+且明文 `ws://` 要 `--allow-plaintext` 显式承认。
+
+### 3.5.4 路径安全
+
+三道闸，任一不过一律 403：段级黑名单（`..`、反斜杠、冒号、NUL，含百分号编码后的形态）、
+`canonicalize` 后必须仍在站点根内（拦符号链接穿透）、必须指向普通文件。
+不存在的路径按"有扩展名 = 404 / 无扩展名 = 回 index.html（客户端路由兜底）"区分——
+否则 `/assets/missing.js` 会拿到一份 HTML，报出来的是 MIME 错误而不是真正的原因。
+
+---
+
 ## 4. 安全防护与沙箱控制模型（Security & Sandboxing）
 
 将文件系统目录浏览开放给网关 RPC 后，必须严格遵守最小权限与失败安全原则：

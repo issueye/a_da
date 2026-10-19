@@ -22,6 +22,7 @@ import {
   windowClose,
   isWindowMaximized,
   onWindowMaximizeChange,
+  isElectronShell,
 } from '../client/desktop-bridge'
 
 interface TitleBarProps {
@@ -250,33 +251,38 @@ export const TitleBar: React.FC<TitleBarProps> = ({
           {isDark ? <Sun size={14} /> : <Moon size={14} />}
         </button>
 
-        <div className="w-[1px] h-3.5 bg-zinc-300 dark:bg-zinc-700 mx-1" />
-
-        {/* 窗口控制按钮 */}
-        <button
-          onClick={handleMinimize}
-          className="p-1.5 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200/70 dark:hover:bg-zinc-800 rounded transition-colors"
-          title="最小化"
-          aria-label="最小化"
-        >
-          <Minus size={13} />
-        </button>
-        <button
-          onClick={handleMaximize}
-          className="p-1.5 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200/70 dark:hover:bg-zinc-800 rounded transition-colors"
-          title={isMax ? '向下还原' : '最大化'}
-          aria-label={isMax ? '向下还原' : '最大化'}
-        >
-          {isMax ? <Copy size={12} className="rotate-180" /> : <Square size={12} />}
-        </button>
-        <button
-          onClick={handleClose}
-          className="p-1.5 text-zinc-600 dark:text-zinc-400 hover:text-white hover:bg-rose-600 rounded transition-colors"
-          title="关闭窗口"
-          aria-label="关闭窗口"
-        >
-          <X size={14} />
-        </button>
+        {/* 窗口控制按钮：**只有 Electron 宿主才渲染**。
+            浏览器里这三个动作在 `desktop-bridge` 里只是 console.log——摆一排点不动的按钮，
+            用户只会以为页面卡住了。网页访问时浏览器自己就有标题栏，不需要我们来画。 */}
+        {isElectronShell() && (
+          <>
+            <div className="w-[1px] h-3.5 bg-zinc-300 dark:bg-zinc-700 mx-1" />
+            <button
+              onClick={handleMinimize}
+              className="p-1.5 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200/70 dark:hover:bg-zinc-800 rounded transition-colors"
+              title="最小化"
+              aria-label="最小化"
+            >
+              <Minus size={13} />
+            </button>
+            <button
+              onClick={handleMaximize}
+              className="p-1.5 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200/70 dark:hover:bg-zinc-800 rounded transition-colors"
+              title={isMax ? '向下还原' : '最大化'}
+              aria-label={isMax ? '向下还原' : '最大化'}
+            >
+              {isMax ? <Copy size={12} className="rotate-180" /> : <Square size={12} />}
+            </button>
+            <button
+              onClick={handleClose}
+              className="p-1.5 text-zinc-600 dark:text-zinc-400 hover:text-white hover:bg-rose-600 rounded transition-colors"
+              title="关闭窗口"
+              aria-label="关闭窗口"
+            >
+              <X size={14} />
+            </button>
+          </>
+        )}
       </div>
     </header>
   )
