@@ -8,7 +8,7 @@
 > `verify-archive`、"归档"等字样均为**历史记录**（迁移过程与决策依据），
 > 不再是现行路径或门禁。现行门禁清单见 [README.md](../../README.md) 与 [AGENTS.md](../../AGENTS.md)。
 
-> 状态：**设计草案 v0.2，只定设计与规范，不动代码**。
+> 状态：**设计 v0.2 的现行部分**。2026-10-19 已移除 TS 时代的事实陈述、迁移路径与未落地附录；历史从 git 取回。
 > **v0.2 的定位变更（相对 v0.1）**：① **只考虑 Rust**——TS 那套 agent 实现（`src/agent/**` 的循环/宿主/工具）
 > 作为**归档版本**，不再是参考设计、不再是等价性基准；② 目标从"把 a_da 抽象出来"改成
 > **"用基座快速产出一个协议与规范都一致的 AGENT CORE"**，且要能覆盖多种产品：
@@ -60,62 +60,6 @@ cargo test -p ada-life                                      # 5 合规套件
 cargo xtask ship --product ada-life                         # 6 单 exe
 cargo xtask verify-wiring                                   # 7 没有第二份引擎（结构断言）
 ```
-
----
-
-## 1. 为什么是 Rust-only，以及要付的代价
-
-### 1.1 事实：多实现已经在漂移（TS 归档的动机）
-
-| 契约 | 份数 | 实测 |
-|---|---|---|
-| 主循环 | 2 | Rust `runner/agent_loop.rs:39-48`；TS `core/agent-loop.ts:209`（由 `src/agent/store.ts:3804`、`:2494`、`:2992`、`subagents/runner.ts:128` 驱动） |
-| 协议目录 | 2 | Rust `protocol/methods.rs` **76 个方法常量** vs TS `ProtocolCommands` **90 个键**（其中 21 `evt.*` + 3 `req.*`）→ **Rust 有、TS 无 10 个** |
-| 主机分发 | 2 | Rust `server/dispatch.rs` 常量臂 vs TS `host/dispatch.ts` 66 个 case |
-| 目录 ↔ 实现 | — | `workspace.set`、`config.update` 声明了却**没有 dispatch 臂**，落到 `_ => method_not_found`（`dispatch.rs:2250`） |
-| 线 DTO | 3 | `protocol/dto.rs` / `src/shared/protocol/dto.ts` / `desktop-ui/src/types/index.ts` |
-
-**门禁判据**：只要有两份引擎，就必须有"等价性"测试才能证明没漂移；而这个测试本身要维护两套脚手架。
-→ **删掉第二份实现，等价性问题消失**，剩下的风险变成"产品之间漂移"，由 §8 的生成+合规闸管住（成本低得多）。
-
-### 1.2 事实：权威路径上有一批"看起来装上了"的部件（新基座必须补上）
-
-| 部件 | 证据 | 后果 |
-|---|---|---|
-| 插件钩子（25 个点位） | 只在 TS 侧定义并调用（`src/agent/core/events.ts:579-605`）；Rust 全仓只有能力位解析（`plugins/manager.rs:101-110`） | Rust 引擎**整套钩子缺失**；`hook_timeout_ms`/`allow_third_party_hooks` 解析后无处使用 |
-| 审批闸门 | `should_ask_approval` 只在 `approval/mod.rs:23-96` 的测试里调用；`ApprovalManager::register_waiter` 唯一调用点在 `#[cfg(test)]` 的 `dispatch.rs:2356`；`config.approval` 只写不读（`dispatch.rs:1238-1240`、`state/store.rs:117`） | ask/readonly 档位**零效力**，审批 UI 建在空接线之上 |
-| 模型重试 | `max_retries` 只在 `ai/types.rs:159` 定义、`agent_loop.rs:98` 与 `subagents/runner.rs:153` 赋值，**全仓无读取点** | "重试 3 次"是幻觉 |
-| 取消贯穿 | `run_command(..., None)`（`executor.rs:117`）；子智能体 `abort_rx: None`（`executor.rs:157`） | 用户点停止，**子进程与子智能体收不到信号** |
-| `terminate` | 插件沙箱写入（`plugins/sandbox.rs:254`）后被 executor 丢弃（`executor.rs:236-249`），模型里没有该字段（`session/types.rs:71-96`） | §5 的语义在 Rust 上不可达 |
-| 禁用内置插件 | `execute_builtin_plugin_tool`（`executor.rs:177`）在 `enabled` 检查（`:184-196`）**之前** | 禁用只影响工具声明，不影响执行 |
-| 附件图片 | `ChatCompletionMessage.content` 只有 `Option<String>`（`ai/types.rs:146`），`format_messages_for_model` 丢 `images`（`runner/prompt.rs:222-229`） | 界面能预览，**模型看不到图** |
-| 工具 schema | 内置插件工具参数全为空对象（`plugins/builtins.rs:104`、`:114`），含 `ask_user`（`:77`），而 handler 在读 `question/choices/allow_text`（`builtin_tools.rs:17-67`） | 模型只能瞎猜参数 |
-| 空壳工具 | `check_gate`/`evaluate_diff`/`manage_ponytail` 恒回成功文案（`builtin_tools.rs:241-246`） | 直接违反「绝不捏造确定性」（AGENTS.md §9） |
-
-**门禁判据**：这些不是"编码助手特有问题"，而是**基座缺机制**。新设计必须让它们成为**类型或合规断言**，
-否则换个产品照样复发（§3 的 INV 表就是干这个的）。
-
-### 1.3 事实：产品假设写死在"通用"代码里（多产品能不能成立的关键）
-
-- 人格与语言写死：`runner/prompt.rs:169-179`（"你是 a-da…AI 编程智能体…中文"）。
-- 工具集写死：`prompt.rs:7-128` 的 7 个编码工具 schema + `executor.rs:48-207` 的 8 个名字分支。
-- 载体写死：`workspace: &Path` 同时是沙箱基准、会话分组键、检查点目录键、插件扫描根（`agent_loop.rs:40`、`session/manager.rs:73-80`、`checkpoint/manager.rs:39`、`prompt.rs:135`）。
-- 默认 provider 兜底写死 `gemini-2.5-flash`（`executor.rs:138-148`）。
-- 一份"工具元数据"散在五处：`tools/mod.rs:13-36`（读写名单）、`approval/types.rs:15-18`（命令工具/危险子串）、`executor.rs:59-66,88-95`（检查点手写分支）、`subagents/types.rs:44`（白名单）、`plugins/types.rs:44`（插件自述 `is_write`）。
-
-**门禁判据**：生活类助手不需要 `fs`/`command`/`git`，也不需要"统一 diff / 写前快照"这套
-**补丁语义**（那是 coding 专有概念）。所以这些必须从内核降级为**可选工具包 + 可选能力位**。
-
-### 1.4 TS 归档的具体处置（迁移期动作）
-
-| 对象 | 处置 | 理由 |
-|---|---|---|
-| `src/agent/**`（循环、宿主、工具、store） | **移入 `archive/ts-agent/`（只读保留一个 tag），并从构建与测试中摘除** | 不再是参考设计；留着就会被误用（§1.1 的等价性负担） |
-| `app.tsx` 的 `--host` 分支、`src/ui/client/in-process.ts`、`host-bootstrap.ts` 的兜底与 `A_DA_FORCE_LEGACY_HOST` | 删除 | TS 宿主消失后这些是死路；**GPUIX 客户端改为必须搭档 `agent_core.exe`**（现状默认路径本来就是它，`host-bootstrap.ts:94-116`） |
-| `ada-ts-engine` + `plugins/sandbox.rs` | **保留为可选适配器**（插件代码运行时），但插件**契约**由 Rust 侧的 `PluginHost` 端口定义 | 插件生态是资产；契约必须单源 |
-| `src/shared/protocol/*.ts` | 改为**生成物**（客户端类型），不再手写 | 治 §1.1 的第三份 DTO |
-| `kernel/`、`compiler/` shim（`kernel/mod.rs:1-6`、`compiler/mod.rs:1-2`） | 删除（`ada-ts-engine` 直接依赖） | 纯转发，无消费者 |
-| 协议草案（原 `jsonrpc-protocol.md`，TS 时代文档，已随 2026-10-18 整理删除）中描述 TS 形态的段落 | 已由 `spec/proto/` 登记表与 [`../protocol/README.md`](../protocol/README.md) 取代 | 文档与实现必须同代 |
 
 ---
 
@@ -384,7 +328,7 @@ spec/proto/<product>.ext.json     ← 产品扩展（L2），不得重新定义 
 | # | 副本对 | 校验位置 | 口径 |
 |---|---|---|---|
 | 1 | `spec/proto/*.json` ↔ `agent-proto/src/methods.rs` | `agent-proto` 的 `test_spec_consistency_across_rust_and_json_spec` | 方法名**集合相等**（base ∪ ext = `ALL_METHODS`） |
-| 2 | `methods.rs` ↔ `agent-core/src/server/dispatch.rs` | `cargo xtask verify-wiring` check A | `ALL_METHODS` 每个都有 `match` 臂；无孤儿臂 |
+| 2 | `methods.rs` ↔ `agent-rpc/src/server/dispatch/` | `cargo xtask verify-wiring` check A | `ALL_METHODS` 每个都有 `match` 臂；无孤儿臂 |
 | 3 | `methods.rs` ↔ `client-ts/methods.ts` | 同 #1 的测试（W5-T1 新增） | **`name → value` 映射双向相等** |
 
 > 校验 #3 在 W5-T1 前是**假校验**：旧写法只做 `ts_content.contains("'<方法值>'")`，
@@ -495,22 +439,6 @@ tools/xtask/           new-agent | gen | verify | verify-spec | verify-wiring | 
 
 ---
 
-## 10. 迁移路径（Rust-only，含 TS 归档）
-
-| 阶段 | 动作 | 验收 | 风险 |
-|---|---|---|---|
-| **P0 规范与闸先行**（不加引擎代码） | 写 `spec/proto/base.json` + `xtask gen/verify`；**先把今日 Rust 实现反推成 spec 并冻结**；`verify-archive` 就位 | `gen` 产出的 Rust 常量与 `protocol/methods.rs` 等价；`verify` 报出 F2 的 10+2 处漂移（预期红） | 无 |
-| **P1 内核抽出** | 建 `agent-base`（3.1–3.3）；`agent_core::runner` 改为"基座引擎 + ada 适配器"；事件名字与负载**保持兼容**（前端不动） | 现 `bun test` 800 项全绿；`cargo check --all-targets` 绿；新增**冻结回放测试**：脚本化模型 → 事件序列与 P0 冻结的产物逐字段相等（不再依赖 TS 对照） | 中：abort 时序、usage 累加 |
-| **P2 注册表化 + 补空接线** | 7 个内置工具与 12 个内置插件工具改 `Toolkit`+`ToolDescriptor`；删 5 处名单；接上审批/取消/`terminate`/图片/回执；空壳工具要么实现要么删声明 | §1.2 每条都有对应合规断言；`run_command` 真正接取消；`ask_user` schema 与 handler 对齐 | 中高（行为面广，正是目的） |
-| **P3 协议单源 + 投影** | 方法表生成物替换手写；`snapshot` 加 `seq`；`UiSnapshot` 出领域；`fs.*`/`change.*`/`plugin.*` 归入 `x.coding.*` | `verify`/`compat` 全绿；前端通过生成类型编译 | 中 |
-| **P4 TS 归档** | `src/agent/**` → `archive/ts-agent`；删 `app.tsx --host`、`in-process.ts`、legacy 兜底、`kernel`/`compiler` shim；`ada-ts-engine` 收敛为插件适配器 | `verify-archive` 绿；GPUIX 与 Tauri 客户端都走 `agent_core.exe`；插件启停/工具调用测试仍绿 | 中：插件链路回归 |
-| **P5 第二个产品** | `ada-life`（或 `ada-assistant`）**只写声明**接入；用它暴露基座缺的能力位 | 第二产品零内核改动即可通过 verify + conformance；差异 < 200 行声明 | 低（这一步是设计的验收） |
-
-**存量缺陷处理原则**：P2 只"登记"§1.2 里的每一条，然后逐条决定**补实现**或**删声明**；
-**禁止**把它们静默带进新基座——那正是本次重构的目的。
-
----
-
 ## 11. 危险区（抽象别把静默坑合法化）
 
 | 反模式 | 为什么它把坑合法化 | 判据（出现即回退） |
@@ -519,90 +447,9 @@ tools/xtask/           new-agent | gen | verify | verify-spec | verify-wiring | 
 | 契约字段用 `Option` 兜 | 回执缺字段 → 界面静默变空（§18） | `status`/`started_at`/`finished_at` 非 `Option` |
 | 保留按名字的工具名单 | "多处登记"换个位置继续存在 | 基座/适配器出现 `matches!(name, …)` 名单 → 关键词门 |
 | 用 `Option<Port>` 表达"这个产品不需要" | "没接"与"不支持"无法区分 | 用能力位 + `Unsupported`，不用 `None` 静默跳过 |
-| 产品为了差异 fork 引擎/复制 dispatch | 漂移从"语言之间"变成"产品之间" | `verify-archive` + 依赖规则（产品只能依赖 runtime/proto/base） |
+| 产品为了差异 fork 引擎/复制 dispatch | 漂移从"语言之间"变成"产品之间" | `verify-wiring` 的依赖规则（产品只能依赖 runtime/proto/base） |
 | 能力位解析了没消费者 | 现在的 `hook_timeout_ms`/`allow_*` 就是这样被扔掉的 | 每个能力位必须有一个"被读取"的测试，否则删除 |
 | 把产品概念塞进内核（`workspace`、`patch`、`calendar`） | 内核变成某个产品的形状，其他产品只能将就 | `agent-base` 关键词门：出现产品名词即失败 |
 | "先粗后细"当挡箭牌 | 协议文档里 21 个未实现 topic 已挂三个版本 | 未实现的能力必须在握手里回答 false，且文档块由生成器产出 |
 
 ---
-
-## 12. 开放决策（已收敛，待你确认）
-
-| # | 决策 | 建议 | 影响 |
-|---|---|---|---|
-| 1 | **TS 归档形态** | 移入 `archive/ts-agent/` 并摘出构建（不是立刻删除） | 保留考古能力，同时 `verify-archive` 保证不被引用 |
-| 2 | **插件运行时** | 保留 `ada-ts-engine` 作可选 `PluginHost` 实现；契约由 Rust 定义；产品在 `capabilities.plugins` 里声明 | 插件生态不动，内核不沾 TS |
-| 3 | **GPUIX 客户端** | 冻结在"必须搭档 `agent_core.exe`"（现状默认路径）；新功能只投 `desktop-ui` | 删掉 legacy 兜底，减少一条并行路径 |
-| 4 | **首个第二产品** | `ada-life`（与 coding 差异最大，最能暴露内核里的产品假设） | 这是设计的真正验收 |
-| 5 | **协议扩展命名** | 统一 `x.<product>.*`，现有 `fs/change/plugin/provider/debug` 归入 `x.coding.*`（保留旧名做别名一个版本） | 老客户端平滑 |
-| 6 | **文档处置** | 协议草案（TS 时代文档，已删除）；现行口径＝`spec/proto/` 登记表 + [`../protocol/README.md`](../protocol/README.md)；本文作为设计源 | 文档与实现同代 |
-
----
-
-## 附录 A：现状结论的证据索引
-
-| 结论 | 证据 |
-|---|---|
-| Rust 是默认权威宿主 | `src/ui/client/host-bootstrap.ts:79-116`；`src-tauri/src/lib.rs:84-118`；`scripts/build.ts:70-107` |
-| TS 循环仍可达（故需归档而非忽视） | `src/agent/store.ts:3804`、`:2494`、`:2992`；`src/agent/subagents/runner.ts:128`；`src/agent/core/agent-loop.ts:209` |
-| 协议目录漂移 | `protocol/methods.rs`（76 方法常量）vs `src/shared/protocol/methods.ts`（90 键，含 24 evt/req）；`workspace.set`/`config.update` 无 dispatch 臂 → `server/dispatch.rs:2250` |
-| TS 分发规模 | `src/agent/host/dispatch.ts` 66 个 case |
-| 钩子只在 TS 且 Rust 零调用 | `src/agent/core/events.ts:579-605`(:614/:637)；`grep hook` 仅 `plugins/manager.rs:101-110`、`lib.rs:315-321`；`plugins/sandbox.rs:24,140` 只有 inspect/call |
-| 审批空接线 | `approval/mod.rs:23-96`（仅测试）、`manager.rs:18`、`dispatch.rs:2356`（`#[cfg(test)]`）、`dispatch.rs:1238-1240`、`state/store.rs:117` |
-| `max_retries` 无读取点 | `ai/types.rs:159`、`agent_loop.rs:98`、`subagents/runner.rs:153` |
-| 取消断链 | `executor.rs:117`（run_command None）、`executor.rs:157`（subagent abort None） |
-| `terminate` 被丢弃 | `plugins/sandbox.rs:254` → `executor.rs:236-249`；`session/types.rs:71-96` 无该字段 |
-| 禁用插件仍可执行 | `executor.rs:175-178` vs `:184-196` |
-| 内置插件 schema 为空 | `plugins/builtins.rs:104`、`:114`（含 `ask_user` :77） |
-| 图片被丢弃 | `ai/types.rs:146`；`runner/prompt.rs:222-229` |
-| 空壳工具恒成功 | `runner/builtin_tools.rs:241-246` |
-| 每轮/每次重扫插件 | `prompt.rs:134-135`、`:181-182`；`executor.rs:180-181` |
-| 五处工具名单 | `tools/mod.rs:13-36`、`approval/types.rs:15-18`、`executor.rs:59-66,88-95`、`subagents/types.rs:44`、`plugins/types.rs:44` |
-| 检查点只在两处且不解批量 | `executor.rs:59-66,88-95`；`builtin_tools.rs:156`（`_checkpoint_mgr` 未使用） |
-| 产品假设写死 | `runner/prompt.rs:169-202`；`prompt.rs:7-128`；`executor.rs:138-148`；`agent_loop.rs:40` |
-| 组合根写死 | `server/ws.rs:49-70`；`src-tauri/src/lib.rs:92-96` |
-| 事件被两份手写 match 消费 | `server/dispatch.rs:542-600`、`:1570-1600` |
-| 合帧与 seq | `server/emitter.rs:33-72`；每命令后广播 `ws.rs:226-228`；种子快照 `seq:0` `ws.rs:146-161` |
-| 死 shim | `kernel/mod.rs:1-6`、`compiler/mod.rs:1-2`、`agent_core/Cargo.toml:28` |
-| 协议草案自述的未实现项 | 原文 `jsonrpc-protocol.md:106-117`、`:139-142`、`:148-149`、`:547-560`、`:603-615`（该文档已删除，需要时从 git 历史取回） |
-
-## 附录 B：`spec/proto/base.json` 草案（片段）
-
-```jsonc
-{
-  "version": "1.0",
-  "capabilities": {
-    "streaming": true,
-    "images": { "since": "1.0", "default": false },
-    "rollback": { "since": "1.0", "default": false },
-    "plugins": { "since": "1.0", "default": false },
-    "hooks": { "since": "1.0", "points": ["beforeTurn","afterTurn","beforeToolCall","afterToolCall",
-                                          "beforeApproval","afterApproval","beforeSubagentStart",
-                                          "afterSubagentEnd","beforeCompaction","beforePersist"] },
-    "events": { "granularity": ["snapshot","delta"], "resync": false }
-  },
-  "methods": {
-    "thread.create":   { "kind": "command", "params": { "scope": "ScopeRef", "mode?": "Mode" },
-                         "result": { "threadId": "ThreadId" } },
-    "thread.send":     { "kind": "command", "params": { "threadId": "ThreadId", "text": "String",
-                                                       "images?": "[ImageRef]" },
-                         "result": { "accepted": "bool", "queued?": "bool" } },
-    "thread.abort":    { "kind": "command", "params": { "threadId": "ThreadId" }, "result": { "aborted": "bool" } },
-    "thread.retry":    { "kind": "command", "params": { "threadId?": "ThreadId" },
-                         "result": { "accepted": "bool", "reason?": "String" } },
-    "approval.decide": { "kind": "command", "params": { "callId": "CallId", "approved": "bool" },
-                         "result": { "callId": "CallId", "approved": "bool",
-                                     "answeredBy": "user|policy|timeout|aborted" } },
-    "evt.turn.started":  { "kind": "event", "params": { "seq": "u64", "threadId": "ThreadId", "turnId": "TurnId" } },
-    "evt.tool.finished": { "kind": "event", "params": { "seq": "u64", "callId": "CallId",
-                                                        "receipt": "ToolReceipt" } },
-    "evt.turn.finished": { "kind": "event", "params": { "seq": "u64", "turnId": "TurnId",
-                                                        "stop": "StopReason" } }
-  },
-  "errors": { "-32000": "ProtocolVersionMismatch", "-32001": "Unauthorized",
-              "-32004": "Denied", "-32005": "Timeout", "-32010": "NeedResync",
-              "-32020": "Unsupported" }
-}
-```
-
-`-32020 Unsupported` 是新增的：INV-2 要求"不支持"有明确的线上表达，而不是静默无响应或假装成功。

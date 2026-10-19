@@ -602,6 +602,13 @@ async fn test_dispatcher_provider_management() {
                 "contextWindow": 200000,
                 "maxOutputTokens": 8192,
                 "supportsImages": true
+            },
+            {
+                "id": "claude-3-haiku-20240307",
+                "name": "Claude 3 Haiku",
+                "contextWindow": 200000,
+                "maxOutputTokens": 4096,
+                "supportsImages": false
             }
         ]
     });
@@ -611,9 +618,9 @@ async fn test_dispatcher_provider_management() {
         .await
         .expect("provider.save 失败");
 
-    // 3. 激活新供应商
+    // 3. 激活新供应商并指定第二个模型
     dispatcher
-        .dispatch("provider.setActive", serde_json::json!({ "id": "anthropic-claude", "model": "claude-3-5-sonnet-20241022" }))
+        .dispatch("provider.setActive", serde_json::json!({ "id": "anthropic-claude", "model": "claude-3-haiku-20240307" }))
         .await
         .expect("provider.setActive 失败");
 
@@ -621,10 +628,21 @@ async fn test_dispatcher_provider_management() {
         let s = store.read().await;
         assert_eq!(s.active_provider_id, "anthropic-claude");
         assert_eq!(s.provider.protocol, agent_base::model::ModelProtocol::Anthropic);
-        assert_eq!(s.provider.model, "claude-3-5-sonnet-20241022");
+        assert_eq!(s.provider.model, "claude-3-haiku-20240307");
         assert_eq!(s.config.context_window, 200000);
-        assert_eq!(s.config.max_output_tokens, Some(8192));
-        assert_eq!(s.config.supports_images, true);
+        assert_eq!(s.config.max_output_tokens, Some(4096));
+        assert_eq!(s.config.supports_images, false);
+    }
+
+    // 再次 save 该供应商，选中的非首项模型必须保留，不得回退为首项
+    dispatcher
+        .dispatch("provider.save", serde_json::json!({ "provider": anthropic_provider }))
+        .await
+        .expect("provider.save 再次保存失败");
+
+    {
+        let s = store.read().await;
+        assert_eq!(s.provider.model, "claude-3-haiku-20240307", "provider.save 不得把已选模型重置为首项");
     }
 
     // 4. 快照广播包含供应商数据

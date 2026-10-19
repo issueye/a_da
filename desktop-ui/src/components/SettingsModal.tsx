@@ -171,15 +171,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setEditApiKey(p.apiKey)
     setEditProxyUrl(p.proxyUrl || '')
     setEditCustomHeadersText(formatHeaders(p.customHeaders))
-    setEditModels(p.models || [])
-    setEditDefaultModel(p.models?.[0]?.id || '')
+    const currentModelId =
+      p.models?.find((m) => m.id === config?.model)?.id ||
+      p.models?.[0]?.id ||
+      ''
+    setEditDefaultModel(currentModelId)
     setEditingModelId(null)
     setEditingModelDraft(null)
     setRemoteModels([])
     setShowRemotePicker(false)
     setFetchModelMsg(null)
     setTestResult(null)
-  }, [])
+  }, [config?.model])
 
   // 弹窗打开时拉取持久化配置
   useEffect(() => {

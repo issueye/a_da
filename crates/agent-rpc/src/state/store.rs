@@ -302,17 +302,22 @@ impl AgentStore {
             prov.protocol = active_entry.protocol;
             prov.custom_headers = active_entry.custom_headers.clone();
             prov.proxy_url = active_entry.proxy_url.clone();
-            if let Some(first_m) = active_entry.models.first() {
-                prov.model = first_m.id.clone();
-                config_snapshot.model = first_m.id.clone();
-                if let Some(cw) = first_m.context_window {
+            let matched_model = active_entry
+                .models
+                .iter()
+                .find(|m| m.id == prov.model)
+                .or_else(|| active_entry.models.first());
+            if let Some(m) = matched_model {
+                prov.model = m.id.clone();
+                config_snapshot.model = m.id.clone();
+                if let Some(cw) = m.context_window {
                     config_snapshot.context_window = cw;
                 }
-                if let Some(mot) = first_m.max_output_tokens {
+                if let Some(mot) = m.max_output_tokens {
                     config_snapshot.max_output_tokens = Some(mot);
                     prov.max_output_tokens = Some(mot);
                 }
-                if let Some(si) = first_m.supports_images {
+                if let Some(si) = m.supports_images {
                     config_snapshot.supports_images = si;
                 }
             }
@@ -1291,6 +1296,44 @@ mod tests {
         assert_eq!(store.config.retry_count, 8, "配置里的 retryCount 必须生效");
         // 落盘路径跟着注入的应用目录走——绝不写到用户真实的 ~/.a-da
         assert_eq!(store.config_path, cfg_path);
+
+        let _ = std::fs::remove_dir_all(temp_home);
+    }
+
+    /// 🔴 多模型供应商必须保留 config.json 里指定的已选模型，严禁无条件被 first() 覆盖。
+    #[test]
+    fn test_store_preserves_selected_model_in_multimodel_provider() {
+        let temp_home = std::env::temp_dir().join(format!("a_da_multimodel_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_home);
+        let cfg_path = temp_home.join("config.json");
+        std::fs::write(&cfg_path, serde_json::json!({
+            "activeProviderId": "prov_wanwu",
+            "model": "gpt-6-sol",
+            "baseUrl": "https://example.com/v1",
+            "apiKey": "sk-test",
+            "providers": [
+                {
+                    "id": "prov_wanwu",
+                    "name": "万物互联",
+                    "protocol": "openai_chat",
+                    "baseUrl": "https://example.com/v1",
+                    "apiKey": "sk-test",
+                    "models": [
+                        { "id": "gpt-5.6-sol", "name": "GPT-5.6", "contextWindow": 128000 },
+                        { "id": "gpt-6-sol", "name": "GPT-6", "contextWindow": 1000000, "maxOutputTokens": 64000 }
+                    ]
+                }
+            ]
+        }).to_string()).unwrap();
+
+        let home = agent_base::testing::TempAppHome::at(&temp_home).with_config_file(&cfg_path);
+        let store = AgentStore::with_home("".to_string(), &home);
+
+        assert_eq!(store.active_provider_id, "prov_wanwu");
+        assert_eq!(store.provider.model, "gpt-6-sol", "必须保留选中的 gpt-6-sol 而非回退到首项 gpt-5.6-sol");
+        assert_eq!(store.config.model, "gpt-6-sol");
+        assert_eq!(store.config.context_window, 1000000);
+        assert_eq!(store.config.max_output_tokens, Some(64000));
 
         let _ = std::fs::remove_dir_all(temp_home);
     }

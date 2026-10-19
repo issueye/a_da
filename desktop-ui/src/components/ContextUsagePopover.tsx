@@ -19,7 +19,7 @@ import {
   Layers,
 } from 'lucide-react'
 import type { ContextUsageSummary } from '../types'
-import { formatTokenShort } from './Transcript'
+import { formatTokenShort } from '../utils/format'
 
 export interface TelemetryData {
   turns: number

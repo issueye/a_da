@@ -52,44 +52,9 @@
 
 ---
 
-## 1. 架构演进与动机分析
+## 1. 角色契约与架构拓扑
 
-### 1.1 为什么彻底剔除桌面原生弹窗（Native Dialog）
-
-历史上桌面端应用倾向于调用操作系统原生文件对话框，但在现代 AI 智能体开发环境中暴露出严重的架构缺陷：
-
-| 维度 | 原生文件对话框（Native Dialog） | 网关驱动的 Web-Native FilePicker |
-|---|---|---|
-| **远程 / Headless 场景** | **彻底失效**：网关运行于远程服务器/Docker，本地弹出的只有客户端本机的目录，无法选取服务器目录 | **天然支持**：浏览并选择的是网关宿主机真实文件系统 |
-| **跨端同构（Web 访问）** | **不可用**：Web 浏览器直连网关时不存在 Electron 原生插件，功能断裂 | **100% 同构**：浏览器与桌面端复用同一套交互组件 |
-| **权限与安全受控** | 操作系统弹窗不可控，无法施加基于 Token 作用域的路径白名单与沙箱拦截 | 网关统一把关，可严格限制可访问目录集（`--allowed-roots`） |
-| **UI 沉浸感与主题** | 风格生硬、阻断主线程、与 Dark 模式及整体 UI 视觉严重割裂 | 深浅主题无缝切换、内联搜索、键盘快捷导航一体化 |
-
-因此，**将原生弹窗彻底剔除，全量转为由网关数据源驱动的 Web FilePicker 是实现云原生与跨端同构的必然要求。**
-
-### 1.2 为什么由网关（Gateway）提供工作区与文件选择，而非 Agent 实例
-
-在系统设计中，曾有 `fs.roots` / `fs.list` 放在 `agent-rpc`（Agent 实例）的实现。然而：
-1. **冷启动悖论**：用户初次打开应用或尚未建立工作区时，对应工作区的 Agent 实例**尚未拉起**；若依赖 Agent 提供文件目录服务，就会出现“为了选择工作区，必须先有一个工作区实例”的死锁。
-2. **工作区切换与多项目管理**：新增工作区、切换工作区属于平台级行为，跨越了单个 Agent 实例的生命周期边界。
-3. **职责划分（INV-8 单一事实源）**：
-   - **Agent 实例**：仅负责**特定工作区内部**的上下文感知、沙箱文件读写（`fs.read_base64` / 工具调用）；
-   - **网关**：统一负责**全局宿主机**的磁盘根节点探测、工作区候选目录遍历、历史工作区记录维护与实例调度拉起。
-
-### 1.3 桌面端蜕变：极限瘦客户端（Extreme Thin Client）
-
-桌面端（[`electron`](../../electron)）原先承载了较多职能：检查并启动多个子进程（`ada-coding`、`ada-gateway`）、读取本地配置文件、维护进程存活列表等。
-
-重构后的定位是**极限瘦客户端**：
-- **除原生窗口生命周期外，不编写任何业务与存储逻辑**；
-- 桌面客户端与普通 Chrome 浏览器打开本地 Web 页面在能力上完全对等；
-- 仅提供一个极轻量的“本地单机伴侣”（Local Companion）：当检测到未指定远程网关且本地未运行网关时，桌面壳静默拉起 `ada-gateway` 并注入其端口给 WebView。
-
----
-
-## 2. 角色契约与架构拓扑
-
-### 2.1 整体拓扑流程
+### 1.1 整体拓扑流程
 
 ```mermaid
 sequenceDiagram
@@ -123,7 +88,7 @@ sequenceDiagram
     UI->>AG: 正常发起会话对话与代码生成
 ```
 
-### 2.2 角色契约矩阵
+### 1.2 角色契约矩阵
 
 | 模块 | 所属组件 | 职责范围 | 绝对禁止事项 |
 |---|---|---|---|
@@ -134,13 +99,13 @@ sequenceDiagram
 
 ---
 
-## 3. 网关工作区与文件系统协议规范（RPC Specification）
+## 2. 网关工作区与文件系统协议规范（RPC Specification）
 
 网关在原有管理面方法（`gateway.info`, `gateway.attach`, `gateway.delegate` 等）基础上，正式扩充 `gateway.fs.*` 与 `gateway.workspaces.*` 命名空间。
 
 所有方法均遵循 JSON-RPC 2.0 规范，通过统一的网关 WebSocket 链路传输。
 
-### 3.1 磁盘根节点查询：`gateway.fs.roots`
+### 2.1 磁盘根节点查询：`gateway.fs.roots`
 
 获取当前宿主机可用的物理磁盘、挂载点以及常用快捷目录。
 
@@ -170,7 +135,7 @@ sequenceDiagram
 }
 ```
 
-### 3.2 目录与文件列表浏览：`gateway.fs.listDirectory`
+### 2.2 目录与文件列表浏览：`gateway.fs.listDirectory`
 
 浏览指定路径下的子项。支持仅浏览目录（选择工作区场景）或浏览全量文件（选择引用附件场景）。
 
@@ -209,7 +174,7 @@ sequenceDiagram
 }
 ```
 
-### 3.3 新建文件夹：`gateway.fs.makeDirectory`
+### 2.3 新建文件夹：`gateway.fs.makeDirectory`
 
 在选定目录下创建新的子目录（用于用户在新建项目时直接在模态框内建立新目录）。
 
@@ -238,7 +203,7 @@ sequenceDiagram
 }
 ```
 
-### 3.4 历史工作区查询与管理：`gateway.workspaces.list` / `gateway.workspaces.remove`
+### 2.4 历史工作区查询与管理：`gateway.workspaces.list` / `gateway.workspaces.remove`
 
 网关持久化维护用户常用与最近访问的工作区清单（位于网关数据目录 `~/.a-da/workspaces.json`）。
 
@@ -287,7 +252,7 @@ sequenceDiagram
 
 ---
 
-## 3.5 网页访问：网关直接托管前端产物（S8）
+## 2.5 网页访问：网关直接托管前端产物（S8）
 
 目标是一句话：**一个 `ada-gateway` 二进制 + 一个端口 = 整站**，浏览器打开就能用，
 不再需要另起 `vite preview`/`http.server` 之类的静态服务器。
@@ -298,7 +263,7 @@ ada-gateway --port 52353 --workspace E:/proj
 # 浏览器打开 http://127.0.0.1:52353/
 ```
 
-### 3.5.1 路由：axum 统一
+### 2.5.1 路由：axum 统一
 
 页面与 WebSocket 在**同一个 axum Router** 里，只有两条路由：
 
@@ -318,7 +283,7 @@ ada-gateway --port 52353 --workspace E:/proj
 表现为页面偶尔白屏）。换成 axum 后这条路径**结构性消失**：响应与连接都由 hyper 收尾，
 没有"绕过它自己 close"的地方。
 
-### 3.5.2 鉴权位置
+### 2.5.2 鉴权位置
 
 - **静态资源不需要 token**——页面只是 JS/CSS，不含任何用户数据；要 token 才能打开"输入 token 的页面"是死锁。
 - **`/rpc` 在升级之前鉴权**：Origin 不合法 → `403`，token 不对 → `401`（都是普通 HTTP 状态码，
@@ -330,13 +295,13 @@ ada-gateway --port 52353 --workspace E:/proj
 对外部署仍然遵守第 4 节的硬规则：非回环必须 `--token` + `--allow-origin`，
 且明文 `ws://` 要 `--allow-plaintext` 显式承认。
 
-### 3.5.3 产物目录怎么找
+### 2.5.3 产物目录怎么找
 
 `--ui-dir <p>` → `A_DA_UI_DIR` → 可执行文件旁 `ui/` → 可执行文件旁 `../desktop-ui/dist` →
 当前目录 `desktop-ui/dist`。**只认含 `index.html` 的目录**；一个都找不到时网关照常启动，
 根路径返回 `503` 并说明怎么修——网页访问是可选能力，不做成启动前置条件。
 
-### 3.5.4 桌面端拉起的网关同样可访问
+### 2.5.4 桌面端拉起的网关同样可访问
 
 桌面端不再用 `--port 0`（随机端口，浏览器根本猜不到），改为**固定 52353**：
 被占用时网关顺延（52353 → 52363），实际端口从 READY 行里拿。每次启动都写一份发现文件
@@ -360,7 +325,7 @@ ada-gateway --port 52353 --workspace E:/proj
 `electron-builder.json` 把 `desktop-ui/dist` 额外复制到 `resources/bin/ui`，
 Electron 再通过 `--ui-dir` 显式传给网关（见 `electron/main.ts` 的 `findUiDir`）。
 
-### 3.5.5 路径安全
+### 2.5.5 路径安全
 
 三道闸，任一不过一律 403：段级黑名单（`..`、反斜杠、冒号、NUL，含百分号编码后的形态）、
 `canonicalize` 后必须仍在站点根内（拦符号链接穿透）、必须指向普通文件。
@@ -370,7 +335,7 @@ Electron 再通过 `--ui-dir` 显式传给网关（见 `electron/main.ts` 的 `f
 
 ---
 
-## 4. 安全防护与沙箱控制模型（Security & Sandboxing）
+## 3. 安全防护与沙箱控制模型（Security & Sandboxing）
 
 将文件系统目录浏览开放给网关 RPC 后，必须严格遵守最小权限与失败安全原则：
 
@@ -409,123 +374,3 @@ Electron 再通过 `--ui-dir` 显式传给网关（见 `electron/main.ts` 的 `f
    - 在目录检索响应中默认隐藏 `.git`, `node_modules`, `target` 等庞大构建产物内部文件遍历（提升传输性能与安全性）。
 
 ---
-
-## 5. 前端沉浸式 FilePicker 改造与体验同构
-
-### 5.1 数据源平滑切换
-
-目前前端的 [`FilePicker.tsx`](../../desktop-ui/src/components/FilePicker.tsx) 组件已经具备完善的 UI 交互（驱动器切换、搜索、新建文件夹、面包屑导航、文件类型过滤等），但原本调用的底层方法是直连的 `fs.roots` / `fs.list`。
-
-**前端改造要点**：
-1. **客户端方法映射升级**（在 [`desktop-ui/src/client/ws-client.ts`](../../desktop-ui/src/client/ws-client.ts) 中）：
-   ```typescript
-   // 统一使用网关方法
-   public fetchRoots(): Promise<FsRoot[]> {
-     return this.request<FsRoot[]>('gateway.fs.roots', {})
-   }
-
-   public listDirectory(path: string, directoriesOnly = false, showHidden = false): Promise<FsListing> {
-     return this.request<FsListing>('gateway.fs.listDirectory', {
-       path,
-       directoriesOnly,
-       showHidden,
-     })
-   }
-
-   public makeDirectory(parentPath: string, folderName: string): Promise<{ path: string }> {
-     return this.request<{ path: string }>('gateway.fs.makeDirectory', {
-       parentPath,
-       folderName,
-     })
-   }
-   ```
-2. **多场景通用复用**：
-   - **选择工作区场景**：传入 `mode="directory"`，仅展示文件夹，点击确认后触发 `gateway.attach` 并切换前端活跃工作区；
-   - **对话引用文件场景**：传入 `mode="files"`，展示文件与图标，支持多选并获取选中的文件绝对路径。
-
-### 5.2 键盘导航与沉浸式体验规范
-
-- **双击**：进入下级目录；
-- **回车键**：在路径输入框直接跳转或选定；
-- **Escape**：关闭模态框；
-- **新建文件夹**：内联行式输入，就地创建并自动聚焦刷新，零弹窗阻断。
-
----
-
-## 6. 桌面宿主（Electron）瘦身改造方案
-
-### 6.1 精简前后的 `electron` 职责对比
-
-| 模块 / 逻辑 | 精简前（现状） | 精简后（极限瘦客户端） | 改造手段 |
-|---|---|---|---|
-| **原生文件夹弹窗** | 未引入但架构未收敛 | **彻底不包含**任何 Native Dialog 依赖 | 彻底收拢至网关与前端 |
-| **子进程多实例编排** | 在 `main.ts` 内显式同时拉起多个进程，手写就绪信号匹配 | **完全下放给网关**：网关内置的 Supervisor 会按需动态管理 Coding 进程 | 移除宿主内的多进程调度代码 |
-| **窗口命令** | `get_core_info`, `get_process_report`, `kill_process`, `get/set_desktop_config` 等业务管理命令 | 仅保留窗口控制与网关端点注入 | 业务命令全部走网关 JSON-RPC |
-| **代码量** | 主进程 `main.ts` | 极致纯粹的原生窗口外壳 | 极致纯粹 |
-
-### 6.2 极简桌面宿主模型
-
-瘦身后的 Electron 主进程只做三件事：
-1. **配置读取与端点确定**：
-   - 检查环境变量 `A_DA_GATEWAY_URL` 或本地配置；
-   - 若未配置且处于本地单机运行，拉起本地 `ada-gateway --port 0`，捕获就绪端口；
-2. **窗口状态保持**：无边框窗口移动与大小缩放；
-3. **退潮自毁（Watchdog）**：将桌面端 PID 传递给网关，窗口关闭时通知网关退出或依赖 PID 看门狗自然回收。
-
-```ts
-// 瘦身后的 Electron 主进程概念代码
-app.whenReady().then(async () => {
-  // 1. 若本地无网关运行，拉起单个 ada-gateway 守护进程
-  const endpoint = await ensureLocalGatewayIfNeeded()
-  // 2. 将网关 WebSocket 端点注入给渲染进程（preload → window.electronAPI）
-  preloadEndpoint = endpoint
-  createFramelessWindow()
-})
-// 仅保留窗口操作 IPC：window:minimize / maximize / close
-```
-
----
-
-## 7. 分阶段实施计划与验证门禁（Roadmap & Verification Gates）
-
-### 7.1 分阶段实施路线
-
-```mermaid
-flowchart TD
-    M1["阶段一：网关管理面接口实现<br>• 在 crates/agent-gateway 增加 gateway.fs.*<br>• 增加 gateway.workspaces.*<br>• 完善路径安全校验与单元测试"]
-    M2["阶段二：前端数据层与 FilePicker 改造<br>• 更新 desktop-ui/src/client/ws-client.ts<br>• 适配 FilePicker.tsx 对接 gateway.fs.*<br>• 抹平工作区选择与切换链路"]
-    M3["阶段三：桌面宿主 electron 大瘦身<br>• 剥离多进程编排与状态存储<br>• 仅保留网关单进程守护与原生窗口控制<br>• 代码量精简 80% 以上"]
-    M4["阶段四：全链路验收与门禁固化<br>• cargo xtask verify-wiring<br>• cargo test --workspace<br>• bun run typecheck"]
-
-    M1 --> M2 --> M3 --> M4
-```
-
-- **阶段一：网关接口补齐（`agent-gateway`）**
-  - 在 [`crates/agent-gateway/src/relay.rs`](../../crates/agent-gateway/src/relay.rs) 增加 `gateway.fs.roots`、`gateway.fs.listDirectory`、`gateway.fs.makeDirectory` 的处理臂；
-  - 增加历史工作区管理存储 `crates/agent-gateway/src/workspaces.rs`；
-  - 编写网关文件系统单元测试（测试路径遍历防护、隐藏文件过滤等）。
-- **阶段二：前端无感切换（`desktop-ui`）**
-  - 在 [`desktop-ui/src/client/ws-client.ts`](../../desktop-ui/src/client/ws-client.ts) 中将目录请求改为 `gateway.fs.*`；
-  - 验证空工作区启动下直接打开 `FilePicker` 选取新目录全流程；
-  - 确认浏览器端与桌面端体验 100% 同构无差别。
-- **阶段三：桌面端代码瘦身（`electron`）**
-  - 重构 [`electron/main.ts`](../../electron/main.ts)，删除冗余的进程监控与重复的命令处理器；
-  - 保留干净的窗口基础控制器。
-- **阶段四：门禁集成**
-  - 跑通 `bun run typecheck` 与 `cargo test --workspace -- --test-threads=1`；
-  - 确保主干代码不出现任何对 OS 原生 Dialog 插件的引用。
-
-### 7.2 质量与验证门禁
-
-| 门禁项 | 验证命令 | 验收标准 |
-|---|---|---|
-| **门一：类型检查** | `bun run typecheck` | 前端 TypeScript 类型定义与调用零报错 |
-| **门二：后端测试** | `cargo test --workspace -- --test-threads=1` | 网关文件遍历与路径沙箱单元测试 100% 通过 |
-| **门三：架构接线** | `cargo xtask verify-wiring` | 架构依赖检查通过，网关不依赖内核内部状态（守住 INV-1 / INV-8） |
-| **门四：归档隔离** | `bun run verify:archive` | 无主干代码引用已归档实现 |
-
----
-
-## 8. 总结与后续建议
-
-本方案将**文件系统与工作区选择的控制权完全转移给网关**，不仅彻底消除了桌面端与 Web 端割裂的原生弹窗历史遗留问题，也使 `a_da` 的桌面宿主蜕变为真正轻量、安全的现代化容器。后续可在该设计文档评审通过后，按第 7 节路线图分步落地实施。

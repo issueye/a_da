@@ -10,12 +10,12 @@
 //! 节点只依赖基座各 crate（`agent-base` / `agent-proto` / `agent-adapter` / `agent-toolkit`
 //! / `agent-runtime`）+ `ada-ts-engine`（插件沙箱）。
 //!
-//! # 与 `agent-core` / `agent-rpc` 的关系
+//! # 与 `agent-rpc` 的关系
 //!
 //! ```text
-//! agent-core（兼容 facade，转发下面两者）
-//!    ├── agent-node（本 crate）：会话 / 审批 / 检查点 / 委派 / 插件 / 技能
-//!    └── agent-rpc：JSON-RPC 分发 + WS 宿主 + UI 投影 + 快照
+//! agent-rpc（桥接面）：JSON-RPC 分发 + WS 宿主 + UI 投影 + 快照
+//!    └── agent-node（本 crate）：会话 / 审批 / 检查点 / 委派 / 插件 / 技能
+//!           └── agent-base（引擎与端口）
 //! ```
 //!
 //! 依赖方向**单向**：`agent-rpc → agent-node`。反向的依赖由 `cargo xtask verify-wiring` 守门。

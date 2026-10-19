@@ -235,7 +235,7 @@ Skills 的结构应利于上下文的高效利用：
 在 Skill 中引用其他文件时，请使用相对于 Skill 根目录的相对路径：
 
 ```markdown theme={null}
-有关详情，请参阅[参考指南](references/REFERENCE.md)。
+有关详情，请参阅 Agent Skills 官方参考指南（https://agentskills.zhcn.dev/ ）。
 
 运行提取脚本：
 scripts/extract.py

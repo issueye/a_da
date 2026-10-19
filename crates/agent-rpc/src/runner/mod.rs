@@ -20,7 +20,7 @@
 //!    （`decide` / `check_gate` 当时也在这条理由里，但已于 2026-10-18 随 `decision`
 //!    工具包整体下线）；`build_system_prompt` 由 `agent-adapter` 的
 //!    `CodingPromptSource` 取代（含 8 条测试）；
-//! 3. **`evaluate_diff` / `manage_ponytail` 连描述符都不在**（不在 24 个工具里）——
+//! 3. **`evaluate_diff` / `manage_ponytail` 连描述符都不在**（不在 20 个工具里）——
 //!    那些测试测的是死分支。
 //!
 //! ## 删掉的 7 个测试里，有 1 个当时是"唯一实现"（**已过时，见下**）

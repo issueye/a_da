@@ -58,7 +58,7 @@
 ## 🔴 顺序：`upserted` 是按 **id** 排序发的，所以定位只能按 `at`
 
 `upserted` 要保证帧内容可复现，因此按 `(threadId, itemId)` 排序——**到达顺序没有意义**。
-客户端给"本地还没有的卡片"定位就只能按 `at`（`ws-client.ts::insertByItemTime`：
+客户端给"本地还没有的卡片"定位就只能按 `at`（`snapshot-merge.ts::insertByItemTime`：
 按时间插入，**等时间戳保持已有相对顺序**）。
 
 于是有一条必须两处都守的不变量：**同一个会话里卡片的 `at` 严格递增**，且与显示顺序一致。

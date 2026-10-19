@@ -42,11 +42,17 @@ fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
         let p = entry.path();
         if p.is_dir() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if matches!(name.as_str(), "target" | "node_modules" | ".git") {
+            if matches!(name.as_str(), "target" | "node_modules" | ".git" | "tests") {
                 continue;
             }
             collect_rs(&p, out);
         } else if p.extension().is_some_and(|x| x == "rs") {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // 独立测试文件（`tests.rs` / `*_tests.rs`）不是生产代码；把它们的发射者
+            // 算进"有发射者"会让门禁误判为已接线。
+            if name == "tests.rs" || name.ends_with("_tests.rs") {
+                continue;
+            }
             out.push(p);
         }
     }
@@ -89,7 +95,7 @@ fn production_prefix(src: &str) -> Option<&str> {
 /// 用于"找消费者"这类**存在性**判断：漏报可以接受（最多误报"没人读"并促使人工确认），
 /// 假阳性不可接受（会掩盖真的问题）。
 ///
-/// 为什么需要它：`agent-rpc/src/server/dispatch.rs` 含多处 `#[cfg(test)]`，
+/// 为什么需要它：`agent-rpc/src/server/dispatch/` 含多处 `#[cfg(test)]`，
 /// 旧逻辑把它整个跳过，于是 `spec.archetype` 的**真实生产消费者**看不见 →
 /// 门报"声明了却没人读"（S6 加 `gateway` 字段时暴露）。
 fn production_prefix_conservative(src: &str) -> &str {
@@ -628,11 +634,11 @@ fn check_dispatch_arms(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
     let methods_src = read(root, "crates/agent-proto/src/methods.rs")?;
     let consts = parse_proto_consts(&methods_src);
     let all_methods = parse_all_methods(&methods_src);
-    let dispatch_src = read(root, "crates/agent-rpc/src/server/dispatch.rs")?;
+    let dispatch_src = read(root, "crates/agent-rpc/src/server/dispatch/mod.rs")?;
 
     let Some(region) = match_region(&dispatch_src, "match method") else {
         rep.violations
-            .push("dispatch.rs 里找不到 `match method {`，无法审计方法覆盖性".to_string());
+            .push("dispatch/ 里找不到 `match method {`，无法审计方法覆盖性".to_string());
         return Ok(());
     };
     let arms = parse_arms(region);
@@ -647,13 +653,13 @@ fn check_dispatch_arms(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
     for n in &missing {
         let value = consts.get(*n).map(String::as_str).unwrap_or("<未知常量>");
         rep.violations.push(format!(
-            "协议方法 `{value}`（常量 {n}）在 ALL_METHODS 里，但 dispatch.rs 没有对应的 match 臂"
+            "协议方法 `{value}`（常量 {n}）在 ALL_METHODS 里，但 dispatch/ 没有对应的 match 臂"
         ));
     }
     let orphans: Vec<&String> = arms.iter().filter(|n| !consts.contains_key(*n)).collect();
     for n in &orphans {
         rep.violations
-            .push(format!("dispatch.rs 有 match 臂 `{n} =>`，但它不是 agent-proto 的方法常量（孤儿臂）"));
+            .push(format!("dispatch/ 有 match 臂 `{n} =>`，但它不是 agent-proto 的方法常量（孤儿臂）"));
     }
     rep.notes.push(format!(
         "协议方法 {} 个，match 臂 {} 个，缺失 {}、孤儿 {}",
@@ -739,10 +745,10 @@ fn check_ts_methods_mirror(root: &Path, rep: &mut Report) -> anyhow::Result<()> 
 /// 行为侧的逐名相等断言在 `agent-core` 的
 /// `test_builtin_catalog_matches_registry_exactly`（那里能真的调 dispatch）。
 fn check_builtin_catalog(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
-    let dispatch_src = read(root, "crates/agent-rpc/src/server/dispatch.rs")?;
+    let dispatch_src = read(root, "crates/agent-rpc/src/server/dispatch/mod.rs")?;
     let Some(region) = match_region(&dispatch_src, "PLUGIN_BUILTIN_CATALOG =>") else {
         rep.violations.push(
-            "dispatch.rs 里找不到 `PLUGIN_BUILTIN_CATALOG =>` 臂，无法审计内置工具目录".to_string(),
+            "dispatch/ 里找不到 `PLUGIN_BUILTIN_CATALOG =>` 臂，无法审计内置工具目录".to_string(),
         );
         return Ok(());
     };

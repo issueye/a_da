@@ -7,7 +7,7 @@
   "main": "dist-electron/main.cjs",
   "description": "A local AI coding agent: pure Rust core + Electron desktop host + React UI",
   "scripts": {
-    "typecheck": "npm --prefix desktop-ui run typecheck",
+    "typecheck": "bun run --cwd desktop-ui typecheck",
     "test": "cargo test --workspace -- --test-threads=1",
     "test:core": "cargo test -p agent-rpc -p agent-node -- --test-threads=1",
     "verify": "cargo run -p xtask -- verify",

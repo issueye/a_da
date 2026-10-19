@@ -32,7 +32,7 @@ import {
 } from 'lucide-react'
 import type { AgentMode, ProviderConfig, ApprovalMode, Effort, Thread, Item, QuestionData, QueuedItem } from '../types'
 import { agentClient } from '../client/ws-client'
-import { formatDuration, formatTokenShort } from './Transcript'
+import { formatDuration, formatTokenShort } from '../utils/format'
 import { AskUserFloatingPanel } from './AskUserFloatingPanel'
 import type { QuestionSubAnswerInput } from '../utils/question-data'
 import { normalizeQuestionData } from '../utils/question-data'
@@ -44,6 +44,7 @@ import { computeContextBreakdown } from '../utils/context-breakdown'
 import { MentionMenu, type MentionItem } from './MentionMenu'
 import { SlashCommandMenu, type SlashCommandItem } from './SlashCommandMenu'
 import { FilePicker } from './FilePicker'
+import { notify } from './ToastHost'
 
 export interface ComposerProps {
   thread?: Thread
@@ -921,7 +922,11 @@ export const Composer: React.FC<ComposerProps> = ({
                                 key={m.id}
                                 onClick={async () => {
                                   if (curProv) {
-                                    await agentClient.setActiveProvider(curProv.id, m.id)
+                                    try {
+                                      await agentClient.setActiveProvider(curProv.id, m.id)
+                                    } catch (err: any) {
+                                      notify({ message: `切换模型失败: ${err?.message || err}`, level: 'error' })
+                                    }
                                   }
                                   setModelMenuOpen(false)
                                 }}

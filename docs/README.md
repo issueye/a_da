@@ -24,8 +24,8 @@
 | 插件契约的精确形状（工厂 API / 类型） | [plugins/extension-factory.md](plugins/extension-factory.md)、[plugins/extension-api.d.ts](plugins/extension-api.d.ts) |
 | **网关**、工作区模型与瘦客户端 | [gateway/README.md](gateway/README.md) |
 | **还没做什么**（功能缺口，带证据） | [quality/unfinished-features.md](quality/unfinished-features.md) |
-| **"看起来装上了其实没接线"** 的处置 | [plans/wiring.md](plans/wiring.md) |
-| 分期与里程碑的执行记录 | [plans/milestones.md](plans/milestones.md) |
+| 历史计划与决策入口（正文已精简） | [plans/README.md](plans/README.md) |
+| 技能格式规范（Agent Skills） | [SKILL_SPEC.md](SKILL_SPEC.md) |
 | 接手必须先知道的坑 | [AGENTS.md](../AGENTS.md) → [architecture/conventions.md](architecture/conventions.md) |
 
 ---
@@ -38,8 +38,7 @@
 | [architecture/conventions.md](architecture/conventions.md) | `AGENTS.md` 的深度约定全文（§1–§18），接手须知 | **约定唯一口径** |
 | [quality/feature-catalog.md](quality/feature-catalog.md) | 已实现功能清单（按功能域，逐条给出代码落点） | 现状清单 |
 | [quality/unfinished-features.md](quality/unfinished-features.md) | **功能缺口**清单（证据 + 最小实现路径 + 状态） | 缺口唯一口径 |
-| [plans/wiring.md](plans/wiring.md) | 接线收口计划与执行记录（缺口台账、任务表、断言变更） | **接线类问题唯一口径** |
-| [plans/milestones.md](plans/milestones.md) | 基座 MVP 与各里程碑的分期口径与执行记录 | 历史执行记录 |
+| [plans/README.md](plans/README.md) | 历史计划入口（wiring / milestones 已精简） | 历史归档 |
 | [protocol/README.md](protocol/README.md) | 线协议总览：握手、帧、事件、错误码、审批通道 | 协议用法说明 |
 | [protocol/state-patch.md](protocol/state-patch.md) | `evt.state.patch` 增量帧与 item 分页、卡片顺序契约 | 帧契约 |
 | [plugins/README.md](plugins/README.md) | 插件平台现状：发现规则、贡献模型、钩子点位与分级、能力开关、管理面、排错 | 插件现状总览 |
@@ -72,5 +71,5 @@
 4. **新增文档请放进对应的功能域目录**（`architecture/` `protocol/` `plugins/` `gateway/`
    `quality/` `plans/`），并**在本索引里登记**。散落在 `docs/` 根下的新文件不会被门禁发现，
    但会破坏"按功能域组织"这条约定。
-5. 文档内的相对链接请用**相对本文件的路径**（如 `../plans/wiring.md`），
+5. 文档内的相对链接请用**相对本文件的路径**（如 `../plans/README.md`），
    移动文档时至少检查一遍出链与入链（`git grep -n "<旧文件名>"`）。

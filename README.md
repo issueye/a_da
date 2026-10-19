@@ -43,9 +43,9 @@
 **依赖方向**（单向，无环）：
 
 ```
-agent-base ─► agent-proto / agent-adapter / agent-toolkit / agent-runtime ─► agent-host
-                                                                              ↓
-                                                        agent-node ─► agent-rpc ─► 产品 / 网关
+agent-base ─► agent-proto / agent-adapter / agent-toolkit ─► agent-runtime
+                                                            ─► agent-node ─► agent-rpc ─► agent-host ─► 产品
+                                                                                    └─► agent-gateway（只依赖 agent-proto）
 ```
 
 | 层 | 位置 | 职责 |
@@ -53,7 +53,7 @@ agent-base ─► agent-proto / agent-adapter / agent-toolkit / agent-runtime �
 | 领域与端口 | `crates/agent-base` | 消息 / 工具描述符与回执 / 事件 / 错误与失败方向；**13 个端口**；**单一引擎** `run_turn`；诊断点位词汇表 |
 | 线协议 | `crates/agent-proto` | JSON-RPC 帧、**77 个方法常量**、线上 DTO、错误码、client-ts |
 | 适配器 | `crates/agent-adapter` | 三家协议 SSE（OpenAI Chat / Anthropic / OpenAI Responses）、会话落盘、提示词排版、作用域、时钟 |
-| 工具包 | `crates/agent-toolkit` | **22 个工具描述符（单一真源）** + `core`/`fs`/`command`/`git`/`project`/`forge` 六个工具包 |
+| 工具包 | `crates/agent-toolkit` | **20 个工具描述符（单一真源）** + `core`/`fs`/`command`/`git`/`project`/`forge` 六个工具包 |
 | 组合根 | `crates/agent-runtime` | `ProductBuilder`、产品声明（`AgentSpec`）、贡献与工具目录 |
 | 宿主装配 | `crates/agent-host` | 按产品声明装配引擎 + 会话 + 审批 + 贡献（`ContributionPolicy`） |
 | **节点** | `crates/agent-node` | 会话 / 审批 / 检查点 / 子智能体 / 插件 / 技能 / 脚本 / **钩子运行时**（不含协议管道与 UI 投影） |
@@ -78,7 +78,7 @@ agent-base ─► agent-proto / agent-adapter / agent-toolkit / agent-runtime �
 | `policies` | `RunPolicy`（并发工具数、工具超时） |
 
 **协议单源**：`spec/proto/*.json` 是唯一手写源，另有手写副本
-（`methods.rs` / `client-ts/methods.ts` / `dispatch.rs` 的 `match` 臂），
+（`methods.rs` / `client-ts/methods.ts` / `dispatch/` 的 `match` 臂），
 三对副本**双向校验**（`cargo xtask verify-wiring`、`compat` 与 `agent-proto` 的测试）。
 详见 [spec/proto/README.md](spec/proto/README.md) 与 [docs/protocol/README.md](docs/protocol/README.md)。
 
@@ -91,7 +91,7 @@ agent-base ─► agent-proto / agent-adapter / agent-toolkit / agent-runtime �
 
 在输入框里用自然语言描述任务。Agent 在**当前工作区**内工作，模型可见的工具由
 产品声明装配——`ada-coding` 是**六个工具包共 21 个工具**，加上按能力位装配的
-`invoke_subagent`，共 **22 个**：
+`invoke_subagent`，共 **20 个**：
 
 | 工具包 | 工具 |
 |---|---|
@@ -132,13 +132,13 @@ agent-base ─► agent-proto / agent-adapter / agent-toolkit / agent-runtime �
   `ToolCallFinished`（INV-6）；
 - **工具结果是结构化回执**：`status` / `duration_ms` / `started_at` / `finished_at`，
   界面据此渲染耗时与状态徽章（conventions §18）；
-- **工具默认顺序执行**：审批一次只该问一件事；`RunPolicy.max_parallel_tools` 可放开
-  （`ada-coding` 声明为 4）；
+- **工具当前始终串行执行**：`RunPolicy.max_parallel_tools` 与 `Execution::ParallelSafe` 尚未被引擎消费，
+  `ada-coding` 声明的 `parallelTools: 4` 目前**不会改变执行**；改并发前先补语义断言。
 - **流式没有总时限**：只有建连超时 + **空闲**超时（`A_DA_STREAM_IDLE_SECS`，默认 90s），
   且 EOF **不等于**完成——三套协议都必须见过终止信号才算正常收尾。
 
 界面侧：桥接层直接订阅基座一等事件 `AgentEventBody` 并投影进会话态广播快照（`
-dispatch.rs` 的执行泵）。**`thread.start` 与"编辑重发"共用同一条执行泵**——事件只有一条通路。
+dispatch/` 的执行泵）。**`thread.start` 与"编辑重发"共用同一条执行泵**——事件只有一条通路。
 
 ---
 
@@ -291,7 +291,7 @@ crates/
     testing/           测试替身（FixedClock / RecordingSink / ScriptedModelClient …）
   agent-proto/         线协议：帧、77 个方法常量、DTO、错误码、client-ts
   agent-adapter/       模型 SSE（三家协议）、会话落盘、提示词、作用域、时钟
-  agent-toolkit/       ToolDescriptor 注册表（22 个）+ 六个工具包工厂
+  agent-toolkit/       ToolDescriptor 注册表（20 个）+ 六个工具包工厂
   agent-runtime/       ProductBuilder、AgentSpec、贡献与工具目录
   agent-host/          按产品声明装配引擎（组合根）
   agent-node/          节点：会话 / 审批 / 检查点 / 子智能体 / 插件 / 技能 / 脚本 / 钩子

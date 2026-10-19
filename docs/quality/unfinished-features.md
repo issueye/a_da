@@ -14,7 +14,7 @@
 
 | 命令 | 结果 |
 |---|---|
-| `cargo test --workspace -- --test-threads=1` | **637 passed / 0 failed**（35 个套件；本次整理时实测，须串行，见 §四） |
+| `cargo test --workspace -- --test-threads=1` | ✔ exit 0（2026-10-19 分拆后全量复跑；测试属性 666，须串行） |
 | `cargo xtask verify` | ✔ 五阶段静态门 + 全量测试 |
 | `cargo xtask verify-spec` | ✔ 无违约 |
 | `cargo xtask verify-wiring` | ✔ 无违约（协议方法 **77** 个都有 `dispatch` 臂；端口 **13** 个都有生产实现） |
@@ -44,7 +44,7 @@
 - 🔴 **同时是一处"声明了没接线"**：`ApprovalGuardConfig.auto_approve`
   （`crates/agent-adapter/src/approval/`）存在，但**全仓零消费者**——
   即使有人往里填工具名也不会生效。详见接线计划的缺口台账。
-- **最小实现路径**：给 `auto_approve` 接上消费者（按「工具名 + 工作区」匹配），
+- **最小实现路径**：给 `auto_approve` 接上配置项与协议入口（生产装配目前始终用默认空配置），
   审批卡片加一个"以后都允许"的勾选；配置落 `config.json`。
 
 ### 3. 会话全文搜索　`未排期`
@@ -105,7 +105,7 @@
 ### 9. 钩子点位　`已落地（P3a，2026-10-16；P4 复核修正 2026-10-17）`
 
 - **现状（已按代码复核）**：`agent_base::ports::hooks::points::IMPLEMENTED` 列 **33 个点位**，
-  **全部**都有真实调用方（对照表：`engine/runtime.rs` 轮内、`dispatch.rs` 管理面、
+  **全部**都有真实调用方（对照表：`engine/runtime/` 轮内、`dispatch/` 管理面、
   `subagents/runner.rs`、`toolkit/core/todo.rs`）：
   - 工具：`beforeToolCall` / `afterToolCall`（拦下 / 旁注 / 改写）
   - 审批：`beforeApproval` / `afterApproval`　轮次：`beforeTurn` / `afterTurn`
@@ -193,6 +193,18 @@
 - **最小实现路径**：在子智能体运行器的起止处发这两个事件
   （`crates/agent-node/src/subagents/runner.rs` 有天然落点）；补完**必须删掉对应豁免**，
   否则门会报"陈旧豁免"。
+
+---
+
+### 13. 并行工具执行　`未排期`
+
+- **现状**：`RunPolicy.max_parallel_tools` 只被 `agent-runtime` 装进结构体，引擎的工具循环
+  （`crates/agent-base/src/engine/runtime/mod.rs`）始终按 `for raw_call in &tool_calls` 串行；
+  `Execution::ParallelSafe` 只在 `dispatch` 里做界面标签；`ada-coding` 的 `parallelTools: 4` 不生效。
+- **影响**：产品声明与运行行为不一致。`verify-spec` 把"字段被生产代码读取"当成消费者，
+  抓不到"读进结构体但没执行"这一类空转。
+- **最小实现路径**：只对 `Execution::ParallelSafe` 且无需审批的工具做有界并发，补一条端到端断言；
+  或者删掉 `parallelTools` / `Execution::ParallelSafe` 的对外承诺，把它们标成未实现。
 
 ---
 

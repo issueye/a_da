@@ -15,7 +15,7 @@
 
 | 能力 | 落点 |
 |---|---|
-| **单一多轮循环** `run_turn`（唯一的 agent 循环，INV-1） | `crates/agent-base/src/engine/runtime.rs` |
+| **单一多轮循环** `run_turn`（唯一的 agent 循环，INV-1） | `crates/agent-base/src/engine/runtime/mod.rs` |
 | 零 IO / 零产品名词的领域层 | `crates/agent-base/src/domain/`（消息、工具描述符与回执、事件、错误与失败方向、诊断） |
 | **13 个端口**（无默认实现，缺实现就编译不过） | `crates/agent-base/src/ports/`：`AppHome` `ApprovalGate` `CancelToken` `Clock` `EventSink` `HookRunner` `ModelClient` `PromptSource` `Scope` `ScriptHost` `SessionStore` `Tool` `ToolCatalog` |
 | 一等事件流（13 个变体）+ 单调 `seq` | `crates/agent-base/src/domain/event.rs` |
@@ -28,7 +28,7 @@
 
 ## 二、工具与工作区沙箱
 
-**22 个内置工具描述符**，元数据（读写性、审批、回滚、终止）单一真源在
+**20 个内置工具描述符**，元数据（读写性、审批、回滚、终止）单一真源在
 `crates/agent-toolkit/src/registry.rs`；工具包名单单一真源在 `toolkits.rs`
 （`core` / `fs` / `command` / `git` / `project` / `forge`）。
 
@@ -189,5 +189,6 @@
 
 `products/ada-coding/agent.spec.json`：`images` / `streaming` / `rollback` / `subagents` /
 `plugins` / `hooks` **全部为 true**；`policies`：`parallelTools: 4`、`toolTimeoutSec: 120`。
+> ⚠️ `parallelTools` 目前只是声明：`RunPolicy.max_parallel_tools` 尚未被引擎读取，工具实际始终串行。
 `capabilities.images` 是**产品级**开关，单个模型认不认图另由 `ModelEntry.supportsImages` 表达
 （**两者不是一回事**）。
