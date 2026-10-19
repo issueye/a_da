@@ -383,7 +383,8 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
             ToolDescriptor {
                 name: "git".to_string(),
                 summary: "查看与操作 Git 版本库（action 选动作：status/diff/log/show/blame 只读；\
-                          add/commit/checkout/restore/reset/stash/branch/merge/push/pull 会改仓库）。"
+                          add/commit/checkout/restore/reset/stash/branch/merge/push/pull 会改仓库）。\
+                          多仓库工作区用 cwd 指定在哪个仓库执行。"
                     .to_string(),
                 schema: json!({
                     "type": "object",
@@ -397,12 +398,16 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                             ],
                             "description": "要执行的 Git 动作。只读：status/diff/log/show/blame；写入：add/commit/checkout/restore/reset/stash/branch/merge/push/pull"
                         },
-                        "file": { "type": "string", "description": "单个文件（工作区内相对路径）；diff/log/show/add/restore/blame 用，path 是别名" },
-                        "path": { "type": "string", "description": "file 的别名" },
+                        "file": { "type": "string", "description": "单个文件（相对 cwd，默认工作区根）；diff/log/show/add/restore/blame 用，path 是别名" },
+                        "path": { "type": "string", "description": "file 的别名——它是**文件过滤**（pathspec），不是仓库目录；要换仓库请用 cwd" },
                         "files": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "多个文件（add/restore/commit 用，工作区内相对路径）"
+                            "description": "多个文件（add/restore/commit 用，相对 cwd）"
+                        },
+                        "cwd": {
+                            "type": "string",
+                            "description": "在哪个子目录执行 git（相对工作区，默认工作区根）。多仓库工作区（根目录下 frontend/backend 各自是仓库）必须用它指定仓库，例如 cwd:\"frontend\""
                         },
                         "ref": { "type": "string", "description": "提交/分支/标签引用（diff/log/show/reset/checkout/merge/push/pull 用；默认 HEAD）" },
                         "branch": { "type": "string", "description": "分支名（branch 创建/删除、checkout 目标、push/pull 目标分支）" },

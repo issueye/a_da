@@ -220,22 +220,76 @@ pub const GIT_ACTIONS: &[&str] = &[
 /// 拼成命令行再交给 `cmd /c` 会把 `%VAR%` 展开、把 `&` 当命令分隔符。这里直接 spawn 子进程，
 /// 没有任何一处转义需要被"猜对"。路径另外做"不得越出工作区"的校验。
 pub async fn git(workspace: &Path, args: &serde_json::Value) -> ToolResult {
-    let (action, argv) = match git_argv(args) {
+    let (action, argv, cwd) = match git_argv(args) {
         Ok(v) => v,
         Err(e) => return ToolResult::error(e),
     };
-    let res = run_git(workspace, &argv).await;
+    let res = run_git(workspace, &argv, cwd.as_deref()).await;
     if !res.ok && res.output.contains("not a git repository") {
-        return ToolResult::error("当前目录不是一个有效的 Git 仓库。");
+        return ToolResult::error(repo_hint(workspace, cwd.as_deref()));
     }
     truncate_git_output(res, &action)
+}
+
+/// 工作区不是仓库时的诊断。
+///
+/// 🔴 多仓库工作区（一个目录下几个子项目各自 `git init`）是很常见的形态，
+/// 而 `path` 的语义是**文件过滤**（pathspec），不是"在哪个仓库执行"。
+/// 以前这两种用法撞在一起只会得到一句"当前目录不是一个有效的 Git 仓库"，
+/// 模型只能改去拼 `run_command`——既绕过了审批，也没有输出限幅。
+/// 所以这里把**一层子目录里的独立仓库**直接列出来，并给出可以照抄的 `cwd`。
+fn repo_hint(workspace: &Path, cwd: Option<&str>) -> String {
+    if let Some(dir) = cwd {
+        return format!(
+            "`{dir}` 及其上层都不是 Git 仓库（工作区：{}）。\
+             确认 `cwd` 指向的是仓库根或其子目录。",
+            workspace.display()
+        );
+    }
+
+    let repos = find_child_repos(workspace);
+    if repos.is_empty() {
+        return format!("当前目录及其上层都不是 Git 仓库：{}", workspace.display());
+    }
+
+    let example = serde_json::json!({ "action": "status", "cwd": repos[0] });
+    format!(
+        "工作区根本身不是 Git 仓库，但检测到以下子目录是**独立仓库**：{}。\n\
+         请用 `cwd` 指定其中一个再试，例如 {}。\n\
+         （`path` / `file` 是**文件过滤**，不是仓库目录；`cwd` 才决定在哪个仓库执行。）",
+        repos.join(" / "),
+        example
+    )
+}
+
+/// 只扫**一层**子目录：多仓库工作区的仓库都在这一层，再深就不是"工作区结构"而是噪音了。
+fn find_child_repos(workspace: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(workspace) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        // `.git` 可能是目录（普通仓库），也可能是文件（worktree / submodule）
+        if !path.join(".git").exists() {
+            continue;
+        }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            found.push(name.to_string());
+        }
+    }
+    found.sort();
+    found
 }
 
 /// 把工具入参翻译成 `git` 的 argv（`argv[0]` 之外的部分）。
 ///
 /// 校验一律**失败即拒**：宁可让模型改参数重试，也不要把可疑字符串交给 git
 /// （`--upload-pack=...` 这类"看着像值、其实是选项"的输入只能靠拒绝 `-` 开头挡住）。
-fn git_argv(args: &serde_json::Value) -> Result<(String, Vec<String>), String> {
+fn git_argv(args: &serde_json::Value) -> Result<(String, Vec<String>, Option<String>), String> {
     let raw_action = args
         .get("action")
         .and_then(|v| v.as_str())
@@ -252,6 +306,20 @@ fn git_argv(args: &serde_json::Value) -> Result<(String, Vec<String>), String> {
                 GIT_ACTIONS.join(" / ")
             )
         })?;
+
+    // 执行目录：多仓库工作区用 `cwd` 指定"在哪个仓库执行"。
+    //
+    // 🔴 与 `file`/`path` 是**两回事**：后者是 git 的 pathspec（过滤哪些文件），
+    // 前者是子进程的 `current_dir`。混用会让"在工作区根执行、把 frontend 当过滤器"
+    // 这种误用失败得莫名其妙。
+    let cwd = args
+        .get("cwd")
+        .or_else(|| args.get("repo"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(repo_path)
+        .transpose()?;
 
     // 文件集合：`file`/`path` 单值 + `files` 数组，一起去重
     let mut files: Vec<String> = Vec::new();
@@ -488,7 +556,7 @@ fn git_argv(args: &serde_json::Value) -> Result<(String, Vec<String>), String> {
         _ => unreachable!("动作已在 GIT_ACTIONS 里校验过"),
     };
 
-    Ok((action, argv))
+    Ok((action, argv, cwd))
 }
 
 /// 仓库内的相对路径：拒绝绝对路径与 `..` 段（越出工作区的 git 操作没有意义，
@@ -496,10 +564,10 @@ fn git_argv(args: &serde_json::Value) -> Result<(String, Vec<String>), String> {
 fn repo_path(raw: &str) -> Result<String, String> {
     let p = raw.trim();
     if p.is_empty() {
-        return Err("文件路径不能为空。".to_string());
+        return Err("路径不能为空。".to_string());
     }
     if p.chars().any(|c| c.is_control()) {
-        return Err("文件路径里不能有控制字符（换行等）。".to_string());
+        return Err("路径里不能有控制字符（换行等）。".to_string());
     }
     let normalized = p.replace('\\', "/");
     let is_absolute = normalized.starts_with('/')
@@ -554,13 +622,22 @@ fn commit_message(raw: &str) -> Result<String, String> {
 ///
 /// 并发读 stdout/stderr：只读一路时，另一路写满管道缓冲会**双双卡死**，
 /// 最后表现为"git 工具超时"——而 git 其实早就干完了。
-async fn run_git(workspace: &Path, argv: &[String]) -> ToolResult {
+async fn run_git(workspace: &Path, argv: &[String], cwd: Option<&str>) -> ToolResult {
     use std::process::Stdio;
     use tokio::io::AsyncReadExt;
 
+    // 执行目录：`cwd` 相对工作区（已在 `repo_path` 里校验过不含 `..`），默认工作区根。
+    let dir = match cwd {
+        Some(rel) => workspace.join(rel),
+        None => workspace.to_path_buf(),
+    };
+    if !dir.is_dir() {
+        return ToolResult::error(format!("git 执行目录不存在：{}", dir.display()));
+    }
+
     let mut cmd = tokio::process::Command::new("git");
     cmd.args(argv)
-        .current_dir(workspace)
+        .current_dir(&dir)
         .env("A_DA_AGENT", "1")
         .env("GIT_TERMINAL_PROMPT", "0") // 要凭据时立刻失败，而不是等满超时
         .env("GIT_PAGER", "cat")
@@ -878,30 +955,117 @@ mod tests {
     /// 常用动作的 argv 形状：钉住"参数都在正确位置"，避免以后加字段时错位。
     #[test]
     fn test_git_argv_shapes_for_common_actions() {
-        let (_, a) = git_argv(&serde_json::json!({
+        let (_, a, _) = git_argv(&serde_json::json!({
             "action": "diff", "staged": true, "file": "src/lib.rs"
         }))
         .unwrap();
         assert_eq!(a, vec!["diff", "--cached", "--", "src/lib.rs"]);
 
-        let (_, a) = git_argv(&serde_json::json!({ "action": "log", "limit": 3 })).unwrap();
+        let (_, a, _) = git_argv(&serde_json::json!({ "action": "log", "limit": 3 })).unwrap();
         assert_eq!(a[0], "log");
         assert!(a.contains(&"3".to_string()));
 
-        let (_, a) = git_argv(&serde_json::json!({
+        let (_, a, _) = git_argv(&serde_json::json!({
             "action": "commit", "message": "fix: 中文提交信息", "all": true
         }))
         .unwrap();
         assert_eq!(a, vec!["commit", "-m", "fix: 中文提交信息", "-a"]);
 
-        let (_, a) = git_argv(&serde_json::json!({
+        let (_, a, _) = git_argv(&serde_json::json!({
             "action": "checkout", "branch": "feat/x", "create": true
         }))
         .unwrap();
         assert_eq!(a, vec!["checkout", "-b", "feat/x"]);
 
-        let (_, a) = git_argv(&serde_json::json!({ "action": "add" })).unwrap();
+        let (_, a, _) = git_argv(&serde_json::json!({ "action": "add" })).unwrap();
         assert_eq!(a, vec!["add", "-A"]);
+    }
+
+    /// `cwd` 是**执行目录**，不是 pathspec：它不能混进 `--` 之后的文件列表。
+    #[test]
+    fn test_git_argv_carries_cwd_but_never_as_pathspec() {
+        let (_, a, cwd) = git_argv(&serde_json::json!({
+            "action": "log", "cwd": "frontend", "limit": 2
+        }))
+        .unwrap();
+        assert_eq!(cwd.as_deref(), Some("frontend"));
+        assert_eq!(a[0], "log");
+        assert!(
+            !a.iter().any(|x| x == "frontend"),
+            "cwd 不该出现在 argv 里（它不是文件过滤）：{a:?}"
+        );
+
+        // `repo` 是 cwd 的别名
+        let (_, _, cwd) = git_argv(&serde_json::json!({ "action": "status", "repo": "backend" })).unwrap();
+        assert_eq!(cwd.as_deref(), Some("backend"));
+
+        // 越界一律拒（与 file 同一套 repo_path 校验）
+        for bad in ["../x", "C:/Windows", "/etc"] {
+            let err = git_argv(&serde_json::json!({ "action": "status", "cwd": bad })).unwrap_err();
+            assert!(
+                err.contains("..") || err.contains("绝对路径"),
+                "{bad} 应被拒：{err}"
+            );
+        }
+    }
+
+    /// 多仓库工作区：失败提示必须**点名**子仓库，并给出可照抄的 `cwd`。
+    #[test]
+    fn test_multi_repo_workspace_hint_names_child_repos() {
+        let root = std::env::temp_dir().join(format!("a_da_multirepo_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("frontend/.git")).unwrap();
+        std::fs::create_dir_all(root.join("backend/.git")).unwrap();
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+
+        let hint = repo_hint(&root, None);
+        assert!(hint.contains("frontend"), "{hint}");
+        assert!(hint.contains("backend"), "{hint}");
+        assert!(hint.contains("cwd"), "要告诉模型怎么改：{hint}");
+        assert!(!hint.contains("docs"), "非仓库目录不该出现在清单里：{hint}");
+
+        // 指定了 cwd 但仍不是仓库：提示说的是 cwd 的问题，不再列清单
+        let hint = repo_hint(&root, Some("docs"));
+        assert!(hint.contains("docs"), "{hint}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 真 git：在工作区根不是仓库的情况下，`cwd` 能落到子仓库里执行。
+    #[tokio::test]
+    async fn test_git_runs_inside_child_repo_via_cwd() {
+        let root = std::env::temp_dir().join(format!("a_da_git_cwd_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("frontend");
+        std::fs::create_dir_all(&repo).unwrap();
+
+        let initialised = std::process::Command::new("git")
+            .arg("init")
+            .arg("-q")
+            .current_dir(&repo)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !initialised {
+            eprintln!("跳过：本机没有可用的 git");
+            return;
+        }
+
+        // 带 cwd：进子仓库执行，成功
+        let res = git(&root, &serde_json::json!({ "action": "status", "cwd": "frontend" })).await;
+        assert!(res.ok, "cwd 指到子仓库应当成功：{}", res.output);
+
+        // 不带 cwd：失败，但提示要能自愈（点名 frontend + 给出 cwd 用法）
+        let res = git(&root, &serde_json::json!({ "action": "status" })).await;
+        assert!(!res.ok, "工作区根不是仓库，应当失败");
+        assert!(
+            res.output.contains("frontend"),
+            "应指出 frontend 是独立仓库：{}",
+            res.output
+        );
+        assert!(res.output.contains("cwd"), "{}", res.output);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 守门：**Go 文件必须能提取出声明**，且提取不到时要如实说明工具边界。
