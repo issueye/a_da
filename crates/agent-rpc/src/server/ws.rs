@@ -1,6 +1,6 @@
-use agent_proto::*;
 use crate::server::dispatch::Dispatcher;
 use crate::state::{generate_snapshot_with_seq, AgentStore};
+use agent_proto::*;
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicU64;
@@ -71,9 +71,7 @@ impl WsHostServer {
         tokio::spawn(async move {
             while let Some(msg_str) = broadcast_rx.recv().await {
                 let mut senders = senders_clone.write().await;
-                senders.retain(|tx| {
-                    tx.send(Message::Text(msg_str.clone().into())).is_ok()
-                });
+                senders.retain(|tx| tx.send(Message::Text(msg_str.clone().into())).is_ok());
             }
         });
 
@@ -126,20 +124,20 @@ impl WsHostServer {
             broadcast_tx.clone(),
         );
         let mut dispatcher = Dispatcher::new(
-                store.clone(),
-                session_mgr,
-                checkpoint_mgr,
-                subagent_mgr,
-                approval_mgr,
-                plugin_mgr,
-                skill_mgr,
-                Some(broadcaster.clone()),
-            )
-            // P2·SP-45：技能列表要认得插件带来的技能（否则界面少一截、模型却看得到）
-            .with_plugin_skills(plugin_skills)
-            // 宿主注入主引擎与 PM 引擎
-            .pipe_engine(coding_injection)
-            .pipe_pm_engine(pm_injection);
+            store.clone(),
+            session_mgr,
+            checkpoint_mgr,
+            subagent_mgr,
+            approval_mgr,
+            plugin_mgr,
+            skill_mgr,
+            Some(broadcaster.clone()),
+        )
+        // P2·SP-45：技能列表要认得插件带来的技能（否则界面少一截、模型却看得到）
+        .with_plugin_skills(plugin_skills)
+        // 宿主注入主引擎与 PM 引擎
+        .pipe_engine(coding_injection)
+        .pipe_pm_engine(pm_injection);
         // P2·SP-46：重装配入口（有才接；没有就如实"只写盘不重装配"）
         if let Some(r) = reassembler {
             dispatcher = dispatcher.with_plugin_reassembler(r);
@@ -192,6 +190,13 @@ impl WsHostServer {
     ) -> Result<(), anyhow::Error> {
         let expected_token = self.token.clone();
         let mut token_valid = false;
+        // HTTP 网关代理连接（`?api=1`）：**只做请求/响应**，不参与事件广播。
+        //
+        // 为什么必须区分：本文件的成功分支在**每个**请求后都会 `broadcast_snapshot()`。
+        // 网关的代理由一次 HTTP 请求触发一次 WS 调用，如果照常广播，一次只读查询也会
+        // 把所有 UI 客户端叫醒重发全量快照——读接口越多、放大越严重。
+        // 代理连接也**不注册**进 `client_senders`：它不需要事件，且不应占用广播带宽。
+        let mut api_mode = false;
 
         // WebSocket 握手门禁校验
         let callback = |req: &Request, resp: Response| {
@@ -201,7 +206,9 @@ impl WsHostServer {
                 if let Some((k, v)) = pair.split_once('=') {
                     if k == "token" && v == expected_token {
                         token_valid = true;
-                        break;
+                    }
+                    if k == "api" && v == "1" {
+                        api_mode = true;
                     }
                 }
             }
@@ -217,24 +224,27 @@ impl WsHostServer {
         };
 
         let ws_stream = tokio_tungstenite::accept_hdr_async(stream, callback).await?;
-        info!("客户端连接已通过令牌验证并建立 WebSocket 通道: {}", peer_addr);
+        info!(
+            "客户端连接已通过令牌验证并建立 WebSocket 通道: {}",
+            peer_addr
+        );
 
         let (mut ws_sink, mut ws_stream) = ws_stream.split();
         let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
 
-        // 注册到全局广播列表
-        {
+        // 注册到全局广播列表（HTTP 代理连接不注册：它只要响应，不要事件）
+        if !api_mode {
             let mut senders = client_senders.write().await;
             senders.push(tx.clone());
         }
 
-        // 推送首帧种子快照。
+        // 推送首帧种子快照。HTTP 代理连接跳过：它只为一次 unary 调用而来。
         //
         // seq 取**当前已发出的状态版本**，不能写死 0：客户端会把它记为 `lastSnapshotSeq`，
         // 而下一帧增量帧的 `baseSeq` 正是这个值。写死 0 时只有"首个连接且还没有任何帧"
         // 才对得上，第二个连接（或任何已经推过帧之后连进来的客户端）永远对不上，
         // 客户端的"缺帧自愈"就会每帧触发一次，变成请求/响应死循环。
-        {
+        if !api_mode {
             let store = self.store.read().await;
             let seed_seq = self.broadcaster.last_sent_seq();
             let snapshot = generate_snapshot_with_seq(&store, seed_seq);
@@ -282,7 +292,11 @@ impl WsHostServer {
                     Err(_) => {
                         let err_resp = JsonRpcResponse::<()>::error(
                             None,
-                            ProtocolError::new(RpcErrorCode::ParseError.code(), "不是合法的 JSON", None),
+                            ProtocolError::new(
+                                RpcErrorCode::ParseError.code(),
+                                "不是合法的 JSON",
+                                None,
+                            ),
                         );
                         let _ = tx.send(Message::Text(serde_json::to_string(&err_resp)?.into()));
                         continue;
@@ -314,8 +328,14 @@ impl WsHostServer {
                         }
                         let resp = JsonRpcResponse::success(req.id, result);
                         let _ = tx.send(Message::Text(serde_json::to_string(&resp)?.into()));
-                        // 触发一次快照对齐
-                        self.broadcast_snapshot().await;
+                        // 触发一次快照对齐。
+                        //
+                        // HTTP 代理连接跳过：**读**请求不该产生广播；**写**请求的广播
+                        // 由 dispatch 臂自己发（`broadcaster.broadcast_immediate()`），
+                        // 所以真实 UI 客户端仍然能在 HTTP 写操作后收到状态更新。
+                        if !api_mode {
+                            self.broadcast_snapshot().await;
+                        }
                     }
                     Err(err) => {
                         let resp = JsonRpcResponse::<()>::error(req.id, err);

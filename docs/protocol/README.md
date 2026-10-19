@@ -1,7 +1,9 @@
 # 线协议总览
 
-a_da 的客户端与宿主之间只有**一套**线协议：JSON-RPC 2.0 over WebSocket。
-本目录是它的**人类可读说明**；机器可读的登记表在 [`spec/proto/`](../../spec/proto/README.md)。
+a_da 的客户端与宿主之间只有**一套状态/事件线协议**：JSON-RPC 2.0 over WebSocket。
+另有一层 HTTP **unary API**（`/api/*`，见 [http-api.md](http-api.md)）：它只承载
+一问一答的命令/查询，**不承载事件**；流式输出、状态增量与实时交互仍然走 `/rpc`。
+本目录是它们的人类可读说明；机器可读的登记表在 [`spec/proto/`](../../spec/proto/README.md)。
 
 > 分工：`spec/proto/*.json` 是**真源**（方法名、`kind`、`since`、错误码）；
 > 本目录解释"怎么用"。**两处不一致时以 `spec/proto/` 为准**——且这种不一致会被
@@ -19,6 +21,7 @@ a_da 的客户端与宿主之间只有**一套**线协议：JSON-RPC 2.0 over We
 | 帧结构 | `{"jsonrpc":"2.0","id":<n>,"method":"...","params":{...}}` |
 | 通知 | 无 `id`（服务端推送事件用 `method: "evt.*"`） |
 | 协议版本 | `PROTOCOL_VERSION = "1.0"`（`crates/agent-proto/src/methods.rs`） |
+| HTTP unary API | `/api/*`（Bearer token；与 `/rpc` 同端口；不含事件） |
 
 实现位置：`crates/agent-rpc/src/server/ws.rs`（`bind` / `bind_with_engine`，握手回调校验 token）。
 网关侧另有一条**对外接入面**：`crates/agent-gateway/src/auth.rs`（token / 作用域 / Origin / 配对码）。
@@ -150,6 +153,7 @@ client.on('evt.state.snapshot', (params) => { /* seq 对账 */ })
 
 | 文档 | 内容 |
 |---|---|
+| [http-api.md](http-api.md) | HTTP unary API：鉴权、端点、ETag、错误映射与 Phase 3 缺口 |
 | [`spec/proto/README.md`](../../spec/proto/README.md) | 登记表真源、命名规则、四处同步、三对副本校验 |
 | [state-patch.md](state-patch.md) | 增量帧与卡片顺序契约 |
 | [../architecture/kernel-design.md](../architecture/kernel-design.md) §6 | 协议单源与"不做代码生成"的决策记录 |

@@ -24,3 +24,7 @@ uuid = { workspace = true }
 
 # 只依赖**线协议**：网关是管理/路由平面，不是 agent
 agent-proto = { workspace = true }
+
+[dev-dependencies]
+# 只用于 HTTP API 的路由/鉴权测试（`oneshot`），不参与产品运行时
+tower = { version = "0.5", features = ["util"] }

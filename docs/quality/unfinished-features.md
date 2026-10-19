@@ -303,6 +303,19 @@
     或把子进程句柄收进一个可 shutdown 的守护器。注意别破坏"网关死了 agent 也跟着死"
     这条已有的看门狗语义。
 
+### 14. HTTP API 的 Phase 3（长活 / 流式 / 幂等）　`未排期`
+
+- **现状**：`crates/agent-gateway/src/http_api.rs` 已把 Phase 1/2 的 **60 个 unary 方法**
+  映射为 `/api/*`（18 查询 + 42 写），另有 11 条网关管理面；Bearer/Origin/作用域、
+  `/api/snapshot` ETag、错误码映射都已接线。
+- **明确没做**：`thread.send` / `retry` / `editAndResend` / `abort` / `compact`、
+  `plugin.load` / `reload` / `validate`、`provider.fetchModels` / `config.checkProvider`
+  仍未 HTTP 化——它们需要 `202 + turnId/jobId` 与事件流配套；Phase 2 写接口也还没有
+  `Idempotency-Key` / `If-Match`（当前 last-write-wins）。
+- **最小实现路径**：长活统一 `POST -> 202 {jobId}` + `GET /api/jobs/{id}` 或直接复用
+  WS 事件；写接口补 `Idempotency-Key` 与按 thread 的版本号；把每请求一条短 WS
+  换成按实例复用的多路复用连接。
+
 ---
 
 ## 五、契约字段的界面消费者审计（2026-10-11）

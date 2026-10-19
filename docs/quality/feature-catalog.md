@@ -7,7 +7,8 @@
 > [../README.md](../README.md)（按功能域找文档）。
 
 系统形态：**Electron 桌面壳 → 网关（`ada-gateway`）→ 按工作区拉起产品实例（`ada-coding`）**；
-界面与宿主之间是 **JSON-RPC 2.0 over WebSocket**（[协议总览](../protocol/README.md)）。
+界面与宿主之间是 **JSON-RPC 2.0 over WebSocket**（[协议总览](../protocol/README.md)）；
+另有一层 HTTP unary API（`/api/*`，[说明](../protocol/http-api.md)），事件仍走 WS。
 
 ---
 
@@ -176,6 +177,12 @@
 | 调试 | `debug.hostInfo` / `trace` / `log.clear`、`stats.promptChars` |
 
 登记表真源：[`spec/proto/`](../../spec/proto/README.md)（base 23 + 产品扩展 54）。
+
+**HTTP unary API（Phase 0/1/2）**：`crates/agent-gateway/src/http_api.rs` 把 60 个
+unary 方法映射为 `/api/*`（18 条查询 + 42 条写），另有 11 条网关管理面；Bearer/Origin/
+作用域鉴权、`/api/snapshot` 的 ETag、JSON-RPC 错误码到 HTTP 状态的映射均已接线。
+事件与流式输出仍由 `/rpc` 的 WS 推送，不被 HTTP 改动。端点表见
+[protocol/http-api.md](../protocol/http-api.md)。
 
 ## 十三、门禁与实机验收
 

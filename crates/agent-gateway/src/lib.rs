@@ -27,6 +27,7 @@
 pub mod auth;
 pub mod delegate;
 pub mod fs_service;
+pub mod http_api;
 pub mod registry;
 pub mod relay;
 pub mod router;

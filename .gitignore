@@ -14,6 +14,7 @@ agent_core/target/
 
 # 工具/编辑器的本地状态目录（不是项目内容）
 .commandcode/
+.workbuddy/
 
 desktop-ui/bun.lock
 
