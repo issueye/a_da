@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "author": "a_da team",
   "private": true,
+  "packageManager": "bun@1.4.3",
   "type": "module",
   "main": "dist-electron/main.cjs",
   "description": "A local AI coding agent: pure Rust core + Electron desktop host + React UI",
