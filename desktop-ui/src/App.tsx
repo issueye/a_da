@@ -346,6 +346,34 @@ export function App() {
     agentClient.compactThread(activeThread?.id)
   }
 
+  /**
+   * 输入框 `/reload`：重新扫盘并重装配插件。
+   *
+   * 不把 `/reload` 当聊天内容发给模型——它是宿主侧动作；重装配成功后
+   * 新增/修改的插件在**下一条消息**生效（当前轮不会热换工具）。
+   */
+  const handleReloadPlugins = async () => {
+    try {
+      const res = await agentClient.reloadPlugins()
+      const count = res?.plugins?.length ?? 0
+      if (res?.applied === true) {
+        notify({
+          message: `已重载 ${count} 个插件`,
+          detail: '新增或修改的插件将在下一条消息生效',
+          level: 'success',
+        })
+      } else {
+        notify({
+          message: `已重新扫描 ${count} 个插件，但引擎未确认重装配`,
+          detail: '如插件仍不可用，请查看插件诊断或重启程序',
+          level: 'warn',
+        })
+      }
+    } catch (err: any) {
+      notify({ message: `重载插件失败: ${err?.message || err}`, level: 'error' })
+    }
+  }
+
   // 统计当前会话未撤销的文件改动数量
   const activeChangeCount = deriveActiveChangeCount(activeThread?.items || [])
 
@@ -620,6 +648,7 @@ export function App() {
               onNewThread={() => handleCreateThread(activeThread?.workspace || snapshot.activeWorkspace)}
               waitingThreads={waitingThreadsElsewhere}
               onCompact={handleCompact}
+              onReloadPlugins={handleReloadPlugins}
             />
           ) : (
             <>
@@ -663,6 +692,7 @@ export function App() {
                 onClearQueue={() => agentClient.clearQueue(activeThread?.id)}
                 onSwitchThread={(threadId) => agentClient.setActiveThread(threadId)}
                 onCompact={handleCompact}
+                onReloadPlugins={handleReloadPlugins}
               />
             </>
           )}

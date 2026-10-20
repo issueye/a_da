@@ -77,6 +77,7 @@ interface EmptyConversationViewProps {
   onNewThread?: () => void
   waitingThreads?: Array<{ id: string; title: string }>
   onCompact?: () => void
+  onReloadPlugins?: () => void
 }
 
 /**
@@ -114,6 +115,7 @@ export const EmptyConversationView: React.FC<EmptyConversationViewProps> = ({
   onNewThread,
   waitingThreads,
   onCompact,
+  onReloadPlugins,
 }) => {
   const isPm = mode === 'pm' || thread?.mode === 'pm' || thread?.agentId === 'ada-pm' || thread?.agentId === 'pm-assistant'
   const agentName = isPm ? 'a_da 项目管理助手' : (agentClient.productInfo?.name || 'a_da 智能编码助手')
@@ -195,6 +197,7 @@ export const EmptyConversationView: React.FC<EmptyConversationViewProps> = ({
             onNewThread={onNewThread}
           waitingThreads={waitingThreads}
             onCompact={onCompact}
+            onReloadPlugins={onReloadPlugins}
           />
         </div>
 

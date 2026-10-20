@@ -6,6 +6,7 @@ import {
   Puzzle,
   History,
   RotateCcw,
+  RefreshCw,
   Compass,
   Zap,
   Globe,
@@ -33,6 +34,7 @@ interface SlashCommandMenuProps {
   onOpenPlugins: () => void
   onOpenChanges: () => void
   onCompact: () => void
+  onReloadPlugins: () => void
   onNewThread: () => void
   onSetMode: (mode: 'code' | 'plan' | 'create') => void
   /** 会话已开始：`/plan`（切模式那条）不再列出，见 `ModeSlider` 的说明 */
@@ -47,6 +49,7 @@ export const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
   onOpenPlugins,
   onOpenChanges,
   onCompact,
+  onReloadPlugins,
   onNewThread,
   onSetMode,
   modeLocked = false,
@@ -88,6 +91,15 @@ export const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
       category: 'system',
       icon: Minimize2,
       action: onCompact,
+    },
+    {
+      id: 'sys-reload',
+      name: 'reload',
+      command: '/reload',
+      description: '重新扫描插件目录并重装配（新增/修改插件后无需重启）',
+      category: 'system',
+      icon: RefreshCw,
+      action: onReloadPlugins,
     },
     {
       id: 'sys-plan',

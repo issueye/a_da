@@ -79,6 +79,8 @@ export interface ComposerProps {
   onClearQueue?: () => void
   onSwitchThread?: (threadId: string) => void
   onCompact?: () => void
+  /** 重新扫描并重装配插件（输入框 `/reload`） */
+  onReloadPlugins?: () => void
   onOpenChanges?: () => void
   onOpenDebug?: () => void
   onOpenPlugins?: () => void
@@ -147,6 +149,7 @@ export const Composer: React.FC<ComposerProps> = ({
   onClearQueue,
   onSwitchThread,
   onCompact,
+  onReloadPlugins,
   onOpenChanges,
   onOpenDebug,
   onOpenPlugins,
@@ -728,6 +731,7 @@ export const Composer: React.FC<ComposerProps> = ({
             onOpenPlugins={onOpenPlugins || (() => {})}
             onOpenChanges={onOpenChanges || (() => {})}
             onCompact={onCompact || (() => {})}
+            onReloadPlugins={onReloadPlugins || (() => {})}
             onNewThread={onNewThread || (() => {})}
             onSetMode={onSetMode}
             // 🔴 会话已开始就不给"切模式"的条目（`centered` = 新会话，见 `isFreshConversation`）
