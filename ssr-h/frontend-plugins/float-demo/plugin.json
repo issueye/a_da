@@ -1,0 +1,10 @@
+{
+  "id": "float-demo",
+  "name": "输入框悬浮卡片（示例）",
+  "version": "0.1.0",
+  "description": "演示插件把内容挂到输入框上方的悬浮点位（composer.above）。",
+  "slots": [
+    { "slot": "composer.above", "template": "float.html", "order": 10 }
+  ],
+  "assets": "static"
+}

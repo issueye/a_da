@@ -1,0 +1,67 @@
+<div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+  {% for s in view.stats %}
+  <div class="card p-4">
+    <span class="badge {% if s.tone == "warn" %}badge-warn{% else if s.tone == "brand" %}badge-brand{% else %}badge-neutral{% endif %}">{{ s.label }}</span>
+    <p class="mt-3 text-2xl font-semibold tracking-tight text-ink">{{ s.value }}</p>
+    <p class="mt-1 text-[11px] leading-4 text-faint">{{ s.hint }}</p>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card mt-4 overflow-hidden">
+  <div class="section-head border-b border-line px-4 py-3">
+    <div>
+      <h2 class="section-title">最近会话</h2>
+      <p class="section-sub">点击进入会话详情并发送消息</p>
+    </div>
+    <a class="link text-xs" href="/threads">全部会话</a>
+  </div>
+  {% if view.recent.is_empty() %}
+  <div class="px-4 py-8 text-center text-xs text-faint">还没有会话。去「会话」页新建一个。</div>
+  {% else %}
+  <div class="divide-y divide-line">
+    {% for t in view.recent %}
+    <a class="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-subtle" href="/threads/{{ t.id }}">
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-2">
+          <span class="truncate text-xs font-medium text-ink">{{ t.title }}</span>
+          {% if t.running %}<span class="badge badge-warn">运行中</span>{% endif %}
+          <span class="badge badge-neutral badge-mono">{{ t.mode }}</span>
+        </div>
+        <p class="mt-1 truncate text-[11px] text-faint">{{ t.workspace }}</p>
+      </div>
+      <span class="badge badge-neutral">{{ t.item_count }} 项</span>
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {{ base.slots.dashboard_widgets|safe }}
+</div>
+
+<div class="mt-4">
+  <div class="section-head">
+    <div>
+      <h2 class="section-title">插件贡献</h2>
+      <p class="section-sub">来自 <code class="code-inline">frontend-plugins/</code> 的 dashboard 片段</p>
+    </div>
+    <a class="link text-xs" href="/extensions">管理扩展</a>
+  </div>
+  {% if view.widgets.is_empty() %}
+  <div class="empty-state py-8">
+    <p class="text-xs font-medium text-ink">还没有前端插件卡片</p>
+    <p class="mt-1 text-[11px] text-faint">新增 <code class="code-inline">frontend-plugins/&lt;id&gt;/plugin.json</code> 后到扩展页点“重载前端插件”。</p>
+  </div>
+  {% else %}  <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+    {% for w in view.widgets %}
+    <div class="card p-4">
+      <div class="flex items-center gap-2">
+        <span class="badge badge-brand">前端插件</span>
+        <span class="text-xs font-medium text-ink">{{ w.plugin_name }}</span>
+      </div>
+      <div class="mt-3">{{ w.html|safe }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {{ base.slots.dashboard_widgets|safe }}
+</div>

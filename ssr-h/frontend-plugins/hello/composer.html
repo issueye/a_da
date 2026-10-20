@@ -1,0 +1,10 @@
+<!--
+  插件片段：挂到输入框工具行左侧（composer.left 插槽）。
+  插槽内容在 SSR 期注入，插件失败时这一格自动退回空位，主应用不受影响。
+-->
+<span class="ada-chip ada-chip--brand" title="来自 hello 插件的插槽">
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M9 3v6M15 3v6"/><path d="M6 9h12v3a6 6 0 0 1-12 0Z"/><path d="M12 18v3"/>
+  </svg>
+  <span class="ada-chip__text">Hello 插槽</span>
+</span>

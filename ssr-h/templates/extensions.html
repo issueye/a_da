@@ -1,0 +1,126 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="section-head">
+  <div>
+    <h1 class="page-title">扩展</h1>
+    <p class="page-sub">两套插件：agent 后端插件（工具/技能/钩子）与运行时前端插件（导航/卡片/页面/插槽）。</p>
+  </div>
+  <div class="flex flex-wrap gap-2">
+    <form method="post" action="/extensions/reload">
+      <button class="btn btn-secondary btn-sm" type="submit">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
+        重载前端插件
+      </button>
+    </form>
+    <form method="post" action="/agent-plugins/reload">
+      <button class="btn btn-primary btn-sm" type="submit">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
+        重载 agent 插件
+      </button>
+    </form>
+  </div>
+</div>
+
+<section class="mt-4">
+  <div class="section-head">
+    <div>
+      <h2 class="section-title">前端插件 <span class="badge badge-brand">{{ frontend_count }}</span></h2>
+      <p class="section-sub">新增目录后点“重载前端插件”，无需重启 ssr-h；停用的插件会立刻卸载并回到默认实现。</p>
+    </div>
+  </div>
+  {% if frontend.is_empty() %}
+  <div class="empty-state">
+    <p class="text-sm font-medium text-ink">没有前端插件</p>
+    <p class="mt-1 text-xs leading-5 text-faint">在 <code class="code-inline">ssr-h/frontend-plugins/&lt;id&gt;/plugin.json</code> 放一个 manifest，再点上方“重载前端插件”。</p>
+  </div>
+  {% else %}
+  <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+    {% for p in frontend %}
+    <div class="card p-4 transition-colors hover:border-line-strong">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="badge badge-brand badge-mono">{{ p.id }}</span>
+        <span class="text-sm font-medium text-ink">{{ p.name }}</span>
+        {% if !p.version.is_empty() %}<span class="badge badge-neutral badge-mono">v{{ p.version }}</span>{% endif %}
+        {% if p.status == "ready" %}
+          <span class="badge badge-success">已挂载</span>
+        {% else if p.status == "disabled" %}
+          <span class="badge badge-neutral">已停用</span>
+        {% else %}
+          <span class="badge badge-danger">加载失败</span>
+        {% endif %}
+      </div>
+      <p class="mt-2 text-xs leading-5 text-muted">{{ p.description }}</p>
+      <div class="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-faint">
+        <span>导航 {{ p.nav_count }}</span>
+        <span>页面 {{ p.page_count }}</span>
+        <span>插槽 {{ p.slot_count }}</span>
+        {% if p.has_dashboard %}<span class="badge badge-neutral">dashboard</span>{% endif %}
+        {% if p.has_assets %}<span class="badge badge-neutral">assets</span>{% endif %}
+      </div>
+      {% for e in p.errors %}
+      <p class="mt-2 text-[10px] text-danger-ink">{{ e }}</p>
+      {% endfor %}
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        {% if p.enabled %}
+        <form method="post" action="/extensions/{{ p.id }}/disable">
+          <button class="btn btn-secondary btn-xs" type="submit">停用</button>
+        </form>
+        {% else %}
+        <form method="post" action="/extensions/{{ p.id }}/enable">
+          <button class="btn btn-primary btn-xs" type="submit">启用</button>
+        </form>
+        {% endif %}
+        {% if let Some(slug) = p.first_page %}
+        <a class="link inline-flex items-center gap-1 text-xs" href="/ext/{{ p.id }}/{{ slug }}">
+          打开插件页面
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14 21 3"/></svg>
+        </a>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {{ base.slots.extensions_list|safe }}
+</section>
+
+<section class="mt-6">
+  <div class="section-head">
+    <div>
+      <h2 class="section-title">Agent 插件 <span class="badge badge-neutral">{{ agent_count }}</span></h2>
+      <p class="section-sub">来自现有 agent 的 <code class="code-inline">plugin.list</code>；启停/新增后点“重载 agent 插件”。</p>
+    </div>
+  </div>
+  {% if agent.is_empty() %}
+  <div class="empty-state">
+    <p class="text-sm font-medium text-ink">没有 agent 插件</p>
+    <p class="mt-1 text-xs text-faint">也可能是网关暂时不可用；查看服务端日志确认。</p>
+  </div>
+  {% else %}
+  <div class="card overflow-hidden">
+    <div class="overflow-x-auto">
+      <table class="table">
+        <thead><tr><th>插件</th><th>Scope</th><th>状态</th><th>工具</th></tr></thead>
+        <tbody>
+          {% for p in agent %}
+          <tr>
+            <td>
+              <span class="font-medium text-ink">{{ p.name }}</span>
+              <p class="mt-1 font-mono text-[10px] text-faint">{{ p.id }}</p>
+              {% if !p.error.is_empty() %}<p class="mt-1 text-[10px] text-danger-ink">{{ p.error }}</p>{% endif %}
+            </td>
+            <td><span class="badge badge-neutral badge-mono">{{ p.scope }}</span></td>
+            <td>
+              {% if p.enabled %}<span class="badge badge-success">启用</span>{% else %}<span class="badge badge-neutral">停用</span>{% endif %}
+              <span class="badge badge-neutral badge-mono">{{ p.status }}</span>
+            </td>
+            <td>{{ p.tools }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

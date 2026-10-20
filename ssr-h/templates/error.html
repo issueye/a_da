@@ -1,0 +1,9 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="empty-state">
+  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color: var(--ph-faint)"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+  <p class="text-sm font-semibold text-ink">页面不存在</p>
+  <p class="mt-1 text-xs text-muted">{{ message }}</p>
+  <a class="btn btn-secondary btn-sm mt-4" href="/">返回概览</a>
+</div>
+{% endblock %}

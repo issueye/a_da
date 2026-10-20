@@ -1,0 +1,7 @@
+{% if items.is_empty() %}
+{{ transcript_empty|safe }}
+{% else %}
+{% for item in items %}
+{{ item.html|safe }}
+{% endfor %}
+{% endif %}

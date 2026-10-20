@@ -1,0 +1,18 @@
+{
+  "id": "hello",
+  "name": "Hello Frontend Plugin",
+  "version": "0.2.0",
+  "description": "演示动态前端插件：导航、独立页面、仪表盘卡片、静态资源与界面插槽。",
+  "nav": [
+    { "label": "Hello 插件", "slug": "hello" }
+  ],
+  "pages": [
+    { "slug": "hello", "title": "Hello 插件", "template": "page.html" }
+  ],
+  "dashboard": "dashboard.html",
+  "assets": "static",
+  "slots": [
+    { "slot": "composer.left", "template": "composer.html", "order": 20 },
+    { "slot": "composer.footer", "template": "footer.html", "order": 10 }
+  ]
+}

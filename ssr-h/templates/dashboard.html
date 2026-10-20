@@ -1,0 +1,14 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="section-head">
+  <div>
+    <h1 class="page-title">概览</h1>
+    <p class="page-sub">agent 状态、最近会话与前端插件贡献。</p>
+  </div>
+  <a class="btn btn-secondary btn-sm" href="/threads">全部会话</a>
+</div>
+
+<div id="dashboard-live" hx-get="/partials/dashboard" hx-trigger="every 5s" hx-swap="innerHTML">
+  {% include "partials/dashboard.html" %}
+</div>
+{% endblock %}
