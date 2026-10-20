@@ -12,6 +12,8 @@ pub struct Release {
     pub sha256: String,
     pub downloads: i64,
     pub created_at: i64,
+    /// 包根 `index.ts` 的 metadata（JSON 字符串，发布时已校验必填字段）。
+    pub metadata_json: String,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -33,6 +35,31 @@ impl Release {
     pub fn size_text(&self) -> String {
         format_size(self.asset_size)
     }
+
+    pub fn metadata(&self) -> serde_json::Value {
+        serde_json::from_str(&self.metadata_json).unwrap_or_else(|_| serde_json::json!({}))
+    }
+
+    fn meta_text(&self, key: &str) -> String {
+        self.metadata()
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    pub fn meta_name(&self) -> String {
+        self.meta_text("name")
+    }
+    pub fn meta_description(&self) -> String {
+        self.meta_text("description")
+    }
+    pub fn meta_author(&self) -> String {
+        self.meta_text("author")
+    }
+    pub fn meta_version(&self) -> String {
+        self.meta_text("version")
+    }
 }
 
 pub fn format_size(bytes: i64) -> String {
@@ -53,12 +80,13 @@ pub async fn create(
     asset_path: &str,
     asset_size: i64,
     sha256: &str,
+    metadata_json: &str,
 ) -> Result<String, sqlx::Error> {
     let id = Uuid::new_v4().to_string();
     let now = crate::views::now_ts();
     sqlx::query(
-        "INSERT INTO releases (id, plugin_id, version, notes, asset_path, asset_size, sha256, downloads, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+        "INSERT INTO releases (id, plugin_id, version, notes, asset_path, asset_size, sha256, downloads, created_at, metadata_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
     )
     .bind(&id)
     .bind(plugin_id)
@@ -68,6 +96,7 @@ pub async fn create(
     .bind(asset_size)
     .bind(sha256)
     .bind(now)
+    .bind(metadata_json)
     .execute(pool)
     .await?;
     Ok(id)
@@ -78,8 +107,8 @@ pub async fn list_for_plugin(
     plugin_id: &str,
 ) -> Result<Vec<Release>, sqlx::Error> {
     sqlx::query_as::<_, Release>(
-        "SELECT id, plugin_id, version, notes, asset_path, asset_size, sha256, downloads, created_at
-         FROM releases WHERE plugin_id = ? ORDER BY created_at DESC",
+        "SELECT id, plugin_id, version, notes, asset_path, asset_size, sha256, downloads, created_at, metadata_json
+         FROM releases WHERE plugin_id = ? ORDER BY created_at DESC, rowid DESC",
     )
     .bind(plugin_id)
     .fetch_all(pool)
@@ -93,11 +122,12 @@ pub async fn find_asset(
     version: &str,
 ) -> Result<Option<ReleaseAsset>, sqlx::Error> {
     sqlx::query_as::<_, ReleaseAsset>(
-        "SELECT r.id, r.plugin_id, u.username AS owner, p.slug, r.version, r.asset_path, r.asset_size, r.sha256
+        "SELECT r.id, r.plugin_id, COALESCE(o.name, u.username) AS owner, p.slug, r.version, r.asset_path, r.asset_size, r.sha256
          FROM releases r
          JOIN plugins p ON p.id = r.plugin_id
-         JOIN users u ON u.id = p.owner_id
-         WHERE u.username = ? AND p.slug = ? AND r.version = ?",
+         LEFT JOIN users u ON u.id = p.owner_id
+         LEFT JOIN orgs o ON o.id = p.org_id
+         WHERE COALESCE(o.name, u.username) = ? AND p.slug = ? AND r.version = ?",
     )
     .bind(owner)
     .bind(slug)

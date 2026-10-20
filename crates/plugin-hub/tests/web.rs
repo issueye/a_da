@@ -104,17 +104,36 @@ async fn create_plugin(app: &Router, cookie: &str, csrf: &str, slug: &str) -> Re
         .unwrap()
 }
 
-fn zip_bytes() -> Vec<u8> {
+fn plugin_source(version: &str) -> String {
+    format!(
+        r#"const metadata = {{
+  name: 'demo',
+  description: '演示插件',
+  author: 'alice',
+  version: '{version}',
+  tools: {{ count: 0, names: [] }},
+  systemPrompt: {{ count: 0, names: [] }},
+  skills: {{ count: 0, names: [] }},
+  hooks: {{ count: 0, names: [] }}
+}};
+export default function (ada) {{ ada.metadata = metadata; }}"#
+    )
+}
+
+fn zip_bytes_for(source: &str) -> Vec<u8> {
     let mut buf = Cursor::new(Vec::new());
     {
         let mut zip = zip::ZipWriter::new(&mut buf);
         let opts = zip::write::SimpleFileOptions::default();
         zip.start_file("index.ts", opts).unwrap();
-        zip.write_all(b"export default function (ada) { ada.metadata = { name: 'demo' }; }")
-            .unwrap();
+        zip.write_all(source.as_bytes()).unwrap();
         zip.finish().unwrap();
     }
     buf.into_inner()
+}
+
+fn zip_bytes() -> Vec<u8> {
+    zip_bytes_for(&plugin_source("0.1.0"))
 }
 
 async fn upload_release(
@@ -125,11 +144,33 @@ async fn upload_release(
     slug: &str,
     version: &str,
 ) -> Response<Body> {
+    upload_release_asset(
+        app,
+        cookie,
+        csrf,
+        owner,
+        slug,
+        &zip_bytes_for(&plugin_source(version)),
+        version,
+    )
+    .await
+}
+
+/// 上传指定版本号与指定包内容（用于元数据/版本不一致的负向用例）。
+async fn upload_release_asset(
+    app: &Router,
+    cookie: &str,
+    csrf: &str,
+    owner: &str,
+    slug: &str,
+    bytes: &[u8],
+    form_version: &str,
+) -> Response<Body> {
     let boundary = "----ada_plugin_hub_test";
     let mut body = Vec::new();
     for (name, value) in [
         ("_csrf", csrf),
-        ("version", version),
+        ("version", form_version),
         ("notes", "first release"),
     ] {
         body.extend_from_slice(
@@ -145,7 +186,7 @@ async fn upload_release(
         )
         .as_bytes(),
     );
-    body.extend_from_slice(&zip_bytes());
+    body.extend_from_slice(bytes);
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
 
     app.clone()
@@ -248,6 +289,9 @@ async fn release_upload_download_and_star() {
     let html = body_text(detail).await;
     assert!(html.contains("v0.1.0"));
     assert!(html.contains("first release"));
+    // 发布时从包根 index.ts 提取的元数据会显示在版本卡上
+    assert!(html.contains("包内 v0.1.0"));
+    assert!(html.contains("alice"));
 
     let download = ctx
         .app
@@ -287,6 +331,291 @@ async fn release_upload_download_and_star() {
     let star_html = body_text(star).await;
     assert!(star_html.contains("已 Star"));
     assert!(star_html.contains(">1<"));
+}
+
+#[tokio::test]
+async fn release_requires_package_metadata() {
+    let ctx = setup().await;
+    let (cookie, csrf) = register(&ctx.app, "meta", "meta@example.com").await;
+    let created = create_plugin(&ctx.app, &cookie, &csrf, "meta-plugin").await;
+    assert_eq!(created.status(), StatusCode::SEE_OTHER);
+
+    // 1) 缺 author：必须在发布时被拒，并把原因回显到表单
+    let missing_author = zip_bytes_for(
+        r#"export default function (ada) {
+            ada.metadata = { name: 'meta-plugin', description: '缺作者', version: '0.1.0' };
+        }"#,
+    );
+    let resp = upload_release_asset(
+        &ctx.app,
+        &cookie,
+        &csrf,
+        "meta",
+        "meta-plugin",
+        &missing_author,
+        "0.1.0",
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(body_text(resp).await.contains("author"));
+
+    // 2) 完全没有 metadata：提示要写 ada.metadata
+    let no_metadata = zip_bytes_for("export default function (ada) {}");
+    let resp = upload_release_asset(
+        &ctx.app,
+        &cookie,
+        &csrf,
+        "meta",
+        "meta-plugin",
+        &no_metadata,
+        "0.1.0",
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(body_text(resp).await.contains("metadata"));
+
+    // 3) 表单版本与包内版本不一致：拒绝，并说明两边各是什么
+    let mismatched = zip_bytes_for(&plugin_source("0.2.0"));
+    let resp = upload_release_asset(
+        &ctx.app,
+        &cookie,
+        &csrf,
+        "meta",
+        "meta-plugin",
+        &mismatched,
+        "0.3.0",
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let html = body_text(resp).await;
+    assert!(html.contains("不一致"), "{html}");
+
+    // 4) 表单版本留空：采用包内 metadata.version
+    let resp = upload_release_asset(
+        &ctx.app,
+        &cookie,
+        &csrf,
+        "meta",
+        "meta-plugin",
+        &zip_bytes_for(&plugin_source("1.2.3")),
+        "",
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let detail = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/plugins/meta/meta-plugin")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(body_text(detail).await.contains("v1.2.3"));
+}
+
+#[tokio::test]
+async fn api_me_and_upsert_support_desktop_publishing() {
+    let ctx = setup().await;
+    let (cookie, csrf) = register(&ctx.app, "publisher", "publisher@example.com").await;
+
+    let token_page = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/settings/tokens")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "_csrf={csrf}&name=publish&read=1&write=1"
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(token_page.status(), StatusCode::OK);
+    let token = extract_api_token(&body_text(token_page).await);
+    let auth = format!("Bearer {token}");
+
+    let me = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/me")
+                .header(header::AUTHORIZATION, &auth)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(me.status(), StatusCode::OK);
+    let me_json: serde_json::Value =
+        serde_json::from_str(&body_text(me).await).expect("me 应是 JSON");
+    assert_eq!(me_json["username"], "publisher");
+    assert_eq!(me_json["canWrite"], true);
+
+    let create_body = serde_json::json!({
+        "slug": "desktop-publish",
+        "name": "Desktop Publish",
+        "description": "从桌面端上传",
+        "readme": "# v1",
+        "tags": "desktop,upload"
+    });
+    let created = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/plugins?upsert=1")
+                .header(header::AUTHORIZATION, &auth)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created_json: serde_json::Value =
+        serde_json::from_str(&body_text(created).await).unwrap();
+    assert_eq!(created_json["existing"], false);
+    assert_eq!(created_json["owner"], "publisher");
+
+    // 第二次 upsert：返回 200 + existing，并更新元数据（同一只 Token 可重复发布）
+    let updated_body = serde_json::json!({
+        "slug": "desktop-publish",
+        "name": "Desktop Publish v2",
+        "description": "更新后的简介",
+        "readme": "# v2",
+        "tags": "desktop"
+    });
+    let updated = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/plugins?upsert=1")
+                .header(header::AUTHORIZATION, &auth)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(updated_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.status(), StatusCode::OK);
+    let updated_json: serde_json::Value =
+        serde_json::from_str(&body_text(updated).await).unwrap();
+    assert_eq!(updated_json["existing"], true);
+
+    let detail = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/plugins/publisher/desktop-publish")
+                .header(header::AUTHORIZATION, &auth)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let detail_json: serde_json::Value =
+        serde_json::from_str(&body_text(detail).await).unwrap();
+    assert_eq!(detail_json["name"], "Desktop Publish v2");
+    assert_eq!(detail_json["description"], "更新后的简介");
+
+    // 不带 upsert 的重复创建必须明确 409（而不是 500）
+    let duplicate = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/plugins")
+                .header(header::AUTHORIZATION, &auth)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(duplicate.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn market_lists_latest_release_and_metadata() {    let ctx = setup().await;
+    let (cookie, csrf) = register(&ctx.app, "market", "market@example.com").await;
+    assert_eq!(
+        create_plugin(&ctx.app, &cookie, &csrf, "market-plugin")
+            .await
+            .status(),
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(
+        upload_release(&ctx.app, &cookie, &csrf, "market", "market-plugin", "0.1.0")
+            .await
+            .status(),
+        StatusCode::SEE_OTHER
+    );
+
+    // 市场 API 与普通 API 一样需要 read 作用域
+    let token_page = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/settings/tokens")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!("_csrf={csrf}&name=market&read=1")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(token_page.status(), StatusCode::OK);
+    let token = extract_api_token(&body_text(token_page).await);
+
+    let resp = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/market/plugins?q=market")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_str(&body_text(resp).await).expect("市场响应应是 JSON");
+    let plugin = &body["plugins"][0];
+    assert_eq!(plugin["slug"], "market-plugin");
+    assert_eq!(plugin["version"], "0.1.0");
+    assert_eq!(plugin["has_release"], true);
+    assert_eq!(plugin["metadata"]["author"], "alice");
+    assert_eq!(plugin["metadata"]["version"], "0.1.0");
+
+    let anonymous = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/market/plugins")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -638,6 +967,23 @@ async fn org_create_add_member_and_publish_org_plugin() {
         .unwrap();
     assert_eq!(detail.status(), StatusCode::OK);
     assert!(body_text(detail).await.contains("Org Plugin"));
+
+    // 组织插件的版本也必须能下载：`find_asset` 早先只 JOIN users，
+    // 组织（owner_id 为 NULL）发布的版本会 404——市场安装会直接踩到。
+    let upload = upload_release(&ctx.app, &cookie, &csrf, "acme", "org-plugin", "0.1.0").await;
+    assert_eq!(upload.status(), StatusCode::SEE_OTHER);
+    let download = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/plugins/acme/org-plugin/releases/0.1.0/download")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(download.status(), StatusCode::OK);
 }
 
 #[tokio::test]

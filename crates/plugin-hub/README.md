@@ -2,6 +2,7 @@
 
 一个类似 GitHub 的**插件库管理平台**：用户/组织协作、创建插件仓库、维护 README 与标签、
 发布带 ZIP 附件的版本、搜索/浏览、Star、下载统计，并提供 **GitHub OAuth**、**API Token** 与 **Webhook**。
+发布时会从包根 `index.ts` 静态提取 `metadata` 并校验；`/api/v1/market/plugins` 供 a_da 桌面端插件市场浏览与安装。
 
 - **后端**：Rust + Axum 0.8 + SQLx 0.8（SQLite）
 - **前端**：Askama SSR + **本地静态** HTMX / Alpine.js / Tailwind CSS
@@ -183,6 +184,48 @@ curl -X POST -H "Authorization: Bearer ada_pat_..." \
 | POST | `/api/v1/plugins` | write |
 | POST | `/api/v1/plugins/{owner}/{slug}/releases` | write |
 | POST | `/api/v1/plugins/{owner}/{slug}/star` | write |
+| GET | `/api/v1/market/plugins` | read |
+| GET | `/api/v1/me` | read |
+
+`POST /api/v1/plugins?upsert=1` 是「创建或更新插件仓库」：同名个人插件已存在时更新
+name/description/README/tags/license 并返回 `200 {existing:true}`，否则创建并返回 201。
+桌面端上传插件走的就是这条路径；不带 `upsert` 的重复创建返回 409。
+`GET /api/v1/me` 返回当前 Token 的用户名与作用域（`canWrite`），发布前用它判断 Token 是否够用。
+
+`/api/v1/market/plugins` 是给 a_da 桌面端「插件市场」用的列表：一次返回公开插件、
+**最新版本**与该版本的包元数据（`version` / `metadata` / `has_release`）。
+普通列表不带头像版本信息，两者都只暴露 `public` 插件。
+
+## 插件包元数据（发布时强制）
+
+发布版本时，服务端会**静态读取** ZIP 包根 `index.ts`（或 `index.js`）里的
+`ada.metadata`（也支持 `export default { metadata: {...} }`），**不执行插件代码**。
+以下字段必须齐全，否则拒绝发布并把原因回显到表单：
+
+| 字段 | 约束 |
+|---|---|
+| `name` | 非空，≤ 80 字符 |
+| `description` | 非空，≤ 300 字符 |
+| `author` | 非空，≤ 80 字符 |
+| `version` | 非空，≤ 32 字符，只允许字母、数字、`.`、`+`、`-`，且**必须与发布的版本号一致** |
+
+- 发布表单的版本号可以**留空**：此时直接采用 `metadata.version`。
+- ZIP 允许整个包被一层目录包着（GitHub 下载的 ZIP 形态），会自动定位包根。
+- 元数据以 JSON 存在 `releases.metadata_json`，详情页/API/市场列表都会返回。
+
+详情页会显示每个版本的「作者 + 包内版本」，方便核对包与页面是否一致。
+
+### a_da 桌面端插件市场
+
+在 a_da 的「插件与能力中心 → 插件市场」里填写本服务地址（如 `http://127.0.0.1:8787`）
+与一个 **read** Token 即可浏览、安装插件。安装固定落到
+`~/.a-da/agent-coding/extensions/<slug>`（全局扩展），装完立即重装配。
+Token 存在本地 `~/.a-da/plugin_hub.json`，界面只回显末 4 位。
+
+上传插件：在「扩展」页点插件卡片的上传按钮，填写 slug/名称/简介/README 后
+「上传并发布」。这一步需要 **write** Token。桌面包目录会被打成 ZIP（自动跳过隐藏文件、
+`node_modules`、`target`），先 upsert 仓库元数据，再发布一个版本；版本号留空时采用
+包内 `metadata.version`。
 
 ## 组织与团队
 

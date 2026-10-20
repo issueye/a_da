@@ -83,6 +83,13 @@
             <span>·</span>
             <span>{{ r.downloads }} 次下载</span>
           </div>
+          {% if !r.meta_author().is_empty() %}
+          <div class="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-faint">
+            <span class="inline-flex items-center gap-1">{% call ui::icon("user", "h-3 w-3") %}{{ r.meta_author() }}</span>
+            <span>·</span>
+            <span class="font-mono">包内 v{{ r.meta_version() }}</span>
+          </div>
+          {% endif %}
           {% if !r.notes.is_empty() %}
           <p class="mt-2 whitespace-pre-wrap text-xs leading-5 text-muted">{{ r.notes }}</p>
           {% endif %}

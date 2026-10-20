@@ -14,6 +14,7 @@ pub mod controllers;
 pub mod db;
 pub mod error;
 pub mod markdown;
+pub mod metadata;
 pub mod models;
 pub mod storage;
 pub mod views;

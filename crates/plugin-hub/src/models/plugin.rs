@@ -35,6 +35,35 @@ pub struct PluginDetail {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, FromRow)]
+pub struct MarketRow {
+    pub owner: String,
+    pub slug: String,
+    pub name: String,
+    pub description: String,
+    pub tags: String,
+    pub downloads: i64,
+    pub stars: i64,
+    pub updated_at: i64,
+    pub latest_version: Option<String>,
+    pub latest_metadata: Option<String>,
+}
+
+impl MarketRow {
+    pub fn tags_list(&self) -> Vec<String> {
+        split_tags(&self.tags)
+    }
+    pub fn updated_text(&self) -> String {
+        crate::views::format_ts(self.updated_at)
+    }
+    pub fn metadata_value(&self) -> serde_json::Value {
+        self.latest_metadata
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PluginFormData {
     pub name: String,
@@ -234,12 +263,13 @@ pub async fn list(
          LEFT JOIN users u ON u.id = p.owner_id
          LEFT JOIN orgs o ON o.id = p.org_id
          WHERE p.visibility = 'public'
-           AND (? = '%%' OR p.name LIKE ? OR p.description LIKE ? OR p.tags LIKE ?
+           AND (? = '%%' OR p.slug LIKE ? OR p.name LIKE ? OR p.description LIKE ? OR p.tags LIKE ?
                 OR COALESCE(o.name, u.username) LIKE ?)
          ORDER BY {order}
          LIMIT ? OFFSET ?"
     );
     sqlx::query_as::<_, PluginCard>(&sql)
+        .bind(&like)
         .bind(&like)
         .bind(&like)
         .bind(&like)
@@ -259,9 +289,10 @@ pub async fn count(pool: &SqlitePool, q: &str) -> Result<i64, sqlx::Error> {
          LEFT JOIN users u ON u.id = p.owner_id
          LEFT JOIN orgs o ON o.id = p.org_id
          WHERE p.visibility = 'public'
-           AND (? = '%%' OR p.name LIKE ? OR p.description LIKE ? OR p.tags LIKE ?
+           AND (? = '%%' OR p.slug LIKE ? OR p.name LIKE ? OR p.description LIKE ? OR p.tags LIKE ?
                 OR COALESCE(o.name, u.username) LIKE ?)",
     )
+    .bind(&like)
     .bind(&like)
     .bind(&like)
     .bind(&like)
@@ -270,6 +301,49 @@ pub async fn count(pool: &SqlitePool, q: &str) -> Result<i64, sqlx::Error> {
     .fetch_one(pool)
     .await?;
     Ok(n)
+}
+
+/// 插件市场列表：在公开插件上带出**最新版本**与其包元数据。
+///
+/// 用相关子查询取最新一条 release（`created_at` 同秒时按 `rowid` 兜底），
+/// 这样市场卡片一次请求就能拿到"最新版本 + 作者/描述"，不用每个插件再查一次详情。
+pub async fn list_market(
+    pool: &SqlitePool,
+    q: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<MarketRow>, sqlx::Error> {
+    let like = format!("%{}%", q.trim());
+    sqlx::query_as::<_, MarketRow>(
+        "SELECT COALESCE(o.name, u.username) AS owner,
+                p.slug, p.name, p.description, p.tags, p.downloads,
+                (SELECT COUNT(*) FROM stars s WHERE s.plugin_id = p.id) AS stars,
+                p.updated_at,
+                (SELECT r.version FROM releases r
+                  WHERE r.plugin_id = p.id
+                  ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1) AS latest_version,
+                (SELECT r.metadata_json FROM releases r
+                  WHERE r.plugin_id = p.id
+                  ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1) AS latest_metadata
+         FROM plugins p
+         LEFT JOIN users u ON u.id = p.owner_id
+         LEFT JOIN orgs o ON o.id = p.org_id
+         WHERE p.visibility = 'public'
+           AND (? = '%%' OR p.slug LIKE ? OR p.name LIKE ? OR p.description LIKE ? OR p.tags LIKE ?
+                OR COALESCE(o.name, u.username) LIKE ?)
+         ORDER BY p.updated_at DESC, p.rowid DESC
+         LIMIT ? OFFSET ?",
+    )
+    .bind(&like)
+    .bind(&like)
+    .bind(&like)
+    .bind(&like)
+    .bind(&like)
+    .bind(&like)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await
 }
 
 pub async fn latest(pool: &SqlitePool, limit: i64) -> Result<Vec<PluginCard>, sqlx::Error> {

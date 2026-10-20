@@ -11,6 +11,8 @@ use crate::app::AppState;
 use crate::models::User;
 use crate::models::{plugin, release, star, token, user};
 
+use super::auth::is_unique;
+
 #[derive(Debug)]
 pub struct ApiError {
     status: StatusCode,
@@ -167,13 +169,83 @@ pub async fn detail(
             "sha256": r.sha256,
             "downloads": r.downloads,
             "created_at": r.created_at,
+            "metadata": r.metadata(),
         })).collect::<Vec<_>>(),
+    })))
+}
+
+/// 插件市场列表：公开插件 + 最新版本 + 包元数据。
+///
+/// 与 `/api/v1/plugins` 的区别是**带上最新 release**（市场卡片要显示版本、作者），
+/// 但仍然只读、只暴露公开插件，作用域与普通列表一致（`read`）。
+pub async fn market(
+    State(state): State<AppState>,
+    auth: ApiAuth,
+    Query(q): Query<ApiListQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    auth.require("read")?;
+    let limit = q.limit.unwrap_or(24).clamp(1, 100);
+    let offset = q.offset.unwrap_or(0).max(0);
+    let rows = plugin::list_market(&state.pool, &q.q, limit, offset).await?;
+    let total = plugin::count(&state.pool, &q.q).await?;
+
+    let plugins: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|row| {
+            let metadata = row.metadata_value();
+            let author = metadata
+                .get("author")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(&row.owner)
+                .to_string();
+            let version = row.latest_version.clone();
+            json!({
+                "owner": row.owner,
+                "slug": row.slug,
+                "name": row.name,
+                "description": row.description,
+                "author": author,
+                "version": version,
+                "has_release": version.is_some(),
+                "tags": row.tags_list(),
+                "downloads": row.downloads,
+                "stars": row.stars,
+                "updated_at": row.updated_at,
+                "metadata": metadata,
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "plugins": plugins,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApiCreateQuery {
+    /// `?upsert=1`：同名插件已存在时**更新元数据**并返回 200，而不是 409。
+    /// a_da 的「上传到插件库」用它把"首次创建"与"再次发布"收敛成同一条路径。
+    #[serde(default)]
+    pub upsert: Option<String>,
+}
+
+/// 当前 Token 对应的用户与作用域：桌面端在发布前用它确认"有没有 write 权限"。
+pub async fn me(auth: ApiAuth) -> Result<Json<serde_json::Value>, ApiError> {
+    auth.require("read")?;
+    Ok(Json(json!({
+        "username": auth.user.username,
+        "scopes": auth.token.scopes_list(),
+        "canWrite": auth.token.has_scope("write"),
     })))
 }
 
 pub async fn create(
     State(state): State<AppState>,
     auth: ApiAuth,
+    Query(q): Query<ApiCreateQuery>,
     Json(body): Json<ApiCreatePlugin>,
 ) -> Result<Response, ApiError> {
     auth.require("write")?;
@@ -201,7 +273,52 @@ pub async fn create(
         tags: body.tags.clone(),
     };
     let tags = plugin::normalize_tags(&body.tags);
-    let id = plugin::create(&state.pool, Some(&auth.user.id), None, &slug, &form, &tags).await?;
+    let upsert = matches!(q.upsert.as_deref(), Some("1" | "true" | "yes"));
+
+    if upsert {
+        if let Some(existing) = plugin::find_detail(&state.pool, &auth.user.username, &slug).await?
+        {
+            // 只允许更新**自己的个人插件**；组织插件/别人的插件走正常 409，
+            // 不能靠 upsert 绕过权限。
+            if existing.org_id.is_none()
+                && existing.owner_id.as_deref() == Some(auth.user.id.as_str())
+            {
+                plugin::update(&state.pool, &existing.id, &form, &tags).await?;
+                crate::models::webhook::dispatch(
+                    state.pool.clone(),
+                    auth.user.id.clone(),
+                    "plugin.updated",
+                    json!({ "plugin": { "id": existing.id, "owner": auth.user.username, "slug": slug } }),
+                );
+                return Ok((
+                    StatusCode::OK,
+                    Json(json!({
+                        "ok": true,
+                        "existing": true,
+                        "id": existing.id,
+                        "owner": auth.user.username,
+                        "slug": slug,
+                    })),
+                )
+                    .into_response());
+            }
+        }
+    }
+
+    let id = match plugin::create(&state.pool, Some(&auth.user.id), None, &slug, &form, &tags).await
+    {
+        Ok(id) => id,
+        Err(err) if is_unique(&err) => {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                format!(
+                    "同名插件已存在：{}/{}（发布新版本请带 ?upsert=1）",
+                    auth.user.username, slug
+                ),
+            ));
+        }
+        Err(err) => return Err(err.into()),
+    };
     crate::models::webhook::dispatch(
         state.pool.clone(),
         auth.user.id.clone(),
@@ -210,7 +327,13 @@ pub async fn create(
     );
     Ok((
         StatusCode::CREATED,
-        Json(json!({ "ok": true, "id": id, "owner": auth.user.username, "slug": slug })),
+        Json(json!({
+            "ok": true,
+            "existing": false,
+            "id": id,
+            "owner": auth.user.username,
+            "slug": slug,
+        })),
     )
         .into_response())
 }
@@ -264,15 +387,7 @@ pub async fn create_release(
             _ => {}
         }
     }
-    let version = version.trim();
-    if version.is_empty()
-        || version.len() > 32
-        || !version
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-'))
-    {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "非法版本号"));
-    }
+    let requested_version = version.trim().to_string();
     let Some(bytes) = asset else {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "缺少 asset 文件"));
     };
@@ -282,19 +397,33 @@ pub async fn create_release(
             "ZIP 超过上传上限",
         ));
     }
+    let metadata = crate::metadata::inspect_zip(&bytes)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let version = metadata
+        .effective_version(&requested_version)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    if version.is_empty()
+        || version.len() > 32
+        || !version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-'))
+    {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "非法版本号"));
+    }
     let stored = state
         .storage
-        .save_plugin_zip(&owner, &slug, version, &bytes)
+        .save_plugin_zip(&owner, &slug, &version, &bytes)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     let result = release::create(
         &state.pool,
         &detail.id,
-        version,
+        &version,
         notes.trim(),
         &stored.relative_path,
         stored.size as i64,
         &stored.sha256,
+        &metadata.to_json_string(),
     )
     .await;
     match result {
@@ -309,7 +438,12 @@ pub async fn create_release(
             .await;
             Ok((
                 StatusCode::CREATED,
-                Json(json!({ "ok": true, "version": version })),
+                Json(json!({
+                    "ok": true,
+                    "owner": detail.owner,
+                    "slug": detail.slug,
+                    "version": version,
+                })),
             )
                 .into_response())
         }

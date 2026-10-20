@@ -89,11 +89,7 @@ pub async fn create(
     }
     auth.validate_csrf(&csrf)?;
 
-    let version = version.trim().to_string();
-    if let Err(error) = validate_version(&version) {
-        return render_form(&auth, &owner, &slug, &detail.name, Some(error))
-            .map(IntoResponse::into_response);
-    }
+    let requested_version = version.trim().to_string();
     let Some(bytes) = asset else {
         return render_form(
             &auth,
@@ -118,6 +114,27 @@ pub async fn create(
         .map(IntoResponse::into_response);
     }
 
+    // 发布前从包根 index.ts **静态**提取 metadata：必填 name/description/author/version，
+    // 且表单版本（可留空）必须与包内版本一致。
+    let metadata = match crate::metadata::inspect_zip(&bytes) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return render_form(&auth, &owner, &slug, &detail.name, Some(error))
+                .map(IntoResponse::into_response);
+        }
+    };
+    let version = match metadata.effective_version(&requested_version) {
+        Ok(version) => version,
+        Err(error) => {
+            return render_form(&auth, &owner, &slug, &detail.name, Some(error))
+                .map(IntoResponse::into_response);
+        }
+    };
+    if let Err(error) = validate_version(&version) {
+        return render_form(&auth, &owner, &slug, &detail.name, Some(error))
+            .map(IntoResponse::into_response);
+    }
+
     let stored = state
         .storage
         .save_plugin_zip(&owner, &slug, &version, &bytes)
@@ -131,6 +148,7 @@ pub async fn create(
         &stored.relative_path,
         stored.size as i64,
         &stored.sha256,
+        &metadata.to_json_string(),
     )
     .await;
     match result {

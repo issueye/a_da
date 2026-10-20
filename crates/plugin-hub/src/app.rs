@@ -91,6 +91,8 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/settings/webhooks/{id}/delete", post(webhooks::delete))
         .route("/api/v1/plugins", get(api::list).post(api::create))
+        .route("/api/v1/me", get(api::me))
+        .route("/api/v1/market/plugins", get(api::market))
         .route("/api/v1/plugins/{owner}/{slug}", get(api::detail))
         .route(
             "/api/v1/plugins/{owner}/{slug}/releases",
