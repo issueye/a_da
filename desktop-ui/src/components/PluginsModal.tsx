@@ -16,6 +16,8 @@ import {
   Eye,
   Edit3,
   RefreshCw,
+  Store,
+  Upload,
 } from 'lucide-react'
 import type {
   PluginItem,
@@ -27,6 +29,8 @@ import type {
 import { agentClient } from '../client/ws-client'
 import { ConfirmModal } from './ConfirmModal'
 import { PluginDiagnostics } from './PluginDiagnostics'
+import { PluginMarketplace } from './PluginMarketplace'
+import { PublishPluginModal } from './PublishPluginModal'
 
 interface PluginsModalProps {
   isOpen: boolean
@@ -34,14 +38,14 @@ interface PluginsModalProps {
 }
 
 /**
- * 标签页（**四页，按"是什么"分**）。
+ * 标签页（**五页，按"是什么"分**）。
  *
  * 早先是六页，其中「内置辅助插件 / 工作区扩展 / 全局扩展」是**同一类东西按来源**切开的三份，
  * 用户要在三个标签之间点来点去才知道自己到底有哪些扩展。现在它们合成一页
- * （来源做成**筛选条**），剩下三页分别是技能、核心工具、能力开关——
+ * （来源做成**筛选条**），其余分别是插件市场、技能、核心工具、能力开关——
  * 一个标签对应一种**事物**，而不是同一件事物的一个切片。
  */
-type TabType = 'extensions' | 'skills' | 'builtins' | 'capabilities'
+type TabType = 'extensions' | 'market' | 'skills' | 'builtins' | 'capabilities'
 
 /** 扩展的来源筛选（三个插件页合并之后的那个筛选条）。 */
 type ScopeFilter = 'all' | 'builtin' | 'workspace' | 'global'
@@ -61,6 +65,8 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
   const [loading, setLoading] = useState(false)
   const [actionNotice, setActionNotice] = useState<string | null>(null)
   const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<PluginItem | null>(null)
+  /** 上传到 plugin-hub 的目标插件（内置插件没有磁盘包，不参与） */
+  const [publishTarget, setPublishTarget] = useState<PluginItem | null>(null)
   /**
    * 新建插件草稿：**作用域在弹窗里选**（不再让用户在工具栏上先挑按钮再输名字）。
    *
@@ -317,6 +323,7 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
         <div className="flex border-b border-zinc-200 dark:border-[#27272a] bg-zinc-100/70 dark:bg-[#141416] px-4 pt-1 flex-shrink-0 overflow-x-auto">
           {[
             { id: 'extensions', label: '扩展', icon: Puzzle, count: plugins.length },
+            { id: 'market', label: '插件市场', icon: Store },
             { id: 'skills', label: '技能库 (Skills)', icon: Zap, count: skills.length },
             { id: 'builtins', label: '核心工具', icon: Shield, count: builtinCatalog.length },
             { id: 'capabilities', label: '能力开关', icon: Sliders },
@@ -429,6 +436,7 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
                       // 内置插件是**编译进来的**，`filePath` 只是 `(builtin):<id>` 这种占位串，
                       // 走删除只会"报成功但什么也没删"。这类卡片不给删除按钮。
                       onDelete={item.scope === 'builtin' ? undefined : () => handleDeletePlugin(item)}
+                      onPublish={item.scope === 'builtin' ? undefined : () => setPublishTarget(item)}
                       onSaveConfig={() => handleSavePluginConfig(item)}
                       onDraftChange={(key, val) => {
                         setConfigDrafts((prev) => ({
@@ -444,6 +452,15 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
                 </div>
               )}
             </div>
+          )}
+
+          {/* 插件市场：对接 plugin-hub（地址 / Token 在这里配置） */}
+          {activeTab === 'market' && (
+            <PluginMarketplace
+              installed={plugins}
+              onInstalled={loadData}
+              onNotice={showNotice}
+            />
           )}
 
           {/* 技能库 */}
@@ -730,6 +747,15 @@ export const PluginsModal: React.FC<PluginsModalProps> = ({ isOpen, onClose }) =
         onCancel={() => setDeleteConfirmTarget(null)}
       />
 
+      {/* 上传插件到 plugin-hub（发布包 + 新版本） */}
+      <PublishPluginModal
+        isOpen={Boolean(publishTarget)}
+        plugin={publishTarget}
+        onClose={() => setPublishTarget(null)}
+        onNotice={showNotice}
+        onPublished={() => loadData()}
+      />
+
       {/* 新建插件弹窗：**作用域在这里选**（不再让用户先挑一个按钮再输名字） */}
       {createDraft && (
         <div
@@ -840,9 +866,11 @@ const PluginDetailCard: React.FC<{
   onToggle: () => void
   /** 省略 = 不可删（内置插件）；只有磁盘上的插件才有东西可删。 */
   onDelete?: () => void
+  /** 省略 = 不可发布（内置插件没有磁盘包）。 */
+  onPublish?: () => void
   onSaveConfig: () => void
   onDraftChange: (key: string, val: string) => void
-}> = ({ item, configs, skillCount = 0, onToggle, onDelete, onSaveConfig, onDraftChange }) => {
+}> = ({ item, configs, skillCount = 0, onToggle, onDelete, onPublish, onSaveConfig, onDraftChange }) => {
   const [editingConfig, setEditingConfig] = useState(false)
   const schemaProps = item.plugin.contributions.configSchema?.properties
 
@@ -883,6 +911,16 @@ const PluginDetailCard: React.FC<{
               title="配置项"
             >
               <Settings size={13} />
+            </button>
+          )}
+
+          {onPublish && (
+            <button
+              onClick={onPublish}
+              className="p-1 text-zinc-400 dark:text-zinc-500 hover:text-blue-500 hover:bg-zinc-200 dark:hover:bg-zinc-800 rounded transition-colors"
+              title="上传到插件库（plugin-hub）"
+            >
+              <Upload size={13} />
             </button>
           )}
 

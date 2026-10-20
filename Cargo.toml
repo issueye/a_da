@@ -72,7 +72,7 @@ thiserror = "2.0"
 similar = "2.7"
 
 # 网络客户端
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "socks"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls", "socks"] }
 
 # TypeScript 编译与执行引擎核心依赖 (供 ada-ts-engine 独占消费)
 boa_engine = "0.22.0"

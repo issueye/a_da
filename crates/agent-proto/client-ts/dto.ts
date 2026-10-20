@@ -396,6 +396,63 @@ export interface PluginListResponse {
   diagnostics: PluginDiagnostic[]
 }
 
+// ── 插件市场（plugin-hub）──────────────────────────────────────────────
+
+export interface MarketConfigView {
+  baseUrl: string
+  hasToken: boolean
+  /** 只回显 Token 末 4 位；完整 Token 不回传界面 */
+  tokenHint: string
+}
+
+export interface MarketPlugin {
+  owner: string
+  slug: string
+  name: string
+  description: string
+  /** 优先取包内 metadata.author，缺失时退回 owner */
+  author: string
+  version?: string | null
+  hasRelease: boolean
+  tags: string[]
+  downloads: number
+  stars: number
+  updatedAt: number
+  /** 包根 index.ts 的 metadata（name/description/author/version 等） */
+  metadata: Record<string, unknown>
+}
+
+export interface MarketSearchResult {
+  baseUrl: string
+  plugins: MarketPlugin[]
+  total: number
+}
+
+export interface MarketInstallResult {
+  ok: boolean
+  plugin: {
+    pluginId: string
+    version: string
+    indexPath: string
+    replaced: boolean
+  }
+  /** 引擎侧是否真的重装配成功；null = 当前宿主没接重装配入口 */
+  applied?: boolean | null
+  report?: unknown
+}
+
+export interface MarketPublishResult {
+  ok: boolean
+  plugin: {
+    owner: string
+    slug: string
+    version: string
+    url: string
+    /** false = 新建了插件仓库；true = 仓库已存在，本次只更新元数据并发布新版本 */
+    existing: boolean
+  }
+}
+
 export interface FileChange {
   path: string
   latestPatch?: string

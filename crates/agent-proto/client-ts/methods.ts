@@ -86,6 +86,13 @@ export const PLUGIN_CREATE_TEMPLATE = 'plugin.createTemplate'
 export const PLUGIN_VALIDATE = 'plugin.validate'
 export const PLUGIN_BUILTIN_CATALOG = 'plugin.builtinCatalog'
 
+// 插件市场（对接 plugin-hub）
+export const MARKET_GET_CONFIG = 'market.getConfig'
+export const MARKET_SET_CONFIG = 'market.setConfig'
+export const MARKET_SEARCH = 'market.search'
+export const MARKET_INSTALL = 'market.install'
+export const MARKET_PUBLISH = 'market.publish'
+
 // 提示词管理 (Prompt)
 export const PROMPT_LIST = 'prompt.list'
 export const PROMPT_SET_ENABLED = 'prompt.setEnabled'

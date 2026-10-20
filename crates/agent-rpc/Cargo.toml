@@ -19,6 +19,7 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 base64 = { workspace = true }
 reqwest = { workspace = true }
+zip = { workspace = true }
 
 # 基座分层
 agent-base = { workspace = true }

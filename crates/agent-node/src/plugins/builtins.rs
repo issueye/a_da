@@ -132,6 +132,9 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
 
 ## metadata：要让宿主看见，且与脚本注册逐项对齐
 - 写法是**工厂里第一句** `ada.metadata = { ... }`：宿主在 `await desc(api)` 之后读 `api.metadata`。
+- **名称 / 描述**是宿主加载的必填项；**作者 / 版本**在发布到插件市场（plugin-hub）时必填：
+  插件库会从包根 `index.ts` 静态提取 metadata，缺 `author` / `version` 会直接拒绝发布，
+  且 `version` 必须与发布版本号一致。
 - 写成 `export const metadata` 无效：转译把 `export default fn` 译成
   `module.exports = exports.default = fn`，挂在 exports 上的东西一起被换掉 →
   装载期报「插件包入口缺少 metadata 对象」。

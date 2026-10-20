@@ -2415,3 +2415,122 @@ async fn test_turn_without_engine_leaves_a_visible_notice() {
         "提示卡要说清这轮为什么没开始：{notice}"
     );
 }
+
+/// 插件市场配置：只在临时应用目录里读写，绝不触网，也不回传完整 Token。
+#[tokio::test]
+async fn test_market_config_roundtrip_and_guards() {
+    let home = test_home_dir();
+    let store = Arc::new(RwLock::new(store_for_test("E:/test")));
+    let dispatcher = Dispatcher::new(
+        store,
+        Arc::new(SessionManager::new(Some(home.clone()))),
+        Arc::new(CheckpointManager::new(Some(home.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::with_home(home.clone())),
+        Arc::new(SkillManager::with_home(home.clone())),
+        None,
+    );
+
+    let initial = dispatcher
+        .dispatch("market.getConfig", serde_json::json!({}))
+        .await
+        .expect("market.getConfig 必须可分发");
+    assert_eq!(initial["baseUrl"], "");
+    assert_eq!(initial["hasToken"], false);
+
+    let saved = dispatcher
+        .dispatch(
+            "market.setConfig",
+            serde_json::json!({
+                "baseUrl": "http://127.0.0.1:8787/",
+                "apiToken": "ada_pat_secret_1234"
+            }),
+        )
+        .await
+        .expect("market.setConfig 必须可分发");
+    assert_eq!(saved["config"]["baseUrl"], "http://127.0.0.1:8787");
+    assert_eq!(saved["config"]["hasToken"], true);
+    assert_eq!(saved["config"]["tokenHint"], "…1234");
+    assert!(
+        !saved.to_string().contains("ada_pat_secret_1234"),
+        "完整 Token 不能回传界面：{saved}"
+    );
+    let on_disk = std::fs::read_to_string(home.join("plugin_hub.json"))
+        .expect("配置应落在应用目录 plugin_hub.json");
+    assert!(on_disk.contains("ada_pat_secret_1234"));
+
+    // 只改地址、不填 Token：已有 Token 必须保留（否则用户改个端口就被登出）
+    let updated = dispatcher
+        .dispatch(
+            "market.setConfig",
+            serde_json::json!({ "baseUrl": "http://127.0.0.1:9999" }),
+        )
+        .await
+        .expect("只改地址也应成功");
+    assert_eq!(updated["config"]["baseUrl"], "http://127.0.0.1:9999");
+    assert_eq!(updated["config"]["hasToken"], true);
+
+    // 地址为空时搜索必须给可操作的错误，而不是发一个空 URL 请求
+    dispatcher
+        .dispatch("market.setConfig", serde_json::json!({ "baseUrl": "" }))
+        .await
+        .expect("允许清空地址以停用市场");
+    let search_err = dispatcher
+        .dispatch("market.search", serde_json::json!({ "query": "demo" }))
+        .await
+        .expect_err("未配置地址时搜索必须失败");
+    assert!(
+        search_err.message.contains("插件库地址"),
+        "错误要说清该配什么：{search_err:?}"
+    );
+
+    // 安装缺参：在联网前就被参数校验拦下
+    let install_err = dispatcher
+        .dispatch("market.install", serde_json::json!({ "owner": "alice" }))
+        .await
+        .expect_err("缺 slug/version 必须失败");
+    assert!(
+        install_err.message.contains("owner")
+            && install_err.message.contains("slug")
+            && install_err.message.contains("version"),
+        "错误要列出缺的参数：{install_err:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// 上传插件：只允许扩展目录下的包（防止把任意文件打成 ZIP 上传）。
+#[tokio::test]
+async fn test_market_publish_rejects_paths_outside_extension_roots() {
+    let home = test_home_dir();
+    let store = Arc::new(RwLock::new(store_for_test("E:/test")));
+    let dispatcher = Dispatcher::new(
+        store,
+        Arc::new(SessionManager::new(Some(home.clone()))),
+        Arc::new(CheckpointManager::new(Some(home.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::with_home(home.clone())),
+        Arc::new(SkillManager::with_home(home.clone())),
+        None,
+    );
+
+    let err = dispatcher
+        .dispatch(
+            "market.publish",
+            serde_json::json!({
+                "filePath": "C:/Windows/System32/notepad.exe",
+                "slug": "not-a-plugin",
+                "name": "not-a-plugin"
+            }),
+        )
+        .await
+        .expect_err("扩展目录之外的文件不能被发布");
+    assert!(
+        err.message.contains("扩展目录"),
+        "错误要说明只允许扩展目录：{err:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}

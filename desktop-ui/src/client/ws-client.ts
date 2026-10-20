@@ -36,6 +36,10 @@ import type {
   ProviderEntry,
   QueuedItem,
   ProductInfo,
+  MarketConfigView,
+  MarketSearchResult,
+  MarketInstallResult,
+  MarketPublishResult,
 } from '../types'
 // W6-T6：重连退避策略抽成**无副作用纯模块**（便于独立验证，见该文件注释）
 import { reconnectDelayMs } from './reconnect-policy'
@@ -1315,11 +1319,79 @@ export class AgentWebSocketClient {
     )
   }
 
-  public fetchSkills(workspace?: string) {
-    return this.request<SkillSummary[]>('skill.list', { workspace: workspace || this.snapshot.activeWorkspace })
+  // ── 插件市场（plugin-hub）RPC 接口 ──
+
+  public getMarketConfig() {
+    return this.request<MarketConfigView>('market.getConfig', {})
   }
 
-  public toggleSkill(id: string, enabled: boolean) {
+  /**
+   * 保存市场配置。
+   *
+   * `apiToken` 留空表示"保持原 Token"；要清除必须显式 `clearToken: true`——
+   * 否则用户只是改了地址，就会把已有的 Token 一起清掉。
+   */
+  public setMarketConfig(params: {
+    baseUrl: string
+    apiToken?: string
+    clearToken?: boolean
+  }) {
+    return this.request<{ ok: boolean; config: MarketConfigView }>('market.setConfig', params)
+  }
+
+  public searchMarket(params?: { query?: string; limit?: number; offset?: number }) {
+    return this.request<MarketSearchResult>('market.search', params || {})
+  }
+
+  /**
+   * 下载并安装插件到全局扩展目录。
+   *
+   * 后端会顺带重装配（`applied` 即结果）；安装完成后前端再 `fetchPlugins()` 刷新列表即可。
+   */
+  public installMarketPlugin(params: {
+    owner: string
+    slug: string
+    version: string
+    overwrite?: boolean
+  }) {
+    return this.request<MarketInstallResult>('market.install', params)
+  }
+
+  /**
+   * 把本地插件包上传到 plugin-hub（需要 write Token）。
+   *
+   * 后端先 `?upsert=1` 创建/更新仓库元数据，再发布一个版本；`version` 留空时
+   * 由插件库采用包内 `metadata.version`。
+   */
+  public publishPlugin(params: {
+    filePath: string
+    workspace?: string
+    slug: string
+    name: string
+    description?: string
+    tags?: string
+    license?: string
+    readme?: string
+    version?: string
+    notes?: string
+  }) {
+    return this.request<MarketPublishResult>('market.publish', {
+      filePath: params.filePath,
+      workspace: params.workspace || this.snapshot.activeWorkspace,
+      slug: params.slug,
+      name: params.name,
+      description: params.description || '',
+      tags: params.tags || '',
+      license: params.license || '',
+      readme: params.readme || '',
+      version: params.version || '',
+      notes: params.notes || '',
+    })
+  }
+
+  public fetchSkills(workspace?: string) {
+    return this.request<SkillSummary[]>('skill.list', { workspace: workspace || this.snapshot.activeWorkspace })
+  }  public toggleSkill(id: string, enabled: boolean) {
     return this.request('skill.setEnabled', { id, enabled })
   }
 

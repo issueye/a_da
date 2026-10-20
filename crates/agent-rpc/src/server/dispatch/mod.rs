@@ -22,6 +22,7 @@ use tracing::warn;
 mod builder;
 mod helpers;
 mod hooks;
+mod market;
 mod thread_loop;
 
 use helpers::*;
@@ -2642,6 +2643,12 @@ impl Dispatcher {
                     "report": report,
                 }))
             }
+
+            MARKET_GET_CONFIG => self.dispatch_market(method, params).await,
+            MARKET_SET_CONFIG => self.dispatch_market(method, params).await,
+            MARKET_SEARCH => self.dispatch_market(method, params).await,
+            MARKET_INSTALL => self.dispatch_market(method, params).await,
+            MARKET_PUBLISH => self.dispatch_market(method, params).await,
 
             SKILL_LIST => {
                 let ws = params.get("workspace").and_then(|v| v.as_str());

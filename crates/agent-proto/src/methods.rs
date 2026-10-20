@@ -81,6 +81,13 @@ pub const PLUGIN_CREATE_TEMPLATE: &str = "plugin.createTemplate";
 /// 自检一个插件：转译 / 装载 / 工具是内置实现还是自定义工具 / 当前权限与预算（P1·SP-18）
 pub const PLUGIN_VALIDATE: &str = "plugin.validate";
 
+// 插件市场（对接 plugin-hub）
+pub const MARKET_GET_CONFIG: &str = "market.getConfig";
+pub const MARKET_SET_CONFIG: &str = "market.setConfig";
+pub const MARKET_SEARCH: &str = "market.search";
+pub const MARKET_INSTALL: &str = "market.install";
+pub const MARKET_PUBLISH: &str = "market.publish";
+
 // 提示词管理
 pub const PROMPT_LIST: &str = "prompt.list";
 pub const PROMPT_SET_ENABLED: &str = "prompt.setEnabled";
@@ -185,6 +192,11 @@ pub const ALL_METHODS: &[&str] = &[
     PLUGIN_DELETE,
     PLUGIN_CREATE_TEMPLATE,
     PLUGIN_VALIDATE,
+    MARKET_GET_CONFIG,
+    MARKET_SET_CONFIG,
+    MARKET_SEARCH,
+    MARKET_INSTALL,
+    MARKET_PUBLISH,
     PROMPT_LIST,
     PROMPT_SET_ENABLED,
     PROMPT_CREATE,
@@ -224,7 +236,8 @@ mod tests {
         // W6-T1/T2：`subagent.resume` / `workspace.rescan` 删除后 74 → 72
         // W7：新增 `config.setRetryCount`（模型请求重试次数）后 72 → 73
         // P1·SP-18：新增 `plugin.validate`（插件只读自检）后 74 → 75
-        assert_eq!(ALL_METHODS.len(), 77);
+        // 插件市场：新增 market.getConfig/setConfig/search/install/publish 后 77 → 82
+        assert_eq!(ALL_METHODS.len(), 82);
 
         let mut event_set = HashSet::new();
         for &e in ALL_EVENTS {

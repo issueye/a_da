@@ -4,6 +4,7 @@ pub mod dispatch;
 pub mod emitter;
 pub mod events;
 pub mod fs_service;
+pub mod market;
 pub mod node_config;
 pub mod watchdog;
 pub mod ws;

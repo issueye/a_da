@@ -347,6 +347,10 @@ fn render_index_ts(id: &str, display: &str, desc: &str, tool: &str) -> String {
 const metadata = {
   name: '@@ID@@',
   description: @@DESC_TS@@,
+  // 发布到插件市场（plugin-hub）时 author / version 是**必填**：
+  // 发布时从包根 index.ts 静态读取并校验，缺一个就会被拒。
+  author: 'a_da',
+  version: '0.1.0',
   tools: { count: 1, names: ['@@TOOL@@'] },
   systemPrompt: { count: 1, names: ['@@ID@@-usage'] },
   skills: { count: 1, names: ['@@ID@@'] },

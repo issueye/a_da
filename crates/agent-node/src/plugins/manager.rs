@@ -505,6 +505,9 @@ impl PluginManager {
             r#"const metadata = {{
   name: {name:?},
   description: '自定义 Agent 扩展',
+  // 发布到插件市场（plugin-hub）时 author / version 是必填项
+  author: 'a_da',
+  version: '0.1.0',
   tools: {{ count: 0, names: [] }},
   systemPrompt: {{ count: 0, names: [] }},
   skills: {{ count: 0, names: [] }},
