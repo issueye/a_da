@@ -56,7 +56,8 @@ impl Tool for BatchWriteTool {
                         f.get("path").and_then(|v| v.as_str()),
                         f.get("content").and_then(|v| v.as_str()),
                     ) {
-                        let res = write_file(&self.workspace, p, c);
+                        let gate = crate::fs_tools::PathGate::scoped(ctx.scope, &self.workspace);
+                        let res = write_file(gate, p, c);
                         if !res.ok {
                             let fin = crate::now_ms().max(started_at);
                             return ToolReceipt::error(
@@ -128,7 +129,8 @@ impl Tool for BatchReplaceTool {
                         return ToolReceipt::new(ToolStatus::Aborted, "操作已中止", started_at, fin);
                     }
                     if let Some(p) = f.as_str() {
-                        let res = edit_file(&self.workspace, p, Some(old_s), Some(new_s), None);
+                        let gate = crate::fs_tools::PathGate::scoped(ctx.scope, &self.workspace);
+                        let res = edit_file(gate, p, Some(old_s), Some(new_s), None);
                         if res.ok {
                             replaced += 1;
                         }

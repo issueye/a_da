@@ -35,7 +35,6 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use tokio::sync::Mutex;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
@@ -816,9 +815,11 @@ async fn relay(
         id: None,
     };
 
-    // 连到 agent 实例
-    let req = instance.endpoint.clone().into_client_request()?;
-    let (agent_ws, _resp) = tokio_tungstenite::connect_async(req).await?;
+    // 连到 agent 实例：端点可能是回环 TCP，也可能是本地管道
+    // （Windows 命名管道 / Unix socket）——形态由 `link` 解析，帧与鉴权完全一致。
+    let endpoint = crate::link::AgentEndpoint::parse(&instance.endpoint)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let agent_ws = endpoint.connect().await?;
 
     let (mut client_sink, mut client_rx) = client_ws.split();
     let (mut agent_tx, mut agent_rx) = agent_ws.split();

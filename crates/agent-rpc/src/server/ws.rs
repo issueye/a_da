@@ -1,19 +1,33 @@
 use crate::server::dispatch::Dispatcher;
-use crate::state::{generate_snapshot_with_seq, AgentStore};
+use crate::state::{AgentStore, generate_snapshot_with_seq};
 use agent_proto::*;
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, RwLock};
-use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+use std::sync::atomic::AtomicU64;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpListener;
+use tokio::sync::{RwLock, mpsc};
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tracing::{info, warn};
+
+/// 宿主监听方式。
+///
+/// 两种形态跑的是**同一套** WS 帧与 dispatch——换的只是"连接从哪来"：
+/// - [`HostBind::Tcp`]：回环端口（默认；手工调试、直连客户端最省事）；
+/// - [`HostBind::Pipe`]：Windows 命名管道（`\\.\pipe\...`）或 Unix domain socket 路径。
+///   网关托管时用它：**不占端口、不进防火墙**，也不需要把 token 交给一个会监听端口的进程。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostBind {
+    Tcp(u16),
+    Pipe(String),
+}
 
 pub struct WsHostServer {
     pub port: u16,
     pub token: String,
+    pub bind: HostBind,
     store: Arc<RwLock<AgentStore>>,
     dispatcher: Arc<Dispatcher>,
     broadcaster: Arc<crate::server::emitter::StateBroadcaster>,
@@ -56,12 +70,67 @@ impl WsHostServer {
         coding_injection: Option<crate::server::dispatch::EngineInjection>,
         pm_injection: Option<crate::server::dispatch::EngineInjection>,
     ) -> Result<Arc<Self>, anyhow::Error> {
-        let addr = SocketAddr::from(([127, 0, 0, 1], bind_port));
-        let listener = TcpListener::bind(addr).await?;
-        let local_addr = listener.local_addr()?;
-        let actual_port = local_addr.port();
+        Self::bind_at(
+            HostBind::Tcp(bind_port),
+            token,
+            store,
+            coding_injection,
+            pm_injection,
+        )
+        .await
+    }
 
-        info!("WebSocket 服务端已在 127.0.0.1:{} 成功绑定", actual_port);
+    /// 按 [`HostBind`] 绑定：TCP 或本地管道（Windows 命名管道 / Unix domain socket）。
+    ///
+    /// 管道形态下 `port` 恒为 0；客户端按管道名连接，帧与鉴权规则与 TCP 完全一致
+    /// （token 仍走 URL query，握手回调不做任何特判）。
+    pub async fn bind_at(
+        bind: HostBind,
+        token: String,
+        store: Arc<RwLock<AgentStore>>,
+        coding_injection: Option<crate::server::dispatch::EngineInjection>,
+        pm_injection: Option<crate::server::dispatch::EngineInjection>,
+    ) -> Result<Arc<Self>, anyhow::Error> {
+        let mut tcp_listener: Option<TcpListener> = None;
+        #[cfg(unix)]
+        let mut unix_listener: Option<tokio::net::UnixListener> = None;
+        #[cfg(windows)]
+        let mut pipe_server: Option<tokio::net::windows::named_pipe::NamedPipeServer> = None;
+
+        let actual_port = match &bind {
+            HostBind::Tcp(port) => {
+                let addr = SocketAddr::from(([127, 0, 0, 1], *port));
+                let listener = TcpListener::bind(addr).await?;
+                let local_addr = listener.local_addr()?;
+                tcp_listener = Some(listener);
+                local_addr.port()
+            }
+            HostBind::Pipe(name) => {
+                #[cfg(unix)]
+                {
+                    // 上次异常退出会留下 socket 文件：先清掉，否则 bind 恒失败。
+                    let _ = std::fs::remove_file(name);
+                    unix_listener = Some(tokio::net::UnixListener::bind(name)?);
+                }
+                #[cfg(windows)]
+                {
+                    let mut opts = tokio::net::windows::named_pipe::ServerOptions::new();
+                    opts.first_pipe_instance(true);
+                    pipe_server = Some(opts.create(name)?);
+                }
+                #[cfg(not(any(unix, windows)))]
+                anyhow::bail!("当前平台不支持本地管道监听");
+                let _ = name;
+                0
+            }
+        };
+
+        match &bind {
+            HostBind::Tcp(_) => info!("WebSocket 服务端已在 127.0.0.1:{} 成功绑定", actual_port),
+            HostBind::Pipe(name) => {
+                info!("WebSocket 服务端已在本地管道 {} 上监听（不占端口）", name)
+            }
+        }
 
         let (broadcast_tx, mut broadcast_rx) = mpsc::unbounded_channel::<String>();
         let client_senders = Arc::new(RwLock::new(Vec::<mpsc::UnboundedSender<Message>>::new()));
@@ -155,24 +224,103 @@ impl WsHostServer {
         let server = Arc::new(Self {
             port: actual_port,
             token: token.clone(),
+            bind: bind.clone(),
             store: store.clone(),
             dispatcher: dispatcher.clone(),
             broadcaster,
         });
 
-        // 接收外部连接后台协程
-        let server_clone = server.clone();
-        tokio::spawn(async move {
-            while let Ok((stream, peer_addr)) = listener.accept().await {
-                let srv = server_clone.clone();
-                let senders = client_senders.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = srv.handle_connection(stream, peer_addr, senders).await {
-                        warn!("客户端连接断开或异常 ({}): {}", peer_addr, e);
+        // 接收外部连接后台协程（按监听方式分支；进来的连接类型不同，处理逻辑完全一致）
+        if let Some(listener) = tcp_listener.take() {
+            let server_clone = server.clone();
+            let senders = client_senders.clone();
+            tokio::spawn(async move {
+                while let Ok((stream, peer_addr)) = listener.accept().await {
+                    let srv = server_clone.clone();
+                    let senders = senders.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = srv
+                            .handle_connection(stream, peer_addr.to_string(), senders)
+                            .await
+                        {
+                            warn!("客户端连接断开或异常 ({}): {}", peer_addr, e);
+                        }
+                    });
+                }
+            });
+        }
+
+        #[cfg(unix)]
+        if let Some(listener) = unix_listener.take() {
+            let server_clone = server.clone();
+            let senders = client_senders.clone();
+            let label = match &bind {
+                HostBind::Pipe(name) => name.clone(),
+                HostBind::Tcp(_) => String::new(),
+            };
+            tokio::spawn(async move {
+                loop {
+                    match listener.accept().await {
+                        Ok((stream, _addr)) => {
+                            let srv = server_clone.clone();
+                            let senders = senders.clone();
+                            let peer = format!("unix:{label}");
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    srv.handle_connection(stream, peer.clone(), senders).await
+                                {
+                                    warn!("Unix socket 连接断开 ({}): {}", peer, e);
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            warn!("Unix socket accept 失败（{}）：{e}", label);
+                            break;
+                        }
                     }
-                });
-            }
-        });
+                }
+            });
+        }
+
+        #[cfg(windows)]
+        if let Some(mut pipe_server) = pipe_server.take() {
+            let server_clone = server.clone();
+            let senders = client_senders.clone();
+            let name = match &bind {
+                HostBind::Pipe(name) => name.clone(),
+                HostBind::Tcp(_) => String::new(),
+            };
+            tokio::spawn(async move {
+                loop {
+                    // 一次 connect 对应一个连接：管道实例是"一次性"的，
+                    // 连上之后必须马上建下一个，否则新客户端会 ENOENT。
+                    if let Err(e) = pipe_server.connect().await {
+                        warn!("命名管道等待连接失败（{}）：{e}", name);
+                        break;
+                    }
+                    let connected = pipe_server;
+                    let next = tokio::net::windows::named_pipe::ServerOptions::new();
+                    match next.create(&name) {
+                        Ok(s) => pipe_server = s,
+                        Err(e) => {
+                            warn!("命名管道创建下一个实例失败（{}）：{e}", name);
+                            break;
+                        }
+                    }
+                    let srv = server_clone.clone();
+                    let senders = senders.clone();
+                    let peer = format!("pipe:{name}");
+                    tokio::spawn(async move {
+                        if let Err(e) = srv
+                            .handle_connection(connected, peer.clone(), senders)
+                            .await
+                        {
+                            warn!("命名管道连接断开 ({}): {}", peer, e);
+                        }
+                    });
+                }
+            });
+        }
 
         Ok(server)
     }
@@ -182,12 +330,23 @@ impl WsHostServer {
         self.broadcaster.broadcast_immediate().await;
     }
 
-    async fn handle_connection(
+    /// 人类可读的监听标识（日志/诊断用；管道形态下没有端口）。
+    pub fn bind_label(&self) -> String {
+        match &self.bind {
+            HostBind::Tcp(port) => format!("127.0.0.1:{}", port),
+            HostBind::Pipe(name) => format!("pipe {}", name),
+        }
+    }
+
+    async fn handle_connection<S>(
         &self,
-        stream: TcpStream,
-        peer_addr: SocketAddr,
+        stream: S,
+        peer_addr: String,
         client_senders: Arc<RwLock<Vec<mpsc::UnboundedSender<Message>>>>,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), anyhow::Error>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
         let expected_token = self.token.clone();
         let mut token_valid = false;
         // HTTP 网关代理连接（`?api=1`）：**只做请求/响应**，不参与事件广播。

@@ -10,7 +10,7 @@ import type { ClientSnapshot, Item } from '../types'
  * （内存侧 `store::next_item_at`、磁盘回填侧 `session::manager::CardStamps`）——
  * 否则同一毫秒里的两张卡（思考 + 正文、正文 + 首段流式）会按 id 字典序落位，
  * 表现为**轮次一收尾思考块就掉到正文下面**。
- * 契约与守门见 `docs/protocol/state-patch.md` 的"顺序"一节。
+ * 契约与守门见 `docs/protocol/README.md` §4.3 的"顺序"一节。
  */
 function insertByItemTime(items: any[], item: any): any[] {
   const at = typeof item?.at === 'number' ? item.at : null

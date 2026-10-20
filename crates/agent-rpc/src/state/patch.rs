@@ -5,7 +5,7 @@
 //! 渲染进程内存被顶到 GB 级。真正的大头是 `items`——所以只推**变过**的 item 就能拿掉绝大部分。
 //!
 //! 这里刻意做成**纯函数 + 不接生产路径**：先把"怎么算差量"用测试钉死，
-//! 再接宿主发送与客户端合并（顺序见 docs/protocol/state-patch.md）。
+//! 再接宿主发送与客户端合并（顺序见 docs/protocol/README.md §4.3）。
 //!
 //! 指纹复用 `store::item_visible_key`——它本来就是为"判断这条 item 可不可能变了"设计的
 //! （id + 文本长度 + 状态 + 是否流式 + 完成时刻），比序列化整条 item 再哈希便宜得多。
@@ -106,7 +106,10 @@ pub fn advance_versions(prev: &mut BTreeMap<ItemKey, u64>, current: &[(String, I
         .collect();
     prev.retain(|k, _| live.contains(k));
     for (thread_id, item) in current {
-        prev.insert((thread_id.clone(), item_id(item).to_string()), fingerprint(item));
+        prev.insert(
+            (thread_id.clone(), item_id(item).to_string()),
+            fingerprint(item),
+        );
     }
 }
 
@@ -197,7 +200,11 @@ mod tests {
         ];
         let d1 = diff_items(&BTreeMap::new(), &items);
         let d2 = diff_items(&BTreeMap::new(), &items);
-        assert_eq!(format!("{d1:?}"), format!("{d2:?}"), "顺序不确定会让日志/ diff 不可复现");
+        assert_eq!(
+            format!("{d1:?}"),
+            format!("{d2:?}"),
+            "顺序不确定会让日志/ diff 不可复现"
+        );
         assert_eq!(
             d1.upserted
                 .iter()

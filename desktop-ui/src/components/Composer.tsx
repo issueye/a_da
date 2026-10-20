@@ -597,7 +597,7 @@ export const Composer: React.FC<ComposerProps> = ({
       className={`select-none relative transition-colors ${
         centered
           ? 'w-full flex flex-col space-y-2'
-          : 'px-3 py-1.5 border-t border-zinc-200 dark:border-[#27272a] bg-zinc-50 dark:bg-[#141416] flex flex-col space-y-1'
+          : 'px-3 py-1.5 flex flex-col space-y-1'
       }`}
     >
       {/* 完全访问档位的**常驻指示**（P1b · SP-35）。
@@ -1073,7 +1073,7 @@ export const Composer: React.FC<ComposerProps> = ({
 
       {/* 4. 底部遥测状态栏（展示轮次、tok、用时，仅非居中时展示） */}
       {!centered && (
-        <div className="flex items-center justify-start flex-wrap gap-x-2.5 gap-y-0.5 px-1.5 pt-0.5 pb-0.5 text-[10.5px] text-zinc-500 dark:text-zinc-400 font-sans select-none relative">
+        <div className="flex items-center justify-center flex-wrap gap-x-2.5 gap-y-0.5 px-1.5 pt-0.5 pb-0.5 text-[10.5px] text-zinc-500 dark:text-zinc-400 font-sans select-none relative">
           {/* 1. 轮次 */}
           <div
             className="flex items-center space-x-1 flex-shrink-0"

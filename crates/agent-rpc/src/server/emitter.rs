@@ -1,9 +1,9 @@
+use crate::state::{AgentStore, generate_snapshot_with_seq};
 use agent_proto::*;
-use crate::state::{generate_snapshot_with_seq, AgentStore};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 
 /// 16ms 窗口节流合帧状态广播器（Snapshot Debouncer / Broadcaster）
 /// 保证在大模型极高频输出 Token 时，UI 侧能获得丝滑的 60FPS 打字机动画，
@@ -72,9 +72,7 @@ impl StateBroadcaster {
         tokio::spawn(async move {
             loop {
                 // 自适应：小帧 16ms（60FPS 打字机），大帧 100ms（别把内存打爆）
-                let interval = next_frame_interval(
-                    b.last_frame_bytes.load(Ordering::Relaxed),
-                );
+                let interval = next_frame_interval(b.last_frame_bytes.load(Ordering::Relaxed));
                 tokio::time::sleep(interval).await;
                 if b.dirty.swap(false, Ordering::Relaxed) {
                     b.broadcast_immediate().await;
@@ -185,7 +183,8 @@ impl StateBroadcaster {
 
         if let Ok(json_str) = serde_json::to_string(&payload) {
             // 记下这一帧多大：下一帧的间隔据此自适应（见 `next_frame_interval`）
-            self.last_frame_bytes.store(json_str.len(), Ordering::Relaxed);
+            self.last_frame_bytes
+                .store(json_str.len(), Ordering::Relaxed);
             let _ = self.broadcast_tx.send(json_str);
         }
     }
@@ -209,7 +208,10 @@ mod tests {
         assert_eq!(val["method"], EVT_STATE_SNAPSHOT);
         assert_eq!(val["params"]["seq"], 1);
         assert_eq!(val["params"]["topic"], EVT_STATE_SNAPSHOT);
-        assert_eq!(val["params"]["payload"]["workspace"]["project"], "E:/test_project");
+        assert_eq!(
+            val["params"]["payload"]["workspace"]["project"],
+            "E:/test_project"
+        );
     }
 
     #[tokio::test]
@@ -234,7 +236,11 @@ mod tests {
             count += 1;
         }
         // 60ms 内，以 16ms 为周期，最多触发 1~4 次合帧广播，绝非 10 次
-        assert!(count >= 1 && count <= 4, "期望收到 1~4 次合帧广播，实际收到 {} 次", count);
+        assert!(
+            count >= 1 && count <= 4,
+            "期望收到 1~4 次合帧广播，实际收到 {} 次",
+            count
+        );
     }
 
     /// 🔴 大帧必须自动降频：全量快照的大小由会话卡片数决定，
@@ -259,7 +265,9 @@ mod tests {
         );
 
         // 真的广播一次大帧后，广播器必须记住它的大小（下一帧据此变慢）
-        let store = Arc::new(RwLock::new(AgentStore::new("E:/test_big_frame".to_string())));
+        let store = Arc::new(RwLock::new(AgentStore::new(
+            "E:/test_big_frame".to_string(),
+        )));
         let seq = Arc::new(AtomicU64::new(0));
         let (tx, _rx) = mpsc::unbounded_channel::<String>();
         let broadcaster = StateBroadcaster::new(store.clone(), seq, tx);
@@ -289,7 +297,9 @@ mod tests {
             }
         }
         broadcaster.broadcast_immediate().await;
-        let last = broadcaster.last_frame_bytes.load(std::sync::atomic::Ordering::Relaxed);
+        let last = broadcaster
+            .last_frame_bytes
+            .load(std::sync::atomic::Ordering::Relaxed);
         assert!(
             last >= FRAME_BIG_BYTES,
             "广播器必须记下真实帧大小（实际 {last}）"
@@ -301,13 +311,15 @@ mod tests {
         );
     }
 
-    /// 🔴 增量帧的验收断言（docs/protocol/state-patch.md）：**没变过的 item 不许出现在 `upserted`**。
+    /// 🔴 增量帧的验收断言（docs/protocol/README.md §4.2）：**没变过的 item 不许出现在 `upserted`**。
     ///
     /// 这是整个增量方案省字节的地方：一条长会话 822 个 item、全量帧 1.85 MB，
     /// 而稳态下一帧只有"正在流式的那一个 item + 小 meta"——从 MB 级降到几十 KB。
     #[tokio::test]
     async fn test_patch_mode_sends_only_changed_items() {
-        let store = Arc::new(RwLock::new(AgentStore::new("E:/test_patch_mode".to_string())));
+        let store = Arc::new(RwLock::new(AgentStore::new(
+            "E:/test_patch_mode".to_string(),
+        )));
         let seq = Arc::new(AtomicU64::new(0));
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let broadcaster = StateBroadcaster::new(store.clone(), seq, tx);
@@ -379,7 +391,9 @@ mod tests {
     /// 全量帧 vs 增量稳态帧的字节数——这就是"MB 级 → 几十 KB"那句话的依据。
     #[tokio::test]
     async fn test_patch_frame_is_much_smaller_than_full_snapshot() {
-        let store = Arc::new(RwLock::new(AgentStore::new("E:/test_patch_size".to_string())));
+        let store = Arc::new(RwLock::new(AgentStore::new(
+            "E:/test_patch_size".to_string(),
+        )));
         let seq = Arc::new(AtomicU64::new(0));
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let broadcaster = StateBroadcaster::new(store.clone(), seq, tx);

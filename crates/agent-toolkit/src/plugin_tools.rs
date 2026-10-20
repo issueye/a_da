@@ -18,7 +18,7 @@ use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt, ToolStatus};
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
 
 use super::cmd_tools::run_command;
-use super::fs_tools::{read_file, ToolResult};
+use super::fs_tools::{read_file, PathGate, ToolResult};
 
 // ── 自由函数：逻辑真源 ──────────────────────────────────────────────────────
 
@@ -137,7 +137,7 @@ fn is_outline_signature(body: &str) -> bool {
 /// 任何签名、每次都返回"未提取到显著大纲"——一个静默失效的工具。
 /// W2-T2 搬运时补了单测才暴露（`test_code_outline_extracts_rust_signatures`）。
 pub async fn code_outline(workspace: &Path, file_path: &str) -> ToolResult {
-    let res = read_file(workspace, file_path, None, Some(2000));
+    let res = read_file(PathGate::Workspace(workspace), file_path, None, Some(2000));
     if !res.ok {
         return res;
     }

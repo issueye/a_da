@@ -25,7 +25,7 @@ impl Dispatcher {
             //
             // 先做**止损式**限流：间隔 1.5s → 10s，并把耗时打进日志（`[sync]`），
             // 让"它到底多贵"变成可见数字。真正的修法是 mtime 过滤（只解析改过的文件），
-            // 见 docs/protocol/state-patch.md 的后续项——那时才能把间隔调回来。
+            // 见 docs/protocol/README.md §4.4 的后续项——那时才能把间隔调回来。
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {

@@ -5,11 +5,17 @@
 //! 第一层（问不问）在 `approval::policy`：`Full` 与 `Auto` 一样不询问。
 //! 第二层（能碰什么）在这里：默认档位下就是工作区沙箱，`Full` 下放开 `..` 与绝对路径。
 //!
-//! # 为什么"完全访问"仍然有一条红线
+//! # 保留目录：凭据关着，插件/技能开着
 //!
-//! `~/.a-da` 放的是**应用自己的配置与 API 密钥**。把它交给任意脚本不属于"访问用户文件"
-//! 的范畴——那是把凭据交出去。所以保留目录**任何档位都不可越**，且这条红线不给开关：
-//! 给一个"再确认一次就放行"的按钮，等于迟早会被点掉。
+//! `~/.a-da` 放的是应用自己的配置与 API 密钥（`config.json`、网关发现文件…）。
+//! 把它整棵交给模型不属于"访问用户文件"——那是把凭据交出去。所以保留目录
+//! **任何档位都不可越**，且这条不给开关：给一个"再确认一次就放行"的按钮，迟早会被点掉。
+//!
+//! 但保留目录里有**不是凭据、且模型本来就该读到**的东西：装好的插件
+//! （`<home>/agent-coding/extensions/`）与技能（`<home>/agent-coding/skills/`）。
+//! 模型读不到它们，就会出现"插件报错却看不到自己的源码 / 技能说不清用法"。
+//! 于是加了**白名单子树**（[`ApprovalAwareScope::with_allowed_subtrees`]）：
+//! 命中的路径在完全访问下放行，**其余仍按保留目录拒绝**——`config.json` 没有开。
 //!
 //! # 判定的两条硬要求
 //!
@@ -42,6 +48,11 @@ pub struct ApprovalAwareScope {
     mode: Arc<dyn ApprovalModeSource>,
     /// 任何档位都不可越的保留目录（构造时即规范化，比较时才不会有差异写法漏网）。
     deny_prefixes: Vec<PathBuf>,
+    /// 位于保留目录**之内**、完全访问下仍然放行的子树（插件 / 技能）。
+    ///
+    /// 判定顺序是"先看白名单、再看黑名单"：`extensions/x` 放行，
+    /// 而指向 `config.json` 的符号链接**规范化之后**落在黑名单，照样拒。
+    allow_prefixes: Vec<PathBuf>,
 }
 
 impl ApprovalAwareScope {
@@ -58,7 +69,17 @@ impl ApprovalAwareScope {
                 .into_iter()
                 .map(|p| agent_toolkit::resolve_real_path(&p))
                 .collect(),
+            allow_prefixes: Vec::new(),
         }
+    }
+
+    /// 在保留目录里开几个**非凭据**的子树（插件安装目录、技能目录）。
+    pub fn with_allowed_subtrees(mut self, allow: Vec<PathBuf>) -> Self {
+        self.allow_prefixes = allow
+            .into_iter()
+            .map(|p| agent_toolkit::resolve_real_path(&p))
+            .collect();
+        self
     }
 
     /// 是否处于完全访问（拿不到档位时**按否处理**——失败方向朝严的一侧）。
@@ -89,6 +110,17 @@ impl Scope for ApprovalAwareScope {
             }
         };
         let resolved = agent_toolkit::resolve_real_path(&candidate);
+
+        // 🔴 白名单先于黑名单：插件/技能目录在完全访问下可读写。
+        // 判定用的是**规范化之后**的路径，所以从白名单目录里指向 `config.json` 的
+        // 符号链接会在下一步命中黑名单，不会被放进来。
+        if self
+            .allow_prefixes
+            .iter()
+            .any(|a| resolved.starts_with(a) && resolved != *a)
+        {
+            return Ok(resolved);
+        }
 
         // 🔴 红线：**先规范化再比**——`a/../../.a-da`、符号链接指向保留目录都必须被拦
         if let Some(hit) = self.deny_prefixes.iter().find(|d| resolved.starts_with(d)) {
@@ -249,5 +281,55 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&ws);
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// 保留目录里的**插件/技能子树**在完全访问下放行，凭据文件仍然拒。
+    ///
+    /// 这条锁的是"收窄红线"的边界：只开 `extensions/` 与 `skills/`，
+    /// 同一棵 `~/.a-da` 里的 `config.json` 不许因此被带出去。
+    #[test]
+    fn test_allowed_subtree_opens_plugins_but_keeps_credentials_closed() {
+        let ws = temp_dir("ws");
+        let app_home = temp_dir("app_home");
+        let ext_dir = app_home.join("agent-coding").join("extensions").join("demo");
+        std::fs::create_dir_all(&ext_dir).expect("建插件目录失败");
+        let plugin_file = ext_dir.join("index.ts");
+        std::fs::write(&plugin_file, "export default {}").expect("写插件文件失败");
+        let secret = app_home.join("config.json");
+        std::fs::write(&secret, r#"{"apiKey":"sk-should-never-leak"}"#).expect("写配置失败");
+
+        let full = ApprovalAwareScope::new(
+            WorkspaceScope::new(ws.clone()),
+            Arc::new(FixedMode(ApprovalMode::Full)),
+            vec![app_home.clone()],
+        )
+        .with_allowed_subtrees(vec![app_home.join("agent-coding").join("extensions")]);
+
+        assert!(
+            full.resolve_path(&plugin_file.to_string_lossy()).is_ok(),
+            "完全访问下插件源码必须可读"
+        );
+        assert!(
+            matches!(
+                full.resolve_path(&secret.to_string_lossy()),
+                Err(DenialKind::Sandbox { .. })
+            ),
+            "白名单不能顺带把 config.json 打开"
+        );
+
+        // 非完全访问：白名单**不生效**，仍按工作区沙箱（插件目录在工作区外）
+        let ask = ApprovalAwareScope::new(
+            WorkspaceScope::new(ws.clone()),
+            Arc::new(FixedMode(ApprovalMode::Ask)),
+            vec![app_home.clone()],
+        )
+        .with_allowed_subtrees(vec![app_home.join("agent-coding").join("extensions")]);
+        assert!(
+            ask.resolve_path(&plugin_file.to_string_lossy()).is_err(),
+            "非完全访问档不许因为白名单就放开工作区"
+        );
+
+        let _ = std::fs::remove_dir_all(&ws);
+        let _ = std::fs::remove_dir_all(&app_home);
     }
 }

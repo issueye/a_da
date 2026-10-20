@@ -49,7 +49,8 @@ impl Tool for SearchFilesTool {
             let case_sensitive = call.args.get("case_sensitive").and_then(|v| v.as_bool()).unwrap_or(false);
             let context = call.args.get("context").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
-            let res = search_files(&self.workspace, pattern, glob, path, literal, case_sensitive, context);
+            let gate = crate::fs_tools::PathGate::scoped(ctx.scope, &self.workspace);
+            let res = search_files(gate, pattern, glob, path, literal, case_sensitive, context);
             let finished_at = crate::now_ms().max(started_at);
 
             if res.ok {

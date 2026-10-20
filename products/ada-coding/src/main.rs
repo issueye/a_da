@@ -35,6 +35,13 @@ struct CliArgs {
     #[arg(long, default_value_t = 0)]
     port: u16,
 
+    /// 改用本地管道承载 WS：Windows 命名管道名（如 `\\.\pipe\a-da-agent-x`）
+    /// 或 Unix domain socket 路径。**给了就忽略 `--port`**。
+    ///
+    /// 网关托管时用它：不占端口、不进防火墙；帧与 token 校验规则与 TCP 完全一致。
+    #[arg(long)]
+    pipe: Option<String>,
+
     /// 握手认证令牌（与 UI 进程共享）
     #[arg(long)]
     token: Option<String>,
@@ -533,8 +540,12 @@ async fn main() -> Result<(), anyhow::Error> {
     )
     .await;
 
-    // 启动 WebSocket 服务
-    let server = WsHostServer::bind_with_engines(args.port, token.clone(), store, injection, pm_injection).await?;
+    // 启动 WebSocket 服务（TCP 回环，或网关托管用的本地管道）
+    let bind = match args.pipe.clone() {
+        Some(name) => agent_rpc::server::HostBind::Pipe(name),
+        None => agent_rpc::server::HostBind::Tcp(args.port),
+    };
+    let server = WsHostServer::bind_at(bind, token.clone(), store, injection, pm_injection).await?;
     let current_pid = std::process::id();
 
     // 打印符合协议 §1.8 规范的标准就绪行至 stdout
@@ -545,6 +556,8 @@ async fn main() -> Result<(), anyhow::Error> {
     let ready_json = serde_json::json!({
         "ready": true,
         "port": server.port,
+        // 管道形态下端口恒为 0；网关按这个字段决定用什么方式连过来
+        "pipe": args.pipe,
         "token": token,
         "pid": current_pid,
         "protocolVersion": PROTOCOL_VERSION,
@@ -554,16 +567,27 @@ async fn main() -> Result<(), anyhow::Error> {
     println!("A_DA_HOST_READY {}", ready_json);
     std::io::stdout().flush()?;
 
-    info!("a-da 原生核心就绪，PID: {}, 监听端口: {}", current_pid, server.port);
+    info!(
+        "a-da 原生核心就绪，PID: {}, 监听: {}",
+        current_pid,
+        server.bind_label()
+    );
 
-    // 若配置了 --gateway，启动后台协程主动向网关注册自身并保持长连接通道
-    if let Some(gateway_endpoint) = args.gateway {
-        let server_port = server.port;
-        let auth_token = token.clone();
-        let ws_path = args.workspace.clone();
-        tokio::spawn(async move {
-            register_to_gateway("ada-coding", &gateway_endpoint, server_port, &auth_token, &ws_path, current_pid).await;
-        });
+    // 若配置了 --gateway，启动后台协程主动向网关注册自身并保持长连接通道。
+    //
+    // 管道形态下不注册：`gateway.register` 的语义是"advertise 一个 ws:// 端点"，
+    // 而管道端点只有拉起它的那个网关知道（且它本来就是网关的子进程，不需要自报）。
+    if let Some(gateway_endpoint) = args.gateway.clone() {
+        if args.pipe.is_some() {
+            warn!("--pipe 与 --gateway 同时给出：管道实例不做自注册（端点无法用 ws:// 表达）");
+        } else {
+            let server_port = server.port;
+            let auth_token = token.clone();
+            let ws_path = args.workspace.clone();
+            tokio::spawn(async move {
+                register_to_gateway("ada-coding", &gateway_endpoint, server_port, &auth_token, &ws_path, current_pid).await;
+            });
+        }
     }
 
     // 持续运行服务直到收到终止信号或父进程看门狗触发退出

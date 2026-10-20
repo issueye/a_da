@@ -76,6 +76,24 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
   ③ **有客户端连着就不回收**（`AgentRegistry::connections` + `relay` 的 ConnGuard）：
      用户可能正对着一条长回答发呆十几分钟，掐掉就是"莫名其妙掉线"。
   另外：工作区目录不存在时 `ensure_agent` **拒绝拉起**（为一个空气目录起进程只会白占一个）。
+- **网关 ↔ agent 的本体链路有两种**（`A_DA_GATEWAY_AGENT_LINK`，默认 `tcp`）：`tcp` 是回环端口
+  （`--host --port 0`，端点 `ws://127.0.0.1:<port>/rpc?token=…`），`pipe` 是
+  **Windows 命名管道 / Unix domain socket**（`--pipe <名>`，端点 `pipe://\\.\pipe\…` 或
+  `unix:///…`，**端口 0、不监听 TCP**）。两种形态跑同一套 WS 帧与 token 握手，
+  客户端察觉不到差别。🔴 **端点解析只有一处**：`agent-gateway/src/link.rs` 的 `AgentEndpoint`，
+  `relay` / `http_api::call_agent` / `gateway.delegate` 都走它——各自 `connect_async` 过一份
+  就会漂（本轮就是这么发现 `/api/*` 与 `delegate` 会绕过管道的）。管道实例**不做
+  `gateway.register` 自注册**（端点无法用 `ws://` 表达）。
+- 🔴 **工具内部的路径校验必须走 `ctx.scope`**（`agent_toolkit::fs_tools::PathGate::Scoped`），
+  不许再自己调 `check_workspace_sandbox`：引擎在工具执行前用 `Scope` 判过一次，工具内部再按
+  `workspace` 硬判一次，`Full`（完全访问）就会在第二处被挡回去——表现是"界面横幅写着可读写
+  工作区之外的路径，模型却一直收到『拒绝访问工作区外的路径』"（2026-10-20 用户实拍）。
+  插件工具与内部调用用 `PathGate::Workspace`（只认工作区，行为与 P1b 之前一致）。
+  **保留目录的红线是"凭据"，不是整棵树**：`~/.a-da` 里 `agent-coding/extensions/`（插件）与
+  `agent-coding/skills/`（技能）在完全访问下**可读写**（`ApprovalAwareScope::with_allowed_subtrees`），
+  `config.json`、网关发现文件与会话仍然拒；判 `allow` 用的是**规范化后**的路径，
+  所以从白名单目录指向 `config.json` 的符号链接照样命中黑名单。
+  实机回归：`bun tools/verify-full-access-paths.mjs`（假模型 + 真协议，四个场景各跑一轮）。
 - **工具超时是真的会生效的**（`RunPolicy::tool_timeout` ← 产品声明 `policies.toolTimeoutSec`）：
   引擎对**非** `Tool::long_running()` 的工具加超时，超时给一条 `ToolStatus::Timeout` 回执
   （回执里说清是哪个工具、让模型换路子），整轮**继续**而不是永远挂住。
@@ -159,7 +177,7 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
   （内存卡片被磁盘回填整份换掉、id 全变，那一帧按 id 字典序落位）。
   只读 `session.snapshot` 是**看不出**这个问题的——服务端数组一直是对的，被换乱的是界面拼出来的那份；
   实机验收用 `bun tools/verify-card-order-e2e.mjs [--with-tool]`（本地假模型 + 真协议，
-  比较收尾前后**界面上**的顺序），契约见 `docs/protocol/state-patch.md` 的"顺序"一节。
+  比较收尾前后**界面上**的顺序），契约见 `docs/protocol/README.md` §4.3 的"顺序"一节。
 - 🔴 **Electron 宿主里 `__dirname` 不可信**：`bun run electron:build:main`（`bun build --target node
   --format cjs`）会把 `__dirname` **硬编码成构建机的源码目录**。用
   `path.join(__dirname, 'preload.cjs')` 当 preload 路径 → preload 静默加载失败 →

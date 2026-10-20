@@ -9,7 +9,7 @@
 > 现行的设计与约定口径是 [docs/architecture/kernel-design.md](docs/architecture/kernel-design.md)
 > 与 [docs/architecture/conventions.md](docs/architecture/conventions.md)。
 
-<img src="./assets/logo.svg" width="88" align="right" alt="a_da logo" />
+<img src="./assets/logo.png" width="88" align="right" alt="a_da logo" />
 
 一个**本地** AI 编码 Agent 的桌面程序：纯 Rust 内核 + Electron 桌面壳 + React 前端。
 标志是一条 shell 提示符 `>_`——Agent 就是在工作区里跑命令的那个东西，
@@ -364,6 +364,7 @@ bun run typecheck            # 门一：前端 tsc --noEmit
 | `pwsh -NoProfile -File tools/verify-desktop-shell.ps1` | 桌面壳：拉起网关 → 界面接入 → 窗口控制 → 状态同步 → 退出清理（弹窗开着时点最大化仍须生效） |
 | `pwsh -NoProfile -File tools/verify-retry-and-disconnect.ps1` | 重试与断线：真产品走真 JSON-RPC（改用户配置前先备份后还原） |
 | `bun tools/verify-card-order-e2e.mjs [--with-tool]` | 卡片顺序：比较**收尾前后界面上**的顺序 |
+| `bun tools/verify-full-access-paths.mjs` | 权限档位：`full` 能读工作区外与插件/技能目录、凭据仍拒、`ask` 仍守边界 |
 | `bun tools/verify-plugin-platform-e2e.mjs` | 插件平台：装配 → 贡献 → 钩子点位 |
 | `pwsh -NoProfile -File tools/verify-gateway-process-model.ps1` | 网关：一工作区一进程与身份键折叠 |
 

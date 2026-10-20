@@ -114,7 +114,7 @@ impl Dispatcher {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                // 增量帧能力协商（docs/protocol/state-patch.md 第 1 步）：只有声明了 state.patch 的
+                // 增量帧能力协商（docs/protocol/README.md §4.2 第 1 步）：只有声明了 state.patch 的
                 // 连接才切增量；没声明的继续收全量快照——这是安全绳，也是回滚路径。
                 let wants_patch = p
                     .get("client")

@@ -372,6 +372,6 @@
 | [`docs/plans/wiring.md`](../plans/wiring.md) | **接线类问题的唯一口径**：缺口台账、任务表、执行记录、断言变更 |
 | [`docs/architecture/kernel-design.md`](../architecture/kernel-design.md) | 设计口径（分层、端口、协议单源、装配） |
 | [`AGENTS.md`](../../AGENTS.md) | 接手须知与 § 索引 |
-| [`docs/protocol/README.md`](../protocol/README.md) | 线协议总览 |
+| [`docs/protocol/README.md`](../protocol/README.md) | 接口文档（WS 线协议 + HTTP API 统一口径） |
 | [`docs/plugins/README.md`](../plugins/README.md) | 插件平台现状（贡献模型、点位、能力开关、排错） |
 | [`docs/quality/feature-catalog.md`](feature-catalog.md) | 已实现功能清单 |

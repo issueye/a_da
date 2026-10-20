@@ -30,9 +30,9 @@ if (-not $WorkDir) { $WorkDir = $RepoRoot }
 
 # 默认目标与进程名（Electron 交付形态）
 if (-not $Exe) {
-  $Exe = if ($Dev) { '' } else { Join-Path $RepoRoot 'dist\electron\win-unpacked\a_da.exe' }
+  $Exe = if ($Dev) { '' } else { Join-Path $RepoRoot 'dist\electron\win-unpacked\ada.exe' }
 }
-$appProcessNames = @('a_da', 'electron')
+$appProcessNames = @('ada', 'a_da', 'electron')
 # 🔴 Electron 会认 ELECTRON_RUN_AS_NODE：一旦继承到（例如从 Electron 系终端里启动），
 # 它就以"纯 Node"跑 main.cjs——require('electron') 变成路径字符串，进程当场崩掉。
 if ($env:ELECTRON_RUN_AS_NODE) {

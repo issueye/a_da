@@ -46,7 +46,8 @@ impl Tool for ReadFileTool {
             let offset = call.args.get("offset").and_then(|v| v.as_u64()).map(|n| n as usize);
             let limit = call.args.get("limit").and_then(|v| v.as_u64()).map(|n| n as usize);
 
-            let res = read_file(&self.workspace, path, offset, limit);
+            let gate = crate::fs_tools::PathGate::scoped(ctx.scope, &self.workspace);
+            let res = read_file(gate, path, offset, limit);
             let finished_at = crate::now_ms().max(started_at);
 
             if res.ok {

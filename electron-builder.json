@@ -11,6 +11,7 @@
     "dist-electron/**/*",
     "desktop-ui/dist/**/*",
     "assets/**/*",
+    "!assets/logo_.jpg",
     "package.json"
   ],
   "extraResources": [
@@ -35,6 +36,7 @@
         "arch": ["x64"]
       }
     ],
+    "executableName": "ada",
     "icon": "assets/logo.ico"
   },
   "nsis": {

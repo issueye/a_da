@@ -105,150 +105,22 @@ sequenceDiagram
 
 所有方法均遵循 JSON-RPC 2.0 规范，通过统一的网关 WebSocket 链路传输。
 
-### 2.1 磁盘根节点查询：`gateway.fs.roots`
+### 2.1 方法清单（示例见统一接口文档）
 
-获取当前宿主机可用的物理磁盘、挂载点以及常用快捷目录。
+完整的请求/响应示例、鉴权、帧、错误码与 HTTP 端点映射统一写在
+[`docs/protocol/README.md`](../protocol/README.md)（§2 鉴权、§3 帧与端点表、§6 错误码）；
+本节只列方法与语义，避免两份示例互相漂移。
 
-- **请求**：
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-1",
-  "method": "gateway.fs.roots",
-  "params": {}
-}
-```
+| 方法 | 语义 |
+|---|---|
+| `gateway.fs.roots` | 磁盘根、挂载点与常用快捷目录（home / desktop / drive） |
+| `gateway.fs.listDirectory` | 浏览目录下的子项：`directoriesOnly=true` 只列目录（选工作区），否则连文件一起（选附件）；`showHidden` / `limit` 控制隐藏项与截断 |
+| `gateway.fs.makeDirectory` | 在 `parentPath` 下建 `folderName` 子目录（新建项目用） |
+| `gateway.workspaces.list` | 最近/常用工作区清单（`~/.a-da/gateway_workspaces.json`），每项带 `lastAccessedAt` / `isOnline` / `activeProduct` |
+| `gateway.workspaces.remove` | 移除工作区记录；`killInstance=true` 时同时回收其 agent 进程 |
 
-- **响应**：
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-1",
-  "result": {
-    "roots": [
-      { "id": "home", "name": "用户主目录", "path": "C:\\Users\\User", "kind": "home" },
-      { "id": "desktop", "name": "桌面", "path": "C:\\Users\\User\\Desktop", "kind": "folder" },
-      { "id": "drive-c", "name": "本地磁盘 (C:)", "path": "C:\\", "kind": "drive" },
-      { "id": "drive-e", "name": "工作盘 (E:)", "path": "E:\\", "kind": "drive" }
-    ]
-  }
-}
-```
-
-### 2.2 目录与文件列表浏览：`gateway.fs.listDirectory`
-
-浏览指定路径下的子项。支持仅浏览目录（选择工作区场景）或浏览全量文件（选择引用附件场景）。
-
-- **请求**：
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-2",
-  "method": "gateway.fs.listDirectory",
-  "params": {
-    "path": "E:\\codes\\rust_projects",
-    "directoriesOnly": true,
-    "showHidden": false,
-    "limit": 500
-  }
-}
-```
-
-- **响应**：
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-2",
-  "result": {
-    "path": "E:/codes/rust_projects",
-    "parent": "E:/codes",
-    "isRoot": false,
-    "dirs": [
-      { "name": "a_da", "path": "E:/codes/rust_projects/a_da", "isDir": true, "modifiedAt": 1728551200000 },
-      { "name": "other-repo", "path": "E:/codes/rust_projects/other-repo", "isDir": true, "modifiedAt": 1728442000000 }
-    ],
-    "files": [],
-    "total": 2,
-    "truncated": false
-  }
-}
-```
-
-### 2.3 新建文件夹：`gateway.fs.makeDirectory`
-
-在选定目录下创建新的子目录（用于用户在新建项目时直接在模态框内建立新目录）。
-
-- **请求**：
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-3",
-  "method": "gateway.fs.makeDirectory",
-  "params": {
-    "parentPath": "E:\\codes\\rust_projects",
-    "folderName": "my-new-app"
-  }
-}
-```
-
-- **响应**：
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-3",
-  "result": {
-    "path": "E:/codes/rust_projects/my-new-app",
-    "created": true
-  }
-}
-```
-
-### 2.4 历史工作区查询与管理：`gateway.workspaces.list` / `gateway.workspaces.remove`
-
-网关持久化维护用户常用与最近访问的工作区清单（位于网关数据目录 `~/.a-da/workspaces.json`）。
-
-- **请求 (`gateway.workspaces.list`)**：
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-4",
-  "method": "gateway.workspaces.list",
-  "params": {}
-}
-```
-
-- **响应**：
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-4",
-  "result": {
-    "workspaces": [
-      {
-        "workspace": "E:/codes/rust_projects/a_da",
-        "name": "a_da",
-        "lastAccessedAt": 1728551200000,
-        "isOnline": true,
-        "activeProduct": "ada-coding"
-      }
-    ],
-    "activeWorkspace": "E:/codes/rust_projects/a_da"
-  }
-}
-```
-
-- **请求 (`gateway.workspaces.remove`)**：
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-5",
-  "method": "gateway.workspaces.remove",
-  "params": {
-    "workspace": "E:/codes/rust_projects/other-repo",
-    "killInstance": true
-  }
-}
-```
+参数形状与结果字段以 `crates/agent-gateway/src/relay.rs` 的实现为准，端到端用例在
+`crates/agent-gateway/tests/`。
 
 ---
 
@@ -265,14 +137,8 @@ ada-gateway --port 52353 --workspace E:/proj
 
 ### 2.5.1 路由：axum 统一
 
-页面与 WebSocket 在**同一个 axum Router** 里，只有两条路由：
-
-| 请求 | 去向 |
-|---|---|
-| `GET /rpc` + `Upgrade: websocket` | `relay::ws_handler`：先鉴权（Origin / token）再升级 |
-| `GET /`、`GET /assets/*` | `static_ui::static_handler`：前端产物（目录 → `index.html`） |
-| `GET /rpc`（无升级头） | `426 Upgrade Required` |
-| `POST` 等非 GET/HEAD | `405 Method Not Allowed` |
+页面与 WebSocket 在**同一个 axum Router** 里。路由表（`/rpc` / `/api/*` / 静态页 / `426` / `405`）
+见[接口文档](../protocol/README.md) §1.2，本文不重复。
 
 组装点是 `crates/agent-gateway/src/router.rs` 的 `router(state)`：**生产与集成测试共用同一份**，
 测试不会因为"另抄了一段分流"而只覆盖到其中一条路。
@@ -285,12 +151,9 @@ ada-gateway --port 52353 --workspace E:/proj
 
 ### 2.5.2 鉴权位置
 
-- **静态资源不需要 token**——页面只是 JS/CSS，不含任何用户数据；要 token 才能打开"输入 token 的页面"是死锁。
-- **`/rpc` 在升级之前鉴权**：Origin 不合法 → `403`，token 不对 → `401`（都是普通 HTTP 状态码，
-  浏览器与 curl 直接看得到）。未认证连接只能调 `gateway.info` / `gateway.pair`，
-  而且**不绑定 agent 实例**——先升级再鉴权，会让一个不带 token 的连接也能触发 `ensure_agent` 起进程。
-- 回环来源（`http://127.0.0.1:*` / `http://localhost:*`）默认放行；网页访问要带凭据时用
-  `?token=<t>`（前端从 `location.search` 读取）。
+规则（谁能连、什么不需要 token、回环放行）见[接口文档](../protocol/README.md) §2。这里只记**为什么**：
+静态资源若也要 token，"输入 token 的页面"就永远打不开；而 `/rpc` 必须在**升级之前**鉴权——
+否则一个不带 token 的连接也能先建立、再触发 `ensure_agent` 起进程，鉴权就形同虚设。
 
 对外部署仍然遵守第 4 节的硬规则：非回环必须 `--token` + `--allow-origin`，
 且明文 `ws://` 要 `--allow-plaintext` 显式承认。
@@ -332,6 +195,36 @@ Electron 再通过 `--ui-dir` 显式传给网关（见 `electron/main.ts` 的 `f
 不存在的路径按"有扩展名 = 404 / 无扩展名 = 回 index.html（客户端路由兜底）"区分——
 否则 `/assets/missing.js` 会拿到一份 HTML，报出来的是 MIME 错误而不是真正的原因。
 错误页里的路径会先解码再 **HTML 转义**（`/<img src=x>.js` 不能变成标签）。
+
+### 2.6 网关 ↔ agent 的本体链路：TCP 还是本地管道
+
+网关拉起 agent 之后要**再连回它**。这条链路有两种形态，由环境变量选择：
+
+| `A_DA_GATEWAY_AGENT_LINK` | 网关传给 agent 的参数 | 注册表里的端点 | 端口 |
+|---|---|---|---|
+| `tcp`（**默认**） | `--host --port 0 --token <t>` | `ws://127.0.0.1:<port>/rpc?token=…` | 占一个回环端口 |
+| `pipe` | `--host --pipe <名> --token <t>` | `pipe://\\.\pipe\…?token=…`（Windows）/ `unix:///tmp/….sock?token=…` | **不占、不监听 TCP** |
+
+三条性质：
+
+1. **帧与鉴权完全一致**：`pipe` 只是换了一条字节流，agent 侧仍是
+   `tokio_tungstenite::accept_hdr_async`、仍校验 URL 里的 `?token=`——**握手回调一字未改**，
+   所以不存在"管道特判免鉴权"这种旁路。
+2. **解析只有一处**：`crates/agent-gateway/src/link.rs` 的 `AgentEndpoint`。
+   `relay`（客户端 WS 透传）、`http_api::call_agent`（unary）、`gateway.delegate`（跨进程派活）
+   都必须走它，别各自 `connect_async`——三种形态各写一份，一定会漂。
+3. **谁产生管道名**：网关（`\\.\pipe\a-da-agent-<uuid>` / 临时目录 `<uuid>.sock`），
+   通过 `--pipe` 传给 agent，agent 在 `A_DA_HOST_READY` 里回写 `pipe` 字段。
+   所以**同一个工作区的多个客户端仍共用一个 agent**，路由语义不变。
+
+⚠️ 默认值刻意是 `tcp`：管道形态还在灰度。想切：
+
+```bash
+A_DA_GATEWAY_AGENT_LINK=pipe ada-gateway --port 52353 --workspace E:/proj
+```
+
+⚠️ 管道实例**不做 `gateway.register` 自注册**（端点无法用 `ws://` 表达，且它本来就是网关的子进程）；
+同时给 `--pipe` 与 `--gateway` 时 agent 会打一条警告并跳过注册。
 
 ---
 

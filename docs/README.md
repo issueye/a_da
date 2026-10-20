@@ -18,9 +18,7 @@
 |---|---|
 | 系统**现在能做什么** | [quality/feature-catalog.md](quality/feature-catalog.md) |
 | 系统是**怎么分层**的、有哪些端口 | [architecture/kernel-design.md](architecture/kernel-design.md) |
-| 客户端和宿主**怎么通信** | [protocol/README.md](protocol/README.md) |
-| **HTTP API**（unary 命令/查询；事件仍走 WS） | [protocol/http-api.md](protocol/http-api.md) |
-| 会话状态帧与卡片顺序（增量帧契约） | [protocol/state-patch.md](protocol/state-patch.md) |
+| 客户端和宿主**怎么通信**（WS 线协议 + HTTP API 的统一接口文档） | [protocol/README.md](protocol/README.md) |
 | **插件怎么写**、有哪些钩子点位 | [plugins/README.md](plugins/README.md) |
 | 插件契约的精确形状（工厂 API / 类型） | [plugins/extension-factory.md](plugins/extension-factory.md)、[plugins/extension-api.d.ts](plugins/extension-api.d.ts) |
 | **网关**、工作区模型与瘦客户端 | [gateway/README.md](gateway/README.md) |
@@ -41,9 +39,7 @@
 | [quality/feature-catalog.md](quality/feature-catalog.md) | 已实现功能清单（按功能域，逐条给出代码落点） | 现状清单 |
 | [quality/unfinished-features.md](quality/unfinished-features.md) | **功能缺口**清单（证据 + 最小实现路径 + 状态） | 缺口唯一口径 |
 | [plans/README.md](plans/README.md) | 历史计划入口（wiring / milestones 已精简） | 历史归档 |
-| [protocol/README.md](protocol/README.md) | 线协议总览：握手、帧、事件、错误码、审批通道 | 协议用法说明 |
-| [protocol/http-api.md](protocol/http-api.md) | HTTP unary API：鉴权、端点、ETag、错误映射、Phase 3 缺口 | HTTP 面说明 |
-| [protocol/state-patch.md](protocol/state-patch.md) | `evt.state.patch` 增量帧与 item 分页、卡片顺序契约 | 帧契约 |
+| [protocol/README.md](protocol/README.md) | **接口文档（唯一）**：WS JSON-RPC 帧、HTTP `/api/*` 端点表、事件与增量帧契约、审批通道、错误码与 HTTP 映射、Phase 3 缺口 | **接口唯一口径** |
 | [plugins/README.md](plugins/README.md) | 插件平台现状：发现规则、贡献模型、钩子点位与分级、能力开关、管理面、排错 | 插件现状总览 |
 | [plugins/extension-factory.md](plugins/extension-factory.md) | Extension Factory 契约：包形态、`metadata`、注册 API、动作分级 | **插件契约唯一口径** |
 | [plugins/extension-api.d.ts](plugins/extension-api.d.ts) | 插件作者用的 TypeScript 类型声明 | 类型契约 |

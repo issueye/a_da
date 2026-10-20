@@ -7,8 +7,8 @@
 > [../README.md](../README.md)（按功能域找文档）。
 
 系统形态：**Electron 桌面壳 → 网关（`ada-gateway`）→ 按工作区拉起产品实例（`ada-coding`）**；
-界面与宿主之间是 **JSON-RPC 2.0 over WebSocket**（[协议总览](../protocol/README.md)）；
-另有一层 HTTP unary API（`/api/*`，[说明](../protocol/http-api.md)），事件仍走 WS。
+界面与宿主之间是 **JSON-RPC 2.0 over WebSocket**，另有一层 HTTP unary API（`/api/*`）承载一问一答——
+两者的端点、鉴权、帧与错误码统一在[接口文档](../protocol/README.md)；事件仍走 WS。
 
 ---
 
@@ -45,6 +45,10 @@
 
 - **路径沙箱**：所有路径解析回会话工作区根；越界拒绝（含 `run_command` 的 `cwd`）；
   字符串检查之后还 realpath 解析符号链接（Windows junction 也算），按**真实落点**拒绝。
+- **档位与路径同源**：fs 工具走 `PathGate::Scoped`（引擎注入的 `Scope`），
+  `Full`（完全访问）下工作区外的路径可读写；`~/.a-da` 里只有 `agent-coding/extensions/`
+  （插件）与 `agent-coding/skills/`（技能）放行，配置与密钥仍拒；
+  插件工具与内部调用走 `PathGate::Workspace`（只认工作区，行为不变）。
 - **长时工具豁免**：等用户、等子智能体、自带超时的命令不套策略超时
   （`LONG_RUNNING_TOOLS` 单一真源 + 契约测试）。
 - **失败安全**：认不出的工具名一律按**写操作**处理（该审批就审批）。
@@ -57,7 +61,7 @@
 |---|---|
 | 会话落盘（JSONL）与摘要列表 | `crates/agent-adapter/src/store/`、`crates/agent-node/src/session/` |
 | 全量快照 `evt.state.snapshot`（首帧 / 自愈 / 重连） | `crates/agent-rpc/src/server/emitter.rs` |
-| **增量帧** `evt.state.patch`（指纹比对，只推变过的 item） | 同上；契约见 [../protocol/state-patch.md](../protocol/state-patch.md) |
+| **增量帧** `evt.state.patch`（指纹比对，只推变过的 item） | 同上；契约见 [../protocol/README.md](../protocol/README.md) §4 |
 | 流式增量 `evt.message.delta`、单卡更新 `evt.card.updated` | 同上 |
 | **卡片顺序**由 `at` 表达且严格递增（内存侧与磁盘回填侧两处都守） | `agent_rpc::state::store::next_item_at` + `SessionManager::CardStamps` |
 | item 分页 | `thread.items.page` |
@@ -147,6 +151,9 @@
 - **WEB 接入面**：token / 作用域 / Origin / 配对码；非回环 `--host` 必须配 token 且显式允许明文，
   否则**拒绝启动**。
 - 工作区门户：`gateway.fs.*`、`gateway.workspaces.*`（[设计意图](../gateway/README.md)）。
+- **网关 ↔ agent 的链路**：回环 TCP（默认，`ws://127.0.0.1:<port>/rpc`）或本地管道
+  （`A_DA_GATEWAY_AGENT_LINK=pipe`：Windows 命名管道 / Unix socket，**端口 0、不监听 TCP**）；
+  两种形态同一套帧与 token 握手，端点解析单点在 `agent-gateway/src/link.rs`。
 
 ## 十一、桌面端界面（`desktop-ui/`）
 
@@ -182,7 +189,7 @@
 unary 方法映射为 `/api/*`（18 条查询 + 42 条写），另有 11 条网关管理面；Bearer/Origin/
 作用域鉴权、`/api/snapshot` 的 ETag、JSON-RPC 错误码到 HTTP 状态的映射均已接线。
 事件与流式输出仍由 `/rpc` 的 WS 推送，不被 HTTP 改动。端点表见
-[protocol/http-api.md](../protocol/http-api.md)。
+[protocol/README.md](../protocol/README.md) §3.3。
 
 ## 十三、门禁与实机验收
 

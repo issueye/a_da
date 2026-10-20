@@ -17,7 +17,8 @@ pub use background::{background_tools, BackgroundTasks};
 pub use cmd_tools::run_command;
 pub use diff::{patch_stats, unified_diff};
 pub use fs_tools::{
-    edit_file, list_files, read_file, search_files, write_file, EditPair, ToolFailure, ToolResult,
+    edit_file, list_files, read_file, search_files, write_file, EditPair, PathGate, ToolFailure,
+    ToolResult,
 };
 pub use registry::{
     find_tool_descriptor, is_readonly_tool, is_write_tool, standard_tool_descriptors,

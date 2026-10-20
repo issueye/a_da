@@ -26,6 +26,65 @@ pub const DEFAULT_READY_TIMEOUT: Duration = Duration::from_secs(15);
 /// 就绪行前缀（协议 §1.8：`A_DA_HOST_READY {"ready":true,"port":…}`）。
 pub const READY_PREFIX: &str = "A_DA_HOST_READY ";
 
+/// 网关 ↔ agent 的**链路形态**。
+///
+/// 环境变量 `A_DA_GATEWAY_AGENT_LINK`：`tcp`（默认，回环端口）/ `pipe`（本地管道）。
+/// 默认保持 TCP：管道形态还在灰度，默认值以"行为不变"为先。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentLinkMode {
+    Tcp,
+    Pipe,
+}
+
+impl AgentLinkMode {
+    pub fn from_env() -> Self {
+        match std::env::var("A_DA_GATEWAY_AGENT_LINK")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "pipe" | "pipes" | "named-pipe" | "unix" => Self::Pipe,
+            _ => Self::Tcp,
+        }
+    }
+}
+
+/// 本次进程唯一的管道名（Windows）或 socket 路径（Unix）。
+pub fn agent_pipe_name() -> String {
+    let id = uuid::Uuid::new_v4().simple();
+    #[cfg(windows)]
+    {
+        format!(r"\\.\pipe\a-da-agent-{id}")
+    }
+    #[cfg(unix)]
+    {
+        std::env::temp_dir()
+            .join(format!("a-da-agent-{id}.sock"))
+            .to_string_lossy()
+            .into_owned()
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        format!("a-da-agent-{id}")
+    }
+}
+
+/// 把管道名包装成注册表里的端点字符串。
+#[cfg(windows)]
+fn pipe_endpoint_url(name: &str) -> String {
+    format!("pipe://{name}")
+}
+
+#[cfg(unix)]
+fn pipe_endpoint_url(name: &str) -> String {
+    format!("unix://{name}")
+}
+
+#[cfg(not(any(windows, unix)))]
+fn pipe_endpoint_url(name: &str) -> String {
+    format!("pipe://{name}")
+}
+
 /// 拉起失败的原因。**每种都如实区分**——"起不来"和"起来了但没就绪"是两回事。
 #[derive(Debug)]
 pub enum SpawnError {
@@ -189,11 +248,21 @@ pub async fn spawn_agent(
     let binary = find_product_binary(&spec.product, spec.binary.as_deref())?;
     info!("网关拉起 agent 实例：{} ({}), 工作区 {}", id, binary.display(), workspace.display());
 
+    let link_mode = AgentLinkMode::from_env();
+    let pipe_name = (link_mode == AgentLinkMode::Pipe).then(agent_pipe_name);
+
     let mut cmd = Command::new(&binary);
-    cmd.arg("--host")
-        .arg("--port")
-        .arg("0")
-        .arg("--token")
+    cmd.arg("--host");
+    match &pipe_name {
+        // 管道形态：不占端口、不监听——连接方只能拿到这个管道名
+        Some(name) => {
+            cmd.arg("--pipe").arg(name);
+        }
+        None => {
+            cmd.arg("--port").arg("0");
+        }
+    }
+    cmd.arg("--token")
         .arg(&token)
         .arg("--workspace")
         .arg(workspace.to_string_lossy().to_string())
@@ -272,10 +341,25 @@ pub async fn spawn_agent(
     let ready: serde_json::Value = serde_json::from_str(&ready_line)
         .map_err(|_| SpawnError::BadReadyLine(ready_line.clone()))?;
 
-    let port = ready
-        .get("port")
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| SpawnError::BadReadyLine(ready_line.clone()))? as u16;
+    // 端点形态由就绪行决定：管道形态带 `pipe`（Windows 管道名 / Unix socket 路径），
+    // 否则必须给出 `port`。两种形态都拼成注册表里同一种端点字符串。
+    let pipe = ready
+        .get("pipe")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    let endpoint = match &pipe {
+        Some(name) => format!("{}?token={}", pipe_endpoint_url(name), token),
+        None => {
+            let port = ready
+                .get("port")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| SpawnError::BadReadyLine(ready_line.clone()))?
+                as u16;
+            format!("ws://127.0.0.1:{port}/rpc?token={token}")
+        }
+    };
 
     // 实例自述服务的产品清单（老实例不带这个字段 → 退回"它自己那个产品"）
     let products: Vec<String> = ready
@@ -293,7 +377,7 @@ pub async fn spawn_agent(
         id,
         product: spec.product.clone(),
         workspace: workspace.to_string_lossy().to_string(),
-        endpoint: format!("ws://127.0.0.1:{port}/rpc?token={token}"),
+        endpoint,
         status: AgentStatus::Ready,
         pid,
         started_at: now_ms(),
@@ -302,7 +386,13 @@ pub async fn spawn_agent(
     };
     registry.register(instance.clone());
 
-    info!("agent 实例就绪：{} → {} (pid {:?})", instance.id, instance.endpoint, pid);
+    // 日志里**不带 query**：端点字符串里有 token，日志会落盘。
+    let shown = instance
+        .endpoint
+        .split('?')
+        .next()
+        .unwrap_or(&instance.endpoint);
+    info!("agent 实例就绪：{} → {} (pid {:?})", instance.id, shown, pid);
     Ok(SpawnedAgent { instance, child, ready })
 }
 

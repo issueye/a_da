@@ -36,7 +36,6 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::RwLock;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::info;
 
@@ -206,12 +205,12 @@ async fn run_delegation(
     subagent_id: Option<String>,
 ) -> Result<DelegateOutcome, DelegateError> {
     let is_resuming = resume_thread.is_some();
-    let req = instance
-        .endpoint
-        .clone()
-        .into_client_request()
-        .map_err(|e| DelegateError::Connect(e.to_string()))?;
-    let (ws, _) = tokio_tungstenite::connect_async(req)
+    // 目标 agent 可能是回环 TCP，也可能是本地管道（`A_DA_GATEWAY_AGENT_LINK=pipe`）；
+    // 形态解析与直连共用同一份实现。
+    let endpoint = crate::link::AgentEndpoint::parse(&instance.endpoint)
+        .map_err(DelegateError::Connect)?;
+    let ws = endpoint
+        .connect()
         .await
         .map_err(|e| DelegateError::Connect(e.to_string()))?;
     let (mut tx, mut rx) = ws.split();

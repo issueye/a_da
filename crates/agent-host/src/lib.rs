@@ -451,11 +451,19 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
                 .root()
                 .to_path_buf()
         };
-        Arc::new(agent_adapter::scope::ApprovalAwareScope::new(
-            WorkspaceScope::new(workspace.clone()),
-            mode_source,
-            vec![app_home_root],
-        ))
+        Arc::new(
+            agent_adapter::scope::ApprovalAwareScope::new(
+                WorkspaceScope::new(workspace.clone()),
+                mode_source,
+                vec![app_home_root.clone()],
+            )
+            // 保留目录里**不是凭据**的两棵树：装好的插件与技能。完全访问下放行，
+            // 其余（config.json / 网关发现文件 / 会话）仍然拒——见 `scope::access` 的文档。
+            .with_allowed_subtrees(vec![
+                app_home_root.join("agent-coding").join("extensions"),
+                app_home_root.join("agent-coding").join("skills"),
+            ]),
+        )
     };
     let session_store: Arc<dyn agent_base::ports::SessionStore> = Arc::new(FsSessionStore::new(
         sessions_root,

@@ -34,7 +34,6 @@ use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Map, Value};
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::warn;
 
@@ -1353,11 +1352,11 @@ async fn call_agent(
     params: Value,
 ) -> Result<Value, ApiError> {
     let endpoint = with_api_flag(&instance.endpoint);
-    let request = endpoint
-        .into_client_request()
-        .map_err(|e| ApiError::bad_gateway(format!("构造 agent 请求失败：{e}")))?;
+    // 端点可能是回环 TCP，也可能是本地管道：统一交给 `link` 解析（帧与鉴权不变）
+    let endpoint = crate::link::AgentEndpoint::parse(&endpoint)
+        .map_err(|e| ApiError::bad_gateway(format!("解析 agent 端点失败：{e}")))?;
 
-    let (ws, _) = tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(request))
+    let ws = tokio::time::timeout(CONNECT_TIMEOUT, endpoint.connect())
         .await
         .map_err(|_| ApiError::gateway_timeout("连接 agent 超时"))?
         .map_err(|e| ApiError::bad_gateway(format!("连接 agent 失败：{e}")))?;

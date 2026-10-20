@@ -14,4 +14,4 @@ pub use emitter::StateBroadcaster;
 pub use events::WsEventSink;
 pub use node_config::StoreBackedNodeConfig;
 pub use watchdog::start_parent_watchdog;
-pub use ws::WsHostServer;
+pub use ws::{HostBind, WsHostServer};
