@@ -103,7 +103,13 @@ pub fn now_ts() -> i64 {
 }
 
 pub fn format_ts(ts: i64) -> String {
+    // 存的是 Unix 秒（UTC），**展示按本机时区**——本地优先的平台把 10:24 显示成 02:24
+    // 只会让人以为发布记录错了。
     DateTime::<Utc>::from_timestamp(ts, 0)
-        .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+        .map(|d| {
+            d.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
         .unwrap_or_else(|| "-".to_string())
 }

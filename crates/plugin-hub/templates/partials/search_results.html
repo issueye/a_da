@@ -1,9 +1,10 @@
+{% import "partials/ui.html" as ui %}
 {% if plugins.is_empty() %}
-<p class="p-3 text-sm text-slate-500">没有匹配「{{ q }}」的插件。</p>
+<p class="px-3 py-6 text-center text-xs text-muted">没有匹配「{{ q }}」的插件。</p>
 {% else %}
 <div class="grid gap-3 sm:grid-cols-2">
   {% for p in plugins %}
-  {% include "partials/plugin_card.html" %}
+  {% call ui::plugin_card(p) %}
   {% endfor %}
 </div>
 {% endif %}

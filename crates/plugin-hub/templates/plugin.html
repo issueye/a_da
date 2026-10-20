@@ -1,46 +1,64 @@
 {% extends "layout.html" %}
+{% import "partials/ui.html" as ui %}
 {% block title %}{{ plugin.name }} · a_da 插件库{% endblock %}
 {% block content %}
-<div class="grid gap-8 lg:grid-cols-[1fr_320px]">
+<div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
   <div class="min-w-0">
-    <div class="flex flex-wrap items-start justify-between gap-4">
-      <div class="min-w-0">
-        <div class="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-          <a class="hover:text-blue-700" href="{{ plugin.owner_href() }}">@{{ plugin.owner }}</a>
-          <span>·</span>
-          <span>更新于 {{ plugin.updated_text() }}</span>
+    <div class="card p-5 sm:p-6">
+      <div class="flex flex-wrap items-start gap-4">
+        {% call ui::avatar(plugin.owner, "h-12 w-12 rounded-2xl text-base") %}
+        <div class="min-w-0 flex-1">
+          <div class="flex flex-wrap items-center gap-1.5 text-[11px] text-faint">
+            <a class="link" href="{{ plugin.owner_href() }}">@{{ plugin.owner }}</a>
+            {% if plugin.owner_kind == "org" %}{% call ui::badge("组织", "brand") %}{% endif %}
+            <span>·</span>
+            <span>更新于 {{ plugin.updated_text() }}</span>
+          </div>
+          <h1 class="mt-1.5 text-xl font-semibold tracking-tight text-ink sm:text-2xl">{{ plugin.name }}</h1>
+          <p class="mt-1.5 max-w-2xl text-sm leading-6 text-muted">{{ plugin.description }}</p>
+          <div class="mt-3 flex flex-wrap gap-1.5">
+            {% for tag in plugin.tags_list() %}
+            {% call ui::tag(tag) %}
+            {% endfor %}
+          </div>
         </div>
-        <h1 class="mt-2 text-2xl font-semibold tracking-tight">{{ plugin.name }}</h1>
-        <p class="mt-2 max-w-2xl text-sm leading-6 text-slate-600">{{ plugin.description }}</p>
-        <div class="mt-3 flex flex-wrap gap-1.5">
-          {% for tag in plugin.tags_list() %}
-          <a href="/plugins?q={{ tag }}" class="rounded-md bg-blue-50 px-2 py-0.5 text-[11px] text-blue-700">#{{ tag }}</a>
-          {% endfor %}
-        </div>
+        {% include "partials/star_button.html" %}
       </div>
-      <div id="star-button">{% include "partials/star_button.html" %}</div>
     </div>
 
-    <div class="mt-6 flex flex-wrap items-center gap-2 border-b border-slate-200 pb-3 text-sm">
+    {% if can_edit || plugin.homepage.is_some() || plugin.license.is_some() %}
+    <div class="mt-4 flex flex-wrap items-center gap-2 border-b border-line pb-3">
       {% if can_edit %}
-      <a href="/plugins/{{ plugin.owner }}/{{ plugin.slug }}/edit" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 hover:bg-slate-50">编辑</a>
-      <a href="/plugins/{{ plugin.owner }}/{{ plugin.slug }}/releases/new" class="rounded-lg bg-slate-900 px-3 py-1.5 text-white hover:bg-slate-700">发布新版本</a>
-      <form method="post" action="/plugins/{{ plugin.owner }}/{{ plugin.slug }}/delete" onsubmit="return confirm('确认删除这个插件及其全部版本？')">
+      <a href="/plugins/{{ plugin.owner }}/{{ plugin.slug }}/edit" class="btn btn-secondary btn-sm">
+        {% call ui::icon("edit", "h-3.5 w-3.5") %}编辑
+      </a>
+      <a href="/plugins/{{ plugin.owner }}/{{ plugin.slug }}/releases/new" class="btn btn-primary btn-sm">
+        {% call ui::icon("upload", "h-3.5 w-3.5") %}发布新版本
+      </a>
+      <form method="post" action="/plugins/{{ plugin.owner }}/{{ plugin.slug }}/delete"
+            data-confirm="确认删除这个插件及其全部版本？该操作不可撤销。">
         <input type="hidden" name="_csrf" value="{{ common.csrf }}">
-        <button class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-rose-700 hover:bg-rose-100" type="submit">删除</button>
+        <button class="btn btn-ghost btn-sm text-danger-ink hover:bg-danger-soft hover:text-danger-ink" type="submit">
+          {% call ui::icon("trash", "h-3.5 w-3.5") %}删除
+        </button>
       </form>
       {% endif %}
       {% if let Some(homepage) = plugin.homepage.as_ref() %}
-      <a href="{{ homepage }}" target="_blank" rel="noopener noreferrer" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 hover:bg-slate-50">主页 ↗</a>
+      <a href="{{ homepage }}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">
+        {% call ui::icon("external-link", "h-3.5 w-3.5") %}主页
+      </a>
       {% endif %}
       {% if let Some(license) = plugin.license.as_ref() %}
-      <span class="text-xs text-slate-500">License: {{ license }}</span>
+      <span class="ml-auto inline-flex items-center gap-1.5 text-[11px] text-faint">
+        {% call ui::icon("shield", "h-3.5 w-3.5") %}License: <span class="font-mono text-muted">{{ license }}</span>
+      </span>
       {% endif %}
     </div>
+    {% endif %}
 
-    <article class="markdown-body mt-6 max-w-none text-sm text-slate-800">
+    <article class="card markdown-body mt-5 max-w-none p-5 text-sm sm:p-6">
       {% if readme_html.is_empty() %}
-      <p class="text-slate-500">作者还没有填写 README。</p>
+      <p class="text-sm text-muted">作者还没有填写 README。</p>
       {% else %}
       {{ readme_html|safe }}
       {% endif %}
@@ -48,33 +66,54 @@
   </div>
 
   <aside class="space-y-4">
-    <div class="rounded-2xl border border-slate-200 bg-white p-4">
+    <div class="card p-4">
       <div class="flex items-center justify-between">
-        <h2 class="text-sm font-semibold">版本</h2>
-        <span class="text-xs text-slate-500">{{ releases.len() }} 个</span>
+        <h2 class="section-title">版本</h2>
+        <span class="text-[11px] text-faint">{{ releases.len() }} 个</span>
       </div>
       <div class="mt-3 space-y-2">
         {% for r in releases %}
-        <div class="rounded-xl border border-slate-100 bg-slate-50/60 p-3">
+        <div class="card-inset">
           <div class="flex items-center justify-between gap-2">
-            <span class="font-mono text-sm font-medium">v{{ r.version }}</span>
-            <span class="text-[11px] text-slate-500">{{ r.size_text() }}</span>
+            <span class="font-mono text-[13px] font-medium text-ink">v{{ r.version }}</span>
+            <span class="badge badge-neutral badge-mono">{{ r.size_text() }}</span>
           </div>
-          <div class="mt-1 text-[11px] text-slate-500">{{ r.created_text() }} · {{ r.downloads }} 次下载</div>
+          <div class="mt-1 flex items-center gap-2 text-[11px] text-faint">
+            <span>{{ r.created_text() }}</span>
+            <span>·</span>
+            <span>{{ r.downloads }} 次下载</span>
+          </div>
           {% if !r.notes.is_empty() %}
-          <p class="mt-2 whitespace-pre-wrap text-xs leading-5 text-slate-600">{{ r.notes }}</p>
+          <p class="mt-2 whitespace-pre-wrap text-xs leading-5 text-muted">{{ r.notes }}</p>
           {% endif %}
           <a href="/plugins/{{ plugin.owner }}/{{ plugin.slug }}/releases/{{ r.version }}/download"
-             class="mt-2 inline-flex rounded-lg bg-white px-2.5 py-1 text-xs font-medium text-slate-800 ring-1 ring-slate-200 hover:bg-slate-100">下载 ZIP</a>
+             class="btn btn-secondary btn-xs mt-2.5">
+            {% call ui::icon("download", "h-3.5 w-3.5") %}下载 ZIP
+          </a>
         </div>
         {% endfor %}
-        {% if releases.is_empty() %}<p class="text-xs text-slate-500">还没有发布版本。</p>{% endif %}
+        {% if releases.is_empty() %}
+        <p class="text-xs text-muted">还没有发布版本。</p>
+        {% endif %}
       </div>
     </div>
-    <div class="rounded-2xl border border-slate-200 bg-white p-4 text-xs text-slate-500">
-      <div class="flex justify-between"><span>下载</span><span class="font-medium text-slate-800">{{ plugin.downloads }}</span></div>
-      <div class="mt-1 flex justify-between"><span>Star</span><span class="font-medium text-slate-800">{{ plugin.stars }}</span></div>
-      <div class="mt-1 flex justify-between"><span>创建</span><span>{{ plugin.created_text() }}</span></div>
+
+    <div class="card p-4">
+      <h2 class="section-title">数据</h2>
+      <dl class="mt-3 space-y-2 text-xs">
+        <div class="flex items-center justify-between">
+          <dt class="inline-flex items-center gap-1.5 text-faint">{% call ui::icon("download", "h-3.5 w-3.5") %}下载</dt>
+          <dd class="font-mono font-medium text-ink">{{ plugin.downloads }}</dd>
+        </div>
+        <div class="flex items-center justify-between">
+          <dt class="inline-flex items-center gap-1.5 text-faint">{% call ui::icon("star", "h-3.5 w-3.5") %}Star</dt>
+          <dd class="font-mono font-medium text-ink">{{ plugin.stars }}</dd>
+        </div>
+        <div class="flex items-center justify-between">
+          <dt class="inline-flex items-center gap-1.5 text-faint">{% call ui::icon("clock", "h-3.5 w-3.5") %}创建</dt>
+          <dd class="text-muted">{{ plugin.created_text() }}</dd>
+        </div>
+      </dl>
     </div>
   </aside>
 </div>

@@ -1,9 +1,18 @@
 {% extends "layout.html" %}
+{% import "partials/ui.html" as ui %}
 {% block title %}{{ status }} · a_da 插件库{% endblock %}
 {% block content %}
-<div class="mx-auto max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center">
-  <p class="font-mono text-sm text-slate-400">{{ status }}</p>
-  <h1 class="mt-2 text-xl font-semibold">{{ message }}</h1>
-  <a class="mt-6 inline-flex text-sm text-blue-600 hover:underline" href="/">返回首页</a>
+<div class="mx-auto flex min-h-[60vh] w-full max-w-md items-center">
+  <div class="card w-full p-6 text-center sm:p-8">
+    <span class="empty-icon mx-auto">
+      {% call ui::icon("alert-circle", "h-5 w-5") %}
+    </span>
+    <p class="mt-4 font-mono text-xs text-faint">{{ status }}</p>
+    <h1 class="mt-1.5 text-lg font-semibold tracking-tight text-ink">{{ message }}</h1>
+    <div class="mt-6 flex flex-wrap items-center justify-center gap-2">
+      <a class="btn btn-primary btn-sm" href="/">返回首页</a>
+      <a class="btn btn-secondary btn-sm" href="/plugins">浏览插件</a>
+    </div>
+  </div>
 </div>
 {% endblock %}

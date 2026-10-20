@@ -52,9 +52,34 @@ impl IntoResponse for AppError {
 }
 
 fn self_page(status: StatusCode, message: &str) -> Response {
+    // 错误页与正常页面共用同一套设计系统：本地 /static/app.css + theme.js，
+    // **不引 CDN**（README 的「本地静态资源」承诺对整个站点成立）。
     let message = escape_html(message);
     let body = format!(
-        r#"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{status} · a_da 插件库</title><script src="https://cdn.tailwindcss.com"></script></head><body class="min-h-screen bg-slate-50 text-slate-900 flex items-center justify-center p-6"><div class="max-w-md w-full bg-white border border-slate-200 rounded-2xl p-8 shadow-sm"><p class="text-sm font-mono text-slate-400">{status}</p><h1 class="mt-2 text-xl font-semibold">{message}</h1><a class="mt-6 inline-flex text-sm text-blue-600 hover:underline" href="/">返回首页</a></div></body></html>"#
+        r##"<!doctype html>
+<html lang="zh-CN" class="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{status} · a_da 插件库</title>
+<script src="/static/theme.js"></script>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="app-shell">
+<a class="skip-link" href="#main">跳到主要内容</a>
+<main id="main" class="app-container flex flex-1 items-center justify-center py-10">
+  <div class="card w-full max-w-md p-6 text-center sm:p-8">
+    <span class="empty-icon mx-auto"><svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg></span>
+    <p class="mt-4 font-mono text-xs text-faint">{status}</p>
+    <h1 class="mt-1.5 text-lg font-semibold tracking-tight text-ink">{message}</h1>
+    <div class="mt-6 flex flex-wrap items-center justify-center gap-2">
+      <a class="btn btn-primary btn-sm" href="/">返回首页</a>
+      <a class="btn btn-secondary btn-sm" href="/plugins">浏览插件</a>
+    </div>
+  </div>
+</main>
+</body>
+</html>"##
     );
     (status, Html(body)).into_response()
 }

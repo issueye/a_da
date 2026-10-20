@@ -99,6 +99,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/v1/plugins/{owner}/{slug}/star", post(api::star))
         .route("/healthz", get(pages::healthz))
         .route("/static/app.css", get(app_css))
+        .route("/static/app.js", get(app_js))
+        .route("/static/theme.js", get(theme_js))
         .route("/static/htmx.min.js", get(htmx_js))
         .route("/static/alpine.min.js", get(alpine_js))
         .fallback(not_found)
@@ -134,6 +136,20 @@ async fn app_css() -> Response {
     static_asset(
         include_bytes!("../static/app.css"),
         "text/css; charset=utf-8",
+    )
+}
+
+async fn app_js() -> Response {
+    static_asset(
+        include_bytes!("../static/app.js"),
+        "text/javascript; charset=utf-8",
+    )
+}
+
+async fn theme_js() -> Response {
+    static_asset(
+        include_bytes!("../static/theme.js"),
+        "text/javascript; charset=utf-8",
     )
 }
 

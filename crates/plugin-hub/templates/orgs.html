@@ -1,29 +1,39 @@
 {% extends "layout.html" %}
+{% import "partials/ui.html" as ui %}
 {% block title %}组织 · a_da 插件库{% endblock %}
 {% block content %}
 <div class="flex flex-wrap items-end justify-between gap-3">
-  <div>
-    <h1 class="text-2xl font-semibold">组织</h1>
-    <p class="mt-1 text-sm text-slate-500">团队协作发布与维护插件。</p>
+  <div class="min-w-0">
+    <h1 class="page-title">组织</h1>
+    <p class="page-sub">团队协作发布与维护插件。</p>
   </div>
   {% if common.current_user.is_some() %}
-  <a href="/orgs/new" class="rounded-lg bg-slate-900 px-3 py-1.5 text-sm text-white hover:bg-slate-700">新建组织</a>
+  <a href="/orgs/new" class="btn btn-primary btn-sm">
+    {% call ui::icon("plus", "h-3.5 w-3.5") %}新建组织
+  </a>
   {% endif %}
 </div>
+
 {% if orgs.is_empty() %}
-<div class="mt-6 rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">
-  还没有组织。
+<div class="mt-6">
+  {% call ui::empty("building", "还没有组织", "创建一个组织，把团队成员和插件放在一起。", "新建组织", "/orgs/new") %}
 </div>
 {% else %}
 <div class="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
   {% for o in orgs %}
-  <a href="/orgs/{{ o.name }}" class="rounded-2xl border border-slate-200 bg-white p-4 hover:border-slate-300 hover:shadow-sm">
-    <div class="flex items-center justify-between gap-2">
-      <h2 class="truncate text-sm font-semibold">{{ o.display_name }}</h2>
-      <span class="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">@{{ o.name }}</span>
+  <a href="/orgs/{{ o.name }}" class="card card-hover group flex h-full flex-col p-4">
+    <div class="flex items-start gap-3">
+      {% call ui::avatar(o.display_name, "h-9 w-9 rounded-xl text-xs") %}
+      <div class="min-w-0 flex-1">
+        <h2 class="truncate text-[13px] font-semibold text-ink transition-colors group-hover:text-brand-ink">{{ o.display_name }}</h2>
+        <span class="mt-0.5 block truncate text-[11px] text-faint">@{{ o.name }}</span>
+      </div>
+      {% call ui::icon("chevron-right", "h-4 w-4 shrink-0 text-faint transition-colors group-hover:text-brand-ink") %}
     </div>
-    <p class="mt-2 line-clamp-2 min-h-10 text-xs leading-5 text-slate-600">{{ o.description }}</p>
-    <p class="mt-3 text-[11px] text-slate-400">创建于 {{ o.created_text() }}</p>
+    <p class="mt-3 line-clamp-2 min-h-[2.5rem] text-xs leading-5 text-muted">{{ o.description }}</p>
+    <div class="mt-auto flex items-center gap-1.5 border-t border-line pt-3 text-[11px] text-faint">
+      {% call ui::icon("clock", "h-3 w-3") %}创建于 {{ o.created_text() }}
+    </div>
   </a>
   {% endfor %}
 </div>

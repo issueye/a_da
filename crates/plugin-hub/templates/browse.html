@@ -1,15 +1,19 @@
 {% extends "layout.html" %}
+{% import "partials/ui.html" as ui %}
 {% block title %}浏览插件 · a_da 插件库{% endblock %}
 {% block content %}
 <div class="flex flex-wrap items-end justify-between gap-3">
-  <div>
-    <h1 class="text-2xl font-semibold">浏览插件</h1>
-    <p class="mt-1 text-sm text-slate-500">共 {{ total }} 个结果{% if !q.is_empty() %}，关键词「{{ q }}」{% endif %}</p>
+  <div class="min-w-0">
+    <h1 class="page-title">浏览插件</h1>
+    <p class="page-sub">
+      共 {{ total }} 个结果{% if !q.is_empty() %}，关键词「{{ q }}」{% endif %}
+    </p>
   </div>
-  <div class="flex items-center gap-2">
+  <div class="flex flex-wrap items-center gap-2">
     <form method="get" action="/plugins" class="flex items-center gap-2">
       <input type="hidden" name="q" value="{{ q }}">
-      <select name="sort" onchange="this.form.submit()" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm">
+      <label class="sr-only" for="sort">排序</label>
+      <select id="sort" name="sort" data-auto-submit class="select w-auto py-1.5 text-xs">
         <option value="updated" {% if sort == "updated" %}selected{% endif %}>最近更新</option>
         <option value="downloads" {% if sort == "downloads" %}selected{% endif %}>下载最多</option>
         <option value="stars" {% if sort == "stars" %}selected{% endif %}>Star 最多</option>
@@ -17,35 +21,38 @@
       </select>
     </form>
     {% if common.current_user.is_some() %}
-    <a href="/plugins/new" class="rounded-lg bg-slate-900 px-3 py-1.5 text-sm text-white hover:bg-slate-700">发布插件</a>
+    <a href="/plugins/new" class="btn btn-primary btn-sm">
+      {% call ui::icon("plus", "h-3.5 w-3.5") %}发布插件
+    </a>
     {% endif %}
   </div>
 </div>
 
-<div class="mt-6">
+<div class="mt-5">
   {% if plugins.is_empty() %}
-  <div class="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center">
-    <p class="text-sm text-slate-500">没有找到匹配的插件。</p>
-    <a class="mt-3 inline-flex text-sm text-blue-600 hover:underline" href="/plugins">清空搜索</a>
-  </div>
+  {% call ui::empty("search", "没有找到匹配的插件", "换个关键词，或者清空筛选看看全部插件。", "清空搜索", "/plugins") %}
   {% else %}
   <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
     {% for p in plugins %}
-    {% include "partials/plugin_card.html" %}
+    {% call ui::plugin_card(p) %}
     {% endfor %}
   </div>
   {% endif %}
 </div>
 
 {% if pages > 1 %}
-<div class="mt-8 flex items-center justify-center gap-2 text-sm">
+<nav class="mt-8 flex items-center justify-center gap-2 text-xs" aria-label="分页">
   {% if page > 1 %}
-  <a class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 hover:bg-slate-50" href="/plugins?q={{ q_url }}&sort={{ sort }}&page={{ page - 1 }}">上一页</a>
+  <a class="btn btn-secondary btn-sm" href="/plugins?q={{ q_url }}&sort={{ sort }}&page={{ page - 1 }}">
+    {% call ui::icon("arrow-left", "h-3.5 w-3.5") %}上一页
+  </a>
   {% endif %}
-  <span class="px-2 text-slate-500">第 {{ page }} / {{ pages }} 页</span>
+  <span class="px-2 text-muted">第 {{ page }} / {{ pages }} 页</span>
   {% if page < pages %}
-  <a class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 hover:bg-slate-50" href="/plugins?q={{ q_url }}&sort={{ sort }}&page={{ page + 1 }}">下一页</a>
+  <a class="btn btn-secondary btn-sm" href="/plugins?q={{ q_url }}&sort={{ sort }}&page={{ page + 1 }}">
+    下一页 {% call ui::icon("arrow-right", "h-3.5 w-3.5") %}
+  </a>
   {% endif %}
-</div>
+</nav>
 {% endif %}
 {% endblock %}

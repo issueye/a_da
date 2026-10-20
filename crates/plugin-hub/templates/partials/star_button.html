@@ -1,13 +1,23 @@
-{% if common.current_user.is_some() %}
-<form hx-post="/plugins/{{ plugin.owner }}/{{ plugin.slug }}/star" hx-target="#star-button" hx-swap="outerHTML">
-  <input type="hidden" name="_csrf" value="{{ common.csrf }}">
-  <button type="submit" class="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium {% if starred %}border-amber-300 bg-amber-50 text-amber-800{% else %}border-slate-300 bg-white text-slate-800 hover:bg-slate-50{% endif %}">
-    <span>{% if starred %}★ 已 Star{% else %}☆ Star{% endif %}</span>
-    <span class="rounded-full bg-black/5 px-2 py-0.5 text-xs">{{ stars }}</span>
-  </button>
-</form>
-{% else %}
-<a href="/login?next=/plugins/{{ plugin.owner }}/{{ plugin.slug }}" class="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 hover:bg-slate-50">
-  ☆ Star <span class="rounded-full bg-black/5 px-2 py-0.5 text-xs">{{ stars }}</span>
-</a>
-{% endif %}
+{% import "partials/ui.html" as ui %}
+{# 目标容器必须由片段自己带上：`hx-target="#star-button"` + `outerHTML` 会把包装层
+   整块换掉，包装层若留在页面模板里，第一次 Star 之后目标 id 就消失了。 #}
+<div id="star-button" class="shrink-0">
+  {% if common.current_user.is_some() %}
+  <form hx-post="/plugins/{{ plugin.owner }}/{{ plugin.slug }}/star" hx-target="#star-button" hx-swap="outerHTML">
+    <input type="hidden" name="_csrf" value="{{ common.csrf }}">
+    <button type="submit" class="btn {% if starred %}btn-starred{% else %}btn-secondary{% endif %} btn-sm"
+            aria-pressed="{% if starred %}true{% else %}false{% endif %}"
+            title="{% if starred %}取消 Star{% else %}Star 这个插件{% endif %}">
+      {% call ui::icon("star", "h-3.5 w-3.5") %}
+      <span>{% if starred %}已 Star{% else %}Star{% endif %}</span>
+      <span class="badge badge-neutral badge-mono">{{ stars }}</span>
+    </button>
+  </form>
+  {% else %}
+  <a href="/login?next=/plugins/{{ plugin.owner }}/{{ plugin.slug }}" class="btn btn-secondary btn-sm">
+    {% call ui::icon("star", "h-3.5 w-3.5") %}
+    <span>Star</span>
+    <span class="badge badge-neutral badge-mono">{{ stars }}</span>
+  </a>
+  {% endif %}
+</div>

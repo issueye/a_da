@@ -466,7 +466,33 @@ async fn static_assets_are_served_locally() {
             .starts_with("text/css")
     );
     let css_text = body_text(css).await;
-    assert!(css_text.contains(".bg-slate-50"));
+    // 组件层由 Tailwind 从 `static/input.css` 生成；`.card` 是设计系统的稳定入口，
+    // 断言它而不是某个一次性的调色板类，避免调色板升级就误报。
+    assert!(css_text.contains(".card{") || css_text.contains(".card {"));
+
+    for (path, marker) in [
+        ("/static/theme.js", "a_da_theme"),
+        ("/static/app.js", "data-confirm-dialog"),
+    ] {
+        let asset = ctx
+            .app
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(asset.status(), StatusCode::OK, "{path} 应可访问");
+        assert!(
+            asset
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("text/javascript"),
+            "{path} 的 Content-Type 应为 JS"
+        );
+        assert!(body_text(asset).await.contains(marker), "{path} 内容不符");
+    }
 
     let htmx = ctx
         .app
@@ -490,6 +516,8 @@ async fn static_assets_are_served_locally() {
         .unwrap();
     let html = body_text(home).await;
     assert!(html.contains("/static/app.css"));
+    assert!(html.contains("/static/app.js"));
+    assert!(html.contains("/static/theme.js"));
     assert!(html.contains("/static/htmx.min.js"));
     assert!(html.contains("/static/alpine.min.js"));
     assert!(!html.contains("cdn.tailwindcss.com"));
