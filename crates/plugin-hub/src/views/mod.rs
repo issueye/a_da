@@ -58,6 +58,7 @@ impl Flash {
                 "duplicate" => "名称/版本已存在，请换一个",
                 "forbidden" => "没有权限执行这个操作",
                 "upload" => "上传失败，请检查 ZIP 后重试",
+                "no_release" => "这个插件还没有发布版本，无法从插件包同步",
                 _ => "操作失败，请稍后重试",
             };
             return Some(Self {
@@ -83,6 +84,7 @@ impl Flash {
             "token_revoked" => "API Token 已撤销",
             "webhook_created" => "Webhook 已创建",
             "webhook_deleted" => "Webhook 已删除",
+            "synced" => "已从最新版本插件包同步简介与 README",
             _ => return None,
         };
         Some(Self {

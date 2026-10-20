@@ -7,10 +7,25 @@
     <div class="min-w-0">
       <h1 class="page-title">{{ heading }}</h1>
       <p class="page-sub">插件元数据会出现在列表与详情页；README 支持 Markdown。</p>
+      <p class="hint mt-1">发布新版本时会自动用包根 <code class="code-inline">README.md</code> 与
+        <code class="code-inline">index.ts</code> 的 <code class="code-inline">metadata.description</code>
+        同步下面的「一句话简介 / README」。</p>
     </div>
-    <a class="btn btn-ghost btn-sm" href="/plugins">
-      {% call ui::icon("arrow-left", "h-3.5 w-3.5") %}返回插件库
-    </a>
+    <div class="flex flex-wrap items-center gap-2">
+      {% if !sync_action.is_empty() %}
+      <form method="post" action="{{ sync_action }}"
+            data-confirm="将用最新版本插件包里的 README.md 与 metadata.description 覆盖当前简介和 README，继续？">
+        <input type="hidden" name="_csrf" value="{{ common.csrf }}">
+        <button type="submit" class="btn btn-secondary btn-sm"
+                title="从最新版本的 ZIP 中读取 README.md 与 index.ts 的 metadata.description">
+          {% call ui::icon("download", "h-3.5 w-3.5") %}从插件包同步
+        </button>
+      </form>
+      {% endif %}
+      <a class="btn btn-ghost btn-sm" href="/plugins">
+        {% call ui::icon("arrow-left", "h-3.5 w-3.5") %}返回插件库
+      </a>
+    </div>
   </div>
 
   {% if let Some(error) = error.as_ref() %}

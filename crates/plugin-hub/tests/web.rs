@@ -127,6 +127,9 @@ fn zip_bytes_for(source: &str) -> Vec<u8> {
         let opts = zip::write::SimpleFileOptions::default();
         zip.start_file("index.ts", opts).unwrap();
         zip.write_all(source.as_bytes()).unwrap();
+        zip.start_file("README.md", opts).unwrap();
+        zip.write_all("# 包内 README\n\n来自插件包的 README 内容。".as_bytes())
+            .unwrap();
         zip.finish().unwrap();
     }
     buf.into_inner()
@@ -292,6 +295,9 @@ async fn release_upload_download_and_star() {
     // 发布时从包根 index.ts 提取的元数据会显示在版本卡上
     assert!(html.contains("包内 v0.1.0"));
     assert!(html.contains("alice"));
+    // 插件包同时同步了仓库简介（metadata.description）与 README.md
+    assert!(html.contains("演示插件"), "{html}");
+    assert!(html.contains("来自插件包的 README 内容"), "{html}");
 
     let download = ctx
         .app
@@ -616,6 +622,134 @@ async fn market_lists_latest_release_and_metadata() {    let ctx = setup().await
         .await
         .unwrap();
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn edit_form_can_sync_description_and_readme_from_latest_package() {
+    let ctx = setup().await;
+    let (cookie, csrf) = register(&ctx.app, "syncer", "syncer@example.com").await;
+    assert_eq!(
+        create_plugin(&ctx.app, &cookie, &csrf, "sync-me")
+            .await
+            .status(),
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(
+        upload_release(&ctx.app, &cookie, &csrf, "syncer", "sync-me", "0.1.0")
+            .await
+            .status(),
+        StatusCode::SEE_OTHER
+    );
+
+    // 人工改成别的简介/README
+    let edit_page = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/plugins/syncer/sync-me/edit")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let edit_csrf = extract_csrf(&body_text(edit_page).await);
+    let manual = format!(
+        "_csrf={edit_csrf}&name=Sync+Me&description=manual-desc&readme=manual-readme&homepage=&license=MIT&tags=demo"
+    );
+    let updated = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/plugins/syncer/sync-me")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(manual))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.status(), StatusCode::SEE_OTHER);
+
+    // 从最新版本插件包同步：简介取 metadata.description，README 取包根 README.md
+    let synced = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/plugins/syncer/sync-me/sync-package")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!("_csrf={edit_csrf}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(synced.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        synced.headers().get(header::LOCATION).unwrap(),
+        "/plugins/syncer/sync-me/edit?ok=synced"
+    );
+
+    let detail = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/plugins/syncer/sync-me")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let html = body_text(detail).await;
+    assert!(html.contains("演示插件"), "{html}");
+    assert!(html.contains("来自插件包的 README 内容"), "{html}");
+    assert!(!html.contains("manual-desc"), "{html}");
+
+    // 没有发布版本的插件：同步按钮要给出可操作提示，而不是 500
+    assert_eq!(
+        create_plugin(&ctx.app, &cookie, &csrf, "no-release")
+            .await
+            .status(),
+        StatusCode::SEE_OTHER
+    );
+    let no_release_page = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/plugins/syncer/no-release/edit")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let no_release_csrf = extract_csrf(&body_text(no_release_page).await);
+    let no_release = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/plugins/syncer/no-release/sync-package")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!("_csrf={no_release_csrf}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(no_release.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        no_release.headers().get(header::LOCATION).unwrap(),
+        "/plugins/syncer/no-release/edit?err=no_release"
+    );
 }
 
 #[tokio::test]

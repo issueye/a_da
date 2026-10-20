@@ -23,6 +23,8 @@ use zip::ZipArchive;
 const MAX_ENTRY_BYTES: u64 = 4 * 1024 * 1024;
 /// 元数据 JSON 落库上限，避免恶意包把整个对象字面量塞进 metadata。
 const MAX_RAW_JSON_BYTES: usize = 16 * 1024;
+/// README 读取上限：插件库只做展示，README 不该是几 MB 的二进制。
+const MAX_README_BYTES: u64 = 512 * 1024;
 
 /// 校验通过的插件包元数据。
 #[derive(Debug, Clone)]
@@ -91,8 +93,21 @@ impl PackageMetadata {
     }
 }
 
+/// 一次发布从 ZIP 里能拿到的展示内容。
+#[derive(Debug, Clone)]
+pub struct PackageInspection {
+    pub metadata: PackageMetadata,
+    /// 包根 `README.md`（大小写不敏感）；没有就是 `None`——发布时不会用它清空已有 README。
+    pub readme: Option<String>,
+}
+
 /// 从 ZIP 中定位包根入口并提取元数据。ZIP 结构本身也会走一遍 `validate_zip`。
 pub fn inspect_zip(bytes: &[u8]) -> Result<PackageMetadata, String> {
+    inspect_package(bytes).map(|inspection| inspection.metadata)
+}
+
+/// 同时提取 metadata 与 README：发布时用它们同步插件仓库的简介/README。
+pub fn inspect_package(bytes: &[u8]) -> Result<PackageInspection, String> {
     crate::storage::validate_zip(bytes)?;
     let mut archive =
         ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("不是合法 ZIP: {e}"))?;
@@ -118,11 +133,63 @@ pub fn inspect_zip(bytes: &[u8]) -> Result<PackageMetadata, String> {
     }
 
     let raw = parse_metadata_source(&source)?;
-    let meta = PackageMetadata::from_value(raw)?;
-    if meta.name.trim().is_empty() {
+    let metadata = PackageMetadata::from_value(raw)?;
+    if metadata.name.trim().is_empty() {
         return Err("metadata.name 不能为空".to_string());
     }
-    Ok(meta)
+    drop(entry);
+    let readme = package_readme(&mut archive, &entry_name);
+    Ok(PackageInspection { metadata, readme })
+}
+
+/// 找与入口同层的 `README.md`（大小写不敏感）。
+///
+/// README 是**展示内容**，不是发布契约：读不出来（过大/非 UTF-8/损坏）时返回 `None`，
+/// 保留仓库里已有的 README，绝不能因为一份 README 让版本发布失败。
+fn package_readme(
+    archive: &mut ZipArchive<Cursor<&[u8]>>,
+    entry_name: &str,
+) -> Option<String> {
+    let prefix = entry_name
+        .rsplit_once('/')
+        .map(|(dir, _)| dir)
+        .unwrap_or("");
+    let mut target: Option<String> = None;
+    for i in 0..archive.len() {
+        let file = archive.by_index(i).ok()?;
+        if file.is_dir() {
+            continue;
+        }
+        let name = file.name();
+        let (dir, base) = name.rsplit_once('/').unwrap_or(("", name));
+        if !base.eq_ignore_ascii_case("README.md") || dir != prefix {
+            continue;
+        }
+        target = Some(name.to_string());
+        break;
+    }
+    let name = target?;
+    let mut file = archive.by_name(&name).ok()?;
+    if file.size() > MAX_README_BYTES {
+        tracing::warn!(%name, "插件包 README 过大，已忽略");
+        return None;
+    }
+    let mut text = String::new();
+    if file
+        .by_ref()
+        .take(MAX_README_BYTES + 1)
+        .read_to_string(&mut text)
+        .is_err()
+    {
+        tracing::warn!(%name, "插件包 README 不是 UTF-8 文本，已忽略");
+        return None;
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_string())
+    }
 }
 
 /// 包根入口：`index.ts|js`，允许整个包被一层目录包着（GitHub ZIP 常见形态）。
@@ -971,6 +1038,50 @@ mod tests {
             let meta = inspect_zip(&buf.into_inner()).expect("应识别包根入口");
             assert_eq!(meta.name, "demo-plugin", "prefix={prefix}");
         }
+    }
+
+    #[test]
+    fn extracts_readme_next_to_package_entry() {
+        let source = full_source("");
+        for (prefix, readme_name) in [("", "README.md"), ("demo/", "Readme.md")] {
+            let mut buf = Cursor::new(Vec::new());
+            {
+                let mut zip = zip::ZipWriter::new(&mut buf);
+                zip.start_file(
+                    format!("{prefix}index.ts"),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+                zip.write_all(source.as_bytes()).unwrap();
+                zip.start_file(
+                    format!("{prefix}{readme_name}"),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+                zip.write_all(b"# Demo\n\nPackage README.").unwrap();
+                zip.finish().unwrap();
+            }
+            let inspection = inspect_package(&buf.into_inner()).expect("应解析成功");
+            assert_eq!(
+                inspection.readme.as_deref(),
+                Some("# Demo\n\nPackage README."),
+                "prefix={prefix}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_readme_is_none_not_an_error() {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buf);
+            zip.start_file("index.ts", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(full_source("").as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let inspection = inspect_package(&buf.into_inner()).expect("没有 README 也应成功");
+        assert!(inspection.readme.is_none());
     }
 
     #[test]

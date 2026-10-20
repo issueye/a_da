@@ -19,14 +19,6 @@ function defaultSlug(item: PluginItem): string {
     .slice(0, 64)
 }
 
-function looksGeneric(description?: string): boolean {
-  if (!description) return true
-  return (
-    /^(全局|工作区)\s*扩展插件$/.test(description.trim()) ||
-    description.trim() === '自定义 Agent 扩展'
-  )
-}
-
 /**
  * 把本地插件包上传到 plugin-hub。
  *
@@ -62,12 +54,13 @@ export const PublishPluginModal: React.FC<PublishPluginModalProps> = ({
     setSubmitting(false)
     setSlug(defaultSlug(plugin))
     setName(plugin.name || '')
-    setDescription(looksGeneric(plugin.plugin.manifest.description) ? '' : plugin.plugin.manifest.description)
+    // 简介与 README 默认留空：发布时插件库会用索引里的 metadata.description 与包内 README.md 填充
+    setDescription('')
     setTags('')
     setLicense('')
     setVersion('')
     setNotes('')
-    setReadme(`# ${plugin.name}\n\n${looksGeneric(plugin.plugin.manifest.description) ? '' : plugin.plugin.manifest.description}`.trim())
+    setReadme('')
     agentClient
       .getMarketConfig()
       .then(setConfig)
@@ -208,13 +201,13 @@ export const PublishPluginModal: React.FC<PublishPluginModalProps> = ({
               </div>
 
               <label className="block">
-                <span className="text-[11px] text-zinc-600 dark:text-zinc-400">简介</span>
+                <span className="text-[11px] text-zinc-600 dark:text-zinc-400">简介（留空用 metadata.description）</span>
                 <textarea
                   value={description}
                   onChange={(event) => setDescription(event.target.value)}
                   rows={2}
                   maxLength={300}
-                  placeholder="一句话说清这个插件解决什么问题"
+                  placeholder="留空则使用插件包 index.ts 里的 metadata.description"
                   className="mt-0.5 w-full px-2.5 py-1.5 bg-zinc-50 dark:bg-zinc-900/70 border border-zinc-200 dark:border-[#2e2e33] rounded-lg text-[11px] text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </label>
@@ -250,11 +243,12 @@ export const PublishPluginModal: React.FC<PublishPluginModalProps> = ({
               </div>
 
               <label className="block">
-                <span className="text-[11px] text-zinc-600 dark:text-zinc-400">README（Markdown）</span>
+                <span className="text-[11px] text-zinc-600 dark:text-zinc-400">README（留空用包内 README.md）</span>
                 <textarea
                   value={readme}
                   onChange={(event) => setReadme(event.target.value)}
                   rows={5}
+                  placeholder="留空则使用插件包根目录的 README.md"
                   className="mt-0.5 w-full px-2.5 py-1.5 bg-zinc-50 dark:bg-zinc-900/70 border border-zinc-200 dark:border-[#2e2e33] rounded-lg text-[11px] font-mono text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </label>
@@ -272,6 +266,7 @@ export const PublishPluginModal: React.FC<PublishPluginModalProps> = ({
               <div className="text-[10px] text-zinc-400 dark:text-zinc-500 leading-4">
                 上传内容为插件包目录（自动跳过隐藏文件、node_modules、target）。插件库会从包根
                 index.ts 校验 name / description / author / version；版本号留空时采用包内版本。
+                简介与 README 留空时，发布后会自动采用包内 metadata.description 与 README.md。
               </div>
             </>
           )}

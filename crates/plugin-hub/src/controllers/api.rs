@@ -283,7 +283,16 @@ pub async fn create(
             if existing.org_id.is_none()
                 && existing.owner_id.as_deref() == Some(auth.user.id.as_str())
             {
-                plugin::update(&state.pool, &existing.id, &form, &tags).await?;
+                // 桌面端上传时简介/README 可以留空（最终由包内 metadata/README 同步）。
+                // upsert 阶段若直接写空会把人工维护的内容清掉，所以空值保留旧值。
+                let mut update_form = form.clone();
+                if update_form.description.trim().is_empty() {
+                    update_form.description = existing.description.clone();
+                }
+                if update_form.readme.trim().is_empty() {
+                    update_form.readme = existing.readme.clone();
+                }
+                plugin::update(&state.pool, &existing.id, &update_form, &tags).await?;
                 crate::models::webhook::dispatch(
                     state.pool.clone(),
                     auth.user.id.clone(),
@@ -397,8 +406,10 @@ pub async fn create_release(
             "ZIP 超过上传上限",
         ));
     }
-    let metadata = crate::metadata::inspect_zip(&bytes)
+    let inspection = crate::metadata::inspect_package(&bytes)
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let metadata = inspection.metadata;
+    let package_readme = inspection.readme;
     let version = metadata
         .effective_version(&requested_version)
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
@@ -428,6 +439,16 @@ pub async fn create_release(
     .await;
     match result {
         Ok(id) => {
+            if let Err(error) = plugin::sync_package_text(
+                &state.pool,
+                &detail.id,
+                &metadata.description,
+                package_readme.as_deref(),
+            )
+            .await
+            {
+                tracing::warn!(%error, "发布成功后同步插件简介/README 失败");
+            }
             crate::models::webhook::dispatch_plugin(
                 &state.pool,
                 detail.owner_id.as_deref(),

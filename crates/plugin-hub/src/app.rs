@@ -53,6 +53,10 @@ pub fn app(state: AppState) -> Router {
             get(plugins::detail).post(plugins::update),
         )
         .route("/plugins/{owner}/{slug}/edit", get(plugins::edit_form))
+        .route(
+            "/plugins/{owner}/{slug}/sync-package",
+            post(plugins::sync_package),
+        )
         .route("/plugins/{owner}/{slug}/delete", post(plugins::delete))
         .route(
             "/plugins/{owner}/{slug}/releases/new",

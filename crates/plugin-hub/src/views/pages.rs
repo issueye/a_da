@@ -58,6 +58,8 @@ pub struct PluginFormTemplate {
     pub heading: String,
     pub submit: String,
     pub error: Option<String>,
+    /// 非空时在表单顶部显示「从最新版本插件包同步」按钮（编辑页才会给）。
+    pub sync_action: String,
 }
 
 #[derive(Template)]

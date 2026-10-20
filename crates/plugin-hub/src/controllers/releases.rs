@@ -115,14 +115,16 @@ pub async fn create(
     }
 
     // 发布前从包根 index.ts **静态**提取 metadata：必填 name/description/author/version，
-    // 且表单版本（可留空）必须与包内版本一致。
-    let metadata = match crate::metadata::inspect_zip(&bytes) {
-        Ok(metadata) => metadata,
+    // 且表单版本（可留空）必须与包内版本一致；同时取包内 README.md 用于同步仓库展示内容。
+    let inspection = match crate::metadata::inspect_package(&bytes) {
+        Ok(inspection) => inspection,
         Err(error) => {
             return render_form(&auth, &owner, &slug, &detail.name, Some(error))
                 .map(IntoResponse::into_response);
         }
     };
+    let metadata = inspection.metadata;
+    let package_readme = inspection.readme;
     let version = match metadata.effective_version(&requested_version) {
         Ok(version) => version,
         Err(error) => {
@@ -153,6 +155,18 @@ pub async fn create(
     .await;
     match result {
         Ok(_) => {
+            // 插件包是展示内容的来源：简介取 metadata.description，README 取包根 README.md。
+            // 包内没有 README 时保留人工维护的那份（sync_package_text 的 None 分支）。
+            if let Err(error) = plugin::sync_package_text(
+                &state.pool,
+                &detail.id,
+                &metadata.description,
+                package_readme.as_deref(),
+            )
+            .await
+            {
+                tracing::warn!(%error, "发布成功后同步插件简介/README 失败");
+            }
             crate::models::webhook::dispatch_plugin(
                 &state.pool,
                 detail.owner_id.as_deref(),

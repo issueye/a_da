@@ -50,6 +50,7 @@ pub async fn new_form(
         heading: "新建插件".to_string(),
         submit: "创建插件".to_string(),
         error: None,
+        sync_action: String::new(),
     })
 }
 
@@ -165,6 +166,7 @@ pub async fn edit_form(
     State(state): State<AppState>,
     auth: AuthCtx,
     Path((owner, slug)): Path<(String, String)>,
+    Query(q): Query<PageQuery>,
 ) -> Result<Html<String>, AppError> {
     let user = auth.require_user()?;
     let Some(detail) = plugin::find_detail(&state.pool, &owner, &slug).await? else {
@@ -174,13 +176,18 @@ pub async fn edit_form(
         return Err(AppError::Forbidden);
     }
     views::render(&PluginFormTemplate {
-        common: Common::from_auth(&auth, None, ""),
+        common: Common::from_auth(
+            &auth,
+            views::Flash::from_query(q.ok.as_deref(), q.err.as_deref()),
+            "",
+        ),
         form: PluginFormData::from(&detail),
         orgs: Vec::new(),
         action: format!("/plugins/{owner}/{slug}"),
         heading: format!("编辑 {}", detail.name),
         submit: "保存修改".to_string(),
         error: None,
+        sync_action: format!("/plugins/{owner}/{slug}/sync-package"),
     })
 }
 
@@ -215,6 +222,7 @@ pub async fn update(
             heading: format!("编辑 {}", detail.name),
             submit: "保存修改".to_string(),
             error: Some(error),
+            sync_action: format!("/plugins/{owner}/{slug}/sync-package"),
         })
         .map(IntoResponse::into_response);
     }
@@ -231,6 +239,55 @@ pub async fn update(
     )
     .await;
     Ok(Redirect::to(&format!("/plugins/{owner}/{slug}?ok=updated")).into_response())
+}
+
+pub async fn sync_package(
+    State(state): State<AppState>,
+    auth: AuthCtx,
+    Path((owner, slug)): Path<(String, String)>,
+    Form(form): Form<super::CsrfForm>,
+) -> Result<Response, AppError> {
+    auth.validate_csrf(&form._csrf)?;
+    let user = auth.require_user()?;
+    let Some(detail) = plugin::find_detail(&state.pool, &owner, &slug).await? else {
+        return Err(AppError::NotFound);
+    };
+    if !can_manage(&state.pool, user, &detail).await? {
+        return Err(AppError::Forbidden);
+    }
+
+    let releases = release::list_for_plugin(&state.pool, &detail.id).await?;
+    let Some(latest) = releases.first() else {
+        return Ok(
+            Redirect::to(&format!("/plugins/{owner}/{slug}/edit?err=no_release"))
+                .into_response(),
+        );
+    };
+    let asset_path = latest.asset_path.clone();
+    let bytes = state
+        .storage
+        .read(&asset_path)
+        .await
+        .map_err(|e| AppError::Internal(format!("读取最新版本插件包失败: {e}")))?;
+    let inspection = crate::metadata::inspect_package(&bytes).map_err(AppError::bad)?;
+    plugin::sync_package_text(
+        &state.pool,
+        &detail.id,
+        &inspection.metadata.description,
+        inspection.readme.as_deref(),
+    )
+    .await?;
+    crate::models::webhook::dispatch_plugin(
+        &state.pool,
+        detail.owner_id.as_deref(),
+        detail.org_id.as_deref(),
+        "plugin.updated",
+        serde_json::json!({
+            "plugin": { "id": detail.id, "owner": detail.owner, "slug": detail.slug }
+        }),
+    )
+    .await;
+    Ok(Redirect::to(&format!("/plugins/{owner}/{slug}/edit?ok=synced")).into_response())
 }
 
 pub async fn delete(
@@ -292,6 +349,7 @@ fn render_form(
         }
         .to_string(),
         error,
+        sync_action: String::new(),
     })
 }
 

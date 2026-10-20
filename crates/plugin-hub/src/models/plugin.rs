@@ -145,6 +145,41 @@ pub fn normalize_tags(raw: &str) -> String {
     out.join(",")
 }
 
+/// 用插件包里的 `metadata.description` / `README.md` 同步仓库展示内容。
+///
+/// `readme = None` 表示包里没有 README：**只更新简介，不动已有 README**，
+/// 避免一次发布把人工维护的 README 清空。
+pub async fn sync_package_text(
+    pool: &SqlitePool,
+    id: &str,
+    description: &str,
+    readme: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let now = crate::views::now_ts();
+    match readme {
+        Some(readme) => {
+            sqlx::query(
+                "UPDATE plugins SET description = ?, readme = ?, updated_at = ? WHERE id = ?",
+            )
+            .bind(description)
+            .bind(readme)
+            .bind(now)
+            .bind(id)
+            .execute(pool)
+            .await?;
+        }
+        None => {
+            sqlx::query("UPDATE plugins SET description = ?, updated_at = ? WHERE id = ?")
+                .bind(description)
+                .bind(now)
+                .bind(id)
+                .execute(pool)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 fn split_tags(raw: &str) -> Vec<String> {
     raw.split(',')
         .map(str::trim)

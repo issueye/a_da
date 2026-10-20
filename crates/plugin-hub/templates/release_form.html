@@ -22,6 +22,8 @@
     发布前会从包根 <code class="code-inline">index.ts</code> 的 <code class="code-inline">ada.metadata</code>
     读取元数据；<span class="font-medium text-ink">name / description / author / version 必须齐全</span>，
     且 <code class="code-inline">version</code> 要与发布的版本号一致。
+    发布成功后，插件的「一句话简介 / README」会自动采用 <code class="code-inline">metadata.description</code>
+    与包根 <code class="code-inline">README.md</code>。
   </div>
 
   <form method="post" action="/plugins/{{ owner }}/{{ slug }}/releases/new" enctype="multipart/form-data"
