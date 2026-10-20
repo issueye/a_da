@@ -110,6 +110,7 @@ impl Dispatcher {
                     Some(reassembler) => reassembler.refresh("marketInstall").await,
                     None => None,
                 };
+                self.invalidate_workspace_engine_caches().await;
                 Ok(serde_json::json!({
                     "ok": true,
                     "plugin": installed,

@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock, mpsc, watch};
+use tokio::sync::{mpsc, watch, Mutex, RwLock};
 
 use crate::runner::run_agent_turn;
 use crate::server::emitter::StateBroadcaster;
 use crate::server::fs_service;
-use crate::state::{AgentStore, generate_snapshot_with_seq};
+use crate::state::{generate_snapshot_with_seq, AgentStore};
 use agent_adapter::model::client::NetworkModelClient;
 use agent_base::domain::{AgentEvent, AgentEventBody, TurnStopReason};
 use agent_base::model::ProviderConfig;
@@ -90,6 +90,21 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
+    /// 插件贡献变化后，丢弃按工作区缓存的动态引擎。
+    ///
+    /// 为什么必须清：`LivePluginReassembler` 只持有**启动装配**那一份
+    /// `LivePluginContributions`（且工作区是启动参数那个固定值）；而
+    /// `resolve_engine_from_cache` 会按会话工作区另建并缓存引擎。用户新增插件后
+    /// 只重装配主引擎，动态引擎仍是旧工具集合——于是“列表里有插件、模型调不到”，
+    /// 只能重启进程（缓存清空、重新装配）才恢复。
+    ///
+    /// 清缓存而不是逐个重装配：动态引擎的活体句柄没有暴露给 Dispatcher；
+    /// 下一轮按最新磁盘重新装配，代价是一次插件脚本装载，换来的是**一致**。
+    async fn invalidate_workspace_engine_caches(&self) {
+        self.workspace_engines.lock().await.clear();
+        self.pm_workspace_engines.lock().await.clear();
+    }
+
     pub async fn dispatch(
         &self,
         method: &str,
@@ -2435,6 +2450,9 @@ impl Dispatcher {
                     Some(r) => r.refresh("reload").await,
                     None => None,
                 };
+                // 主引擎已重装配；按工作区缓存的动态引擎必须一起失效，
+                // 否则新插件只对“启动工作区”生效，其他工作区要重启才看到。
+                self.invalidate_workspace_engine_caches().await;
                 Ok(serde_json::json!({
                     "ok": true,
                     "plugins": plugins,
@@ -2456,6 +2474,7 @@ impl Dispatcher {
                     Some(r) => r.refresh("capabilities").await,
                     None => None,
                 };
+                self.invalidate_workspace_engine_caches().await;
                 Ok(serde_json::json!({
                     "applied": report.as_ref().map(|r| r.applied),
                     "report": report,
@@ -2543,6 +2562,7 @@ impl Dispatcher {
                     Some(r) => r.reassemble(plugin_id, enabled).await,
                     None => None,
                 };
+                self.invalidate_workspace_engine_caches().await;
 
                 // ── afterPluginToggle（P3a·SP-55）───────────────────────────
                 //
@@ -2607,6 +2627,7 @@ impl Dispatcher {
                     Some(r) => r.refresh("delete").await,
                     None => None,
                 };
+                self.invalidate_workspace_engine_caches().await;
                 Ok(serde_json::json!({
                     "ok": ok,
                     "applied": report.as_ref().map(|r| r.applied),
@@ -2637,6 +2658,7 @@ impl Dispatcher {
                     Some(r) => r.refresh("createTemplate").await,
                     None => None,
                 };
+                self.invalidate_workspace_engine_caches().await;
                 Ok(serde_json::json!({
                     "filePath": fp,
                     "applied": report.as_ref().map(|r| r.applied),

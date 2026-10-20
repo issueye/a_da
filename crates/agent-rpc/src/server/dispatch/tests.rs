@@ -771,3 +771,76 @@ async fn test_session_initialize_returns_capabilities_and_snapshot_has_seq() {
     assert!(snap_val.get("seq").is_some(), "快照必须携带 seq 字段");
     assert_eq!(snap_val.get("seq").and_then(|v| v.as_u64()), Some(0));
 }
+
+/// 回归：插件重载必须让**按工作区缓存的动态引擎**失效。
+///
+/// 用户症状：新加插件后点「重新加载」，插件列表里有、模型却调不到；重启程序才恢复。
+/// 根因是 `plugin.reload` 只重装配启动工作区那份主引擎，而 `workspace_engines`
+/// 里的动态引擎仍是旧工具集合。清缓存后下一轮会按最新磁盘重建。
+#[tokio::test]
+async fn test_plugin_reload_invalidates_workspace_engine_caches() {
+    use agent_base::engine::{AgentRuntime, RunPolicy};
+    use agent_base::ports::ToolCatalog;
+    use agent_base::testing::{
+        FixedClock, FixedPrompt, InMemorySessionStore, InMemoryToolCatalog, MockScope,
+        RecordingApprovalGate, ScriptedModelClient,
+    };
+    use std::path::PathBuf;
+
+    let catalog: Arc<dyn ToolCatalog> = Arc::new(InMemoryToolCatalog::with_tools(vec![]));
+    let runtime = Arc::new(AgentRuntime::new(
+        Arc::new(ScriptedModelClient::new(vec![])),
+        catalog,
+        Arc::new(RecordingApprovalGate::new(true)),
+        Arc::new(InMemorySessionStore::new()),
+        Arc::new(FixedPrompt::new("test")),
+        Arc::new(MockScope::new("test")),
+        Arc::new(FixedClock::new(1000)),
+        RunPolicy::default(),
+    ));
+
+    let store = Arc::new(RwLock::new(AgentStore::new("E:/test".to_string())));
+    let dispatcher = Dispatcher::new(
+        store,
+        Arc::new(SessionManager::new(Some(
+            std::env::temp_dir().join("a_da_test_home"),
+        ))),
+        Arc::new(CheckpointManager::new(Some(
+            std::env::temp_dir().join("a_da_test_home"),
+        ))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::new()),
+        Arc::new(SkillManager::new()),
+        None,
+    );
+
+    let ws = PathBuf::from("E:/active");
+    dispatcher
+        .workspace_engines
+        .lock()
+        .await
+        .insert(ws.clone(), runtime.clone());
+    dispatcher
+        .pm_workspace_engines
+        .lock()
+        .await
+        .insert(ws, runtime);
+
+    dispatcher
+        .dispatch(
+            agent_proto::methods::PLUGIN_RELOAD,
+            serde_json::json!({ "workspace": "E:/active" }),
+        )
+        .await
+        .expect("plugin.reload 应可分发");
+
+    assert!(
+        dispatcher.workspace_engines.lock().await.is_empty(),
+        "重载后动态编码引擎缓存必须清空"
+    );
+    assert!(
+        dispatcher.pm_workspace_engines.lock().await.is_empty(),
+        "重载后动态 PM 引擎缓存必须清空"
+    );
+}
