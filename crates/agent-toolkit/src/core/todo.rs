@@ -49,11 +49,16 @@ impl TodoTool {
 
     /// 从参数里取清单。**形状不对就如实报错**（而不是当空清单继续跑——
     /// 拿一份空清单去问插件，只会得到误导性的答复）。
+    ///
+    /// 🔴 描述符（模型看到的 schema）用的是 `items: [{id,title,done}]`，
+    /// 而早期实现只认 `todos: [{title,status}]`：模型按 schema 发 `items` 时
+    /// 工具会把它当成"空清单已清空"，界面却仍从 `args.items` 画出计划——
+    /// 工具回执与界面互相矛盾。这里两个字段都认，并把 `done` 归一成 `status`。
     fn parse_steps(args: &serde_json::Value) -> (Vec<TodoStep>, Option<String>) {
-        let Some(raw) = args.get("todos") else {
+        let Some(raw) = args.get("todos").or_else(|| args.get("items")) else {
             return (Vec::new(), None);
         };
-        match serde_json::from_value::<Vec<TodoStep>>(raw.clone()) {
+        match serde_json::from_value::<Vec<TodoStep>>(normalize_steps(raw)) {
             Ok(mut steps) => {
                 steps.retain(|s| !s.title.trim().is_empty());
                 (steps, None)
@@ -61,7 +66,7 @@ impl TodoTool {
             Err(e) => (
                 Vec::new(),
                 Some(format!(
-                    "`todos` 不是合法清单（{e}）：期望 `[{{title, status}}]`"
+                    "`todos` 不是合法清单（{e}）：期望 `[{{title, status}}]` 或 `[{{title, done}}]`"
                 )),
             ),
         }
@@ -71,9 +76,14 @@ impl TodoTool {
     fn revalidate_replacement(args: &serde_json::Value) -> Result<Vec<TodoStep>, String> {
         let steps_raw = args
             .get("todos")
-            .ok_or_else(|| "改写必须给出 `todos` 字段".to_string())?;
-        let steps: Vec<TodoStep> = serde_json::from_value(steps_raw.clone())
-            .map_err(|e| format!("改写后的清单不合法（{e}）：期望 `[{{title, status}}]`"))?;
+            .or_else(|| args.get("items"))
+            .ok_or_else(|| "改写必须给出 `todos` / `items` 字段".to_string())?;
+        let steps: Vec<TodoStep> =
+            serde_json::from_value(normalize_steps(steps_raw)).map_err(|e| {
+                format!(
+                    "改写后的清单不合法（{e}）：期望 `[{{title, status}}]` 或 `[{{title, done}}]`"
+                )
+            })?;
         if steps.iter().any(|s| s.title.trim().is_empty()) {
             return Err("改写后的清单里有空标题".to_string());
         }
@@ -100,6 +110,28 @@ fn append_notes(output: &mut String, notes: &[AfterNote]) {
         output.push_str("\n\n[插件旁注] ");
         output.push_str(&texts.join("\n"));
     }
+}
+
+/// 把 `{title, done}`（描述符 schema）归一成 `{title, status}`（实现/回执形状）。
+fn normalize_steps(raw: &serde_json::Value) -> serde_json::Value {
+    let Some(array) = raw.as_array() else {
+        return raw.clone();
+    };
+    let mut out = Vec::with_capacity(array.len());
+    for entry in array {
+        let mut value = entry.clone();
+        if let Some(map) = value.as_object_mut() {
+            if !map.contains_key("status") {
+                let done = map.get("done").and_then(|v| v.as_bool()).unwrap_or(false);
+                map.insert(
+                    "status".to_string(),
+                    serde_json::json!(if done { "completed" } else { "pending" }),
+                );
+            }
+        }
+        out.push(value);
+    }
+    serde_json::Value::Array(out)
 }
 
 impl Tool for TodoTool {
@@ -219,5 +251,48 @@ impl Tool for TodoTool {
 
             ToolReceipt::success(output, started_at, crate::now_ms())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn accepts_items_shape_advertised_by_the_tool_schema() {
+        // 描述符里写的就是 items + done；模型照 schema 发，工具必须认。
+        let args = json!({
+            "action": "set",
+            "items": [
+                { "id": "t1", "title": "读 README", "done": true },
+                { "id": "t2", "title": "写总结", "done": false }
+            ]
+        });
+        let (steps, problem) = TodoTool::parse_steps(&args);
+        assert!(problem.is_none(), "items 形状不该报错: {problem:?}");
+        assert_eq!(steps.len(), 2);
+        assert!(steps[0].is_done());
+        assert!(!steps[1].is_done());
+    }
+
+    #[test]
+    fn keeps_accepting_the_legacy_todos_shape() {
+        let args = json!({
+            "action": "update",
+            "todos": [{ "id": "t1", "title": "读 README", "status": "completed" }]
+        });
+        let (steps, problem) = TodoTool::parse_steps(&args);
+        assert!(problem.is_none());
+        assert_eq!(steps.len(), 1);
+        assert!(steps[0].is_done());
+    }
+
+    #[test]
+    fn empty_items_are_an_explicit_clear_not_a_parse_error() {
+        let args = json!({ "action": "set", "items": [] });
+        let (steps, problem) = TodoTool::parse_steps(&args);
+        assert!(problem.is_none());
+        assert!(steps.is_empty());
     }
 }
