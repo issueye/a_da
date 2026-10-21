@@ -182,9 +182,12 @@ impl AgentClient {
             }
         }
 
+        // 🔴 错误文案里只能是 scheme://host:port/path：URL 的 query 带着网关 token，
+        // 它会一路被 AppError 回显到浏览器页面（2026-10-21 实测过的泄漏路径）。
+        let display = display_url(&url);
         let (ws, _) = tokio_tungstenite::connect_async(url.as_str())
             .await
-            .with_context(|| format!("连接网关失败: {url}"))?;
+            .with_context(|| format!("连接网关失败: {display}"))?;
         let (mut tx, mut rx) = ws.split();
 
         let init = json!({
@@ -208,6 +211,17 @@ impl AgentClient {
         send(&mut tx, call).await?;
         wait(&mut rx, 2).await
     }
+}
+
+/// 可安全展示的端点：丢掉 query（里面带着网关 token）与 userinfo。
+fn display_url(url: &reqwest::Url) -> String {
+    let mut out = format!("{}://{}", url.scheme(), url.host_str().unwrap_or("?"));
+    if let Some(port) = url.port() {
+        out.push(':');
+        out.push_str(&port.to_string());
+    }
+    out.push_str(url.path());
+    out
 }
 
 async fn send<S>(tx: &mut S, frame: Value) -> Result<()>
@@ -254,5 +268,21 @@ where
             bail!("网关错误 {code}: {msg}");
         }
         return Ok(value.get("result").cloned().unwrap_or(Value::Null));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_url_drops_query_so_the_gateway_token_never_reaches_a_page() {
+        let url =
+            reqwest::Url::parse("ws://127.0.0.1:52353/rpc?workspace=E%3A%2Fw&token=SECRET-TOKEN")
+                .unwrap();
+        let shown = display_url(&url);
+        assert_eq!(shown, "ws://127.0.0.1:52353/rpc");
+        assert!(!shown.contains("SECRET"));
+        assert!(!shown.contains('?'));
     }
 }

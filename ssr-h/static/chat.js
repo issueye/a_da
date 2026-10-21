@@ -3,6 +3,9 @@
  *
  * 组件级行为（折叠状态、复制、输入框聚焦与自动增高）在 components.js 里，
  * 这里只保留与"对话流"强相关的部分：滚动跟随、代码块复制、侧栏搜索。
+ *
+ * live 轮询用 OOB 方式替换 #transcript（不是 htmx 的普通换 DOM），
+ * 所以这里用 MutationObserver 而不是 htmx:afterSwap 钩子。
  */
 (() => {
   const scroller = () => document.getElementById('chat-scroll');
@@ -51,15 +54,15 @@
     if (el) {
       el.addEventListener('scroll', () => { stickToBottom = nearBottom(); }, { passive: true });
     }
+    const transcript = document.getElementById('transcript');
+    if (transcript && window.MutationObserver) {
+      new MutationObserver(() => {
+        enhanceCodeBlocks();
+        if (stickToBottom) scrollToBottom();
+      }).observe(transcript, { childList: true });
+    }
     scrollToBottom();
   };
-
-  document.body.addEventListener('htmx:afterSwap', (event) => {
-    if (event.target && event.target.id === 'transcript') {
-      enhanceCodeBlocks();
-      if (stickToBottom) scrollToBottom();
-    }
-  });
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', boot);
@@ -68,18 +71,34 @@
   }
 })();
 
-/* 侧栏会话搜索：纯前端过滤标题，不改变当前会话。 */
+/* 侧栏会话搜索：纯前端过滤标题，不改变当前会话。
+   live 轮询会重渲染 #thread-list，因此要重新套用过滤并保住滚动位置。 */
 (() => {
   const initThreadSearch = () => {
     const input = document.getElementById('chat-thread-search');
+    const list = document.getElementById('thread-list');
     if (!input) return;
-    const items = [...document.querySelectorAll('.ada-thread')];
-    input.addEventListener('input', () => {
+
+    let listScroll = 0;
+    const apply = () => {
       const query = input.value.trim().toLowerCase();
-      for (const item of items) {
+      document.querySelectorAll('.ada-thread').forEach((item) => {
         item.hidden = Boolean(query) && !item.textContent.toLowerCase().includes(query);
+      });
+    };
+
+    input.addEventListener('input', apply);
+
+    if (list) {
+      list.addEventListener('scroll', () => { listScroll = list.scrollTop; }, { passive: true });
+      if (window.MutationObserver) {
+        new MutationObserver(() => {
+          if (list.scrollTop !== listScroll) list.scrollTop = listScroll;
+          apply();
+        }).observe(list, { childList: true });
       }
-    });
+    }
+    apply();
   };
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initThreadSearch);

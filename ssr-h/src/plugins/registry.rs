@@ -20,7 +20,6 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Component, Path, PathBuf};
 use std::sync::RwLock;
 
@@ -127,6 +126,50 @@ pub struct PluginSnapshot {
     pub errors: Vec<String>,
 }
 
+/// 目录名 → 插件 id（只用于"加载失败的插件"占位，正常插件以清单 id 为准）。
+fn dir_plugin_id(root: &Path) -> String {
+    let raw = root
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| root.display().to_string());
+    let mut id = String::new();
+    for ch in raw.chars() {
+        let lower = ch.to_ascii_lowercase();
+        if lower.is_ascii_lowercase() || lower.is_ascii_digit() || lower == '-' {
+            id.push(lower);
+        } else if !id.ends_with('-') {
+            id.push('-');
+        }
+    }
+    let trimmed = id.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "invalid".to_string()
+    } else {
+        trimmed
+    }
+}
+
+/// 加载失败的插件占位：没有贡献，但**出现在列表里并带原因**。
+fn failed_record(root: &Path, id: &str, message: &str) -> PluginRecord {
+    PluginRecord {
+        id: id.to_string(),
+        name: id.to_string(),
+        version: String::new(),
+        description: String::new(),
+        enabled: true,
+        status: PluginStatus::Failed(message.to_string()),
+        slots: Vec::new(),
+        nav: Vec::new(),
+        pages: Vec::new(),
+        dashboard: None,
+        root: root.to_path_buf(),
+        assets_dir: None,
+        errors: vec![message.to_string()],
+        fragments: HashMap::new(),
+        fingerprint: 0,
+    }
+}
+
 impl PluginRegistry {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         let dir = dir.into();
@@ -162,18 +205,21 @@ impl PluginRegistry {
                 Ok(Some(record)) => discovered.push(record),
                 Ok(None) => {}
                 Err(error) => {
-                    let id = path
-                        .file_name()
-                        .map(|name| name.to_string_lossy().to_string())
-                        .unwrap_or_else(|| path.display().to_string());
-                    tracing::warn!("跳过无效前端插件 {id}: {error:#}");
+                    // 坏插件不能"静默消失"：保留成 Failed 记录，让扩展页把原因显示出来。
+                    let id = dir_plugin_id(&path);
+                    let message = format!("{error:#}");
+                    tracing::warn!("前端插件 {id} 加载失败: {message}");
+                    discovered.push(failed_record(&path, &id, &message));
                     report.failed.push(id);
                 }
             }
         }
         discovered.sort_by(|a, b| a.id.cmp(&b.id));
 
-        let mut guard = self.plugins.write().map_err(|_| anyhow!("插件注册表锁异常"))?;
+        let mut guard = self
+            .plugins
+            .write()
+            .map_err(|_| anyhow!("插件注册表锁异常"))?;
         let previous = std::mem::take(&mut *guard);
 
         for mut record in discovered {
@@ -223,9 +269,7 @@ impl PluginRegistry {
             .with_context(|| format!("读取 {} 失败", manifest_path.display()))?;
         let manifest: Manifest = serde_json::from_str(&raw)
             .with_context(|| format!("解析 {} 失败", manifest_path.display()))?;
-        manifest
-            .validate()
-            .context("插件清单校验失败")?;
+        manifest.validate().context("插件清单校验失败")?;
 
         let root = root
             .canonicalize()
@@ -280,6 +324,9 @@ impl PluginRegistry {
             .iter_mut()
             .find(|record| record.id == id)
             .ok_or_else(|| anyhow!("前端插件不存在: {id}"))?;
+        if let PluginStatus::Failed(reason) = &record.status {
+            bail!("插件 {id} 加载失败，无法启用：{reason}");
+        }
         record.enabled = enabled;
         record.status = if enabled {
             PluginStatus::Ready
@@ -314,17 +361,10 @@ impl PluginRegistry {
                     output.failed.push(record.id.clone());
                     continue;
                 };
-                // 单个插件的片段渲染不允许把整个页面带崩。
-                let rendered = catch_unwind(AssertUnwindSafe(|| html.clone())).unwrap_or_else(
-                    |_| {
-                        output.failed.push(record.id.clone());
-                        String::new()
-                    },
-                );
-                if rendered.is_empty() {
+                if html.is_empty() {
                     continue;
                 }
-                contributions.push((entry.order, record.id.clone(), rendered));
+                contributions.push((entry.order, record.id.clone(), html.clone()));
             }
         }
         drop(guard);
@@ -409,6 +449,11 @@ impl PluginRegistry {
     }
 
     pub fn read_page(&self, plugin: &PluginRecord, slug: &str) -> Result<(String, String)> {
+        // 停用/加载失败的插件不再对外提供页面：否则"停用后回到默认实现"只是把
+        // 导航藏了，直链仍然能打开。
+        if !plugin.is_active() {
+            bail!("插件未启用或加载失败: {}", plugin.id);
+        }
         let page = plugin
             .pages
             .iter()
@@ -422,6 +467,9 @@ impl PluginRegistry {
         let plugin = self
             .find(plugin_id)
             .ok_or_else(|| anyhow!("前端插件不存在: {plugin_id}"))?;
+        if !plugin.is_active() {
+            bail!("插件未启用或加载失败: {plugin_id}");
+        }
         let assets = plugin
             .assets_dir
             .as_ref()
@@ -462,14 +510,17 @@ fn resolve_assets_dir(root: &Path, declared: Option<&str>) -> Option<PathBuf> {
         }
         None => {
             let default = root.join("static");
-            default.is_dir().then(|| default.canonicalize().unwrap_or(default))
+            default
+                .is_dir()
+                .then(|| default.canonicalize().unwrap_or(default))
         }
     }
 }
 
 fn read_fragment(plugin_root: &Path, base: &Path, relative: &str) -> Result<String> {
     let path = safe_join(plugin_root, base, relative)?;
-    let meta = fs::metadata(&path).with_context(|| format!("读取插件文件失败: {}", path.display()))?;
+    let meta =
+        fs::metadata(&path).with_context(|| format!("读取插件文件失败: {}", path.display()))?;
     if meta.len() > MAX_PARTIAL_BYTES {
         bail!("插件 HTML 片段过大（上限 {} KB）", MAX_PARTIAL_BYTES / 1024);
     }
@@ -533,4 +584,113 @@ fn fnv1a(seed: u64, bytes: &[u8]) -> u64 {
 /// 初始指纹。
 fn fnv1a_init(bytes: &[u8]) -> u64 {
     fnv1a(0xcbf2_9ce4_8422_2325, bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_root(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "ssr_h_plugin_{tag}_{}_{}",
+            std::process::id(),
+            nanos
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_demo_plugin(root: &Path) {
+        let plugin = root.join("demo");
+        fs::create_dir_all(plugin.join("static")).unwrap();
+        fs::write(
+            plugin.join("plugin.json"),
+            r#"{
+                "id": "demo",
+                "name": "Demo",
+                "pages": [{"slug":"p","title":"P","template":"page.html"}],
+                "assets": "static"
+            }"#,
+        )
+        .unwrap();
+        fs::write(plugin.join("page.html"), "<p>page</p>").unwrap();
+        fs::write(plugin.join("static").join("x.js"), "console.log(1);").unwrap();
+    }
+
+    #[test]
+    fn broken_plugin_is_visible_as_failed_instead_of_silently_disappearing() {
+        let root = temp_root("broken");
+        let plugin = root.join("broken");
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(
+            plugin.join("plugin.json"),
+            r#"{"id":"broken","name":"Broken","slots":[{"slot":"nope.slot","template":"x.html"}]}"#,
+        )
+        .unwrap();
+        fs::write(plugin.join("x.html"), "<p>x</p>").unwrap();
+
+        let registry = PluginRegistry::new(&root);
+        let plugins = registry.list();
+        assert_eq!(plugins.len(), 1, "坏插件也要留在注册表里");
+        assert!(
+            matches!(plugins[0].status, PluginStatus::Failed(_)),
+            "状态必须是 Failed，不能消失"
+        );
+        assert!(!plugins[0].is_active());
+        assert!(!plugins[0].errors.is_empty());
+        assert_eq!(registry.snapshot()[0].status, "failed");
+        assert!(registry.set_enabled("broken", true).is_err());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn disabled_plugin_page_and_assets_are_rejected() {
+        let root = temp_root("disabled");
+        write_demo_plugin(&root);
+        let registry = PluginRegistry::new(&root);
+        let plugin = registry.find("demo").expect("插件应当加载成功");
+        assert!(plugin.is_active());
+        assert!(registry.read_page(&plugin, "p").is_ok());
+        assert!(registry.asset_path("demo", "x.js").is_ok());
+
+        registry.set_enabled("demo", false).unwrap();
+        let plugin = registry.find("demo").unwrap();
+        assert!(!plugin.is_active());
+        assert!(registry.read_page(&plugin, "p").is_err());
+        assert!(registry.asset_path("demo", "x.js").is_err());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn asset_path_rejects_traversal_and_absolute_paths() {
+        let root = temp_root("traversal");
+        write_demo_plugin(&root);
+        let registry = PluginRegistry::new(&root);
+        assert!(registry.asset_path("demo", "../plugin.json").is_err());
+        assert!(registry.asset_path("demo", "C:/Windows/win.ini").is_err());
+        assert!(registry.asset_path("demo", "/etc/passwd").is_err());
+
+        let root_canonical = root.join("demo").canonicalize().unwrap();
+        assert!(safe_join(&root_canonical, &root_canonical, "../plugin.json").is_err());
+        assert!(safe_join(&root_canonical, &root_canonical, "page.html").is_ok());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn directory_without_manifest_is_ignored() {
+        let root = temp_root("empty");
+        fs::create_dir_all(root.join("not-a-plugin")).unwrap();
+        let registry = PluginRegistry::new(&root);
+        assert!(registry.list().is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
 }

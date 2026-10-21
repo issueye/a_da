@@ -13,14 +13,14 @@
 //! - 组件可通过 [`Render::render`] 得到可直接 `|safe` 输出的 HTML 字符串。
 
 use super::icons::icon;
-use super::theme::{attr, class_list, escape, ButtonKind, ButtonVariant, Size, Tone};
+use super::theme::{attr, class_list, escape, space_attrs, ButtonKind, ButtonVariant, Size, Tone};
 
 /// 可渲染组件的统一接口。
 pub trait Render {
     fn render(&self) -> String;
 }
 
-/// ── 按钮 ─────────────────────────────────────────────────────────────────
+// ── 按钮 ─────────────────────────────────────────────────────────────────
 
 /// 按钮：链接与提交按钮共用一套外观。
 #[derive(Debug, Clone, Default)]
@@ -124,13 +124,31 @@ impl Render for Button {
                 href = escape(href)
             );
         }
-        let method = attr("method", self.method.as_deref().unwrap_or("post"));
+
+        // 🔴 `action` 必须变成一个**真正的表单**：把 `action="/x"` 写到 <button> 上
+        // 不是 HTML 语义，浏览器永远不会提交它（历史 bug：输入框下方的
+        // 中止/清空队列/重试、Notice 里的「重试这一轮」点了都没反应）。
+        if let Some(action) = &self.action {
+            let method = self
+                .method
+                .as_deref()
+                .filter(|method| !method.trim().is_empty())
+                .unwrap_or("post");
+            // `data-confirm` 等属性要落在 form 上：共享确认对话框监听的是 `form[data-confirm]`。
+            let extra = space_attrs(self.extra_attrs.as_deref());
+            return format!(
+                r#"<form class="ada-action-form" method="{method}" action="{action}"{extra}><button class="{classes}" type="submit"{title}>{body}</button></form>"#,
+                method = escape(method),
+                action = escape(action),
+            );
+        }
+
         let name = attr("name", self.name.as_deref().unwrap_or(""));
         let value = attr("value", self.value.as_deref().unwrap_or(""));
         let kind = self.kind.unwrap_or(ButtonKind::Submit);
-        let extra = self.extra_attrs.clone().unwrap_or_default();
+        let extra = space_attrs(self.extra_attrs.as_deref());
         format!(
-            r#"<button class="{classes}" type="{kind}"{method}{name}{value}{title}{extra}>{body}</button>"#
+            r#"<button class="{classes}" type="{kind}"{name}{value}{title}{extra}>{body}</button>"#
         )
     }
 }
@@ -188,17 +206,24 @@ impl Render for IconButton {
         let classes = class_list(&["ada-icon-btn", self.extra_class.as_deref().unwrap_or("")]);
         let title = attr("title", self.title.as_deref().unwrap_or(&self.label));
         let body = icon(&self.icon, 15);
+        let extra = space_attrs(self.extra_attrs.as_deref());
         if let Some(href) = &self.href {
             return format!(
-                r#"<a class="{classes}" href="{href}" aria-label="{label}"{title} rel="noreferrer">{body}</a>"#,
+                r#"<a class="{classes}" href="{href}" aria-label="{label}"{title}{extra} rel="noreferrer">{body}</a>"#,
                 href = escape(href),
                 label = escape(&self.label)
             );
         }
-        let action = attr("action", self.action.as_deref().unwrap_or(""));
+        if let Some(action) = &self.action {
+            return format!(
+                r#"<form class="ada-action-form" method="post" action="{action}"{extra}><button class="{classes}" type="submit" aria-label="{label}"{title}>{body}</button></form>"#,
+                action = escape(action),
+                label = escape(&self.label),
+            );
+        }
         let kind = self.kind.unwrap_or(ButtonKind::Button);
         format!(
-            r#"<button class="{classes}" type="{kind}" aria-label="{label}"{action}{title}>{body}</button>"#,
+            r#"<button class="{classes}" type="{kind}" aria-label="{label}"{title}{extra}>{body}</button>"#,
             label = escape(&self.label)
         )
     }
@@ -218,7 +243,9 @@ impl SendButton {
         Self {
             label: label.into(),
             title: None,
-            disabled: true,
+            // 渐进增强：SSR 基线必须能提交（`required` 会挡住空内容），
+            // 有 JS 时由 components.js 按输入内容即时启停。
+            disabled: false,
         }
     }
 
@@ -240,7 +267,7 @@ impl Render for SendButton {
     }
 }
 
-/// ── 药丸 ─────────────────────────────────────────────────────────────────
+// ── 药丸 ─────────────────────────────────────────────────────────────────
 
 /// 药丸：图标 + 文本，用于只读状态展示（模式、审批档位、模型）。
 #[derive(Debug, Clone)]
@@ -312,7 +339,7 @@ impl Render for Chip {
     }
 }
 
-/// ── 输入 ─────────────────────────────────────────────────────────────────
+// ── 输入 ─────────────────────────────────────────────────────────────────
 
 /// 单行输入框。
 #[derive(Debug, Clone, Default)]
@@ -373,12 +400,7 @@ impl Render for TextField {
         let hint = self
             .hint
             .as_deref()
-            .map(|text| {
-                format!(
-                    "<span class=\"ada-field__hint\">{}</span>",
-                    escape(text)
-                )
-            })
+            .map(|text| format!("<span class=\"ada-field__hint\">{}</span>", escape(text)))
             .unwrap_or_default();
         let input_type = self.input_type.as_deref().unwrap_or("text");
         let attrs = self.extra_attrs.clone().unwrap_or_default();
@@ -391,7 +413,7 @@ impl Render for TextField {
     }
 }
 
-/// ── 折叠（工具 / 思考 / 压缩） ────────────────────────────────────────────
+// ── 折叠（工具 / 思考 / 压缩） ────────────────────────────────────────────
 
 /// 折叠面板：**整行可点**、没有展开箭头，靠背景与文字色区分开合状态。
 #[derive(Debug, Clone)]
@@ -417,6 +439,8 @@ pub struct Disclosure {
     pub extra_attrs: Option<String>,
     /// 目标信息是否用弱化样式（思考预览用斜体弱色）。
     pub detail_muted: bool,
+    /// 稳定标识（item id）：轮询替换 DOM 后靠它恢复展开状态。
+    pub key: Option<String>,
 }
 
 impl Disclosure {
@@ -433,7 +457,14 @@ impl Disclosure {
             kind: kind.into(),
             extra_attrs: None,
             detail_muted: false,
+            key: None,
         }
+    }
+
+    /// 稳定标识：live 轮询替换 DOM 后按它恢复展开状态。
+    pub fn key(mut self, key: impl Into<String>) -> Self {
+        self.key = Some(key.into());
+        self
     }
 
     pub fn detail(mut self, detail: impl Into<String>) -> Self {
@@ -496,13 +527,23 @@ impl Render for Disclosure {
             .sub
             .as_deref()
             .filter(|text| !text.is_empty())
-            .map(|text| format!("<span class=\"ada-disclosure__sub\">{}</span>", escape(text)))
+            .map(|text| {
+                format!(
+                    "<span class=\"ada-disclosure__sub\">{}</span>",
+                    escape(text)
+                )
+            })
             .unwrap_or_default();
         let meta = self
             .meta
             .as_deref()
             .filter(|text| !text.is_empty())
-            .map(|text| format!("<span class=\"ada-disclosure__meta\">{}</span>", escape(text)))
+            .map(|text| {
+                format!(
+                    "<span class=\"ada-disclosure__meta\">{}</span>",
+                    escape(text)
+                )
+            })
             .unwrap_or_default();
         let badge = self
             .badge
@@ -516,11 +557,12 @@ impl Render for Disclosure {
                 )
             })
             .unwrap_or_default();
-        let attrs = self.extra_attrs.clone().unwrap_or_default();
+        let attrs = space_attrs(self.extra_attrs.as_deref());
+        let data_key = attr("data-key", self.key.as_deref().unwrap_or(""));
         // 图标位有两个角色：常态是"这一行是什么"（工具/思考图标），
         // 鼠标悬浮或键盘聚焦时换成"可以展开"（箭头）。两者占同宽，切换不跳版。
         format!(
-            r#"<details class="ada-disclosure" data-kind="{kind}" data-state="closed"{attrs}><summary class="ada-disclosure__summary"><span class="ada-disclosure__icon">{icon}</span><span class="ada-disclosure__caret">{caret}</span><span class="ada-disclosure__label">{label}</span>{detail}{sub}{meta}{badge}</summary><div class="ada-disclosure__rail">{body}</div></details>"#,
+            r#"<details class="ada-disclosure" data-kind="{kind}" data-state="closed"{data_key}{attrs}><summary class="ada-disclosure__summary"><span class="ada-disclosure__icon">{icon}</span><span class="ada-disclosure__caret">{caret}</span><span class="ada-disclosure__label">{label}</span>{detail}{sub}{meta}{badge}</summary><div class="ada-disclosure__rail">{body}</div></details>"#,
             kind = escape(&self.kind),
             attrs = attrs,
             icon = icon(&self.icon, 13),
@@ -603,7 +645,10 @@ impl Render for Panel {
                 escape(&self.content)
             )
         } else {
-            format!(r#"<div class="ada-panel__body ada-panel__body--html">{}</div>"#, self.content)
+            format!(
+                r#"<div class="ada-panel__body ada-panel__body--html">{}</div>"#,
+                self.content
+            )
         };
         format!(r#"<div class="ada-panel">{head}{body}</div>"#)
     }
@@ -615,13 +660,24 @@ impl Render for Panel {
 #[derive(Debug, Clone)]
 pub struct UserMessage {
     pub text: String,
+    /// 附带图片数量（当前 SSR 版不渲染图片内容，但不能装作没有）。
+    pub images: usize,
 }
 
 impl Render for UserMessage {
     fn render(&self) -> String {
+        let images = if self.images > 0 {
+            format!(
+                r#"<span class="ada-msg__images" title="ssr-h 暂不显示图片内容">含 {} 张图片</span>"#,
+                self.images
+            )
+        } else {
+            String::new()
+        };
         format!(
-            r#"<div class="ada-msg ada-msg--user"><div class="ada-bubble">{}</div></div>"#,
-            escape(&self.text)
+            r#"<div class="ada-msg ada-msg--user"><div class="ada-bubble">{}{}</div></div>"#,
+            escape(&self.text),
+            images
         )
     }
 }
@@ -708,9 +764,7 @@ impl Render for EmptyState {
         let action = self
             .action
             .as_ref()
-            .map(|button| {
-                format!("<div class=\"ada-empty__action\">{}</div>", button.render())
-            })
+            .map(|button| format!("<div class=\"ada-empty__action\">{}</div>", button.render()))
             .unwrap_or_default();
         format!(
             r#"<div class="ada-empty"><span class="ada-empty__mark">{icon}</span><h2 class="ada-empty__title">{title}</h2>{description}{action}</div>"#,
@@ -833,17 +887,16 @@ impl Render for Composer {
             .focus_hint
             .as_deref()
             .filter(|text| !text.is_empty())
-            .map(|text| {
-                format!(
-                    r#"<div class="ada-composer__hint">{}</div>"#,
-                    escape(text)
-                )
-            })
+            .map(|text| format!(r#"<div class="ada-composer__hint">{}</div>"#, escape(text)))
             .unwrap_or_default();
         let aux = self
             .aux
             .as_ref()
-            .map(|aux| aux.render())
+            .map(|aux| {
+                // live 轮询用 `#composer-aux` 做 OOB 目标：只替换状态区，
+                // 不重建 textarea（保住焦点与草稿）。
+                format!(r#"<div id="composer-aux">{}</div>"#, aux.render())
+            })
             .unwrap_or_default();
         format!(
             r#"<form class="ada-composer" method="post" action="{action}"><div class="ada-composer__card"><textarea class="ada-composer__input" name="text" rows="2" placeholder="{placeholder}" aria-label="消息输入框" required></textarea>{hint}<div class="ada-composer__bar"><div class="ada-composer__group ada-composer__group--left">{left}</div><div class="ada-composer__group ada-composer__group--right">{right}</div></div></div></form>{aux}"#,
@@ -957,7 +1010,7 @@ impl Render for QueueTray {
             .iter()
             .map(|item| {
                 format!(
-                    r#"<div class="ada-tray__row"><span class="ada-tray__order">{order}</span><span class="ada-tray__text" title="{text}">{text}</span><form method="post" action="/threads/{thread}/queue/{index}/promote" class="ada-tray__form"><button class="ada-tray__link" type="submit" title="提升到队首">提升</button></form><form method="post" action="/threads/{thread}/queue/{index}/remove" class="ada-tray__form"><button class="ada-tray__link ada-tray__link--danger" type="submit" title="删除">删除</button></form></div>"#,
+                    r#"<div class="ada-tray__row"><span class="ada-tray__order">{order}</span><span class="ada-tray__text" title="{text}">{text}</span><form method="post" action="/threads/{thread}/queue/{index}/promote" class="ada-tray__form" data-confirm="提升会中断当前回答并立即执行这条消息，确定吗？"><button class="ada-tray__link" type="submit" title="提升到队首（会中断当前轮次）">提升</button></form><form method="post" action="/threads/{thread}/queue/{index}/remove" class="ada-tray__form" data-confirm="确定删除这条排队消息吗？"><button class="ada-tray__link ada-tray__link--danger" type="submit" title="删除">删除</button></form></div>"#,
                     order = item.order,
                     text = super::theme::escape(&item.text),
                     thread = super::theme::escape(&item.thread_id),
@@ -971,7 +1024,7 @@ impl Render for QueueTray {
             .first()
             .map(|item| {
                 format!(
-                    r#"<form method="post" action="/threads/{thread}/queue/clear" class="ada-tray__form"><button class="ada-tray__link" type="submit">清空</button></form>"#,
+                    r#"<form method="post" action="/threads/{thread}/queue/clear" class="ada-tray__form" data-confirm="确定清空当前会话的排队消息吗？"><button class="ada-tray__link" type="submit">清空</button></form>"#,
                     thread = super::theme::escape(&item.thread_id)
                 )
             })
@@ -983,5 +1036,50 @@ impl Render for QueueTray {
             clear = clear,
             rows = rows,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_button_renders_a_real_submit_form() {
+        let html = Button::new("重试这一轮")
+            .action("/threads/t1/retry")
+            .attrs("data-confirm=\"确定重试吗？\"")
+            .render();
+        assert!(html.starts_with("<form"), "必须是真正的表单: {html}");
+        assert!(html.contains("method=\"post\""));
+        assert!(html.contains("action=\"/threads/t1/retry\""));
+        assert!(html.contains("data-confirm=\"确定重试吗？\""));
+        assert!(html.contains("type=\"submit\""));
+        assert!(html.contains("</form>"));
+    }
+
+    #[test]
+    fn send_button_is_enabled_in_the_ssr_baseline() {
+        let html = SendButton::new("发送").render();
+        assert!(!html.contains(" disabled"), "无 JS 时也必须能提交: {html}");
+        assert!(html.contains("type=\"submit\""));
+    }
+
+    #[test]
+    fn disclosure_carries_a_stable_key_for_live_restore() {
+        let html = Disclosure::new("tool", "i-terminal", "执行命令")
+            .key("item-42")
+            .body("")
+            .render();
+        assert!(html.contains("data-key=\"item-42\""));
+    }
+
+    #[test]
+    fn user_message_shows_an_image_count() {
+        let html = UserMessage {
+            text: "看图".to_string(),
+            images: 2,
+        }
+        .render();
+        assert!(html.contains("含 2 张图片"));
     }
 }

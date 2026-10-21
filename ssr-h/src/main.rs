@@ -4,6 +4,7 @@
 //! 运行 `cargo run --manifest-path ssr-h/Cargo.toml` 才会启动这个独立页面。
 
 mod agent;
+mod guard;
 mod handlers;
 mod markdown;
 mod plugins;
@@ -24,8 +25,8 @@ use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 
 use agent::AgentClient;
-use plugins::PluginRegistry;
 use handlers::AppState;
+use plugins::PluginRegistry;
 
 #[derive(Debug, Parser)]
 #[command(name = "ssr-h", about = "a_da SSR agent frontend prototype")]
@@ -37,6 +38,14 @@ struct Args {
     /// 页面端口
     #[arg(long, default_value_t = 8788)]
     port: u16,
+
+    /// 允许绑定非回环地址（必须同时设置 --ui-token）
+    #[arg(long)]
+    allow_remote: bool,
+
+    /// 浏览器访问令牌；非回环监听必填，回环也可主动开启
+    #[arg(long)]
+    ui_token: Option<String>,
 
     /// 网关 HTTP 地址，例如 http://127.0.0.1:52353
     #[arg(long)]
@@ -93,34 +102,84 @@ async fn main() -> anyhow::Result<()> {
         .or_else(|| discovery.as_ref().and_then(|d| d.token.clone()))
         .unwrap_or_default();
 
-    let workspace = args
-        .workspace
-        .or_else(|| std::env::var("A_DA_WORKSPACE").ok())
-        .or_else(|| discovery.as_ref().and_then(|d| d.workspace.clone()))
-        .or_else(|| {
-            std::env::current_dir()
-                .ok()
-                .map(|path| path.to_string_lossy().to_string())
-        })
-        .unwrap_or_else(|| ".".to_string());
+    // 工作区优先级：显式参数 → 环境变量 → 网关发现文件 → 当前目录。
+    // 发现文件里的 workspace 可能是 gate 自己的应用目录（实测本机是 `~/.a-da`），
+    // 直接拿来当 agent 工作区会把凭据目录暴露给会话，所以必须先校验。
+    let discovery_raw = discovery.as_ref().and_then(|d| d.workspace.clone());
+    let discovery_workspace = discovery_raw
+        .clone()
+        .filter(|candidate| valid_workspace(candidate));
+    let cwd_workspace = std::env::current_dir()
+        .ok()
+        .map(|path| path.to_string_lossy().to_string());
+    let (workspace, workspace_source) = if let Some(workspace) = args.workspace {
+        (workspace, "--workspace")
+    } else if let Ok(workspace) = std::env::var("A_DA_WORKSPACE") {
+        (workspace, "A_DA_WORKSPACE")
+    } else if let Some(workspace) = discovery_workspace {
+        (workspace, "gateway_endpoint.json")
+    } else if let Some(workspace) = cwd_workspace {
+        if let Some(raw) = discovery_raw {
+            tracing::warn!(
+                "忽略 gateway_endpoint.json 里的 workspace（不存在或指向 ~/.a-da）: {raw}"
+            );
+        }
+        (workspace, "current_dir")
+    } else {
+        (".".to_string(), "fallback")
+    };
+    if !std::path::Path::new(&workspace).is_dir() {
+        tracing::warn!("工作区目录不存在，网关可能拒绝拉起 agent: {workspace}");
+    }
 
     let plugins_dir = args.plugins_dir.unwrap_or_else(default_plugins_dir);
-
-    let frontend = Arc::new(PluginRegistry::new(plugins_dir.clone()));
-    let agent = Arc::new(AgentClient::new(gateway.clone(), token, workspace.clone()));
-    let state = AppState { agent, frontend };
 
     let host: IpAddr = args
         .host
         .parse()
         .map_err(|error| anyhow::anyhow!("非法监听地址 {}: {error}", args.host))?;
+
+    // 非回环监听会把整个 agent（以及服务端的网关 token）暴露到局域网；
+    // 与网关自身的安全模型对齐：必须显式确认 + 访问令牌，否则拒绝启动。
+    if let Some(token) = args.ui_token.as_deref() {
+        guard::validate_token(token)
+            .map_err(|message| anyhow::anyhow!("{message}（--ui-token 太弱或被拒绝）"))?;
+    }
+    if !host.is_loopback() {
+        if !args.allow_remote {
+            anyhow::bail!(
+                "拒绝对非回环地址 {host} 监听：默认只允许 127.0.0.1。\
+                 确实需要局域网访问时，请显式加 --allow-remote 并设置 --ui-token。"
+            );
+        }
+        if args.ui_token.as_deref().unwrap_or("").is_empty() {
+            anyhow::bail!(
+                "非回环监听必须设置 --ui-token（ssr-h 只提供明文 HTTP，令牌是唯一闸门）。"
+            );
+        }
+        tracing::warn!(
+            "ssr-h 正在以明文 HTTP 监听 {host}:{}，访问令牌会以明文传输；请只在可信网络使用",
+            args.port
+        );
+    }
+
+    let access = Arc::new(guard::Access::for_host(host, args.port, args.ui_token));
+    let frontend = Arc::new(PluginRegistry::new(plugins_dir.clone()));
+    let agent = Arc::new(AgentClient::new(gateway.clone(), token, workspace.clone()));
+    let state = AppState {
+        agent,
+        frontend,
+        access: access.clone(),
+    };
+
     let addr = std::net::SocketAddr::new(host, args.port);
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     tracing::info!("ssr-h listening on http://{addr}");
     tracing::info!("gateway: {gateway}");
-    tracing::info!("workspace: {workspace}");
+    tracing::info!("workspace: {workspace}（来源：{workspace_source}）");
     tracing::info!("frontend plugins: {}", plugins_dir.display());
+    tracing::info!("access: {}", guard::access_summary(&access));
 
     axum::serve(listener, app(state)).await?;
     Ok(())
@@ -131,11 +190,13 @@ fn app(state: AppState) -> Router {
         .route("/", get(handlers::chat))
         .route("/overview", get(handlers::dashboard))
         .route("/partials/dashboard", get(handlers::dashboard_partial))
+        .route("/__auth", get(guard::auth_form).post(guard::auth_submit))
         .route(
             "/threads",
             get(handlers::chat).post(handlers::create_thread),
         )
         .route("/threads/{id}/partial", get(handlers::transcript_partial))
+        .route("/threads/{id}/live", get(handlers::live))
         .route("/threads/{id}", get(handlers::chat_thread))
         .route("/threads/{id}/send", post(handlers::send_message))
         .route("/threads/{id}/abort", post(handlers::abort_thread))
@@ -171,9 +232,11 @@ fn app(state: AppState) -> Router {
         .route("/static/htmx.min.js", get(static_htmx))
         .route("/static/alpine.min.js", get(static_alpine))
         .fallback(handlers::not_found)
+        .with_state(state.clone())
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        // 必须最外层：先做 Host/Origin/令牌校验，再进压缩与业务。
+        .layer(axum::middleware::from_fn_with_state(state, guard::guard))
 }
 
 /// 插件目录按“可执行文件旁 → 当前目录 → 源码目录”查找。
@@ -206,6 +269,31 @@ fn read_discovery() -> Option<Discovery> {
         .join("gateway_endpoint.json");
     let raw = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&raw).ok()
+}
+
+/// 网关发现文件里的 workspace 只有在"真实存在且不是应用目录"时才采用。
+///
+/// 实测本机的 `gateway_endpoint.json` 里 `workspace` 是 `C:\Users\<user>\.a-da`；
+/// 拿它当 agent 工作区等于把保留目录（凭据/会话）暴露成会话的默认目录。
+fn valid_workspace(candidate: &str) -> bool {
+    let path = std::path::Path::new(candidate.trim());
+    if !path.is_dir() {
+        return false;
+    }
+    let Some(home) = app_home() else {
+        return true;
+    };
+    match (path.canonicalize(), home.canonicalize()) {
+        (Ok(candidate), Ok(home)) => candidate != home,
+        _ => true,
+    }
+}
+
+fn app_home() -> Option<PathBuf> {
+    std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok()
+        .map(|home| PathBuf::from(home).join(".a-da"))
 }
 
 async fn static_css() -> Response {

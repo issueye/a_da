@@ -1,10 +1,11 @@
 /*
  * a_da 组件库 · 客户端行为
  * ---------------------------------------------------------------------------
- * 组件的 DOM 与状态语义在服务端渲染（src/ui/），这里只做三件事：
+ * 组件的 DOM 与状态语义在服务端渲染（src/ui/），这里只做四件事：
  *   1. 把"状态"同步到 data-*（折叠开合、聚焦），供样式与插件读取；
- *   2. 渐进增强：没有 JS 时页面依然完整可读（SSR 基线）；
- *   3. 插件插槽注册表：把服务端渲染的插槽暴露给插件与调试面板。
+ *   2. 渐进增强：没有 JS 时页面依然完整可读；
+ *   3. live 轮询替换对话流后，按 **item id** 恢复展开状态（不是按下标）；
+ *   4. 插件插槽注册表：把服务端渲染的插槽暴露给插件与调试面板。
  *
  * 刻意不做的事：不接管业务动作（发送/审批/重试都走原生表单提交），
  * 不做虚拟 DOM，不引入框架。
@@ -13,8 +14,20 @@
   'use strict';
 
   /* ── 1. 折叠行：整行可点 + 状态同步 ─────────────────────────────────── */
+  /* live 轮询会整段替换 #transcript，开合状态必须跨替换保留。
+     旧实现按"行类型 + 下标"恢复，打开第 2 个工具行会被恢复到第 1 个；
+     现在按服务端渲染的 data-key（item id）记录。 */
+  var openKeys = Object.create(null);
+
   function syncDisclosureState(details) {
     details.setAttribute('data-state', details.open ? 'open' : 'closed');
+    var key = details.getAttribute('data-key');
+    if (!key) return;
+    if (details.open) {
+      openKeys[key] = true;
+    } else {
+      delete openKeys[key];
+    }
   }
 
   function bindDisclosures(root) {
@@ -26,36 +39,11 @@
       node.addEventListener('toggle', function (event) {
         syncDisclosureState(event.currentTarget);
       });
-      syncDisclosureState(node);
-    }
-  }
-
-  /*
-   * 对话流每 3 秒被 HTMX 整段替换，展开状态会丢。
-   * 这里按"行类型 + 序号"记住哪些行是展开的，替换后恢复。
-   */
-  var openState = [];
-
-  function snapshotOpenState() {
-    var transcript = document.getElementById('transcript');
-    if (!transcript) return;
-    openState = [];
-    var nodes = transcript.querySelectorAll('.ada-disclosure[open]');
-    for (var i = 0; i < nodes.length; i += 1) {
-      openState.push(nodes[i].dataset.kind || '');
-    }
-  }
-
-  function restoreOpenState() {
-    if (!openState.length) return;
-    var transcript = document.getElementById('transcript');
-    if (!transcript) return;
-    var nodes = transcript.querySelectorAll('.ada-disclosure');
-    for (var i = 0; i < nodes.length && i < openState.length; i += 1) {
-      if ((nodes[i].dataset.kind || '') === openState[i]) {
-        nodes[i].open = true;
-        syncDisclosureState(nodes[i]);
+      var key = node.getAttribute('data-key');
+      if (key && openKeys[key]) {
+        node.open = true;
       }
+      syncDisclosureState(node);
     }
   }
 
@@ -83,22 +71,25 @@
     });
   }
 
+  /* 只改文字节点，别把按钮里的图标一起抹掉。 */
+  function feedback(button, text) {
+    var label = button.querySelector('span') || button;
+    var original = label.textContent;
+    label.textContent = text;
+    window.setTimeout(function () {
+      label.textContent = original;
+    }, 1200);
+  }
+
   function handleCopy(button) {
     var text = button.getAttribute('data-copy') || '';
     if (!text) return;
-    var original = button.getAttribute('data-copy-label') || button.textContent;
     copyText(text).then(
       function () {
-        button.textContent = '已复制';
-        window.setTimeout(function () {
-          button.textContent = original;
-        }, 1200);
+        feedback(button, '已复制');
       },
       function () {
-        button.textContent = '复制失败';
-        window.setTimeout(function () {
-          button.textContent = original;
-        }, 1200);
+        feedback(button, '复制失败');
       }
     );
   }
@@ -106,7 +97,7 @@
   document.addEventListener('click', function (event) {
     var target = event.target;
     if (!target || !target.closest) return;
-    var button = target.closest('.ada-panel__copy, [data-copy]:not(.ada-panel__copy)');
+    var button = target.closest('[data-copy]');
     if (button) {
       handleCopy(button);
     }
@@ -190,10 +181,7 @@
       });
   }
 
-  /* ── 5. 任务规划面板：记住展开/收起偏好 ──────────────────────────────
-     默认收起（展开态贴着正文会盖住字），但用户的选择要记住——
-     与 desktop-ui 的 `a_da_todo_panel_collapsed` 同一个键。
-     面板本体是 <details>，没有 JS 也能展开收起；这里只补"记住偏好"。 */
+  /* ── 5. 任务规划面板：记住展开/收起偏好 ────────────────────────────── */
   var TODO_COLLAPSED_KEY = 'a_da_todo_panel_collapsed';
 
   function bindTodoPanel() {
@@ -217,7 +205,7 @@
       }
     };
 
-    // 上次是展开态 → 这次直接展开。
+    // 上次是展开态 → 这次直接展开（live 轮询替换面板后同样适用）。
     if (readPref() === '0') {
       panel.open = true;
     }
@@ -229,13 +217,31 @@
     sync();
 
     // 复制按钮在 summary 里：点它不该顺带把面板开合。
+    // 注意**不要** stopPropagation —— 复制动作是 document 上的委托，
+    // 截断冒泡会让"复制"永远不执行（历史 bug）。
     var copy = panel.querySelector('.ada-todo__copy');
     if (copy) {
       copy.addEventListener('click', function (event) {
         event.preventDefault();
-        event.stopPropagation();
       });
     }
+  }
+
+  /* ── 6. live 轮询后的重建 ────────────────────────────────────────────── */
+  function watchTranscript() {
+    var transcript = document.getElementById('transcript');
+    if (!transcript || !window.MutationObserver) return;
+    new MutationObserver(function () {
+      bindDisclosures(transcript);
+    }).observe(transcript, { childList: true });
+  }
+
+  function watchTodoDock() {
+    var dock = document.getElementById('ada-todo-dock');
+    if (!dock || !window.MutationObserver) return;
+    new MutationObserver(function () {
+      bindTodoPanel();
+    }).observe(dock, { childList: true });
   }
 
   /* ── 启动 ───────────────────────────────────────────────────────────── */
@@ -243,6 +249,8 @@
     bindDisclosures(document);
     bindComposer();
     bindTodoPanel();
+    watchTranscript();
+    watchTodoDock();
     loadSlotRegistry();
   }
 
@@ -251,19 +259,6 @@
   } else {
     boot();
   }
-
-  document.body.addEventListener('htmx:beforeSwap', function (event) {
-    if (event.target && event.target.id === 'transcript') {
-      snapshotOpenState();
-    }
-  });
-
-  document.body.addEventListener('htmx:afterSwap', function (event) {
-    if (event.target && event.target.id === 'transcript') {
-      restoreOpenState();
-      bindDisclosures(event.target);
-    }
-  });
 
   // 供插件与调试使用
   window.AdaComponents = {

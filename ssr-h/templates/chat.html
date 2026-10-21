@@ -69,20 +69,8 @@
       <input id="chat-thread-search" class="ada-search__input" type="search" placeholder="搜索会话…" autocomplete="off" aria-label="搜索会话">
     </div>
 
-    <div class="ada-thread-list">
-      {% if threads.is_empty() %}
-      <p style="padding:10px 9px;color:var(--ph-faint);font-size:11px">还没有会话</p>
-      {% else %}
-      {% for t in threads %}
-      <a class="ada-thread{% if t.id == active_thread_id %} is-active{% endif %}" href="/threads/{{ t.id }}" title="{{ t.title }}">
-        <span class="ada-thread__title">{{ t.title }}</span>
-        <span class="ada-thread__meta">
-          {% if t.running %}<span class="ada-thread__running"><span class="ada-dot ada-dot--warn"></span>运行中</span>{% endif %}
-          <span>{{ t.item_count }} 项</span>
-        </span>
-      </a>
-      {% endfor %}
-      {% endif %}
+    <div class="ada-thread-list" id="thread-list">
+      {% include "partials/thread_list.html" %}
     </div>
 
     {% if !base.plugin_nav.is_empty() %}
@@ -120,34 +108,18 @@
       <div class="ada-topbar__title">
         {% if let Some(t) = active %}
         <h1 title="{{ t.title }}">{{ t.title }}</h1>
-        {% if t.running %}<span class="ada-chip ada-chip--warn"><span class="ada-dot ada-dot--warn"></span>运行中</span>{% endif %}
         {% else %}
         <h1>新对话</h1>
         {% endif %}
-        {% if connected %}<span class="ada-chip" title="审批档位">{{ approval }}</span>{% endif %}
-        {% if !connected %}<span class="ada-chip ada-chip--danger">未连接</span>{% endif %}
+        <div id="topbar-status">{{ topbar_status|safe }}</div>
       </div>
       <div class="ada-topbar__actions">
         {{ base.slots.topbar_right|safe }}
-        {% if let Some(t) = active %}
-        <a class="ada-icon-btn" href="/threads/{{ t.id }}" title="刷新" aria-label="刷新">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
-        </a>
-        {% if t.running %}
-        <form method="post" action="/threads/{{ t.id }}/abort" data-confirm="确定中止当前轮次吗？">
-          <button class="ada-btn ada-btn--danger ada-btn--sm" type="submit">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
-            停止
-          </button>
-        </form>
-        {% endif %}
-        {% endif %}
+        <div id="topbar-actions">{{ topbar_actions|safe }}</div>
       </div>
     </header>
 
-    {% if !todo_html.is_empty() %}
-    <div class="ada-todo-dock">{{ todo_html|safe }}</div>
-    {% endif %}
+    <div class="ada-todo-dock" id="ada-todo-dock">{{ todo_html|safe }}</div>
 
     {% if let Some(f) = base.flash %}
     <div class="ada-flash alert {% if f.kind == "error" %}alert-danger{% else if f.kind == "success" %}alert-success{% else %}alert-info{% endif %}" data-flash="{{ f.kind }}" role="status">
@@ -173,9 +145,13 @@
         </div>
         {% else %}
           {% if let Some(t) = active %}
-          <div id="transcript" hx-get="/threads/{{ t.id }}/partial" hx-trigger="every 3s" hx-swap="innerHTML">
-            {% include "partials/transcript.html" %}
-          </div>
+          <div id="transcript">{% include "partials/transcript.html" %}</div>
+          <div id="chat-live"
+               hx-get="/threads/{{ t.id }}/live"
+               hx-trigger="every 2s"
+               hx-swap="none"
+               aria-hidden="true"
+               style="display:none"></div>
           {{ base.slots.transcript_after|safe }}
           {% else %}
           <div class="ada-empty">
@@ -203,14 +179,9 @@
     <div class="ada-float-dock" aria-label="插件悬浮区">{{ base.slots.composer_above|safe }}</div>
     {% endif %}
 
-    {% if !approvals_html.is_empty() || !queue_html.is_empty() %}
-    <div class="ada-trays">
-      {{ approvals_html|safe }}
-      {{ queue_html|safe }}
-    </div>
-    {% endif %}
+    <div class="ada-trays" id="ada-trays">{{ trays_html|safe }}</div>
 
-    {{ composer_html|safe }}
+    {% if !composer_html.is_empty() %}{{ composer_html|safe }}{% endif %}
   </main>
 </div>
 

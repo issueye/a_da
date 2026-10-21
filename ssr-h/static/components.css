@@ -1704,3 +1704,50 @@ html.dark .icon-moon {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── 动作按钮的真实表单 ───────────────────────────────────────────────────
+   `Button::action` 渲染成 <form>，用 display:contents 让按钮继续参与父级
+   flex 布局（否则输入框辅助区会多出一层块级盒子）。 */
+.ada-action-form {
+  display: contents;
+}
+
+/* 空的托盘 / 规划占位不参与布局（live 轮询会保留容器做 OOB 目标）。 */
+.ada-trays:empty,
+.ada-todo-dock:empty {
+  display: none;
+}
+
+/* 顶栏 live 区：药丸排成一行。 */
+#topbar-status,
+#topbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 用户消息里的图片计数标记（图片本身暂不渲染）。 */
+.ada-msg__images {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--ph-subtle);
+  color: var(--ph-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* 侧栏会话列表空态。 */
+.ada-thread-list__empty {
+  padding: 10px 9px;
+  color: var(--ph-faint);
+  font-size: 11px;
+}
+
+/* 不可用的图标按钮（如"附件（规划中）"）：看起来就不能点。 */
+.ada-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

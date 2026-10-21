@@ -1,47 +1,20 @@
 /*
- * plugin-hub 共享交互层（无构建步骤，模板里只挂 data-* 属性）
+ * 应用外壳交互层（无构建步骤，模板里只挂 data-* 属性）
  *
- * 覆盖四件事：
- *  1. 顶部导航高亮：按 data-nav 前缀匹配，最长前缀获胜；
- *  2. 提示条：可关闭，并在一段时间后自动淡出；
- *  3. 复制按钮：data-copy（候选值）或 data-copy-target（选择器）；
- *  4. 确认对话框：form[data-confirm] 用原生 <dialog> 统一确认，
- *     不再散落 window.confirm / onsubmit 内联脚本。
+ * 覆盖三件事：
+ *  1. 提示条：可关闭，并在一段时间后自动淡出；
+ *  2. 确认对话框：form[data-confirm] 用原生 <dialog> 统一确认，
+ *     不再散落 window.confirm / onsubmit 内联脚本；
+ *  3. 移动端侧栏抽屉。
+ *
+ * 复制按钮（data-copy）与组件行为在 components.js，这里不重复绑定——
+ * 两份 document 级委托会让每次点击写两次剪贴板。
  * 主题切换在 theme.js（必须阻塞加载以避免闪白）。
  */
 (function () {
   'use strict';
 
-  var root = document.documentElement;
-
-  /* ── 1. 导航高亮 ─────────────────────────────────────────────────────── */
-  function markActiveNav() {
-    var path = window.location.pathname.replace(/\/+$/, '') || '/';
-    var links = document.querySelectorAll('[data-nav]');
-    var best = null;
-    var bestLength = -1;
-
-    for (var i = 0; i < links.length; i += 1) {
-      var link = links[i];
-      var target = link.getAttribute('data-nav');
-      if (!target) continue;
-      var targetPath = target.replace(/\/+$/, '') || '/';
-      var matches =
-        targetPath === '/'
-          ? path === '/'
-          : path === targetPath || path.indexOf(targetPath + '/') === 0;
-      if (matches && targetPath.length > bestLength) {
-        best = link;
-        bestLength = targetPath.length;
-      }
-    }
-
-    if (!best) return;
-    best.classList.add('nav-link-active');
-    best.setAttribute('aria-current', 'page');
-  }
-
-  /* ── 2. 提示条 ───────────────────────────────────────────────────────── */
+  /* ── 1. 提示条 ───────────────────────────────────────────────────────── */
   function dismiss(target) {
     if (!target) return;
     target.style.transition = 'opacity 160ms ease, transform 160ms ease';
@@ -64,58 +37,7 @@
     }
   }
 
-  /* ── 3. 复制按钮 ─────────────────────────────────────────────────────── */
-  function copyText(text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      return navigator.clipboard.writeText(text);
-    }
-    return new Promise(function (resolve, reject) {
-      var area = document.createElement('textarea');
-      area.value = text;
-      area.setAttribute('readonly', '');
-      area.style.position = 'fixed';
-      area.style.opacity = '0';
-      document.body.appendChild(area);
-      area.select();
-      try {
-        document.execCommand('copy');
-        resolve();
-      } catch (error) {
-        reject(error);
-      } finally {
-        area.remove();
-      }
-    });
-  }
-
-  function handleCopy(button) {
-    var text = button.getAttribute('data-copy') || '';
-    var selector = button.getAttribute('data-copy-target');
-    if (!text && selector) {
-      var source = document.querySelector(selector);
-      text = source ? source.textContent || '' : '';
-    }
-    text = text.trim();
-    if (!text) return;
-
-    var original = button.getAttribute('data-copy-label') || button.textContent;
-    copyText(text).then(
-      function () {
-        button.textContent = '已复制';
-        window.setTimeout(function () {
-          button.textContent = original;
-        }, 1500);
-      },
-      function () {
-        button.textContent = '复制失败';
-        window.setTimeout(function () {
-          button.textContent = original;
-        }, 1500);
-      }
-    );
-  }
-
-  /* ── 4. 共享确认对话框 ───────────────────────────────────────────────── */
+  /* ── 2. 共享确认对话框 ───────────────────────────────────────────────── */
   var dialog = document.querySelector('[data-confirm-dialog]');
   var pendingConfirm = null;
 
@@ -184,12 +106,6 @@
       return;
     }
 
-    var copyButton = target.closest('[data-copy], [data-copy-target]');
-    if (copyButton) {
-      handleCopy(copyButton);
-      return;
-    }
-
     var confirmedLink = target.closest('a[data-confirm]');
     if (confirmedLink) {
       event.preventDefault();
@@ -208,7 +124,7 @@
     if (field.form) field.form.submit();
   });
 
-  /* ── 5. 移动端侧栏抽屉（≤760px 由 CSS 启用） ─────────────────────────── */
+  /* ── 3. 移动端侧栏抽屉（≤760px 由 CSS 启用） ─────────────────────────── */
   function sidebar() {
     return document.getElementById('chat-sidebar');
   }
@@ -224,7 +140,7 @@
     side.classList.toggle('is-open', open);
     veil.classList.toggle('is-open', open);
     if (open) {
-      var search = side.querySelector('.chat-thread-search-input');
+      var search = side.querySelector('.ada-search__input');
       if (search) search.focus();
     }
   }
@@ -250,7 +166,6 @@
   });
 
   function boot() {
-    markActiveNav();
     wireDialog();
     autoDismissFlashes();
   }
@@ -260,7 +175,4 @@
   } else {
     boot();
   }
-
-  // 供调试面板确认静态资源已加载（打包后日志是唯一证据）
-  root.setAttribute('data-plugin-hub-ui', 'ready');
 })();

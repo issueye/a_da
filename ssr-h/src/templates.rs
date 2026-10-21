@@ -157,16 +157,16 @@ pub struct ChatPage {
     pub items: Vec<ItemRow>,
     /// 空会话时的提示片段。
     pub transcript_empty: String,
-    /// 审批托盘（组件库渲染）。
-    pub approvals_html: String,
-    /// 排队托盘（组件库渲染）。
-    pub queue_html: String,
-    /// 顶栏展示的审批档位文案。
-    pub approval: String,
+    /// 审批 + 排队托盘（组件库渲染）。
+    pub trays_html: String,
     /// 组件库渲染好的输入框（含插件插槽）。
     pub composer_html: String,
     /// 任务规划悬浮面板（组件库渲染）；无规划时为空。
     pub todo_html: String,
+    /// 顶栏状态药丸（运行中 / 审批档位 / 未连接）。
+    pub topbar_status: String,
+    /// 顶栏刷新 / 停止按钮。
+    pub topbar_actions: String,
     pub connected: bool,
 }
 

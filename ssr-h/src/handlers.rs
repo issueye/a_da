@@ -12,14 +12,19 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::agent::AgentClient;
+use crate::guard::SharedAccess;
 use crate::plugins::{PluginRegistry, Slot};
 use crate::templates::*;
-use crate::ui::{self, Button, ButtonKind, ButtonVariant, Chip, Composer, ComposerAux, AuxItem, IconButton, Render, SendButton, Size, Tone};
+use crate::ui::{
+    self, AuxItem, Button, ButtonKind, ButtonVariant, Chip, Composer, ComposerAux, IconButton,
+    Render, SendButton, Size, Tone,
+};
 
 #[derive(Clone)]
 pub struct AppState {
     pub agent: Arc<AgentClient>,
     pub frontend: Arc<PluginRegistry>,
+    pub access: SharedAccess,
 }
 
 pub struct AppError {
@@ -79,6 +84,7 @@ pub struct PageQuery {
     notice: Option<String>,
     error: Option<String>,
     count: Option<usize>,
+    failed: Option<usize>,
     thread: Option<String>,
 }
 
@@ -107,7 +113,18 @@ fn flash_from_query(query: &PageQuery) -> Option<Flash> {
     }
     let notice = query.notice.as_deref()?;
     let message = match notice {
-        "frontend_reloaded" => format!("前端插件已重新扫描：当前 {} 个", query.count.unwrap_or(0)),
+        "frontend_reloaded" => {
+            let failed = query.failed.unwrap_or(0);
+            if failed > 0 {
+                format!(
+                    "前端插件已重新扫描：{} 个（{} 个加载失败，见下方错误）",
+                    query.count.unwrap_or(0),
+                    failed
+                )
+            } else {
+                format!("前端插件已重新扫描：当前 {} 个", query.count.unwrap_or(0))
+            }
+        }
         "agent_reloaded" => "已请求 agent 重载插件；新增工具将在下一条消息生效".to_string(),
         "created" => "会话已创建".to_string(),
         "sent" => "消息已发送".to_string(),
@@ -146,141 +163,224 @@ fn base(state: &AppState, title: &str, active: &str, flash: Option<Flash>) -> Pa
 ///
 /// 工具行左右两侧与辅助区都是**插件插槽**：插件可以往里放自己的控件，
 /// 插件挂了或坏了，插槽退回默认实现，输入框照常可用。
-fn composer_html(
-    state: &AppState,
-    thread_id: &str,
-    model: &str,
-    approval: &str,
-    approval_tone: &str,
-    workspace_label: &str,
+/// 输入框与辅助区需要的运行时状态。
+///
+/// 打包成一个结构体而不是 11 个参数：页首渲染与 live 轮询必须用**同一份**输入，
+/// 否则"页面上的状态"和"轮询回来的状态"会各写一套。
+#[derive(Debug, Clone)]
+struct ComposerArgs<'a> {
+    thread_id: &'a str,
+    model: &'a str,
+    approval: &'a str,
+    approval_tone: &'a str,
+    workspace_label: &'a str,
+    workspace_path: &'a str,
     connected: bool,
     running: bool,
     queue_len: usize,
     approval_count: usize,
     item_count: usize,
-) -> String {
-    let slots = slot_content(&state.frontend);
+}
 
-    // 左组：附件（未落地，明确标注）、工作区、审批档位。
+fn composer_html(slots: &SlotContent, args: &ComposerArgs<'_>) -> String {
+    // 左组：附件（未落地，明确禁用）、工作区、审批档位。
     let mut left = String::new();
     left.push_str(
-        &IconButton::new("i-plus", "附件与提及（规划中）")
+        &IconButton::new("i-plus", "附件与提及（规划中，暂不可用）")
             .kind(ButtonKind::Button)
             .class("ada-composer__plus")
+            .attrs("disabled aria-disabled=\"true\"")
             .render(),
     );
-    if !workspace_label.is_empty() {
+    if !args.workspace_label.is_empty() {
         left.push_str(
-            &Chip::new(workspace_label, Tone::Neutral)
+            &Chip::new(args.workspace_label, Tone::Neutral)
                 .icon("i-git-branch")
-                .title(state.agent.workspace.clone())
+                .title(args.workspace_path.to_string())
                 .class("ada-chip--workspace")
                 .render(),
         );
     }
-    let approval_tone = match approval_tone {
-        "danger" => Tone::Danger,
-        "warn" => Tone::Warn,
-        _ => Tone::Neutral,
-    };
-    left.push_str(
-        &Chip::new(approval, approval_tone)
-            .icon("i-shield")
-            .caret(true)
-            .title("审批档位：在桌面端设置中调整")
-            .class("ada-chip--approval")
-            .render(),
-    );
+    // 审批档位与模型都是只读展示：不加下拉箭头，避免"看起来能点、点了没反应"。
+    // 用独立容器包住，live 轮询才能只换这一个药丸（不重建整条工具行）。
+    left.push_str(&format!(
+        r#"<span id="composer-approval">{}</span>"#,
+        approval_chip_html(args.approval, args.approval_tone)
+    ));
     left.push_str(&slots.composer_left);
 
     // 右组：模型 + 发送。
     let mut right = String::new();
-    right.push_str(
-        &Chip::new(model, Tone::Neutral)
-            .icon("i-sparkles")
-            .caret(true)
-            .title(format!("当前模型：{model}"))
-            .class("ada-chip--model")
-            .render(),
-    );
+    right.push_str(&format!(
+        r#"<span id="composer-model">{}</span>"#,
+        model_chip_html(args.model)
+    ));
     right.push_str(&slots.composer_right);
     right.push_str(&SendButton::new("发送").title("发送（Enter）").render());
 
-    // 输入框下方的辅助区：状态提示 + 上下文 + 真实可用的快捷操作。
+    Composer {
+        action: format!("/threads/{}/send", args.thread_id),
+        placeholder: "向 a_da 提问，或指派一个任务…".to_string(),
+        focus_hint: Some("Enter 发送 · Shift+Enter 换行".to_string()),
+        left,
+        right,
+        aux: Some(composer_aux(slots, args)),
+    }
+    .render()
+}
+
+/// 输入框下方的辅助区：状态提示 + 上下文 + 真实可用的快捷操作。
+fn composer_aux(slots: &SlotContent, args: &ComposerArgs<'_>) -> ComposerAux {
     let mut status = Vec::new();
-    if connected {
+    if args.connected {
         status.push(AuxItem::new("网关已连接", Tone::Success).icon("i-plug"));
     } else {
         status.push(AuxItem::new("网关未连接", Tone::Danger).icon("i-alert"));
     }
-    if running {
+    if args.running {
         status.push(AuxItem::new("运行中", Tone::Warn).icon("i-clock"));
     }
-    if approval_count > 0 {
+    if args.approval_count > 0 {
         status.push(
-            AuxItem::new(format!("等待批准 {approval_count} 项"), Tone::Warn).icon("i-shield-check"),
+            AuxItem::new(format!("等待批准 {} 项", args.approval_count), Tone::Warn)
+                .icon("i-shield-check"),
         );
     }
-    if queue_len > 0 {
-        status.push(AuxItem::new(format!("排队 {queue_len} 条"), Tone::Brand).icon("i-layers"));
+    if args.queue_len > 0 {
+        status.push(
+            AuxItem::new(format!("排队 {} 条", args.queue_len), Tone::Brand).icon("i-layers"),
+        );
     }
 
     let mut context = Vec::new();
-    context.push(AuxItem::new(format!("{item_count} 条消息"), Tone::Neutral).icon("i-chat"));
-    if !workspace_label.is_empty() {
-        context.push(AuxItem::new(workspace_label, Tone::Neutral).icon("i-folder"));
+    // 断线时不显示"0 条消息"这类无法确认的数字（失败安全）。
+    if args.connected {
+        context.push(
+            AuxItem::new(format!("{} 条消息", args.item_count), Tone::Neutral).icon("i-chat"),
+        );
+    }
+    if !args.workspace_label.is_empty() {
+        context.push(AuxItem::new(args.workspace_label, Tone::Neutral).icon("i-folder"));
     }
 
     let mut actions = Vec::new();
-    if running {
+    // 断线时动作按钮一律不出现：它们只会再失败一次。
+    if args.connected {
+        if args.running {
+            actions.push(
+                Button::new("中止")
+                    .variant(ButtonVariant::Danger)
+                    .size(Size::Sm)
+                    .icon("i-stop")
+                    .action(format!("/threads/{}/abort", args.thread_id))
+                    .attrs("data-confirm=\"确定中止当前轮次吗？\"")
+                    .class("ada-aux__action"),
+            );
+        }
+        if args.queue_len > 0 {
+            actions.push(
+                Button::new("清空队列")
+                    .variant(ButtonVariant::Ghost)
+                    .size(Size::Sm)
+                    .icon("i-trash")
+                    .action(format!("/threads/{}/queue/clear", args.thread_id))
+                    .attrs("data-confirm=\"确定清空当前会话的排队消息吗？\"")
+                    .class("ada-aux__action"),
+            );
+        }
         actions.push(
-            Button::new("中止")
+            Button::new("重试上一轮")
+                .variant(ButtonVariant::Ghost)
+                .size(Size::Sm)
+                .icon("i-refresh")
+                .action(format!("/threads/{}/retry", args.thread_id))
+                .class("ada-aux__action"),
+        );
+    }
+
+    ComposerAux {
+        status,
+        context,
+        actions,
+        hint: Some("Enter 发送 · Shift+Enter 换行".to_string()),
+        plugins: slots.composer_footer.clone(),
+    }
+}
+
+fn composer_aux_html(slots: &SlotContent, args: &ComposerArgs<'_>) -> String {
+    composer_aux(slots, args).render()
+}
+
+/// 顶栏的状态药丸（运行中 / 审批档位 / 未连接）。
+fn topbar_status_html(
+    running: bool,
+    connected: bool,
+    approval: &str,
+    approval_tone: &str,
+) -> String {
+    let mut out = String::new();
+    if running {
+        out.push_str(
+            r#"<span class="ada-chip ada-chip--warn"><span class="ada-dot ada-dot--warn"></span>运行中</span>"#,
+        );
+    }
+    if connected {
+        let tone = match approval_tone {
+            "danger" => Tone::Danger,
+            "warn" => Tone::Warn,
+            _ => Tone::Neutral,
+        };
+        out.push_str(&Chip::new(approval, tone).title("审批档位").render());
+    } else {
+        out.push_str(
+            &Chip::new("未连接", Tone::Danger)
+                .title("无法连接 agent 网关")
+                .render(),
+        );
+    }
+    out
+}
+
+fn approval_chip_html(label: &str, tone: &str) -> String {
+    let tone = match tone {
+        "danger" => Tone::Danger,
+        "warn" => Tone::Warn,
+        _ => Tone::Neutral,
+    };
+    Chip::new(label, tone)
+        .icon("i-shield")
+        .title("审批档位：在桌面端设置中调整")
+        .class("ada-chip--approval")
+        .render()
+}
+
+fn model_chip_html(model: &str) -> String {
+    Chip::new(model, Tone::Neutral)
+        .icon("i-sparkles")
+        .title(format!("当前模型：{model}（在桌面端切换）"))
+        .class("ada-chip--model")
+        .render()
+}
+
+/// 顶栏右侧的刷新 / 停止（插件插槽在模板里单独保留）。
+fn topbar_actions_html(thread_id: &str, running: bool) -> String {
+    let mut out = IconButton::new("i-refresh", "刷新")
+        .href(format!("/threads/{thread_id}"))
+        .render();
+    if running {
+        out.push_str(
+            &Button::new("停止")
                 .variant(ButtonVariant::Danger)
                 .size(Size::Sm)
                 .icon("i-stop")
                 .action(format!("/threads/{thread_id}/abort"))
                 .attrs("data-confirm=\"确定中止当前轮次吗？\"")
-                .class("ada-aux__action"),
+                .render(),
         );
     }
-    if queue_len > 0 {
-        actions.push(
-            Button::new("清空队列")
-                .variant(ButtonVariant::Ghost)
-                .size(Size::Sm)
-                .icon("i-trash")
-                .action(format!("/threads/{thread_id}/queue/clear"))
-                .class("ada-aux__action"),
-        );
-    }
-    actions.push(
-        Button::new("重试上一轮")
-            .variant(ButtonVariant::Ghost)
-            .size(Size::Sm)
-            .icon("i-refresh")
-            .action(format!("/threads/{thread_id}/retry"))
-            .class("ada-aux__action"),
-    );
-
-    let aux = ComposerAux {
-        status,
-        context,
-        actions,
-        hint: Some("Enter 发送 · Shift+Enter 换行".to_string()),
-        plugins: slots.composer_footer,
-    };
-
-    Composer {
-        action: format!("/threads/{thread_id}/send"),
-        placeholder: "向 a_da 提问，或指派一个任务…".to_string(),
-        focus_hint: Some("Enter 发送 · Shift+Enter 换行".to_string()),
-        left,
-        right,
-        aux: Some(aux),
-    }
-    .render()
+    out
 }
-///
+
 /// 插槽内容在 SSR 期注入：插件贡献的 HTML 直接进页面，
 /// 插件失败时该插槽退回默认实现（空），主应用不受影响。
 fn slot_content(registry: &PluginRegistry) -> SlotContent {
@@ -308,6 +408,58 @@ fn redirect(path: &str) -> Response {
         )],
     )
         .into_response()
+}
+
+/// 用户可见的失败原因：去掉 URL 里的凭据，只留第一行。
+///
+/// 上游错误可能很长（甚至带网关地址），直接塞进页面既难读也容易泄露；
+/// 完整错误进服务端日志，页面只给"发生了什么"。
+fn public_reason(error: &anyhow::Error) -> String {
+    let text = redact_tokens(&format!("{error:#}"));
+    let first = text.lines().next().unwrap_or("未知错误").trim();
+    truncate(first, 200)
+}
+
+/// 把 `token=…` 的值打码（URL query 是最常见的泄漏位置）。
+fn redact_tokens(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(position) = rest.find("token=") {
+        out.push_str(&rest[..position]);
+        out.push_str("token=***");
+        rest = &rest[position + "token=".len()..];
+        let end = rest
+            .find(|ch: char| ch == '&' || ch.is_whitespace() || ch == '"' || ch == '\'')
+            .unwrap_or(rest.len());
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// 查询参数编码：只让 ASCII 安全字符原样通过，其余按 UTF-8 字节百分号编码。
+fn encode_query(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.as_bytes() {
+        match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char);
+            }
+            b' ' => out.push('+'),
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
+/// 动作失败：回跳到会话页并用 flash 说明原因，**不**把整个界面换成裸错误页。
+fn action_failed(thread_id: &str, prefix: &str, error: anyhow::Error) -> Response {
+    tracing::warn!("{prefix}: {error:#}");
+    let message = format!("{prefix}：{}", public_reason(&error));
+    redirect(&format!(
+        "/threads/{thread_id}?error={}",
+        encode_query(&message)
+    ))
 }
 
 fn str_at<'a>(value: &'a Value, key: &str) -> &'a str {
@@ -443,19 +595,8 @@ fn args_text(args: &Value) -> String {
         return text.replace(['\r', '\n'], " ").trim().to_string();
     }
     for key in [
-        "path",
-        "file",
-        "filePath",
-        "command",
-        "cmd",
-        "task",
-        "query",
-        "keyword",
-        "pattern",
-        "url",
-        "question",
-        "message",
-        "id",
+        "path", "file", "filePath", "command", "cmd", "task", "query", "keyword", "pattern", "url",
+        "question", "message", "id",
     ] {
         if let Some(value) = args.get(key).and_then(Value::as_str) {
             if !value.trim().is_empty() {
@@ -502,7 +643,11 @@ fn details_display(details: &Value) -> String {
     if let Some(items) = details.get("items").and_then(Value::as_array) {
         let mut lines: Vec<String> = Vec::new();
         for entry in items.iter().take(8) {
-            let title = entry.get("title").and_then(Value::as_str).unwrap_or("").trim();
+            let title = entry
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
             if title.is_empty() {
                 continue;
             }
@@ -623,7 +768,11 @@ fn tool_target(name: &str, args: &Value) -> (String, String) {
                     raw
                 }
             };
-            let role = if role.is_empty() { "子智能体" } else { role };
+            let role = if role.is_empty() {
+                "子智能体"
+            } else {
+                role
+            };
             let task = short_title(str_at(args, "task"), 40);
             return (
                 if task.is_empty() {
@@ -646,7 +795,10 @@ fn tool_target(name: &str, args: &Value) -> (String, String) {
     }
     let normalized = summary.replace('\\', "/");
     match normalized.rfind('/') {
-        Some(cut) => (normalized[cut + 1..].to_string(), normalized[..=cut].to_string()),
+        Some(cut) => (
+            normalized[cut + 1..].to_string(),
+            normalized[..=cut].to_string(),
+        ),
         None => (normalized, String::new()),
     }
 }
@@ -686,8 +838,7 @@ fn last_line_preview(text: &str) -> String {
     let line = text
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .next_back()
+        .rfind(|line| !line.is_empty())
         .unwrap_or("");
     if line.chars().count() > 42 {
         let mut out: String = line.chars().take(42).collect();
@@ -728,11 +879,34 @@ fn elapsed_label(value: &Value) -> String {
     }
 }
 
+/// 压缩卡片的正文是 `summary`（不是 `text`），并带上真实的 token 变化。
+fn compact_text(value: &Value) -> String {
+    let summary = str_at(value, "summary");
+    let pre = value.get("preTokens").and_then(Value::as_u64);
+    let post = value.get("postTokens").and_then(Value::as_u64);
+    match (pre, post) {
+        (Some(pre), Some(post)) => {
+            format!("{summary}\n\n上下文 {pre} → {post} tokens")
+        }
+        _ => summary.to_string(),
+    }
+}
+
 /// 把 agent 快照里的一条 item 归一化成组件库的行视图。
 fn row_view(value: &Value) -> ui::RowView {
     let kind = str_at(value, "kind").to_string();
     let tool_name = str_at(value, "name").to_string();
-    let raw_text = str_at(value, "text").to_string();
+    let raw_text = if kind == "compact" {
+        compact_text(value)
+    } else {
+        str_at(value, "text").to_string()
+    };
+    let images = value
+        .get("images")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let key = str_at(value, "id").to_string();
     let raw_output = value
         .get("output")
         .and_then(Value::as_str)
@@ -794,6 +968,8 @@ fn row_view(value: &Value) -> ui::RowView {
     };
     ui::RowView {
         kind,
+        key,
+        images,
         text,
         html,
         label,
@@ -838,27 +1014,35 @@ fn truncate(text: &str, max: usize) -> String {
     out
 }
 
-fn model_of(config: &Value) -> String {
-    config
-        .get("saved")
-        .and_then(|saved| saved.get("model"))
+/// 当前模型：优先取运行中快照的 `config.model`，回退到 `/api/config` 的 saved。
+fn model_of(snapshot: &Value, config: &Value) -> String {
+    snapshot
+        .get("config")
+        .and_then(|value| value.get("model"))
         .and_then(Value::as_str)
+        .filter(|model| !model.trim().is_empty())
+        .or_else(|| {
+            config
+                .get("saved")
+                .and_then(|saved| saved.get("model"))
+                .and_then(Value::as_str)
+        })
         .or_else(|| config.get("model").and_then(Value::as_str))
         .unwrap_or("未配置")
         .to_string()
 }
 
+/// 审批档位的真实字段是 `snapshot.config.approval`。
+///
+/// 历史实现找的是 `approvalMode`（不存在的字段），所以"完全访问"一直显示成
+/// "自动批准"、危险档也不显红——这是安全信息，不能靠猜。
 fn approval_mode(snapshot: &Value, config: &Value) -> String {
     snapshot
-        .get("approvalMode")
+        .get("config")
+        .and_then(|cfg| cfg.get("approval"))
+        .or_else(|| config.get("saved").and_then(|saved| saved.get("approval")))
+        .or_else(|| config.get("approval"))
         .and_then(Value::as_str)
-        .or_else(|| {
-            snapshot
-                .get("config")
-                .and_then(|cfg| cfg.get("approvalMode"))
-                .and_then(Value::as_str)
-        })
-        .or_else(|| config.get("approvalMode").and_then(Value::as_str))
         .unwrap_or("auto")
         .to_string()
 }
@@ -907,8 +1091,12 @@ fn waited_label(value: &Value) -> String {
     let seconds = now.saturating_sub(at) / 1000;
     if seconds < 60 {
         format!("已等待 {seconds}s")
-    } else {
+    } else if seconds < 3600 {
         format!("已等待 {}m {:02}s", seconds / 60, seconds % 60)
+    } else if seconds < 86400 {
+        format!("已等待 {}h {:02}m", seconds / 3600, (seconds % 3600) / 60)
+    } else {
+        format!("已等待 {}d {}h", seconds / 86400, (seconds % 86400) / 3600)
     }
 }
 
@@ -961,6 +1149,155 @@ fn queue_rows(snapshot: &Value, thread_id: &str) -> Vec<QueueRow> {
         .collect()
 }
 
+/// 渲染好的对话片段（SSR 与 live 共用）。
+fn transcript_html(items: Vec<ItemRow>) -> String {
+    render_string(&TranscriptPartial {
+        items,
+        transcript_empty: ui::render_empty_thread(),
+    })
+}
+
+/// 侧栏会话列表（SSR 与 live 共用）。
+fn thread_rows(snapshot: &Value, active_thread_id: &str) -> Vec<ThreadRow> {
+    let running = running_ids(snapshot);
+    // 侧栏只保留有内容的会话，以及当前会话/正在运行的会话：
+    // agent 会先落一个空“新会话”占位，全部列出来会淹没真正有内容的会话。
+    array_at(snapshot, "threads")
+        .iter()
+        .map(|value| thread_row(value, &running))
+        .filter(|thread| thread.item_count > 0 || thread.id == active_thread_id || thread.running)
+        .collect()
+}
+
+/// 审批 + 排队托盘。返回 `(html, 待批准数, 排队数)`。
+fn trays_html(snapshot: &Value, raw_items: &[Value], thread_id: &str) -> (String, usize, usize) {
+    let approvals = approval_rows(raw_items);
+    let approvals_html = approvals
+        .iter()
+        .map(|row| {
+            ui::ApprovalTray {
+                call_id: row.call_id.clone(),
+                thread_id: thread_id.to_string(),
+                tool_name: row.tool_name.clone(),
+                args: row.args.clone(),
+                waited: row.waited.clone(),
+            }
+            .render()
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let queue = queue_rows(snapshot, thread_id);
+    let queue_html = if queue.is_empty() {
+        String::new()
+    } else {
+        ui::QueueTray {
+            items: queue
+                .iter()
+                .map(|row| ui::QueueItem {
+                    index: row.index,
+                    order: row.order,
+                    text: row.text.clone(),
+                    thread_id: thread_id.to_string(),
+                })
+                .collect(),
+        }
+        .render()
+    };
+    (
+        format!("{approvals_html}{queue_html}"),
+        approvals.len(),
+        queue.len(),
+    )
+}
+
+/// 任务规划：按 set/update/get 的动作推演当前计划（不是“倒序找最后一张卡片”）。
+fn todo_html(raw_items: &[Value]) -> String {
+    ui::derive_todo_plan(raw_items)
+        .map(|plan| {
+            ui::TodoPanel {
+                plan,
+                dom_id: "ada-todo".to_string(),
+            }
+            .render()
+        })
+        .unwrap_or_default()
+}
+
+fn render_string<T: Template>(template: &T) -> String {
+    template.render().unwrap_or_else(|error| {
+        tracing::error!("模板渲染失败: {error}");
+        String::new()
+    })
+}
+
+/// live 轮询要替换的各个区域。
+struct LiveParts {
+    transcript: String,
+    trays: String,
+    todo: String,
+    topbar_status: String,
+    topbar_actions: String,
+    aux: String,
+    approval_chip: String,
+    model_chip: String,
+}
+
+fn live_parts(state: &AppState, snapshot: &Value, thread_id: &str, thread: &Value) -> LiveParts {
+    let raw_items = thread
+        .get("items")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let items: Vec<ItemRow> = raw_items
+        .iter()
+        .map(|item| item_row(item, thread_id))
+        .collect();
+    let item_count = items.len();
+    let (trays, approval_count, queue_len) = trays_html(snapshot, raw_items, thread_id);
+    let running = running_ids(snapshot).iter().any(|id| id == thread_id);
+    let mode = approval_mode(snapshot, &Value::Null);
+    let approval = approval_label(&mode);
+    let tone = approval_tone(&mode);
+    let model = model_of(snapshot, &Value::Null);
+    let workspace = str_at(thread, "workspace");
+    let (workspace_label, workspace_path) = if workspace.is_empty() {
+        (
+            workspace_label(&state.agent.workspace),
+            state.agent.workspace.as_str(),
+        )
+    } else {
+        (workspace_label(workspace), workspace)
+    };
+    // 这里只换辅助区，只需要 composer.footer 一个插槽；不必把十个插槽都渲染一遍。
+    let slots = SlotContent {
+        composer_footer: state.frontend.render_slot(Slot::ComposerFooter).html,
+        ..SlotContent::default()
+    };
+    let args = ComposerArgs {
+        thread_id,
+        model: &model,
+        approval: &approval,
+        approval_tone: &tone,
+        workspace_label: &workspace_label,
+        workspace_path,
+        connected: true,
+        running,
+        queue_len,
+        approval_count,
+        item_count,
+    };
+    LiveParts {
+        transcript: transcript_html(items),
+        trays,
+        todo: todo_html(raw_items),
+        topbar_status: topbar_status_html(running, true, &approval, &tone),
+        topbar_actions: topbar_actions_html(thread_id, running),
+        aux: composer_aux_html(&slots, &args),
+        approval_chip: approval_chip_html(&approval, &tone),
+        model_chip: model_chip_html(&model),
+    }
+}
+
 async fn load_chat(
     state: &AppState,
     forced_thread: Option<String>,
@@ -971,32 +1308,38 @@ async fn load_chat(
         Err(error) => {
             // 连接失败也要给一个可读的壳，而不是直接 502：
             // 用户至少要知道“没连上”，并能看到重试/刷新入口。
+            // 如果这次是某个动作失败后跳回来的，优先显示动作原因（那才是用户刚做的事）。
+            let flash = flash_from_query(query).unwrap_or_else(|| Flash {
+                kind: "error".to_string(),
+                message: format!("无法连接 agent 网关：{}", public_reason(&error)),
+            });
             return Ok(ChatPage {
-                base: base(
-                    state,
-                    "未连接",
-                    "chat",
-                    Some(Flash {
-                        kind: "error".to_string(),
-                        message: format!("无法连接 agent 网关：{error:#}"),
-                    }),
-                ),
+                base: base(state, "未连接", "chat", Some(flash)),
                 threads: Vec::new(),
                 active: None,
                 active_thread_id: String::new(),
                 items: Vec::new(),
                 transcript_empty: ui::render_empty_thread(),
-                approvals_html: String::new(),
-                queue_html: String::new(),
-                approval: "未连接".to_string(),
+                trays_html: String::new(),
                 composer_html: String::new(),
                 todo_html: String::new(),
+                topbar_status: topbar_status_html(false, false, "未连接", "neutral"),
+                topbar_actions: String::new(),
                 connected: false,
             });
         }
     };
     let running = running_ids(&snapshot);
     let thread_values = array_at(&snapshot, "threads");
+    // 显式的深链接不存在时如实 404，而不是悄悄显示“第一条会话”。
+    if let Some(id) = forced_thread.as_deref() {
+        if !thread_values.iter().any(|value| str_at(value, "id") == id) {
+            return Err(AppError::new(
+                StatusCode::NOT_FOUND,
+                format!("会话不存在: {id}"),
+            ));
+        }
+    }
     let wanted = forced_thread.or_else(|| query.thread.clone()).or_else(|| {
         snapshot
             .get("activeThreadId")
@@ -1012,13 +1355,7 @@ async fn load_chat(
         .as_ref()
         .map(|thread| thread.id.clone())
         .unwrap_or_default();
-    // 侧栏只保留有内容的会话，以及当前会话/正在运行的会话：
-    // agent 会先落一个空“新会话”占位，全部列出来会淹没真正有内容的会话。
-    let threads: Vec<ThreadRow> = thread_values
-        .iter()
-        .map(|value| thread_row(value, &running))
-        .filter(|thread| thread.item_count > 0 || thread.id == active_thread_id || thread.running)
-        .collect();
+    let threads = thread_rows(&snapshot, &active_thread_id);
     let raw_items: &[Value] = active_value
         .and_then(|value| value.get("items"))
         .and_then(Value::as_array)
@@ -1029,41 +1366,10 @@ async fn load_chat(
         .map(|item| item_row(item, &active_thread_id))
         .collect();
     let item_count = items.len();
-    let approvals = approval_rows(raw_items);
-    let queue = queue_rows(&snapshot, &active_thread_id);
-    let approvals_html = approvals
-        .iter()
-        .map(|row| {
-            ui::ApprovalTray {
-                call_id: row.call_id.clone(),
-                thread_id: active_thread_id.clone(),
-                tool_name: row.tool_name.clone(),
-                args: row.args.clone(),
-                waited: row.waited.clone(),
-            }
-            .render()
-        })
-        .collect::<Vec<_>>()
-        .join("");
-    let queue_html = if queue.is_empty() {
-        String::new()
-    } else {
-        ui::QueueTray {
-            items: queue
-                .iter()
-                .map(|row| ui::QueueItem {
-                    index: row.index,
-                    order: row.order,
-                    text: row.text.clone(),
-                    thread_id: active_thread_id.clone(),
-                })
-                .collect(),
-        }
-        .render()
-    };
+    let (trays, approval_count, queue_len) = trays_html(&snapshot, raw_items, &active_thread_id);
 
     let config = state.agent.config().await.unwrap_or(Value::Null);
-    let model = model_of(&config);
+    let model = model_of(&snapshot, &config);
     let mode = approval_mode(&snapshot, &config);
     let approval = approval_label(&mode);
     let approval_tone = approval_tone(&mode);
@@ -1076,46 +1382,141 @@ async fn load_chat(
         .map(|thread| workspace_label(&thread.workspace))
         .filter(|label| !label.is_empty())
         .unwrap_or_else(|| workspace_label(&state.agent.workspace));
+    let workspace_path = active
+        .as_ref()
+        .map(|thread| thread.workspace.clone())
+        .filter(|path| !path.is_empty())
+        .unwrap_or_else(|| state.agent.workspace.clone());
+    let is_running = running.contains(&active_thread_id);
+    let slots = slot_content(&state.frontend);
 
-    // 任务规划：按 set/update/get 的动作推演当前计划（不是"倒序找最后一张卡片"）。
-    let todo_html = ui::derive_todo_plan(raw_items)
-        .map(|plan| {
-            ui::TodoPanel {
-                plan,
-                dom_id: "ada-todo".to_string(),
-            }
-            .render()
-        })
-        .unwrap_or_default();
-
-    let composer_html = composer_html(
-        state,
-        &active_thread_id,
-        &model,
-        &approval,
-        &approval_tone,
-        &workspace_label,
-        true,
-        running.contains(&active_thread_id),
-        queue.len(),
-        approvals.len(),
-        item_count,
-    );
+    // 没有活动会话时不给输入框：提交到 `/threads//send` 只会得到一个错误。
+    let composer_html = if active_thread_id.is_empty() {
+        String::new()
+    } else {
+        composer_html(
+            &slots,
+            &ComposerArgs {
+                thread_id: &active_thread_id,
+                model: &model,
+                approval: &approval,
+                approval_tone: &approval_tone,
+                workspace_label: &workspace_label,
+                workspace_path: &workspace_path,
+                connected: true,
+                running: is_running,
+                queue_len,
+                approval_count,
+                item_count,
+            },
+        )
+    };
 
     Ok(ChatPage {
         base: base(state, &title, "chat", flash_from_query(query)),
         threads,
         active,
-        active_thread_id,
+        active_thread_id: active_thread_id.clone(),
         items,
         transcript_empty: ui::render_empty_thread(),
-        approvals_html,
-        queue_html,
-        approval,
+        trays_html: trays,
         composer_html,
-        todo_html,
+        todo_html: todo_html(raw_items),
+        topbar_status: topbar_status_html(is_running, true, &approval, &approval_tone),
+        topbar_actions: topbar_actions_html(&active_thread_id, is_running),
         connected: true,
     })
+}
+
+/// `hx-swap-oob` 片段：把这块 HTML 写进页面里同 id 的元素。
+fn oob(id: &str, html: &str) -> String {
+    format!(r#"<div id="{id}" hx-swap-oob="innerHTML">{html}</div>"#)
+}
+
+fn no_store_html(html: String) -> Response {
+    (
+        StatusCode::OK,
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/html; charset=utf-8"),
+            ),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+        ],
+        Html(html),
+    )
+        .into_response()
+}
+
+/// 网关断开时的 live 响应：只更新“未连接”状态，**不碰**对话流内容。
+fn live_offline(state: &AppState, thread_id: &str) -> Response {
+    let label = workspace_label(&state.agent.workspace);
+    let slots = SlotContent {
+        composer_footer: state.frontend.render_slot(Slot::ComposerFooter).html,
+        ..SlotContent::default()
+    };
+    let args = ComposerArgs {
+        thread_id,
+        model: "未连接",
+        approval: "未连接",
+        approval_tone: "neutral",
+        workspace_label: &label,
+        workspace_path: &state.agent.workspace,
+        connected: false,
+        running: false,
+        queue_len: 0,
+        approval_count: 0,
+        item_count: 0,
+    };
+    let body = [
+        oob(
+            "topbar-status",
+            &topbar_status_html(false, false, "未连接", "neutral"),
+        ),
+        oob("topbar-actions", &topbar_actions_html(thread_id, false)),
+        oob("composer-aux", &composer_aux_html(&slots, &args)),
+        oob(
+            "composer-approval",
+            &approval_chip_html("未连接", "neutral"),
+        ),
+        oob("composer-model", &model_chip_html("未连接")),
+    ]
+    .concat();
+    no_store_html(body)
+}
+
+/// 每 2 秒的局部刷新：一个响应里带回所有动态区域。
+///
+/// 为什么不是只刷新对话流：审批按钮、运行状态、任务规划都在对话流之外，
+/// 只刷新 transcript 会让"等待批准"永久停在页面上（只能手工 F5 才出现按钮）。
+pub async fn live(State(state): State<AppState>, Path(thread_id): Path<String>) -> Response {
+    let snapshot = match state.agent.snapshot().await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            // 轮询每 2 秒一次：连接断开时不要刷爆日志，状态已经通过页面告诉用户。
+            tracing::debug!("live 读取网关失败: {error:#}");
+            return live_offline(&state, &thread_id);
+        }
+    };
+    let Some(thread) = array_at(&snapshot, "threads")
+        .iter()
+        .find(|value| str_at(value, "id") == thread_id)
+    else {
+        return (StatusCode::NOT_FOUND, "会话不存在").into_response();
+    };
+    let parts = live_parts(&state, &snapshot, &thread_id, thread);
+    let body = [
+        oob("transcript", &parts.transcript),
+        oob("ada-trays", &parts.trays),
+        oob("ada-todo-dock", &parts.todo),
+        oob("topbar-status", &parts.topbar_status),
+        oob("topbar-actions", &parts.topbar_actions),
+        oob("composer-aux", &parts.aux),
+        oob("composer-approval", &parts.approval_chip),
+        oob("composer-model", &parts.model_chip),
+    ]
+    .concat();
+    no_store_html(body)
 }
 
 pub async fn chat(
@@ -1139,11 +1540,10 @@ pub async fn transcript_partial(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
 ) -> Result<Response, AppError> {
-    let snapshot = state
-        .agent
-        .snapshot()
-        .await
-        .map_err(|error| AppError::upstream(format!("读取会话失败: {error:#}")))?;
+    let snapshot =
+        state.agent.snapshot().await.map_err(|error| {
+            AppError::upstream(format!("读取会话失败: {}", public_reason(&error)))
+        })?;
     let value = array_at(&snapshot, "threads")
         .iter()
         .find(|value| str_at(value, "id") == thread_id)
@@ -1151,7 +1551,12 @@ pub async fn transcript_partial(
     let items: Vec<ItemRow> = value
         .get("items")
         .and_then(Value::as_array)
-        .map(|items| items.iter().map(|item| item_row(item, &thread_id)).collect())
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| item_row(item, &thread_id))
+                .collect()
+        })
         .unwrap_or_default();
     Ok(render(&TranscriptPartial {
         items,
@@ -1161,11 +1566,9 @@ pub async fn transcript_partial(
 }
 
 async fn dashboard_view(state: &AppState) -> Result<DashboardView, AppError> {
-    let snapshot = state
-        .agent
-        .snapshot()
-        .await
-        .map_err(|error| AppError::upstream(format!("读取 agent 快照失败: {error:#}")))?;
+    let snapshot = state.agent.snapshot().await.map_err(|error| {
+        AppError::upstream(format!("读取 agent 快照失败: {}", public_reason(&error)))
+    })?;
     let running = running_ids(&snapshot);
     let threads: Vec<ThreadRow> = array_at(&snapshot, "threads")
         .iter()
@@ -1242,16 +1645,24 @@ pub async fn create_thread(
     if title.is_empty() {
         return Err(AppError::bad("会话标题不能为空"));
     }
-    let result = state
-        .agent
-        .create_thread(title)
-        .await
-        .map_err(|error| AppError::upstream(format!("创建会话失败: {error:#}")))?;
-    let id = result
+    let result = match state.agent.create_thread(title).await {
+        Ok(result) => result,
+        Err(error) => {
+            tracing::warn!("创建会话失败: {error:#}");
+            let message = format!("创建会话失败：{}", public_reason(&error));
+            return Ok(redirect(&format!("/?error={}", encode_query(&message))));
+        }
+    };
+    let Some(id) = result
         .get("threadId")
         .and_then(Value::as_str)
         .or_else(|| result.get("id").and_then(Value::as_str))
-        .ok_or_else(|| AppError::upstream("网关没有返回新会话 id"))?;
+    else {
+        return Ok(redirect(&format!(
+            "/?error={}",
+            encode_query("创建会话失败：网关没有返回新会话 id")
+        )));
+    };
     Ok(redirect(&format!("/threads/{id}")))
 }
 
@@ -1264,24 +1675,20 @@ pub async fn send_message(
     if text.is_empty() {
         return Ok(redirect(&format!("/threads/{thread_id}")));
     }
-    state
-        .agent
-        .send_message(&thread_id, text)
-        .await
-        .map_err(|error| AppError::upstream(format!("发送消息失败: {error:#}")))?;
-    Ok(redirect(&format!("/threads/{thread_id}?notice=sent")))
+    match state.agent.send_message(&thread_id, text).await {
+        Ok(_) => Ok(redirect(&format!("/threads/{thread_id}?notice=sent"))),
+        Err(error) => Ok(action_failed(&thread_id, "发送消息失败", error)),
+    }
 }
 
 pub async fn abort_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
 ) -> Result<Response, AppError> {
-    state
-        .agent
-        .abort_thread(&thread_id)
-        .await
-        .map_err(|error| AppError::upstream(format!("中止失败: {error:#}")))?;
-    Ok(redirect(&format!("/threads/{thread_id}?notice=aborted")))
+    match state.agent.abort_thread(&thread_id).await {
+        Ok(_) => Ok(redirect(&format!("/threads/{thread_id}?notice=aborted"))),
+        Err(error) => Ok(action_failed(&thread_id, "中止失败", error)),
+    }
 }
 
 pub async fn decide_approval(
@@ -1296,70 +1703,70 @@ pub async fn decide_approval(
         form.approved.trim().to_ascii_lowercase().as_str(),
         "true" | "1" | "on" | "yes"
     );
-    state
-        .agent
-        .decide_approval(&call_id, approved)
-        .await
-        .map_err(|error| AppError::upstream(format!("提交审批失败: {error:#}")))?;
-    let notice = if approved { "approved" } else { "rejected" };
-    Ok(redirect(&format!(
-        "/threads/{}?notice={notice}",
-        form.thread_id
-    )))
+    match state.agent.decide_approval(&call_id, approved).await {
+        Ok(_) => {
+            let notice = if approved { "approved" } else { "rejected" };
+            Ok(redirect(&format!(
+                "/threads/{}?notice={notice}",
+                form.thread_id
+            )))
+        }
+        Err(error) => {
+            if form.thread_id.trim().is_empty() {
+                tracing::warn!("提交审批失败: {error:#}");
+                let message = format!("提交审批失败：{}", public_reason(&error));
+                Ok(redirect(&format!("/?error={}", encode_query(&message))))
+            } else {
+                Ok(action_failed(&form.thread_id, "提交审批失败", error))
+            }
+        }
+    }
 }
 
 pub async fn retry_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
 ) -> Result<Response, AppError> {
-    state
-        .agent
-        .retry_thread(&thread_id)
-        .await
-        .map_err(|error| AppError::upstream(format!("重试失败: {error:#}")))?;
-    Ok(redirect(&format!("/threads/{thread_id}?notice=retried")))
+    match state.agent.retry_thread(&thread_id).await {
+        Ok(_) => Ok(redirect(&format!("/threads/{thread_id}?notice=retried"))),
+        Err(error) => Ok(action_failed(&thread_id, "重试失败", error)),
+    }
 }
 
 pub async fn promote_queue(
     State(state): State<AppState>,
     Path((thread_id, index)): Path<(String, usize)>,
 ) -> Result<Response, AppError> {
-    state
-        .agent
-        .promote_queue(index, &thread_id)
-        .await
-        .map_err(|error| AppError::upstream(format!("提升排队消息失败: {error:#}")))?;
-    Ok(redirect(&format!(
-        "/threads/{thread_id}?notice=queue_promoted"
-    )))
+    match state.agent.promote_queue(index, &thread_id).await {
+        Ok(_) => Ok(redirect(&format!(
+            "/threads/{thread_id}?notice=queue_promoted"
+        ))),
+        Err(error) => Ok(action_failed(&thread_id, "提升排队消息失败", error)),
+    }
 }
 
 pub async fn remove_queue(
     State(state): State<AppState>,
     Path((thread_id, index)): Path<(String, usize)>,
 ) -> Result<Response, AppError> {
-    state
-        .agent
-        .remove_queue(index)
-        .await
-        .map_err(|error| AppError::upstream(format!("删除排队消息失败: {error:#}")))?;
-    Ok(redirect(&format!(
-        "/threads/{thread_id}?notice=queue_removed"
-    )))
+    match state.agent.remove_queue(index).await {
+        Ok(_) => Ok(redirect(&format!(
+            "/threads/{thread_id}?notice=queue_removed"
+        ))),
+        Err(error) => Ok(action_failed(&thread_id, "删除排队消息失败", error)),
+    }
 }
 
 pub async fn clear_queue(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
 ) -> Result<Response, AppError> {
-    state
-        .agent
-        .clear_queue(&thread_id)
-        .await
-        .map_err(|error| AppError::upstream(format!("清空排队消息失败: {error:#}")))?;
-    Ok(redirect(&format!(
-        "/threads/{thread_id}?notice=queue_cleared"
-    )))
+    match state.agent.clear_queue(&thread_id).await {
+        Ok(_) => Ok(redirect(&format!(
+            "/threads/{thread_id}?notice=queue_cleared"
+        ))),
+        Err(error) => Ok(action_failed(&thread_id, "清空排队消息失败", error)),
+    }
 }
 
 pub async fn providers(
@@ -1482,15 +1889,21 @@ pub async fn extensions(
 }
 
 pub async fn reload_frontend(State(state): State<AppState>) -> Result<Response, AppError> {
-    let report = state.frontend.reload().map_err(|error| {
-        AppError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("重载前端插件失败: {error:#}"),
-        )
-    })?;
+    let report = match state.frontend.reload() {
+        Ok(report) => report,
+        Err(error) => {
+            tracing::warn!("重载前端插件失败: {error:#}");
+            let message = format!("重载前端插件失败：{}", public_reason(&error));
+            return Ok(redirect(&format!(
+                "/extensions?error={}",
+                encode_query(&message)
+            )));
+        }
+    };
     Ok(redirect(&format!(
-        "/extensions?notice=frontend_reloaded&count={}",
-        report.total
+        "/extensions?notice=frontend_reloaded&count={}&failed={}",
+        report.total,
+        report.failed.len()
     )))
 }
 
@@ -1499,11 +1912,17 @@ pub async fn enable_plugin(
     State(state): State<AppState>,
     Path(plugin_id): Path<String>,
 ) -> Result<Response, AppError> {
-    state
-        .frontend
-        .set_enabled(&plugin_id, true)
-        .map_err(|error| AppError::bad(format!("{error:#}")))?;
-    Ok(redirect(&format!("/extensions?notice=plugin_enabled&id={plugin_id}")))
+    if let Err(error) = state.frontend.set_enabled(&plugin_id, true) {
+        tracing::warn!("启用前端插件失败: {error:#}");
+        let message = format!("启用插件失败：{}", public_reason(&error));
+        return Ok(redirect(&format!(
+            "/extensions?error={}",
+            encode_query(&message)
+        )));
+    }
+    Ok(redirect(&format!(
+        "/extensions?notice=plugin_enabled&id={plugin_id}"
+    )))
 }
 
 /// 停用插件（卸载：贡献消失，界面回到默认实现）。
@@ -1511,10 +1930,14 @@ pub async fn disable_plugin(
     State(state): State<AppState>,
     Path(plugin_id): Path<String>,
 ) -> Result<Response, AppError> {
-    state
-        .frontend
-        .set_enabled(&plugin_id, false)
-        .map_err(|error| AppError::bad(format!("{error:#}")))?;
+    if let Err(error) = state.frontend.set_enabled(&plugin_id, false) {
+        tracing::warn!("停用前端插件失败: {error:#}");
+        let message = format!("停用插件失败：{}", public_reason(&error));
+        return Ok(redirect(&format!(
+            "/extensions?error={}",
+            encode_query(&message)
+        )));
+    }
     Ok(redirect(&format!(
         "/extensions?notice=plugin_disabled&id={plugin_id}"
     )))
@@ -1541,11 +1964,14 @@ pub async fn plugins_api(State(state): State<AppState>) -> Result<Response, AppE
 }
 
 pub async fn reload_agent(State(state): State<AppState>) -> Result<Response, AppError> {
-    state
-        .agent
-        .reload_agent_plugins()
-        .await
-        .map_err(|error| AppError::upstream(format!("agent 重载插件失败: {error:#}")))?;
+    if let Err(error) = state.agent.reload_agent_plugins().await {
+        tracing::warn!("agent 重载插件失败: {error:#}");
+        let message = format!("agent 重载插件失败：{}", public_reason(&error));
+        return Ok(redirect(&format!(
+            "/extensions?error={}",
+            encode_query(&message)
+        )));
+    }
     Ok(redirect("/extensions?notice=agent_reloaded"))
 }
 
@@ -1585,12 +2011,9 @@ pub async fn plugin_asset(
         .frontend
         .asset_path(&plugin_id, &path)
         .map_err(|error| AppError::new(StatusCode::NOT_FOUND, format!("{error:#}")))?;
-    let bytes = tokio::fs::read(&file).await.map_err(|error| {
-        AppError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("读取资源失败: {error}"),
-        )
-    })?;
+    let bytes = tokio::fs::read(&file)
+        .await
+        .map_err(|error| AppError::new(StatusCode::NOT_FOUND, format!("读取资源失败: {error}")))?;
     Ok((
         [
             (
@@ -1617,5 +2040,70 @@ pub async fn not_found(State(state): State<AppState>) -> Response {
             format!("渲染错误页失败: {error}"),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn approval_mode_reads_snapshot_config_approval() {
+        let snapshot = json!({"config":{"approval":"full","model":"deepseek-chat"}});
+        assert_eq!(approval_mode(&snapshot, &Value::Null), "full");
+        assert_eq!(approval_label("full"), "完全访问");
+        assert_eq!(approval_tone("full"), "danger");
+    }
+
+    #[test]
+    fn approval_mode_falls_back_to_saved_config() {
+        let snapshot = json!({});
+        let config = json!({"saved":{"approval":"ask"}});
+        assert_eq!(approval_mode(&snapshot, &config), "ask");
+        assert_eq!(approval_mode(&snapshot, &Value::Null), "auto");
+    }
+
+    #[test]
+    fn compact_row_uses_summary_not_text() {
+        let row = row_view(&json!({
+            "kind":"compact",
+            "id":"c1",
+            "summary":"压缩了 6 轮对话",
+            "preTokens":90000,
+            "postTokens":12000
+        }));
+        assert_eq!(row.key, "c1");
+        assert!(row.text.contains("压缩了 6 轮对话"));
+        assert!(row.text.contains("90000"));
+        assert!(row.text.contains("12000"));
+        assert!(ui::render_row(&row, "t1").contains("压缩了 6 轮对话"));
+    }
+
+    #[test]
+    fn user_row_marks_images_instead_of_silently_dropping_them() {
+        let row = row_view(&json!({
+            "kind":"user",
+            "id":"u1",
+            "text":"看一下这张图",
+            "images":["data:image/png;base64,AA"]
+        }));
+        assert_eq!(row.images, 1);
+        assert!(ui::render_row(&row, "t1").contains("含 1 张图片"));
+    }
+
+    #[test]
+    fn public_reason_redacts_tokens_and_keeps_only_the_first_line() {
+        let error =
+            anyhow::anyhow!("连接网关失败: ws://127.0.0.1:1/rpc?workspace=w&token=SECRET\n第二行");
+        let reason = public_reason(&error);
+        assert!(!reason.contains("SECRET"));
+        assert!(!reason.contains("第二行"));
+        assert!(reason.contains("token=***"));
+    }
+
+    #[test]
+    fn encode_query_percent_encodes_utf8_and_reserved_chars() {
+        assert_eq!(encode_query("a b&c=中"), "a+b%26c%3D%E4%B8%AD");
     }
 }

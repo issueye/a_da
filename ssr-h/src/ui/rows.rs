@@ -14,6 +14,10 @@ use super::theme::{ButtonVariant, Size, Tone};
 pub struct RowView {
     /// `user` / `assistant` / `thinking` / `tool` / `notice` / `compact`。
     pub kind: String,
+    /// 快照里的 item id：live 轮询替换 DOM 后按它恢复展开状态。
+    pub key: String,
+    /// 用户消息附带的图片数量。
+    pub images: usize,
     /// 纯文本内容。
     pub text: String,
     /// 助手正文的 Markdown HTML。
@@ -62,6 +66,7 @@ pub fn render_row(view: &RowView, thread_id: &str) -> String {
     match view.kind.as_str() {
         "user" => UserMessage {
             text: view.text.clone(),
+            images: view.images,
         }
         .render(),
         "assistant" => AssistantMessage {
@@ -70,13 +75,14 @@ pub fn render_row(view: &RowView, thread_id: &str) -> String {
         .render(),
         "thinking" => {
             let mut row = Disclosure::new("thinking", "i-brain", "思考");
+            if !view.key.is_empty() {
+                row = row.key(view.key.clone());
+            }
             if !view.elapsed.is_empty() {
                 row = row.meta(format!("· {}", view.elapsed));
             }
             if !view.preview.is_empty() {
-                row = row
-                    .detail(format!("“{}”", view.preview))
-                    .detail_muted(true);
+                row = row.detail(format!("“{}”", view.preview)).detail_muted(true);
             }
             row = row.body(
                 Panel::new(view.text.clone())
@@ -88,6 +94,9 @@ pub fn render_row(view: &RowView, thread_id: &str) -> String {
         }
         "tool" => {
             let mut row = Disclosure::new("tool", &view.icon, &view.label);
+            if !view.key.is_empty() {
+                row = row.key(view.key.clone());
+            }
             if !view.target.is_empty() {
                 row = row.detail(view.target.clone());
             }
@@ -125,16 +134,13 @@ pub fn render_row(view: &RowView, thread_id: &str) -> String {
                 } else {
                     Panel::new(String::new()).html(view.output_html.clone())
                 };
-                body.push_str(
-                    &panel
-                        .title("执行输出")
-                        .copy(view.output.clone())
-                        .render(),
-                );
+                body.push_str(&panel.title("执行输出").copy(view.output.clone()).render());
             }
             if body.is_empty() {
                 body.push_str(
-                    &Panel::new(String::new()).html("<p>这个工具没有返回可展示的内容。</p>").render(),
+                    &Panel::new(String::new())
+                        .html("<p>这个工具没有返回可展示的内容。</p>")
+                        .render(),
                 );
             }
             row = row.body(body);
@@ -158,9 +164,18 @@ pub fn render_row(view: &RowView, thread_id: &str) -> String {
             }
             notice.render()
         }
-        "compact" => Disclosure::new("compact", "i-layers", "上下文压缩")
-            .body(Panel::new(String::new()).html(&format!("<p>{}</p>", super::theme::escape(&view.text))).render())
-            .render(),
+        "compact" => {
+            let mut row = Disclosure::new("compact", "i-layers", "上下文压缩");
+            if !view.key.is_empty() {
+                row = row.key(view.key.clone());
+            }
+            row.body(
+                Panel::new(String::new())
+                    .html(format!("<p>{}</p>", super::theme::escape(&view.text)))
+                    .render(),
+            )
+            .render()
+        }
         _ => format!(
             r#"<div class="ada-msg ada-msg--plain"><div class="ada-plain">{}</div></div>"#,
             super::theme::escape(&view.text)

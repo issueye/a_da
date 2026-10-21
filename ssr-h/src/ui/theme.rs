@@ -146,3 +146,15 @@ pub fn attr(name: &str, value: &str) -> String {
     }
     format!(" {name}=\"{}\"", escape(value))
 }
+
+/// 把调用方给的裸属性串补上前导空格（空串仍是空串）。
+///
+/// 组件拼标签时总是写成 `...{extra}>`，如果 `extra` 自带内容却不带空格，
+/// 就会拼出 `action="/x"data-confirm="…"` 这种非法 HTML（浏览器可能勉强解析，
+/// 但属性归属就不可靠了）。
+pub fn space_attrs(attrs: Option<&str>) -> String {
+    match attrs.map(str::trim).filter(|attrs| !attrs.is_empty()) {
+        Some(attrs) => format!(" {attrs}"),
+        None => String::new(),
+    }
+}
