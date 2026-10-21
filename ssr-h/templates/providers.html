@@ -4,51 +4,206 @@
   <div>
     <div class="flex flex-wrap items-center gap-2">
       <h1 class="page-title">供应商</h1>
-      <span class="badge badge-neutral">
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
-        只读
-      </span>
+      <span class="badge badge-neutral">{{ providers.len() }} 个</span>
     </div>
-    <p class="page-sub">只读展示当前 agent 的供应商配置；密钥不会离开后端。</p>
+    <p class="page-sub">与桌面端同一套能力：选供应商 → 改连接参数 → 管模型列表。密钥不回显（留空＝保持原值）。</p>
   </div>
+  <form method="post" action="/providers/new">
+    <button class="btn btn-primary btn-sm" type="submit">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      新建供应商
+    </button>
+  </form>
 </div>
 
-<div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+<div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
   <div class="card p-4">
-    <p class="text-[10px] font-semibold uppercase tracking-wider text-faint">当前模型</p>
-    <p class="mt-2 break-all font-mono text-sm text-ink">{{ model }}</p>
+    <p class="ada-eyebrow">当前模型</p>
+    <p class="mt-2 break-all font-mono text-sm text-ink">{{ current_model }}</p>
   </div>
   <div class="card p-4">
-    <p class="text-[10px] font-semibold uppercase tracking-wider text-faint">Base URL</p>
-    <p class="mt-2 break-all font-mono text-xs text-muted">{{ base_url }}</p>
+    <p class="ada-eyebrow">当前 Base URL</p>
+    <p class="mt-2 break-all font-mono text-xs text-muted">{{ current_base_url }}</p>
   </div>
 </div>
 
 {% if providers.is_empty() %}
 <div class="empty-state mt-4">
-  <p class="text-sm font-medium text-ink">没有供应商</p>
-  <p class="mt-1 text-xs text-faint">先在现有桌面端配置一个供应商，再回到这里查看。</p>
+  <p class="text-sm font-medium text-ink">还没有供应商</p>
+  <p class="mt-1 text-xs leading-5 text-faint">点右上角“新建供应商”，填好端点与密钥后保存并设为当前供应商。</p>
 </div>
 {% else %}
-<div class="card mt-4 overflow-hidden">
-  <div class="overflow-x-auto">
-    <table class="table">
-      <thead>
-        <tr><th>名称</th><th>ID</th><th>模型</th><th>Base URL</th><th>状态</th></tr>
-      </thead>
-      <tbody>
-        {% for p in providers %}
-        <tr>
-          <td class="font-medium text-ink">{{ p.name }}</td>
-          <td class="font-mono text-[10px]">{{ p.id }}</td>
-          <td class="font-mono text-[10px]">{{ p.model }}</td>
-          <td class="break-all font-mono text-[10px]">{{ p.base_url }}</td>
-          <td>{% if p.active %}<span class="badge badge-success">当前</span>{% else %}<span class="badge badge-neutral">-</span>{% endif %}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
+<div class="mt-4 ada-master-detail">
+
+  {# 左列：供应商清单（Master） #}
+  <aside class="card ada-provider-list">
+    <div class="ada-provider-list__head ada-eyebrow">已配置的供应商</div>
+    <div class="ada-provider-list__body">
+      {% for item in providers %}
+      <div class="ada-provider-item{% if item.active %} is-active{% endif %}">
+        <a class="ada-provider-item__main" href="{{ item.href }}">
+          <div class="ada-provider-item__name">
+            <span>{{ item.name }}</span>
+            {% if item.active %}<span class="badge badge-success">当前</span>{% endif %}
+          </div>
+          <div class="ada-provider-item__meta">
+            <span class="badge badge-neutral">{{ item.model_count }} 个模型</span>
+            <span>{{ item.protocol_label }}</span>
+          </div>
+        </a>
+        {# 行右侧操作列：删除供应商（整行是链接，删除按钮自带表单） #}
+        <div class="ada-provider-item__actions">{{ item.delete_form|safe }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </aside>
+
+  {# 右列：选中供应商详情（Detail）。
+     详情分成「供应商信息 / 模型列表」两个页签：导航条由组件库的 Tabs 渲染，
+     面板 id 必须遵守 `{DETAIL_TABS}-panel-{key}` 约定（JS 按 aria-controls 找面板）；
+     无 JS 时页签是真实链接（`?provider=…&tab=…`），服务端按 active_tab 渲染展开项。 #}
+  {% if let Some(p) = selected %}
+  <section class="ada-master-detail__main">
+    <div class="card p-4">
+      {# 身份信息两个页签共用：切到哪个页签都先看得见"这是谁、是不是当前" #}
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="badge badge-brand badge-mono">{{ p.id }}</span>
+        {% if p.active %}<span class="badge badge-success">当前供应商</span>{% else %}<span class="badge badge-neutral">未激活</span>{% endif %}
+        <span class="badge badge-neutral">{{ p.protocol_label }}</span>
+        <span class="badge badge-neutral">{{ p.model_count }} 个模型</span>
+      </div>
+
+      <div class="ada-tabs mt-3">
+        {{ tabs|safe }}
+
+        <div class="ada-tabs__panels mt-3">
+          {# 页签一：连接参数 #}
+          <section class="ada-tabs__panel" id="provider-detail-panel-connection" role="tabpanel" aria-labelledby="provider-detail-tab-connection" data-ada-tab-panel="connection"{% if active_tab != "connection" %} hidden{% endif %}>
+            <form method="post" action="/providers/{{ p.id }}" id="provider-form" class="space-y-3">
+              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label class="field">
+                  <span class="label">名称</span>
+                  <input class="input" name="name" value="{{ p.name }}" required>
+                </label>
+                <div class="field">
+                  <span class="label">协议</span>
+                  {# 组件库的 Select（非原生 <select>）：弹层样式与键盘行为都由自己控制 #}
+                  {{ protocol_select|safe }}
+                </div>
+              </div>
+
+              <label class="field">
+                <span class="label">API 端点 (Base URL)</span>
+                <input class="input font-mono" name="baseUrl" value="{{ p.base_url }}" placeholder="https://api.openai.com/v1" required>
+              </label>
+
+              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label class="field">
+                  <span class="label">API Key{% if p.api_key_set %} <span class="hint">{{ p.api_key_hint }}</span>{% endif %}</span>
+                  <input class="input" type="password" name="apiKey" value="" autocomplete="off"
+                         placeholder="{% if p.api_key_set %}已保存，留空表示不修改{% else %}尚未配置{% endif %}">
+                </label>
+                <label class="field">
+                  <span class="label">代理 URL（可选）</span>
+                  <input class="input font-mono" name="proxyUrl" value="{{ p.proxy_url }}" placeholder="http://127.0.0.1:7890">
+                </label>
+              </div>
+
+              <label class="field">
+                <span class="label">自定义请求头（可选） <span class="hint">格式 k: v; k2: v2</span></span>
+                <textarea class="textarea font-mono" name="headers" rows="2" placeholder="x-api-key: ...">{{ p.headers }}</textarea>
+              </label>
+
+              {% if p.api_key_set %}
+              <label class="checkbox-row">
+                <input type="checkbox" name="clearApiKey" value="on"> 清空已保存的密钥
+              </label>
+              {% endif %}
+
+              <div class="flex flex-wrap items-center gap-3 border-t border-line pt-3">
+                <button class="btn btn-primary btn-sm" type="submit">保存</button>
+                <label class="checkbox-row">
+                  <input type="checkbox" name="makeActive" value="on"{% if p.active %} checked{% endif %}> 设为当前供应商
+                </label>
+                <button class="btn btn-secondary btn-sm" type="button"
+                        hx-post="/providers/{{ p.id }}/test"
+                        hx-include="#provider-form"
+                        hx-target="#provider-test"
+                        hx-swap="innerHTML">测试连接</button>
+                <span id="provider-test" class="text-xs"></span>
+              </div>
+              <p class="text-[10px] leading-5 text-faint">
+                测试连接目前只做参数校验（后端不发起真实请求）；想验证端点可达性，用「模型列表」页签里的“获取远程模型”。
+              </p>
+            </form>
+          </section>
+
+          {# 页签二：模型列表 #}
+          <section class="ada-tabs__panel" id="provider-detail-panel-models" role="tabpanel" aria-labelledby="provider-detail-tab-models" data-ada-tab-panel="models"{% if active_tab != "models" %} hidden{% endif %}>
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 class="section-title">可用模型</h2>
+                <p class="mt-1 text-[10px] leading-5 text-faint">编辑与新增都在弹窗里完成；「获取远程模型」用「供应商信息」页签里填写的连接参数（密钥留空＝用已存的）。</p>
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <button class="btn btn-secondary btn-xs" type="button" data-modal-open="model-new">新增模型</button>
+                <button class="btn btn-secondary btn-xs" type="button"
+                        hx-post="/providers/{{ p.id }}/models/fetch"
+                        hx-include="#provider-form"
+                        hx-target="#remote-models"
+                        hx-swap="innerHTML">获取远程模型</button>
+              </div>
+            </div>
+
+            <div id="remote-models" class="mt-2"></div>
+
+            <div class="ada-table-wrap mt-3">
+              <table class="table ada-model-table">
+                <thead>
+                  <tr>
+                    <th>模型 ID</th><th>显示名</th><th>上下文</th><th>最大输出</th><th>图片</th><th>状态</th><th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for m in p.models %}
+                  <tr>
+                    <td class="font-mono text-[11px] text-ink">{{ m.id }}</td>
+                    <td class="text-xs">{{ m.name }}</td>
+                    <td class="font-mono text-[11px]">{{ m.context_window }}</td>
+                    <td class="font-mono text-[11px]">{{ m.max_output_tokens }}</td>
+                    <td class="text-[10px]">{% if m.supports_images %}<span class="badge badge-neutral">支持</span>{% else %}<span class="text-faint">—</span>{% endif %}</td>
+                    <td>{% if m.current %}<span class="badge badge-success">当前</span>{% else %}<span class="text-[10px] text-faint">—</span>{% endif %}</td>
+                    <td>
+                      <div class="ada-table-actions">
+                        <button class="btn btn-secondary btn-xs" type="button" data-modal-open="model-{{ m.index }}">编辑</button>
+                        {% if !m.current %}
+                        <form method="post" action="/providers/{{ p.id }}/activate">
+                          <input type="hidden" name="model" value="{{ m.id }}">
+                          <button class="btn btn-secondary btn-xs" type="submit">设为当前</button>
+                        </form>
+                        {% endif %}
+                        <form method="post" action="/providers/{{ p.id }}/models/{{ m.index }}/delete"
+                              data-confirm="从供应商「{{ p.name }}」移除模型 {{ m.id }}？">
+                          <button class="btn btn-secondary btn-xs" type="submit"{% if p.model_count <= 1 %} disabled title="每个供应商至少保留一个模型"{% endif %}>移除</button>
+                        </form>
+                      </div>
+                    </td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    {# 编辑 / 新增弹窗（组件库渲染，JS 控制器负责开合）。
+       必须放在页签容器**之外**：面板带 hidden 时，里面的 <ada-modal> 会跟着不可见。 #}
+    {{ p.modals|safe }}
+    {{ model_new_modal|safe }}
+  </section>
+  {% endif %}
 </div>
 {% endif %}
 {% endblock %}

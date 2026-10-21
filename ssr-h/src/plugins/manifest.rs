@@ -149,6 +149,12 @@ pub struct Manifest {
     /// v0.6 新增：挂载点声明。
     #[serde(default)]
     pub slots: Vec<SlotEntry>,
+    /// Slang 语言主版本；缺省按 2 处理。只接受 `2`（v1 已移除）。
+    #[serde(default)]
+    pub slang: Option<u32>,
+    /// 可选的组合组件文件（相对插件根目录）。
+    #[serde(default)]
+    pub components: Vec<String>,
 }
 
 impl Manifest {
@@ -185,6 +191,38 @@ impl Manifest {
                 bail!("插槽 {} 的 template 不能为空", entry.slot);
             }
         }
+        if let Some(version) = self.slang {
+            if version != 2 {
+                bail!("不支持的 Slang 版本 `{version}`；当前只支持 `slang/2`（v1 已移除）");
+            }
+        }
+        for component in &self.components {
+            if component.trim().is_empty() {
+                bail!("components 里的路径不能为空");
+            }
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest(slang: u32) -> Manifest {
+        serde_json::from_value(serde_json::json!({
+            "id": "demo",
+            "name": "Demo",
+            "version": "0.1.0",
+            "slang": slang,
+        }))
+        .expect("manifest")
+    }
+
+    #[test]
+    fn only_slang_two_is_accepted() {
+        assert!(manifest(2).validate().is_ok());
+        let error = manifest(1).validate().unwrap_err();
+        assert!(format!("{error}").contains("slang/2"), "{error}");
     }
 }

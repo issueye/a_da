@@ -14,6 +14,6 @@ pub mod registry;
 
 pub use manifest::{Manifest, NavEntry, PageEntry, Slot, SlotEntry};
 pub use registry::{
-    NavLink, PluginRecord, PluginRegistry, PluginSnapshot, PluginStatus, PluginWidget, ReloadReport,
-    SlotOutput,
+    NavLink, PluginRecord, PluginRegistry, PluginSnapshot, PluginStatus, PluginWidget,
+    ReloadReport, SlotOutput,
 };

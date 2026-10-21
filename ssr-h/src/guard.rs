@@ -128,6 +128,19 @@ pub fn origin_allowed(origin: &str, host_header: &str) -> bool {
     authority.eq_ignore_ascii_case(host_header.trim())
 }
 
+/// 写请求的来源判定：Origin 必须与 Host 一致；`Origin: null` 只在浏览器声明同源导航时放行。
+pub fn write_origin_allowed(origin: &str, host: &str, sec_fetch_site: Option<&str>) -> bool {
+    if origin_allowed(origin, host) {
+        return true;
+    }
+    // `Origin: null` 有两个来源：隐私策略/扩展把来源抹掉（Chromium 在 `no-referrer` 下
+    // 对**表单 POST** 就是这么干的），以及 sandbox iframe 之类的**不透明来源**。
+    // 后者必须拒绝，前者放行才不至于让站内动作全废——区分它们只能看浏览器自己写的
+    // Sec-Fetch-Site（禁改头，脚本无法伪造）。
+    origin.eq_ignore_ascii_case("null")
+        && sec_fetch_site.is_some_and(|value| value.eq_ignore_ascii_case("same-origin"))
+}
+
 /// 定长比较，避免按字节提前返回泄露前缀。
 fn token_eq(left: &str, right: &str) -> bool {
     if left.len() != right.len() {
@@ -275,9 +288,16 @@ fn finish(mut response: Response) -> Response {
         HeaderValue::from_static("nosniff"),
     );
     headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    // 🔴 **不能用 `no-referrer`**：Chromium 在**表单 POST**（导航请求）上会把 Origin 发成
+    // 字面量 `null`，于是 guard 的同源校验会把所有动作按钮一起拒掉——现象是"点新会话 /
+    // 发送 / 审批全是 403 跨站请求"，而 `fetch()` 却正常（它照常带真实 Origin），极易误判。
+    // 实测对照（同一浏览器、同一页面，只差这个响应头）：
+    //   no-referrer → Host=127.0.0.1:8791 Origin=null
+    //   无该头      → Host=127.0.0.1:8792 Origin=http://127.0.0.1:8792
+    // `same-origin` 仍然不会把来源泄露给第三方（跨站请求不带 Referer）。
     headers.insert(
         header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
+        HeaderValue::from_static("same-origin"),
     );
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
@@ -306,14 +326,23 @@ pub async fn guard(
 
     let method = request.method().clone();
     if is_unsafe(&method) {
+        let site = header_str(request.headers(), HeaderName::from_static("sec-fetch-site"));
         if let Some(origin) = header_str(request.headers(), header::ORIGIN) {
-            if !origin_allowed(&origin, &host) {
+            if !write_origin_allowed(&origin, &host, site.as_deref()) {
+                // 两端都打出来：只报"不一致"时，线上根本猜不到是哪一侧有问题。
+                tracing::warn!(
+                    method = %method,
+                    path = %path,
+                    host = %host,
+                    origin = %origin,
+                    sec_fetch_site = site.as_deref().unwrap_or(""),
+                    "拒绝跨站写请求：Origin 与 Host 不一致"
+                );
                 return forbidden("拒绝访问：跨站请求（Origin 与 Host 不一致）。");
             }
         }
-        if let Some(site) = header_str(request.headers(), HeaderName::from_static("sec-fetch-site"))
-        {
-            if site.eq_ignore_ascii_case("cross-site") {
+        if let Some(value) = site.as_deref() {
+            if value.eq_ignore_ascii_case("cross-site") {
                 return forbidden("拒绝访问：跨站请求被拒绝。");
             }
         }
@@ -441,6 +470,40 @@ mod tests {
         assert!(!origin_allowed(
             "http://user@127.0.0.1:8788",
             "127.0.0.1:8788"
+        ));
+    }
+
+    #[test]
+    fn null_origin_only_passes_for_same_origin_navigation() {
+        // Chromium 在 Referrer-Policy: no-referrer 下会给表单 POST 发 Origin: null，
+        // 但 Sec-Fetch-Site 仍是 same-origin——这种必须放行，否则站内动作全 403。
+        assert!(write_origin_allowed(
+            "null",
+            "127.0.0.1:8788",
+            Some("same-origin")
+        ));
+        assert!(write_origin_allowed(
+            "NULL",
+            "127.0.0.1:8788",
+            Some("SAME-ORIGIN")
+        ));
+        // 不透明来源（sandbox iframe）与伪造的跨站来源一律拒绝。
+        assert!(!write_origin_allowed(
+            "null",
+            "127.0.0.1:8788",
+            Some("cross-site")
+        ));
+        assert!(!write_origin_allowed("null", "127.0.0.1:8788", None));
+        assert!(!write_origin_allowed(
+            "http://evil.example",
+            "127.0.0.1:8788",
+            Some("same-origin")
+        ));
+        // 正常同源请求不依赖 Sec-Fetch-Site。
+        assert!(write_origin_allowed(
+            "http://127.0.0.1:8788",
+            "127.0.0.1:8788",
+            None
         ));
     }
 

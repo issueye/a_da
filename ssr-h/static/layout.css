@@ -1,0 +1,181 @@
+/* 组件库 · 布局层：应用外壳、左右两栏（Master-Detail）、供应商清单与模型表格。 */
+
+/* ── 应用外壳 ───────────────────────────────────────────────────────────── */
+.ada-body {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--ph-canvas);
+  color: var(--ph-ink);
+  font-family: var(--ui-font);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 跳转主内容（无障碍） */
+.skip-link {
+  position: absolute;
+  left: 12px;
+  top: -48px;
+  z-index: 100;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--ph-brand);
+  color: #fff;
+  font-size: 12px;
+  text-decoration: none;
+  transition: top 0.15s ease;
+}
+.skip-link:focus {
+  top: 12px;
+}
+
+/* 主题切换：浅色显示月亮（目标暗色），深色显示太阳（目标亮色） */
+html.light .icon-sun,
+html.dark .icon-moon {
+  display: none;
+}
+
+/* ── 页面布局：左右两栏（Master-Detail）────────────────────────────────────
+   🔴 不要用 Tailwind 的**任意值**类来写布局（`lg:grid-cols-[264px_minmax(0,1fr)]`）：
+   `static/app.css` 是预编译产物，里面没有的类写了等于没写——供应商页就是这样悄悄退化成
+   上下堆叠的。结构类一律落在本文件。 */
+.ada-master-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+@media (min-width: 1024px) {
+  .ada-master-detail {
+    grid-template-columns: 264px minmax(0, 1fr);
+  }
+}
+.ada-master-detail__main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* 小号全大写标签（原来的 uppercase/tracking-wider 工具类同样不存在于 app.css） */
+.ada-eyebrow {
+  color: var(--ph-faint);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/* 供应商清单（左列） */
+.ada-provider-list {
+  overflow: hidden;
+}
+.ada-provider-list__head {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--ph-line);
+}
+.ada-provider-list__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+}
+.ada-provider-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 6px 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  transition: background var(--ada-transition), border-color var(--ada-transition);
+}
+.ada-provider-item:hover {
+  background: var(--ph-subtle);
+}
+.ada-provider-item.is-active {
+  background: var(--ph-brand-soft);
+  border-color: color-mix(in srgb, var(--ph-brand) 22%, transparent);
+}
+.ada-provider-item__main {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+/* 行右侧操作列：删除供应商。整行是链接，按钮是独立表单，不会触发导航。 */
+.ada-provider-item__actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+.ada-provider-item__actions .ada-icon-btn {
+  width: 26px;
+  height: 26px;
+}
+.ada-provider-item__actions .ada-icon-btn:hover {
+  background: var(--ph-danger-soft);
+  color: var(--ph-danger-ink);
+}
+.ada-provider-item__actions .ada-icon-btn:disabled {
+  color: var(--ph-line-strong);
+  cursor: not-allowed;
+  background: transparent;
+}
+.ada-provider-item__name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ada-provider-item__name > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ph-ink);
+  font-size: 13px;
+  font-weight: 500;
+}
+.ada-provider-item__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  color: var(--ph-faint);
+  font-size: 10px;
+}
+
+/* 模型列表（表格式） */
+.ada-table-wrap {
+  overflow-x: auto;
+}
+.ada-model-table td {
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.ada-model-table td:nth-child(2) {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ada-table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 弹窗里的表单：两列（窄屏一列） */
+.ada-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+@media (min-width: 520px) {
+  .ada-form-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+.ada-modal__form {
+  display: block;
+}

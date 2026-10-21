@@ -9,7 +9,14 @@
  */
 (() => {
   const scroller = () => document.getElementById('chat-scroll');
+  const transcriptOf = () => document.getElementById('transcript');
   let stickToBottom = true;
+  let chatTop = 0;
+
+  /* 展开面板内部的滚动位置，键是 `item id#面板序号`。
+     live 轮询整段替换 #transcript 后，新旧节点不是同一个 DOM，
+     位置只能靠记录还原——不还原就是"展开的工具每 2 秒自己滚回顶部"。 */
+  const panelScroll = new Map();
 
   const nearBottom = () => {
     const el = scroller();
@@ -20,6 +27,68 @@
   const scrollToBottom = () => {
     const el = scroller();
     if (el) el.scrollTop = el.scrollHeight;
+  };
+
+  /* 面板的身份：所属折叠行的 data-key + 它是行内第几个面板。
+     服务端渲染顺序稳定（参数 → 执行输出），所以序号可跨替换对齐。 */
+  const panelId = (node) => {
+    const row = node.closest ? node.closest('details.ada-disclosure') : null;
+    if (!row) return null;
+    const key = row.getAttribute('data-key');
+    if (!key) return null;
+    const bodies = row.querySelectorAll('.ada-panel__body');
+    for (let i = 0; i < bodies.length; i += 1) {
+      if (bodies[i] === node) return key + '#' + i;
+    }
+    return null;
+  };
+
+  /* scroll 不冒泡，但捕获阶段能拿到任意元素的滚动，不用逐个绑定。 */
+  document.addEventListener('scroll', (event) => {
+    const target = event.target;
+    if (!target) return;
+    if (target === scroller()) {
+      chatTop = target.scrollTop;
+      stickToBottom = nearBottom();
+      return;
+    }
+    if (target.classList && target.classList.contains('ada-panel__body')) {
+      const id = panelId(target);
+      if (id) panelScroll.set(id, target.scrollTop);
+    }
+  }, { capture: true, passive: true });
+
+  /* 替换后还原视图位置。顺序不能反：details 折叠着时面板没有高度，
+     先设 scrollTop 会被浏览器夹成 0，必须先把展开态放回去再量。 */
+  const restoreScroll = () => {
+    const box = transcriptOf();
+    if (!box) return;
+    // 保险：即使 components.js 的观察器还没跑到这一帧，也先把展开态放回去。
+    if (window.AdaComponents && window.AdaComponents.bindDisclosures) {
+      window.AdaComponents.bindDisclosures(box);
+    }
+    if (panelScroll.size) {
+      void box.offsetHeight; // 强制布局：展开的面板此时才有 scrollHeight
+      const rows = box.querySelectorAll('details.ada-disclosure[data-key]');
+      for (let i = 0; i < rows.length; i += 1) {
+        const row = rows[i];
+        if (!row.open) continue;
+        const key = row.getAttribute('data-key');
+        const bodies = row.querySelectorAll('.ada-panel__body');
+        for (let j = 0; j < bodies.length; j += 1) {
+          const top = panelScroll.get(key + '#' + j);
+          if (top > 0) bodies[j].scrollTop = top;
+        }
+      }
+    }
+    const el = scroller();
+    if (!el) return;
+    if (stickToBottom) {
+      el.scrollTop = el.scrollHeight;
+      chatTop = el.scrollTop;
+    } else if (chatTop > 0) {
+      el.scrollTop = chatTop;
+    }
   };
 
   /* 代码块悬停显示复制按钮（组件库管工具面板的复制，这里管正文代码块） */
@@ -50,15 +119,11 @@
 
   const boot = () => {
     enhanceCodeBlocks();
-    const el = scroller();
-    if (el) {
-      el.addEventListener('scroll', () => { stickToBottom = nearBottom(); }, { passive: true });
-    }
-    const transcript = document.getElementById('transcript');
+    const transcript = transcriptOf();
     if (transcript && window.MutationObserver) {
       new MutationObserver(() => {
         enhanceCodeBlocks();
-        if (stickToBottom) scrollToBottom();
+        restoreScroll();
       }).observe(transcript, { childList: true });
     }
     scrollToBottom();

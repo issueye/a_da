@@ -45,6 +45,8 @@ pub struct PageBase {
     pub slots: SlotContent,
     /// 图标 sprite（组件库生成的唯一图标源）。
     pub icons: String,
+    /// 共享确认弹窗（组件库渲染）：每个页面外壳都要带上，别在模板里手写一份。
+    pub confirm_dialog: String,
 }
 
 #[derive(Debug, Clone)]
@@ -93,13 +95,44 @@ pub struct QueueRow {
     pub text: String,
 }
 
+/// 供应商详情里的一个可用模型（对应 `ModelEntry`）。
 #[derive(Debug, Clone)]
-pub struct ProviderRow {
+pub struct ProviderModelRow {
+    /// 列表内下标：模型 id 里可能带 `/`，用下标寻址才不会和路由冲突。
+    pub index: usize,
     pub id: String,
     pub name: String,
+    pub context_window: String,
+    pub max_output_tokens: String,
+    pub supports_images: bool,
+    /// 是否为该供应商当前生效的模型。
+    pub current: bool,
+}
+
+/// 供应商卡片：列表与详情共用一份数据（详情多带几个可编辑字段）。
+#[derive(Debug, Clone)]
+pub struct ProviderCard {
+    pub id: String,
+    /// 左列链接（`id` 已做查询编码，别在模板里再拼）。
+    pub href: String,
+    pub name: String,
+    pub protocol: String,
+    pub protocol_label: String,
     pub base_url: String,
-    pub model: String,
+    pub proxy_url: String,
+    /// `k: v; k2: v2` 文本形式，编辑框直接回填。
+    pub headers: String,
+    /// 是否已配置密钥（密钥本身**不回显**，只在后端）。
+    pub api_key_set: bool,
+    /// 打码后的提示，例如 `sk-…7f3a`。
+    pub api_key_hint: String,
+    pub model_count: usize,
     pub active: bool,
+    pub models: Vec<ProviderModelRow>,
+    /// 该供应商每个模型的编辑弹窗（组件库渲染好的 HTML，模板直接塞进去）。
+    pub modals: String,
+    /// 列表行右侧的「删除供应商」动作（组件库渲染；最后一个供应商是禁用态）。
+    pub delete_form: String,
 }
 
 #[derive(Debug, Clone)]
@@ -177,13 +210,32 @@ pub struct TranscriptPartial {
     pub transcript_empty: String,
 }
 
+/// 协议下拉项。
+#[derive(Debug, Clone)]
+pub struct ProtocolOption {
+    pub value: String,
+    pub label: String,
+}
+
 #[derive(Template)]
 #[template(path = "providers.html")]
 pub struct ProvidersPage {
     pub base: PageBase,
-    pub providers: Vec<ProviderRow>,
-    pub model: String,
-    pub base_url: String,
+    /// 左列的供应商清单（顺序＝后端顺序）。
+    pub providers: Vec<ProviderCard>,
+    /// 右列的当前选中项。
+    pub selected: Option<ProviderCard>,
+    /// 当前生效的模型与端点（顶部状态条）。
+    pub current_model: String,
+    pub current_base_url: String,
+    /// 协议下拉的组件渲染结果（Select 组件，非原生 `<select>`）。
+    pub protocol_select: String,
+    /// 详情区的页签导航条（组件库渲染）。面板由模板摆放，id 前缀与它一致。
+    pub tabs: String,
+    /// 当前页签 key（`connection` / `models`），决定哪块面板不渲染 `hidden`。
+    pub active_tab: String,
+    /// "新增模型"弹窗（组件库渲染；列表区的「新增模型」按钮用 data-modal-open 打开）。
+    pub model_new_modal: String,
 }
 
 #[derive(Template)]

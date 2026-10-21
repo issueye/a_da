@@ -4,14 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ base.title }} · a_da</title>
-  <script src="/static/theme.js?v=10"></script>
-  <link rel="stylesheet" href="/static/app.css?v=10">
-  <link rel="stylesheet" href="/static/components.css?v=10">
-  <script src="/static/htmx.min.js?v=10" defer></script>
-  <script src="/static/alpine.min.js?v=10" defer></script>
-  <script src="/static/app.js?v=10" defer></script>
-  <script src="/static/components.js?v=10" defer></script>
-  <script src="/static/chat.js?v=10" defer></script>
+  <script src="/static/theme.js?v=18"></script>
+  <link rel="stylesheet" href="/static/app.css?v=18">
+  <link rel="stylesheet" href="/static/components.css?v=18">
+  <link rel="stylesheet" href="/static/layout.css?v=18">
+  <link rel="stylesheet" href="/static/widgets.css?v=18">
+  <link rel="stylesheet" href="/static/shell.css?v=18">
+  <link rel="stylesheet" href="/static/pages.css?v=18">
+  <script src="/static/htmx.min.js?v=18" defer></script>
+  <script src="/static/alpine.min.js?v=19" defer></script>
+  <script src="/static/app.js?v=18" defer></script>
+  <script src="/static/ada-select.js?v=18" defer></script>
+  <script src="/static/ada-modal.js?v=18" defer></script>
+  <script src="/static/components.js?v=18" defer></script>
+  <script src="/static/chat.js?v=18" defer></script>
 </head>
 <body class="ada-body">
 <a class="skip-link" href="#main">跳到主要内容</a>
@@ -185,14 +191,7 @@
   </main>
 </div>
 
-<dialog class="confirm-dialog" data-confirm-dialog>
-  <div class="confirm-card">
-    <p class="confirm-message" data-confirm-message>确认执行这个操作？</p>
-    <div class="confirm-actions">
-      <button class="btn btn-secondary btn-sm" type="button" data-confirm-cancel>取消</button>
-      <button class="btn btn-primary btn-sm" type="button" data-confirm-ok>确认</button>
-    </div>
-  </div>
-</dialog>
+{# 共享确认弹窗：组件库渲染，与二级页同一份实现 #}
+{{ base.confirm_dialog|safe }}
 </body>
 </html>

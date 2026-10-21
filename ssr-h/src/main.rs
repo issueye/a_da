@@ -8,6 +8,7 @@ mod guard;
 mod handlers;
 mod markdown;
 mod plugins;
+mod slang;
 mod templates;
 mod ui;
 
@@ -215,6 +216,27 @@ fn app(state: AppState) -> Router {
             post(handlers::decide_approval),
         )
         .route("/providers", get(handlers::providers))
+        .route("/providers/new", post(handlers::create_provider))
+        .route("/providers/{id}", post(handlers::save_provider))
+        .route(
+            "/providers/{id}/activate",
+            post(handlers::activate_provider),
+        )
+        .route("/providers/{id}/delete", post(handlers::delete_provider))
+        .route("/providers/{id}/models", post(handlers::add_provider_model))
+        .route(
+            "/providers/{id}/models/fetch",
+            post(handlers::fetch_provider_models),
+        )
+        .route(
+            "/providers/{id}/models/{index}",
+            post(handlers::update_provider_model),
+        )
+        .route(
+            "/providers/{id}/models/{index}/delete",
+            post(handlers::delete_provider_model),
+        )
+        .route("/providers/{id}/test", post(handlers::test_provider))
         .route("/extensions", get(handlers::extensions))
         .route("/extensions/reload", post(handlers::reload_frontend))
         .route("/extensions/{id}/enable", post(handlers::enable_plugin))
@@ -224,8 +246,16 @@ fn app(state: AppState) -> Router {
         .route("/ext/{id}/assets/{*path}", get(handlers::plugin_asset))
         .route("/ext/{id}/{slug}", get(handlers::plugin_page))
         .route("/static/app.css", get(static_css))
+        // 组件库按层拆开：引用顺序必须保持 components → layout → widgets → shell → pages，
+        // 与拆分前的单文件串联顺序一致（层叠行为不变）。
         .route("/static/components.css", get(static_components_css))
+        .route("/static/layout.css", get(static_layout_css))
+        .route("/static/widgets.css", get(static_widgets_css))
+        .route("/static/shell.css", get(static_shell_css))
+        .route("/static/pages.css", get(static_pages_css))
         .route("/static/app.js", get(static_app_js))
+        .route("/static/ada-select.js", get(static_ada_select_js))
+        .route("/static/ada-modal.js", get(static_ada_modal_js))
         .route("/static/components.js", get(static_components_js))
         .route("/static/chat.js", get(static_chat_js))
         .route("/static/theme.js", get(static_theme_js))
@@ -308,6 +338,54 @@ async fn static_components_css() -> Response {
     static_asset(
         include_bytes!("../static/components.css"),
         "text/css; charset=utf-8",
+    )
+}
+
+/// 布局层：应用外壳、左右两栏、供应商清单与模型表格。
+async fn static_layout_css() -> Response {
+    static_asset(
+        include_bytes!("../static/layout.css"),
+        "text/css; charset=utf-8",
+    )
+}
+
+/// 控件层：下拉选择与弹窗。
+async fn static_widgets_css() -> Response {
+    static_asset(
+        include_bytes!("../static/widgets.css"),
+        "text/css; charset=utf-8",
+    )
+}
+
+/// 外壳层：复制按钮、侧栏、主区、审批/排队浮层。
+async fn static_shell_css() -> Response {
+    static_asset(
+        include_bytes!("../static/shell.css"),
+        "text/css; charset=utf-8",
+    )
+}
+
+/// 页面层：任务规划、插件悬浮区、响应式。
+async fn static_pages_css() -> Response {
+    static_asset(
+        include_bytes!("../static/pages.css"),
+        "text/css; charset=utf-8",
+    )
+}
+
+/// Web Component：`<ada-select>`。
+async fn static_ada_select_js() -> Response {
+    static_asset(
+        include_bytes!("../static/ada-select.js"),
+        "text/javascript; charset=utf-8",
+    )
+}
+
+/// Web Component：`<ada-modal>`。
+async fn static_ada_modal_js() -> Response {
+    static_asset(
+        include_bytes!("../static/ada-modal.js"),
+        "text/javascript; charset=utf-8",
     )
 }
 

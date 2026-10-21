@@ -20,8 +20,8 @@ pub mod todo;
 
 pub use components::{
     render_slot, ApprovalTray, AssistantMessage, AuxItem, Button, Chip, Composer, ComposerAux,
-    Disclosure, EmptyState, IconButton, Notice, Panel, QueueItem, QueueTray, Render, SendButton,
-    Slot, TextField, UserMessage,
+    ConfirmDialog, Disclosure, EmptyState, IconButton, Modal, Notice, Panel, QueueItem, QueueTray,
+    Render, Select, SendButton, Slot, TabItem, Tabs, TextField, UserMessage,
 };
 pub use icons::{icon, sprite};
 pub use rows::{render_empty, render_empty_thread, render_row, RowView};

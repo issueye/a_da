@@ -4,13 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}{{ base.title }} · a_da{% endblock %}</title>
-  <script src="/static/theme.js?v=10"></script>
-  <link rel="stylesheet" href="/static/app.css?v=10">
-  <link rel="stylesheet" href="/static/components.css?v=10">
-  <script src="/static/htmx.min.js?v=10" defer></script>
-  <script src="/static/alpine.min.js?v=10" defer></script>
-  <script src="/static/app.js?v=10" defer></script>
-  <script src="/static/components.js?v=10" defer></script>
+  <script src="/static/theme.js?v=18"></script>
+  <link rel="stylesheet" href="/static/app.css?v=18">
+  <link rel="stylesheet" href="/static/components.css?v=18">
+  <link rel="stylesheet" href="/static/layout.css?v=18">
+  <link rel="stylesheet" href="/static/widgets.css?v=18">
+  <link rel="stylesheet" href="/static/shell.css?v=18">
+  <link rel="stylesheet" href="/static/pages.css?v=18">
+  <script src="/static/htmx.min.js?v=18" defer></script>
+  <script src="/static/alpine.min.js?v=19" defer></script>
+  <script src="/static/app.js?v=18" defer></script>
+  <script src="/static/ada-select.js?v=18" defer></script>
+  <script src="/static/ada-modal.js?v=18" defer></script>
+  <script src="/static/components.js?v=18" defer></script>
 </head>
 <body class="ada-body">
 <a class="skip-link" href="#main">跳到主要内容</a>
@@ -122,5 +128,9 @@
     </div>
   </main>
 </div>
+
+{# 共享确认弹窗：组件库渲染（`ui::ConfirmDialog`），不是原生 <dialog>/window.confirm。
+   每个页面外壳都必须带上——二级页缺了它，删除动作就会退化。 #}
+{{ base.confirm_dialog|safe }}
 </body>
 </html>

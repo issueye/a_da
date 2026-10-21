@@ -54,8 +54,14 @@ ssr-h/
 │   └── ...
 ├── static/
 │   ├── app.css                 # plugin-hub 的 Tailwind 底座（提供 --ph-* 变量）
-│   ├── components.css          # ★ 组件库样式（唯一一份页面级 CSS）
-│   ├── components.js           # ★ 组件库行为（焦点态/折叠/复制/插槽注册表）
+│   ├── components.css          # 组件库·基础层（token/焦点/按钮/输入/折叠/消息/输入框）
+│   ├── layout.css              # 组件库·布局层（外壳、左右两栏、供应商清单、模型表格）
+│   ├── widgets.css             # 组件库·控件层（下拉选择、弹窗）
+│   ├── shell.css               # 组件库·外壳层（复制按钮、侧栏、主区、托盘）
+│   ├── pages.css               # 组件库·页面层（任务规划、插件悬浮区、响应式）
+│   ├── ada-select.js           # ★ `<ada-select>` Web Component
+│   ├── ada-modal.js            # ★ `<ada-modal>` Web Component
+│   ├── components.js           # 组件库其余行为（折叠/复制/插槽注册表/输入框）
 │   ├── app.js / chat.js / theme.js
 └── frontend-plugins/<id>/
     ├── plugin.json             # 可声明 slots
@@ -63,7 +69,9 @@ ssr-h/
     └── ...
 ```
 
-> `static/ssr.css` 已被组件库吸收并删除——**只保留一份页面级样式**是这次改造的硬约束。
+> 样式按层拆成 5 个文件，模板里的引用顺序必须是 **components → layout → widgets → shell → pages**，
+> 这与拆分前单文件的串联顺序一致，层叠行为不变。新增样式请落进对应层，别再往基础层堆。
+> `static/ssr.css` 已被组件库吸收并删除——**只保留一份页面级样式体系**是这次改造的硬约束。
 
 ---
 
@@ -87,6 +95,10 @@ ssr-h/
    components.css（ada-* + --ph-*）
 ```
 
+> **运行时编排**：插件页面/插槽/仪表盘还可以写 `.slang`，由
+> [SLANG-V2.md](SLANG-V2.md) 的运行时引擎在服务端解析成内容或组件。Rust 仍是原子组件（DOM/class/`data-*` 契约）
+> 的唯一实现；Slang 只负责“怎么拼”，不产生第二套视觉契约。
+
 ### 3.2 组件清单
 
 | 组件 | 用途 | 关键 API |
@@ -95,6 +107,10 @@ ssr-h/
 | `IconButton` | 纯图标按钮（强制 `aria-label`） | `icon` `label` `kind` |
 | `Chip` | 状态药丸（模式/审批档位/模型） | `tone` `icon` `caret` |
 | `TextField` | 单行输入 | `label` `hint` `icon` |
+| `Select` | 下拉选择（**非**原生 `<select>`） | `option` `options` `value` `title` |
+| `Tabs` / `TabItem` | 页签导航条（同一实体的多块内容切换） | `id`（DOM id 前缀） `label` `item` `active` |
+| `ConfirmDialog` | 共享确认弹窗（**非** `<dialog>` / `window.confirm`） | `ConfirmDialog::markup()` |
+| `Modal` | 通用弹窗（编辑表单等；同一套 `[data-modal]` 控制器） | `id` `title` `body` `actions` `wide` |
 | `Disclosure` | 折叠行（工具/思考/压缩） | `icon` `label` `detail` `sub` `meta` `badge` `body` |
 | `Panel` | 展开面板（标题栏 + 复制按钮 + 内容） | `title` `copy` `preformatted` |
 | `UserMessage` / `AssistantMessage` | 消息行 | `text` / `html` |
@@ -107,6 +123,51 @@ ssr-h/
 
 ### 3.3 规范
 
+- 🔴 **弹层类 UI 一律用组件，不用原生**：下拉用 `Select`（不写 `<select>`）、确认用 `ConfirmDialog`
+  （不写 `<dialog>`，更不用 `window.confirm` / `alert`）、其它弹窗用 `Modal`。原生弹层样式不可控、
+  会阻塞脚本、各浏览器长相不一，同一个"删除"在两处会是两种观感（2026-10-21 实拍过）。
+  `Select` 用隐藏 input 承载表单值；`Modal` / `ConfirmDialog` 是 `<ada-modal>` 元素，
+  开合、焦点圈、Esc、遮罩、滚动锁定都在**元素内部**实现。
+
+### 3.4 Web Components 层（`static/ada-select.js` / `static/ada-modal.js`）
+
+弹层类组件的**行为**已经元素化，服务端直接渲染自定义标签，浏览器解析后自动 upgrade：
+
+| 元素 | 对应组件 | 对外 API |
+|---|---|---|
+| `<ada-select>` | `Select` | `openMenu()` `closeMenu()` `value`（读写）`isOpen`，事件 `ada:select` |
+| `<ada-modal>` | `Modal` / `ConfirmDialog` | `open()` `close()` `isOpen`，事件 `ada:modal-open` / `ada:modal-close`；声明式入口 `data-modal-open="<id>"` / `data-modal-close` |
+
+- **刻意不挂 shadow root**：页面是 SSR + htmx 的，样式、插件插槽、服务端渲染的 class 都在同一棵树；
+  shadow DOM 会把它们整片隔离（还得把 `components.css` 复制进每个 root）。这里要的是**行为封装**，
+  不是样式隔离——每个组件的监听器只挂在自己的元素上，不再靠 document 级委托 + `data-*` 猜。
+- **模态栈**：`<ada-modal>` 自己维护打开顺序，只有栈顶响应 Esc / Tab 焦点圈，`body.ada-modal-open` 按栈深加/减。
+- 没有 JS 时两个元素退化成普通行内标签，服务端渲染的内容照样可读，只是交互不可用。
+- 兼容层：`window.AdaComponents.openModal/closeModal/modalOpen` 转发到 `window.AdaElements`，
+  旧调用点（`app.js` 的确认框）不用改。
+
+### 3.5 页签（Tabs）的契约
+
+页签刻意拆成两半：**导航条归组件库，面板归页面模板**（面板里是页面自己的表单/表格，
+组件不该知道它长什么样）。
+
+- 导航条：`Tabs::new(id, label).active(key).item(TabItem::new(key, label, href).count(n))`，
+  渲染 `role="tablist"` / `role="tab"`、`aria-selected`、`aria-controls` 与 roving `tabindex`；
+- 面板：模板摆放
+  `<section class="ada-tabs__panel" id="{id}-panel-{key}" role="tabpanel" aria-labelledby="{id}-tab-{key}" data-ada-tab-panel="{key}">`。
+  当前页签**不渲染** `hidden`，其余渲染 `hidden`——由服务端按 `?tab=` 决定，所以首屏就是对的；
+- 无 JS：页签是**真实链接**，点一下整页刷新到该页签（地址带 `?tab=`，刷新/收藏/分享都在同一页签）；
+- 有 JS：`components.js` 的 `bindTabs` 就地切换面板，并 `history.replaceState` 成该页签自己的
+  `href`（不新增历史记录，浏览器「后退」仍回到上一页）；方向键 / Home / End 在页签之间移动；
+- 🔴 **弹窗必须放在页签容器之外**：面板带 `hidden` 时，里面的 `<ada-modal>` 会跟着不可见，
+  「编辑 / 新增」会像点了没反应（供应商页的模型弹窗就是这样挪出去的）。
+
+### 3.6 规范
+
+- 🔴 **不要用 Tailwind 的任意值类写布局**（`lg:grid-cols-[264px_minmax(0,1fr)]`、
+  `sm:grid-cols-[...]`）：`static/app.css` 是**预编译产物**，里面没有的类写了等于没写——
+  供应商页就是这样一直静默地上下堆叠，而不是左右两栏。页面结构类一律落在 `components.css`
+  （`.ada-master-detail`、`.ada-table-wrap` 等），模板只引用这些确定的类名。
 - **类名**：`ada-` 前缀；状态一律用 `data-*`（`data-state="open"`），不拼 class；
 - **颜色**：组件不写死颜色，只引用 `--ph-*`（来自 `app.css`）；组件库自己只定义 `--ada-*` 语义变量；
 - **焦点态**：`.ada-focusable` 统一 2px 品牌描边 + 3px 半透明光环；组合式（输入卡）用 `:focus-within`；
@@ -133,7 +194,11 @@ ssr-h/
 - 行内**不再渲染任何展开/收起图标**；
 - 整行 `<summary>` 天然可点（鼠标、触摸、键盘 Enter/Space 均可）；
 - 开合状态用三重信号表达：**左侧品牌色条** + **浅底背景** + **文字变深**，并同步 `data-state="open|closed"` 供样式与插件读取；
-- HTMX 每 3 秒替换对话流后，展开状态由 `components.js` 按"行类型 + 序号"恢复。
+- HTMX 每 2 秒替换对话流后，展开状态由 `components.js` 按 **`data-key`（item id）** 恢复；
+- **面板内部滚动位置同样要还原**（`chat.js` 的 `restoreScroll`）：替换后的面板是新 DOM，
+  `.ada-panel__body` 有 `max-height: 300px`，不还原就是"展开的工具每 2 秒自己滚回顶部"。
+  位置按 `item id#面板序号` 记录，还原顺序必须是"先恢复 `details.open` 再设 `scrollTop`"——
+  折叠状态下面板没有高度，先设会被夹成 0。
 
 ---
 

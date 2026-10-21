@@ -103,6 +103,38 @@ impl AgentClient {
         self.get("/api/providers").await
     }
 
+    /// 整条保存一个供应商（`provider.save`）。
+    ///
+    /// 必须发**整条**实体：后端是"存在就替换"的语义，少带的字段会被当成空值落盘
+    /// （模型列表就丢了）。所以调用方一律先读当前条目、改字段、再整体写回。
+    pub async fn save_provider(&self, provider: &Value) -> Result<Value> {
+        self.rpc("provider.save", json!({ "provider": provider }))
+            .await
+    }
+
+    pub async fn delete_provider(&self, id: &str) -> Result<Value> {
+        self.rpc("provider.delete", json!({ "id": id })).await
+    }
+
+    /// 设为激活供应商，可选指定模型。
+    pub async fn set_active_provider(&self, id: &str, model: Option<&str>) -> Result<Value> {
+        let mut params = json!({ "id": id });
+        if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
+            params["model"] = json!(model.trim());
+        }
+        self.rpc("provider.setActive", params).await
+    }
+
+    /// 拉取供应商的远程模型列表（会真的发 `/models` 请求）。
+    pub async fn fetch_provider_models(&self, params: Value) -> Result<Value> {
+        self.rpc("provider.fetchModels", params).await
+    }
+
+    /// 配置校验（`config.checkProvider`）。注意后端当前只做参数校验、**不发起真实请求**。
+    pub async fn check_provider(&self, params: Value) -> Result<Value> {
+        self.rpc("config.checkProvider", params).await
+    }
+
     pub async fn plugins(&self) -> Result<Value> {
         self.get("/api/plugins").await
     }

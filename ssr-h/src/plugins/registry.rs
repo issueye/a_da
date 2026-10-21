@@ -20,10 +20,15 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Component, Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use anyhow::{anyhow, bail, Context, Result};
+
+use crate::slang::{
+    self, AppMeta, CompiledTemplate, Engine, PageMeta, PluginMeta, RenderContext, SlotMeta, Trust,
+};
 
 use super::manifest::{Manifest, NavEntry, PageEntry, Slot, SlotEntry};
 
@@ -70,6 +75,10 @@ pub struct PluginRecord {
     pub errors: Vec<String>,
     /// 片段缓存：`slot|template` → HTML。
     fragments: HashMap<String, String>,
+    /// Slang 编译产物：模板相对路径 → 编译后的 AST。
+    pub slang_templates: HashMap<String, Arc<CompiledTemplate>>,
+    /// 清单声明的组合组件文件（已编译的也在 slang_templates 里）。
+    pub components: Vec<String>,
     /// 清单与片段内容的指纹，用来判断"插件是不是改过了"。
     fingerprint: u64,
 }
@@ -100,6 +109,7 @@ pub struct SlotOutput {
 /// 插件注册表。
 pub struct PluginRegistry {
     dir: PathBuf,
+    engine: Arc<Engine>,
     plugins: RwLock<Vec<PluginRecord>>,
 }
 
@@ -124,6 +134,10 @@ pub struct PluginSnapshot {
     pub status: String,
     pub slots: Vec<String>,
     pub errors: Vec<String>,
+    /// `slang` / `html`：这个插件是否使用了运行时组件语言。
+    pub engine: String,
+    /// 已编译的 Slang 模板数。
+    pub slang_compiled: usize,
 }
 
 /// 目录名 → 插件 id（只用于"加载失败的插件"占位，正常插件以清单 id 为准）。
@@ -166,21 +180,32 @@ fn failed_record(root: &Path, id: &str, message: &str) -> PluginRecord {
         assets_dir: None,
         errors: vec![message.to_string()],
         fragments: HashMap::new(),
+        slang_templates: HashMap::new(),
+        components: Vec::new(),
         fingerprint: 0,
     }
 }
 
 impl PluginRegistry {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self::with_engine(dir, Arc::new(slang::default_engine()))
+    }
+
+    pub fn with_engine(dir: impl Into<PathBuf>, engine: Arc<Engine>) -> Self {
         let dir = dir.into();
         let registry = Self {
             dir,
+            engine,
             plugins: RwLock::new(Vec::new()),
         };
         if let Err(error) = registry.reload() {
             tracing::warn!("扫描前端插件目录失败: {error:#}");
         }
         registry
+    }
+
+    pub fn engine(&self) -> &Arc<Engine> {
+        &self.engine
     }
 
     pub fn dir(&self) -> &Path {
@@ -286,21 +311,64 @@ impl PluginRegistry {
             slots: manifest.slots,
             nav: manifest.nav,
             pages: manifest.pages,
-            dashboard: manifest.dashboard,
+            dashboard: manifest.dashboard.clone(),
+            components: manifest.components.clone(),
             root,
             assets_dir,
             errors: Vec::new(),
             fragments: HashMap::new(),
+            slang_templates: HashMap::new(),
             fingerprint: 0,
         };
 
-        // 装载阶段：片段读不到就降级（该插槽不贡献内容），插件本体照常可用。
-        let mut fingerprint = fnv1a_init(raw.as_bytes());
+        // 1) 编译所有 `.slang` 模板（插槽 / 页面 / 仪表盘 / 组合组件）。
+        let mut slang_paths: Vec<String> = Vec::new();
+        for entry in &record.slots {
+            if is_slang(&entry.template) {
+                slang_paths.push(entry.template.clone());
+            }
+        }
+        for page in &record.pages {
+            if is_slang(&page.template) {
+                slang_paths.push(page.template.clone());
+            }
+        }
+        if let Some(dashboard) = &record.dashboard {
+            if is_slang(dashboard) {
+                slang_paths.push(dashboard.clone());
+            }
+        }
+        for component in &record.components {
+            if is_slang(component) {
+                slang_paths.push(component.clone());
+            }
+        }
+        slang_paths.sort();
+        slang_paths.dedup();
+        for path in &slang_paths {
+            let full = record.root.join(path);
+            match self.engine.compile_file(&full, &record.root, Trust::Local) {
+                Ok(template) => {
+                    record.slang_templates.insert(path.clone(), template);
+                }
+                Err(error) => {
+                    let message = format!("Slang 模板 `{path}` 编译失败：{}", error.render());
+                    tracing::warn!("插件 {} {message}", record.id);
+                    if !record.errors.contains(&message) {
+                        record.errors.push(message);
+                    }
+                }
+            }
+        }
+
+        // 2) `.html` 插槽仍走原始片段；`.slang` 插槽不读成字符串。
         for entry in record.slots.clone() {
+            if is_slang(&entry.template) {
+                continue;
+            }
             let key = PluginRecord::fragment_key(&entry.slot, &entry.template);
             match read_fragment(&record.root, &record.root, &entry.template) {
                 Ok(html) => {
-                    fingerprint = fnv1a(fingerprint, html.as_bytes());
                     record.fragments.insert(key, html);
                 }
                 Err(error) => {
@@ -310,7 +378,10 @@ impl PluginRegistry {
                 }
             }
         }
-        record.fingerprint = fingerprint;
+
+        // 3) 指纹包含清单与所有 `.slang`/`.html`/`.json` 文件：
+        //    @include/@use 的依赖变更也能触发重载。
+        record.fingerprint = plugin_fingerprint(&record.root, raw.as_bytes());
         Ok(Some(record))
     }
 
@@ -340,6 +411,11 @@ impl PluginRegistry {
 
     /// 渲染一个插槽：逐插件隔离，失败只跳过它自己。
     pub fn render_slot(&self, slot: Slot) -> SlotOutput {
+        self.render_slot_with(slot, &RenderContext::default())
+    }
+
+    /// 带上下文的插槽渲染：`.slang` 片段可以读到 `plugin.*` / `slot.*` / `app.*`。
+    pub fn render_slot_with(&self, slot: Slot, cx: &RenderContext) -> SlotOutput {
         let mut output = SlotOutput::default();
         let Ok(guard) = self.plugins.read() else {
             return output;
@@ -355,16 +431,58 @@ impl PluginRegistry {
                 .filter(|entry| entry.parsed_slot().ok() == Some(slot))
                 .collect();
             entries.sort_by_key(|entry| entry.order);
-            for entry in entries {
-                let key = PluginRecord::fragment_key(&entry.slot, &entry.template);
-                let Some(html) = record.fragments.get(&key) else {
-                    output.failed.push(record.id.clone());
-                    continue;
+            for (index, entry) in entries.into_iter().enumerate() {
+                let html = if let Some(template) = record.slang_templates.get(&entry.template) {
+                    let mut plugin_cx = cx.clone();
+                    plugin_cx.plugin = Some(PluginMeta {
+                        id: record.id.clone(),
+                        name: record.name.clone(),
+                        version: record.version.clone(),
+                        description: record.description.clone(),
+                    });
+                    plugin_cx.slot = Some(SlotMeta {
+                        name: slot.as_str().to_string(),
+                        order: entry.order,
+                        index,
+                    });
+                    match catch_unwind(AssertUnwindSafe(|| {
+                        self.engine.render(template, &plugin_cx)
+                    })) {
+                        Ok(Ok(html)) => html,
+                        Ok(Err(error)) => {
+                            output.failed.push(record.id.clone());
+                            tracing::warn!(
+                                "插件 {} 插槽 {} 渲染失败: {}",
+                                record.id,
+                                slot.as_str(),
+                                error.render()
+                            );
+                            continue;
+                        }
+                        Err(_) => {
+                            output.failed.push(record.id.clone());
+                            tracing::warn!(
+                                "插件 {} 插槽 {} 渲染 panic，已隔离",
+                                record.id,
+                                slot.as_str()
+                            );
+                            continue;
+                        }
+                    }
+                } else {
+                    let key = PluginRecord::fragment_key(&entry.slot, &entry.template);
+                    match record.fragments.get(&key) {
+                        Some(html) => html.clone(),
+                        None => {
+                            output.failed.push(record.id.clone());
+                            continue;
+                        }
+                    }
                 };
                 if html.is_empty() {
                     continue;
                 }
-                contributions.push((entry.order, record.id.clone(), html.clone()));
+                contributions.push((entry.order, record.id.clone(), html));
             }
         }
         drop(guard);
@@ -380,6 +498,10 @@ impl PluginRegistry {
 
     pub fn list(&self) -> Vec<PluginRecord> {
         self.plugins.read().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    pub fn count(&self) -> usize {
+        self.plugins.read().map(|guard| guard.len()).unwrap_or(0)
     }
 
     pub fn find(&self, id: &str) -> Option<PluginRecord> {
@@ -406,6 +528,12 @@ impl PluginRegistry {
                     .map(|entry| entry.slot.clone())
                     .collect(),
                 errors: record.errors,
+                engine: if record.slang_templates.is_empty() {
+                    "html".to_string()
+                } else {
+                    "slang".to_string()
+                },
+                slang_compiled: record.slang_templates.len(),
             })
             .collect()
     }
@@ -428,6 +556,10 @@ impl PluginRegistry {
     }
 
     pub fn dashboard_widgets(&self) -> Vec<PluginWidget> {
+        self.dashboard_widgets_with(&RenderContext::default())
+    }
+
+    pub fn dashboard_widgets_with(&self, cx: &RenderContext) -> Vec<PluginWidget> {
         let mut widgets = Vec::new();
         for plugin in self.list() {
             if !plugin.is_active() {
@@ -436,19 +568,63 @@ impl PluginRegistry {
             let Some(rel) = plugin.dashboard.as_deref() else {
                 continue;
             };
-            match read_fragment(&plugin.root, &plugin.root, rel) {
-                Ok(html) => widgets.push(PluginWidget {
-                    plugin_id: plugin.id.clone(),
-                    plugin_name: plugin.name.clone(),
-                    html,
-                }),
-                Err(error) => tracing::warn!("读取前端插件卡片失败 {}: {error:#}", plugin.id),
-            }
+            let html = if is_slang(rel) {
+                let Some(template) = plugin.slang_templates.get(rel) else {
+                    tracing::warn!("插件 {} 的 Slang 卡片未编译成功", plugin.id);
+                    continue;
+                };
+                let mut plugin_cx = cx.clone();
+                plugin_cx.plugin = Some(PluginMeta {
+                    id: plugin.id.clone(),
+                    name: plugin.name.clone(),
+                    version: plugin.version.clone(),
+                    description: plugin.description.clone(),
+                });
+                match catch_unwind(AssertUnwindSafe(|| {
+                    self.engine.render(template, &plugin_cx)
+                })) {
+                    Ok(Ok(html)) => html,
+                    Ok(Err(error)) => {
+                        tracing::warn!(
+                            "插件 {} 的 Slang 卡片渲染失败: {}",
+                            plugin.id,
+                            error.render()
+                        );
+                        continue;
+                    }
+                    Err(_) => {
+                        tracing::warn!("插件 {} 的 Slang 卡片渲染 panic，已隔离", plugin.id);
+                        continue;
+                    }
+                }
+            } else {
+                match read_fragment(&plugin.root, &plugin.root, rel) {
+                    Ok(html) => html,
+                    Err(error) => {
+                        tracing::warn!("读取前端插件卡片失败 {}: {error:#}", plugin.id);
+                        continue;
+                    }
+                }
+            };
+            widgets.push(PluginWidget {
+                plugin_id: plugin.id.clone(),
+                plugin_name: plugin.name.clone(),
+                html,
+            });
         }
         widgets
     }
 
     pub fn read_page(&self, plugin: &PluginRecord, slug: &str) -> Result<(String, String)> {
+        self.read_page_with(plugin, slug, &RenderContext::default())
+    }
+
+    pub fn read_page_with(
+        &self,
+        plugin: &PluginRecord,
+        slug: &str,
+        cx: &RenderContext,
+    ) -> Result<(String, String)> {
         // 停用/加载失败的插件不再对外提供页面：否则"停用后回到默认实现"只是把
         // 导航藏了，直链仍然能打开。
         if !plugin.is_active() {
@@ -459,7 +635,30 @@ impl PluginRegistry {
             .iter()
             .find(|page| page.slug == slug)
             .ok_or_else(|| anyhow!("插件页面不存在: {}/{}", plugin.id, slug))?;
-        let html = read_fragment(&plugin.root, &plugin.root, &page.template)?;
+        let html = if is_slang(&page.template) {
+            let template = plugin.slang_templates.get(&page.template).ok_or_else(|| {
+                anyhow!(
+                    "插件页面 `{}` 的 Slang 模板未编译成功，见扩展页诊断",
+                    page.template
+                )
+            })?;
+            let mut plugin_cx = cx.clone();
+            plugin_cx.plugin = Some(PluginMeta {
+                id: plugin.id.clone(),
+                name: plugin.name.clone(),
+                version: plugin.version.clone(),
+                description: plugin.description.clone(),
+            });
+            plugin_cx.page = Some(PageMeta {
+                slug: page.slug.clone(),
+                title: page.title.clone(),
+            });
+            self.engine.render(template, &plugin_cx).map_err(|error| {
+                anyhow!("插件页面 `{}` 渲染失败：{}", page.template, error.render())
+            })?
+        } else {
+            read_fragment(&plugin.root, &plugin.root, &page.template)?
+        };
         Ok((page.title.clone(), html))
     }
 
@@ -501,6 +700,56 @@ pub struct PluginWidget {
 }
 
 // ── 工具函数 ──────────────────────────────────────────────────────────────
+
+/// 是否是 Slang 模板（按扩展名分派）。
+fn is_slang(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("slang"))
+}
+
+/// 插件指纹：清单 + 插件目录里所有 `.slang` / `.html` / `.json` 文件。
+///
+/// 这样 `@include` / `@use` 的依赖变更也会触发重载，而不是只盯清单和插槽片段。
+fn plugin_fingerprint(root: &Path, manifest: &[u8]) -> u64 {
+    let mut hash = fnv1a_init(manifest);
+    let mut files = Vec::new();
+    collect_fingerprint_files(root, &mut files, 0);
+    files.sort();
+    for path in files {
+        if let Ok(relative) = path.strip_prefix(root) {
+            hash = fnv1a(hash, relative.to_string_lossy().as_bytes());
+        }
+        if let Ok(bytes) = fs::read(&path) {
+            hash = fnv1a(hash, &bytes);
+        }
+    }
+    hash
+}
+
+fn collect_fingerprint_files(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+    if depth > 4 || out.len() > 256 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_fingerprint_files(&path, out, depth + 1);
+        } else if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| {
+                matches!(ext.to_ascii_lowercase().as_str(), "slang" | "html" | "json")
+            })
+        {
+            out.push(path);
+        }
+    }
+}
 
 fn resolve_assets_dir(root: &Path, declared: Option<&str>) -> Option<PathBuf> {
     match declared.map(str::trim).filter(|s| !s.is_empty()) {
@@ -691,6 +940,173 @@ mod tests {
         fs::create_dir_all(root.join("not-a-plugin")).unwrap();
         let registry = PluginRegistry::new(&root);
         assert!(registry.list().is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn write_slang_plugin(root: &Path) -> PathBuf {
+        let plugin = root.join("slang-demo");
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(
+            plugin.join("plugin.json"),
+            r#"{
+                "id": "slang-demo",
+                "name": "Slang Demo",
+                "version": "0.1.0",
+                "description": "运行时组件语言示例",
+                "slang": 2,
+                "components": ["components.slang"],
+                "pages": [{"slug":"hello","title":"Hello","template":"page.slang"}],
+                "dashboard": "dashboard.slang",
+                "slots": [{"slot":"composer.left","template":"slot.slang","order":10}]
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            plugin.join("components.slang"),
+            r#"@def Stat { @props { label: String } ::span(class: "stat") { {{ label }} } }"#,
+        )
+        .unwrap();
+        fs::write(
+            plugin.join("page.slang"),
+            r#"@slang 2
+@use "components.slang"
+::div(class: "page") {
+  ::h1 { {{ plugin.name }} }
+  ::Stat(label: data.label)
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            plugin.join("slot.slang"),
+            r#"@slang 2
+::span(class: "slot") { {{ plugin.name }} · {{ slot.name }} }"#,
+        )
+        .unwrap();
+        fs::write(
+            plugin.join("dashboard.slang"),
+            r#"@slang 2
+::div(class: "widget") { v{{ plugin.version }} }"#,
+        )
+        .unwrap();
+        plugin
+    }
+
+    #[test]
+    fn slang_plugin_renders_page_slot_dashboard_with_context() {
+        use crate::slang::{AppMeta, RenderContext};
+
+        let root = temp_root("slang");
+        write_slang_plugin(&root);
+        let registry = PluginRegistry::new(&root);
+        let plugin = registry.find("slang-demo").expect("plugin loads");
+        assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
+        assert!(
+            plugin.slang_templates.len() >= 4,
+            "templates: {:?}",
+            plugin.slang_templates.keys().collect::<Vec<_>>()
+        );
+
+        let cx = RenderContext::new(AppMeta::default())
+            .with_data(serde_json::json!({"label": "会话"}).into());
+        let (title, html) = registry
+            .read_page_with(&plugin, "hello", &cx)
+            .expect("page renders");
+        assert_eq!(title, "Hello");
+        assert!(html.contains("Slang Demo"), "{html}");
+        assert!(html.contains("会话"), "{html}");
+        assert!(html.contains("class=\"stat\""), "{html}");
+
+        let slot = registry.render_slot_with(Slot::ComposerLeft, &cx);
+        assert_eq!(slot.contributors, 1, "{slot:?}");
+        assert!(
+            slot.html.contains("Slang Demo · composer.left"),
+            "{}",
+            slot.html
+        );
+
+        let widgets = registry.dashboard_widgets_with(&cx);
+        assert_eq!(widgets.len(), 1);
+        assert!(widgets[0].html.contains("v0.1.0"), "{}", widgets[0].html);
+
+        let snapshot = registry.snapshot();
+        assert_eq!(snapshot[0].engine, "slang");
+        assert!(snapshot[0].slang_compiled >= 4);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn slang_plugin_reloads_included_component_changes() {
+        let root = temp_root("slang_reload");
+        let plugin_root = write_slang_plugin(&root);
+        let registry = PluginRegistry::new(&root);
+        let plugin = registry.find("slang-demo").unwrap();
+        let cx = crate::slang::RenderContext::default();
+        let (_, before) = registry.read_page_with(&plugin, "hello", &cx).unwrap();
+        assert!(before.contains("class=\"stat\""), "{before}");
+
+        fs::write(
+            plugin_root.join("components.slang"),
+            r#"@def Stat { @props { label: String } ::span(class: "stat-v2") { {{ label }} } }"#,
+        )
+        .unwrap();
+        let report = registry.reload().unwrap();
+        assert!(
+            report.updated.contains(&"slang-demo".to_string()),
+            "{report:?}"
+        );
+        let plugin = registry.find("slang-demo").unwrap();
+        let (_, after) = registry.read_page_with(&plugin, "hello", &cx).unwrap();
+        assert!(after.contains("class=\"stat-v2\""), "{after}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bundled_hello_slang_example_compiles_and_renders() {
+        let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
+        let registry = PluginRegistry::new(&plugins_dir);
+        let plugin = registry
+            .find("hello-slang")
+            .expect("hello-slang 示例插件应当被扫描到");
+        assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
+        assert!(
+            plugin.slang_templates.len() >= 4,
+            "templates: {:?}; errors: {:?}",
+            plugin.slang_templates.keys().collect::<Vec<_>>(),
+            plugin.errors
+        );
+        let cx = crate::slang::RenderContext::default();
+        let (_, html) = registry
+            .read_page_with(&plugin, "hello", &cx)
+            .expect("示例页面应当能渲染");
+        assert!(html.contains("前端插件页面（Slang）"), "{html}");
+        assert!(html.contains("hello-slang"), "{html}");
+    }
+
+    #[test]
+    fn broken_slang_template_is_visible_in_plugin_errors() {
+        let root = temp_root("slang_broken");
+        let plugin_root = write_slang_plugin(&root);
+        fs::write(
+            plugin_root.join("page.slang"),
+            r#"@slang 2
+::Nope()"#,
+        )
+        .unwrap();
+        let registry = PluginRegistry::new(&root);
+        let plugin = registry.find("slang-demo").expect("plugin still loads");
+        assert!(!plugin.errors.is_empty(), "errors: {:?}", plugin.errors);
+        assert!(
+            plugin.errors.iter().any(|error| error.contains("未知组件")),
+            "errors: {:?}",
+            plugin.errors
+        );
+        let error = registry
+            .read_page_with(&plugin, "hello", &crate::slang::RenderContext::default())
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("未编译成功"), "{error:#}");
+
         let _ = fs::remove_dir_all(&root);
     }
 }

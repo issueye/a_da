@@ -103,6 +103,9 @@
     }
   });
 
+  /* 下拉选择与弹窗已升级为 Web Components（见 static/elements.js）：
+     `<ada-select>` 与 `<ada-modal>`。这里只保留非元素化的行为（折叠、输入框、复制、插槽）。 */
+
   /* ── 3. 输入框：聚焦态 + 发送可用性 + 自动增高 ───────────────────────── */
   function bindComposer() {
     var card = document.querySelector('.ada-composer__card');
@@ -244,11 +247,104 @@
     }).observe(dock, { childList: true });
   }
 
+  /* ── 7. 页签（Tabs）────────────────────────────────────────────────────
+     服务端已按 `?tab=` 渲染好展开项（无 JS 时页签就是普通链接，点一下整页刷新）。
+     这里只做渐进增强：点击/方向键就地切换面板，并用 history.replaceState 把地址栏
+     换成该页签自己的 href —— 刷新、收藏、分享都还落在同一个页签上。 */
+  function closestTab(node, list) {
+    while (node && node !== list) {
+      if (node.nodeType === 1 && node.getAttribute('role') === 'tab') return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  function bindTabList(list) {
+    if (list.dataset.adaBound === '1') return;
+    list.dataset.adaBound = '1';
+
+    var tabs = list.querySelectorAll('[role="tab"][aria-controls]');
+    if (!tabs.length) return;
+
+    var indexOf = function (tab) {
+      for (var i = 0; i < tabs.length; i += 1) {
+        if (tabs[i] === tab) return i;
+      }
+      return -1;
+    };
+
+    var select = function (tab, focus, syncUrl) {
+      for (var i = 0; i < tabs.length; i += 1) {
+        var current = tabs[i];
+        var active = current === tab;
+        current.setAttribute('aria-selected', active ? 'true' : 'false');
+        current.setAttribute('tabindex', active ? '0' : '-1');
+        var panel = document.getElementById(current.getAttribute('aria-controls'));
+        if (!panel) continue;
+        if (active) {
+          panel.removeAttribute('hidden');
+        } else {
+          panel.setAttribute('hidden', '');
+        }
+      }
+      if (focus) tab.focus();
+      if (!syncUrl) return;
+      var href = tab.getAttribute('href');
+      if (href && window.history && window.history.replaceState) {
+        window.history.replaceState(null, '', href);
+      }
+    };
+
+    list.addEventListener('click', function (event) {
+      // 保留"新标签页打开 / 新窗口打开"这类浏览器原生意图，不拦。
+      if (event.defaultPrevented || event.button !== 0) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      var tab = closestTab(event.target, list);
+      if (!tab) return;
+      event.preventDefault();
+      select(tab, false, true);
+    });
+
+    list.addEventListener('keydown', function (event) {
+      var tab = closestTab(event.target, list);
+      if (!tab) return;
+      var index = indexOf(tab);
+      if (index < 0) return;
+      var next = -1;
+      if (event.key === 'ArrowRight') {
+        next = (index + 1) % tabs.length;
+      } else if (event.key === 'ArrowLeft') {
+        next = (index - 1 + tabs.length) % tabs.length;
+      } else if (event.key === 'Home') {
+        next = 0;
+      } else if (event.key === 'End') {
+        next = tabs.length - 1;
+      } else if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
+        // 链接的 Enter 会自己触发 click；Space 不会，这里补上。
+        event.preventDefault();
+        select(tab, true, true);
+        return;
+      } else {
+        return;
+      }
+      event.preventDefault();
+      select(tabs[next], true, true);
+    });
+  }
+
+  function bindTabs(root) {
+    var lists = (root || document).querySelectorAll('[data-ada-tabs]');
+    for (var i = 0; i < lists.length; i += 1) {
+      bindTabList(lists[i]);
+    }
+  }
+
   /* ── 启动 ───────────────────────────────────────────────────────────── */
   function boot() {
     bindDisclosures(document);
     bindComposer();
     bindTodoPanel();
+    bindTabs(document);
     watchTranscript();
     watchTodoDock();
     loadSlotRegistry();
@@ -260,10 +356,25 @@
     boot();
   }
 
-  // 供插件与调试使用
+  // 供插件与调试使用。
+  // 下拉与弹窗的实现在 elements.js 的 Web Components 里（`<ada-select>` / `<ada-modal>`），
+  // 这里只转一层，保持老调用点（app.js 的确认框）不变。
   window.AdaComponents = {
     bindDisclosures: bindDisclosures,
     bindComposer: bindComposer,
+    bindTabs: bindTabs,
     copyText: copyText,
+    closeSelects: function () {
+      if (window.AdaElements) window.AdaElements.closeAllSelects(null);
+    },
+    openModal: function (id) {
+      if (window.AdaElements) window.AdaElements.openModal(id);
+    },
+    closeModal: function (id) {
+      if (window.AdaElements) window.AdaElements.closeModal(id);
+    },
+    modalOpen: function () {
+      return !!(window.AdaElements && window.AdaElements.modalOpen());
+    },
   };
 })();

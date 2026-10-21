@@ -1,0 +1,213 @@
+/* 组件库 · 控件层：下拉选择（<ada-select>）与弹窗（<ada-modal>）。 */
+
+/* ── 下拉选择（Select 组件）───────────────────────────────────────────────
+   原生 <select> 的弹层由系统绘制，样式与键盘行为都不受控；这里用按钮 + listbox 自己画。
+   表单值仍靠隐藏 input 提交，所以没有 JS 时也能提交（降级成"当前值"）。 */
+.ada-select {
+  position: relative;
+  display: block;
+}
+.ada-select__trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--ph-line-strong);
+  border-radius: var(--ada-radius-sm);
+  background: var(--ph-surface);
+  color: var(--ph-ink);
+  font-family: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--ada-transition), box-shadow var(--ada-transition);
+}
+.ada-select__trigger:hover {
+  border-color: var(--ph-faint);
+}
+.ada-select__trigger:focus-visible,
+.ada-select.is-open .ada-select__trigger {
+  border-color: var(--ph-brand);
+  box-shadow: 0 0 0 3px var(--ph-focus);
+  outline: none;
+}
+.ada-select__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ada-select__caret {
+  flex-shrink: 0;
+  color: var(--ph-faint);
+  transition: transform 120ms ease;
+}
+.ada-select.is-open .ada-select__caret {
+  transform: rotate(180deg);
+}
+.ada-select__menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--ph-line);
+  border-radius: 10px;
+  background: var(--ph-elevated);
+  box-shadow: var(--ph-shadow);
+}
+.ada-select__menu[hidden] {
+  display: none;
+}
+.ada-select__option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: var(--ph-muted);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.ada-select__option:hover,
+.ada-select__option.is-active {
+  background: var(--ph-subtle);
+  color: var(--ph-ink);
+}
+.ada-select__option.is-selected {
+  color: var(--ph-brand-ink);
+  font-weight: 500;
+}
+.ada-select__option.is-selected::after {
+  content: "✓";
+  font-size: 11px;
+}
+
+/* ── 页签（Tabs 组件）────────────────────────────────────────────────────
+   导航条由组件库渲染（`ui::Tabs`），面板由页面模板摆放。无 JS 时页签是普通链接
+   （服务端按 `?tab=` 渲染展开项）；有 JS 时就地切换，不改页面的其他状态。
+   视觉：浅底分段条，选中项浮起成卡片色。 */
+.ada-tabs__list {
+  display: inline-flex;
+  max-width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--ph-line);
+  border-radius: var(--ada-radius-md);
+  background: var(--ph-subtle);
+}
+.ada-tabs__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 7px;
+  color: var(--ph-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.5;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background var(--ada-transition), color var(--ada-transition),
+    box-shadow var(--ada-transition);
+}
+.ada-tabs__tab:hover {
+  color: var(--ph-ink);
+  background: color-mix(in srgb, var(--ph-surface) 55%, transparent);
+}
+.ada-tabs__tab[aria-selected="true"] {
+  background: var(--ph-surface);
+  color: var(--ph-ink);
+  box-shadow: var(--ph-shadow);
+}
+.ada-tabs__count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--ph-subtle);
+  color: var(--ph-faint);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+}
+.ada-tabs__tab[aria-selected="true"] .ada-tabs__count {
+  background: var(--ph-brand-soft);
+  color: var(--ph-brand-ink);
+}
+/* 面板的 hidden 由服务端决定；这里只兜底（浏览器默认行为其实一样） */
+.ada-tabs__panel[hidden] {
+  display: none;
+}
+
+/* ── 弹窗（确认对话框，app.js 的 form[data-confirm] 统一入口）─────────────
+   纯 DOM 组件：不用 <dialog>、更不用 window.confirm。开合/焦点圈/Esc/遮罩
+   在 app.js；这里只管样子。 */
+.ada-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.ada-modal[hidden] {
+  display: none;
+}
+.ada-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(24, 24, 27, 0.42);
+  backdrop-filter: blur(2px);
+}
+.ada-modal__panel {
+  position: relative;
+  width: 380px;
+  max-width: calc(100vw - 48px);
+  padding: 18px 20px 16px;
+  border: 1px solid var(--ph-line);
+  border-radius: 14px;
+  background: var(--ph-elevated);
+  box-shadow: 0 24px 64px -24px rgba(24, 24, 27, 0.45);
+}
+.ada-modal__panel--wide {
+  width: 560px;
+}
+.ada-modal__body {
+  margin: 0;
+}
+.ada-modal__body .field + .field {
+  margin-top: 0;
+}
+.ada-modal__title {
+  margin: 0 0 8px;
+  color: var(--ph-ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+.ada-modal__message {
+  margin: 0 0 16px;
+  color: var(--ph-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.ada-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+/* 弹窗打开时锁住页面滚动（原生 <dialog> 自动做，纯 DOM 组件要自己做） */
+body.ada-modal-open {
+  overflow: hidden;
+}

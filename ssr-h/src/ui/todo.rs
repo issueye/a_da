@@ -67,12 +67,20 @@ impl TodoPlan {
         self.steps
             .iter()
             .find(|step| step.status == TodoStatus::InProgress)
-            .or_else(|| self.steps.iter().find(|step| step.status != TodoStatus::Completed))
+            .or_else(|| {
+                self.steps
+                    .iter()
+                    .find(|step| step.status != TodoStatus::Completed)
+            })
     }
 
     /// 复制用的 Markdown 任务清单。
     pub fn to_markdown(&self) -> String {
-        let mut lines = vec![format!("### 任务规划步骤 ({}/{})", self.completed(), self.steps.len())];
+        let mut lines = vec![format!(
+            "### 任务规划步骤 ({}/{})",
+            self.completed(),
+            self.steps.len()
+        )];
         if let Some(notes) = &self.notes {
             if !notes.trim().is_empty() {
                 lines.push(format!("> 备注：{notes}"));
@@ -213,15 +221,13 @@ pub fn derive_todo_plan(items: &[Value]) -> Option<TodoPlan> {
         }
         // update：按 id 增量合并；没有 id 的按标题匹配。
         for next in steps {
-            let index = plan
-                .iter()
-                .position(|current| {
-                    if !next.id.is_empty() {
-                        current.id == next.id
-                    } else {
-                        current.title == next.title
-                    }
-                });
+            let index = plan.iter().position(|current| {
+                if !next.id.is_empty() {
+                    current.id == next.id
+                } else {
+                    current.title == next.title
+                }
+            });
             match index {
                 Some(index) => {
                     if !next.id.is_empty() {
@@ -381,11 +387,8 @@ mod tests {
             { "id": "t2", "title": "写条目", "done": false }
         ]);
         let update = json!([{ "id": "t1", "title": "读列表", "done": true }]);
-        let plan = derive_todo_plan(&[
-            todo_item("set", base),
-            todo_item("update", update),
-        ])
-        .expect("应当有计划");
+        let plan = derive_todo_plan(&[todo_item("set", base), todo_item("update", update)])
+            .expect("应当有计划");
         assert_eq!(plan.steps.len(), 2, "update 不该新增步骤");
         assert_eq!(plan.completed(), 1, "t1 应当被标记完成");
         assert_eq!(plan.steps[1].title, "写条目", "未提及的条目要保留");
@@ -395,11 +398,8 @@ mod tests {
     fn update_没命中就追加() {
         let base = json!([{ "id": "t1", "title": "读列表", "done": false }]);
         let update = json!([{ "id": "t9", "title": "新任务", "done": false }]);
-        let plan = derive_todo_plan(&[
-            todo_item("set", base),
-            todo_item("update", update),
-        ])
-        .expect("应当有计划");
+        let plan = derive_todo_plan(&[todo_item("set", base), todo_item("update", update)])
+            .expect("应当有计划");
         assert_eq!(plan.steps.len(), 2);
         assert_eq!(plan.steps[1].title, "新任务");
     }
@@ -407,11 +407,8 @@ mod tests {
     #[test]
     fn get_不改变计划() {
         let base = json!([{ "id": "t1", "title": "读列表", "done": false }]);
-        let plan = derive_todo_plan(&[
-            todo_item("set", base.clone()),
-            todo_item("get", json!([])),
-        ])
-        .expect("应当有计划");
+        let plan = derive_todo_plan(&[todo_item("set", base.clone()), todo_item("get", json!([]))])
+            .expect("应当有计划");
         assert_eq!(plan.steps.len(), 1);
         assert_eq!(plan.completed(), 0);
     }
@@ -425,11 +422,7 @@ mod tests {
         });
         // 先用 update 建立基线，再用缺省 action 整份替换
         let base = json!([{ "id": "t1", "title": "读列表", "done": false }]);
-        let plan = derive_todo_plan(&[
-            todo_item("update", base),
-            item.take(),
-        ])
-        .expect("应当有计划");
+        let plan = derive_todo_plan(&[todo_item("update", base), item.take()]).expect("应当有计划");
         assert_eq!(plan.steps.len(), 1);
     }
 
