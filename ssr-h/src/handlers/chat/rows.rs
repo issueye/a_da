@@ -706,8 +706,6 @@ pub(super) fn render_string<T: Template>(template: &T) -> String {
     })
 }
 
-/// live 轮询要替换的各个区域。
-
 #[cfg(test)]
 mod tests {
     use super::*;

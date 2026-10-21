@@ -24,3 +24,15 @@ tokio-tungstenite = "0.26"
 tower-http = { version = "0.6", features = ["trace", "compression-gzip"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# ── TSX 运行时（OXC + Boa）──────────────────────────────────────────────
+# TSX → OXC（去类型 + JSX classic pragma `h`）→ Boa（无宿主环境）→ VNode JSON
+# → Rust `ui` 组件渲染。已接入插件注册表（.tsx 页面/插槽/仪表盘）。
+boa_engine = { version = "0.22.0" }
+oxc_allocator = { version = "0.146.0" }
+oxc_ast = { version = "0.146.0" }
+oxc_codegen = { version = "0.146.0" }
+oxc_parser = { version = "0.146.0" }
+oxc_semantic = { version = "0.146.0" }
+oxc_span = { version = "0.146.0" }
+oxc_transformer = { version = "0.146.0" }

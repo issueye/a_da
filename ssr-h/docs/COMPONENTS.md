@@ -65,7 +65,7 @@ ssr-h/
 │   ├── app.js / chat.js / theme.js
 └── frontend-plugins/<id>/
     ├── plugin.json             # 可声明 slots
-    ├── composer.html           # 插槽片段示例
+    ├── slot.tsx                # 插槽示例
     └── ...
 ```
 
@@ -89,15 +89,16 @@ ssr-h/
    组件（Button / Chip / …）      ← src/ui/components.rs
         │  输出 HTML
         ▼
-   模板 {{ x|safe }}              ← templates/*.html
+   模板 {{ x|safe }}              ← templates/*.html（应用壳）
         │  套上样式
         ▼
    components.css（ada-* + --ph-*）
 ```
 
-> **运行时编排**：插件页面/插槽/仪表盘还可以写 `.slang`，由
-> [SLANG-V2.md](SLANG-V2.md) 的运行时引擎在服务端解析成内容或组件。Rust 仍是原子组件（DOM/class/`data-*` 契约）
-> 的唯一实现；Slang 只负责“怎么拼”，不产生第二套视觉契约。
+> **运行时编排**：插件页面/插槽/仪表盘写 `.tsx`，由 OXC + Boa 在服务端执行；
+> 组件库本身也在 `src/tsx/components.tsx`（TSX 函数，输出 `ada-*` class）。
+> Rust 只保留 `Icon` SVG 原语与 HTML 白名单；应用壳的 Rust 组件不参与插件渲染。
+> 见 [TSX.md](TSX.md)。
 
 ### 3.2 组件清单
 
@@ -262,8 +263,7 @@ ssr-h/
   "name": "Hello Frontend Plugin",
   "version": "0.2.0",
   "slots": [
-    { "slot": "composer.left", "template": "composer.html", "order": 20 },
-    { "slot": "composer.footer", "template": "footer.html", "order": 10 }
+    { "slot": "composer.left", "template": "slot.tsx", "order": 20 }
   ]
 }
 ```

@@ -1,7 +1,7 @@
 //! 前端插件的清单格式。
 //!
 //! 在原有能力（导航 / 独立页面 / 仪表盘卡片 / 静态资源）之上，
-//! v0.6 增加了**插槽**（slots）：插件可以把 HTML 片段挂到界面的固定位置上。
+//! 插件模板只接受 `.tsx`；页面、插槽、仪表盘卡片都由 TSX 在服务端渲染。
 
 use std::path::Path;
 
@@ -100,7 +100,7 @@ impl std::fmt::Display for Slot {
 pub struct SlotEntry {
     /// 挂载点（见 [`Slot`]）。
     pub slot: String,
-    /// 相对插件根目录的 HTML 片段。
+    /// 相对插件根目录的 TSX 模板。
     pub template: String,
     /// 同一插槽内的排序，小的在前。
     #[serde(default)]
@@ -149,12 +149,6 @@ pub struct Manifest {
     /// v0.6 新增：挂载点声明。
     #[serde(default)]
     pub slots: Vec<SlotEntry>,
-    /// Slang 语言主版本；缺省按 2 处理。只接受 `2`（v1 已移除）。
-    #[serde(default)]
-    pub slang: Option<u32>,
-    /// 可选的组合组件文件（相对插件根目录）。
-    #[serde(default)]
-    pub components: Vec<String>,
 }
 
 impl Manifest {
@@ -187,18 +181,18 @@ impl Manifest {
         for entry in &self.slots {
             // 插槽名写错要在加载阶段就报错，而不是等到页面上"插件没出现"。
             entry.parsed_slot()?;
-            if entry.template.trim().is_empty() {
-                bail!("插槽 {} 的 template 不能为空", entry.slot);
+            if !entry.template.trim().ends_with(".tsx") {
+                bail!("插槽 {} 的 template 必须是 .tsx", entry.slot);
             }
         }
-        if let Some(version) = self.slang {
-            if version != 2 {
-                bail!("不支持的 Slang 版本 `{version}`；当前只支持 `slang/2`（v1 已移除）");
+        for page in &self.pages {
+            if !page.template.trim().ends_with(".tsx") {
+                bail!("页面 `{}` 的 template 必须是 .tsx", page.slug);
             }
         }
-        for component in &self.components {
-            if component.trim().is_empty() {
-                bail!("components 里的路径不能为空");
+        if let Some(dashboard) = &self.dashboard {
+            if !dashboard.trim().ends_with(".tsx") {
+                bail!("dashboard 必须是 .tsx 文件");
             }
         }
         Ok(())
@@ -209,20 +203,22 @@ impl Manifest {
 mod tests {
     use super::*;
 
-    fn manifest(slang: u32) -> Manifest {
+    fn manifest(template: &str) -> Manifest {
         serde_json::from_value(serde_json::json!({
             "id": "demo",
             "name": "Demo",
             "version": "0.1.0",
-            "slang": slang,
+            "pages": [{ "slug": "home", "title": "Home", "template": template }],
         }))
         .expect("manifest")
     }
 
     #[test]
-    fn only_slang_two_is_accepted() {
-        assert!(manifest(2).validate().is_ok());
-        let error = manifest(1).validate().unwrap_err();
-        assert!(format!("{error}").contains("slang/2"), "{error}");
+    fn only_tsx_templates_are_accepted() {
+        assert!(manifest("page.tsx").validate().is_ok());
+        let error = manifest("page.slang").validate().unwrap_err();
+        assert!(format!("{error}").contains(".tsx"), "{error}");
+        let error = manifest("page.html").validate().unwrap_err();
+        assert!(format!("{error}").contains(".tsx"), "{error}");
     }
 }

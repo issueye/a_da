@@ -56,7 +56,7 @@ async fn dashboard_view(state: &AppState) -> Result<DashboardView, AppError> {
         ],
         widgets: state
             .frontend
-            .dashboard_widgets_with(&super::render_context(&state, "dashboard")),
+            .dashboard_widgets_with(&super::render_context(state, "dashboard")),
         recent,
     })
 }

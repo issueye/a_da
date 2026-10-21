@@ -1,11 +1,17 @@
 //! 内置 HTML 元素白名单、URL/class 校验与通用元素渲染辅助。
 //!
-//! Slang 的小写组件（`::div` / `::a` / `::img` …）走这里。它替代“插件作者手写
-//! 任意 HTML”，但仍然允许常用的布局标签；`script` / `style` / `iframe` / `form`
-//! 等不开放——表单控件请用 `::Button` / `::TextField` / `::Form` 等组件。
+//! TSX 里的小写标签（`<div>` / `<a>` / `<img>` …）走这里。它替代插件作者手写
+//! 任意 HTML，但仍然允许常用的布局标签；`script` / `style` / `iframe` / `form`
+//! 等不开放——表单控件请用 Rust 组件。
 
-use super::component::ElementDef;
-use super::error::{err, SlangResult, Span};
+/// 一个允许的 HTML 元素描述。
+#[derive(Debug, Clone, Copy)]
+pub struct ElementDef {
+    pub tag: &'static str,
+    pub allowed_attrs: &'static [&'static str],
+    pub required_attrs: &'static [&'static str],
+    pub void: bool,
+}
 
 /// 全局属性（所有元素都可用的安全子集）。
 pub const GLOBAL_ATTRS: &[&str] = &[
@@ -20,6 +26,24 @@ const OL_ATTRS: &[&str] = &["start", "reversed", "type"];
 const DETAILS_ATTRS: &[&str] = &["open"];
 const PROGRESS_ATTRS: &[&str] = &["value", "max"];
 const METER_ATTRS: &[&str] = &["value", "min", "max", "low", "high", "optimum"];
+const BUTTON_ATTRS: &[&str] = &["type", "name", "value", "disabled"];
+const FORM_ATTRS: &[&str] = &["action", "method", "novalidate"];
+const INPUT_ATTRS: &[&str] = &[
+    "type",
+    "name",
+    "value",
+    "placeholder",
+    "disabled",
+    "autocomplete",
+    "inputmode",
+    "maxlength",
+    "min",
+    "max",
+    "step",
+    "required",
+    "readonly",
+];
+const LABEL_ATTRS: &[&str] = &["for"];
 
 /// 全部内置元素。
 pub fn builtin_elements() -> Vec<ElementDef> {
@@ -31,7 +55,6 @@ pub fn builtin_elements() -> Vec<ElementDef> {
                 allowed_attrs: &[],
                 required_attrs: &[],
                 void: false,
-                primary_slot: "body",
             });
         };
         ($tag:literal, $attrs:expr) => {
@@ -40,7 +63,6 @@ pub fn builtin_elements() -> Vec<ElementDef> {
                 allowed_attrs: $attrs,
                 required_attrs: &[],
                 void: false,
-                primary_slot: "body",
             });
         };
         ($tag:literal, $attrs:expr, void) => {
@@ -49,7 +71,6 @@ pub fn builtin_elements() -> Vec<ElementDef> {
                 allowed_attrs: $attrs,
                 required_attrs: &[],
                 void: true,
-                primary_slot: "body",
             });
         };
     }
@@ -115,6 +136,13 @@ pub fn builtin_elements() -> Vec<ElementDef> {
     element!("img", IMG_ATTRS, void);
     element!("progress", PROGRESS_ATTRS);
     element!("meter", METER_ATTRS);
+    element!("button", BUTTON_ATTRS);
+    element!("form", FORM_ATTRS);
+    element!("input", INPUT_ATTRS, void);
+    element!("label", LABEL_ATTRS);
+    // TSX 组件库使用的自定义元素（行为在 static/ada-select.js / ada-modal.js）。
+    element!("ada-select");
+    element!("ada-modal");
 
     // 给少数元素补 required 属性。img.alt 必须显式给（装饰图给空串）。
     for element in &mut elements {
@@ -197,20 +225,14 @@ pub fn sanitize_class(raw: &str) -> Result<String, String> {
     Ok(tokens.join(" "))
 }
 
-/// 给元素属性值做 HTML 转义。
-pub fn escape_attr(value: &str) -> String {
-    crate::ui::theme::escape(value)
-}
-
 /// 校验元素必填属性（在渲染前调用）。
-pub fn check_required(element: &ElementDef, present: &[String], span: Span) -> SlangResult<()> {
+pub fn check_required(element: &ElementDef, present: &[String]) -> Result<(), String> {
     for required in element.required_attrs {
         if !present.iter().any(|name| name == required) {
-            return err(
-                "E3003",
-                format!("元素 `::{}` 缺少必填属性 `{required}`", element.tag),
-                span,
-            );
+            return Err(format!(
+                "元素 `<{}>` 缺少必填属性 `{required}`",
+                element.tag
+            ));
         }
     }
     Ok(())

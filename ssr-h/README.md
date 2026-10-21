@@ -101,73 +101,78 @@ cargo run --manifest-path ssr-h/Cargo.toml -- \
 
 ## 动态前端插件
 
-目录结构：
+**插件只接受 TSX**：`.slang` / `.html` 模板已移除。目录结构：
 
 ```text
-ssr-h/frontend-plugins/hello/
+ssr-h/frontend-plugins/hello-tsx/
   plugin.json             # 清单：导航 / 页面 / 仪表盘 / 插槽
-  composer.html           # 插槽片段（可选）
-  dashboard.html          # 仪表盘卡片（可选）
-  page.html               # 独立页面内容（可选）
-  static/hello.js         # 插件静态资源（可选）
+  page.tsx                # 独立页面
+  dashboard.tsx           # 仪表盘卡片（可选）
+  slot.tsx                # 插槽（可选）
+  components/card.tsx     # 相对 import 的组件（可选）
+  static/                 # 插件静态资源（可选）
 ```
 
 `plugin.json`：
 
 ```json
 {
-  "id": "hello",
-  "name": "Hello Frontend Plugin",
-  "version": "0.2.0",
-  "description": "演示动态前端插件",
-  "nav": [{ "label": "Hello 插件", "slug": "hello" }],
-  "pages": [{ "slug": "hello", "title": "Hello 插件", "template": "page.html" }],
-  "dashboard": "dashboard.html",
+  "id": "hello-tsx",
+  "name": "Hello TSX",
+  "version": "0.1.0",
+  "description": "演示 TSX 插件",
+  "nav": [{ "label": "Hello TSX", "slug": "hello" }],
+  "pages": [{ "slug": "hello", "title": "Hello TSX", "template": "page.tsx" }],
+  "dashboard": "dashboard.tsx",
   "assets": "static",
   "slots": [
-    { "slot": "composer.left", "template": "composer.html", "order": 20 }
+    { "slot": "composer.left", "template": "slot.tsx", "order": 20 }
   ]
 }
 ```
 
 - 访问 `/extensions` 点「重载前端插件」即可重新扫描目录；新插件立即出现在导航与仪表盘，无需重启。
 - 独立页面地址：`/ext/{id}/{slug}`；资源地址：`/ext/{id}/assets/{path}`。
-- **插槽（slots）**：把片段挂到界面的固定位置（`composer.left` / `composer.right` / `composer.footer` / `composer.above` / `sidebar.top` / `sidebar.bottom` / `topbar.right` / `transcript.after` / `extensions.list` / `dashboard.widgets`）。插槽内容在服务端渲染进 HTML；插件加载失败只影响它自己，界面退回默认实现。
+- **插槽（slots）**：把 TSX 挂到界面的固定位置（`composer.left` / `composer.right` / `composer.footer` / `composer.above` / `sidebar.top` / `sidebar.bottom` / `topbar.right` / `transcript.after` / `extensions.list` / `dashboard.widgets`）。插槽内容在服务端渲染进 HTML；插件加载失败只影响它自己，界面退回默认实现。
 - 可在扩展页逐个**停用/启用**插件（`POST /extensions/{id}/disable|enable`），停用后贡献立即消失、界面回到默认实现；`GET /api/plugins` 暴露插件与插槽状态。
-- 插件 HTML 是**本地受信任内容**，以原样片段插入布局；不要在不受信任的目录里放插件。后续可加 iframe/沙箱。
+- 插件只接受 `.tsx` 模板；插件代码是**本地受信任内容**，不要在不受信任的目录里放插件。
 
-### Slang（运行时组件语言）
+### TSX 作者约定
 
-插件也可以把 `template` / `dashboard` 写成 `.slang`，由 `src/slang/` 在运行时解析成
-**内容或组件**；新增页面/卡片/业务组件不需要改 Rust，也不需要重新编译：
+```tsx
+import { Button, Chip } from "ssr-h:components";
 
-```json
-{
-  "slang": 2,
-  "components": ["components.slang"],
-  "pages": [{ "slug": "hello", "title": "Hello Slang", "template": "page.slang" }],
-  "dashboard": "dashboard.slang",
-  "slots": [{ "slot": "composer.left", "template": "slot.slang", "order": 30 }]
+export function Page(props: any) {
+  return (
+    <div class="card">
+      <h2>{props.plugin.name}</h2>
+      <Chip text={"插件 " + props.data.plugin_count} tone="brand" />
+      <Button label="打开对话" href="/" />
+    </div>
+  );
 }
 ```
 
-- 小写 `::div` / `::p` 是内置安全 HTML 元素；大写 `::Button` / `::Card` 是组件；
-- `{{ }}` 默认转义，`@if` / `@for` / `@let` / `@use` / `@include` / `@slot` 由服务端求值；
-- 旧 `.html` 插件完全不受影响，按扩展名分派；`.slang` 解析失败会显示在扩展页诊断里，
-  并保留上一次可用编译结果（热重载）；
-- 示例：`frontend-plugins/hello-slang/`；语言与组件模型见
-  [docs/SLANG-V2.md](docs/SLANG-V2.md)；
-- 脚本层（Slang 2）：`@script` 模块纯函数 + `@props` 契约 + 作用域插槽；
-  **没有** setup/闭包/ref/computed/事件/lambda，见 [docs/SLANG-SCRIPT.md](docs/SLANG-SCRIPT.md)；
-- 客户端交互统一用 **Alpine.js（CSP 构建）**：`static/alpine.min.js` 不需要
-  `unsafe-eval`，当前 CSP 可直接使用；服务端只输出 HTML/数据，状态留在浏览器。
+- 内置 **TSX 组件库**（`src/tsx/components.tsx`）提供 `Button` / `IconButton` / `Chip` /
+  `Notice` / `Panel` / `Disclosure` / `EmptyState` / `Icon` / `TextField` / `Select` /
+  `Modal` / `Form` / `Todo` / `UserMessage` / `AssistantMessage`；
+  推荐 `import { Button } from "ssr-h:components"`，也兼容直接使用全局同名组件；
+- 小写标签走 HTML 白名单与 URL 校验；文本默认转义；函数 prop / `onX` /
+  `dangerouslySetInnerHTML` 拒绝；Boa 无 fs/net/process，并有循环/递归/输出/嵌套预算；
+- **支持 import/export**：加载/重载时 OXC 递归转译相对模块，运行时交给 Boa 的 ESM loader；
+  **不需要 Bun/Node**（只支持插件目录内的相对模块，npm 依赖不支持）；
+- 每次渲染新建 Boa Context（模块状态不跨请求）；release 单文件页约 5ms、
+  含内置组件库的模块页约 3.4ms（组件库每次 Context 都要初始化，后续可做池化/预编译）；
+- 示例：`frontend-plugins/hello-tsx/`；完整说明见 [docs/TSX.md](docs/TSX.md)。
+
 
 ## 组件库
 
-- 组件在 **Rust 侧渲染**（`src/ui/`），聊天页模板只摆放；样式按层拆在 `static/{components,layout,widgets,shell,pages}.css`（引用顺序固定）。
-  二级页（插件/供应商/概览）仍保留 Tailwind 时代的 `btn/card/badge` 标记，两套视觉尚未完全收口。
-- 焦点态全库统一：品牌描边 + 3px 光环；输入框聚焦时额外显示提示文案。
-- 组件图标在 `src/ui/icons.rs` 定义；部分模板（侧栏/顶栏/插件页）仍有内联 SVG，待后续收口到 sprite。
+- **应用壳**仍用 Rust 组件（`src/ui/`）渲染；聊天页模板只摆放。
+- **插件 TSX** 的组件库在 `src/tsx/components.tsx`：组件就是 TSX 函数，输出 `ada-*` class；
+  Rust 侧只保留 `Icon` SVG 原语与 HTML 白名单，不再实现插件业务组件。
+- 样式按层拆在 `static/{components,layout,widgets,shell,pages}.css`（引用顺序固定）；
+  焦点态统一为品牌描边 + 3px 光环；图标唯一来源仍是 `src/ui/icons.rs`。
 - 详见 [docs/COMPONENTS.md](docs/COMPONENTS.md)。
 
 ## 当前实现边界
@@ -175,8 +180,10 @@ ssr-h/frontend-plugins/hello/
 - 这是 SSR/HTMX 原型，不是现有 desktop-ui 的替代：聊天发送通过服务端 WS RPC，页面按轮询/重新加载更新；
 - 已实现：只读概览、会话列表/详情、发送、中止、重试、审批、排队（提升/删除/清空）、任务规划、
   **供应商管理**（新建 / 编辑连接 / 删除 / 设为当前 / 测试连接 / 获取远程模型 / 模型增删改，对齐 desktop-ui）、
-  插件重载与启停、**Slang 运行时组件语言**（`.slang` 页面/插槽/仪表盘/组合组件）；
-- 核心页面壳仍是 Askama 编译期模板；Slang 先覆盖插件扩展面，不替代整页布局与数据获取；
+  插件重载与启停、**TSX 服务端插件**（`.tsx` 页面/插槽/仪表盘，OXC + Boa + 内置 TSX 组件库）；
+- 核心页面壳仍是 Askama 编译期模板；TSX 只覆盖插件扩展面，不替代整页布局与数据获取；
 - 侧栏会话列表仍是页面加载时的快照（顶栏运行状态由 live 更新）；新会话/其它客户端的变更需要刷新；
 - 图片会显示"含 N 张图片"标记但**不渲染图片内容**；模式/审批档位/模型仍只读；
+- TSX 的相对 import 由 OXC + Boa 原生加载，不需要 Bun/Node；npm 依赖仍不支持，
+  且没有 wall-clock 超时（只有循环/递归/输出预算）；
 - 不做登录鉴权；非回环监听必须显式 `--allow-remote` + `--ui-token`，且只提供明文 HTTP。

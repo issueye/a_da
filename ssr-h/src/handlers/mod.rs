@@ -16,9 +16,9 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::agent::AgentClient;
+use crate::context::{AppMeta, RenderContext};
 use crate::guard::SharedAccess;
 use crate::plugins::{PluginRegistry, Slot};
-use crate::slang::{AppMeta, RenderContext, Trust};
 use crate::templates::*;
 use crate::ui::{self, ConfirmDialog};
 
@@ -184,13 +184,9 @@ fn render_context(state: &AppState, active: &str) -> RenderContext {
         product: "ssr-h · agent frontend".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
-    .with_trust(Trust::Local)
-    .with_data(
-        serde_json::json!({
-            "plugin_count": state.frontend.count(),
-        })
-        .into(),
-    )
+    .with_data(serde_json::json!({
+        "plugin_count": state.frontend.count(),
+    }))
     .with_route_path(active)
 }
 
@@ -198,11 +194,6 @@ fn render_context(state: &AppState, active: &str) -> RenderContext {
 ///
 /// 工具行左右两侧与辅助区都是**插件插槽**：插件可以往里放自己的控件，
 /// 插件挂了或坏了，插槽退回默认实现，输入框照常可用。
-/// 输入框与辅助区需要的运行时状态。
-///
-/// 打包成一个结构体而不是 11 个参数：页首渲染与 live 轮询必须用**同一份**输入，
-/// 否则"页面上的状态"和"轮询回来的状态"会各写一套。
-
 fn slot_content(registry: &PluginRegistry, context: &RenderContext) -> SlotContent {
     let pick = |slot: Slot| registry.render_slot_with(slot, context).html;
     SlotContent {
