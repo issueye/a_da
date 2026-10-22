@@ -398,7 +398,12 @@
   color: var(--ph-brand-ink);
 }
 .ada-disclosure__rail {
-  margin: 2px 0 4px 11px;
+  /* 面板之间要有间距，否则两块面板的边框会粘成一根线、看着像一张卡。
+     底部多留一点：展开块必须和下一行拉开，不然它会读成"下一条记录的一部分"。 */
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 12px 11px;
   padding-left: 10px;
   border-left: 1px solid var(--ph-line);
 }
