@@ -257,15 +257,13 @@ fn ssr_log(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResul
 /// 单行化 + 截断：日志里夹换行会把终端输出冲散，超大对象也不能照单全收。
 fn sanitize_console_text(raw: &str) -> String {
     let mut text = String::new();
-    let mut count = 0usize;
     let mut truncated = false;
-    for ch in raw.chars() {
+    for (count, ch) in raw.chars().enumerate() {
         if count >= MAX_CONSOLE_CHARS {
             truncated = true;
             break;
         }
         text.push(if ch.is_control() { ' ' } else { ch });
-        count += 1;
     }
     if truncated {
         text.push_str(" …（已截断）");
@@ -1376,3 +1374,4 @@ export function Page() {
         let _ = std::fs::remove_dir_all(&root);
     }
 }
+

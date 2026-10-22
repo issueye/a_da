@@ -1,14 +1,12 @@
-import { Button } from "ssr-h:components";
+import { Button, Icon } from "ssr-h:components";
 import { bandOf, percentOf, tokensOf } from "./components/weather";
 
 /**
  * 输入框上方的天气胶囊（`composer.above` 插槽）。
  *
- * 点击不再跳页，而是展开一个浮动小窗（`<details>` + 绝对定位面板）：
- * 天气分档、百分比、已用/窗口、会话与模型都在这里看；完整页面仍保留入口。
- *
- * 面板在每次 `parts` 刷新时会被整块替换，`chat.js` 会按 `id` 还原 `open`，
- * 所以展开状态不会被 500ms 一次的更新关掉。
+ * 点击展开浮动小窗（`<details>` + 绝对定位面板）：天气分档、百分比、
+ * 已用/窗口、会话与模型都在这里看；完整页面仍保留入口。
+ * 面板在 SSE `parts` 刷新时会被整块替换，`chat.js` 按 `id` 还原 `open`。
  */
 export function Page(props: any) {
   const tokens = tokensOf(props);
@@ -20,44 +18,70 @@ export function Page(props: any) {
   const model = tokens && tokens.model ? tokens.model : "未知";
   const href = "/ext/token-weather/weather";
   const label = percent === null ? "Token 用量" : band.label + " · " + percent + "%";
+  const pct = percent === null ? "—" : percent + "%";
   const detail =
     percent === null
       ? "还没有用量数据：先在对话里说一句，或检查网关是否连上"
       : used + " / " + windowSize + " tokens · " + band.advice;
 
   return (
-    <details class="ada-popover" id="token-weather-popover">
-      <summary class={"ada-chip ada-chip--" + band.tone} title={detail} aria-label="Token 天气详情">
-        <span aria-hidden="true">{band.icon}</span>
+    <details class={"ada-popover tw-popover tw-" + band.key} id="token-weather-popover">
+      <summary class={"ada-chip ada-chip--" + band.tone + " tw-chip"} title={detail} aria-label="Token 天气详情">
+        <span class="tw-chip__icon" aria-hidden="true">{band.icon}</span>
         <span class="ada-chip__text">{label}</span>
+        <Icon name="i-chevron-down" size={11} class="tw-chip__caret" />
       </summary>
 
-      <div class="ada-popover__panel">
-        <div class="flex items-center gap-3">
-          <span class="text-2xl" aria-hidden="true">{band.icon}</span>
-          <div class="flex-1">
-            <div class="text-sm font-semibold text-ink">{label}</div>
-            <div class="text-xs text-muted">{band.advice}</div>
+      <div class="ada-popover__panel tw-panel">
+        <div class="tw-panel__aura" aria-hidden="true"></div>
+
+        <div class="tw-panel__head">
+          <span class="tw-panel__orb" aria-hidden="true">{band.icon}</span>
+          <div class="tw-panel__copy">
+            <div class="tw-panel__kicker">CONTEXT WEATHER</div>
+            <div class="tw-panel__title">
+              {band.label}
+              <span class="tw-panel__pct">{pct}</span>
+            </div>
+            <p class="tw-panel__advice">{band.advice}</p>
           </div>
         </div>
 
-        <progress class="mt-2 w-full" value={percent === null ? 0 : percent} max="100"></progress>
-
-        <div class="mt-2 space-y-2 text-xs text-muted">
-          <p>已用：{used} tokens</p>
-          <p>窗口：{windowSize > 0 ? windowSize + " tokens" : "未配置（contextWindow = 0）"}</p>
-          <p>会话：{threadTitle}</p>
-          <p>模型：{model}</p>
+        <div class="tw-meter">
+          <div class="tw-meter__meta">
+            <span>上下文用量</span>
+            <span>{percent === null ? "暂无数据" : used + " / " + windowSize}</span>
+          </div>
+          <progress class="tw-progress" value={percent === null ? 0 : percent} max="100"></progress>
         </div>
 
-        <p class="mt-2 text-[11px] text-faint">
-          口径：最近一次模型调用的 promptTokens ÷ contextWindow；随对话实时刷新。
-        </p>
+        <div class="tw-stats">
+          <div class="tw-stat">
+            <span class="tw-stat__label">已用</span>
+            <strong class="tw-stat__value">{used}</strong>
+            <span class="tw-stat__unit">tokens</span>
+          </div>
+          <div class="tw-stat">
+            <span class="tw-stat__label">窗口</span>
+            <strong class="tw-stat__value">{windowSize > 0 ? windowSize : "—"}</strong>
+            <span class="tw-stat__unit">tokens</span>
+          </div>
+          <div class="tw-stat tw-stat--wide">
+            <span class="tw-stat__label">会话</span>
+            <span class="tw-stat__text" title={threadTitle}>{threadTitle}</span>
+          </div>
+          <div class="tw-stat tw-stat--wide">
+            <span class="tw-stat__label">模型</span>
+            <span class="tw-stat__text" title={model}>{model}</span>
+          </div>
+        </div>
 
-        <div class="mt-2 flex justify-end">
+        <div class="tw-panel__foot">
+          <span class="tw-note">最近一次 promptTokens ÷ contextWindow</span>
           <Button label="完整页面" href={href} variant="ghost" size="sm" icon="i-external" />
         </div>
       </div>
     </details>
   );
 }
+

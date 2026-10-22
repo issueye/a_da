@@ -148,14 +148,31 @@ html.dark .icon-moon {
 .ada-table-wrap {
   overflow-x: auto;
 }
+.ada-model-table {
+  table-layout: fixed;
+  width: 100%;
+}
+.ada-model-table th,
 .ada-model-table td {
+  min-width: 0;
+  overflow: hidden;
   vertical-align: middle;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ada-model-table td:nth-child(2) {
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.ada-col-id { width: 30%; }
+.ada-col-name { width: 24%; }
+.ada-col-context { width: 12%; }
+.ada-col-output { width: 12%; }
+.ada-col-image { width: 7%; }
+.ada-col-status { width: 7%; }
+.ada-col-actions { width: 52px; }
+.ada-model-table__actions {
+  overflow: visible;
+  text-align: center;
+}
+.ada-model-table__actions .ada-row-menu {
+  justify-content: center;
 }
 .ada-table-actions {
   display: flex;
@@ -178,4 +195,84 @@ html.dark .icon-moon {
 }
 .ada-modal__form {
   display: block;
+}
+
+/* 模型/行级操作：SVG 省略号 + 下拉菜单。
+   JS（components.js）在展开时把面板放到 position:fixed，避免被表格横向滚动裁切；
+   无 JS 时 details 仍能展开，作为静态降级。 */
+.ada-row-menu {
+  position: relative;
+  display: inline-flex;
+  justify-content: flex-end;
+}
+.ada-row-menu > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.ada-row-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.ada-row-menu__trigger {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid var(--ph-line);
+  border-radius: 7px;
+  background: var(--ph-surface);
+  color: var(--ph-muted);
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.ada-row-menu__trigger:hover,
+.ada-row-menu[open] .ada-row-menu__trigger {
+  border-color: var(--ph-line-strong);
+  background: var(--ph-subtle);
+  color: var(--ph-ink);
+}
+.ada-row-menu__panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 70;
+  display: grid;
+  min-width: 156px;
+  gap: 1px;
+  padding: 4px;
+  border: 1px solid var(--ph-line);
+  border-radius: 10px;
+  background: var(--ph-elevated);
+  box-shadow: var(--ph-shadow);
+}
+.ada-row-menu__panel form {
+  margin: 0;
+}
+.ada-row-menu__item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  padding: 7px 9px;
+  color: var(--ph-muted);
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: left;
+  white-space: nowrap;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.ada-row-menu__item:hover {
+  background: var(--ph-subtle);
+  color: var(--ph-ink);
+}
+.ada-row-menu__item--danger {
+  color: var(--ph-danger-ink);
+}
+.ada-row-menu__item--danger:hover {
+  background: var(--ph-danger-soft);
+  color: var(--ph-danger-ink);
+}
+.ada-row-menu__item:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }

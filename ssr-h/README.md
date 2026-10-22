@@ -167,6 +167,7 @@ ssr-h/frontend-plugins/hello-tsx/
   slot.tsx                # 插槽（可选）
   components/card.tsx     # 相对 import 的组件（可选）
   static/                 # 插件静态资源（可选）
+  static/hello.css        # 插件自定义样式（由 manifest styles 注入）
 ```
 
 `plugin.json`：
@@ -181,6 +182,7 @@ ssr-h/frontend-plugins/hello-tsx/
   "pages": [{ "slug": "hello", "title": "Hello TSX", "template": "page.tsx" }],
   "dashboard": "dashboard.tsx",
   "assets": "static",
+  "styles": ["hello.css"],
   "slots": [
     { "slot": "composer.left", "template": "slot.tsx", "order": 20 }
   ]
@@ -189,6 +191,15 @@ ssr-h/frontend-plugins/hello-tsx/
 
 - 访问 `/extensions` 点「重载前端插件」即可重新扫描目录；新插件立即出现在导航与仪表盘，无需重启。
 - 独立页面地址：`/ext/{id}/{slug}`；资源地址：`/ext/{id}/assets/{path}`。
+- **自定义 CSS**：把 CSS 放进 assets 目录，在 `plugin.json` 的 `styles` 里列相对路径；
+  服务端会把 `<link rel="stylesheet" href="/ext/{id}/assets/...?v=指纹">` 注入所有页面 `<head>`，
+  并把 CSS 包进 `@scope ([data-plugin-scope="{id}"])`，**只作用于该插件内容**，
+  不会污染应用壳或其他插件。`styles` 只接受相对路径 `.css`（不能 `..` / 绝对路径），
+  CSS 变化会随插件指纹刷新缓存。例如 `{ "assets": "static", "styles": ["hello.css"] }`
+  对应 `static/hello.css`。插件内容外层有 `data-plugin-scope` 包裹层
+  （`display: contents`，不改变布局）；浏览器不支持 `@scope` 时整段样式被忽略（安全降级）。
+  请用插件内容 class 选择器，不要依赖 `:root`/`body`；`@import`/`@charset` 放在作用域内无效，
+  `@keyframes` 名称仍建议加插件前缀。
 - **插槽（slots）**：把 TSX 挂到界面的固定位置（`composer.left` / `composer.right` / `composer.footer` / `composer.above` / `sidebar.top` / `sidebar.bottom` / `topbar.right` / `transcript.after` / `extensions.list` / `dashboard.widgets`）。插槽内容在服务端渲染进 HTML；插件加载失败只影响它自己，界面退回默认实现。
 - `composer.above` 的插件（如 Token 天气）随 SSE `parts` 刷新：投影里带**当前会话**的助手 `usage`（不是快照的 `activeThreadId`），轮次收尾后会延迟补拉一次条目，所以不会停在「晴天 0%」。点击天气胶囊展开**浮层**（分档/百分比/已用/窗口/会话/模型），不跳页；完整页面仍保留入口。浮层是插件自己的 `<details class="ada-popover">`，`chat.js` 在 `parts` 替换后按 `id` 还原展开状态，并支持点外部/Esc 关闭。
 - 可在扩展页逐个**停用/启用**插件（`POST /extensions/{id}/disable|enable`），停用后贡献立即消失、界面回到默认实现；`GET /api/plugins` 暴露插件与插槽状态。
@@ -275,3 +286,5 @@ export function Page(props: any) {
 - TSX 的相对 import 由 OXC + Boa 原生加载，不需要 Bun/Node；npm 依赖仍不支持，
   且没有 wall-clock 超时（只有循环/递归/输出预算）；
 - 不做登录鉴权；非回环监听必须显式 `--allow-remote` + `--ui-token`，且只提供明文 HTTP。
+
+

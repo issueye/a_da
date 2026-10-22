@@ -157,42 +157,7 @@
 
             <div id="remote-models" class="mt-2"></div>
 
-            <div class="ada-table-wrap mt-3">
-              <table class="table ada-model-table">
-                <thead>
-                  <tr>
-                    <th>模型 ID</th><th>显示名</th><th>上下文</th><th>最大输出</th><th>图片</th><th>状态</th><th>操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {% for m in p.models %}
-                  <tr>
-                    <td class="font-mono text-[11px] text-ink">{{ m.id }}</td>
-                    <td class="text-xs">{{ m.name }}</td>
-                    <td class="font-mono text-[11px]">{{ m.context_window }}</td>
-                    <td class="font-mono text-[11px]">{{ m.max_output_tokens }}</td>
-                    <td class="text-[10px]">{% if m.supports_images %}<span class="badge badge-neutral">支持</span>{% else %}<span class="text-faint">—</span>{% endif %}</td>
-                    <td>{% if m.current %}<span class="badge badge-success">当前</span>{% else %}<span class="text-[10px] text-faint">—</span>{% endif %}</td>
-                    <td>
-                      <div class="ada-table-actions">
-                        <button class="btn btn-secondary btn-xs" type="button" data-modal-open="model-{{ m.index }}">编辑</button>
-                        {% if !m.current %}
-                        <form method="post" action="/providers/{{ p.id }}/activate">
-                          <input type="hidden" name="model" value="{{ m.id }}">
-                          <button class="btn btn-secondary btn-xs" type="submit">设为当前</button>
-                        </form>
-                        {% endif %}
-                        <form method="post" action="/providers/{{ p.id }}/models/{{ m.index }}/delete"
-                              data-confirm="从供应商「{{ p.name }}」移除模型 {{ m.id }}？">
-                          <button class="btn btn-secondary btn-xs" type="submit"{% if p.model_count <= 1 %} disabled title="每个供应商至少保留一个模型"{% endif %}>移除</button>
-                        </form>
-                      </div>
-                    </td>
-                  </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
+            {{ model_table|safe }}
           </section>
         </div>
       </div>
@@ -207,3 +172,4 @@
 </div>
 {% endif %}
 {% endblock %}
+

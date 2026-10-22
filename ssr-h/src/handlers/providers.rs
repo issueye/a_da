@@ -12,7 +12,8 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::ui::{
-    Button, ButtonKind, ButtonVariant, IconButton, Modal, Render, Select, Size, TabItem, Tabs,
+    Button, ButtonKind, ButtonVariant, IconButton, Modal, ModelTable, Render, Select, Size, TabItem,
+    Tabs,
 };
 
 /// 详情区页签的 DOM id 前缀：`Tabs` 按它生成 `…-tab-{key}` / `…-panel-{key}`，
@@ -368,6 +369,10 @@ pub async fn providers(
             .render(),
         None => String::new(),
     };
+    let model_table = selected
+        .as_ref()
+        .map(|card| ModelTable::new(&card.id, &card.name, &card.models).render())
+        .unwrap_or_default();
     let page = ProvidersPage {
         base: base(&state, "供应商", "providers", flash_from_query(&query)).await,
         providers: cards,
@@ -378,6 +383,7 @@ pub async fn providers(
         tabs,
         active_tab: active_tab.to_string(),
         model_new_modal,
+        model_table,
     };
     Ok(render(&page)?.into_response())
 }
@@ -1043,3 +1049,4 @@ mod tests {
         assert_eq!(value["contextWindow"], json!(128000));
     }
 }
+

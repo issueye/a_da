@@ -149,6 +149,9 @@ pub struct Manifest {
     /// v0.6 新增：挂载点声明。
     #[serde(default)]
     pub slots: Vec<SlotEntry>,
+    /// 插件 CSS（相对 assets 目录；只接受 `.css`，例如 `weather.css`）。
+    #[serde(default)]
+    pub styles: Vec<String>,
 }
 
 impl Manifest {
@@ -195,6 +198,24 @@ impl Manifest {
                 bail!("dashboard 必须是 .tsx 文件");
             }
         }
+        for style in &self.styles {
+            let style = style.trim();
+            if style.is_empty() || !style.ends_with(".css") {
+                bail!("插件样式必须是 .css 文件");
+            }
+            if style.starts_with('/')
+                || style.contains('\\')
+                || style.split('/').any(|part| part == ".." || part.is_empty())
+            {
+                bail!("插件样式路径不合法: {style}");
+            }
+            if !style
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/'))
+            {
+                bail!("插件样式路径只能包含字母、数字、_ - . /: {style}");
+            }
+        }
         Ok(())
     }
 }
@@ -220,5 +241,27 @@ mod tests {
         assert!(format!("{error}").contains(".tsx"), "{error}");
         let error = manifest("page.html").validate().unwrap_err();
         assert!(format!("{error}").contains(".tsx"), "{error}");
+    }
+
+    fn manifest_with_styles(styles: Vec<&str>) -> Manifest {
+        serde_json::from_value(serde_json::json!({
+            "id": "demo",
+            "name": "Demo",
+            "version": "0.1.0",
+            "pages": [{ "slug": "home", "title": "Home", "template": "page.tsx" }],
+            "styles": styles,
+        }))
+        .expect("manifest")
+    }
+
+    #[test]
+    fn styles_must_be_relative_css_files() {
+        assert!(manifest_with_styles(vec!["weather.css", "nested/badge.css"])
+            .validate()
+            .is_ok());
+        for bad in ["style.scss", "../style.css", "/style.css", "a//b.css"] {
+            let error = manifest_with_styles(vec![bad]).validate().unwrap_err();
+            assert!(format!("{error}").contains("样式"), "{bad}: {error}");
+        }
     }
 }

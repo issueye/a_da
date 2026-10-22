@@ -833,3 +833,35 @@
   align-items: center;
   gap: 6px;
 }
+
+/* 插件样式作用域：包裹层不能改变布局。 */
+[data-plugin-scope] { display: contents; }
+
+/* 工具调用输出：长内容先给 12 行预览，完整内容收进嵌套 details。 */
+.ada-tool-output__preview {
+  max-height: 190px;
+  overflow: auto;
+}
+.ada-tool-output__meta {
+  margin-left: auto;
+  color: var(--ph-faint);
+  font-size: 9.5px;
+}
+.ada-tool-output__more {
+  border-top: 1px solid var(--ph-line);
+}
+.ada-tool-output__more > summary {
+  padding: 6px 10px;
+  color: var(--ph-brand-ink);
+  font-size: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.ada-tool-output__more > summary:hover {
+  background: var(--ph-subtle);
+}
+.ada-tool-output__full {
+  max-height: 420px;
+  overflow: auto;
+  border-top: 1px solid var(--ph-line);
+}

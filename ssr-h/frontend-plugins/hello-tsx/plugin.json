@@ -3,8 +3,11 @@
   "name": "Hello TSX",
   "version": "0.1.0",
   "description": "运行时 TSX 插件：OXC + Boa 在服务端执行，VNode 交给 Rust 组件库渲染。",
+  "assets": "static",
+  "styles": ["hello.css"],
   "nav": [{ "label": "Hello TSX", "slug": "hello" }],
   "pages": [{ "slug": "hello", "title": "Hello TSX", "template": "page.tsx" }],
   "dashboard": "dashboard.tsx",
   "slots": [{ "slot": "composer.left", "template": "slot.tsx", "order": 40 }]
 }
+

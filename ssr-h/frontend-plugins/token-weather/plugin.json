@@ -5,6 +5,9 @@
   "description": "按当前会话的上下文用量显示天气：0-30% 晴 / 31-60% 多云 / 61-85% 阴 / >85% 暴雨。",
   "nav": [{ "label": "Token 天气", "slug": "weather" }],
   "pages": [{ "slug": "weather", "title": "Token 天气", "template": "page.tsx" }],
+  "assets": "static",
+  "styles": ["weather.css"],
   "dashboard": "dashboard.tsx",
   "slots": [{ "slot": "composer.above", "template": "slot.tsx", "order": 10 }]
 }
+

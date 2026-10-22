@@ -202,6 +202,7 @@ async fn base_with_snapshot(
         gateway: state.agent.base_url().to_string(),
         product: "ssr-h · agent frontend".to_string(),
         plugin_nav: state.frontend.nav_links(),
+        plugin_styles: state.frontend.styles(),
         flash,
         slots,
         icons: ui::sprite(),
@@ -665,3 +666,4 @@ pub use dashboard::*;
 pub use extensions::*;
 pub use providers::*;
 pub use workspaces::*;
+

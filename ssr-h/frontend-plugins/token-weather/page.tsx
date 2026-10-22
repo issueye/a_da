@@ -1,12 +1,11 @@
-import { Chip, Notice, Panel } from "ssr-h:components";
+import { Chip, Notice } from "ssr-h:components";
 import { bandOf, percentOf, tokensOf } from "./components/weather";
 
 /**
- * Token 天气：把"当前会话的上下文用量"渲染成天气。
+ * Token 天气完整页：把"当前会话的上下文用量"渲染成天气。
  *
  * 数据来源是服务端注入的 `props.data.tokens`（`promptTokens ÷ contextWindow`），
- * 插件自己不算 token——Boa 里没有 fs/net，也拿不到网关。
- * 每 5 秒用 HTMX 把本节点整块换一次：`hx-select` 从整页里取回 `#token-weather`。
+ * 插件自己不算 token；每 5 秒用 HTMX 把本节点整块换一次。
  */
 export function Page(props: any) {
   const tokens = tokensOf(props);
@@ -18,39 +17,63 @@ export function Page(props: any) {
   const model = tokens && tokens.model ? tokens.model : "未知";
   const slug = props.page && props.page.slug ? props.page.slug : "weather";
   const href = "/ext/" + props.plugin.id + "/" + slug;
+  const pct = percent === null ? "—" : percent + "%";
 
   return (
     <div
       id="token-weather"
-      class="space-y-3"
+      class={"tw-page tw-" + band.key}
       hx-get={href}
       hx-trigger="every 5s"
       hx-target="#token-weather"
       hx-swap="outerHTML"
       hx-select="#token-weather"
     >
-      <div class="flex items-center gap-3">
-        <span class="text-2xl" aria-hidden="true">{band.icon}</span>
-        <div class="flex-1">
-          <div class="text-lg font-semibold text-ink">{band.label}</div>
-          <div class="text-xs text-muted">{band.advice}</div>
+      <section class="tw-hero">
+        <div class="tw-hero__glow" aria-hidden="true"></div>
+        <span class="tw-hero__orb" aria-hidden="true">{band.icon}</span>
+        <div class="tw-hero__body">
+          <div class="tw-kicker">CONTEXT WEATHER</div>
+          <h2 class="tw-hero__title">{band.label}</h2>
+          <p class="tw-hero__advice">{band.advice}</p>
         </div>
-        <Chip text={percent === null ? "无数据" : percent + "%"} tone={band.tone} />
-      </div>
+        <Chip text={percent === null ? "无数据" : pct} tone={band.tone} />
+      </section>
 
-      <progress class="w-full" value={percent === null ? 0 : percent} max="100"></progress>
-
-      <Panel title="用量明细">
-        <div class="space-y-2 text-xs text-muted">
-          <p>已用：{used} tokens</p>
-          <p>
-            窗口：
-            {windowSize > 0 ? windowSize + " tokens" : "未配置（config.contextWindow = 0）"}
-          </p>
-          <p>会话：{threadTitle}</p>
-          <p>模型：{model}</p>
+      <section class="tw-card">
+        <div class="tw-meter">
+          <div class="tw-meter__meta">
+            <span>上下文用量</span>
+            <strong>{percent === null ? "暂无数据" : used + " / " + windowSize + " tokens"}</strong>
+          </div>
+          <progress class="tw-progress" value={percent === null ? 0 : percent} max="100"></progress>
         </div>
-      </Panel>
+
+        <div class="tw-stats">
+          <div class="tw-stat">
+            <span class="tw-stat__label">已用</span>
+            <strong class="tw-stat__value">{used}</strong>
+            <span class="tw-stat__unit">tokens</span>
+          </div>
+          <div class="tw-stat">
+            <span class="tw-stat__label">窗口</span>
+            <strong class="tw-stat__value">{windowSize > 0 ? windowSize : "—"}</strong>
+            <span class="tw-stat__unit">tokens</span>
+          </div>
+          <div class="tw-stat">
+            <span class="tw-stat__label">已用比例</span>
+            <strong class="tw-stat__value">{pct}</strong>
+          </div>
+          <div class="tw-stat tw-stat--wide">
+            <span class="tw-stat__label">会话</span>
+            <span class="tw-stat__text" title={threadTitle}>{threadTitle}</span>
+          </div>
+          <div class="tw-stat tw-stat--wide">
+            <span class="tw-stat__label">模型</span>
+            <span class="tw-stat__text" title={model}>{model}</span>
+          </div>
+        </div>
+      </section>
 
       {band.key === "storm" ? (
         <Notice
@@ -59,10 +82,11 @@ export function Page(props: any) {
         />
       ) : null}
 
-      <p class="text-[11px] text-faint">
+      <p class="tw-note tw-note--page">
         口径：最近一次模型调用的 promptTokens ÷ contextWindow（与引擎的上下文治理同源）。
         数据由服务端注入 props.data.tokens，插件只负责显示。
       </p>
     </div>
   );
 }
+

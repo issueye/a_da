@@ -26,9 +26,11 @@ mod disclosure;
 mod input;
 mod messages;
 mod modal;
+mod model_table;
 mod select;
 mod slot;
 mod tabs;
+mod tool_call;
 mod trays;
 
 pub use button::{Button, IconButton, SendButton};
@@ -38,9 +40,11 @@ pub use disclosure::{Disclosure, Panel};
 pub use input::TextField;
 pub use messages::{AssistantMessage, EmptyState, Notice, UserMessage};
 pub use modal::{ConfirmDialog, Modal};
+pub use model_table::{ModelTable, ModelTableRow};
 pub use select::Select;
 pub use slot::{render_slot, Slot};
 pub use tabs::{TabItem, Tabs};
+pub use tool_call::ToolCall;
 pub use trays::{ApprovalTray, QueueItem, QueueTray};
 
 #[cfg(test)]
@@ -187,3 +191,5 @@ mod tests {
         assert!(html.contains("含 2 张图片"));
     }
 }
+
+

@@ -20,7 +20,8 @@
 | `plugin.json` | 清单：导航、页面、仪表盘、`composer.above` 插槽 |
 | `page.tsx` | 完整页面（天气 + 用量明细） |
 | `dashboard.tsx` | 概览卡片 |
-| `slot.tsx` | 输入框上方的天气胶囊 / 浮层 |
+| `slot.tsx` | 输入框上方的天气胶囊 / 浮层（阴影、进度与明细） |
+| `static/weather.css` | 插件作用域内的浮窗/页面/卡片样式（`styles: ["weather.css"]`） |
 | `components/weather.tsx` | 分档规则（0–30 晴 / 31–60 多云 / 61–85 阴 / >85 暴雨） |
 
 ## 启用

@@ -44,6 +44,8 @@ pub struct PageBase {
     pub gateway: String,
     pub product: String,
     pub plugin_nav: Vec<NavLink>,
+    /// 启用插件声明的 CSS（由 manifest `styles` 注入 `<head>`）。
+    pub plugin_styles: Vec<String>,
     pub flash: Option<Flash>,
     /// 插件插槽内容（SSR 期填充）。
     pub slots: SlotContent,
@@ -143,19 +145,8 @@ pub struct QueueRow {
     pub text: String,
 }
 
-/// 供应商详情里的一个可用模型（对应 `ModelEntry`）。
-#[derive(Debug, Clone)]
-pub struct ProviderModelRow {
-    /// 列表内下标：模型 id 里可能带 `/`，用下标寻址才不会和路由冲突。
-    pub index: usize,
-    pub id: String,
-    pub name: String,
-    pub context_window: String,
-    pub max_output_tokens: String,
-    pub supports_images: bool,
-    /// 是否为该供应商当前生效的模型。
-    pub current: bool,
-}
+/// 供应商详情里的一个可用模型（对应 `ModelEntry`）；定义在组件库里，模板只做别名。
+pub use crate::ui::ModelTableRow as ProviderModelRow;
 
 /// 供应商卡片：列表与详情共用一份数据（详情多带几个可编辑字段）。
 #[derive(Debug, Clone)]
@@ -308,6 +299,8 @@ pub struct ProvidersPage {
     pub active_tab: String,
     /// "新增模型"弹窗（组件库渲染；列表区的「新增模型」按钮用 data-modal-open 打开）。
     pub model_new_modal: String,
+    /// 模型表（组件库渲染；模板只负责摆放）。
+    pub model_table: String,
 }
 
 #[derive(Template)]
@@ -324,6 +317,7 @@ pub struct ExtensionsPage {
 #[template(path = "plugin.html")]
 pub struct PluginPage {
     pub base: PageBase,
+    pub plugin_id: String,
     pub plugin_name: String,
     pub page_title: String,
     pub html: String,
@@ -335,3 +329,4 @@ pub struct ErrorPage {
     pub base: PageBase,
     pub message: String,
 }
+

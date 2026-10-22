@@ -188,11 +188,16 @@ pub async fn plugin_page(
             None,
         )
         .await,
+        plugin_id: plugin.id,
         plugin_name: plugin.name,
         page_title,
         html,
     };
     Ok(render(&page)?.into_response())
+}
+
+fn scope_plugin_css(plugin_id: &str, css: &str) -> String {
+    format!("@scope ([data-plugin-scope=\"{plugin_id}\"]) to ([data-plugin-scope]) {{\n{css}\n}}\n")
 }
 
 pub async fn plugin_asset(
@@ -206,6 +211,15 @@ pub async fn plugin_asset(
     let bytes = tokio::fs::read(&file)
         .await
         .map_err(|error| AppError::new(StatusCode::NOT_FOUND, format!("读取资源失败: {error}")))?;
+    // 插件 CSS 统一包进 @scope：只命中带 data-plugin-scope 的插件内容，
+    // 不会污染应用壳或其它插件。浏览器不支持 @scope 时整段样式被忽略（安全降级）。
+    let bytes = if mime.starts_with("text/css") {
+        let css = String::from_utf8_lossy(&bytes);
+        let css = css.strip_prefix('\u{feff}').unwrap_or(&css);
+        scope_plugin_css(&plugin_id, css).into_bytes()
+    } else {
+        bytes
+    };
     Ok((
         [
             (
@@ -218,4 +232,18 @@ pub async fn plugin_asset(
         bytes,
     )
         .into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugin_css_is_scoped_to_plugin_content() {
+        let css = scope_plugin_css("hello-tsx", ".badge { color: red; }");
+        assert!(
+            css.starts_with("@scope ([data-plugin-scope=\"hello-tsx\"]) to ([data-plugin-scope])")
+        );
+        assert!(css.contains(".badge { color: red; }"));
+    }
 }

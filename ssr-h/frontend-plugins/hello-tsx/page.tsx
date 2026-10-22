@@ -9,7 +9,7 @@ export function Page(props: any) {
   return (
     <div class="max-w-2xl space-y-4">
       <div>
-        <span class="badge badge-brand">hello-tsx · TSX</span>
+        <span class="badge badge-brand hello-tsx-badge">hello-tsx · TSX</span>
         <h2 class="mt-2 text-lg font-semibold tracking-tight text-ink">
           页面由 TSX 在服务端渲染
         </h2>
@@ -44,3 +44,4 @@ export function Page(props: any) {
     </div>
   );
 }
+

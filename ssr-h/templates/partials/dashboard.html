@@ -57,10 +57,11 @@
         <span class="badge badge-brand">前端插件</span>
         <span class="text-xs font-medium text-ink">{{ w.plugin_name }}</span>
       </div>
-      <div class="mt-3">{{ w.html|safe }}</div>
+      <div class="mt-3"><div data-plugin-scope="{{ w.plugin_id }}">{{ w.html|safe }}</div></div>
     </div>
     {% endfor %}
   </div>
   {% endif %}
   {{ base.slots.dashboard_widgets|safe }}
 </div>
+

@@ -339,12 +339,88 @@
     }
   }
 
+  /* ── 行级操作菜单（表格里的 SVG 省略号）────────────────────────────── */
+  function closeRowMenus(except) {
+    var menus = document.querySelectorAll('details.ada-row-menu[open]');
+    for (var i = 0; i < menus.length; i += 1) {
+      if (menus[i] !== except) menus[i].open = false;
+    }
+  }
+
+  function positionRowMenu(menu) {
+    var panel = menu.querySelector('.ada-row-menu__panel');
+    if (!panel) return;
+    var rect = menu.getBoundingClientRect();
+    var width = panel.offsetWidth || 156;
+    panel.style.position = 'fixed';
+    panel.style.right = 'auto';
+    panel.style.left =
+      Math.max(8, Math.min(window.innerWidth - width - 8, rect.right - width)) + 'px';
+    panel.style.top = rect.bottom + 6 + 'px';
+    var panelRect = panel.getBoundingClientRect();
+    if (panelRect.bottom > window.innerHeight - 8) {
+      panel.style.top = Math.max(8, rect.top - panelRect.height - 6) + 'px';
+    }
+  }
+
+  function bindRowMenus(root) {
+    var menus = (root || document).querySelectorAll('details.ada-row-menu');
+    for (var i = 0; i < menus.length; i += 1) {
+      var menu = menus[i];
+      if (menu._adaRowMenuBound) continue;
+      menu._adaRowMenuBound = true;
+      menu.addEventListener('toggle', function () {
+        if (!this.open) return;
+        closeRowMenus(this);
+        var current = this;
+        window.requestAnimationFrame(function () {
+          positionRowMenu(current);
+        });
+      });
+    }
+  }
+
+  var rowMenuDocumentBound = false;
+  function bindRowMenuDocument() {
+    if (rowMenuDocumentBound) return;
+    rowMenuDocumentBound = true;
+    document.addEventListener('click', function (event) {
+      var menu = event.target.closest && event.target.closest('details.ada-row-menu');
+      if (!menu) {
+        closeRowMenus();
+        return;
+      }
+      // 点面板里的动作后收起；编辑按钮先由 modal 控制器打开，延迟关闭不会影响它。
+      if (event.target.closest('.ada-row-menu__panel')) {
+        var current = menu;
+        window.setTimeout(function () {
+          current.open = false;
+        }, 0);
+      }
+    });
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') closeRowMenus();
+    });
+    window.addEventListener('resize', function () {
+      closeRowMenus();
+    });
+    window.addEventListener(
+      'scroll',
+      function () {
+        closeRowMenus();
+      },
+      true
+    );
+  }
+
   /* ── 启动 ───────────────────────────────────────────────────────────── */
   function boot() {
     bindDisclosures(document);
     bindComposer();
     bindTodoPanel();
     bindTabs(document);
+    bindRowMenus(document);
+    bindRowMenuDocument();
     watchTranscript();
     watchTodoDock();
     loadSlotRegistry();
@@ -363,6 +439,7 @@
     bindDisclosures: bindDisclosures,
     bindComposer: bindComposer,
     bindTabs: bindTabs,
+    bindRowMenus: bindRowMenus,
     copyText: copyText,
     closeSelects: function () {
       if (window.AdaElements) window.AdaElements.closeAllSelects(null);

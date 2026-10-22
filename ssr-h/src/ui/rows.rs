@@ -5,7 +5,7 @@
 //! 行内结构、状态语义、复制按钮等细节全部由组件库统一负责。
 
 use super::components::{
-    AssistantMessage, Button, Disclosure, EmptyState, Notice, Panel, Render, UserMessage,
+    AssistantMessage, Button, Disclosure, EmptyState, Notice, Panel, Render, ToolCall, UserMessage,
 };
 use super::theme::{ButtonVariant, Size, Tone};
 
@@ -92,61 +92,21 @@ pub fn render_row(view: &RowView, thread_id: &str) -> String {
             );
             row.render()
         }
-        "tool" => {
-            let mut row = Disclosure::new("tool", &view.icon, &view.label);
-            if !view.key.is_empty() {
-                row = row.key(view.key.clone());
-            }
-            if !view.target.is_empty() {
-                row = row.detail(view.target.clone());
-            }
-            if !view.dir.is_empty() {
-                row = row.sub(view.dir.clone());
-            }
-            if !view.elapsed.is_empty() {
-                row = row.meta(view.elapsed.clone());
-            }
-            if !view.status.is_empty() && view.status_tone != Tone::Neutral {
-                row = row.badge(view.status.clone(), view.status_tone);
-            }
-            let mut body = String::new();
-            // todo 工具：先把任务清单排版出来，原始 JSON 退居其次。
-            if !view.todo_steps.is_empty() {
-                body.push_str(
-                    &super::todo::TodoList {
-                        steps: view.todo_steps.clone(),
-                        notes: view.todo_notes.clone(),
-                    }
-                    .render(),
-                );
-            }
-            if !view.args.is_empty() {
-                body.push_str(
-                    &Panel::new(view.args.clone())
-                        .title("输入参数")
-                        .copy(view.args.clone())
-                        .render(),
-                );
-            }
-            if !view.output.is_empty() {
-                let panel = if view.output_html.is_empty() {
-                    Panel::new(view.output.clone())
-                } else {
-                    Panel::new(String::new()).html(view.output_html.clone())
-                };
-                body.push_str(&panel.title("执行输出").copy(view.output.clone()).render());
-            }
-            if body.is_empty() {
-                body.push_str(
-                    &Panel::new(String::new())
-                        .html("<p>这个工具没有返回可展示的内容。</p>")
-                        .render(),
-                );
-            }
-            row = row.body(body);
-            row.render()
-        }
-        "notice" => {
+        "tool" => ToolCall::new(
+            &view.icon,
+            &view.label,
+            &view.target,
+            &view.dir,
+            &view.elapsed,
+            &view.status,
+            view.status_tone,
+            &view.args,
+            &view.output,
+            &view.output_html,
+            &view.todo_steps,
+            view.todo_notes.as_deref(),
+        )
+        .render(),        "notice" => {
             let tone = match view.level.as_str() {
                 "error" => Tone::Danger,
                 "warn" => Tone::Warn,
@@ -204,3 +164,4 @@ pub fn render_empty(title: &str, description: &str, icon: &str) -> String {
     }
     .render()
 }
+

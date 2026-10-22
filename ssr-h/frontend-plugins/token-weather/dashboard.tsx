@@ -10,18 +10,21 @@ export function Page(props: any) {
   const windowSize = tokens && tokens.window ? tokens.window : 0;
 
   return (
-    <div class="flex items-center gap-3">
-      <span class="text-2xl" aria-hidden="true">{band.icon}</span>
-      <div class="flex-1">
-        <div class="flex items-center gap-2">
-          <span class="text-sm font-medium text-ink">{band.label}</span>
+    <div class={"tw-dash tw-" + band.key}>
+      <span class="tw-dash__orb" aria-hidden="true">{band.icon}</span>
+      <div class="tw-dash__body">
+        <div class="tw-dash__head">
+          <span class="tw-dash__title">{band.label}</span>
           <Chip text={percent === null ? "无数据" : percent + "%"} tone={band.tone} />
         </div>
-        <p class="mt-1 text-[11px] text-muted">
-          {percent === null
-            ? "还没有用量数据"
-            : used + " / " + windowSize + " tokens"}
+        <p class="tw-dash__meta">
+          {percent === null ? "还没有用量数据" : used + " / " + windowSize + " tokens"}
         </p>
+        <progress
+          class="tw-progress tw-progress--sm"
+          value={percent === null ? 0 : percent}
+          max="100"
+        ></progress>
       </div>
     </div>
   );

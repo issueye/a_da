@@ -382,8 +382,41 @@
   margin: 0 auto;
   padding: 18px 28px 32px;
 }
+/* Flash 是浮动 toast，不占主布局空间；位置固定在顶栏下方居中。 */
 .ada-flash {
-  margin: 12px 20px 0;
+  position: fixed;
+  top: 66px;
+  left: 50%;
+  z-index: 90;
+  width: min(560px, calc(100vw - 32px));
+  margin: 0;
+  transform: translateX(-50%);
+  border: 1px solid color-mix(in srgb, var(--ph-line-strong) 55%, transparent);
+  box-shadow:
+    0 18px 42px -18px rgba(15, 23, 42, 0.32),
+    0 4px 14px -8px rgba(15, 23, 42, 0.2);
+  animation: ada-flash-in 180ms ease-out;
+}
+@keyframes ada-flash-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -6px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+@media (max-width: 640px) {
+  .ada-flash {
+    top: 60px;
+    width: calc(100vw - 24px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ada-flash {
+    animation: none;
+  }
 }
 .ada-flash__close {
   display: grid;

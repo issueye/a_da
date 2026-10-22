@@ -47,6 +47,8 @@ pub struct PluginRecord {
     pub dashboard: Option<String>,
     pub root: PathBuf,
     pub assets_dir: Option<PathBuf>,
+    /// 相对 assets 目录的 CSS 路径。
+    pub styles: Vec<String>,
     pub errors: Vec<String>,
     /// 模板相对路径 → 已编译 TSX。
     pub tsx_templates: HashMap<String, Arc<CompiledTsx>>,
@@ -129,6 +131,7 @@ fn failed_record(root: &Path, id: &str, message: &str) -> PluginRecord {
         dashboard: None,
         root: root.to_path_buf(),
         assets_dir: None,
+        styles: Vec::new(),
         errors: vec![message.to_string()],
         tsx_templates: HashMap::new(),
         fingerprint: 0,
@@ -268,10 +271,32 @@ impl PluginRegistry {
             dashboard: manifest.dashboard.clone(),
             root,
             assets_dir,
+            styles: Vec::new(),
             errors: Vec::new(),
             tsx_templates: HashMap::new(),
             fingerprint: 0,
         };
+
+        if !manifest.styles.is_empty() {
+            match &record.assets_dir {
+                Some(assets) => {
+                    for style in &manifest.styles {
+                        match safe_join(&record.root, assets, style) {
+                            Ok(path) if path.is_file() => {
+                                record.styles.push(style.trim().to_string());
+                            }
+                            Ok(_) => record.errors.push(format!("插件样式不存在: {style}")),
+                            Err(error) => record
+                                .errors
+                                .push(format!("插件样式路径不合法 `{style}`: {error}")),
+                        }
+                    }
+                }
+                None => record.errors.push(
+                    "插件声明了 styles，但没有可用的 assets 目录（默认 static/）".to_string(),
+                ),
+            }
+        }
 
         let mut paths: Vec<String> = Vec::new();
         for entry in &record.slots {
@@ -393,9 +418,11 @@ impl PluginRegistry {
             }
         }
         contributions.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-        for (_, _id, html) in contributions {
+        for (_, id, html) in contributions {
             output.contributors += 1;
-            output.html.push_str(&html);
+            output
+                .html
+                .push_str(&format!("<div data-plugin-scope=\"{}\">{}</div>", id, html));
         }
         output
     }
@@ -454,6 +481,25 @@ impl PluginRegistry {
             }
         }
         links
+    }
+
+    /// 所有启用插件的 CSS 链接（带插件指纹，重载后浏览器会重新取）。
+    pub fn styles(&self) -> Vec<String> {
+        let mut styles = Vec::new();
+        for plugin in self.list() {
+            if !plugin.is_active() {
+                continue;
+            }
+            for style in &plugin.styles {
+                styles.push(format!(
+                    "/ext/{}/assets/{}?v={:x}",
+                    plugin.id, style, plugin.fingerprint
+                ));
+            }
+        }
+        styles.sort();
+        styles.dedup();
+        styles
     }
 
     pub fn dashboard_widgets(&self) -> Vec<PluginWidget> {
@@ -720,7 +766,7 @@ fn collect_fingerprint_files(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
             .is_some_and(|ext| {
                 matches!(
                     ext.to_ascii_lowercase().as_str(),
-                    "tsx" | "ts" | "js" | "jsx" | "mjs" | "cjs" | "html" | "json"
+                    "tsx" | "ts" | "js" | "jsx" | "mjs" | "cjs" | "css" | "html" | "json"
                 )
             })
         {
@@ -920,8 +966,48 @@ mod tests {
             slot.html,
             slot.failed
         );
+        assert!(
+            slot.html.contains(r#"data-plugin-scope="tsx-demo""#),
+            "{}",
+            slot.html
+        );
         let widgets = registry.dashboard_widgets_with(&cx);
         assert!(widgets.iter().any(|widget| widget.html.contains("card")));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plugin_styles_are_validated_and_exposed() {
+        let root = temp_root("styles");
+        let plugin_root = root.join("styled");
+        fs::create_dir_all(plugin_root.join("static")).unwrap();
+        fs::write(
+            plugin_root.join("plugin.json"),
+            r#"{
+                "id": "styled",
+                "name": "Styled",
+                "assets": "static",
+                "styles": ["plugin.css"],
+                "pages": [{"slug":"p","title":"P","template":"page.tsx"}]
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            plugin_root.join("page.tsx"),
+            r#"function Page() { return <div>styled</div>; }"#,
+        )
+        .unwrap();
+        fs::write(
+            plugin_root.join("static/plugin.css"),
+            ".styled { color: red; }",
+        )
+        .unwrap();
+        let registry = PluginRegistry::new(&root);
+        let plugin = registry.find("styled").expect("plugin loads");
+        assert_eq!(plugin.styles, vec!["plugin.css"]);
+        let styles = registry.styles();
+        assert_eq!(styles.len(), 1, "{styles:?}");
+        assert!(styles[0].starts_with("/ext/styled/assets/plugin.css?v="));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1087,7 +1173,10 @@ export function Page() {
             let (_, html) = registry
                 .read_page_with(&plugin, "weather", &context(percent))
                 .expect("weather page renders");
-            assert!(html.contains(label), "percent={percent} 期望 {label}: {html}");
+            assert!(
+                html.contains(label),
+                "percent={percent} 期望 {label}: {html}"
+            );
             assert!(
                 html.contains(&format!("{percent}%")),
                 "percent={percent} 的百分比没有渲染: {html}"
@@ -1099,10 +1188,7 @@ export function Page() {
             .read_page_with(&plugin, "weather", &context(70))
             .expect("weather page renders");
         assert!(html.contains(r#"hx-trigger="every 5s""#), "{html}");
-        assert!(
-            html.contains(r##"hx-select="#token-weather""##),
-            "{html}"
-        );
+        assert!(html.contains(r##"hx-select="#token-weather""##), "{html}");
 
         // 网关拿不到用量时：不能 panic，页面上要如实说"无数据"。
         let (_, html) = registry
@@ -1125,6 +1211,12 @@ export function Page() {
         assert_eq!(slot.contributors, 1, "slot: {slot:?}");
         assert!(slot.html.contains("阴天"), "{}", slot.html);
         assert!(slot.html.contains("70%"), "{}", slot.html);
+        assert!(
+            slot.html.contains(r#"class="ada-icon tw-chip__caret""#),
+            "{}",
+            slot.html
+        );
+        assert!(!slot.html.contains("⌄"), "{}", slot.html);
         assert!(
             slot.html.contains(r#"href="/ext/token-weather/weather""#),
             "{}",

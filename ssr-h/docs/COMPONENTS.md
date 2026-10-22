@@ -110,6 +110,7 @@ ssr-h/
 | `TextField` | 单行输入 | `label` `hint` `icon` |
 | `Select` | 下拉选择（**非**原生 `<select>`） | `option` `options` `value` `title` |
 | `Tabs` / `TabItem` | 页签导航条（同一实体的多块内容切换） | `id`（DOM id 前缀） `label` `item` `active` |
+| `ModelTable` | 供应商模型表：固定列宽、省略号 + `title` tooltip、行级操作菜单 | `ModelTable::new(provider_id, provider_name, rows)` |\n| `ToolCall` | 工具调用卡片：折叠行 + 参数 + 长输出 12 行预览 / 展开全文 | `ToolCall::new(...)` |
 | `ConfirmDialog` | 共享确认弹窗（**非** `<dialog>` / `window.confirm`） | `ConfirmDialog::markup()` |
 | `Modal` | 通用弹窗（编辑表单等；同一套 `[data-modal]` 控制器） | `id` `title` `body` `actions` `wide` |
 | `Disclosure` | 折叠行（工具/思考/压缩） | `icon` `label` `detail` `sub` `meta` `badge` `body` |
@@ -368,3 +369,4 @@ register → load → mount → render → unmount → destroy
 2. 在 `src/handlers.rs` 的 `slot_content()` 里取一次，填进 `SlotContent`；
 3. 在对应模板的挂载点输出 `{{ base.slots.<name>|safe }}`；
 4. 插槽名写错会在插件加载时报错——**这是有意的**：契约变更必须显式。
+

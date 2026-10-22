@@ -101,6 +101,38 @@ live 轮询）、插件独立页、概览卡片有；供应商/扩展等二级�
   `props.data.tokens` 数据契约，以及 `hx-get` + `hx-select` 做页面自刷新；
 - `plugin.json` 里所有 `template` / `dashboard` 都必须是 `.tsx`；
 
+### 自定义 CSS
+
+在插件目录放 CSS（通常在 assets 目录下），在 manifest 里声明：
+
+```json
+{
+  "assets": "static",
+  "styles": ["hello.css"]
+}
+```
+
+```text
+plugin.json
+static/hello.css
+```
+
+- `styles` 是相对 **assets 目录**的路径，只接受 `.css`，不能是绝对路径或包含 `..`；
+- 服务端把 `<link rel="stylesheet" href="/ext/{id}/assets/hello.css?v={fingerprint}">`
+  注入所有页面 `<head>`，并把 CSS 包装为：
+  ```css
+  @scope ([data-plugin-scope="hello-tsx"]) to ([data-plugin-scope]) {
+    /* 插件 CSS */
+  }
+  ```
+  因此选择器只能命中该插件的包裹层内部，不会污染应用壳或其他插件；
+- 插件页面/插槽/仪表盘内容会自动带上 `data-plugin-scope="<id>"` 包裹层
+  （`display: contents`，不改变布局）；CSS 改动后重载插件，指纹变化会刷新浏览器缓存；
+- 浏览器不支持 `@scope` 时整段插件样式被忽略（安全降级，不会污染）；
+- 请用插件内容 class 选择器，不要依赖 `:root`/`body`；`@import`/`@charset` 在作用域内无效，
+  `@keyframes` 名称仍建议加插件前缀；
+- CSS 是本地受信任内容，不做 sanitizer；不要从不可信目录安装插件。
+
 ## 5. 安全与预算
 
 - Boa 环境**不注入** fs/net/process；插件脚本只能算数据；
