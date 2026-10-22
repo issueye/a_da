@@ -1,0 +1,56 @@
+{% if workspaces.is_empty() %}
+<p class="ada-thread-list__empty">还没有会话</p>
+{% else %}
+<div class="ada-ws-tree">
+  {% for group in workspaces %}
+  <div class="ada-ws{% if group.active %} is-active{% endif %}" data-ws-key="{{ group.key }}">
+    <details class="ada-ws__details"{% if group.active %} open{% endif %}>
+      <summary class="ada-ws__summary" title="{{ group.path }}">
+        <svg class="ada-ws__chevron" width="11" height="11" aria-hidden="true"><use href="#i-chevron"></use></svg>
+        <svg class="ada-ws__folder" width="13" height="13" aria-hidden="true"><use href="#i-folder"></use></svg>
+        <span class="ada-ws__name">{{ group.name }}</span>
+        {% if group.active %}<span class="ada-ws__badge">当前</span>{% endif %}
+        {% if group.running %}<span class="ada-ws__running" title="该工作区有会话正在运行"><span class="ada-dot ada-dot--warn"></span></span>{% endif %}
+        <span class="ada-ws__count">{{ group.count }}</span>
+      </summary>
+
+      <div class="ada-ws__threads">
+        {% if group.count == 0 %}
+        <p class="ada-ws__empty">暂无会话</p>
+        {% else %}
+        {% for t in group.threads %}
+        <a class="ada-thread{% if t.id == active_thread_id %} is-active{% endif %}" href="/threads/{{ t.id }}" title="{{ t.title }}">
+          <span class="ada-thread__title">{{ t.title }}</span>
+          <span class="ada-thread__meta">
+            {% if t.running %}<span class="ada-thread__running"><span class="ada-dot ada-dot--warn"></span>运行中</span>{% endif %}
+            <span>{{ t.item_count }} 项</span>
+          </span>
+        </a>
+        {% endfor %}
+        {% endif %}
+      </div>
+    </details>
+
+    {# 操作按钮放在 <details> 外：折叠状态下也要能"新建 / 切换"，
+       且按钮在 summary 里会被浏览器当成展开/收起点击。绝对定位覆盖在组头右侧。 #}
+    <div class="ada-ws__actions">
+      <form method="post" action="/threads">
+        <input type="hidden" name="title" value="新会话">
+        <input type="hidden" name="workspace" value="{{ group.path }}">
+        <button class="ada-ws__action" type="submit" title="在此工作区新建对话" aria-label="在此工作区新建对话">
+          <svg class="ada-icon" width="12" height="12" aria-hidden="true"><use href="#i-plus"></use></svg>
+        </button>
+      </form>
+      {% if !group.active %}
+      <form method="post" action="/workspaces/select">
+        <input type="hidden" name="path" value="{{ group.path }}">
+        <button class="ada-ws__action" type="submit" title="切换到工作区 {{ group.name }}" aria-label="切换到工作区 {{ group.name }}">
+          <svg class="ada-icon" width="12" height="12" aria-hidden="true"><use href="#i-check"></use></svg>
+        </button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}

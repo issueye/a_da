@@ -162,19 +162,29 @@ impl PluginRegistry {
             if !path.is_dir() {
                 continue;
             }
-            match self.register(&path) {
-                Ok(Some(record)) => discovered.push(record),
-                Ok(None) => {}
-                Err(error) => {
+            // 加载期也要隔离 panic：OXC/Boa 遇到诡异输入可能直接 panic，
+            // 一次 reload 不能把整个进程带走（渲染路径早就按同样口径处理了）。
+            match catch_unwind(AssertUnwindSafe(|| self.register(&path))) {
+                Ok(Ok(Some(record))) => discovered.push(record),
+                Ok(Ok(None)) => {}
+                Ok(Err(error)) => {
                     let id = dir_plugin_id(&path);
                     let message = format!("{error:#}");
                     tracing::warn!("前端插件 {id} 加载失败: {message}");
                     discovered.push(failed_record(&path, &id, &message));
                     report.failed.push(id);
                 }
+                Err(_) => {
+                    let id = dir_plugin_id(&path);
+                    let message = "插件加载过程中 panic，已隔离".to_string();
+                    tracing::warn!("前端插件 {id} {message}");
+                    discovered.push(failed_record(&path, &id, &message));
+                    report.failed.push(id);
+                }
             }
         }
-        discovered.sort_by(|a, b| a.id.cmp(&b.id));
+        // (id, 路径) 双键排序：同 id 的两个目录谁胜出必须稳定，否则每次重载"随机"一个生效。
+        discovered.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.root.cmp(&b.root)));
 
         let mut guard = self
             .plugins
@@ -183,6 +193,19 @@ impl PluginRegistry {
         let previous = std::mem::take(&mut *guard);
 
         for mut record in discovered {
+            // 两个目录声明同一个 id 时不能"都塞进去"：`find` 只会命中第一个，
+            // 导航/插槽却会重复渲染，排查起来像见鬼。重复的那个按加载失败处理并说明原因。
+            if let Some(existing) = guard.iter().find(|other| other.id == record.id) {
+                let message = format!(
+                    "插件 id `{}` 与 `{}` 重复，该目录已忽略",
+                    record.id,
+                    existing.root.display()
+                );
+                tracing::warn!("{message}");
+                report.failed.push(record.id.clone());
+                guard.push(failed_record(&record.root, &record.id, &message));
+                continue;
+            }
             match previous.iter().find(|old| old.id == record.id) {
                 Some(old) => {
                     if old.fingerprint == record.fingerprint {
@@ -309,53 +332,66 @@ impl PluginRegistry {
 
     pub fn render_slot_with(&self, slot: Slot, cx: &RenderContext) -> SlotOutput {
         let mut output = SlotOutput::default();
-        let Ok(guard) = self.plugins.read() else {
-            return output;
-        };
-        let mut contributions: Vec<(i32, String, String)> = Vec::new();
-        for record in guard.iter() {
-            if !record.is_active() {
-                continue;
-            }
-            let mut entries: Vec<&SlotEntry> = record
-                .slots
-                .iter()
-                .filter(|entry| entry.parsed_slot().ok() == Some(slot))
-                .collect();
-            entries.sort_by_key(|entry| entry.order);
-            for (index, entry) in entries.into_iter().enumerate() {
-                let Some(template) = record.tsx_templates.get(&entry.template) else {
-                    output.failed.push(record.id.clone());
+        // 先把"要渲染什么"在锁内取出来，再在锁外渲染。
+        // 渲染是 CPU 密集的（Boa + OXC，可能几十毫秒），攥着读锁会让
+        // `reload` 的写锁一直排队，界面表现为"点重载没反应"。
+        let targets: Vec<(i32, String, Arc<CompiledTsx>, serde_json::Value)> = {
+            let Ok(guard) = self.plugins.read() else {
+                return output;
+            };
+            let mut targets = Vec::new();
+            for record in guard.iter() {
+                if !record.is_active() {
                     continue;
-                };
-                let props = tsx_props(record, cx, None, Some((slot, entry.order, index)));
-                match catch_unwind(AssertUnwindSafe(|| tsx::render(template, &props))) {
-                    Ok(Ok(html)) => {
-                        if !html.is_empty() {
-                            contributions.push((entry.order, record.id.clone(), html));
-                        }
-                    }
-                    Ok(Err(error)) => {
-                        output.failed.push(record.id.clone());
-                        tracing::warn!(
-                            "插件 {} 插槽 {} 的 TSX 渲染失败: {}",
-                            record.id,
-                            slot.as_str(),
-                            error
-                        );
-                    }
-                    Err(_) => {
-                        output.failed.push(record.id.clone());
-                        tracing::warn!(
-                            "插件 {} 插槽 {} 的 TSX 渲染 panic，已隔离",
-                            record.id,
-                            slot.as_str()
-                        );
+                }
+                let mut entries: Vec<&SlotEntry> = record
+                    .slots
+                    .iter()
+                    .filter(|entry| entry.parsed_slot().ok() == Some(slot))
+                    .collect();
+                entries.sort_by_key(|entry| entry.order);
+                for (index, entry) in entries.into_iter().enumerate() {
+                    match record.tsx_templates.get(&entry.template) {
+                        Some(template) => targets.push((
+                            entry.order,
+                            record.id.clone(),
+                            Arc::clone(template),
+                            tsx_props(record, cx, None, Some((slot, entry.order, index))),
+                        )),
+                        None => output.failed.push(record.id.clone()),
                     }
                 }
             }
+            targets
+        };
+
+        let mut contributions: Vec<(i32, String, String)> = Vec::new();
+        for (order, id, template, props) in targets {
+            match catch_unwind(AssertUnwindSafe(|| tsx::render(&template, &props))) {
+                Ok(Ok(html)) => {
+                    if !html.is_empty() {
+                        contributions.push((order, id, html));
+                    }
+                }
+                Ok(Err(error)) => {
+                    output.failed.push(id.clone());
+                    tracing::warn!(
+                        "插件 {} 插槽 {} 的 TSX 渲染失败: {}",
+                        id,
+                        slot.as_str(),
+                        error
+                    );
+                }
+                Err(_) => {
+                    output.failed.push(id.clone());
+                    tracing::warn!(
+                        "插件 {} 插槽 {} 的 TSX 渲染 panic，已隔离",
+                        id,
+                        slot.as_str()
+                    );
+                }
+            }
         }
-        drop(guard);
         contributions.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
         for (_, _id, html) in contributions {
             output.contributors += 1;
@@ -480,8 +516,20 @@ impl PluginRegistry {
             )
         })?;
         let props = tsx_props(plugin, cx, Some(page), None);
-        let html = tsx::render(template, &props)
-            .map_err(|error| anyhow!("插件页面 `{}` 渲染失败：{error}", page.template))?;
+        // 页面渲染也要隔离 panic：插槽/卡片早就这么做了，页面漏掉的话
+        // 一个诡异模板会让连接直接断掉（用户只看到空白，日志里也没有 500 可读）。
+        let html = match catch_unwind(AssertUnwindSafe(|| tsx::render(template, &props))) {
+            Ok(Ok(html)) => html,
+            Ok(Err(error)) => {
+                return Err(anyhow!("插件页面 `{}` 渲染失败：{error}", page.template))
+            }
+            Err(_) => {
+                return Err(anyhow!(
+                    "插件页面 `{}` 渲染 panic，已隔离（详见服务端日志）",
+                    page.template
+                ))
+            }
+        };
         Ok((page.title.clone(), html))
     }
 
@@ -503,6 +551,83 @@ impl PluginRegistry {
         }
         let mime = content_type(&path);
         Ok((path, mime))
+    }
+}
+
+// ── 异步包装 ─────────────────────────────────────────────────────────────
+//
+// 渲染是**同步 CPU 活**（OXC + Boa，单页可到几十毫秒）：直接在 axum handler 里跑
+// 会占住 tokio 工作线程，live 轮询每 2 秒来一次，多几个插件就把响应拖慢。
+// 统一丢进 `spawn_blocking`，并保证一批插槽只占一个阻塞线程。
+
+/// 渲染一个插槽（阻塞线程池）。
+pub async fn render_slot_off_thread(
+    registry: Arc<PluginRegistry>,
+    slot: Slot,
+    cx: RenderContext,
+) -> SlotOutput {
+    let fallback_name = slot.as_str();
+    match tokio::task::spawn_blocking(move || registry.render_slot_with(slot, &cx)).await {
+        Ok(output) => output,
+        Err(error) => {
+            tracing::warn!("插槽 {fallback_name} 渲染任务失败: {error}");
+            SlotOutput::default()
+        }
+    }
+}
+
+/// 顺序渲染一批插槽，只占一个阻塞线程（页面外壳一次要渲染十个插槽）。
+pub async fn render_slots_off_thread(
+    registry: Arc<PluginRegistry>,
+    slots: &[Slot],
+    cx: RenderContext,
+) -> Vec<SlotOutput> {
+    let slots = slots.to_vec();
+    let count = slots.len();
+    let task = move || {
+        slots
+            .iter()
+            .map(|slot| registry.render_slot_with(*slot, &cx))
+            .collect::<Vec<_>>()
+    };
+    match tokio::task::spawn_blocking(task).await {
+        Ok(outputs) => outputs,
+        Err(error) => {
+            tracing::warn!("插槽批量渲染任务失败: {error}");
+            vec![SlotOutput::default(); count]
+        }
+    }
+}
+
+/// 渲染插件独立页面（阻塞线程池）。
+pub async fn read_page_off_thread(
+    registry: Arc<PluginRegistry>,
+    plugin_id: String,
+    slug: String,
+    cx: RenderContext,
+) -> Result<(String, String)> {
+    let task = move || {
+        let plugin = registry
+            .find(&plugin_id)
+            .ok_or_else(|| anyhow!("前端插件不存在: {plugin_id}"))?;
+        registry.read_page_with(&plugin, &slug, &cx)
+    };
+    tokio::task::spawn_blocking(task)
+        .await
+        .map_err(|error| anyhow!("插件页面渲染任务失败: {error}"))?
+}
+
+/// 渲染仪表盘 TSX 卡片（阻塞线程池）。
+pub async fn dashboard_widgets_off_thread(
+    registry: Arc<PluginRegistry>,
+    cx: RenderContext,
+) -> Vec<PluginWidget> {
+    match tokio::task::spawn_blocking(move || registry.dashboard_widgets_with(&cx)).await {
+        Ok(widgets) => widgets,
+        Err(error) => {
+            tracing::warn!("插件卡片渲染任务失败: {error}");
+            Vec::new()
+        }
     }
 }
 
@@ -922,5 +1047,91 @@ export function Page() {
         let (_, html) = registry.read_page_with(&plugin, "p", &cx).unwrap();
         assert!(html.contains("更新后的 label"), "{html}");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Token 天气插件：把"上下文用量"按固定分档渲染成天气。
+    ///
+    /// 分档口径：0-30 晴天 / 31-60 多云 / 61-85 阴天 / >85 暴雨（边界归上一档）。
+    #[test]
+    fn token_weather_plugin_maps_percent_to_weather() {
+        let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
+        let registry = PluginRegistry::new(&plugins_dir);
+        let plugin = registry
+            .find("token-weather")
+            .expect("token-weather 插件应当被发现");
+        assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
+
+        let context = |percent: u64| {
+            RenderContext::default().with_data(serde_json::json!({
+                "tokens": {
+                    "used": percent * 1280,
+                    "window": 128_000,
+                    "percent": percent,
+                    "threadId": "t1",
+                    "threadTitle": "主会话",
+                    "model": "deepseek-chat",
+                }
+            }))
+        };
+
+        for (percent, label) in [
+            (0u64, "晴天"),
+            (30, "晴天"),
+            (31, "多云"),
+            (60, "多云"),
+            (61, "阴天"),
+            (85, "阴天"),
+            (86, "暴雨"),
+            (100, "暴雨"),
+        ] {
+            let (_, html) = registry
+                .read_page_with(&plugin, "weather", &context(percent))
+                .expect("weather page renders");
+            assert!(html.contains(label), "percent={percent} 期望 {label}: {html}");
+            assert!(
+                html.contains(&format!("{percent}%")),
+                "percent={percent} 的百分比没有渲染: {html}"
+            );
+        }
+
+        // 自刷新走白名单里的 hx-*：hx-select 从整页里取回这个根节点。
+        let (_, html) = registry
+            .read_page_with(&plugin, "weather", &context(70))
+            .expect("weather page renders");
+        assert!(html.contains(r#"hx-trigger="every 5s""#), "{html}");
+        assert!(
+            html.contains(r##"hx-select="#token-weather""##),
+            "{html}"
+        );
+
+        // 网关拿不到用量时：不能 panic，页面上要如实说"无数据"。
+        let (_, html) = registry
+            .read_page_with(&plugin, "weather", &RenderContext::default())
+            .expect("weather page renders without usage");
+        assert!(html.contains("无数据"), "{html}");
+        assert!(!html.contains("100%"), "{html}");
+
+        // 概览卡片用同一套分档。
+        let widgets = registry.dashboard_widgets_with(&context(5));
+        assert!(
+            widgets
+                .iter()
+                .any(|widget| widget.plugin_id == "token-weather" && widget.html.contains("晴天")),
+            "widgets: {widgets:?}"
+        );
+
+        // 输入框上方（composer.above）：一颗胶囊，点进去是完整页面。
+        let slot = registry.render_slot_with(Slot::ComposerAbove, &context(70));
+        assert_eq!(slot.contributors, 1, "slot: {slot:?}");
+        assert!(slot.html.contains("阴天"), "{}", slot.html);
+        assert!(slot.html.contains("70%"), "{}", slot.html);
+        assert!(
+            slot.html.contains(r#"href="/ext/token-weather/weather""#),
+            "{}",
+            slot.html
+        );
+        // 没有用量时也不能空着：给一颗"Token 用量"的兜底胶囊。
+        let slot = registry.render_slot_with(Slot::ComposerAbove, &RenderContext::default());
+        assert!(slot.html.contains("Token 用量"), "{}", slot.html);
     }
 }

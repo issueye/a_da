@@ -54,9 +54,11 @@ async fn dashboard_view(state: &AppState) -> Result<DashboardView, AppError> {
                 tone: "brand".to_string(),
             },
         ],
-        widgets: state
-            .frontend
-            .dashboard_widgets_with(&super::render_context(state, "dashboard")),
+        widgets: crate::plugins::dashboard_widgets_off_thread(
+            std::sync::Arc::clone(&state.frontend),
+            super::render_context_with_tokens(state, "dashboard", &snapshot, None),
+        )
+        .await,
         recent,
     })
 }
@@ -64,7 +66,7 @@ async fn dashboard_view(state: &AppState) -> Result<DashboardView, AppError> {
 pub async fn dashboard(State(state): State<AppState>) -> Result<Response, AppError> {
     let view = dashboard_view(&state).await?;
     let page = DashboardPage {
-        base: base(&state, "概览", "dashboard", None),
+        base: base(&state, "概览", "dashboard", None).await,
         view,
     };
     Ok(render(&page)?.into_response())
@@ -74,7 +76,7 @@ pub async fn dashboard_partial(State(state): State<AppState>) -> Result<Response
     let view = dashboard_view(&state).await?;
     Ok(render(&DashboardPartial {
         view,
-        base: base(&state, "概览", "dashboard", None),
+        base: base(&state, "概览", "dashboard", None).await,
     })?
     .into_response())
 }

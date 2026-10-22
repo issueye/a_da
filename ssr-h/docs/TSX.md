@@ -40,8 +40,14 @@ function Page(props: any) {
 
 - **可以写 `import` / `export`**：加载/重载时 OXC 递归转译相对模块，Boa 的 ESM loader
   在服务端执行；**不需要 Bun/Node**。只支持插件目录内的相对模块，npm 依赖不支持。
-- 大写标签是 Rust 组件；小写标签是内置 HTML 元素（属性白名单 + URL scheme 校验）。
-- 服务端不允许函数 prop、`onX`、`dangerouslySetInnerHTML`；`key` 会被丢弃。
+- 大写标签是**内置 TSX 组件**（`components.tsx`，也可以 `import { Button } from "ssr-h:components"`）：
+  组件本身就是普通 TSX 函数，直接返回 VNode；Rust 侧只保留 `Icon` 这个 SVG 原语。
+  写了没定义的大写标签会得到 `ReferenceError`，不是"被静默忽略"。
+- 小写标签是内置 HTML 元素：**标签 + 属性名 + 属性值**三重校验（标签白名单、
+  `^[A-Za-z_:][-A-Za-z0-9_:.]*$` 属性名、URL scheme）。
+- `key` 对 HTML 标签是列表身份（丢弃不渲染），对组件是可读 prop：
+  `<Disclosure key={item.id}>` 会落成 `data-key`，供 live 轮询还原展开态。
+- 服务端不允许函数 prop、`onX`、`dangerouslySetInnerHTML`。
 - 不支持 hooks、ref、事件、async、hydration；需要浏览器交互时用 `hx-*` / Alpine。
 
 `props` 形状：
@@ -53,9 +59,25 @@ function Page(props: any) {
   "slot":   { "name": "composer.left", "order": 10, "index": 0 },
   "app":    { "workspace": "...", "gateway": "...", "product": "...", "version": "..." },
   "route":  { "path": "...", "query": "..." },
-  "data":   { "plugin_count": 3 }
+  "data":   {
+    "plugin_count": 3,
+    "tokens": {
+      "used": 12000,
+      "window": 128000,
+      "percent": 9,
+      "threadId": "…",
+      "threadTitle": "…",
+      "model": "deepseek-chat"
+    }
+  }
 }
 ```
+
+`data.tokens` 是**当前会话的上下文用量**：最近一次模型调用如实报回的
+`usage.promptTokens ÷ config.contextWindow`（与引擎的上下文治理同源，不做估算）。
+`percent` 为 `null` 表示算不出来（没有会话 / 窗口未配置 / 网关不可达）——插件要自己
+决定显示什么，别当成 0%。**只有拿得到快照的渲染点才有这个字段**：聊天页（含每 2 秒的
+live 轮询）、插件独立页、概览卡片有；供应商/扩展等二级页的插槽只有 `plugin_count`。
 
 ## 3. 内置 TSX 组件库
 
@@ -73,16 +95,43 @@ function Page(props: any) {
 ## 4. 插件示例
 
 - `frontend-plugins/hello-tsx/`：页面 / 仪表盘 / `composer.left` 插槽；
+- `frontend-plugins/token-weather/`：**按上下文用量显示天气**（0-30% 晴 / 31-60% 多云 /
+  61-85% 阴 / >85% 暴雨）。三处形态：独立页面、输入框上方胶囊（`composer.above`，随
+  live 轮询每 2 秒刷新）、概览卡片。顺带演示相对 import（`components/weather.tsx` 三处共用）、
+  `props.data.tokens` 数据契约，以及 `hx-get` + `hx-select` 做页面自刷新；
 - `plugin.json` 里所有 `template` / `dashboard` 都必须是 `.tsx`；
 
 ## 5. 安全与预算
 
 - Boa 环境**不注入** fs/net/process；插件脚本只能算数据；
 - 循环 100,000 次、递归 64 层、输出 1 MB、VNode 嵌套 64 层；
-- 文本默认转义；HTML 标签/属性白名单；URL scheme 校验；
-- 没有 wall-clock deadline：Boa 0.22 不提供中断 API，异常长计算仍可能占住线程。
-  生产化需要 worker/子进程隔离或接受预算兜底。
+- 文本默认转义；HTML 标签白名单；URL scheme 校验；
+- **属性名必须过字符校验**（`^[A-Za-z_:][-A-Za-z0-9_:.]*$`）：值会被转义，但名字里出现
+  `"` 或空格就能把 `data-x` 撑成 `data-x" onmouseover="…`，凭空造出一个事件属性。
+  展开属性（`{...obj}`）是唯一能带任意属性名的入口，这里是它唯一的闸门。
+- **HTMX 属性走显式白名单**（`hx-get/post/put/patch/delete/target/swap/trigger/include/…`）：
+  `hx-on*` 等价于内联脚本（浏览器会把属性名小写化，所以写 `hx-ON:click` 一样能执行），
+  `hx-vals` / `hx-headers` / `hx-trigger` 里的 `js:` 值会被 HTMX 求值——这些都拒。
+- **没有内存上限**：`"x".repeat(1e9)` 这类分配会直接把进程撑爆——Rust 的分配失败是
+  `abort`，`catch_unwind` 拦不住。输出 1 MB 的上限是**构造完之后**才检查的。
+- **没有 wall-clock deadline**：Boa 0.22 不提供中断 API，异常长计算仍可能占住线程。
+  真隔离需要 worker/子进程（可超时、可 kill）。
 - 插件仍是**本地受信任内容**；不要从不可信来源安装 `.tsx`。
+
+## 5.1 调试：console.log 往哪里打
+
+TSX 在**服务端**执行，所以：
+
+- 输出进 **ssr-h 进程的日志**（tracing → stdout），**不是浏览器 DevTools**；
+  `.\ssr-h.exe > log.txt` 或直接看终端即可；
+- Boa 引擎**不自带 `console`**，这里注入了一个最小实现（只有 log/info/warn/error/debug，
+  全部落到 `target=ssr_h::plugin` 的 tracing 日志），前缀是 `插件id/页面` 或 `插件id@插槽`：
+  `INFO ssr_h::plugin: [token-weather/weather] props {...}`；
+- 单次渲染最多 20 条、每条最多 2000 字符（插槽每 2 秒渲染一次，不设限会刷屏）；
+  换行/制表符会被压成空格，避免把终端输出冲散；
+- 想看 `debug` 级别：`RUST_LOG=ssr_h=debug`（默认 `ssr_h=info`）；
+- 改完 `.tsx` 必须在 `/extensions` 点**重载前端插件**（模板是加载时编译并缓存的），
+  否则跑的仍是旧代码——这也是"改了没反应"的常见原因。
 
 ## 6. 模块加载（import/export，原生实现，不需要 Bun/Node）
 
@@ -111,23 +160,29 @@ page.tsx + 相对依赖
 ## 7. 测试
 
 ```bash
-cargo test --manifest-path ssr-h/Cargo.toml -- --test-threads=1
+# 本机（Windows）默认 target 目录编译 `ring` 会撞 MSVC D8050，复用缓存目录即可：
+CARGO_TARGET_DIR=../cargo_target_ada CARGO_BUILD_JOBS=2 \
+  cargo test --manifest-path ssr-h/Cargo.toml -- --test-threads=1
 ```
 
-覆盖：TSX 转译/执行、组合组件、循环、fragment、转义、URL 校验、事件 prop 拒绝、
-上下文隔离、循环预算、组件属性校验、插件页面/插槽/仪表盘、热重载、相对模块 import。
+覆盖：TSX 转译/执行、组合组件、循环、fragment、转义、URL 校验、**属性名注入**、
+**HTMX 白名单**、事件 prop 拒绝、`key → data-key`、上下文隔离、循环预算、
+插件页面/插槽/仪表盘、热重载、相对模块 import。
 
 ## 8. 已知边界
 
 - **没有 TypeScript 类型检查**：类型注解被 OXC 剥掉；原生组件属性是手工白名单，
   复合组件 props 没有运行时校验。后续从 `ComponentSpec` 生成 `.d.ts` + schema。
-- **没有 wall-clock deadline**：Boa 0.22 没有 interrupt API；目前只有循环/递归/输出/嵌套预算。
-  生产化需要 worker/子进程隔离，或接受预算兜底。
+- **没有 wall-clock deadline、也没有内存上限**：Boa 0.22 没有 interrupt API，预算只有
+  循环/递归/输出/嵌套四项；一次性大分配（`repeat`、`Array.join`）能直接 abort 进程。
+  真隔离需要 worker/子进程（可超时、可 kill），或接受"插件 = 可信代码"这个前提。
 - **Context 每次新建**：约 1.7ms/页；复用可到约 0.6ms，但要先解决 Realm/全局状态隔离。
 - **npm 依赖不支持**：内置 loader 只解析插件目录内的相对模块；需要 npm 包时必须在插件
   发布阶段预打包/内联，或后续增加显式的依赖安装流程。
 - **事件/hydration 不支持**：TSX 只做服务端模板 + JS 逻辑；交互仍走 HTMX/Alpine。
 - **部分组件是简化实现**：`Modal` 的 actions 尚未覆盖；`Form` 内请用 `<Button kind="submit">`，
   不要再用 `<Button action>`（会嵌套 form）。
-- **路由上下文**：页面 props 的 `route.path` 已按 `/ext/{id}/{slug}` 覆盖；插槽/卡片仍沿用
-  当前页面的 `render_context`。
+- **路由上下文**：页面 props 的 `route.path` 已按 `/ext/{id}/{slug}` 覆盖；插槽/卡片沿用
+  当前页面的 `render_context`（首屏之外的 live 轮询同样传真实上下文，不会再刷成空）。
+- **`dashboard` 字段 vs `dashboard.widgets` 插槽**：前者是"这个插件的一张卡片"（清单字段），
+  后者是"往概览的卡片区里再塞一段 HTML"（插槽）。两者都声明就会出两张卡——通常只用一个。

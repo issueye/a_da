@@ -200,6 +200,7 @@ fn app(state: AppState) -> Router {
         )
         .route("/threads/{id}/partial", get(handlers::transcript_partial))
         .route("/threads/{id}/live", get(handlers::live))
+        .route("/threads/{id}/stream", get(handlers::live_stream))
         .route("/threads/{id}", get(handlers::chat_thread))
         .route("/threads/{id}/send", post(handlers::send_message))
         .route("/threads/{id}/abort", post(handlers::abort_thread))
@@ -218,6 +219,9 @@ fn app(state: AppState) -> Router {
             post(handlers::decide_approval),
         )
         .route("/providers", get(handlers::providers))
+        .route("/workspaces", get(handlers::workspace_picker))
+        .route("/workspaces/select", post(handlers::select_workspace))
+        .route("/workspaces/mkdir", post(handlers::make_workspace_dir))
         .route("/providers/new", post(handlers::create_provider))
         .route("/providers/{id}", post(handlers::save_provider))
         .route(

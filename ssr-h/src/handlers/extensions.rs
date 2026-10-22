@@ -56,7 +56,7 @@ pub async fn extensions(
     let agent_value = state.agent.plugins().await.unwrap_or(Value::Null);
     let agent = agent_rows(&agent_value);
     let page = ExtensionsPage {
-        base: base(&state, "扩展", "extensions", flash_from_query(&query)),
+        base: base(&state, "扩展", "extensions", flash_from_query(&query)).await,
         frontend_count: frontend.len(),
         agent_count: agent.len(),
         frontend,
@@ -122,10 +122,16 @@ pub async fn disable_plugin(
 
 /// 插件状态快照：客户端与服务端看到同一份事实。
 pub async fn plugins_api(State(state): State<AppState>) -> Result<Response, AppError> {
+    let outputs = crate::plugins::render_slots_off_thread(
+        std::sync::Arc::clone(&state.frontend),
+        crate::plugins::Slot::all(),
+        super::render_context(&state, "extensions"),
+    )
+    .await;
     let slots: Vec<serde_json::Value> = crate::plugins::Slot::all()
         .iter()
-        .map(|slot| {
-            let output = state.frontend.render_slot(*slot);
+        .zip(outputs)
+        .map(|(slot, output)| {
             serde_json::json!({
                 "slot": slot.as_str(),
                 "contributors": output.contributors,
@@ -162,18 +168,26 @@ pub async fn plugin_page(
             format!("前端插件不存在: {plugin_id}"),
         )
     })?;
-    let context = super::render_context(&state, "extensions");
-    let (page_title, html) = state
-        .frontend
-        .read_page_with(&plugin, &slug, &context)
-        .map_err(|error| AppError::new(StatusCode::NOT_FOUND, format!("{error:#}")))?;
+    // 插件页可以读 `props.data.tokens`（当前会话上下文用量）。网关不可达时退化成
+    // 空快照——插件拿到 percent = null 自己显示"无数据"，页面不要因此 500。
+    let snapshot = state.agent.snapshot().await.unwrap_or(Value::Null);
+    let context = super::render_context_with_tokens(&state, "extensions", &snapshot, None);
+    let (page_title, html) = crate::plugins::read_page_off_thread(
+        std::sync::Arc::clone(&state.frontend),
+        plugin_id.clone(),
+        slug.clone(),
+        context,
+    )
+    .await
+    .map_err(|error| AppError::new(StatusCode::NOT_FOUND, format!("{error:#}")))?;
     let page = PluginPage {
         base: base(
             &state,
             &format!("{} · {}", plugin.name, page_title),
             "extensions",
             None,
-        ),
+        )
+        .await,
         plugin_name: plugin.name,
         page_title,
         html,

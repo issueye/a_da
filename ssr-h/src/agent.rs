@@ -11,6 +11,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
+use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(60);
@@ -62,8 +63,20 @@ impl AgentClient {
     }
 
     async fn get(&self, path: &str) -> Result<Value> {
+        self.get_with(path, &[]).await
+    }
+
+    /// 带额外 query 的 GET（`workspace` 由 [`AgentClient::url`] 统一附加）。
+    async fn get_with(&self, path: &str, params: &[(&str, String)]) -> Result<Value> {
+        let mut url = self.url(path)?;
+        {
+            let mut query = url.query_pairs_mut();
+            for (key, value) in params {
+                query.append_pair(key, value);
+            }
+        }
         let resp = self
-            .auth(self.http.get(self.url(path)?))
+            .auth(self.http.get(url))
             .send()
             .await
             .with_context(|| format!("请求网关失败: {path}"))?;
@@ -140,11 +153,43 @@ impl AgentClient {
     }
 
     pub async fn create_thread(&self, title: &str) -> Result<Value> {
+        self.create_thread_in(title, &self.workspace).await
+    }
+
+    /// 在指定工作区里新建会话。
+    ///
+    /// 工作区是**会话属性**：同一个 agent 进程能看到所有工作区的会话，
+    /// 所以不需要为切换工作区重连；新建时把目标路径带上即可。
+    pub async fn create_thread_in(&self, title: &str, workspace: &str) -> Result<Value> {
         self.post(
             "/api/threads",
-            json!({ "title": title, "workspace": self.workspace }),
+            json!({ "title": title, "workspace": workspace }),
         )
         .await
+    }
+
+    /// 把某个目录设为当前工作区（`workspace.add`：设 active project + 记入会话目录索引）。
+    ///
+    /// 与 desktop-ui 的 `setActiveProject` 同源：它也是"先记工作区、再新建会话"。
+    pub async fn add_workspace(&self, path: &str) -> Result<Value> {
+        self.rpc("workspace.add", json!({ "path": path })).await
+    }
+
+    /// 系统根目录（磁盘 / 主目录 / 当前项目），供工作区选择器使用。
+    pub async fn fs_roots(&self) -> Result<Vec<Value>> {
+        let value = self.get("/api/fs/roots").await?;
+        Ok(value.as_array().cloned().unwrap_or_default())
+    }
+
+    /// 列出目录内容（不过滤：由调用方按 `isDir` 决定展示什么）。
+    pub async fn fs_list(&self, path: &str) -> Result<Value> {
+        self.get_with("/api/fs/list", &[("path", path.to_string())])
+            .await
+    }
+
+    /// 新建目录（工作区选择器里的"新建文件夹"）。
+    pub async fn fs_mkdir(&self, path: &str) -> Result<Value> {
+        self.post("/api/fs/mkdir", json!({ "path": path })).await
     }
 
     pub async fn send_message(&self, thread_id: &str, text: &str) -> Result<Value> {
@@ -153,6 +198,15 @@ impl AgentClient {
             json!({ "threadId": thread_id, "text": text }),
         )
         .await
+    }
+
+    /// 聚焦会话（`thread.focus`）：设为激活会话并打开它的 Tab。
+    ///
+    /// 快照只给"激活 / 打开的 Tab / 运行中 / 子智能体"会话带 items，所以从侧栏
+    /// 打开一条历史会话前必须先聚焦，否则正文是空的。
+    pub async fn focus_thread(&self, thread_id: &str) -> Result<Value> {
+        self.rpc("thread.focus", json!({ "threadId": thread_id }))
+            .await
     }
 
     pub async fn abort_thread(&self, thread_id: &str) -> Result<Value> {
@@ -195,8 +249,8 @@ impl AgentClient {
             .await
     }
 
-    /// 一次短 WS 连接：`session.initialize` → 目标方法 → 读取响应。
-    async fn rpc(&self, method: &str, params: Value) -> Result<Value> {
+    /// 网关 `/rpc` 的 WebSocket 地址（工作区与 token 都走 query）。
+    fn rpc_url(&self) -> Result<reqwest::Url> {
         let mut url = reqwest::Url::parse(&self.base)
             .with_context(|| format!("非法网关地址: {}", self.base))?;
         url.set_scheme(if url.scheme() == "https" { "wss" } else { "ws" })
@@ -213,7 +267,12 @@ impl AgentClient {
                 q.append_pair("token", self.token.trim());
             }
         }
+        Ok(url)
+    }
 
+    /// 一次短 WS 连接：`session.initialize` → 目标方法 → 读取响应。
+    async fn rpc(&self, method: &str, params: Value) -> Result<Value> {
+        let url = self.rpc_url()?;
         // 🔴 错误文案里只能是 scheme://host:port/path：URL 的 query 带着网关 token，
         // 它会一路被 AppError 回显到浏览器页面（2026-10-21 实测过的泄漏路径）。
         let display = display_url(&url);
@@ -242,6 +301,102 @@ impl AgentClient {
         });
         send(&mut tx, call).await?;
         wait(&mut rx, 2).await
+    }
+
+    /// 订阅网关的**状态事件**，把 `evt.state.snapshot` / `evt.state.patch` 转进通道。
+    ///
+    /// 与 [`AgentClient::rpc`] 的区别：这条连接是**长期持有**的（页面开着就一直连着），
+    /// 而且只读通知、不注册任何界面状态。`state.patch` 能力必须在这里声明：
+    /// 宿主只有收到声明才会把后续帧切成"只带变过的 item"的增量帧。
+    ///
+    /// 连接断开时函数返回，调用方据此结束 SSE 流；浏览器 `EventSource` 会自动重连，
+    /// 重连后重新走一遍首帧快照，界面因此能自愈。
+    pub async fn pump_events(&self, tx: mpsc::Sender<Value>) -> Result<()> {
+        let url = self.rpc_url()?;
+        let display = display_url(&url);
+        let (ws, _) = tokio_tungstenite::connect_async(url.as_str())
+            .await
+            .with_context(|| format!("连接网关失败: {display}"))?;
+        let (mut sink, mut rx) = ws.split();
+
+        let init = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "session.initialize",
+            "params": {
+                "protocolVersion": "1.0",
+                "client": { "name": "ssr-h", "capabilities": ["state.patch"] }
+            }
+        });
+        send(&mut sink, init).await?;
+
+        loop {
+            let next = rx.next().await.ok_or_else(|| anyhow!("网关连接已关闭"))?;
+            let msg = next.map_err(|e| anyhow!("读取网关事件失败: {e}"))?;
+            let Message::Text(text) = msg else {
+                continue;
+            };
+            let value: Value =
+                serde_json::from_str(text.as_str()).context("网关返回了非法 JSON")?;
+            let Some(method) = value.get("method").and_then(Value::as_str) else {
+                continue; // 请求/响应帧（含 initialize 的应答）不参与状态投影
+            };
+            if method != "evt.state.snapshot" && method != "evt.state.patch" {
+                continue;
+            }
+            let frame = json!({
+                "method": method,
+                "params": value.get("params").cloned().unwrap_or(Value::Null),
+            });
+            if tx.send(frame).await.is_err() {
+                break; // 页面已经关了：结束连接，别继续占着网关
+            }
+        }
+        Ok(())
+    }
+
+    /// 拉取一条会话的**完整 item 列表**（按需分页）。
+    ///
+    /// 为什么不用 `/api/snapshot`：快照只对"激活 / 打开的 Tab / 运行中 / 子智能体"会话
+    /// 带 items。从 ssr-h 打开一个非激活会话时，快照里它是空的——首屏与事件流都需要
+    /// 真实内容，这里按 `GET /api/threads/{id}/items` 翻页取全。
+    ///
+    /// 走 HTTP 而不是 WS 的 `thread.items.page`：每条 WS 短连接都会让 agent 先推一份
+    /// 全量种子快照（长会话上 MB），只为取一页条目并不划算。
+    pub async fn thread_items(&self, thread_id: &str) -> Result<Vec<Value>> {
+        // 会话 id 来自 URL 路径：只允许安全字符，避免拼出一条指向别处的请求。
+        if thread_id.is_empty()
+            || !thread_id
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        {
+            bail!("非法会话 id: {thread_id}");
+        }
+        let path = format!("/api/threads/{thread_id}/items");
+        let mut out: Vec<Value> = Vec::new();
+        loop {
+            let page = self
+                .get_with(
+                    &path,
+                    &[
+                        ("from", out.len().to_string()),
+                        ("count", "500".to_string()),
+                    ],
+                )
+                .await?;
+            let items = page
+                .get("items")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let total = page.get("total").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let empty = items.is_empty();
+            out.extend(items);
+            if out.len() >= total || out.len() >= 5000 || empty {
+                break;
+            }
+        }
+        Ok(out)
     }
 }
 

@@ -195,9 +195,9 @@ ssr-h/
 - 行内**不再渲染任何展开/收起图标**；
 - 整行 `<summary>` 天然可点（鼠标、触摸、键盘 Enter/Space 均可）；
 - 开合状态用三重信号表达：**左侧品牌色条** + **浅底背景** + **文字变深**，并同步 `data-state="open|closed"` 供样式与插件读取；
-- HTMX 每 2 秒替换对话流后，展开状态由 `components.js` 按 **`data-key`（item id）** 恢复；
+- SSE 增量替换（或结构变化时的整段同步）后，展开状态由 `components.js` 按 **`data-key`（item id）** 恢复；
 - **面板内部滚动位置同样要还原**（`chat.js` 的 `restoreScroll`）：替换后的面板是新 DOM，
-  `.ada-panel__body` 有 `max-height: 300px`，不还原就是"展开的工具每 2 秒自己滚回顶部"。
+  `.ada-panel__body` 有 `max-height: 300px`，不还原就是"展开的工具每次更新自己滚回顶部"。
   位置按 `item id#面板序号` 记录，还原顺序必须是"先恢复 `details.open` 再设 `scrollTop`"——
   折叠状态下面板没有高度，先设会被夹成 0。
 

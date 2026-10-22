@@ -148,6 +148,12 @@
   color: var(--ph-muted);
   font-family: var(--mono-font, Consolas, monospace);
   font-size: 10.5px;
+  text-decoration: none;
+  transition: border-color var(--ada-transition), color var(--ada-transition);
+}
+.ada-workspace:hover {
+  border-color: var(--ada-focus-border);
+  color: var(--ph-ink);
 }
 .ada-workspace .ada-icon {
   color: var(--ph-faint);
@@ -213,6 +219,12 @@
 .ada-thread:hover {
   background: var(--ph-line);
   color: var(--ph-ink);
+}
+/* `hidden` 属性在 UA 样式里只是 `display:none`，会被上面的 `display:flex` 盖掉
+   （搜索过滤靠的就是 `hidden`）。这里显式提升优先级。 */
+.ada-thread[hidden],
+.ada-ws[hidden] {
+  display: none !important;
 }
 .ada-thread.is-active {
   background: var(--ph-brand-soft);
@@ -334,6 +346,35 @@
   min-height: 0;
   overflow-y: auto;
   scroll-behavior: smooth;
+}
+/* 回到最新：sticky 在滚动容器底部、水平居中（避开右下角的插件悬浮区）。
+   只有向上阅读（不接近底部）时才显示，由 chat.js 切换 `hidden`。 */
+.ada-scroll-bottom {
+  position: sticky;
+  bottom: 14px;
+  z-index: 26;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: max-content;
+  margin: 0 auto 10px;
+  padding: 6px 12px;
+  border: 1px solid var(--ph-line);
+  border-radius: 999px;
+  background: var(--ph-elevated);
+  color: var(--ph-muted);
+  font-family: inherit;
+  font-size: 11px;
+  box-shadow: var(--ph-shadow);
+  cursor: pointer;
+  transition: background var(--ada-transition), color var(--ada-transition);
+}
+.ada-scroll-bottom:hover {
+  background: var(--ph-surface);
+  color: var(--ph-ink);
+}
+.ada-scroll-bottom[hidden] {
+  display: none;
 }
 .ada-wrap {
   width: 100%;
@@ -493,4 +534,153 @@
 .ada-tray__link--danger:hover {
   background: var(--ph-danger-soft);
   color: var(--ph-danger-ink);
+}
+
+/* ── 工作区树（侧栏） ─────────────────────────────────────────────────────
+   一个工作区 = 一个 <details>；操作按钮放在 details 外，折叠时也能新建/切换。 */
+.ada-ws-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ada-ws {
+  position: relative;
+  border-radius: 8px;
+}
+.ada-ws__details {
+  border-radius: 8px;
+}
+.ada-ws__summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 62px 4px 7px;
+  border-radius: 7px;
+  color: var(--ph-muted);
+  font-size: 11.5px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  transition: background var(--ada-transition), color var(--ada-transition);
+}
+.ada-ws__summary::-webkit-details-marker {
+  display: none;
+}
+.ada-ws__summary:hover {
+  background: var(--ph-line);
+}
+.ada-ws.is-active > .ada-ws__details > .ada-ws__summary {
+  background: var(--ph-brand-soft);
+  color: var(--ph-brand-ink);
+}
+.ada-ws__chevron {
+  flex-shrink: 0;
+  color: var(--ph-faint);
+  transition: transform var(--ada-transition);
+}
+.ada-ws__details[open] .ada-ws__chevron {
+  transform: rotate(90deg);
+}
+.ada-ws__folder {
+  flex-shrink: 0;
+  color: var(--ph-faint);
+}
+.ada-ws.is-active .ada-ws__folder {
+  color: var(--ph-brand);
+}
+.ada-ws__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.ada-ws__badge {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--ph-brand);
+  color: #fff;
+  font-size: 9px;
+  line-height: 15px;
+}
+.ada-ws__running {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.ada-ws__count {
+  flex-shrink: 0;
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--ph-line);
+  color: var(--ph-faint);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: 9px;
+  line-height: 15px;
+  text-align: center;
+}
+.ada-ws__actions {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity var(--ada-transition);
+}
+.ada-ws:hover .ada-ws__actions,
+.ada-ws:focus-within .ada-ws__actions,
+.ada-ws.is-active .ada-ws__actions {
+  opacity: 1;
+}
+@media (hover: none) {
+  /* 触摸设备没有 hover：操作按钮常驻，否则"切换工作区"根本点不到 */
+  .ada-ws__actions {
+    opacity: 1;
+  }
+}
+.ada-ws__actions form {
+  display: inline-flex;
+  margin: 0;
+}
+.ada-ws__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ph-faint);
+  cursor: pointer;
+}
+.ada-ws__action:hover {
+  background: var(--ph-surface);
+  color: var(--ph-ink);
+}
+.ada-ws__threads {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 1px 0 3px 13px;
+  padding-left: 6px;
+  border-left: 1px solid var(--ph-line);
+}
+.ada-ws__empty {
+  margin: 2px 0 2px 3px;
+  color: var(--ph-faint);
+  font-size: 10.5px;
+  font-style: italic;
+}
+.ada-ws-stats {
+  margin-top: auto;
+  padding: 8px 4px 2px;
+  color: var(--ph-faint);
+  font-size: 10px;
+  text-align: center;
 }

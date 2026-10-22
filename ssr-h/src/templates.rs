@@ -36,7 +36,11 @@ pub struct SlotContent {
 pub struct PageBase {
     pub title: String,
     pub active: String,
-    pub workspace: String,
+    /// 当前**激活**的工作区（快照里的 `workspace.project`；没有快照时退回启动参数）。
+    /// 侧栏的"新会话"与工作区树用它，而不是静态的 `workspace`。
+    pub active_workspace: String,
+    /// 当前激活工作区的末段目录名（只用于展示）。
+    pub active_workspace_name: String,
     pub gateway: String,
     pub product: String,
     pub plugin_nav: Vec<NavLink>,
@@ -72,6 +76,50 @@ pub struct ThreadRow {
     pub mode: String,
     pub running: bool,
     pub item_count: usize,
+    /// 会话创建时刻（毫秒）：工作区树按"最近会话"排序用。
+    pub created_at: u64,
+}
+
+/// 侧栏工作区树的一个分组：一个工作区 + 它下面的会话。
+#[derive(Debug, Clone)]
+pub struct WorkspaceGroup {
+    /// 规范化后的路径键（大小写/斜杠归一），用于判断"同一个工作区"。
+    pub key: String,
+    /// 原始路径（展示与表单提交都用它）。
+    pub path: String,
+    /// 末段目录名。
+    pub name: String,
+    pub threads: Vec<ThreadRow>,
+    pub count: usize,
+    pub running: bool,
+    /// 是否是当前激活工作区（决定默认展开与"当前"标记）。
+    pub active: bool,
+}
+
+/// 工作区选择器里的一个根节点（磁盘 / 主目录 / 当前项目）。
+#[derive(Debug, Clone)]
+pub struct FsRootRow {
+    pub label: String,
+    pub path: String,
+    pub href: String,
+    pub kind: String,
+}
+
+/// 工作区选择器里的一个可进入目录。
+#[derive(Debug, Clone)]
+pub struct FsEntryRow {
+    pub name: String,
+    pub path: String,
+    pub href: String,
+}
+
+/// 工作区选择器里的"最近工作区"条目。
+#[derive(Debug, Clone)]
+pub struct WorkspaceRow {
+    pub path: String,
+    pub name: String,
+    pub sessions: usize,
+    pub active: bool,
 }
 
 /// 对话流的一行：**组件库渲染好的 HTML**。
@@ -184,6 +232,10 @@ pub struct DashboardPartial {
 pub struct ChatPage {
     pub base: PageBase,
     pub threads: Vec<ThreadRow>,
+    /// 侧栏工作区树（按工作区分组；当前工作区即使没有会话也会出现）。
+    pub workspaces: Vec<WorkspaceGroup>,
+    /// 当前会话所属工作区（"新会话"提交到它；空串时由 agent 用默认值）。
+    pub current_workspace: String,
     pub active: Option<ThreadRow>,
     pub active_thread_id: String,
     /// 已渲染好的对话行。
@@ -208,6 +260,26 @@ pub struct ChatPage {
 pub struct TranscriptPartial {
     pub items: Vec<ItemRow>,
     pub transcript_empty: String,
+}
+
+/// 工作区选择/添加页：左边驱动器与最近工作区，右边目录浏览。
+#[derive(Template)]
+#[template(path = "workspaces.html")]
+pub struct WorkspacesPage {
+    pub base: PageBase,
+    pub roots: Vec<FsRootRow>,
+    pub recent: Vec<WorkspaceRow>,
+    /// 当前浏览目录（真实路径）。
+    pub current: String,
+    /// 上一级目录；根目录时为空。
+    pub parent: String,
+    /// 上一级目录的链接（路径已做查询编码）。
+    pub parent_href: String,
+    /// 当前目录下的子目录（只列目录：工作区必须是目录）。
+    pub entries: Vec<FsEntryRow>,
+    /// 目录被后端截断时的提示（`truncated` / `omitted`）。
+    pub truncated: bool,
+    pub omitted: usize,
 }
 
 /// 协议下拉项。

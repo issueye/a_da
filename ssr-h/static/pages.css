@@ -239,6 +239,11 @@
 .ada-float-dock > * {
   pointer-events: auto;
 }
+/* 容器始终存在（live 轮询的 `hx-swap-oob` 需要一个固定目标 id），
+   没有插件贡献时它不占位——否则输入框上方会多出一条空白。 */
+.ada-float-dock:empty {
+  display: none;
+}
 /* 插件自带的悬浮卡片外观（插件片段可直接用这套 class） */
 .ada-float {
   max-width: 340px;
@@ -411,4 +416,179 @@
 .ada-icon-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* ── 工作区选择/添加页 ─────────────────────────────────────────────────── */
+.ada-picker-current {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--ph-line);
+  border-radius: var(--ada-radius-md);
+  background: var(--ph-surface);
+}
+.ada-picker-current__path {
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ph-ink);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: 11.5px;
+}
+.ada-picker {
+  display: grid;
+  grid-template-columns: 270px minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 12px;
+  align-items: start;
+}
+.ada-picker__side {
+  padding: 12px;
+}
+.ada-picker__section + .ada-picker__section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--ph-line);
+}
+.ada-picker__empty {
+  margin-top: 6px;
+  color: var(--ph-faint);
+  font-size: 11px;
+}
+.ada-picker__root {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 7px;
+  border-radius: 7px;
+  color: var(--ph-muted);
+  font-size: 11.5px;
+  text-decoration: none;
+}
+.ada-picker__root:hover {
+  background: var(--ph-subtle);
+  color: var(--ph-ink);
+}
+.ada-picker__root.is-active {
+  background: var(--ph-brand-soft);
+  color: var(--ph-brand-ink);
+}
+.ada-picker__root-label {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+.ada-picker__root-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ph-faint);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: 9.5px;
+}
+.ada-picker__recent-form {
+  margin: 0;
+}
+.ada-picker__recent {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 7px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ph-muted);
+  font-family: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.ada-picker__recent:hover {
+  background: var(--ph-subtle);
+  color: var(--ph-ink);
+}
+.ada-picker__recent.is-active {
+  background: var(--ph-brand-soft);
+  color: var(--ph-brand-ink);
+}
+.ada-picker__recent-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.ada-picker__recent-meta {
+  flex-shrink: 0;
+  color: var(--ph-faint);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: 9.5px;
+}
+.ada-picker__main {
+  min-width: 0;
+  padding: 12px;
+}
+.ada-picker__crumbs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ada-picker__path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ph-ink);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: 11.5px;
+}
+.ada-picker__mkdir {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.ada-picker__mkdir .input {
+  flex: 1;
+  min-width: 0;
+}
+.ada-picker__notice {
+  margin-top: 10px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  background: var(--ph-warn-soft);
+  color: var(--ph-warn-ink);
+  font-size: 11px;
+}
+.ada-picker__list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.ada-picker__entry {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  color: var(--ph-muted);
+  font-size: 12px;
+  text-decoration: none;
+}
+.ada-picker__entry:hover {
+  background: var(--ph-subtle);
+  color: var(--ph-ink);
+}
+@media (max-width: 860px) {
+  .ada-picker {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

@@ -8,13 +8,19 @@
 //! 不做 hooks/事件/hydration；交互仍走 HTMX/Alpine。
 //!
 //! 约定：
-//! - TSX 文件顶层必须声明 `function Page(props) { ... }`；
-//! - 大写组件名（`<Button>` / `<Chip>` …）由 Rust 渲染；
-//! - 小写标签（`<div>` / `<a>` …）走内置 HTML 白名单、URL 校验与转义；
-//! - 服务端不允许函数 prop / `onX` / `dangerouslySetInnerHTML`；
-//! - 不支持 import/export、hooks、async、事件回调、hydration。
+//! - 入口是 `Page(props)`：单文件写全局 `function Page`，含 import/export 的模块写
+//!   `export function Page` 或 `export default`；
+//! - 大写标签是**内置 TSX 组件**（`components.tsx` 注入到 `globalThis`，也可
+//!   `import { Button } from "ssr-h:components"`）：组件就是普通 TSX 函数，直接返回 VNode；
+//!   Rust 侧只保留 `Icon` 这个 SVG 原语；
+//! - 小写标签（`<div>` / `<a>` …）走内置 HTML 白名单、**属性名校验**、URL 校验与转义；
+//! - 服务端不允许函数 prop / `onX` / `dangerouslySetInnerHTML`；`key` 只传给组件
+//!   （HTML 标签上的 `key` 会被丢掉，组件靠它落 `data-key` 之类的稳定身份）；
+//! - 不支持 hooks、ref、事件回调、hydration；交互仍走 HTMX/Alpine。
 //!
-//! 运行：`cargo test --manifest-path ssr-h/Cargo.toml -- --nocapture`
+//! 运行（本机 `ring` 会撞上 MSVC D8050，要复用缓存的 target 目录）：
+//! `CARGO_TARGET_DIR=../cargo_target_ada CARGO_BUILD_JOBS=2 \
+//!   cargo test --manifest-path ssr-h/Cargo.toml -- --test-threads=1`
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -25,7 +31,7 @@ use std::sync::{Arc, OnceLock};
 
 use boa_engine::builtins::promise::PromiseState;
 use boa_engine::module::{resolve_module_specifier, Module, ModuleLoader, ModuleRequest, Referrer};
-use boa_engine::{js_string, Context, JsError, JsNativeError, JsResult, JsValue, Source};
+use boa_engine::{js_string, Context, JsError, JsNativeError, JsResult, JsValue, NativeFunction, Source};
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
@@ -136,21 +142,160 @@ function h(type, props, ...children) {
     __collect(props.children, kids);
     delete props.children;
   }
-  // React 习惯里的 `key` 只是列表身份，服务端渲染不需要（Rust 也不认它）。
-  delete props.key;
   __checkProps(props);
   if (typeof type === "function") {
+    // 组件的 `key` 是**可读 prop**（`Disclosure` 用它落 data-key；其余组件按需忽略）。
+    // 早先在这里就删掉，于是 `<Disclosure key=…>` 永远拿不到 key、data-key 一直是空的。
     var merged = Object.assign({}, props);
     if (kids.length === 1) merged.children = kids[0];
     else if (kids.length > 1) merged.children = kids;
     return type(merged);
   }
+  // HTML 标签上的 `key` 只是列表身份，服务端渲染不需要（Rust 也不认它）。
+  delete props.key;
   if (typeof type !== "string" || type.length === 0) {
     throw new Error("非法 JSX 类型: " + String(type));
   }
   return { type: type, props: props, children: kids };
 }
 "##;
+
+/// 单次渲染最多允许多少条 `console` 输出。
+///
+/// 插槽每 2 秒渲染一次，没有上限就是给自己刷屏；20 条足够定位问题。
+const MAX_CONSOLE_LINES: usize = 20;
+/// 单条 `console` 输出的最大字符数（`console.log(hugeObject)` 不能把终端冲掉）。
+const MAX_CONSOLE_CHARS: usize = 2_000;
+
+/// 插件里的 `console`（Boa **不自带**，这里补一个只写日志的最小实现）。
+///
+/// 🔴 TSX 在**服务端**执行：输出进 ssr-h 自己的 tracing 日志（终端 / `> log.txt`），
+/// 浏览器 DevTools 里永远看不到——那是最常见的"console.log 没输出"的原因。
+/// 除了写日志什么都不做：没有 fs/net/process，也不影响隔离边界。
+const CONSOLE_SHIM: &str = r##"
+function __ssrFormat(args) {
+  var parts = [];
+  for (var i = 0; i < args.length; i += 1) {
+    var value = args[i];
+    if (typeof value === "string") {
+      parts.push(value);
+      continue;
+    }
+    try {
+      var text = JSON.stringify(value);
+      parts.push(text === undefined ? String(value) : text);
+    } catch (error) {
+      parts.push(String(value));
+    }
+  }
+  return parts.join(" ");
+}
+
+function __ssrMakeConsole(label, limit) {
+  var used = 0;
+  function emit(level, args) {
+    if (used >= limit) {
+      return;
+    }
+    used += 1;
+    __ssrLog(label, level, __ssrFormat(args));
+  }
+  return {
+    log: function () { emit("info", arguments); },
+    info: function () { emit("info", arguments); },
+    debug: function () { emit("debug", arguments); },
+    warn: function () { emit("warn", arguments); },
+    error: function () { emit("error", arguments); },
+  };
+}
+"##;
+
+/// 装上 `console`：原生 `__ssrLog` + 上面那段 JS 包装。
+///
+/// `label` 形如 `token-weather/weather` / `token-weather@composer.above`，
+/// 一条日志就能看出是哪个插件的哪个模板打的。
+fn install_console(context: &mut Context, label: &str) -> Result<(), String> {
+    context
+        .register_global_builtin_callable(
+            js_string!("__ssrLog"),
+            3,
+            NativeFunction::from_fn_ptr(ssr_log),
+        )
+        .map_err(|error| format!("console 初始化失败: {error}"))?;
+    context
+        .eval(Source::from_bytes(CONSOLE_SHIM))
+        .map_err(|error| format!("console 初始化失败: {error}"))?;
+    let label = serde_json::to_string(label).unwrap_or_else(|_| "\"plugin\"".to_string());
+    let setup =
+        format!("globalThis.console = __ssrMakeConsole({label}, {MAX_CONSOLE_LINES});");
+    context
+        .eval(Source::from_bytes(&setup))
+        .map_err(|error| format!("console 初始化失败: {error}"))?;
+    Ok(())
+}
+
+/// 原生日志出口：写进 ssr-h 的 tracing（`RUST_LOG=ssr_h::plugin=info` 可见）。
+fn ssr_log(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+    let as_text = |value: Option<&JsValue>| -> String {
+        value
+            .and_then(JsValue::as_string)
+            .map(|text| text.to_std_string_escaped())
+            .unwrap_or_default()
+    };
+    let label = as_text(args.first());
+    let level = as_text(args.get(1));
+    let message = sanitize_console_text(&as_text(args.get(2)));
+    match level.as_str() {
+        "warn" => tracing::warn!(target: "ssr_h::plugin", "[{label}] {message}"),
+        "error" => tracing::error!(target: "ssr_h::plugin", "[{label}] {message}"),
+        "debug" => tracing::debug!(target: "ssr_h::plugin", "[{label}] {message}"),
+        _ => tracing::info!(target: "ssr_h::plugin", "[{label}] {message}"),
+    }
+    Ok(JsValue::undefined())
+}
+
+/// 单行化 + 截断：日志里夹换行会把终端输出冲散，超大对象也不能照单全收。
+fn sanitize_console_text(raw: &str) -> String {
+    let mut text = String::new();
+    let mut count = 0usize;
+    let mut truncated = false;
+    for ch in raw.chars() {
+        if count >= MAX_CONSOLE_CHARS {
+            truncated = true;
+            break;
+        }
+        text.push(if ch.is_control() { ' ' } else { ch });
+        count += 1;
+    }
+    if truncated {
+        text.push_str(" …（已截断）");
+    }
+    text
+}
+
+/// 日志前缀：插件 id + 当前模板（页面 slug 或插槽名）。
+fn console_label(props: &Value) -> String {
+    let plugin = props
+        .get("plugin")
+        .and_then(|plugin| plugin.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or("plugin");
+    if let Some(page) = props
+        .get("page")
+        .and_then(|page| page.get("slug"))
+        .and_then(Value::as_str)
+    {
+        return format!("{plugin}/{page}");
+    }
+    if let Some(slot) = props
+        .get("slot")
+        .and_then(|slot| slot.get("name"))
+        .and_then(Value::as_str)
+    {
+        return format!("{plugin}@{slot}");
+    }
+    plugin.to_string()
+}
 
 /// 一份已编译的 TSX。
 #[derive(Debug, Clone)]
@@ -438,6 +583,7 @@ fn evaluate_module(module: &TsxModule, props: &Value) -> Result<Value, String> {
         .eval(Source::from_bytes(PRELUDE))
         .map_err(|error| format!("JSX runtime 初始化失败: {error}"))?;
     install_component_library(&mut context)?;
+    install_console(&mut context, &console_label(props))?;
     let entry_js = module
         .modules
         .get(&module.entry)
@@ -559,6 +705,7 @@ fn evaluate_page(js: &str, entry: &str, props: &Value) -> Result<Value, String> 
         .eval(Source::from_bytes(PRELUDE))
         .map_err(|error| format!("JSX runtime 初始化失败: {error}"))?;
     install_component_library(&mut context)?;
+    install_console(&mut context, &console_label(props))?;
     // 末尾用 `;` 断开上一条语句，避免 ASI 把调用吞进函数声明。
     let program = format!("{js}\n;JSON.stringify(h({entry}, {props_json}));");
     let value = context
@@ -645,14 +792,14 @@ fn render_element(
     depth: usize,
 ) -> Result<(), String> {
     let element = html::builtin_elements()
-        .into_iter()
+        .iter()
         .find(|element| element.tag == tag)
         .ok_or_else(|| format!("不允许的 HTML 标签 <{tag}>"))?;
     let empty = Map::new();
     let props = props.unwrap_or(&empty);
     let mut present: Vec<String> = props.keys().cloned().collect();
     present.sort();
-    html::check_required(&element, &present)?;
+    html::check_required(element, &present)?;
 
     let mut attrs = String::new();
     for key in &present {
@@ -665,13 +812,25 @@ fn render_element(
             "htmlFor" => "for",
             other => other,
         };
-        if !html::element_allows_attr(&element, key) {
-            return Err(format!("标签 <{tag}> 不允许属性 `{key}`"));
+        // 🔴 属性名必须先过字符校验：值会转义，但名字里出现 `"` / 空格就能
+        // 把 `data-x` 变成 `data-x" onmouseover="…`，凭空造出一个事件属性。
+        if !html::valid_attr_name(key) {
+            return Err(format!("标签 <{tag}> 的属性名不合法: `{key}`"));
         }
-        if key.eq_ignore_ascii_case("hx-on") || key.starts_with("hx-on:") {
-            return Err(format!(
-                "标签 <{tag}> 不允许内联脚本属性 `{key}`；交互请用 hx-post/hx-get + 服务端动作"
-            ));
+        let lower = key.to_ascii_lowercase();
+        let is_htmx = lower.starts_with("hx-");
+        let allowed = if is_htmx {
+            html::hx_attr_allowed(key)
+        } else {
+            html::element_allows_attr(element, key)
+        };
+        if !allowed {
+            if is_htmx {
+                return Err(format!(
+                    "标签 <{tag}> 不允许 HTMX 属性 `{key}`；交互请用 hx-post/hx-get 等白名单属性"
+                ));
+            }
+            return Err(format!("标签 <{tag}> 不允许属性 `{key}`"));
         }
         match value {
             Value::Bool(true) => attrs.push_str(&format!(" {key}")),
@@ -690,6 +849,11 @@ fn render_element(
                 } else {
                     text.clone()
                 };
+                if is_htmx && !html::hx_value_allowed(key, &text) {
+                    return Err(format!(
+                        "标签 <{tag}> 的 `{key}` 不允许 `js:` 内联脚本值"
+                    ));
+                }
                 attrs.push_str(&format!(" {key}=\"{}\"", escape(&text)));
             }
             Value::Number(number) => {
@@ -958,6 +1122,136 @@ function Page() {
 "#;
         let error = render_tsx(source, &Value::Null).unwrap_err();
         assert!(!error.is_empty());
+    }
+
+    /// 2026-10-22 评审：值转义管不住属性名。
+    #[test]
+    fn rejects_attribute_names_that_would_inject_attributes() {
+        let source = r##"
+function Page() {
+  return <div {...{"data-x\" onmouseover=\"alert(1)": "1"}} />;
+}
+"##;
+        let error = render_tsx(source, &Value::Null).unwrap_err();
+        assert!(error.contains("属性名不合法"), "{error}");
+    }
+
+    /// `hx-ON:click` 会被浏览器小写化成 `hx-on:click`（浏览器禁改的属性名），
+    /// 所以拦截必须大小写不敏感；`hx-vals` 的 `js:` 值同样会被 HTMX 求值。
+    #[test]
+    fn rejects_htmx_inline_script_in_any_case() {
+        for source in [
+            r#"function Page() { return <div hx-on:click="alert(1)" />; }"#,
+            r#"function Page() { return <div hx-ON:click="alert(1)" />; }"#,
+            r#"function Page() { return <div hx-on="alert(1)" />; }"#,
+            r#"function Page() { return <div hx-evil="1" />; }"#,
+        ] {
+            let error = render_tsx(source, &Value::Null).unwrap_err();
+            assert!(
+                error.contains("HTMX") || error.contains("属性名"),
+                "{source} -> {error}"
+            );
+        }
+        let error = render_tsx(
+            r#"function Page() { return <div hx-vals="js:alert(1)" />; }"#,
+            &Value::Null,
+        )
+        .unwrap_err();
+        assert!(error.contains("js:"), "{error}");
+    }
+
+    #[test]
+    fn htmx_server_attributes_still_render() {
+        let source = r##"
+function Page() {
+  return <button hx-post="/threads/x/send" hx-target="#y" hx-swap="outerHTML">ok</button>;
+}
+"##;
+        let html = render_tsx(source, &Value::Null).expect("htmx render");
+        assert!(html.contains("hx-post=\"/threads/x/send\""), "{html}");
+        assert!(html.contains("hx-target=\"#y\""), "{html}");
+    }
+
+    /// `key` 对 HTML 标签是列表身份（丢弃），对组件是可读 prop（Disclosure 落 data-key）。
+    #[test]
+    fn component_key_reaches_data_key() {
+        let source = r##"
+function Page() {
+  return <Disclosure key="tool-1" label="执行命令"><span>ok</span></Disclosure>;
+}
+"##;
+        let html = render_tsx(source, &Value::Null).expect("disclosure render");
+        assert!(html.contains("data-key=\"tool-1\""), "{html}");
+
+        let html = render_tsx(r##"function Page() { return <li key="a">x</li>; }"##, &Value::Null)
+            .expect("li render");
+        assert!(!html.contains("key"), "{html}");
+    }
+
+    /// `console` 在 Boa 里**默认不存在**：不补的话 `console.log(...)` 抛 ReferenceError，
+    /// 整页渲染失败——这才是"日志没输出"的常见原因，而不是日志被吞了。
+    #[test]
+    fn console_exists_and_never_breaks_rendering() {
+        let source = r##"
+function Page() {
+  console.log("hello", { a: 1 }, [1, 2], function () {});
+  console.info("info");
+  console.warn("warn");
+  console.error("error");
+  console.debug("debug");
+  for (var i = 0; i < 100; i += 1) {
+    console.log("flood", i);
+  }
+  return <div class="ok">ok</div>;
+}
+"##;
+        let html = render_tsx(source, &Value::Null).expect("console 必须存在且不影响渲染");
+        assert!(html.contains("ok"), "{html}");
+    }
+
+    /// ESM 路径（模块模式）也要有 console：它和单文件路径是两套上下文初始化。
+    #[test]
+    fn console_log_works_in_module_mode() {
+        let root = std::env::temp_dir().join(format!("ssr_h_console_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("page.tsx"),
+            "export function Page(props: any) { console.log(\"module\", props.plugin); return <div class=\"m\">m</div>; }\n",
+        )
+        .unwrap();
+        let compiled = compile_file(&root.join("page.tsx"), &root).expect("compile");
+        let props = serde_json::json!({ "plugin": { "id": "demo" } });
+        let html = render(&compiled, &props).expect("module render");
+        assert!(html.contains("class=\"m\""), "{html}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn console_text_is_flattened_and_truncated() {
+        assert_eq!(sanitize_console_text("a\nb\tc"), "a b c");
+        let long = "x".repeat(MAX_CONSOLE_CHARS + 50);
+        let text = sanitize_console_text(&long);
+        assert!(text.ends_with("…（已截断）"), "{text}");
+        assert!(text.chars().count() <= MAX_CONSOLE_CHARS + 8, "{text}");
+    }
+
+    #[test]
+    fn console_label_names_the_plugin_and_template() {
+        assert_eq!(
+            console_label(
+                &serde_json::json!({ "plugin": { "id": "demo" }, "page": { "slug": "weather" } })
+            ),
+            "demo/weather"
+        );
+        assert_eq!(
+            console_label(&serde_json::json!({
+                "plugin": { "id": "demo" },
+                "slot": { "name": "composer.above" }
+            })),
+            "demo@composer.above"
+        );
+        assert_eq!(console_label(&Value::Null), "plugin");
     }
 
     #[test]

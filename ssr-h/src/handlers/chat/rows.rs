@@ -472,10 +472,19 @@ pub(super) fn row_view(value: &Value) -> ui::RowView {
 }
 
 /// 渲染一行对话（组件库）。
+///
+/// 外面包一层 `.ada-transcript__item`：SSE 流式更新按 `data-item-id` 定位、
+/// 按 `data-at` 插入到正确位置（服务端推来的 item 可能比界面已有的更新，
+/// 但顺序仍由 `at` 决定）。包装层不参与排版，只提供身份与定位。
 pub(super) fn item_row(value: &Value, thread_id: &str) -> ItemRow {
-    ItemRow {
-        html: ui::render_row(&row_view(value), thread_id),
-    }
+    let id = str_at(value, "id");
+    let at = value.get("at").and_then(Value::as_u64).unwrap_or(0);
+    let html = format!(
+        r#"<div class="ada-transcript__item" data-item-id="{}" data-at="{at}">{}</div>"#,
+        crate::ui::theme::escape(id),
+        ui::render_row(&row_view(value), thread_id),
+    );
+    ItemRow { html }
 }
 
 /// 输出看起来是不是 JSON（对象或数组）——是就用等宽原文展示，不做 Markdown 解析。
@@ -630,14 +639,63 @@ pub(super) fn transcript_html(items: Vec<ItemRow>) -> String {
 }
 
 /// 侧栏会话列表（SSR 与 live 共用）。
-pub(super) fn thread_rows(snapshot: &Value, active_thread_id: &str) -> Vec<ThreadRow> {
+///
+/// 过滤规则：
+/// - 有内容 / 运行中 / 当前会话：全部保留；
+/// - **没有真实会话的工作区**补一条最新的空会话作为占位。agent 启动时会先落一个空的
+///   "新会话"，全列出来会淹没真实会话；但把空会话一律丢掉又会让
+///   "刚添加、还没说话的 beta 工作区"在树里消失——所以只给空工作区留一条。
+pub(crate) fn thread_rows(snapshot: &Value, active_thread_id: &str) -> Vec<ThreadRow> {
     let running = running_ids(snapshot);
-    // 侧栏只保留有内容的会话，以及当前会话/正在运行的会话：
-    // agent 会先落一个空“新会话”占位，全部列出来会淹没真正有内容的会话。
-    array_at(snapshot, "threads")
+    let rows: Vec<ThreadRow> = array_at(snapshot, "threads")
         .iter()
         .map(|value| thread_row(value, &running))
-        .filter(|thread| thread.item_count > 0 || thread.id == active_thread_id || thread.running)
+        .collect();
+
+    let mut content_workspaces: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for thread in &rows {
+        if thread.item_count > 0 || thread.running || thread.id == active_thread_id {
+            content_workspaces.insert(super::super::workspaces::workspace_path_key(
+                &thread.workspace,
+            ));
+        }
+    }
+
+    let mut newest_empty: std::collections::HashMap<String, (u64, String)> =
+        std::collections::HashMap::new();
+    for thread in &rows {
+        if thread.item_count > 0 || thread.running || thread.id == active_thread_id {
+            continue;
+        }
+        let key = super::super::workspaces::workspace_path_key(&thread.workspace);
+        if content_workspaces.contains(&key) {
+            continue;
+        }
+        let better = match newest_empty.get(&key) {
+            Some((at, id)) => {
+                thread.created_at > *at
+                    || (thread.created_at == *at && thread.id.as_str() > id.as_str())
+            }
+            None => true,
+        };
+        if better {
+            newest_empty.insert(key, (thread.created_at, thread.id.clone()));
+        }
+    }
+
+    rows.into_iter()
+        .filter(|thread| {
+            thread.item_count > 0
+                || thread.running
+                || thread.id == active_thread_id
+                || newest_empty
+                    .get(&super::super::workspaces::workspace_path_key(
+                        &thread.workspace,
+                    ))
+                    .map(|(_, id)| id == &thread.id)
+                    .unwrap_or(false)
+        })
         .collect()
 }
 

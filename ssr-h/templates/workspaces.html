@@ -1,0 +1,98 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="section-head">
+  <div>
+    <div class="flex flex-wrap items-center gap-2">
+      <h1 class="page-title">工作区</h1>
+      <span class="badge badge-neutral">{{ roots.len() }} 个位置</span>
+    </div>
+    <p class="page-sub">选一个目录作为当前工作区；没有会话的目录会被加进侧栏树并新建一条会话。目录浏览走网关，和桌面端文件选择器是同一组端点。</p>
+  </div>
+</div>
+
+{% if !current.is_empty() %}
+<div class="ada-picker-current">
+  <div class="min-w-0">
+    <p class="ada-eyebrow">当前浏览目录</p>
+    <p class="ada-picker-current__path" title="{{ current }}">{{ current }}</p>
+  </div>
+  <form method="post" action="/workspaces/select">
+    <input type="hidden" name="path" value="{{ current }}">
+    <button class="btn btn-primary btn-sm" type="submit">使用此目录</button>
+  </form>
+</div>
+{% endif %}
+
+<div class="ada-picker">
+  <aside class="card ada-picker__side">
+    <div class="ada-picker__section">
+      <p class="ada-eyebrow">磁盘与常用位置</p>
+      {% if roots.is_empty() %}
+      <p class="ada-picker__empty">没有可用的根目录</p>
+      {% else %}
+      {% for root in roots %}
+      <a class="ada-picker__root ada-picker__root--{{ root.kind }}{% if root.path == current %} is-active{% endif %}" href="{{ root.href }}" title="{{ root.path }}">
+        <svg class="ada-icon" width="13" height="13" aria-hidden="true"><use href="#i-folder"></use></svg>
+        <span class="ada-picker__root-label">{{ root.label }}</span>
+        <span class="ada-picker__root-path">{{ root.path }}</span>
+      </a>
+      {% endfor %}
+      {% endif %}
+    </div>
+
+    <div class="ada-picker__section">
+      <p class="ada-eyebrow">最近工作区</p>
+      {% if recent.is_empty() %}
+      <p class="ada-picker__empty">还没有带会话的工作区</p>
+      {% else %}
+      {% for ws in recent %}
+      <form method="post" action="/workspaces/select" class="ada-picker__recent-form">
+        <input type="hidden" name="path" value="{{ ws.path }}">
+        <button class="ada-picker__recent{% if ws.active %} is-active{% endif %}" type="submit" title="{{ ws.path }}">
+          <span class="ada-picker__recent-name">{{ ws.name }}</span>
+          <span class="ada-picker__recent-meta">{{ ws.sessions }} 会话{% if ws.active %} · 当前{% endif %}</span>
+        </button>
+      </form>
+      {% endfor %}
+      {% endif %}
+    </div>
+  </aside>
+
+  <section class="card ada-picker__main">
+    <div class="ada-picker__crumbs">
+      {% if !parent.is_empty() %}
+      <a class="btn btn-ghost btn-sm" href="{{ parent_href }}">上一级</a>
+      {% endif %}
+      <span class="ada-picker__path">{{ current }}</span>
+    </div>
+
+    <form method="post" action="/workspaces/mkdir" class="ada-picker__mkdir">
+      <input type="hidden" name="parent" value="{{ current }}">
+      <input class="input" name="name" placeholder="新建文件夹名称" required autocomplete="off">
+      <button class="btn btn-secondary btn-sm" type="submit">新建目录</button>
+    </form>
+
+    {% if truncated %}
+    <p class="ada-picker__notice">目录项过多，已省略 {{ omitted }} 项；可用上方路径直接进入更深的目录。</p>
+    {% endif %}
+
+    {% if entries.is_empty() %}
+    <div class="empty-state">
+      <p class="text-sm font-medium text-ink">这个目录下没有子目录</p>
+      <p class="mt-1 text-xs leading-5 text-faint">可以直接“使用此目录”，或在上面新建一个文件夹。</p>
+    </div>
+    {% else %}
+    <ul class="ada-picker__list">
+      {% for entry in entries %}
+      <li>
+        <a class="ada-picker__entry" href="{{ entry.href }}" title="{{ entry.path }}">
+          <svg class="ada-icon" width="14" height="14" aria-hidden="true"><use href="#i-folder"></use></svg>
+          <span>{{ entry.name }}</span>
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

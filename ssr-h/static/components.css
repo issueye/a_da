@@ -209,6 +209,42 @@
   color: var(--ph-success-ink);
 }
 
+/* ── 可展开气泡（details + summary） ─────────────────────────────────────
+   用于插件悬浮卡：点击展开"更多信息"，而不是跳页。面板绝对定位在触发元素
+   上方（右下角的 composer.above 插件悬浮区），不参与页面布局。 */
+.ada-popover {
+  position: relative;
+  display: inline-flex;
+}
+.ada-popover > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.ada-popover > summary::-webkit-details-marker {
+  display: none;
+}
+.ada-popover__panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 45;
+  width: min(300px, calc(100vw - 40px));
+  padding: 12px;
+  border: 1px solid var(--ph-line-strong);
+  border-radius: var(--ada-radius-lg);
+  background: var(--ph-elevated);
+  box-shadow: var(--ph-shadow);
+  color: var(--ph-muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+  text-align: left;
+}
+/* 底部空间不足时（窄屏/贴顶），面板仍向上展开；内容超长可滚动。 */
+.ada-popover__panel {
+  max-height: min(360px, 60vh);
+  overflow-y: auto;
+}
+
 /* ── 输入 ───────────────────────────────────────────────────────────────── */
 .ada-field {
   display: flex;
@@ -485,6 +521,18 @@
   margin-top: 0;
 }
 .ada-msg:last-child {
+  margin-bottom: 0;
+}
+/* SSE 流式更新给每条对话行加了一层 `.ada-transcript__item`（携带 item id 与 `at`）。
+   包装层不参与排版，但会让每条消息都变成“父容器的第一个孩子”——
+   上面的 `:first-child` 会命中每一条，消息间距被抹平。这里按“整段对话的首尾”重新收口。 */
+.ada-transcript__item > .ada-msg {
+  margin: 10px 0;
+}
+.ada-transcript__item:first-child > .ada-msg {
+  margin-top: 0;
+}
+.ada-transcript__item:last-child > .ada-msg {
   margin-bottom: 0;
 }
 .ada-msg--user {

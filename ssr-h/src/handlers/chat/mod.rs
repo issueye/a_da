@@ -4,8 +4,14 @@
 //! 本文件只留页面装配、轮询与动作端点。
 
 mod rows;
+mod stream;
 
 use rows::*;
+
+pub use stream::live_stream;
+
+/// 侧栏线程过滤（空占位会话按工作区裁剪）也供工作区选择页的"最近工作区"计数使用。
+pub(super) use rows::thread_rows;
 
 use axum::extract::{Form, Path, Query, State};
 use axum::http::{header, HeaderValue, StatusCode};
@@ -243,27 +249,33 @@ fn action_failed(thread_id: &str, prefix: &str, error: anyhow::Error) -> Respons
 }
 
 struct LiveParts {
-    transcript: String,
     trays: String,
     todo: String,
     topbar_status: String,
     topbar_actions: String,
     aux: String,
+    /// 输入框上方的插件悬浮区（`composer.above`）。
+    composer_above: String,
     approval_chip: String,
     model_chip: String,
 }
 
-fn live_parts(state: &AppState, snapshot: &Value, thread_id: &str, thread: &Value) -> LiveParts {
+/// 渲染对话流**之外**的动态区域（托盘 / 任务规划 / 顶栏 / 输入框辅助区）。
+///
+/// 刻意不含 transcript：SSE 流式更新时正文是按 item 逐条替换的，
+/// 每帧重渲染整段对话流既浪费又会破坏展开状态；整段同步由调用方单独触发。
+async fn live_parts(
+    state: &AppState,
+    snapshot: &Value,
+    thread_id: &str,
+    thread: &Value,
+    item_count: usize,
+) -> LiveParts {
     let raw_items = thread
         .get("items")
         .and_then(Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let items: Vec<ItemRow> = raw_items
-        .iter()
-        .map(|item| item_row(item, thread_id))
-        .collect();
-    let item_count = items.len();
     let (trays, approval_count, queue_len) = trays_html(snapshot, raw_items, thread_id);
     let running = running_ids(snapshot).iter().any(|id| id == thread_id);
     let mode = approval_mode(snapshot, &Value::Null);
@@ -279,9 +291,25 @@ fn live_parts(state: &AppState, snapshot: &Value, thread_id: &str, thread: &Valu
     } else {
         (workspace_label(workspace), workspace)
     };
-    // 这里只换辅助区，只需要 composer.footer 一个插槽；不必把十个插槽都渲染一遍。
+    // 这里只换辅助区与输入框上方，不必把十个插槽都渲染一遍。
+    // 🔴 必须带真实上下文：早先用 `render_slot()`（默认 `RenderContext`），
+    // 于是首屏渲染正常、2 秒后第一次轮询就把 `props.app.*` / `props.data.*` 刷成空。
+    // 两个插槽共用同一份（带 `data.tokens`）的上下文，首屏与轮询看到的数据才一致。
+    let chat_context = super::render_context_with_tokens(state, "chat", snapshot, Some(thread_id));
+    let footer = crate::plugins::render_slot_off_thread(
+        std::sync::Arc::clone(&state.frontend),
+        Slot::ComposerFooter,
+        chat_context.clone(),
+    )
+    .await;
+    let above = crate::plugins::render_slot_off_thread(
+        std::sync::Arc::clone(&state.frontend),
+        Slot::ComposerAbove,
+        chat_context,
+    )
+    .await;
     let slots = SlotContent {
-        composer_footer: state.frontend.render_slot(Slot::ComposerFooter).html,
+        composer_footer: footer.html,
         ..SlotContent::default()
     };
     let args = ComposerArgs {
@@ -298,12 +326,12 @@ fn live_parts(state: &AppState, snapshot: &Value, thread_id: &str, thread: &Valu
         item_count,
     };
     LiveParts {
-        transcript: transcript_html(items),
         trays,
         todo: todo_html(raw_items),
         topbar_status: topbar_status_html(running, true, &approval, &tone),
         topbar_actions: topbar_actions_html(thread_id, running),
         aux: composer_aux_html(&slots, &args),
+        composer_above: above.html,
         approval_chip: approval_chip_html(&approval, &tone),
         model_chip: model_chip_html(&model),
     }
@@ -325,8 +353,10 @@ async fn load_chat(
                 message: format!("无法连接 agent 网关：{}", public_reason(&error)),
             });
             return Ok(ChatPage {
-                base: base(state, "未连接", "chat", Some(flash)),
+                base: base(state, "未连接", "chat", Some(flash)).await,
                 threads: Vec::new(),
+                workspaces: Vec::new(),
+                current_workspace: String::new(),
                 active: None,
                 active_thread_id: String::new(),
                 items: Vec::new(),
@@ -367,6 +397,22 @@ async fn load_chat(
         .map(|thread| thread.id.clone())
         .unwrap_or_default();
     let threads = thread_rows(&snapshot, &active_thread_id);
+    // 当前工作区：优先"当前会话所属工作区"（与桌面端 `currentThreadWorkspace` 同口径），
+    // 否则用 agent 的当前项目；侧栏树据此决定默认展开与"当前"标记。
+    let agent_workspace = snapshot
+        .get("workspace")
+        .and_then(|workspace| workspace.get("project"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|workspace| !workspace.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| state.agent.workspace.clone());
+    let active_workspace = active
+        .as_ref()
+        .map(|thread| thread.workspace.trim().to_string())
+        .filter(|workspace| !workspace.is_empty())
+        .unwrap_or_else(|| agent_workspace.clone());
+    let workspaces = workspace_groups(&threads, &active_workspace);
     let raw_items: &[Value] = active_value
         .and_then(|value| value.get("items"))
         .and_then(Value::as_array)
@@ -400,7 +446,7 @@ async fn load_chat(
         .unwrap_or_else(|| state.agent.workspace.clone());
     let is_running = running.contains(&active_thread_id);
     let context = super::render_context(state, "chat");
-    let slots = slot_content(&state.frontend, &context);
+    let slots = slot_content(&state.frontend, context).await;
 
     // 没有活动会话时不给输入框：提交到 `/threads//send` 只会得到一个错误。
     let composer_html = if active_thread_id.is_empty() {
@@ -424,9 +470,26 @@ async fn load_chat(
         )
     };
 
+    let mut base = base_with_snapshot(
+        state,
+        &title,
+        "chat",
+        flash_from_query(query),
+        Some(&snapshot),
+    )
+    .await;
+    // 直接打开某条会话时，`base` 里的 active_workspace 是 agent 的当前项目；
+    // 侧栏与"新会话"应以**当前会话**的工作区为准，这里覆盖一次。
+    if !active_workspace.is_empty() {
+        base.active_workspace = active_workspace.clone();
+        base.active_workspace_name = workspace_name(&active_workspace);
+    }
+
     Ok(ChatPage {
-        base: base(state, &title, "chat", flash_from_query(query)),
+        base,
         threads,
+        workspaces,
+        current_workspace: active_workspace.clone(),
         active,
         active_thread_id: active_thread_id.clone(),
         items,
@@ -461,10 +524,23 @@ fn no_store_html(html: String) -> Response {
 }
 
 /// 网关断开时的 live 响应：只更新“未连接”状态，**不碰**对话流内容。
-fn live_offline(state: &AppState, thread_id: &str) -> Response {
+async fn live_offline(state: &AppState, thread_id: &str) -> Response {
     let label = workspace_label(&state.agent.workspace);
+    let footer = crate::plugins::render_slot_off_thread(
+        std::sync::Arc::clone(&state.frontend),
+        Slot::ComposerFooter,
+        super::render_context(state, "chat"),
+    )
+    .await;
+    // 断开时没有快照，用量无从谈起：插件会显示"无数据"，而不是停在旧数字上骗人。
+    let above = crate::plugins::render_slot_off_thread(
+        std::sync::Arc::clone(&state.frontend),
+        Slot::ComposerAbove,
+        super::render_context(state, "chat"),
+    )
+    .await;
     let slots = SlotContent {
-        composer_footer: state.frontend.render_slot(Slot::ComposerFooter).html,
+        composer_footer: footer.html,
         ..SlotContent::default()
     };
     let args = ComposerArgs {
@@ -486,6 +562,7 @@ fn live_offline(state: &AppState, thread_id: &str) -> Response {
             &topbar_status_html(false, false, "未连接", "neutral"),
         ),
         oob("topbar-actions", &topbar_actions_html(thread_id, false)),
+        oob("composer-above", &above.html),
         oob("composer-aux", &composer_aux_html(&slots, &args)),
         oob(
             "composer-approval",
@@ -507,7 +584,7 @@ pub async fn live(State(state): State<AppState>, Path(thread_id): Path<String>) 
         Err(error) => {
             // 轮询每 2 秒一次：连接断开时不要刷爆日志，状态已经通过页面告诉用户。
             tracing::debug!("live 读取网关失败: {error:#}");
-            return live_offline(&state, &thread_id);
+            return live_offline(&state, &thread_id).await;
         }
     };
     let Some(thread) = array_at(&snapshot, "threads")
@@ -516,13 +593,30 @@ pub async fn live(State(state): State<AppState>, Path(thread_id): Path<String>) 
     else {
         return (StatusCode::NOT_FOUND, "会话不存在").into_response();
     };
-    let parts = live_parts(&state, &snapshot, &thread_id, thread);
+    let item_count = thread
+        .get("items")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let parts = live_parts(&state, &snapshot, &thread_id, thread, item_count).await;
+    let items: Vec<ItemRow> = thread
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| item_row(item, &thread_id))
+                .collect()
+        })
+        .unwrap_or_default();
     let body = [
-        oob("transcript", &parts.transcript),
+        oob("transcript", &transcript_html(items)),
         oob("ada-trays", &parts.trays),
         oob("ada-todo-dock", &parts.todo),
         oob("topbar-status", &parts.topbar_status),
         oob("topbar-actions", &parts.topbar_actions),
+        // 输入框上方的插件悬浮区：用量会随对话变化，跟其他区域一起每 2 秒刷新。
+        oob("composer-above", &parts.composer_above),
         oob("composer-aux", &parts.aux),
         oob("composer-approval", &parts.approval_chip),
         oob("composer-model", &parts.model_chip),
@@ -544,6 +638,12 @@ pub async fn chat_thread(
     Path(thread_id): Path<String>,
     Query(query): Query<PageQuery>,
 ) -> Result<Response, AppError> {
+    // 先聚焦：快照只给"激活 / 打开的 Tab / 运行中"会话带 items。
+    // 侧栏树可以点到别的工作区的历史会话，不聚焦的话正文会是空的
+    // （桌面端 `handleSelectThread` 也是先 `setActiveThread`）。
+    if let Err(error) = state.agent.focus_thread(&thread_id).await {
+        tracing::debug!("聚焦会话失败（继续按快照渲染）: {error:#}");
+    }
     let page = load_chat(&state, Some(thread_id), &query).await?;
     Ok(render(&page)?.into_response())
 }
@@ -585,7 +685,18 @@ pub async fn create_thread(
     if title.is_empty() {
         return Err(AppError::bad("会话标题不能为空"));
     }
-    let result = match state.agent.create_thread(title).await {
+    // 侧栏工作区树的"+"会带上目标工作区；顶部的"新会话"不带，
+    // 由 agent 落到当前激活工作区（与桌面端 currentThreadWorkspace 的行为一致）。
+    let workspace = form
+        .workspace
+        .as_deref()
+        .map(str::trim)
+        .filter(|workspace| !workspace.is_empty());
+    let result = match workspace {
+        Some(workspace) => state.agent.create_thread_in(title, workspace).await,
+        None => state.agent.create_thread(title).await,
+    };
+    let result = match result {
         Ok(result) => result,
         Err(error) => {
             tracing::warn!("创建会话失败: {error:#}");

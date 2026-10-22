@@ -5,19 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ base.title }} · a_da</title>
   <script src="/static/theme.js?v=18"></script>
-  <link rel="stylesheet" href="/static/app.css?v=18">
-  <link rel="stylesheet" href="/static/components.css?v=18">
-  <link rel="stylesheet" href="/static/layout.css?v=18">
-  <link rel="stylesheet" href="/static/widgets.css?v=18">
-  <link rel="stylesheet" href="/static/shell.css?v=18">
-  <link rel="stylesheet" href="/static/pages.css?v=18">
+  <link rel="stylesheet" href="/static/app.css?v=20">
+  <link rel="stylesheet" href="/static/components.css?v=20">
+  <link rel="stylesheet" href="/static/layout.css?v=20">
+  <link rel="stylesheet" href="/static/widgets.css?v=20">
+  <link rel="stylesheet" href="/static/shell.css?v=21">
+  <link rel="stylesheet" href="/static/pages.css?v=20">
   <script src="/static/htmx.min.js?v=18" defer></script>
   <script src="/static/alpine.min.js?v=19" defer></script>
   <script src="/static/app.js?v=18" defer></script>
   <script src="/static/ada-select.js?v=18" defer></script>
   <script src="/static/ada-modal.js?v=18" defer></script>
-  <script src="/static/components.js?v=18" defer></script>
-  <script src="/static/chat.js?v=18" defer></script>
+  <script src="/static/components.js?v=20" defer></script>
+  <script src="/static/chat.js?v=25" defer></script>
 </head>
 <body class="ada-body">
 <a class="skip-link" href="#main">跳到主要内容</a>
@@ -37,6 +37,7 @@
 
     <form method="post" action="/threads">
       <input type="hidden" name="title" value="新会话">
+      <input type="hidden" name="workspace" value="{{ current_workspace }}">
       <button class="ada-btn ada-btn--primary ada-btn--md" type="submit" style="width:100%">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
         新会话
@@ -63,20 +64,21 @@
     </nav>
 
     <div class="ada-section">
-      <div class="ada-section__label"><span>工作区</span><a href="/extensions" title="管理前端插件">管理</a></div>
-      <div class="ada-workspace" title="{{ base.workspace }}">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
-        <span>{{ base.workspace }}</span>
-      </div>
+      <div class="ada-section__label"><span>工作区</span><a href="/workspaces" title="添加或切换工作区">添加/切换</a></div>
+      <a class="ada-workspace" href="/workspaces" title="当前工作区：{{ base.active_workspace }}（点击添加/切换）">
+        <svg class="ada-icon" width="14" height="14" aria-hidden="true"><use href="#i-folder"></use></svg>
+        <span>{{ base.active_workspace_name }}</span>
+      </a>
     </div>
 
     <div class="ada-search">
       <svg class="ada-search__icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-      <input id="chat-thread-search" class="ada-search__input" type="search" placeholder="搜索会话…" autocomplete="off" aria-label="搜索会话">
+      <input id="chat-thread-search" class="ada-search__input" type="search" placeholder="搜索工作区或会话…" autocomplete="off" aria-label="搜索工作区或会话">
     </div>
 
     <div class="ada-thread-list" id="thread-list">
-      {% include "partials/thread_list.html" %}
+      {% include "partials/workspace_tree.html" %}
+      <div class="ada-ws-stats">{{ workspaces.len() }} 工作区 · {{ threads.len() }} 会话</div>
     </div>
 
     {% if !base.plugin_nav.is_empty() %}
@@ -151,13 +153,9 @@
         </div>
         {% else %}
           {% if let Some(t) = active %}
-          <div id="transcript">{% include "partials/transcript.html" %}</div>
-          <div id="chat-live"
-               hx-get="/threads/{{ t.id }}/live"
-               hx-trigger="every 2s"
-               hx-swap="none"
-               aria-hidden="true"
-               style="display:none"></div>
+          <div id="transcript" data-thread-id="{{ t.id }}">{% include "partials/transcript.html" %}</div>
+          {# 实时更新由 chat.js 的 EventSource 驱动；SSE 断开时同一段脚本用 fetch
+             轮询 `/threads/{id}/live` 作为兜底（不依赖 htmx 的 every 过滤器语义）。 #}
           {{ base.slots.transcript_after|safe }}
           {% else %}
           <div class="ada-empty">
@@ -179,11 +177,18 @@
           {% endif %}
         {% endif %}
       </div>
+      {# 回到最新：用户向上阅读时出现；点一下回到底部并恢复自动跟随。
+         放在滚动容器内、水平居中，避开右下角的插件悬浮区（composer.above）。
+         `data-ada-scroll-bottom` 是给插件的同一份契约：插件按钮加上它即可。 #}
+      <button class="ada-scroll-bottom" id="scroll-bottom" type="button" data-ada-scroll-bottom hidden title="回到最新">
+        <svg class="ada-icon" width="13" height="13" aria-hidden="true"><use href="#i-chevron-down"></use></svg>
+        <span>回到最新</span>
+      </button>
     </div>
 
-    {% if !base.slots.composer_above.is_empty() %}
-    <div class="ada-float-dock" aria-label="插件悬浮区">{{ base.slots.composer_above|safe }}</div>
-    {% endif %}
+    {# 容器**始终**渲染：live 轮询用 `hx-swap-oob` 按 id 整块换掉插件悬浮区；
+       没有插件贡献时为空，`.ada-float-dock:empty` 会让它不占位。 #}
+    <div class="ada-float-dock" id="composer-above" aria-label="插件悬浮区">{{ base.slots.composer_above|safe }}</div>
 
     <div class="ada-trays" id="ada-trays">{{ trays_html|safe }}</div>
 

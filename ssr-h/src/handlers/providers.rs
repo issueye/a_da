@@ -369,7 +369,7 @@ pub async fn providers(
         None => String::new(),
     };
     let page = ProvidersPage {
-        base: base(&state, "供应商", "providers", flash_from_query(&query)),
+        base: base(&state, "供应商", "providers", flash_from_query(&query)).await,
         providers: cards,
         selected,
         current_model,

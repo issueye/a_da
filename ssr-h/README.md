@@ -13,19 +13,45 @@ UED 设计基线、组件规范与 desktop-ui 对齐差距见 [docs/UED.md](docs
 
 ## 主界面
 
-- `/`：截图式 Agent 界面——左侧会话栏（新会话、导航、工作区、会话列表、前端插件）、中间对话流、底部输入框。
+- `/`：截图式 Agent 界面——左侧工作区树（按工作区分组会话、当前工作区标记、组内新建/切换）、导航、前端插件、中间对话流、底部输入框。
 - `/threads/{id}`：同一界面定位到指定会话；`/overview` 保留原来的统计概览。
 - 助手正文用 `pulldown-cmark` 渲染 Markdown，再经 `ammonia` 白名单清洗后输出；工具/思考折叠展示。
-- 页面每 2 秒通过 HTMX 拉取 `/threads/{id}/live`，用 `hx-swap-oob` 一次更新**对话流、审批/排队托盘、任务规划、顶栏状态、输入框辅助区**；发送消息仍走服务端 WS RPC 后整页跳回。
-- 输入框：Enter 发送、Shift+Enter 换行、随内容自动增高；代码块悬停有复制按钮；思考/工具折叠按 item id 在轮询替换后保持展开状态，并还原面板内部的滚动位置（否则展开的工具每 2 秒自己滚回顶部）；只有接近底部时才自动跟随新内容。
+- 页面通过 **SSE**（`GET /threads/{id}/stream`）实时更新：服务端持有一条到网关的长连接，订阅增量帧 `evt.state.patch`，把**变过的 item** 渲染成 HTML 推给浏览器——助手正文按 item 原位替换（约 25FPS 合帧），新增/删除卡片才整段同步一次对话流；审批/排队托盘、任务规划、顶栏状态、输入框辅助区走 `parts` 事件（最小间隔 500ms）。断流时 `EventSource` 自动重连，期间由同一段脚本用 2 秒 `fetch` 轮询 `/threads/{id}/live` 兜底，重连后自动停掉。发送消息仍走服务端 WS RPC 后整页跳回。
+- 输入框：Enter 发送、Shift+Enter 换行、随内容自动增高；代码块悬停有复制按钮；思考/工具折叠按 item id 在增量同步后保持展开状态，并还原面板内部的滚动位置（否则展开的工具会自己滚回顶部）；只有接近底部时才自动跟随新内容。
+- 向上阅读时对话区底部出现「回到最新」胶囊：点一下回到底部并恢复自动跟随。它是核心 UI（不依赖插件插槽），水平居中，不会和右下角 `composer.above` 的插件悬浮卡抢位置。
 - 任务规划（`todo` 工具）悬浮在会话区右上角，默认收成胶囊药丸（进度 + 当前步骤），展开是步骤清单卡片；计划按 `set`/`update`/`get` 的动作推演，不是倒序取最后一张卡片。
 - 对话流：工具与思考采用 desktop-ui 的单行日志式——单行显示图标、中文标签、目标对象与真实耗时，展开后是左侧导轨线里的参数/输出面板；工具输出按 Markdown 渲染（JSON 走等宽原文）。
-- 侧栏支持按标题搜索会话；插件 / 供应商 / 概览 / 插件页也共用同一套侧栏外壳，不再切回旧布局。
+- 侧栏支持按标题搜索会话**和工作区名**（工作区名命中时整组展开）；插件 / 供应商 / 概览 / 插件页也共用同一套侧栏外壳，不再切回旧布局。
 - 图标统一为 14–16px 线性 SVG（替代早期字符符号）；工具/思考用单行日志式展示；输入框为桌面端形态（大圆角输入卡 + 底部工具行：工作区/审批档位/模型 + 近黑圆形发送键）；窄窗口（≤760px）侧栏收为抽屉，顶栏出汉堡按钮；**宽屏下同一个按钮是"收起/展开侧栏"**（状态存 `localStorage`，跨刷新保持）；中止等危险操作用共享确认对话框（原生 `<dialog>`）。
-- 审批：`waiting_approval` 工具在输入框上方托盘展示命令/参数与等待时长，可批准/拒绝；托盘随 live 轮询出现/消失，不需要手工刷新。
+- 审批：`waiting_approval` 工具在输入框上方托盘展示命令/参数与等待时长，可批准/拒绝；托盘随事件流出现/消失（断流时由兜底轮询接管），不需要手工刷新。
 - 排队：当前会话的排队消息可见，可提升、删除、清空（提升会中断当前回答，已加确认）。
 - 失败：`notice.level=error` 的卡片带「重试这一轮」；动作失败会回到会话页用 flash 说明原因，不再把整页换成裸错误页。
-- 聊天页在网关断开时保留界面壳并显示「未连接」，已打开会话的 live 轮询会继续探测并在恢复后自动接回；首屏就未连接时请点「重新连接」；`/overview`、`/providers` 等二级页仍会直接显示错误页。
+- 聊天页在网关断开时保留界面壳并显示「未连接」，已打开会话的 SSE 会自动重连、期间由兜底轮询继续探测，恢复后自动接回；首屏就未连接时请点「重新连接」；`/overview`、`/providers` 等二级页仍会直接显示错误页。
+
+## 工作区
+
+侧栏是**工作区树**，与 desktop-ui 的分组口径一致（同一个 agent 进程能看到所有工作区的会话）：
+
+- 会话按 `workspace` 分组；组头显示目录名、会话数、运行中标记，**当前工作区**默认展开并标「当前」；
+- 组内只有空占位会话的工作区（例如刚添加、还没说话）也会出现——每个空工作区保留最新的一条空会话，有真实内容后自动收掉占位；
+- 组头的 `+` 在该工作区新建会话；非当前组的 ✓ 切换工作区（有空会话就打开最近一条，没有就新建一条）；
+- 顶部「新会话」提交到当前会话所属工作区（没有活动会话时用 agent 的当前项目）；
+- 搜索框同时过滤工作区名与会话标题，工作区名命中时整组展开。
+
+`/workspaces` 是添加/选择工作区的目录浏览器：左侧是磁盘、主目录与最近工作区，右侧浏览子目录，可新建文件夹，最后「使用此目录」把该目录设为当前工作区并打开/新建会话。
+
+| 路由 | 作用 |
+|---|---|
+| `GET /workspaces?path=…` | 目录浏览器（走网关 `fs.roots` / `fs.list`，不自己读盘） |
+| `POST /workspaces/select` | `workspace.add`（设当前项目 + 记入会话目录索引）→ 打开该工作区最近的会话，没有则 `thread.create` |
+| `POST /workspaces/mkdir` | 在浏览位置新建目录（`fs.mkdir`），成功后进入它 |
+
+两条实现约束：
+
+- **工作区是会话属性**：切换不需要重连网关、也不换 agent；新会话通过 `thread.create { workspace }` 绑定目录；
+- **打开历史会话前先 `thread.focus`**：快照只给"激活 / 打开的 Tab / 运行中"会话带 items，不聚焦直接渲染会得到空正文。
+
+当前**不做移除工作区**：后端 `workspace.remove` 会连同该工作区的会话文件一起删除，Web 端先不提供这个破坏性入口。
 
 ## 运行
 
@@ -51,6 +77,11 @@ cargo run --manifest-path ssr-h/Cargo.toml -- \
 发现文件里的 `workspace` 只在"目录真实存在且不是 `~/.a-da`"时采用，否则回退到当前目录
 （避免把凭据目录当成会话工作区）。
 
+🔴 **插件目录按“exe 旁 → 当前目录 → 源码目录”查找**：直接跑 `dist/ssr-h.exe` 时读的是
+`dist/frontend-plugins/`，不是 `ssr-h/frontend-plugins/`。改了源码插件后要同步
+`dist/frontend-plugins/`，或启动时显式加 `--plugins-dir ssr-h/frontend-plugins`；
+否则点「重载前端插件」也只会重载**旧的那份**。
+
 ### 局域网访问与访问令牌
 
 默认只允许绑定回环地址。要开放给局域网，必须**同时**显式确认并设置访问令牌：
@@ -75,6 +106,31 @@ cargo run --manifest-path ssr-h/Cargo.toml -- \
   同源校验会把所有动作按钮一起拒掉——现象是"点新会话 / 发送 / 审批全是 403 跨站请求"，
   而 `fetch()` 却正常（照常带真实 Origin），极易误判。现在 `Origin: null` 仅当
   `Sec-Fetch-Site: same-origin`（浏览器禁改头）时按同源导航放行，其余照旧拒绝。
+
+🔴 **工作区选择器会浏览网关所在机器的文件系统**（`/workspaces` 走 `gateway.fs.*`）。
+非回环监听时必须开 `--ui-token`，并且只发给可信用户——拿到令牌的人可以浏览宿主目录。
+
+### 流式验收
+
+```bash
+node tools/verify-ssr-streaming.mjs
+```
+
+假模型（每 120ms 吐一段）+ 真网关 + 真 `ssr-h`，走真实的 `/threads/{id}/send` 与
+`/threads/{id}/stream`，断言助手正文被拆成多次增量推送、相邻间隔远小于旧的 2 秒整段刷新、
+正文单调变长、最后一段不丢。需要 `dist/ada-gateway.exe`、`dist/ada-coding.exe`
+与已构建的 `ssr-h`（默认取 `../cargo_target_ada/debug/ssr-h.exe`，可用 `SSR_H_EXE` 覆盖）。
+脚本的临时目录都在 `target/ssr-verify/` 下（某些沙箱环境不允许子进程写系统 TEMP）。
+
+### 工作区验收
+
+```bash
+node tools/verify-ssr-workspaces.mjs
+```
+
+真网关 + 真 `ada-coding` + 真 `ssr-h`：建两个工作区的会话，断言侧栏树分组/当前标记/跨工作区可见，
+再走 `/workspaces` 浏览目录、`workspaces/select` 选新目录（无会话则建一条）、选已有工作区（打开已有会话），
+最后用 `workspaces/mkdir` 新建目录。临时目录在 `target/ssr-verify-workspaces/`。
 
 ## 供应商管理
 
@@ -134,8 +190,31 @@ ssr-h/frontend-plugins/hello-tsx/
 - 访问 `/extensions` 点「重载前端插件」即可重新扫描目录；新插件立即出现在导航与仪表盘，无需重启。
 - 独立页面地址：`/ext/{id}/{slug}`；资源地址：`/ext/{id}/assets/{path}`。
 - **插槽（slots）**：把 TSX 挂到界面的固定位置（`composer.left` / `composer.right` / `composer.footer` / `composer.above` / `sidebar.top` / `sidebar.bottom` / `topbar.right` / `transcript.after` / `extensions.list` / `dashboard.widgets`）。插槽内容在服务端渲染进 HTML；插件加载失败只影响它自己，界面退回默认实现。
+- `composer.above` 的插件（如 Token 天气）随 SSE `parts` 刷新：投影里带**当前会话**的助手 `usage`（不是快照的 `activeThreadId`），轮次收尾后会延迟补拉一次条目，所以不会停在「晴天 0%」。点击天气胶囊展开**浮层**（分档/百分比/已用/窗口/会话/模型），不跳页；完整页面仍保留入口。浮层是插件自己的 `<details class="ada-popover">`，`chat.js` 在 `parts` 替换后按 `id` 还原展开状态，并支持点外部/Esc 关闭。
 - 可在扩展页逐个**停用/启用**插件（`POST /extensions/{id}/disable|enable`），停用后贡献立即消失、界面回到默认实现；`GET /api/plugins` 暴露插件与插槽状态。
 - 插件只接受 `.tsx` 模板；插件代码是**本地受信任内容**，不要在不受信任的目录里放插件。
+
+### 插件实现「置底/回到最新」按钮
+
+**纯 TSX 插件做不了完整版**：插件在服务端渲染成 HTML，没有浏览器 JS、没有事件回调，也读不到滚动位置。核心提供了一份很薄的声明式契约，插件只写 HTML：
+
+```tsx
+// plugin.json 里挂到 "transcript.after" 插槽
+export function Page(_props: any) {
+  return (
+    <button class="ada-scroll-bottom" type="button" data-ada-scroll-bottom>
+      回到最新
+    </button>
+  );
+}
+```
+
+- `data-ada-scroll-bottom` 由 `chat.js` 事件委托绑定：点击滚到底部 + 恢复自动跟随；
+- 同一批按钮按"是否接近底部"自动切换 `hidden`（核心按钮也走这套）；
+- 复用核心 `.ada-scroll-bottom` 类即可获得 sticky 居中样式（插件不需要额外 CSS/JS）。
+- 插槽建议用 `transcript.after`（在滚动容器内）；放 `composer.above` 会落在右下角插件悬浮区。
+
+如果坚持"零核心脚本"，还有一个纯 HTML 的退路：在 `transcript.after` 放一个底部锚点 `<a id="chat-end"></a>`，插件按钮用 `<a href="#chat-end">`。它能让浏览器自己滚动，但**无法在底部时隐藏**、会改 URL fragment，也不负责恢复 `stickToBottom`，所以不推荐作为正式交互。
 
 ### TSX 作者约定
 
@@ -157,13 +236,21 @@ export function Page(props: any) {
   `Notice` / `Panel` / `Disclosure` / `EmptyState` / `Icon` / `TextField` / `Select` /
   `Modal` / `Form` / `Todo` / `UserMessage` / `AssistantMessage`；
   推荐 `import { Button } from "ssr-h:components"`，也兼容直接使用全局同名组件；
-- 小写标签走 HTML 白名单与 URL 校验；文本默认转义；函数 prop / `onX` /
-  `dangerouslySetInnerHTML` 拒绝；Boa 无 fs/net/process，并有循环/递归/输出/嵌套预算；
+- 小写标签走 **标签 / 属性名 / URL** 三重校验（属性名必须是合法标识符，否则
+  `{…{"data-x\" onmouseover=\"…"}}` 这种展开属性能凭空造事件属性）；
+  `hx-*` 走显式白名单，`hx-on*` 与 `hx-vals`/`hx-headers`/`hx-trigger` 的 `js:` 值一律拒绝；
+  文本默认转义；函数 prop / `onX` / `dangerouslySetInnerHTML` 拒绝；
+  Boa 无 fs/net/process，并有循环/递归/输出/嵌套预算（**没有内存上限**，见 [docs/TSX.md](docs/TSX.md) §5）；
 - **支持 import/export**：加载/重载时 OXC 递归转译相对模块，运行时交给 Boa 的 ESM loader；
   **不需要 Bun/Node**（只支持插件目录内的相对模块，npm 依赖不支持）；
 - 每次渲染新建 Boa Context（模块状态不跨请求）；release 单文件页约 5ms、
   含内置组件库的模块页约 3.4ms（组件库每次 Context 都要初始化，后续可做池化/预编译）；
-- 示例：`frontend-plugins/hello-tsx/`；完整说明见 [docs/TSX.md](docs/TSX.md)。
+- 示例：`frontend-plugins/hello-tsx/`（页面 / 仪表盘 / 插槽）、
+  `frontend-plugins/token-weather/`（按上下文用量显示天气：页面 + 输入框上方胶囊 +
+  概览卡片，演示相对 import 与 `hx-get`/`hx-select` 自刷新）；完整说明见 [docs/TSX.md](docs/TSX.md)。
+- **调试用 `console.log`**：TSX 在服务端跑，输出进 **ssr-h 进程日志**（`INFO ssr_h::plugin:
+  [插件id/页面] …`），浏览器 DevTools 里看不到；Boa 本身没有 `console`，这是内置的
+  最小实现（单次渲染最多 20 条）。改完模板要在 `/extensions` 点「重载前端插件」才生效。
 
 
 ## 组件库
@@ -177,7 +264,7 @@ export function Page(props: any) {
 
 ## 当前实现边界
 
-- 这是 SSR/HTMX 原型，不是现有 desktop-ui 的替代：聊天发送通过服务端 WS RPC，页面按轮询/重新加载更新；
+- 这是 SSR/HTMX 原型，不是现有 desktop-ui 的替代：聊天发送通过服务端 WS RPC，页面正文由 SSE 增量更新（断流时退回 2 秒轮询），动作完成后整体跳转；
 - 已实现：只读概览、会话列表/详情、发送、中止、重试、审批、排队（提升/删除/清空）、任务规划、
   **供应商管理**（新建 / 编辑连接 / 删除 / 设为当前 / 测试连接 / 获取远程模型 / 模型增删改，对齐 desktop-ui）、
   插件重载与启停、**TSX 服务端插件**（`.tsx` 页面/插槽/仪表盘，OXC + Boa + 内置 TSX 组件库）；

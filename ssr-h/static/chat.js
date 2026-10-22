@@ -29,6 +29,22 @@
     if (el) el.scrollTop = el.scrollHeight;
   };
 
+  /* "回到最新"按钮：只在离开底部时出现。
+   *
+   * 插件也可以用同一套行为：任意元素加 `data-ada-scroll-bottom` 即可，
+   * 核心脚本负责"点击回到底部 + 恢复自动跟随 + 按滚动位置切换 hidden"。
+   * 推荐在 `transcript.after` 插槽里复用 `.ada-scroll-bottom` 类（sticky 居中），
+   * 这样插件不需要写任何 JavaScript（TSX 本来也不允许事件回调）。
+   */
+  const scrollButtons = () =>
+    document.querySelectorAll('#scroll-bottom, [data-ada-scroll-bottom]');
+  const syncBottomButtons = () => {
+    const hidden = nearBottom();
+    scrollButtons().forEach((button) => {
+      button.hidden = hidden;
+    });
+  };
+
   /* 面板的身份：所属折叠行的 data-key + 它是行内第几个面板。
      服务端渲染顺序稳定（参数 → 执行输出），所以序号可跨替换对齐。 */
   const panelId = (node) => {
@@ -50,6 +66,7 @@
     if (target === scroller()) {
       chatTop = target.scrollTop;
       stickToBottom = nearBottom();
+      syncBottomButtons();
       return;
     }
     if (target.classList && target.classList.contains('ada-panel__body')) {
@@ -89,6 +106,7 @@
     } else if (chatTop > 0) {
       el.scrollTop = chatTop;
     }
+    syncBottomButtons();
   };
 
   /* 代码块悬停显示复制按钮（组件库管工具面板的复制，这里管正文代码块） */
@@ -117,6 +135,35 @@
     });
   };
 
+  /* 事件委托：核心按钮与插件按钮（`data-ada-scroll-bottom`）走同一条路径。
+     插件是服务端渲染的，动态插入/替换后也不需要重新绑定。 */
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    const button =
+      target && target.closest
+        ? target.closest('#scroll-bottom, [data-ada-scroll-bottom]')
+        : null;
+    if (!button) return;
+    event.preventDefault();
+    stickToBottom = true;
+    scrollToBottom();
+    syncBottomButtons();
+  });
+
+  /* 插件气泡（`details.ada-popover`）：点外部或 Esc 关闭。
+     原生 details 只会在再点 summary 时关闭，对"小窗"来说不够直觉。 */
+  document.addEventListener('click', (event) => {
+    document.querySelectorAll('details.ada-popover[open]').forEach((popover) => {
+      if (!popover.contains(event.target)) popover.open = false;
+    });
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    document.querySelectorAll('details.ada-popover[open]').forEach((popover) => {
+      popover.open = false;
+    });
+  });
+
   const boot = () => {
     enhanceCodeBlocks();
     const transcript = transcriptOf();
@@ -127,6 +174,7 @@
       }).observe(transcript, { childList: true });
     }
     scrollToBottom();
+    syncBottomButtons();
   };
 
   if (document.readyState === 'loading') {
@@ -150,6 +198,19 @@
       document.querySelectorAll('.ada-thread').forEach((item) => {
         item.hidden = Boolean(query) && !item.textContent.toLowerCase().includes(query);
       });
+      // 工作区树：会话全被过滤掉时把整组藏起来；工作区名命中则整组展开、会话全显示。
+      document.querySelectorAll('.ada-ws').forEach((group) => {
+        const details = group.querySelector('details');
+        const name = (group.querySelector('.ada-ws__name')?.textContent || '').toLowerCase();
+        const nameHit = Boolean(query) && name.includes(query);
+        const rows = group.querySelectorAll('.ada-thread');
+        if (nameHit) {
+          rows.forEach((row) => { row.hidden = false; });
+        }
+        const hasVisible = Array.from(rows).some((row) => !row.hidden);
+        group.hidden = Boolean(query) && !nameHit && !hasVisible;
+        if (query && (nameHit || hasVisible) && details) details.open = true;
+      });
     };
 
     input.addEventListener('input', apply);
@@ -170,4 +231,180 @@
   } else {
     initThreadSearch();
   }
+})();
+
+/* ── 服务端推送（SSE）：逐条更新对话流 ─────────────────────────────────────
+ *
+ * 服务端把网关的 `evt.state.patch` 渲染成 HTML 后推过来：
+ *   - `transcript`：结构变化（新增/删除卡片）时整段同步；
+ *   - `item`：单条卡片的正文/状态变化（流式回答就是这一种）；
+ *   - `parts`：托盘 / 任务规划 / 顶栏 / 输入框辅助区（JSON，按键替换）。
+ *
+ * 事件流断开时 `window.__adaStream` 置 false，同一段脚本用 2 秒 `fetch` 轮询
+ * `/threads/{id}/live` 兜底；EventSource 重连成功后自动停掉兜底。这样既不用写
+ * 两套渲染，也不会在断流时让界面冻住。
+ */
+(() => {
+  const transcriptOf = () => document.getElementById('transcript');
+  const initial = transcriptOf();
+  if (!initial) return;
+  const threadId = initial.getAttribute('data-thread-id') || '';
+  if (!threadId) return;
+
+  window.__adaStream = false;
+
+  const escapeSelector = (value) => {
+    if (window.CSS && window.CSS.escape) return window.CSS.escape(value);
+    return String(value).replace(/["\\]/g, '\\$&');
+  };
+
+  const replaceTranscript = (html) => {
+    const box = transcriptOf();
+    if (box) box.innerHTML = html;
+  };
+
+  /* 单条卡片：已存在就原位替换（保住阅读位置），不存在就按 `at` 插到正确位置。 */
+  const applyItem = (html) => {
+    const box = transcriptOf();
+    if (!box) return;
+    const template = document.createElement('template');
+    template.innerHTML = html.trim();
+    const node = template.content.firstElementChild;
+    if (!node) return;
+
+    const id = node.getAttribute('data-item-id') || '';
+    const at = Number(node.getAttribute('data-at') || 0);
+    const existing = id
+      ? box.querySelector('[data-item-id="' + escapeSelector(id) + '"]')
+      : null;
+    if (existing) {
+      existing.replaceWith(node);
+      return;
+    }
+    const rows = box.children;
+    for (let i = 0; i < rows.length; i += 1) {
+      const row = rows[i];
+      if (!row.hasAttribute || !row.hasAttribute('data-at')) continue;
+      if (Number(row.getAttribute('data-at') || 0) > at) {
+        box.insertBefore(node, row);
+        return;
+      }
+    }
+    box.appendChild(node);
+  };
+
+  const PART_TARGETS = {
+    trays: 'ada-trays',
+    todo: 'ada-todo-dock',
+    topbarStatus: 'topbar-status',
+    topbarActions: 'topbar-actions',
+    aux: 'composer-aux',
+    above: 'composer-above',
+    approval: 'composer-approval',
+    model: 'composer-model',
+  };
+
+  /* 替换动态区域时保住展开中的插件气泡：`details[open][id]` 在替换后按 id 还原。
+     否则 composer.above 每 500ms 被 parts 换一次，天气小窗会自己关掉。 */
+  const replaceKeepingOpen = (target, html) => {
+    const openIds = [];
+    target.querySelectorAll('details[open][id]').forEach((node) => {
+      openIds.push(node.id);
+    });
+    target.innerHTML = html;
+    openIds.forEach((id) => {
+      const reopened = target.querySelector('[id="' + escapeSelector(id) + '"]');
+      if (reopened && reopened.tagName === 'DETAILS') reopened.open = true;
+    });
+  };
+
+  const applyParts = (payload) => {
+    Object.keys(PART_TARGETS).forEach((key) => {
+      if (!(key in payload)) return;
+      const target = document.getElementById(PART_TARGETS[key]);
+      if (target) replaceKeepingOpen(target, payload[key]);
+    });
+  };
+
+  /* ── 兜底轮询 ────────────────────────────────────────────────────────────
+   * 为什么不交给 `hx-trigger="every 2s [条件]"`：实测这一版 htmx 的 every 过滤器
+   * 不会拦住轮询请求（条件恒为 false 时仍每 2 秒打一次 /live），于是 SSE 明明活着，
+   * 界面还是被整段重渲染盖掉。这里用同一段脚本显式控制，取代语义不确定的 htmx 写法。
+   */
+  let pollTimer = null;
+
+  const stopPolling = () => {
+    if (pollTimer) {
+      window.clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+  };
+
+  const applyOob = (html) => {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    doc.querySelectorAll('[hx-swap-oob]').forEach((node) => {
+      const target = node.id ? document.getElementById(node.id) : null;
+      if (target) target.innerHTML = node.innerHTML;
+    });
+  };
+
+  const pollOnce = async () => {
+    pollTimer = null;
+    if (window.__adaStream) return;
+    try {
+      const response = await fetch('/threads/' + encodeURIComponent(threadId) + '/live', {
+        headers: { 'HX-Request': 'true' },
+      });
+      if (response.ok) applyOob(await response.text());
+    } catch (error) {
+      /* 网关还没回来：下一轮继续探测 */
+    }
+    if (!window.__adaStream) schedulePoll();
+  };
+
+  function schedulePoll() {
+    stopPolling();
+    pollTimer = window.setTimeout(pollOnce, 2000);
+  }
+
+  let source = null;
+  /* 只有**真的收到事件**才算流可用。
+     不能在 `open` 里置 true：SSE 的 200 头在服务端连上网关之前就发出去了，
+     网关挂着时 `open` 也会触发，于是"假在线"会把兜底轮询关掉（实测断网时正是这样）。 */
+  const markLive = () => {
+    window.__adaStream = true;
+    stopPolling();
+  };
+  const connect = () => {
+    if (source) source.close();
+    source = new EventSource('/threads/' + encodeURIComponent(threadId) + '/stream');
+    source.addEventListener('transcript', (event) => {
+      markLive();
+      replaceTranscript(event.data);
+    });
+    source.addEventListener('item', (event) => {
+      markLive();
+      applyItem(event.data);
+    });
+    source.addEventListener('parts', (event) => {
+      markLive();
+      try {
+        applyParts(JSON.parse(event.data));
+      } catch (error) {
+        /* 坏帧不拖垮页面：下一次 parts（500ms 内）会覆盖 */
+      }
+    });
+    source.addEventListener('error', () => {
+      // EventSource 自己会重连；期间用 2 秒轮询兜底。
+      // 只在没有计时器时排下一轮：反复的 error 不该把轮询一直往后推。
+      window.__adaStream = false;
+      if (!pollTimer) schedulePoll();
+    });
+  };
+
+  if (window.EventSource) {
+    connect();
+  }
+  // 首屏先排一次兜底：SSE 在几百毫秒内连上时，`open` 会把它取消。
+  schedulePoll();
 })();

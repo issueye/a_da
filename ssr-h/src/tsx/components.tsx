@@ -12,7 +12,9 @@ function __classes(base: string, extra?: any) {
 
 function __check(name: string, props: any, allowed: string[]) {
   Object.keys(props || {}).forEach((key) => {
-    if (key !== "children" && allowed.indexOf(key) < 0) {
+    // `key` 与 `children` 一样是通用 prop：h() 会把它传给组件（HTML 标签上才丢弃），
+    // 组件靠它落稳定身份（Disclosure 的 data-key 供 live 轮询还原展开态）。
+    if (key !== "children" && key !== "key" && allowed.indexOf(key) < 0) {
       throw new Error("组件 <" + name + "> 不支持属性 `" + key + "`");
     }
   });
