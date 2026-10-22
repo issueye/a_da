@@ -127,6 +127,8 @@
   min-height: 0;
   max-height: 124px;
   overflow-y: auto;
+  /* 滚到底不把整页一起带走 */
+  overscroll-behavior: contain;
 }
 
 .ada-section {
@@ -222,6 +224,10 @@
   /* 保底三条会话的高度：再挤也要能看见列表，而不是剩一条彩边 */
   min-height: 96px;
   overflow-y: auto;
+  /* 会话增删会跨越滚动阈值，预留位置避免标题串位 */
+  scrollbar-gutter: stable;
+  /* 滚到底不把整页一起带走 */
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -366,6 +372,11 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* 滚到底不把整页一起带走 */
+  overscroll-behavior: contain;
+  /* 预留滚动条位：流式输出时内容长度反复跨过滚动阈值，
+     不留位会让整块正文左右跳 10px。 */
+  scrollbar-gutter: stable;
   scroll-behavior: smooth;
 }
 /* 回到最新：sticky 在滚动容器底部、水平居中（避开右下角的插件悬浮区）。
@@ -470,6 +481,8 @@
   margin: 0 auto;
   max-height: 38vh;
   overflow-y: auto;
+  /* 滚到底不把整页一起带走 */
+  overscroll-behavior: contain;
   padding: 0 24px 8px;
 }
 .ada-tray {
@@ -517,6 +530,8 @@
   max-height: 120px;
   margin: 8px 0;
   overflow: auto;
+  /* 滚到底不把整页一起带走 */
+  overscroll-behavior: contain;
   border: 1px solid var(--ph-line);
   border-radius: var(--ada-radius-md);
   background: var(--ph-canvas);

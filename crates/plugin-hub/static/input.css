@@ -12,8 +12,9 @@
 @layer base {
   html {
     -webkit-text-size-adjust: 100%;
+    /* Firefox：标准属性。颜色取同一套令牌，跟 WebKit 保持一致。 */
     scrollbar-width: thin;
-    scrollbar-color: var(--ph-line-strong) transparent;
+    scrollbar-color: var(--ph-scrollbar) transparent;
   }
 
   body {
@@ -23,23 +24,36 @@
     text-rendering: optimizeLegibility;
   }
 
-  /* 纤细滚动条：与桌面端一致 */
+  /* ── 滚动条 ───────────────────────────────────────────────────────────
+     10px 占位、3px 透明描边 → 可见 4px 的圆条（尺寸取偶数，2 的倍数）。
+     三态逐级加深：常规可见但不抢戏，悬停确认「这能拖」，按下最深。
+
+     用 `background-color` 而不是 `background` 简写——简写会把
+     `background-clip` 重置成 border-box，细条会瞬间涨满 10px
+     （原代码在 hover 里重复声明 clip，就是在补这个坑）。 */
   ::-webkit-scrollbar {
-    width: 9px;
-    height: 9px;
+    width: var(--ph-scrollbar-size, 10px);
+    height: var(--ph-scrollbar-size, 10px);
   }
   ::-webkit-scrollbar-track {
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: var(--ph-line-strong);
     border: 3px solid transparent;
-    border-radius: 9999px;
+    border-radius: 999px;
+    background-color: var(--ph-scrollbar);
     background-clip: content-box;
+    transition: background-color 120ms ease;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: var(--ph-faint);
-    background-clip: content-box;
+    background-color: var(--ph-scrollbar-hover);
+  }
+  ::-webkit-scrollbar-thumb:active {
+    background-color: var(--ph-scrollbar-active);
+  }
+  /* 横竖交汇的那个小方块：默认会画成白块，深色模式下很扎眼 */
+  ::-webkit-scrollbar-corner {
+    background: transparent;
   }
 
   ::selection {

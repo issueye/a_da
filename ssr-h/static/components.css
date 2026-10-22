@@ -289,6 +289,8 @@
 .ada-popover__panel {
   max-height: min(360px, 60vh);
   overflow-y: auto;
+  /* 滚到底不把整页一起带走 */
+  overscroll-behavior: contain;
 }
 
 /* ── 输入 ───────────────────────────────────────────────────────────────── */
@@ -572,6 +574,8 @@
   margin: 0;
   max-height: 300px;
   overflow: auto;
+  /* 滚到底不把整页一起带走 */
+  overscroll-behavior: contain;
   padding: 8px 10px;
   color: var(--ph-muted);
   font-family: var(--mono-font, Consolas, monospace);
@@ -813,6 +817,8 @@
   line-height: 1.65;
   padding: 14px 16px 8px;
   overflow-y: auto;
+  /* 滚到底不把整页一起带走 */
+  overscroll-behavior: contain;
 }
 .ada-composer__input::placeholder {
   color: var(--ph-faint);
@@ -1087,6 +1093,8 @@
 .ada-tool-output__scroll {
   max-height: 220px;
   overflow: auto;
+  /* 滚到底不把整页一起带走 */
+  overscroll-behavior: contain;
 }
 .ada-tool-output[data-expanded="true"] .ada-tool-output__scroll {
   max-height: 420px;

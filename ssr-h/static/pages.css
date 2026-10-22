@@ -181,6 +181,8 @@
   margin: 0;
   padding: 0;
   overflow-y: auto;
+  /* 滚到底不把整页一起带走 */
+  overscroll-behavior: contain;
   list-style: none;
 }
 .ada-todo__step {

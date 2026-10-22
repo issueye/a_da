@@ -337,6 +337,52 @@ fn templates_avoid_inline_font_sizes() {
     );
 }
 
+#[test]
+fn scrollbar_follows_the_scale() {
+    // 滚动条是最容易被忽略的一处「控件尺寸」：它占位、参与布局，
+    // 却不属于任何组件的 padding，很容易长期停在某个奇数上（曾经是 9px）。
+    let tokens = read(&repo_dir().join("design/tokens.css"));
+    let mut size = None;
+    for line in tokens.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("--ph-scrollbar-size:") {
+            let digits: String = rest.trim().chars().take_while(char::is_ascii_digit).collect();
+            size = digits.parse::<u32>().ok();
+            break;
+        }
+    }
+    let size = size.expect("tokens.css 应定义 --ph-scrollbar-size");
+    assert_eq!(size % 2, 0, "滚动条宽度 {size}px 是奇数，应取 2 的倍数");
+
+    // 亮/暗两套都要有颜色令牌，否则深色模式下 thumb 会退回浏览器默认
+    for token in ["--ph-scrollbar:", "--ph-scrollbar-hover:", "--ph-scrollbar-active:"] {
+        let count = tokens.matches(token).count();
+        assert_eq!(count, 2, "{token} 应在明暗两套里各出现一次（实际 {count} 次）");
+    }
+
+    let input = read(&repo_dir().join("crates/plugin-hub/static/input.css"));
+    assert!(
+        input.contains("width: var(--ph-scrollbar-size"),
+        "::-webkit-scrollbar 的宽度要走令牌，别写死像素"
+    );
+
+    // thumb 必须用 background-color：`background` 简写会把 background-clip
+    // 重置成 border-box，4px 的细条会瞬间涨满整个 10px 槽位。
+    let thumb = input
+        .split("::-webkit-scrollbar-thumb {")
+        .nth(1)
+        .and_then(|rest| rest.split('}').next())
+        .expect("input.css 应有 ::-webkit-scrollbar-thumb 规则");
+    assert!(
+        thumb.contains("background-color:"),
+        "thumb 要用 background-color 而不是 background，否则 background-clip 被重置"
+    );
+    assert!(
+        thumb.contains("background-clip: content-box"),
+        "thumb 需要 background-clip: content-box，配合透明描边做出内缩的细条"
+    );
+}
+
 // ── 棘轮：存量基线 ───────────────────────────────────────────────────────
 //
 // 🔻 这些数字只许变小。每收敛一处就减一，直至清零后把对应规则改成「禁止」。

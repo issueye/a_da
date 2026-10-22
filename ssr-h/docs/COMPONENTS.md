@@ -187,6 +187,12 @@ ssr-h/
   这条由 `tests/ui_scale.rs` 守住（12 个测试）：参数值是奇数 → 失败；
   CSS 里出现 `border-radius: 9px` / `font-size: 11.5px` → 失败；模板写
   `text-[11px]` 或内联 `style="font-size:..."` → 失败。报错会给出文件名与行号；
+- **滚动条**：槽位 10px、3px 透明描边 → 可见 4px 圆条；三态色走
+  `--ph-scrollbar / -hover / -active`（半透明混合，明暗自动适配）。
+  所有滚动容器加 `overscroll-behavior: contain`（滚到底不把整页带走）；
+  对话流与会话列表额外加 `scrollbar-gutter: stable`（长度跨过滚动阈值时不横移）。
+  🔴 `thumb` 必须用 `background-color`——用 `background` 简写会把
+  `background-clip` 重置成 `border-box`，4px 细条瞬间涨满整个槽位；
 - **焦点态**：`.ada-focusable` 统一 2px 品牌描边 + 3px 半透明光环；组合式（输入卡）用 `:focus-within`；
 - **转义**：所有动态文本经 `theme::escape`，组件只输出可信 HTML；
 - **图标**：组件图标在 `icons.rs` 定义；聊天页组件已全走它，侧栏/顶栏/插件页模板仍有少量内联 SVG（待收口）。

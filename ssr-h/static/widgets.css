@@ -57,6 +57,8 @@
   margin: 0;
   padding: 4px;
   overflow-y: auto;
+  /* 滚到底不把整页一起带走 */
+  overscroll-behavior: contain;
   list-style: none;
   border: 1px solid var(--ph-line);
   border-radius: var(--ada-radius-md);
@@ -251,6 +253,8 @@ body.ada-modal-open {
 .ada-remote__body {
   max-height: min(58vh, 520px);
   overflow-y: auto;
+  /* 滚到底不把整页一起带走 */
+  overscroll-behavior: contain;
   border: 1px solid var(--ph-line);
   border-radius: var(--ada-radius-md);
   background: var(--ph-canvas);
