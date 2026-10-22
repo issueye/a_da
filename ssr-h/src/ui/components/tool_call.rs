@@ -1,4 +1,7 @@
-//! 工具调用卡片：折叠行 + 输入参数 + 长输出预览/展开。
+//! 工具调用卡片：折叠行（做了什么 + 得到什么）+ 输入参数 + 分型输出。
+//!
+//! 折叠行是扫读单位，所以结果尾标与耗时都在行内；展开后**输出在前、参数在后**——
+//! 用户点开一张工具卡是为了看结果，不是为了读参数 JSON。
 
 use crate::ui::theme::escape;
 use crate::ui::Tone;
@@ -6,7 +9,8 @@ use crate::ui::Tone;
 use super::{Disclosure, Panel, Render};
 use crate::ui::todo::{TodoList, TodoStep};
 
-const PREVIEW_LINES: usize = 12;
+/// 折叠态预览行数：再多就交给「展开全部」，避免一展开就铺满整屏。
+const PREVIEW_LINES: usize = 10;
 
 pub struct ToolCall<'a> {
     pub icon: &'a str,
@@ -21,6 +25,15 @@ pub struct ToolCall<'a> {
     pub output_html: &'a str,
     pub todo_steps: &'a [TodoStep],
     pub todo_notes: Option<&'a str>,
+    /// 结果尾标（`167 行` / `+18 -4` / `exit 0`）。
+    pub result: &'a str,
+    pub result_tone: Tone,
+    /// 执行中：左侧色条呼吸 + 客户端实时计时。
+    pub running: bool,
+    /// 计时基点（epoch 毫秒）。
+    pub started_at: Option<i64>,
+    /// 输出总行数（按截断前原文统计）。
+    pub total_lines: usize,
 }
 
 impl<'a> ToolCall<'a> {
@@ -52,6 +65,48 @@ impl<'a> ToolCall<'a> {
             output_html,
             todo_steps,
             todo_notes,
+            result: "",
+            result_tone: Tone::Neutral,
+            running: false,
+            started_at: None,
+            total_lines: 0,
+        }
+    }
+
+    /// 结果尾标：折叠态回答"这一步得到了什么"。
+    pub fn result(mut self, result: &'a str, tone: Tone) -> Self {
+        self.result = result;
+        self.result_tone = tone;
+        self
+    }
+
+    /// 执行中：色条呼吸 + 每秒计时。
+    pub fn running(mut self, running: bool) -> Self {
+        self.running = running;
+        self
+    }
+
+    /// 计时基点（epoch 毫秒）。
+    pub fn started_at(mut self, ms: Option<i64>) -> Self {
+        self.started_at = ms;
+        self
+    }
+
+    /// 输出总行数（截断前）：按钮上要写真实规模。
+    pub fn total_lines(mut self, lines: usize) -> Self {
+        self.total_lines = lines;
+        self
+    }
+
+    /// 语义阶段：运行中 / 待批 / 失败。完成态不给色——那才是默认。
+    fn phase(&self) -> Option<&'static str> {
+        if self.running {
+            return Some("running");
+        }
+        match self.status_tone {
+            Tone::Danger => Some("danger"),
+            Tone::Warn => Some("warn"),
+            _ => None,
         }
     }
 }
@@ -68,6 +123,10 @@ impl Render for ToolCall<'_> {
                 .render(),
             );
         }
+        // 输出在前：点开卡片的人想看"它到底做了什么"，参数是补证据时才翻的。
+        if !self.output.is_empty() {
+            body.push_str(&self.output_panel());
+        }
         if !self.args.is_empty() {
             body.push_str(
                 &Panel::new(self.args)
@@ -75,9 +134,6 @@ impl Render for ToolCall<'_> {
                     .copy(self.args)
                     .render(),
             );
-        }
-        if !self.output.is_empty() {
-            body.push_str(&self.output_panel());
         }
         if body.is_empty() {
             body.push_str(
@@ -94,6 +150,15 @@ impl Render for ToolCall<'_> {
         if !self.dir.is_empty() {
             row = row.sub(self.dir);
         }
+        if !self.result.is_empty() {
+            row = row.result(self.result, self.result_tone);
+        }
+        if let Some(phase) = self.phase() {
+            row = row.phase(phase);
+        }
+        if let Some(ms) = self.started_at {
+            row = row.started_at(ms);
+        }
         if !self.elapsed.is_empty() {
             row = row.meta(self.elapsed);
         }
@@ -106,60 +171,89 @@ impl Render for ToolCall<'_> {
 
 impl ToolCall<'_> {
     fn output_panel(&self) -> String {
-        let line_count = self.output.lines().count();
-        // 短输出直接展示；长输出只给预览，完整内容放进嵌套 details，避免一展开
-        // 工具卡就铺满整屏。
-        if line_count <= PREVIEW_LINES && self.output_html.is_empty() {
-            return Panel::new(self.output)
-                .title("执行输出")
-                .copy(self.output)
-                .render();
-        }
+        let line_count = self.total_lines.max(self.output.lines().count());
+        // 短输出直接铺开；长输出只给预览 + 一层「展开全部」——
+        // 两层折叠等于要用户点两次才看到全文。
         if line_count <= PREVIEW_LINES {
-            return Panel::new(String::new())
-                .html(self.output_html)
-                .title("执行输出")
-                .copy(self.output)
-                .render();
+            return self.output_block(line_count, None);
         }
-
         let preview = if self.output_html.is_empty() {
             let lines: Vec<&str> = self.output.lines().take(PREVIEW_LINES).collect();
             format!(
-                r#"<pre class="ada-panel__body ada-tool-output__preview">{}</pre>"#,
+                r#"<pre class="ada-tool-output__preview">{}</pre>"#,
                 escape(&lines.join("\n"))
             )
         } else {
-            format!(
-                r#"<div class="ada-panel__body ada-panel__body--html ada-tool-output__preview">{}</div>"#,
-                self.output_html
-            )
+            self.output_html.to_string()
         };
-        let full = if self.output_html.is_empty() {
+        self.output_block(line_count, Some(preview))
+    }
+
+    /// 输出面板外壳：`preview` 为 `Some` 时渲染"预览 + 展开全部"。
+    fn output_block(&self, line_count: usize, preview: Option<String>) -> String {
+        let plain = self.output_html.is_empty();
+        let body_class = if plain {
+            "ada-panel__body ada-tool-output__scroll"
+        } else {
+            "ada-panel__body ada-panel__body--html ada-tool-output__scroll"
+        };
+        let inner = match preview {
+            Some(preview) => {
+                let full = if plain {
+                    format!(
+                        r#"<pre class="ada-tool-output__full">{}</pre>"#,
+                        escape(self.output)
+                    )
+                } else {
+                    // Markdown 不能安全切片：折叠交给 CSS 高度，展开只改高度。
+                    String::new()
+                };
+                format!("{preview}{full}")
+            }
+            None => {
+                if plain {
+                    format!(
+                        r#"<pre class="ada-tool-output__preview">{}</pre>"#,
+                        escape(self.output)
+                    )
+                } else {
+                    self.output_html.to_string()
+                }
+            }
+        };
+        let toggle = if line_count > PREVIEW_LINES {
             format!(
-                r#"<pre class="ada-panel__body ada-tool-output__full">{}</pre>"#,
-                escape(self.output)
+                r#"<button class="ada-tool-output__toggle" type="button" data-ada-expand="1" aria-expanded="false">展开全部 {line_count} 行</button>"#
             )
         } else {
+            String::new()
+        };
+        let copy = if self.output.is_empty() {
+            String::new()
+        } else {
             format!(
-                r#"<div class="ada-panel__body ada-panel__body--html ada-tool-output__full">{}</div>"#,
-                self.output_html
+                r#"<button class="ada-panel__copy" type="button" data-copy="{text}" data-copy-label="复制">复制</button>"#,
+                text = escape(self.output)
             )
         };
         format!(
-            r#"<div class="ada-panel ada-tool-output">
+            r#"<div class="ada-panel ada-tool-output" data-expanded="{expanded}" data-body="{body}">
   <div class="ada-panel__head">
-    <span>执行输出</span>
+    <span class="ada-panel__title">执行输出</span>
     <span class="ada-tool-output__meta">共 {line_count} 行</span>
-    <button class="ada-panel__copy" type="button" data-copy="{copy}" data-copy-label="复制">复制</button>
+    {copy}
   </div>
-  {preview}
-  <details class="ada-tool-output__more">
-    <summary>展开全文（共 {line_count} 行）</summary>
-    {full}
-  </details>
+  <div class="{body_class}">{inner}</div>
+  {toggle}
 </div>"#,
-            copy = escape(self.output),
+            // `shown` = 短输出直接铺开（没有全文块，也就没有可折叠的东西）；
+            // 只有长输出才有 true/false 两种折叠态。
+            expanded = if line_count > PREVIEW_LINES {
+                "false"
+            } else {
+                "shown"
+            },
+            body = if plain { "text" } else { "html" },
         )
     }
 }
@@ -189,18 +283,21 @@ mod tests {
     fn short_output_is_rendered_inline() {
         let html = call("ok").render();
         assert!(html.contains("执行输出"), "{html}");
-        assert!(!html.contains("ada-tool-output__more"), "{html}");
+        assert!(!html.contains("data-ada-expand"), "{html}");
     }
 
     #[test]
-    fn long_output_gets_preview_and_expandable_full_text() {
+    fn long_output_gets_single_layer_expand() {
         let output = (1..=20)
             .map(|index| format!("line {index}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let html = call(&output).render();
+        let html = call(&output).total_lines(20).render();
         assert!(html.contains("共 20 行"), "{html}");
-        assert!(html.contains("展开全文（共 20 行）"), "{html}");
+        assert!(html.contains("展开全部 20 行"), "{html}");
+        assert!(html.contains(r#"data-body="text""#), "{html}");
+        // 只有一层折叠：不再出现嵌套的 details/summary。
+        assert_eq!(html.matches("<details").count(), 1, "{html}");
         let preview = html
             .split("ada-tool-output__preview")
             .nth(1)
@@ -208,11 +305,35 @@ mod tests {
             .split("</pre>")
             .next()
             .expect("preview body");
-        assert!(preview.contains("line 12"), "{preview}");
-        assert!(
-            !preview.contains("line 13"),
-            "预览只保留前 12 行: {preview}"
-        );
+        assert!(preview.contains("line 10"), "{preview}");
+        assert!(!preview.contains("line 11"), "预览只留前 10 行: {preview}");
         assert!(html.contains(r#"data-copy="line 1"#), "{html}");
+    }
+
+    #[test]
+    fn output_comes_before_args() {
+        let html = call("ok").render();
+        let output_at = html.find("执行输出").expect("output");
+        let args_at = html.find("输入参数").expect("args");
+        assert!(output_at < args_at, "输出应排在参数前面: {html}");
+    }
+
+    #[test]
+    fn result_tail_lands_on_the_folded_row() {
+        let html = call("ok").result("exit 0", Tone::Success).render();
+        assert!(
+            html.contains(r#"ada-disclosure__result" data-tone="success">exit 0"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn running_row_carries_phase_and_start_time() {
+        let html = call("")
+            .running(true)
+            .started_at(Some(1_700_000_000_000))
+            .render();
+        assert!(html.contains(r#"data-phase="running""#), "{html}");
+        assert!(html.contains(r#"data-started-at="1700000000000""#), "{html}");
     }
 }

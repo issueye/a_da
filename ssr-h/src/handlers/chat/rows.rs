@@ -336,9 +336,21 @@ pub(super) fn last_line_preview(text: &str) -> String {
 /// - 工具：`durationMs` 是真实耗时，按 desktop-ui 的做法显示毫秒值；
 /// - 思考：只有起止时间差 ≥1 秒才显示——恢复出来的历史会话里 `at` 与
 ///   `endedAt` 往往是同一个时间戳，显示"0 秒"只是噪声，不如不显示。
-pub(super) fn elapsed_label(value: &Value) -> String {
+pub(super) fn elapsed_label(value: &Value, status: &str) -> String {
     if let Some(ms) = value.get("durationMs").and_then(Value::as_u64) {
-        return format!("{ms}ms");
+        return duration_text(ms);
+    }
+    // 执行中：起点用 `startedAt`，客户端每秒接着走（服务端只负责给对的起点）。
+    // 不用 `at` 兜底——它是排序用的序号，不是时间戳，拿它算会得出天文数字。
+    if running_status(status) {
+        if let Some(start) = started_ms(value) {
+            let elapsed = now_ms() - start;
+            // 起点明显不合理（时钟漂移、单位写错）就不要显示天文数字。
+            if (0..86_400_000).contains(&elapsed) {
+                let prefix = if status == "waiting_approval" { "待批 " } else { "已 " };
+                return format!("{prefix}{}", duration_text(elapsed as u64));
+            }
+        }
     }
     let start = value
         .get("at")
@@ -359,6 +371,196 @@ pub(super) fn elapsed_label(value: &Value) -> String {
         }
         _ => String::new(),
     }
+}
+
+/// 毫秒 → 人读的时长：`820ms` / `1.2s` / `1 分 12 秒`。
+fn duration_text(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        format!("{} 分 {} 秒", ms / 60_000, (ms % 60_000) / 1000)
+    }
+}
+
+/// 当前时间（epoch 毫秒）。
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn started_ms(value: &Value) -> Option<i64> {
+    value.get("startedAt").and_then(Value::as_i64)
+}
+
+/// 还在跑的状态（等待批准也算：用户要看到自己已经犹豫了多久）。
+fn running_status(raw: &str) -> bool {
+    matches!(raw, "running" | "queued" | "awaiting" | "waiting_approval")
+}
+
+/// 已经有结论的状态：只有这些才配结果尾标。
+fn finished_status(raw: &str) -> bool {
+    matches!(
+        raw,
+        "done" | "completed" | "success" | "error" | "failed" | "denied" | "timeout"
+    )
+}
+
+fn failed_status(raw: &str) -> bool {
+    matches!(raw, "error" | "failed" | "denied" | "timeout")
+}
+
+/// 折叠行尾标：一句话说清「这一步得到了什么」。
+///
+/// 全部来自工具自己的返回值（`output` / `patch` / `details`），不做估算；
+/// 拿不到就**留空**——编一个"完成"上去比空着更糟。
+fn result_summary(
+    name: &str,
+    args: &Value,
+    item: &Value,
+    todo: &[ui::TodoStep],
+) -> (String, Tone) {
+    let status = str_at(item, "status");
+    if !finished_status(status) {
+        return (String::new(), Tone::Neutral);
+    }
+    let output = item.get("output").and_then(Value::as_str).unwrap_or("");
+    let neutral = if failed_status(status) {
+        Tone::Danger
+    } else {
+        Tone::Neutral
+    };
+    let outcome: Option<(String, Tone)> = match name {
+        "read_file" => count_lines(output).map(|lines| (format!("{lines} 行"), neutral)),
+        "list_files" => count_entries(output).map(|items| (format!("{items} 项"), neutral)),
+        "write_file" => args
+            .get("content")
+            .and_then(Value::as_str)
+            .filter(|content| !content.trim().is_empty())
+            .map(|content| (format!("写入 {} 行", content.lines().count()), neutral)),
+        "edit_file" | "batch_replace" | "batch_write" => item
+            .get("patch")
+            .and_then(Value::as_str)
+            .and_then(patch_stats)
+            .map(|(added, removed)| {
+                let tone = if failed_status(status) {
+                    Tone::Danger
+                } else {
+                    Tone::Success
+                };
+                (format!("+{added} -{removed}"), tone)
+            }),
+        "run_command" | "run_background" => exit_code(item).map(|code| {
+            let tone = if code != 0 {
+                Tone::Danger
+            } else {
+                neutral
+            };
+            (format!("exit {code}"), tone)
+        }),
+        "run_tests" => test_summary(output),
+        "search_files" => count_entries(output).map(|hits| (format!("{hits} 处"), neutral)),
+        "todo" => todo_summary(todo),
+        // 这几个的结果本身就在正文里，尾标重复一遍只是噪声。
+        "invoke_subagent" | "ask_user" | "finish" => None,
+        _ => count_lines(output).map(|lines| (format!("{lines} 行"), neutral)),
+    };
+    outcome
+        .filter(|(text, _)| !text.is_empty())
+        .unwrap_or_else(|| (String::new(), Tone::Neutral))
+}
+
+/// 行数（空文本返回 `None`，避免给出"0 行"这种没信息量的尾标）。
+fn count_lines(text: &str) -> Option<usize> {
+    let lines = text.lines().count();
+    (lines > 0).then_some(lines)
+}
+
+/// 非空行数：目录条目、搜索命中都是一行一条。
+fn count_entries(text: &str) -> Option<usize> {
+    let entries = text.lines().filter(|line| !line.trim().is_empty()).count();
+    (entries > 0).then_some(entries)
+}
+
+/// 退出去码：只认工具结果里的结构化字段，不猜。
+fn exit_code(item: &Value) -> Option<i64> {
+    let details = item.get("details")?;
+    details
+        .get("exitCode")
+        .or_else(|| details.get("exit_code"))
+        .and_then(Value::as_i64)
+}
+
+/// 测试汇总：cargo 每个测试二进制都会打一行 `test result: ok. 128 passed; 0 failed`。
+fn test_summary(output: &str) -> Option<(String, Tone)> {
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    let mut seen = false;
+    for line in output.lines() {
+        if let Some(count) = number_before(line, "passed") {
+            passed += count;
+            seen = true;
+        }
+        if let Some(count) = number_before(line, "failed") {
+            failed += count;
+            seen = true;
+        }
+    }
+    if !seen {
+        return None;
+    }
+    let tone = if failed > 0 {
+        Tone::Danger
+    } else {
+        Tone::Success
+    };
+    Some((format!("{passed} 通过 · {failed} 失败"), tone))
+}
+
+/// `带 128 passed` → `128`：取关键词前面紧邻的数字。
+fn number_before(line: &str, word: &str) -> Option<usize> {
+    let head = line[..line.find(word)?].trim_end();
+    let digits: String = head
+        .chars()
+        .rev()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    digits.parse().ok()
+}
+
+/// 统一 diff 的增删行数。
+fn patch_stats(patch: &str) -> Option<(usize, usize)> {
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    for line in patch.lines() {
+        if line.starts_with("+++") || line.starts_with("---") || line.starts_with("@@") {
+            continue;
+        }
+        if line.starts_with('+') {
+            added += 1;
+        } else if line.starts_with('-') {
+            removed += 1;
+        }
+    }
+    (added + removed > 0).then_some((added, removed))
+}
+
+/// 任务规划的完成度：`3/12`。
+fn todo_summary(steps: &[ui::TodoStep]) -> Option<(String, Tone)> {
+    if steps.is_empty() {
+        return None;
+    }
+    let done = steps
+        .iter()
+        .filter(|step| step.status == ui::TodoStatus::Completed)
+        .count();
+    Some((format!("{done}/{}", steps.len()), Tone::Neutral))
 }
 
 /// 压缩卡片的正文是 `summary`（不是 `text`），并带上真实的 token 变化。
@@ -402,6 +604,8 @@ pub(super) fn row_view(value: &Value) -> ui::RowView {
         });
     let text = truncate(&raw_text, 8000);
     let output = truncate(&raw_output, 4000);
+    // 行数按截断前的原文统计：按钮上写"共 42 行"就不能是截断后的 12 行。
+    let output_lines = raw_output.lines().count();
     let html = if kind == "assistant" {
         crate::markdown::to_html(&raw_text)
     } else {
@@ -448,6 +652,8 @@ pub(super) fn row_view(value: &Value) -> ui::RowView {
         "success" => Tone::Success,
         _ => Tone::Neutral,
     };
+    let (result, result_tone) = result_summary(&tool_name, &args_value, value, &todo_steps);
+    let running = running_status(raw_status);
     ui::RowView {
         kind,
         key,
@@ -460,7 +666,12 @@ pub(super) fn row_view(value: &Value) -> ui::RowView {
         icon: tool_icon(&tool_name),
         status: tool_status_label(raw_status),
         status_tone,
-        elapsed: elapsed_label(value),
+        result,
+        result_tone,
+        running,
+        started_at: if running { started_ms(value) } else { None },
+        output_lines,
+        elapsed: elapsed_label(value, raw_status),
         args: truncate(&args_display(&args_value), 2000),
         output,
         output_html,
@@ -811,5 +1022,70 @@ mod tests {
         }));
         assert_eq!(row.images, 1);
         assert!(ui::render_row(&row, "t1").contains("含 1 张图片"));
+    }
+
+    #[test]
+    fn tool_row_reports_how_many_lines_were_read() {
+        let row = row_view(&json!({
+            "kind":"tool","id":"t1","name":"read_file","status":"done",
+            "args":{"path":"rows.rs"},"output":"a\nb\nc"
+        }));
+        assert_eq!(row.result, "3 行");
+        assert_eq!(row.result_tone, Tone::Neutral);
+    }
+
+    #[test]
+    fn command_row_reports_exit_code_and_colors_failure() {
+        let ok = row_view(&json!({
+            "kind":"tool","id":"t1","name":"run_command","status":"done",
+            "args":{"command":"cargo build"},"details":{"exitCode":0}
+        }));
+        assert_eq!(ok.result, "exit 0");
+        assert_eq!(ok.result_tone, Tone::Neutral);
+
+        let failed = row_view(&json!({
+            "kind":"tool","id":"t2","name":"run_command","status":"error",
+            "args":{"command":"cargo build"},"details":{"exitCode":101}
+        }));
+        assert_eq!(failed.result, "exit 101");
+        assert_eq!(failed.result_tone, Tone::Danger);
+    }
+
+    #[test]
+    fn edit_row_counts_added_and_removed_lines() {
+        let row = row_view(&json!({
+            "kind":"tool","id":"t1","name":"edit_file","status":"done",
+            "args":{"path":"rows.rs"},
+            "patch":"--- a/rows.rs\n+++ b/rows.rs\n@@ -1,2 +1,3 @@\n-old\n+new\n+more\n"
+        }));
+        assert_eq!(row.result, "+2 -1");
+        assert_eq!(row.result_tone, Tone::Success);
+    }
+
+    #[test]
+    fn running_tool_has_no_result_but_keeps_a_live_start_point() {
+        let started = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as i64)
+            .unwrap_or(0)
+            - 3000;
+        let row = row_view(&json!({
+            "kind":"tool","id":"t1","name":"run_command","status":"running",
+            "args":{"command":"npm run build"},"startedAt":started
+        }));
+        assert!(row.result.is_empty(), "执行中不该给结果尾标");
+        assert!(row.running);
+        assert_eq!(row.started_at, Some(started));
+        assert!(row.elapsed.starts_with("已 "), "{}", row.elapsed);
+    }
+
+    #[test]
+    fn test_runner_row_sums_passed_and_failed() {
+        let row = row_view(&json!({
+            "kind":"tool","id":"t1","name":"run_tests","status":"done",
+            "output":"test result: ok. 128 passed; 0 failed; 3 ignored\n"
+        }));
+        assert_eq!(row.result, "128 通过 · 0 失败");
+        assert_eq!(row.result_tone, Tone::Success);
     }
 }

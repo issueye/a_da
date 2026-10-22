@@ -230,7 +230,51 @@
     }
   }
 
-  /* ── 6. live 轮询后的重建 ────────────────────────────────────────────── */
+  /* ── 工具输出：单层「展开全部」────────────────────────────────────────── */
+  /* 全文服务端已经渲染进 DOM，这里只切 data-expanded：
+     不重新请求，也不改布局宽度以外的东西。按钮文案自己记原始值。 */
+  var toolOutputBound = false;
+  function bindToolOutputs() {
+    if (toolOutputBound) return;
+    toolOutputBound = true;
+    document.addEventListener('click', function (event) {
+      var button = event.target.closest && event.target.closest('[data-ada-expand]');
+      if (!button) return;
+      var block = button.closest('.ada-tool-output');
+      if (!block) return;
+      event.preventDefault();
+      if (!button.dataset.adaLabel) button.dataset.adaLabel = button.textContent;
+      var expanded = block.getAttribute('data-expanded') !== 'true';
+      block.setAttribute('data-expanded', expanded ? 'true' : 'false');
+      button.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      button.textContent = expanded ? '收起输出' : button.dataset.adaLabel;
+    });
+  }
+
+  /* ── 运行中工具：每秒走一次耗时 ──────────────────────────────────────── */
+  /* 每次轮询都会整段替换对话流，所以节点不能缓存——每轮重新查询，
+     否则计时会停在上一批已经被换掉的节点上。 */
+  function tickRunningElapsed() {
+    var rows = document.querySelectorAll(
+      '.ada-disclosure[data-phase="running"][data-started-at]'
+    );
+    for (var i = 0; i < rows.length; i += 1) {
+      var started = parseInt(rows[i].getAttribute('data-started-at'), 10);
+      if (!started) continue;
+      var meta = rows[i].querySelector('.ada-disclosure__meta');
+      if (!meta) continue;
+      var diff = Date.now() - started;
+      // 起点不合理（时钟漂移、单位写错）就保持服务端给的文案，不往外抛天文数字。
+      if (!(diff >= 0 && diff < 86400000)) continue;
+      var seconds = Math.floor(diff / 1000);
+      meta.textContent =
+        seconds >= 60
+          ? '已 ' + Math.floor(seconds / 60) + ' 分 ' + (seconds % 60) + ' 秒'
+          : '已 ' + seconds + 's';
+    }
+  }
+
+  /* ── 8. live 轮询后的重建 ────────────────────────────────────────────── */
   function watchTranscript() {
     var transcript = document.getElementById('transcript');
     if (!transcript || !window.MutationObserver) return;
@@ -247,7 +291,7 @@
     }).observe(dock, { childList: true });
   }
 
-  /* ── 7. 页签（Tabs）────────────────────────────────────────────────────
+  /* ── 9. 页签（Tabs）────────────────────────────────────────────────────
      服务端已按 `?tab=` 渲染好展开项（无 JS 时页签就是普通链接，点一下整页刷新）。
      这里只做渐进增强：点击/方向键就地切换面板，并用 history.replaceState 把地址栏
      换成该页签自己的 href —— 刷新、收藏、分享都还落在同一个页签上。 */
@@ -421,6 +465,9 @@
     bindTabs(document);
     bindRowMenus(document);
     bindRowMenuDocument();
+    bindToolOutputs();
+    // 运行中的工具每秒刷新一次耗时：1s 粒度足够，也能让"它还在跑"看得见。
+    window.setInterval(tickRunningElapsed, 1000);
     watchTranscript();
     watchTodoDock();
     loadSlotRegistry();
@@ -440,6 +487,7 @@
     bindComposer: bindComposer,
     bindTabs: bindTabs,
     bindRowMenus: bindRowMenus,
+    bindToolOutputs: bindToolOutputs,
     copyText: copyText,
     closeSelects: function () {
       if (window.AdaElements) window.AdaElements.closeAllSelects(null);

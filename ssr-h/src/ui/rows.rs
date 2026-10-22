@@ -34,6 +34,19 @@ pub struct RowView {
     pub status: String,
     /// 状态语义色。
     pub status_tone: Tone,
+    /// 折叠态的结果尾标：`167 行` / `+18 -4` / `exit 0`。
+    ///
+    /// 用户扫读对话时最想知道的不是"它做了什么"（标签已经说了），
+    /// 而是"这一步得到了什么"——成败与规模必须留在折叠行上。
+    pub result: String,
+    /// 结果尾标的语义色（只有异常与增删数着色，普通计数保持中性）。
+    pub result_tone: Tone,
+    /// 是否仍在执行（驱动左侧色条与客户端每秒计时）。
+    pub running: bool,
+    /// 实时计时基点（epoch 毫秒）：只有执行中才有值。
+    pub started_at: Option<i64>,
+    /// 输出总行数（按截断前的原文统计）：长输出按钮的文案依据。
+    pub output_lines: usize,
     /// 耗时。
     pub elapsed: String,
     /// 原始参数。
@@ -106,7 +119,12 @@ pub fn render_row(view: &RowView, thread_id: &str) -> String {
             &view.todo_steps,
             view.todo_notes.as_deref(),
         )
-        .render(),        "notice" => {
+        .result(&view.result, view.result_tone)
+        .running(view.running)
+        .started_at(view.started_at)
+        .total_lines(view.output_lines)
+        .render(),
+        "notice" => {
             let tone = match view.level.as_str() {
                 "error" => Tone::Danger,
                 "warn" => Tone::Warn,

@@ -25,6 +25,13 @@ pub struct Disclosure {
     /// 状态徽标文案。
     pub badge: Option<String>,
     pub badge_tone: Tone,
+    /// 结果尾标：折叠态回答"这一步得到了什么"（`167 行` / `exit 0`）。
+    pub result: Option<String>,
+    pub result_tone: Tone,
+    /// 语义阶段（`running` / `warn` / `danger`）：驱动左侧色条与实时计时。
+    pub phase: Option<&'static str>,
+    /// 实时计时基点（epoch 毫秒）：客户端据此每秒刷新耗时文案。
+    pub started_at: Option<i64>,
     /// 展开区内容（已渲染好的 HTML）。
     pub body: String,
     /// 行类型，用于样式与测试定位。
@@ -47,6 +54,10 @@ impl Disclosure {
             meta: None,
             badge: None,
             badge_tone: Tone::Neutral,
+            result: None,
+            result_tone: Tone::Neutral,
+            phase: None,
+            started_at: None,
             body: String::new(),
             kind: kind.into(),
             extra_attrs: None,
@@ -85,6 +96,25 @@ impl Disclosure {
     pub fn badge(mut self, badge: impl Into<String>, tone: Tone) -> Self {
         self.badge = Some(badge.into());
         self.badge_tone = tone;
+        self
+    }
+
+    /// 结果尾标：紧跟在目标后面，回答"得到了什么"。
+    pub fn result(mut self, result: impl Into<String>, tone: Tone) -> Self {
+        self.result = Some(result.into());
+        self.result_tone = tone;
+        self
+    }
+
+    /// 语义阶段：运行中给品牌色条 + 呼吸，等待批准给警告色，失败给危险色。
+    pub fn phase(mut self, phase: &'static str) -> Self {
+        self.phase = Some(phase);
+        self
+    }
+
+    /// 实时计时基点（epoch 毫秒）：客户端据此把「已 3s」接着走下去。
+    pub fn started_at(mut self, ms: i64) -> Self {
+        self.started_at = Some(ms);
         self
     }
 
@@ -151,12 +181,29 @@ impl Render for Disclosure {
                 )
             })
             .unwrap_or_default();
+        let result = self
+            .result
+            .as_deref()
+            .filter(|text| !text.is_empty())
+            .map(|text| {
+                format!(
+                    "<span class=\"ada-disclosure__result\" data-tone=\"{}\">{}</span>",
+                    self.result_tone.class(),
+                    escape(text)
+                )
+            })
+            .unwrap_or_default();
         let attrs = space_attrs(self.extra_attrs.as_deref());
         let data_key = attr("data-key", self.key.as_deref().unwrap_or(""));
+        let data_phase = attr("data-phase", self.phase.unwrap_or(""));
+        let data_started = self
+            .started_at
+            .map(|ms| format!(" data-started-at=\"{ms}\""))
+            .unwrap_or_default();
         // 图标位有两个角色：常态是"这一行是什么"（工具/思考图标），
         // 鼠标悬浮或键盘聚焦时换成"可以展开"（箭头）。两者占同宽，切换不跳版。
         format!(
-            r#"<details class="ada-disclosure" data-kind="{kind}" data-state="closed"{data_key}{attrs}><summary class="ada-disclosure__summary"><span class="ada-disclosure__icon">{icon}</span><span class="ada-disclosure__caret">{caret}</span><span class="ada-disclosure__label">{label}</span>{detail}{sub}{meta}{badge}</summary><div class="ada-disclosure__rail">{body}</div></details>"#,
+            r#"<details class="ada-disclosure" data-kind="{kind}" data-state="closed"{data_key}{data_phase}{data_started}{attrs}><summary class="ada-disclosure__summary"><span class="ada-disclosure__icon">{icon}</span><span class="ada-disclosure__caret">{caret}</span><span class="ada-disclosure__label">{label}</span>{detail}{sub}{result}{meta}{badge}</summary><div class="ada-disclosure__rail">{body}</div></details>"#,
             kind = escape(&self.kind),
             attrs = attrs,
             icon = icon(&self.icon, 13),
