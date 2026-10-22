@@ -20,8 +20,9 @@ use serde_json::Value;
 
 use super::*;
 use crate::plugins::Slot;
+use crate::ui::theme::escape;
 use crate::ui::{
-    self, AuxItem, Button, ButtonKind, ButtonVariant, Chip, Composer, ComposerAux, IconButton,
+    self, AuxItem, Button, ButtonVariant, Chip, Composer, ComposerAux, IconButton,
     Render, SendButton, Size, Tone,
 };
 struct ComposerArgs<'a> {
@@ -35,37 +36,86 @@ struct ComposerArgs<'a> {
     running: bool,
     queue_len: usize,
     approval_count: usize,
-    item_count: usize,
+    /// 最近一回合的速度 / 缓存命中 / 上下文占用。
+    stats: TurnStats,
+}
+
+/// 工具行里的一项：无边框的图标 + 文字，只有**真有去处**时才带箭头。
+///
+/// 空箭头等于骗点击（UED 的硬约束）：模型能跳到供应商页，所以给箭头；
+/// 审批档位只能在桌面端改，就不给。
+fn toolbar_item(
+    icon: &str,
+    label: &str,
+    title: &str,
+    href: Option<&str>,
+    extra_class: &str,
+) -> String {
+    let glyph = ui::icon(icon, 14);
+    let caret = match href {
+        Some(_) => ui::icon("i-chevron-down", 12),
+        None => String::new(),
+    };
+    let body = format!(
+        r#"{glyph}<span class="ada-tool__label">{}</span>{caret}"#,
+        escape(label)
+    );
+    match href {
+        Some(href) => format!(
+            r#"<a class="ada-tool {extra_class}" href="{}" title="{}">{}</a>"#,
+            escape(href),
+            escape(title),
+            body
+        ),
+        None => format!(
+            r#"<span class="ada-tool {extra_class}" title="{}">{}</span>"#,
+            escape(title),
+            body
+        ),
+    }
+}
+
+/// 圆形「＋」：面板向上弹——输入框贴着视口底部，向下必然被裁掉。
+fn plus_menu(thread_id: &str) -> String {
+    format!(
+        r#"<details class="ada-plus">
+  <summary class="ada-plus__button" title="更多操作" aria-label="更多操作">{plus}</summary>
+  <div class="ada-plus__panel">
+    <form method="post" action="/threads"><input type="hidden" name="title" value="新会话"><button class="ada-plus__item" type="submit">{new}<span>新会话</span></button></form>
+    <a class="ada-plus__item" href="/workspaces">{work}<span>切换工作区</span></a>
+    <form method="post" action="/threads/{id}/retry"><button class="ada-plus__item" type="submit">{retry}<span>重试上一轮</span></button></form>
+  </div>
+</details>"#,
+        plus = ui::icon("i-plus", 15),
+        new = ui::icon("i-chat", 14),
+        work = ui::icon("i-folder", 14),
+        retry = ui::icon("i-refresh", 14),
+        id = escape(thread_id),
+    )
 }
 
 fn composer_html(slots: &SlotContent, args: &ComposerArgs<'_>) -> String {
-    // 左组：附件（未落地，明确禁用）、工作区、审批档位。
+    // 左组：更多操作、工作区、审批档位。
     let mut left = String::new();
-    left.push_str(
-        &IconButton::new("i-plus", "附件与提及（规划中，暂不可用）")
-            .kind(ButtonKind::Button)
-            .class("ada-composer__plus")
-            .attrs("disabled aria-disabled=\"true\"")
-            .render(),
-    );
+    left.push_str(&plus_menu(args.thread_id));
     if !args.workspace_label.is_empty() {
-        left.push_str(
-            &Chip::new(args.workspace_label, Tone::Neutral)
-                .icon("i-git-branch")
-                .title(args.workspace_path.to_string())
-                .class("ada-chip--workspace")
-                .render(),
-        );
+        // 工作区名是"可以短一点"的信息（侧栏有全名），窄屏先让它让位。
+        left.push_str(&toolbar_item(
+            "i-git-branch",
+            args.workspace_label,
+            args.workspace_path,
+            None,
+            "ada-tool--workspace",
+        ));
     }
-    // 审批档位与模型都是只读展示：不加下拉箭头，避免"看起来能点、点了没反应"。
-    // 用独立容器包住，live 轮询才能只换这一个药丸（不重建整条工具行）。
+    // 用独立容器包住：live 轮询只换这一个（不重建整条工具行）。
     left.push_str(&format!(
         r#"<span id="composer-approval">{}</span>"#,
         approval_chip_html(args.approval, args.approval_tone)
     ));
     left.push_str(&slots.composer_left);
 
-    // 右组：模型 + 发送。
+    // 右组：模型（能跳到供应商页）+ 发送。
     let mut right = String::new();
     right.push_str(&format!(
         r#"<span id="composer-model">{}</span>"#,
@@ -77,7 +127,6 @@ fn composer_html(slots: &SlotContent, args: &ComposerArgs<'_>) -> String {
     Composer {
         action: format!("/threads/{}/send", args.thread_id),
         placeholder: "向 a_da 提问，或指派一个任务…".to_string(),
-        focus_hint: Some("Enter 发送 · Shift+Enter 换行".to_string()),
         left,
         right,
         aux: Some(composer_aux(slots, args)),
@@ -85,12 +134,14 @@ fn composer_html(slots: &SlotContent, args: &ComposerArgs<'_>) -> String {
     .render()
 }
 
-/// 输入框下方的辅助区：状态提示 + 上下文 + 真实可用的快捷操作。
+/// 输入框下方这一行：状态（异常才出）+ 遥测 + 动作 + 一处提示。
+///
+/// 只留与「这一次发送」有关的东西：工作区名在工具栏已有一份、消息条数在侧栏一眼可见，
+/// 这里不再重复——同一件事说两遍，用户会怀疑哪个才是真的。
 fn composer_aux(slots: &SlotContent, args: &ComposerArgs<'_>) -> ComposerAux {
     let mut status = Vec::new();
-    if args.connected {
-        status.push(AuxItem::new("网关已连接", Tone::Success).icon("i-plug"));
-    } else {
+    // 连上了不必说"已连接"：那是默认状态，天天显示只是噪音；断线才值得喊一声。
+    if !args.connected {
         status.push(AuxItem::new("网关未连接", Tone::Danger).icon("i-alert"));
     }
     if args.running {
@@ -108,15 +159,22 @@ fn composer_aux(slots: &SlotContent, args: &ComposerArgs<'_>) -> ComposerAux {
         );
     }
 
+    // 遥测：模型自己报回的 usage 与耗时算出来的，不估算。
     let mut context = Vec::new();
-    // 断线时不显示"0 条消息"这类无法确认的数字（失败安全）。
-    if args.connected {
-        context.push(
-            AuxItem::new(format!("{} 条消息", args.item_count), Tone::Neutral).icon("i-chat"),
-        );
+    if let Some(speed) = args.stats.tokens_per_sec {
+        context.push(AuxItem::new(format!("{speed} tok/s"), Tone::Neutral).icon("i-wave"));
     }
-    if !args.workspace_label.is_empty() {
-        context.push(AuxItem::new(args.workspace_label, Tone::Neutral).icon("i-folder"));
+    if let Some(hit) = args.stats.cache_hit {
+        context.push(AuxItem::new(format!("缓存命中 {hit}%"), Tone::Neutral).icon("i-layers"));
+    }
+    if let Some(percent) = args.stats.context {
+        // 接近窗口上限才变色：常态下它只是一个参考数。
+        let tone = if percent >= 85 {
+            Tone::Warn
+        } else {
+            Tone::Neutral
+        };
+        context.push(AuxItem::new(format!("上下文 {percent}%"), tone).icon("i-chart"));
     }
 
     let mut actions = Vec::new();
@@ -144,14 +202,6 @@ fn composer_aux(slots: &SlotContent, args: &ComposerArgs<'_>) -> ComposerAux {
                     .class("ada-aux__action"),
             );
         }
-        actions.push(
-            Button::new("重试上一轮")
-                .variant(ButtonVariant::Ghost)
-                .size(Size::Sm)
-                .icon("i-refresh")
-                .action(format!("/threads/{}/retry", args.thread_id))
-                .class("ada-aux__action"),
-        );
     }
 
     ComposerAux {
@@ -167,27 +217,17 @@ fn composer_aux_html(slots: &SlotContent, args: &ComposerArgs<'_>) -> String {
     composer_aux(slots, args).render()
 }
 
-/// 顶栏的状态药丸（运行中 / 审批档位 / 未连接）。
-fn topbar_status_html(
-    running: bool,
-    connected: bool,
-    approval: &str,
-    approval_tone: &str,
-) -> String {
+/// 顶栏状态：只放**全局且异常**的信号（运行中 / 未连接）。
+///
+/// 审批档位不在这里——它在输入框工具栏里，离"发送"更近，才是它该出现的位置。
+fn topbar_status_html(running: bool, connected: bool) -> String {
     let mut out = String::new();
     if running {
         out.push_str(
             r#"<span class="ada-chip ada-chip--warn"><span class="ada-dot ada-dot--warn"></span>运行中</span>"#,
         );
     }
-    if connected {
-        let tone = match approval_tone {
-            "danger" => Tone::Danger,
-            "warn" => Tone::Warn,
-            _ => Tone::Neutral,
-        };
-        out.push_str(&Chip::new(approval, tone).title("审批档位").render());
-    } else {
+    if !connected {
         out.push_str(
             &Chip::new("未连接", Tone::Danger)
                 .title("无法连接 agent 网关")
@@ -198,24 +238,27 @@ fn topbar_status_html(
 }
 
 fn approval_chip_html(label: &str, tone: &str) -> String {
-    let tone = match tone {
-        "danger" => Tone::Danger,
-        "warn" => Tone::Warn,
-        _ => Tone::Neutral,
+    // 只读项：不给箭头（切换在桌面端设置里），但语义色保留，便于一眼看出档位危险与否。
+    let (icon, modifier) = match tone {
+        "danger" => ("i-shield-check", "ada-tool--danger"),
+        "warn" => ("i-shield-check", "ada-tool--warn"),
+        _ => ("i-shield", ""),
     };
-    Chip::new(label, tone)
-        .icon("i-shield")
-        .title("审批档位：在桌面端设置中调整")
-        .class("ada-chip--approval")
-        .render()
+    format!(
+        r#"<span class="ada-tool {modifier}" title="审批档位：在桌面端设置中调整">{glyph}<span class="ada-tool__label">{label}</span></span>"#,
+        glyph = ui::icon(icon, 14),
+        label = escape(label),
+    )
 }
 
 fn model_chip_html(model: &str) -> String {
-    Chip::new(model, Tone::Neutral)
-        .icon("i-sparkles")
-        .title(format!("当前模型：{model}（在桌面端切换）"))
-        .class("ada-chip--model")
-        .render()
+    // 模型能真的换：链到供应商页，所以这里**该有**箭头。
+    format!(
+        r#"<a class="ada-tool ada-tool--model" href="/providers" title="当前模型：{label}（在供应商页更换）">{glyph}<span class="ada-tool__label">{label}</span>{caret}</a>"#,
+        label = escape(model),
+        glyph = ui::icon("i-sparkles", 14),
+        caret = ui::icon("i-chevron-down", 12),
+    )
 }
 
 /// 顶栏右侧的刷新 / 停止（插件插槽在模板里单独保留）。
@@ -269,7 +312,6 @@ async fn live_parts(
     snapshot: &Value,
     thread_id: &str,
     thread: &Value,
-    item_count: usize,
 ) -> LiveParts {
     let raw_items = thread
         .get("items")
@@ -323,12 +365,12 @@ async fn live_parts(
         running,
         queue_len,
         approval_count,
-        item_count,
+        stats: turn_stats(snapshot, thread),
     };
     LiveParts {
         trays,
         todo: todo_html(raw_items),
-        topbar_status: topbar_status_html(running, true, &approval, &tone),
+        topbar_status: topbar_status_html(running, true),
         topbar_actions: topbar_actions_html(thread_id, running),
         aux: composer_aux_html(&slots, &args),
         composer_above: above.html,
@@ -364,7 +406,7 @@ async fn load_chat(
                 trays_html: String::new(),
                 composer_html: String::new(),
                 todo_html: String::new(),
-                topbar_status: topbar_status_html(false, false, "未连接", "neutral"),
+                topbar_status: topbar_status_html(false, false),
                 topbar_actions: String::new(),
                 connected: false,
             });
@@ -422,7 +464,6 @@ async fn load_chat(
         .iter()
         .map(|item| item_row(item, &active_thread_id))
         .collect();
-    let item_count = items.len();
     let (trays, approval_count, queue_len) = trays_html(&snapshot, raw_items, &active_thread_id);
 
     let config = state.agent.config().await.unwrap_or(Value::Null);
@@ -465,7 +506,7 @@ async fn load_chat(
                 running: is_running,
                 queue_len,
                 approval_count,
-                item_count,
+                stats: active_value.map(|value| turn_stats(&snapshot, value)).unwrap_or_default(),
             },
         )
     };
@@ -497,7 +538,7 @@ async fn load_chat(
         trays_html: trays,
         composer_html,
         todo_html: todo_html(raw_items),
-        topbar_status: topbar_status_html(is_running, true, &approval, &approval_tone),
+        topbar_status: topbar_status_html(is_running, true),
         topbar_actions: topbar_actions_html(&active_thread_id, is_running),
         connected: true,
     })
@@ -554,12 +595,12 @@ async fn live_offline(state: &AppState, thread_id: &str) -> Response {
         running: false,
         queue_len: 0,
         approval_count: 0,
-        item_count: 0,
+        stats: TurnStats::default(),
     };
     let body = [
         oob(
             "topbar-status",
-            &topbar_status_html(false, false, "未连接", "neutral"),
+            &topbar_status_html(false, false),
         ),
         oob("topbar-actions", &topbar_actions_html(thread_id, false)),
         oob("composer-above", &above.html),
@@ -593,12 +634,7 @@ pub async fn live(State(state): State<AppState>, Path(thread_id): Path<String>) 
     else {
         return (StatusCode::NOT_FOUND, "会话不存在").into_response();
     };
-    let item_count = thread
-        .get("items")
-        .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
-    let parts = live_parts(&state, &snapshot, &thread_id, thread, item_count).await;
+    let parts = live_parts(&state, &snapshot, &thread_id, thread).await;
     let items: Vec<ItemRow> = thread
         .get("items")
         .and_then(Value::as_array)

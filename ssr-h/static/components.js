@@ -274,6 +274,25 @@
     }
   }
 
+  /* ── 「＋」菜单：点外面或按 Esc 收起 ────────────────────────────────── */
+  /* details 自己只管开合：不处理"点别处"，菜单会一直挂在输入框上方。 */
+  var plusBound = false;
+  function bindPlusMenu() {
+    if (plusBound) return;
+    plusBound = true;
+    document.addEventListener('click', function (event) {
+      var menus = document.querySelectorAll('details.ada-plus[open]');
+      for (var i = 0; i < menus.length; i += 1) {
+        if (!menus[i].contains(event.target)) menus[i].open = false;
+      }
+    });
+    document.addEventListener('keydown', function (event) {
+      if (event.key !== 'Escape') return;
+      var menus = document.querySelectorAll('details.ada-plus[open]');
+      for (var i = 0; i < menus.length; i += 1) menus[i].open = false;
+    });
+  }
+
   /* ── 8. live 轮询后的重建 ────────────────────────────────────────────── */
   function watchTranscript() {
     var transcript = document.getElementById('transcript');
@@ -466,6 +485,7 @@
     bindRowMenus(document);
     bindRowMenuDocument();
     bindToolOutputs();
+    bindPlusMenu();
     // 运行中的工具每秒刷新一次耗时：1s 粒度足够，也能让"它还在跑"看得见。
     window.setInterval(tickRunningElapsed, 1000);
     watchTranscript();

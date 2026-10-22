@@ -104,8 +104,6 @@ pub struct Composer {
     /// 表单提交地址。
     pub action: String,
     pub placeholder: String,
-    /// 聚焦后出现的提示文案。
-    pub focus_hint: Option<String>,
     /// 工具行左侧（内置控件 + 插件插槽）。
     pub left: String,
     /// 工具行右侧（内置控件 + 插件插槽）。
@@ -116,12 +114,6 @@ pub struct Composer {
 
 impl Render for Composer {
     fn render(&self) -> String {
-        let hint = self
-            .focus_hint
-            .as_deref()
-            .filter(|text| !text.is_empty())
-            .map(|text| format!(r#"<div class="ada-composer__hint">{}</div>"#, escape(text)))
-            .unwrap_or_default();
         let aux = self
             .aux
             .as_ref()
@@ -131,11 +123,12 @@ impl Render for Composer {
                 format!(r#"<div id="composer-aux">{}</div>"#, aux.render())
             })
             .unwrap_or_default();
+        // 快捷键提示只出现在下方辅助区一处：卡片里再来一行，
+        // 聚焦时会变成同一句话上下各一遍。
         format!(
-            r#"<form class="ada-composer" method="post" action="{action}"><div class="ada-composer__card"><textarea class="ada-composer__input" name="text" rows="2" placeholder="{placeholder}" aria-label="消息输入框" required></textarea>{hint}<div class="ada-composer__bar"><div class="ada-composer__group ada-composer__group--left">{left}</div><div class="ada-composer__group ada-composer__group--right">{right}</div></div></div></form>{aux}"#,
+            r#"<form class="ada-composer" method="post" action="{action}"><div class="ada-composer__card"><textarea class="ada-composer__input" name="text" rows="2" placeholder="{placeholder}" aria-label="消息输入框" required></textarea><div class="ada-composer__bar"><div class="ada-composer__group ada-composer__group--left">{left}</div><div class="ada-composer__group ada-composer__group--right">{right}</div></div></div></form>{aux}"#,
             action = escape(&self.action),
             placeholder = escape(&self.placeholder),
-            hint = hint,
             left = self.left,
             right = self.right,
             aux = aux,

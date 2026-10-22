@@ -148,6 +148,8 @@
   align-items: center;
   gap: 5px;
   height: 26px;
+  min-width: 0;
+  flex-shrink: 0;
   max-width: 320px;
   padding: 0 8px;
   border: 1px solid var(--ph-line);
@@ -737,18 +739,22 @@
   background: var(--ph-surface);
 }
 .ada-composer__card {
+  /* 作为容器：工具行按"卡片宽度"而不是视口宽度做取舍 */
+  container-type: inline-size;
   max-width: 860px;
   margin: 0 auto;
-  border: 1px solid var(--ph-line-strong);
-  border-radius: var(--ada-radius-card);
+  border: 1px solid var(--ph-line);
+  border-radius: 20px;
   background: var(--ph-surface);
+  /* 只浮一层很浅的影子：输入框是常驻物，不该抢对话流的注意力 */
+  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.04), 0 10px 26px -22px rgba(24, 24, 27, 0.3);
   transition: border-color 150ms ease, box-shadow 150ms ease,
     background-color 150ms ease;
 }
 .ada-composer__input {
   display: block;
   width: 100%;
-  min-height: 52px;
+  min-height: 58px;
   max-height: 180px;
   resize: none;
   border: 0;
@@ -758,34 +764,18 @@
   font-family: inherit;
   font-size: 13.5px;
   line-height: 1.65;
-  padding: 12px 15px 6px;
+  padding: 14px 16px 8px;
   overflow-y: auto;
 }
 .ada-composer__input::placeholder {
   color: var(--ph-faint);
-}
-/* 聚焦提示：只在聚焦时出现，避免常驻文字噪音 */
-.ada-composer__hint {
-  max-height: 0;
-  overflow: hidden;
-  padding: 0 15px;
-  color: var(--ph-brand-ink);
-  font-size: 10.5px;
-  opacity: 0;
-  transition: max-height 160ms ease, opacity 160ms ease, padding 160ms ease;
-}
-.ada-composer__card:focus-within .ada-composer__hint {
-  max-height: 24px;
-  padding: 0 15px 4px;
-  opacity: 1;
 }
 .ada-composer__bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 9px 9px;
-  border-top: 1px solid var(--ph-line);
+  padding: 2px 10px 10px;
 }
 .ada-composer__group {
   display: flex;
@@ -794,55 +784,190 @@
   min-width: 0;
 }
 .ada-composer__group--left {
-  overflow: hidden;
+  /* 不能 overflow:hidden：里面的「＋」菜单是向上弹的绝对定位面板，
+     一裁就整块看不见（实测 elementFromPoint 打到的是外层 main）。
+     窄列缺空间靠下面的容器查询 + 标签省略来收，不靠裁切。 */
+  min-width: 0;
 }
 .ada-composer__group--right {
   gap: 8px;
   flex-shrink: 0;
 }
-.ada-composer__plus {
-  width: 26px;
-  height: 26px;
+/* ── 工具行里的一项：无边框文字（+ 图标） ───────────────────────────────
+   参考桌面端：工具行不是一排药丸，而是一排"文字按钮"——
+   边框与底色只留给悬停，静态时靠字重和图标区分层级。 */
+.ada-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 8px;
+  min-width: 0;
+  color: var(--ph-muted);
+  font-size: 12px;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background var(--ada-transition), color var(--ada-transition);
+}
+/* 窄列时按"信息重要性"让位：工作区名最先缩（侧栏有全名），其次模型名，
+   审批档位与图标不缩——缩到只剩图标就等于没说。 */
+.ada-tool--workspace {
+  flex-shrink: 6;
+}
+.ada-tool--model {
+  flex-shrink: 2;
+}
+.ada-tool:hover {
+  background: var(--ph-subtle);
+  color: var(--ph-ink);
+}
+.ada-tool .ada-icon {
+  color: var(--ph-faint);
+  transition: color var(--ada-transition);
+}
+.ada-tool:hover .ada-icon {
+  color: var(--ph-ink);
+}
+.ada-tool__label {
+  min-width: 0;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ada-tool--workspace .ada-tool__label {
+  max-width: 150px;
+}
+.ada-tool--model .ada-tool__label {
+  max-width: 220px;
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: 11.5px;
+}
+.ada-tool--danger,
+.ada-tool--danger .ada-icon {
+  color: var(--ph-danger-ink);
+}
+.ada-tool--warn,
+.ada-tool--warn .ada-icon {
+  color: var(--ph-warn-ink);
 }
 
-/* 发送键：全页最重的主操作 */
+/* 窄卡片：先丢掉"侧栏已经有"的信息，别把一串标签压成省略号堆。
+   工作区名在侧栏与页面标题各有一份，这里丢掉不影响判断。 */
+@container (max-width: 560px) {
+  .ada-tool--workspace {
+    display: none;
+  }
+  .ada-tool--model .ada-tool__label {
+    max-width: 160px;
+  }
+}
+
+/* 圆形「＋」：面板向上弹——输入框贴着视口底部，向下必被裁掉。 */
+.ada-plus {
+  position: relative;
+}
+.ada-plus > summary {
+  list-style: none;
+}
+.ada-plus > summary::-webkit-details-marker {
+  display: none;
+}
+.ada-plus__button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: var(--ph-subtle);
+  color: var(--ph-muted);
+  cursor: pointer;
+  transition: background var(--ada-transition), color var(--ada-transition);
+}
+.ada-plus__button:hover,
+.ada-plus[open] .ada-plus__button {
+  background: var(--ph-line);
+  color: var(--ph-ink);
+}
+.ada-plus__panel {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 40;
+  min-width: 208px;
+  padding: 5px;
+  border: 1px solid var(--ph-line-strong);
+  border-radius: 10px;
+  background: var(--ph-elevated);
+  box-shadow: var(--ph-shadow);
+}
+.ada-plus__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ph-muted);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background var(--ada-transition), color var(--ada-transition);
+}
+.ada-plus__item:hover {
+  background: var(--ph-subtle);
+  color: var(--ph-ink);
+}
+.ada-plus__item .ada-icon {
+  color: var(--ph-faint);
+  flex-shrink: 0;
+}
+
+/* 发送键：全页最重的主操作；空输入时降为柔色待命，而不是变成一个灰点 */
 .ada-send {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   border: 0;
   border-radius: 50%;
-  background: var(--ph-ink);
-  color: var(--ph-canvas);
+  background: var(--ph-brand);
+  color: #ffffff;
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.24);
   cursor: pointer;
-  transition: opacity var(--ada-transition), transform var(--ada-transition);
+  transition: background var(--ada-transition), transform var(--ada-transition),
+    box-shadow var(--ada-transition);
 }
 .ada-send:hover {
-  opacity: 0.88;
+  background: var(--ph-brand-strong);
 }
 .ada-send:active {
   transform: scale(0.94);
 }
 .ada-send:disabled {
-  background: var(--ph-subtle);
-  color: var(--ph-faint);
+  background: var(--ph-brand-soft);
+  color: color-mix(in srgb, var(--ph-brand) 42%, transparent);
+  box-shadow: none;
   cursor: default;
 }
 
-/* ── 输入框下方辅助区 ─────────────────────────────────────────────────────
-   一整行连续排列并居中：状态 → 上下文 → 快捷操作 → 提示 → 插件插槽。
-   不做左右分栏——分栏会把提示文案推走，整行读起来才是一句话。 */
+/* ── 输入框下方一行：状态 · 遥测 · 动作 · 提示 ──────────────────────────
+   不是"一句话"，而是若干**独立指标**：每项自带图标、等距排列，
+   长度变化只影响自己，不会把整行推来推去。 */
 .ada-aux {
   display: flex;
   align-items: center;
   justify-content: center;
   flex-wrap: wrap;
-  gap: 6px 14px;
+  gap: 6px 18px;
   max-width: 860px;
-  margin: 7px auto 0;
+  margin: 10px auto 0;
   color: var(--ph-faint);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 .ada-aux__group {
   display: inline-flex;
@@ -855,6 +980,21 @@
   align-items: center;
   gap: 5px;
   white-space: nowrap;
+}
+.ada-aux__item .ada-icon {
+  color: var(--ph-faint);
+}
+.ada-aux__item--success .ada-icon {
+  color: var(--ph-success-ink);
+}
+.ada-aux__item--warn .ada-icon {
+  color: var(--ph-warn-ink);
+}
+.ada-aux__item--danger .ada-icon {
+  color: var(--ph-danger-ink);
+}
+.ada-aux__item--brand .ada-icon {
+  color: var(--ph-brand-ink);
 }
 .ada-aux__item--success {
   color: var(--ph-success-ink);

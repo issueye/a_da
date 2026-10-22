@@ -250,7 +250,7 @@ async fn render_parts(state: &AppState, view: &StreamView) -> Option<String> {
         .iter()
         .find(|thread| str_at(thread, "id") == view.thread_id)?
         .clone();
-    let parts = live_parts(state, &snapshot, &view.thread_id, &thread, view.items.len()).await;
+    let parts = live_parts(state, &snapshot, &view.thread_id, &thread).await;
     Some(
         json!({
             "trays": parts.trays,

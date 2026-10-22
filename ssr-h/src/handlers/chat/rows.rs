@@ -373,6 +373,62 @@ pub(super) fn elapsed_label(value: &Value, status: &str) -> String {
     }
 }
 
+/// 输入框下方那行遥测：速度 / 缓存命中 / 上下文占用。
+///
+/// 三个数都来自**最近一次模型调用自己报回的** usage 与耗时，不估算：
+/// - `tok/s`  = completionTokens ÷ (durationMs ÷ 1000)
+/// - 缓存命中 = cachedTokens ÷ promptTokens
+/// - 上下文   = promptTokens ÷ contextWindow
+///
+/// 拿不到就留空——宁可少一个数，也别摆一个编出来的指标。
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct TurnStats {
+    pub tokens_per_sec: Option<u64>,
+    pub cache_hit: Option<u64>,
+    pub context: Option<u64>,
+}
+
+pub(super) fn turn_stats(snapshot: &Value, thread: &Value) -> TurnStats {
+    let latest = array_at(thread, "items")
+        .iter()
+        .rev()
+        .find(|item| str_at(item, "kind") == "assistant" && prompt_tokens(item) > 0);
+    let Some(item) = latest else {
+        return TurnStats::default();
+    };
+    let usage = item.get("usage").cloned().unwrap_or(Value::Null);
+    let number = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let prompt = number("promptTokens");
+    let completion = number("completionTokens");
+    let cached = number("cachedTokens");
+    let duration = item.get("durationMs").and_then(Value::as_u64).unwrap_or(0);
+    let window = snapshot
+        .get("config")
+        .and_then(|config| config.get("contextWindow"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let percent_of = |part: u64, whole: u64| {
+        (whole > 0).then(|| {
+            let scaled = part.saturating_mul(100).saturating_add(whole / 2);
+            (scaled / whole).min(100)
+        })
+    };
+    TurnStats {
+        // 太短的调用算不出有意义的速率（一个 200ms 的回复会算出三位数）。
+        tokens_per_sec: (duration >= 200 && completion > 0)
+            .then(|| (completion.saturating_mul(1000) / duration).max(1)),
+        cache_hit: percent_of(cached, prompt),
+        context: percent_of(prompt, window),
+    }
+}
+
+fn prompt_tokens(item: &Value) -> u64 {
+    item.get("usage")
+        .and_then(|usage| usage.get("promptTokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
+
 /// 毫秒 → 人读的时长：`820ms` / `1.2s` / `1 分 12 秒`。
 fn duration_text(ms: u64) -> String {
     if ms < 1000 {
@@ -1087,5 +1143,37 @@ mod tests {
         }));
         assert_eq!(row.result, "128 通过 · 0 失败");
         assert_eq!(row.result_tone, Tone::Success);
+    }
+
+    #[test]
+    fn stats_read_speed_cache_and_context_from_the_last_turn() {
+        let snapshot = json!({"config": {"contextWindow": 200000}});
+        let thread = json!({"items": [
+            {"kind": "user", "text": "hi"},
+            {"kind": "assistant", "text": "ok", "durationMs": 2000,
+             "usage": {"promptTokens": 50000, "completionTokens": 400, "cachedTokens": 45000}}
+        ]});
+        let stats = turn_stats(&snapshot, &thread);
+        assert_eq!(stats.tokens_per_sec, Some(200));
+        assert_eq!(stats.cache_hit, Some(90));
+        assert_eq!(stats.context, Some(25));
+    }
+
+    #[test]
+    fn stats_skip_numbers_they_cannot_trust() {
+        // 太短的一回合算不出有意义的速率；没有 usage 就一个数都不给。
+        let snapshot = json!({"config": {"contextWindow": 0}});
+        let short = json!({"items": [
+            {"kind": "assistant", "text": "ok", "durationMs": 120,
+             "usage": {"promptTokens": 10, "completionTokens": 2, "cachedTokens": 0}}
+        ]});
+        let stats = turn_stats(&snapshot, &short);
+        assert_eq!(stats.tokens_per_sec, None);
+        assert_eq!(stats.context, None, "窗口没配就不该编百分比");
+        assert_eq!(stats.cache_hit, Some(0));
+
+        let empty = turn_stats(&snapshot, &json!({"items": []}));
+        assert_eq!(empty.tokens_per_sec, None);
+        assert_eq!(empty.cache_hit, None);
     }
 }
