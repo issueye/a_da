@@ -245,9 +245,10 @@ export function Page(props: any) {
   **不需要 Bun/Node**（只支持插件目录内的相对模块，npm 依赖不支持）；
 - 每次渲染新建 Boa Context（模块状态不跨请求）；release 单文件页约 5ms、
   含内置组件库的模块页约 3.4ms（组件库每次 Context 都要初始化，后续可做池化/预编译）；
-- 示例：`frontend-plugins/hello-tsx/`（页面 / 仪表盘 / 插槽）、
-  `frontend-plugins/token-weather/`（按上下文用量显示天气：页面 + 输入框上方胶囊 +
-  概览卡片，演示相对 import 与 `hx-get`/`hx-select` 自刷新）；完整说明见 [docs/TSX.md](docs/TSX.md)。
+- **示例插件**：`frontend-plugins/hello-tsx/`（最小页面 / 仪表盘 / 插槽）、
+  `frontend-plugins/token-weather/`（按上下文用量显示天气：完整页面 + 输入框上方胶囊/浮层 +
+  概览卡片，演示相对 import、`details` 浮层与 SSE `parts` 刷新；说明见插件目录内的 README）；
+  完整 TSX 说明见 [docs/TSX.md](docs/TSX.md)。
 - **调试用 `console.log`**：TSX 在服务端跑，输出进 **ssr-h 进程日志**（`INFO ssr_h::plugin:
   [插件id/页面] …`），浏览器 DevTools 里看不到；Boa 本身没有 `console`，这是内置的
   最小实现（单次渲染最多 20 条）。改完模板要在 `/extensions` 点「重载前端插件」才生效。
