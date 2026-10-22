@@ -20,7 +20,7 @@
   background: var(--ph-surface);
   color: var(--ph-ink);
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 13px;
   text-align: left;
   cursor: pointer;
   transition: border-color var(--ada-transition), box-shadow var(--ada-transition);
@@ -74,7 +74,7 @@
   padding: 6px 8px;
   border-radius: 6px;
   color: var(--ph-muted);
-  font-size: 12.5px;
+  font-size: 13px;
   cursor: pointer;
 }
 .ada-select__option:hover,
@@ -113,7 +113,7 @@
   padding: 5px 12px;
   border-radius: 7px;
   color: var(--ph-muted);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 500;
   line-height: 1.5;
   text-decoration: none;
@@ -133,7 +133,7 @@
 .ada-tabs__count {
   min-width: 18px;
   padding: 0 5px;
-  border-radius: 999px;
+  border-radius: var(--ada-radius-pill);
   background: var(--ph-subtle);
   color: var(--ph-faint);
   font-size: 10px;
@@ -235,7 +235,7 @@ body.ada-modal-open {
   background: var(--ph-surface);
   color: var(--ph-ink);
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 .ada-remote__search:focus {
   outline: none;
@@ -280,7 +280,7 @@ body.ada-modal-open {
   padding: 6px 10px;
   background: var(--ph-subtle);
   color: var(--ph-muted);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -317,7 +317,7 @@ body.ada-modal-open {
   white-space: nowrap;
   color: var(--ph-ink);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 .ada-remote__row.is-added .ada-remote__id {
   color: var(--ph-faint);
@@ -325,7 +325,7 @@ body.ada-modal-open {
 .ada-remote__added {
   flex-shrink: 0;
   color: var(--ph-faint);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 .ada-remote__row form {
   flex-shrink: 0;

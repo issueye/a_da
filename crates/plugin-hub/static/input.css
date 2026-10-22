@@ -1,76 +1,13 @@
+/* 设计令牌在这里定义：design/tokens.css（唯一真源）。
+   必须排在 @tailwind 之前——@import 出现在其它规则之后会被 CSS 规范忽略。 */
+@import "../../../design/tokens.css";
+
+/* 视觉语言与 desktop-ui 对齐：zinc 中性色 + 蓝色主色、1px 细边框、极轻投影。
+   颜色全部走 CSS 变量，亮/暗主题只切换 `html.dark`。 */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* ─────────────────────────────────────────────────────────────────────────
-   设计令牌（design tokens）
-   与 desktop-ui 共用同一套视觉语言：zinc 中性色 + 蓝色主色、圆角 8/12/16px、
-   1px 细边框、极轻投影。所有颜色走 CSS 变量，亮/暗主题只切换 `html.dark`。
-   ───────────────────────────────────────────────────────────────────────── */
-:root,
-html.light {
-  --ph-canvas: #fafafa;
-  --ph-surface: #ffffff;
-  --ph-elevated: #ffffff;
-  --ph-line: #e4e4e7;
-  --ph-line-strong: #d4d4d8;
-  --ph-ink: #18181b;
-  --ph-muted: #52525b;
-  --ph-faint: #71717a;
-  --ph-brand: #2563eb;
-  --ph-brand-strong: #1d4ed8;
-  --ph-brand-soft: #eff6ff;
-  --ph-brand-ink: #1d4ed8;
-  --ph-subtle: #f4f4f5;
-  --ph-subtle-ink: #52525b;
-  --ph-success-soft: #ecfdf5;
-  --ph-success-ink: #047857;
-  --ph-warn-soft: #fffbeb;
-  --ph-warn-ink: #b45309;
-  --ph-danger-soft: #fff1f2;
-  --ph-danger-ink: #be123c;
-  --ph-glass: rgba(250, 250, 250, 0.82);
-  --ph-focus: rgba(37, 99, 235, 0.32);
-  --ph-code-bg: #18181b;
-  --ph-code-ink: #e4e4e7;
-  --ph-inline-code-bg: #f4f4f5;
-  --ph-inline-code-ink: #3f3f46;
-  --ph-shadow: 0 1px 2px rgba(24, 24, 27, 0.04),
-    0 12px 32px -24px rgba(24, 24, 27, 0.18);
-  color-scheme: light;
-}
-
-html.dark {
-  --ph-canvas: #131316;
-  --ph-surface: #1b1b1f;
-  --ph-elevated: #202024;
-  --ph-line: #2c2c32;
-  --ph-line-strong: #3f3f46;
-  --ph-ink: #f4f4f5;
-  --ph-muted: #a1a1aa;
-  --ph-faint: #8b8b93;
-  --ph-brand: #2563eb;
-  --ph-brand-strong: #1d4ed8;
-  --ph-brand-soft: rgba(59, 130, 246, 0.14);
-  --ph-brand-ink: #93c5fd;
-  --ph-subtle: #202024;
-  --ph-subtle-ink: #a1a1aa;
-  --ph-success-soft: rgba(16, 185, 129, 0.14);
-  --ph-success-ink: #6ee7b7;
-  --ph-warn-soft: rgba(245, 158, 11, 0.14);
-  --ph-warn-ink: #fcd34d;
-  --ph-danger-soft: rgba(244, 63, 94, 0.14);
-  --ph-danger-ink: #fda4af;
-  --ph-glass: rgba(19, 19, 22, 0.82);
-  --ph-focus: rgba(96, 165, 250, 0.4);
-  --ph-code-bg: #101014;
-  --ph-code-ink: #e4e4e7;
-  --ph-inline-code-bg: #27272a;
-  --ph-inline-code-ink: #e4e4e7;
-  --ph-shadow: 0 1px 2px rgba(0, 0, 0, 0.4),
-    0 16px 40px -32px rgba(0, 0, 0, 0.9);
-  color-scheme: dark;
-}
 
 @layer base {
   html {

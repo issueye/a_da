@@ -17,7 +17,7 @@
   background: var(--ph-surface);
   color: var(--ph-muted);
   font-family: inherit;
-  font-size: 9.5px;
+  font-size: 10px;
   opacity: 0;
   cursor: pointer;
   transition: opacity var(--ada-transition), background var(--ada-transition);
@@ -75,7 +75,7 @@
   border-radius: 6px;
   color: var(--ph-faint);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 9px;
+  font-size: 10px;
 }
 /* 侧栏导航 */
 .ada-nav {
@@ -90,7 +90,7 @@
   padding: 7px 9px;
   border-radius: 8px;
   color: var(--ph-muted);
-  font-size: 12.5px;
+  font-size: 13px;
   text-decoration: none;
   transition: background var(--ada-transition), color var(--ada-transition);
 }
@@ -147,7 +147,7 @@
   background: var(--ph-surface);
   color: var(--ph-muted);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 10.5px;
+  font-size: 11px;
   text-decoration: none;
   transition: border-color var(--ada-transition), color var(--ada-transition);
 }
@@ -185,7 +185,7 @@
   background: var(--ph-surface);
   color: var(--ph-ink);
   font-family: inherit;
-  font-size: 11.5px;
+  font-size: 12px;
   outline: none;
   transition: border-color var(--ada-transition), box-shadow var(--ada-transition);
 }
@@ -237,7 +237,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.45;
 }
 .ada-thread__meta {
@@ -295,7 +295,7 @@
   min-width: 0;
   color: var(--ph-faint);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 9.5px;
+  font-size: 10px;
 }
 .ada-gateway span {
   overflow: hidden;
@@ -360,7 +360,7 @@
   margin: 0 auto 10px;
   padding: 6px 12px;
   border: 1px solid var(--ph-line);
-  border-radius: 999px;
+  border-radius: var(--ada-radius-pill);
   background: var(--ph-elevated);
   color: var(--ph-muted);
   font-family: inherit;
@@ -466,7 +466,7 @@
   align-items: center;
   gap: 8px;
   color: var(--ph-ink);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
 }
 .ada-tray__icon {
@@ -502,13 +502,13 @@
   padding: 8px 10px;
   color: var(--ph-muted);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.55;
   white-space: pre-wrap;
 }
 .ada-tray__empty {
   color: var(--ph-faint);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 .ada-tray__actions {
   display: flex;
@@ -535,7 +535,7 @@
   background: var(--ph-subtle);
   color: var(--ph-faint);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 9px;
+  font-size: 10px;
 }
 .ada-tray__text {
   flex: 1;
@@ -544,7 +544,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--ph-muted);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 .ada-tray__link {
   padding: 2px 6px;
@@ -553,7 +553,7 @@
   background: transparent;
   color: var(--ph-muted);
   font-family: inherit;
-  font-size: 10.5px;
+  font-size: 11px;
   cursor: pointer;
   transition: background var(--ada-transition), color var(--ada-transition);
 }
@@ -591,7 +591,7 @@
   padding: 4px 62px 4px 7px;
   border-radius: 7px;
   color: var(--ph-muted);
-  font-size: 11.5px;
+  font-size: 12px;
   cursor: pointer;
   list-style: none;
   user-select: none;
@@ -633,10 +633,10 @@
 .ada-ws__badge {
   flex-shrink: 0;
   padding: 0 5px;
-  border-radius: 999px;
+  border-radius: var(--ada-radius-pill);
   background: var(--ph-brand);
   color: #fff;
-  font-size: 9px;
+  font-size: 10px;
   line-height: 15px;
 }
 .ada-ws__running {
@@ -647,11 +647,11 @@
   flex-shrink: 0;
   min-width: 16px;
   padding: 0 5px;
-  border-radius: 999px;
+  border-radius: var(--ada-radius-pill);
   background: var(--ph-line);
   color: var(--ph-faint);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 9px;
+  font-size: 10px;
   line-height: 15px;
   text-align: center;
 }
@@ -707,7 +707,7 @@
 .ada-ws__empty {
   margin: 2px 0 2px 3px;
   color: var(--ph-faint);
-  font-size: 10.5px;
+  font-size: 11px;
   font-style: italic;
 }
 .ada-ws-stats {

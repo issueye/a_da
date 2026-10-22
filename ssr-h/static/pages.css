@@ -27,10 +27,10 @@
   max-width: 380px;
   padding: 0 10px;
   border: 1px solid var(--ph-line-strong);
-  border-radius: 999px;
+  border-radius: var(--ada-radius-pill);
   background: var(--ph-elevated);
   color: var(--ph-ink);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   box-shadow: var(--ph-shadow);
   cursor: pointer;
@@ -82,7 +82,7 @@
 }
 .ada-todo__count {
   padding: 0 6px;
-  border-radius: 999px;
+  border-radius: var(--ada-radius-pill);
   background: var(--ph-brand-soft);
   color: var(--ph-brand-ink);
   font-family: var(--mono-font, Consolas, monospace);
@@ -112,7 +112,7 @@
   background: transparent;
   color: var(--ph-muted);
   font-family: inherit;
-  font-size: 10.5px;
+  font-size: 11px;
   cursor: pointer;
   transition: background var(--ada-transition), color var(--ada-transition);
 }
@@ -191,7 +191,7 @@
   border: 1px solid transparent;
   border-radius: 8px;
   color: var(--ph-ink);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.55;
 }
 .ada-todo__step .ada-icon {
@@ -252,7 +252,7 @@
   border-radius: var(--ada-radius-lg);
   background: var(--ph-elevated);
   box-shadow: var(--ph-shadow);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.55;
   color: var(--ph-muted);
 }
@@ -262,7 +262,7 @@
   gap: 6px;
   margin-bottom: 4px;
   color: var(--ph-ink);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
 }
 .ada-float__head .ada-icon {
@@ -271,11 +271,11 @@
 .ada-float__badge {
   margin-left: auto;
   padding: 0 6px;
-  border-radius: 999px;
+  border-radius: var(--ada-radius-pill);
   background: var(--ph-brand-soft);
   color: var(--ph-brand-ink);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 9.5px;
+  font-size: 10px;
   font-weight: 600;
 }
 .ada-float__text {
@@ -398,7 +398,7 @@
   display: inline-block;
   margin-left: 8px;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--ada-radius-pill);
   background: var(--ph-subtle);
   color: var(--ph-muted);
   font-size: 10px;
@@ -437,7 +437,7 @@
   white-space: nowrap;
   color: var(--ph-ink);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 .ada-picker {
   display: grid;
@@ -467,7 +467,7 @@
   padding: 6px 7px;
   border-radius: 7px;
   color: var(--ph-muted);
-  font-size: 11.5px;
+  font-size: 12px;
   text-decoration: none;
 }
 .ada-picker__root:hover {
@@ -488,7 +488,7 @@
   white-space: nowrap;
   color: var(--ph-faint);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 9.5px;
+  font-size: 10px;
 }
 .ada-picker__recent-form {
   margin: 0;
@@ -505,7 +505,7 @@
   background: transparent;
   color: var(--ph-muted);
   font-family: inherit;
-  font-size: 11.5px;
+  font-size: 12px;
   text-align: left;
   cursor: pointer;
 }
@@ -528,7 +528,7 @@
   flex-shrink: 0;
   color: var(--ph-faint);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 9.5px;
+  font-size: 10px;
 }
 .ada-picker__main {
   min-width: 0;
@@ -546,7 +546,7 @@
   white-space: nowrap;
   color: var(--ph-ink);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 .ada-picker__mkdir {
   display: flex;

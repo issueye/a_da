@@ -16,10 +16,38 @@
     monospace;
   --ada-focus-ring: 0 0 0 3px var(--ph-focus);
   --ada-focus-border: var(--ph-brand);
-  --ada-radius-sm: 7px;
+
+  /* ── 标尺（scale）──────────────────────────────────────────────────────
+     颜色令牌在 `design/tokens.css`（唯一真源）；这里定义的是**尺寸标尺**。
+     规则：组件只许用下面这些变量，不许再写 `border-radius: 9px` 这类字面值。
+     少一档就少一次 0.5px 的即兴发挥——`cargo test ui_scale` 会守住这条。 */
+
+  /* 圆角 4 档 + 胶囊：内联 / 控件与卡片 / 面板与弹窗 / 输入卡 */
+  --ada-radius-sm: 6px;
   --ada-radius-md: 10px;
   --ada-radius-lg: 14px;
-  --ada-radius-card: 18px;
+  --ada-radius-xl: 20px;
+  /* 历史别名：语义等同 xl（输入卡）。保留以免破坏既有引用。 */
+  --ada-radius-card: var(--ada-radius-xl);
+  --ada-radius-pill: 999px;
+
+  /* 字号 6 档：辅助 / 控件 / 正文 / 卡片标题 / 小节 / 页面 */
+  --ada-text-xs: 11px;
+  --ada-text-sm: 12px;
+  --ada-text-base: 13px;
+  --ada-text-md: 15px;
+  --ada-text-lg: 18px;
+  --ada-text-xl: 24px;
+
+  /* 图标 3 档：行内 / 操作 / 强调（线宽恒为 1.75） */
+  --ada-icon-sm: 12px;
+  --ada-icon-md: 14px;
+  --ada-icon-lg: 18px;
+
+  /* 阴影 3 档：静态卡片 / 浮层与弹窗 / 键盘聚焦环 */
+  --ada-shadow-raised: 0 1px 2px rgba(24, 24, 27, 0.04);
+  --ada-shadow-overlay: var(--ph-shadow);
+
   --ada-row-h: 28px;
   --ada-transition: 120ms cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -85,11 +113,11 @@
 }
 .ada-btn--md {
   padding: 6px 12px;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 .ada-btn--lg {
   padding: 9px 16px;
-  font-size: 13.5px;
+  font-size: 13px;
 }
 .ada-btn--primary {
   background: var(--ph-brand);
@@ -163,7 +191,7 @@
 .ada-chip--model {
   max-width: none;
   flex-shrink: 0;
-  font-size: 11.5px;
+  font-size: 12px;
 }
 .ada-chip--model .m-name,
 .ada-chip--model .ada-chip__text {
@@ -237,7 +265,7 @@
   background: var(--ph-elevated);
   box-shadow: var(--ph-shadow);
   color: var(--ph-muted);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.55;
   text-align: left;
 }
@@ -259,7 +287,7 @@
 }
 .ada-field__hint {
   color: var(--ph-faint);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 .ada-input {
   width: 100%;
@@ -269,7 +297,7 @@
   background: var(--ph-surface);
   color: var(--ph-ink);
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 13px;
   outline: none;
   transition: border-color var(--ada-transition), box-shadow var(--ada-transition);
 }
@@ -368,7 +396,7 @@
 .ada-disclosure__detail--muted {
   color: var(--ph-faint);
   font-family: inherit;
-  font-size: 10.5px;
+  font-size: 11px;
   font-style: italic;
 }
 .ada-disclosure__sub {
@@ -385,7 +413,7 @@
   flex-shrink: 0;
   color: var(--ph-faint);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 /* 展开态：左侧品牌色条 + 品牌浅底，字色更深 */
 .ada-disclosure[open] > .ada-disclosure__summary {
@@ -465,8 +493,8 @@
   flex-shrink: 0;
   padding: 1px 7px;
   border: 1px solid transparent;
-  border-radius: 999px;
-  font-size: 9.5px;
+  border-radius: var(--ada-radius-pill);
+  font-size: 10px;
   font-weight: 500;
   line-height: 15px;
   white-space: nowrap;
@@ -516,7 +544,7 @@
   background: transparent;
   color: var(--ph-muted);
   font-family: inherit;
-  font-size: 9.5px;
+  font-size: 10px;
   cursor: pointer;
   transition: background var(--ada-transition), color var(--ada-transition);
 }
@@ -531,14 +559,14 @@
   padding: 8px 10px;
   color: var(--ph-muted);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .ada-panel__body--html {
   font-family: inherit;
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.7;
   white-space: normal;
 }
@@ -565,7 +593,7 @@
   background: var(--ph-subtle);
   color: var(--ph-ink);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 /* ── 消息行 ─────────────────────────────────────────────────────────────── */
@@ -599,7 +627,10 @@
   max-width: 680px;
   padding: 8px 13px;
   border: 1px solid var(--ph-line);
-  border-radius: 16px 16px 4px 16px;
+  /* 气泡：右下收窄成「尾巴」——这是对话流唯一的形状特例，
+     仍然用标尺取值（lg + sm），不再写 16/4 的字面值。 */
+  border-radius: var(--ada-radius-lg) var(--ada-radius-lg)
+    var(--ada-radius-sm) var(--ada-radius-lg);
   background: var(--ph-subtle);
   color: var(--ph-ink);
   font-size: 13px;
@@ -669,7 +700,7 @@
   margin: 8px 0;
   padding: 11px 13px;
   border-radius: var(--ada-radius-md);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.6;
 }
 .ada-notice__row {
@@ -744,7 +775,7 @@
   max-width: 860px;
   margin: 0 auto;
   border: 1px solid var(--ph-line);
-  border-radius: 20px;
+  border-radius: var(--ada-radius-xl);
   background: var(--ph-surface);
   /* 只浮一层很浅的影子：输入框是常驻物，不该抢对话流的注意力 */
   box-shadow: 0 1px 2px rgba(24, 24, 27, 0.04), 0 10px 26px -22px rgba(24, 24, 27, 0.3);
@@ -762,7 +793,7 @@
   background: transparent;
   color: var(--ph-ink);
   font-family: inherit;
-  font-size: 13.5px;
+  font-size: 13px;
   line-height: 1.65;
   padding: 14px 16px 8px;
   overflow-y: auto;
@@ -841,7 +872,7 @@
 .ada-tool--model .ada-tool__label {
   max-width: 220px;
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 .ada-tool--danger,
 .ada-tool--danger .ada-icon {
@@ -878,7 +909,7 @@
   place-items: center;
   width: 30px;
   height: 30px;
-  border-radius: 999px;
+  border-radius: var(--ada-radius-pill);
   background: var(--ph-subtle);
   color: var(--ph-muted);
   cursor: pointer;
@@ -1016,8 +1047,8 @@
 /* 快捷操作：小药丸，无底色（danger 档除外） */
 .ada-aux__action {
   padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 10.5px;
+  border-radius: var(--ada-radius-pill);
+  font-size: 11px;
 }
 .ada-aux__hint {
   color: var(--ph-faint);
@@ -1084,7 +1115,7 @@
   background: transparent;
   color: var(--ph-brand-ink);
   font-family: inherit;
-  font-size: 10.5px;
+  font-size: 11px;
   text-align: left;
   cursor: pointer;
   transition: background var(--ada-transition), color var(--ada-transition);

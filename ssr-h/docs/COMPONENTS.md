@@ -53,7 +53,7 @@ ssr-h/
 │   ├── partials/transcript.html# 只输出组件渲染好的行
 │   └── ...
 ├── static/
-│   ├── app.css                 # plugin-hub 的 Tailwind 底座（提供 --ph-* 变量）
+│   ├── app.css                 # Tailwind 产物（构建自 plugin-hub/static/input.css）
 │   ├── components.css          # 组件库·基础层（token/焦点/按钮/输入/折叠/消息/输入框）
 │   ├── layout.css              # 组件库·布局层（外壳、左右两栏、供应商清单、模型表格）
 │   ├── widgets.css             # 组件库·控件层（下拉选择、弹窗）
@@ -171,7 +171,11 @@ ssr-h/
   供应商页就是这样一直静默地上下堆叠，而不是左右两栏。页面结构类一律落在 `components.css`
   （`.ada-master-detail`、`.ada-table-wrap` 等），模板只引用这些确定的类名。
 - **类名**：`ada-` 前缀；状态一律用 `data-*`（`data-state="open"`），不拼 class；
-- **颜色**：组件不写死颜色，只引用 `--ph-*`（来自 `app.css`）；组件库自己只定义 `--ada-*` 语义变量；
+- **颜色**：组件不写死颜色，只引用 `--ph-*`；**令牌只在 `design/tokens.css` 定义**
+  （唯一真源，两个前端共用），组件库自己只定义 `--ada-*` 尺寸标尺；
+- **标尺**（字号 / 圆角 / 图标 / 阴影）只能从 `components.css` 的 `:root` 取值，
+  不许就地写 `border-radius: 9px`、`font-size: 11.5px`。这条由 `tests/ui_scale.rs`
+  用**棘轮**守住：基线只许变小，新档位一律失败（报错会给出文件名与行号）；
 - **焦点态**：`.ada-focusable` 统一 2px 品牌描边 + 3px 半透明光环；组合式（输入卡）用 `:focus-within`；
 - **转义**：所有动态文本经 `theme::escape`，组件只输出可信 HTML；
 - **图标**：组件图标在 `icons.rs` 定义；聊天页组件已全走它，侧栏/顶栏/插件页模板仍有少量内联 SVG（待收口）。

@@ -53,14 +53,34 @@ cargo build --release -p plugin-hub
 `app.rs` 用 `include_bytes!` 把这些文件嵌进二进制，`/static/*` 由同一进程提供；部署时不需要额外带 `static/` 目录。
 错误页（`src/error.rs`）也走同一份 `app.css` / `theme.js`，所以 Tailwind 的 `content` 同时扫描 `src/**/*.rs`。
 
-模板有改动后重新生成 Tailwind（`app.css` 是产物，必须一起提交）：
+### 设计令牌与样式构建
+
+颜色令牌（`--ph-*`）只在 **`design/tokens.css`** 定义，两个前端共用这一份。
+`static/input.css` 用 `@import` 引入它，所以改颜色只改 `design/tokens.css`。
+
+模板或令牌有改动后重新生成 Tailwind（`app.css` 是产物，必须一起提交）：
 
 ```bash
+# 1. 构建产物
 bun desktop-ui/node_modules/tailwindcss/lib/cli.js \
   -c crates/plugin-hub/tailwind.config.cjs \
   -i crates/plugin-hub/static/input.css \
   -o crates/plugin-hub/static/app.css --minify
+
+# 2. 同步给 ssr-h（它用同一份产物；忘了这步＝改了令牌但对话页毫无变化）
+cp crates/plugin-hub/static/app.css ssr-h/static/app.css
 ```
+
+> `tailwind.config.cjs` 的 `content` 同时扫描 **两个前端** 的模板与源码。
+> 只扫 plugin-hub 会让 ssr-h 里用到、而 plugin-hub 恰好没用的类静默缺失
+> （「写了但没生效」，极难排查）。
+>
+> 第 2 步漏做会被 `cargo test --test ui_scale` 拦下
+> （它比对两份 `app.css` 是否逐字节相同）。
+
+`--ada-*`（字号 / 圆角 / 图标 / 阴影的**尺寸标尺**）定义在
+`ssr-h/static/components.css` 的 `:root`，同样由测试守住：只许从标尺取值，
+新加的字面值档位会让 `cargo test` 失败。
 
 ## 界面与组件（设计系统）
 
