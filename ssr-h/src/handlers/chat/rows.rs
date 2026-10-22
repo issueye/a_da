@@ -295,22 +295,31 @@ pub(super) fn pick<'a>(value: &'a str, fallback: &'a str) -> &'a str {
 
 /// 工具图标 key：与 desktop-ui `renderToolIcon` 的同一套语义。
 pub(super) fn tool_icon(name: &str) -> String {
+    // 🔴 这里必须返回**注册过的**图标键（`icons.rs` 里以 `i-` 开头）。
+    // 早先返回的是 "folder" / "terminal" 这类裸名，查表永远落空，
+    // 于是每条工具行的图标位都是空的——文案对、位置对，就是没有图。
     match name {
-        "list_files" => "folder",
-        "read_file" | "write_file" | "edit_file" | "batch_write" | "code_outline" => "file",
-        "batch_replace" => "edit",
-        "search_files" | "project_inspect" => "search",
-        "create_plugin" => "package",
-        "find_symbol" => "code",
-        "run_command" | "run_background" => "terminal",
-        "run_tests" => "check",
-        "check_task" => "clock",
-        "kill_task" => "xcircle",
-        "todo" => "list",
-        "invoke_subagent" | "check_subagent" => "bot",
-        "ask_user" => "sparkles",
-        "git" => "git",
-        _ => "terminal",
+        "list_files" => "i-folder",
+        "read_file" => "i-file",
+        "write_file" | "edit_file" | "batch_write" | "batch_replace" => "i-edit",
+        "code_outline" => "i-code",
+        "find_symbol" => "i-search",
+        "search_files" => "i-search",
+        "project_inspect" => "i-grid",
+        "create_plugin" => "i-plug",
+        "run_command" | "run_background" => "i-terminal",
+        "run_tests" => "i-check-circle",
+        "check_task" => "i-clock",
+        "kill_task" => "i-x-circle",
+        "todo" => "i-list",
+        "invoke_subagent" | "check_subagent" => "i-bot",
+        "ask_user" => "i-chat",
+        "git" => "i-git-branch",
+        "weather" => "i-sun",
+        "news_query" => "i-chart",
+        "finish" => "i-check",
+        // 没登记的工具用扳手：既不是文件夹也不是终端，别假装知道。
+        _ => "i-wrench",
     }
     .to_string()
 }
@@ -1143,6 +1152,47 @@ mod tests {
         }));
         assert_eq!(row.result, "128 通过 · 0 失败");
         assert_eq!(row.result_tone, Tone::Success);
+    }
+
+    #[test]
+    fn every_tool_icon_key_is_registered() {
+        // 回归：曾经返回 "folder"/"terminal" 这类裸名，图标表只认 `i-*`，
+        // 于是每条工具行的图标位都是空的（肉眼看着像"没画图"）。
+        let tools = [
+            "list_files",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "batch_write",
+            "batch_replace",
+            "code_outline",
+            "find_symbol",
+            "search_files",
+            "project_inspect",
+            "create_plugin",
+            "run_command",
+            "run_background",
+            "run_tests",
+            "check_task",
+            "kill_task",
+            "todo",
+            "invoke_subagent",
+            "check_subagent",
+            "ask_user",
+            "git",
+            "weather",
+            "news_query",
+            "finish",
+            "some_unknown_tool",
+        ];
+        for name in tools {
+            let key = tool_icon(name);
+            assert!(
+                crate::ui::icons::has(&key),
+                "{name} → {key} 不是已注册的图标键"
+            );
+            assert!(key.starts_with("i-"), "{name} → {key} 缺少 i- 前缀");
+        }
     }
 
     #[test]
