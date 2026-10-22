@@ -86,7 +86,7 @@ fn plus_menu(thread_id: &str) -> String {
     <form method="post" action="/threads/{id}/retry"><button class="ada-plus__item" type="submit">{retry}<span>重试上一轮</span></button></form>
   </div>
 </details>"#,
-        plus = ui::icon("i-plus", 15),
+        plus = ui::icon("i-plus", 14),
         new = ui::icon("i-chat", 14),
         work = ui::icon("i-folder", 14),
         retry = ui::icon("i-refresh", 14),

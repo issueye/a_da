@@ -3,7 +3,7 @@
   <div class="card p-4">
     <span class="badge {% if s.tone == "warn" %}badge-warn{% else if s.tone == "brand" %}badge-brand{% else %}badge-neutral{% endif %}">{{ s.label }}</span>
     <p class="mt-3 text-2xl font-semibold tracking-tight text-ink">{{ s.value }}</p>
-    <p class="mt-1 text-aux leading-4 text-faint">{{ s.hint }}</p>
+    <p class="mt-1 text-xs leading-4 text-faint">{{ s.hint }}</p>
   </div>
   {% endfor %}
 </div>
@@ -28,7 +28,7 @@
           {% if t.running %}<span class="badge badge-warn">运行中</span>{% endif %}
           <span class="badge badge-neutral badge-mono">{{ t.mode }}</span>
         </div>
-        <p class="mt-1 truncate text-aux text-faint">{{ t.workspace }}</p>
+        <p class="mt-1 truncate text-xs text-faint">{{ t.workspace }}</p>
       </div>
       <span class="badge badge-neutral">{{ t.item_count }} 项</span>
     </a>
@@ -48,7 +48,7 @@
   {% if view.widgets.is_empty() %}
   <div class="empty-state py-8">
     <p class="text-xs font-medium text-ink">还没有前端插件卡片</p>
-    <p class="mt-1 text-aux text-faint">新增 <code class="code-inline">frontend-plugins/&lt;id&gt;/plugin.json</code> 后到扩展页点“重载前端插件”。</p>
+    <p class="mt-1 text-xs text-faint">新增 <code class="code-inline">frontend-plugins/&lt;id&gt;/plugin.json</code> 后到扩展页点“重载前端插件”。</p>
   </div>
   {% else %}  <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
     {% for w in view.widgets %}

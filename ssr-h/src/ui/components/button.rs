@@ -192,7 +192,7 @@ impl Render for IconButton {
     fn render(&self) -> String {
         let classes = class_list(&["ada-icon-btn", self.extra_class.as_deref().unwrap_or("")]);
         let title = attr("title", self.title.as_deref().unwrap_or(&self.label));
-        let body = icon(&self.icon, 15);
+        let body = icon(&self.icon, 14);
         let extra = space_attrs(self.extra_attrs.as_deref());
         if let Some(href) = &self.href {
             return format!(
@@ -249,7 +249,7 @@ impl Render for SendButton {
         format!(
             r#"<button class="ada-send" type="submit" aria-label="{label}"{title}{disabled}>{icon}</button>"#,
             label = escape(&self.label),
-            icon = icon("i-send", 16),
+            icon = icon("i-send", 14),
         )
     }
 }

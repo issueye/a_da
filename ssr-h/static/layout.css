@@ -18,10 +18,10 @@
   top: -48px;
   z-index: 100;
   padding: 8px 14px;
-  border-radius: 8px;
+  border-radius: var(--ada-radius-md);
   background: var(--ph-brand);
   color: #fff;
-  font-size: 12px;
+  font-size: var(--ada-text-sm);
   text-decoration: none;
   transition: top 0.15s ease;
 }
@@ -60,7 +60,7 @@ html.dark .icon-moon {
 /* 小号全大写标签（原来的 uppercase/tracking-wider 工具类同样不存在于 app.css） */
 .ada-eyebrow {
   color: var(--ph-faint);
-  font-size: 10px;
+  font-size: var(--ada-text-xs);
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -86,7 +86,7 @@ html.dark .icon-moon {
   gap: 6px;
   padding: 8px 6px 8px 10px;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--ada-radius-md);
   transition: background var(--ada-transition), border-color var(--ada-transition);
 }
 .ada-provider-item:hover {
@@ -131,7 +131,7 @@ html.dark .icon-moon {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--ph-ink);
-  font-size: 13px;
+  font-size: var(--ada-text-base);
   font-weight: 500;
 }
 .ada-provider-item__meta {
@@ -141,7 +141,7 @@ html.dark .icon-moon {
   gap: 6px;
   margin-top: 4px;
   color: var(--ph-faint);
-  font-size: 10px;
+  font-size: var(--ada-text-xs);
 }
 
 /* 模型列表（表格式） */
@@ -218,7 +218,7 @@ html.dark .icon-moon {
   height: 28px;
   place-items: center;
   border: 1px solid var(--ph-line);
-  border-radius: 7px;
+  border-radius: var(--ada-radius-sm);
   background: var(--ph-surface);
   color: var(--ph-muted);
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
@@ -236,10 +236,10 @@ html.dark .icon-moon {
   z-index: 70;
   display: grid;
   min-width: 156px;
-  gap: 1px;
+  gap: 2px;
   padding: 4px;
   border: 1px solid var(--ph-line);
-  border-radius: 10px;
+  border-radius: var(--ada-radius-md);
   background: var(--ph-elevated);
   box-shadow: var(--ph-shadow);
 }
@@ -251,11 +251,11 @@ html.dark .icon-moon {
   width: 100%;
   align-items: center;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--ada-radius-sm);
   background: transparent;
-  padding: 7px 9px;
+  padding: 8px 10px;
   color: var(--ph-muted);
-  font-size: 12px;
+  font-size: var(--ada-text-sm);
   line-height: 1.2;
   text-align: left;
   white-space: nowrap;

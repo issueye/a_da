@@ -279,9 +279,9 @@ impl Render for TodoList {
             .iter()
             .map(|step| {
                 let glyph = match step.status {
-                    TodoStatus::Completed => icon("i-check-circle", 13),
-                    TodoStatus::InProgress => icon("i-arrow-right", 13),
-                    TodoStatus::Pending => icon("i-circle", 13),
+                    TodoStatus::Completed => icon("i-check-circle", 12),
+                    TodoStatus::InProgress => icon("i-arrow-right", 12),
+                    TodoStatus::Pending => icon("i-circle", 12),
                 };
                 format!(
                     "<li class=\"ada-todo__step is-{status}\">{glyph}<span>{title}</span></li>",
@@ -329,7 +329,7 @@ impl Render for TodoPanel {
         let head_right = format!(
             "<span class=\"ada-todo__head-right\"><button class=\"ada-todo__copy\" type=\"button\" data-copy=\"{markdown}\" data-copy-label=\"复制\">{copy}<span>复制</span></button><span class=\"ada-todo__collapse\">{up}收起</span></span>",
             markdown = escape(&plan.to_markdown()),
-            copy = icon("i-copy", 11),
+            copy = icon("i-copy", 12),
             up = icon("i-chevron-up", 12),
         );
         format!(
@@ -343,7 +343,7 @@ impl Render for TodoPanel {
             state = state_class,
             done = done,
             total = total,
-            icon = icon("i-list", 13),
+            icon = icon("i-list", 12),
             head_right = head_right,
             active = active_html,
             body = TodoList {

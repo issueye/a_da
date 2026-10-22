@@ -48,7 +48,7 @@ impl Render for AssistantMessage {
     fn render(&self) -> String {
         format!(
             r#"<div class="ada-msg ada-msg--assistant"><span class="ada-avatar" title="助手">{avatar}</span><div class="ada-msg__body markdown-body ada-markdown">{body}</div></div>"#,
-            avatar = icon("i-bot", 15),
+            avatar = icon("i-bot", 14),
             body = self.html,
         )
     }
@@ -123,7 +123,7 @@ impl Render for EmptyState {
             .unwrap_or_default();
         format!(
             r#"<div class="ada-empty"><span class="ada-empty__mark">{icon}</span><h2 class="ada-empty__title">{title}</h2>{description}{action}</div>"#,
-            icon = icon(&self.icon, 20),
+            icon = icon(&self.icon, 18),
             title = escape(&self.title),
             description = description,
             action = action,

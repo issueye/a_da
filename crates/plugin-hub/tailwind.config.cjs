@@ -51,12 +51,9 @@ module.exports = {
           ink: "var(--ph-danger-ink)",
         },
       },
-      fontSize: {
-        // 语义字号：模板里用 `text-aux`，别写 `text-[11px]`（任意值会绕过标尺）。
-        // 与 ssr-h 的 --ada-text-xs 同值，这里给字面量是为了让只用 app.css
-        // 的页面（比如错误页）也能拿到样式，不依赖组件库是否加载。
-        aux: "11px",
-      },
+      // 字号不做自定义档：Tailwind 默认的 xs/sm/base/lg/xl/2xl 就是
+      // 12/14/16/18/20/24，全部偶数，直接当标尺用。
+      // 需要 10px（辅助/徽标）时用组件库的 --ada-text-xs，别写 text-[10px]。
       fontFamily: {
         sans: [
           "-apple-system",

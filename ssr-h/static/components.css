@@ -19,10 +19,15 @@
 
   /* ── 标尺（scale）──────────────────────────────────────────────────────
      颜色令牌在 `design/tokens.css`（唯一真源）；这里定义的是**尺寸标尺**。
-     规则：组件只许用下面这些变量，不许再写 `border-radius: 9px` 这类字面值。
+     规则：组件只许用下面这些变量，不许再写 `border-radius: var(--ada-radius-md)` 这类字面值。
      少一档就少一次 0.5px 的即兴发挥——`cargo test ui_scale` 会守住这条。 */
 
-  /* 圆角 4 档 + 胶囊：内联 / 控件与卡片 / 面板与弹窗 / 输入卡 */
+  /* 🔴 所有尺寸令牌都是 **2 的倍数**（偶数倍）。
+     理由：任意两个令牌相加/相减仍落回同一网格，居中、对齐、栅格不会产生
+     半像素；缩放到 125%/150% 时也不会出现 0.5px 的字形边缘。
+     奇数档（7px / 9px / 11px / 13px / 15px）一律不收——它们就是「就地微调」的化石。
+
+     ── 圆角 4 档 + 胶囊：内联 / 控件与卡片 / 面板与弹窗 / 输入卡 */
   --ada-radius-sm: 6px;
   --ada-radius-md: 10px;
   --ada-radius-lg: 14px;
@@ -31,18 +36,29 @@
   --ada-radius-card: var(--ada-radius-xl);
   --ada-radius-pill: 999px;
 
-  /* 字号 6 档：辅助 / 控件 / 正文 / 卡片标题 / 小节 / 页面 */
-  --ada-text-xs: 11px;
+  /* ── 字号 6 档：辅助 / 次要 / 正文 / 卡片标题 / 小节 / 页面
+     正文 14、辅助 10，中间只留 12——三档足够表达层级，多一档只会让人纠结。 */
+  --ada-text-xs: 10px;
   --ada-text-sm: 12px;
-  --ada-text-base: 13px;
-  --ada-text-md: 15px;
-  --ada-text-lg: 18px;
+  --ada-text-base: 14px;
+  --ada-text-md: 16px;
+  --ada-text-lg: 20px;
   --ada-text-xl: 24px;
 
-  /* 图标 3 档：行内 / 操作 / 强调（线宽恒为 1.75） */
+  /* ── 图标 3 档：行内 / 操作 / 强调（线宽恒为 1.75） */
   --ada-icon-sm: 12px;
   --ada-icon-md: 14px;
   --ada-icon-lg: 18px;
+
+  /* ── 间距 6 档：4 的倍数（4px 网格，天然是偶数倍）
+     用于 padding / gap / margin。不做 2px 档——比 4 更细的间距在密集界面里
+     看不出差别，只会让人在两个近似值之间反复试。 */
+  --ada-space-1: 4px;
+  --ada-space-2: 8px;
+  --ada-space-3: 12px;
+  --ada-space-4: 16px;
+  --ada-space-5: 20px;
+  --ada-space-6: 24px;
 
   /* 阴影 3 档：静态卡片 / 浮层与弹窗 / 键盘聚焦环 */
   --ada-shadow-raised: 0 1px 2px rgba(24, 24, 27, 0.04);
@@ -108,16 +124,16 @@
   transform: scale(0.985);
 }
 .ada-btn--sm {
-  padding: 3px 9px;
-  font-size: 11px;
+  padding: 4px 10px;
+  font-size: var(--ada-text-sm);
 }
 .ada-btn--md {
   padding: 6px 12px;
-  font-size: 13px;
+  font-size: var(--ada-text-base);
 }
 .ada-btn--lg {
-  padding: 9px 16px;
-  font-size: 13px;
+  padding: 10px 16px;
+  font-size: var(--ada-text-base);
 }
 .ada-btn--primary {
   background: var(--ph-brand);
@@ -174,7 +190,7 @@
 .ada-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   height: 26px;
   min-width: 0;
   flex-shrink: 0;
@@ -184,19 +200,19 @@
   border-radius: var(--ada-radius-sm);
   background: var(--ph-subtle);
   color: var(--ph-muted);
-  font-size: 11px;
+  font-size: var(--ada-text-sm);
   white-space: nowrap;
 }
 /* 模型药丸：模型名要完整可读，宁可占宽也不截断成半个 id */
 .ada-chip--model {
   max-width: none;
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: var(--ada-text-sm);
 }
 .ada-chip--model .m-name,
 .ada-chip--model .ada-chip__text {
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 11px;
+  font-size: var(--ada-text-sm);
 }
 .ada-chip .ada-icon {
   color: var(--ph-faint);
@@ -265,7 +281,7 @@
   background: var(--ph-elevated);
   box-shadow: var(--ph-shadow);
   color: var(--ph-muted);
-  font-size: 12px;
+  font-size: var(--ada-text-sm);
   line-height: 1.55;
   text-align: left;
 }
@@ -279,25 +295,25 @@
 .ada-field {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
 }
 .ada-field__label {
   color: var(--ph-muted);
-  font-size: 11px;
+  font-size: var(--ada-text-sm);
 }
 .ada-field__hint {
   color: var(--ph-faint);
-  font-size: 11px;
+  font-size: var(--ada-text-sm);
 }
 .ada-input {
   width: 100%;
-  padding: 7px 10px;
+  padding: 8px 10px;
   border: 1px solid var(--ph-line-strong);
   border-radius: var(--ada-radius-sm);
   background: var(--ph-surface);
   color: var(--ph-ink);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--ada-text-base);
   outline: none;
   transition: border-color var(--ada-transition), box-shadow var(--ada-transition);
 }
@@ -318,13 +334,13 @@
 .ada-disclosure__summary {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   min-height: var(--ada-row-h);
-  padding: 2px 9px;
+  padding: 2px 10px;
   border-left: 2px solid transparent;
   border-radius: var(--ada-radius-sm);
   color: var(--ph-faint);
-  font-size: 12px;
+  font-size: var(--ada-text-sm);
   cursor: pointer;
   list-style: none;
   user-select: none;
@@ -391,12 +407,12 @@
   white-space: nowrap;
   color: var(--ph-ink);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 12px;
+  font-size: var(--ada-text-sm);
 }
 .ada-disclosure__detail--muted {
   color: var(--ph-faint);
   font-family: inherit;
-  font-size: 11px;
+  font-size: var(--ada-text-sm);
   font-style: italic;
 }
 .ada-disclosure__sub {
@@ -406,14 +422,14 @@
   white-space: nowrap;
   color: var(--ph-faint);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 11px;
+  font-size: var(--ada-text-sm);
 }
 .ada-disclosure__meta {
   margin-left: auto;
   flex-shrink: 0;
   color: var(--ph-faint);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 11px;
+  font-size: var(--ada-text-xs);
 }
 /* 展开态：左侧品牌色条 + 品牌浅底，字色更深 */
 .ada-disclosure[open] > .ada-disclosure__summary {
@@ -433,7 +449,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin: 4px 0 12px 11px;
+  margin: 4px 0 12px 12px;
   padding-left: 10px;
   border-left: 1px solid var(--ph-line);
 }
@@ -444,7 +460,7 @@
   flex-shrink: 0;
   color: var(--ph-faint);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 11px;
+  font-size: var(--ada-text-xs);
   white-space: nowrap;
 }
 .ada-disclosure__result[data-tone="success"] {
@@ -491,10 +507,10 @@
 /* 状态徽标 */
 .ada-badge {
   flex-shrink: 0;
-  padding: 1px 7px;
+  padding: 2px 8px;
   border: 1px solid transparent;
   border-radius: var(--ada-radius-pill);
-  font-size: 10px;
+  font-size: var(--ada-text-xs);
   font-weight: 500;
   line-height: 15px;
   white-space: nowrap;
@@ -532,19 +548,19 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 5px 10px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--ph-line);
   color: var(--ph-faint);
-  font-size: 10px;
+  font-size: var(--ada-text-xs);
 }
 .ada-panel__copy {
-  padding: 1px 6px;
+  padding: 2px 6px;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--ada-radius-sm);
   background: transparent;
   color: var(--ph-muted);
   font-family: inherit;
-  font-size: 10px;
+  font-size: var(--ada-text-xs);
   cursor: pointer;
   transition: background var(--ada-transition), color var(--ada-transition);
 }
@@ -559,14 +575,14 @@
   padding: 8px 10px;
   color: var(--ph-muted);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 11px;
+  font-size: var(--ada-text-sm);
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .ada-panel__body--html {
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--ada-text-sm);
   line-height: 1.7;
   white-space: normal;
 }
@@ -588,12 +604,12 @@
   overflow-wrap: anywhere;
 }
 .ada-panel__body--html code {
-  padding: 1px 4px;
-  border-radius: 4px;
+  padding: 2px 4px;
+  border-radius: var(--ada-radius-sm);
   background: var(--ph-subtle);
   color: var(--ph-ink);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 11px;
+  font-size: var(--ada-text-sm);
 }
 
 /* ── 消息行 ─────────────────────────────────────────────────────────────── */
@@ -625,7 +641,7 @@
 }
 .ada-bubble {
   max-width: 680px;
-  padding: 8px 13px;
+  padding: 8px 14px;
   border: 1px solid var(--ph-line);
   /* 气泡：右下收窄成「尾巴」——这是对话流唯一的形状特例，
      仍然用标尺取值（lg + sm），不再写 16/4 的字面值。 */
@@ -633,13 +649,13 @@
     var(--ada-radius-sm) var(--ada-radius-lg);
   background: var(--ph-subtle);
   color: var(--ph-ink);
-  font-size: 13px;
+  font-size: var(--ada-text-base);
   line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .ada-msg--assistant {
-  gap: 11px;
+  gap: 12px;
 }
 .ada-avatar {
   display: grid;
@@ -647,16 +663,16 @@
   width: 28px;
   height: 28px;
   flex-shrink: 0;
-  border-radius: 9px;
+  border-radius: var(--ada-radius-md);
   background: var(--ph-brand-soft);
   color: var(--ph-brand-ink);
 }
 .ada-msg__body {
   min-width: 0;
   flex: 1;
-  padding-top: 1px;
+  padding-top: 2px;
   color: var(--ph-ink);
-  font-size: 13px;
+  font-size: var(--ada-text-base);
   line-height: 1.72;
 }
 .ada-msg__body p {
@@ -686,7 +702,7 @@
 }
 .ada-plain {
   color: var(--ph-ink);
-  font-size: 13px;
+  font-size: var(--ada-text-base);
   line-height: 1.7;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -698,9 +714,9 @@
   flex-direction: column;
   gap: 8px;
   margin: 8px 0;
-  padding: 11px 13px;
+  padding: 12px 14px;
   border-radius: var(--ada-radius-md);
-  font-size: 12px;
+  font-size: var(--ada-text-sm);
   line-height: 1.6;
 }
 .ada-notice__row {
@@ -709,7 +725,7 @@
   gap: 8px;
 }
 .ada-notice__row .ada-icon {
-  margin-top: 1px;
+  margin-top: 2px;
 }
 .ada-notice--warn {
   background: var(--ph-warn-soft);
@@ -743,20 +759,20 @@
   place-items: center;
   width: 44px;
   height: 44px;
-  border-radius: 13px;
+  border-radius: var(--ada-radius-lg);
   background: var(--ph-brand-soft);
   color: var(--ph-brand-ink);
 }
 .ada-empty__title {
   margin: 14px 0 6px;
-  font-size: 16px;
+  font-size: var(--ada-text-md);
   font-weight: 600;
 }
 .ada-empty__desc {
   max-width: 420px;
   margin: 0;
   color: var(--ph-muted);
-  font-size: 12px;
+  font-size: var(--ada-text-sm);
   line-height: 1.7;
 }
 .ada-empty__action {
@@ -793,7 +809,7 @@
   background: transparent;
   color: var(--ph-ink);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--ada-text-base);
   line-height: 1.65;
   padding: 14px 16px 8px;
   overflow-y: auto;
@@ -833,10 +849,10 @@
   gap: 6px;
   height: 30px;
   padding: 0 8px;
-  border-radius: 8px;
+  border-radius: var(--ada-radius-md);
   min-width: 0;
   color: var(--ph-muted);
-  font-size: 12px;
+  font-size: var(--ada-text-sm);
   text-decoration: none;
   white-space: nowrap;
   transition: background var(--ada-transition), color var(--ada-transition);
@@ -872,7 +888,7 @@
 .ada-tool--model .ada-tool__label {
   max-width: 220px;
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 12px;
+  font-size: var(--ada-text-sm);
 }
 .ada-tool--danger,
 .ada-tool--danger .ada-icon {
@@ -926,9 +942,9 @@
   bottom: calc(100% + 8px);
   z-index: 40;
   min-width: 208px;
-  padding: 5px;
+  padding: 6px;
   border: 1px solid var(--ph-line-strong);
-  border-radius: 10px;
+  border-radius: var(--ada-radius-md);
   background: var(--ph-elevated);
   box-shadow: var(--ph-shadow);
 }
@@ -937,13 +953,13 @@
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 7px 8px;
+  padding: 8px 8px;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--ada-radius-sm);
   background: transparent;
   color: var(--ph-muted);
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--ada-text-sm);
   text-align: left;
   text-decoration: none;
   cursor: pointer;
@@ -998,7 +1014,7 @@
   max-width: 860px;
   margin: 10px auto 0;
   color: var(--ph-faint);
-  font-size: 11px;
+  font-size: var(--ada-text-sm);
 }
 .ada-aux__group {
   display: inline-flex;
@@ -1009,7 +1025,7 @@
 .ada-aux__item {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   white-space: nowrap;
 }
 .ada-aux__item .ada-icon {
@@ -1048,7 +1064,7 @@
 .ada-aux__action {
   padding: 2px 8px;
   border-radius: var(--ada-radius-pill);
-  font-size: 11px;
+  font-size: var(--ada-text-sm);
 }
 .ada-aux__hint {
   color: var(--ph-faint);
@@ -1104,18 +1120,18 @@
 .ada-tool-output__meta {
   margin-left: auto;
   color: var(--ph-faint);
-  font-size: 10px;
+  font-size: var(--ada-text-xs);
 }
 .ada-tool-output__toggle {
   display: block;
   width: 100%;
-  padding: 5px 10px;
+  padding: 6px 10px;
   border: 0;
   border-top: 1px solid var(--ph-line);
   background: transparent;
   color: var(--ph-brand-ink);
   font-family: inherit;
-  font-size: 11px;
+  font-size: var(--ada-text-sm);
   text-align: left;
   cursor: pointer;
   transition: background var(--ada-transition), color var(--ada-transition);

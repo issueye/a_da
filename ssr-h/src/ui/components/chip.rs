@@ -64,7 +64,7 @@ impl Render for Chip {
         let icon_html = self
             .icon
             .as_deref()
-            .map(|key| icon(key, 13))
+            .map(|key| icon(key, 12))
             .unwrap_or_default();
         let caret = if self.caret {
             icon("i-chevron-down", 12)

@@ -206,7 +206,7 @@ impl Render for Disclosure {
             r#"<details class="ada-disclosure" data-kind="{kind}" data-state="closed"{data_key}{data_phase}{data_started}{attrs}><summary class="ada-disclosure__summary"><span class="ada-disclosure__icon">{icon}</span><span class="ada-disclosure__caret">{caret}</span><span class="ada-disclosure__label">{label}</span>{detail}{sub}{result}{meta}{badge}</summary><div class="ada-disclosure__rail">{body}</div></details>"#,
             kind = escape(&self.kind),
             attrs = attrs,
-            icon = icon(&self.icon, 13),
+            icon = icon(&self.icon, 12),
             caret = icon("i-chevron", 12),
             label = escape(&self.label),
             detail = detail,

@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ base.title }} · a_da</title>
   <script src="/static/theme.js?v=18"></script>
-  <link rel="stylesheet" href="/static/app.css?v=21">
-  <link rel="stylesheet" href="/static/components.css?v=25">
-  <link rel="stylesheet" href="/static/layout.css?v=23">
-  <link rel="stylesheet" href="/static/widgets.css?v=22">
-  <link rel="stylesheet" href="/static/shell.css?v=23">
-  <link rel="stylesheet" href="/static/pages.css?v=21">
+  <link rel="stylesheet" href="/static/app.css?v=23">
+  <link rel="stylesheet" href="/static/components.css?v=29">
+  <link rel="stylesheet" href="/static/layout.css?v=26">
+  <link rel="stylesheet" href="/static/widgets.css?v=26">
+  <link rel="stylesheet" href="/static/shell.css?v=29">
+  <link rel="stylesheet" href="/static/pages.css?v=24">
   {% for style in base.plugin_styles %}<link rel="stylesheet" href="{{ style }}">{% endfor %}
   <script src="/static/htmx.min.js?v=18" defer></script>
   <script src="/static/alpine.min.js?v=19" defer></script>
@@ -83,10 +83,10 @@
     </div>
 
     {% if !base.plugin_nav.is_empty() %}
-    <div class="ada-section" style="max-height:124px;overflow-y:auto">
+    <div class="ada-section ada-section--plugins">
       <div class="ada-section__label"><span>前端插件</span><a href="/extensions">管理</a></div>
       {% for p in base.plugin_nav %}
-      <a class="ada-nav__item" href="{{ p.href }}" title="{{ p.plugin_id }}" style="font-size:11.5px">
+      <a class="ada-nav__item" href="{{ p.href }}" title="{{ p.plugin_id }}">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3v6M15 3v6"/><path d="M6 9h12v3a6 6 0 0 1-12 0Z"/><path d="M12 18v3"/></svg>
         <span>{{ p.label }}</span>
       </a>

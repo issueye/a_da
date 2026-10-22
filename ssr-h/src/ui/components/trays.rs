@@ -30,7 +30,7 @@ impl Render for ApprovalTray {
             r#"<div class="ada-tray ada-tray--approval"><div class="ada-tray__head"><span class="ada-tray__icon">{icon}</span><span class="ada-tray__title">需要批准 · {tool}</span><span class="ada-tray__meta">{clock}{waited}</span></div>{args}<div class="ada-tray__actions"><form method="post" action="/approvals/{call}/decision" class="ada-tray__form"><input type="hidden" name="thread_id" value="{thread}"><button class="ada-btn ada-btn--primary ada-btn--sm" type="submit" name="approved" value="true">{check}批准</button><button class="ada-btn ada-btn--secondary ada-btn--sm" type="submit" name="approved" value="false">{cross}拒绝</button></form></div></div>"#,
             icon = icon("i-shield-check", 14),
             tool = escape(&self.tool_name),
-            clock = icon("i-clock", 11),
+            clock = icon("i-clock", 12),
             waited = escape(&self.waited),
             args = args,
             call = escape(&self.call_id),

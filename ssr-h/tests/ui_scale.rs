@@ -202,37 +202,154 @@ fn scale_tokens_are_defined() {
     }
 }
 
+#[test]
+fn every_scale_value_is_a_multiple_of_two() {
+    // 「偶数倍」是这套标尺的核心约定：任意两个令牌相加相减仍落在同一网格上，
+    // 居中与栅格不会出现半像素，125% / 150% 缩放下也不会冒出 0.5px 的字形边缘。
+    // 唯一例外是胶囊（999px），它本来就是个"取整无穷"的标记。
+    let css = read(&crate_dir().join("static/components.css"));
+    let root_start = css.find(":root {").expect("components.css 应有 :root 块");
+    let root_end = root_start + css[root_start..].find("\n}").expect(":root 应有收尾");
+    let block = &css[root_start..root_end];
+
+    let mut bad = Vec::new();
+    let mut checked = 0;
+    for prefix in ["--ada-radius-", "--ada-text-", "--ada-icon-", "--ada-space-"] {
+        let mut rest = block;
+        while let Some(pos) = rest.find(prefix) {
+            rest = &rest[pos..];
+            let Some(colon) = rest.find(':') else { break };
+            let name = &rest[..colon];
+            let after = rest[colon + 1..].trim_start();
+            let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+            if !digits.is_empty() && after[digits.len()..].trim_start().starts_with("px") {
+                let value: u32 = digits.parse().expect("纯数字");
+                if !name.ends_with("-pill") {
+                    checked += 1;
+                    if value % 2 != 0 {
+                        bad.push(format!("  {name}: {value}px —— 奇数"));
+                    }
+                }
+            }
+            rest = &rest[colon + 1..];
+        }
+    }
+
+    assert!(checked >= 15, "只解析到 {checked} 个尺寸令牌，解析可能失效了");
+    assert!(
+        bad.is_empty(),
+        "标尺里出现了奇数档：\n{}\n\n\
+         所有尺寸令牌必须是 2 的倍数（圆角 6/10/14/20、字号 10/12/14/16/20/24、\
+         图标 12/14/18、间距 4 的倍数）。奇数档会让两个令牌之和对不齐网格。",
+        bad.join("\n")
+    );
+}
+
+#[test]
+fn templates_only_use_scale_font_classes() {
+    // Tailwind 的 text-lg 是 18px、text-3xl 是 30px，都不在 6 档里。
+    // 模板只许用与标尺重合的那几个（12 / 14 / 16 / 20 / 24）。
+    const ALLOWED: &[&str] = &["text-xs", "text-sm", "text-base", "text-xl", "text-2xl"];
+    let dir = crate_dir().join("templates");
+    let mut stack = vec![dir.clone()];
+    let mut offenders = Vec::new();
+    while let Some(path) = stack.pop() {
+        for entry in fs::read_dir(&path).expect("读模板目录") {
+            let entry = entry.expect("目录项");
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "html") {
+                continue;
+            }
+            for (index, line) in read(&path).lines().enumerate() {
+                for class in line.split(|c: char| c.is_whitespace() || c == '"' || c == '\'') {
+                    let Some(rest) = class.strip_prefix("text-") else {
+                        continue;
+                    };
+                    if rest.starts_with('[') {
+                        continue; // 任意值由另一个测试负责
+                    }
+                    // 只关心字号类：text-xs / text-2xl 这种
+                    let is_font = ["xs", "sm", "base", "lg", "xl", "2xl", "3xl", "4xl", "5xl"]
+                        .contains(&rest);
+                    if is_font && !ALLOWED.contains(&class) {
+                        offenders.push(format!(
+                            "  {}:{} —— {class}",
+                            path.strip_prefix(&dir).unwrap_or(&path).display(),
+                            index + 1
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "模板用了标尺外的字号类：\n{}\n\n可用：{}",
+        offenders.join("\n"),
+        ALLOWED.join(" / ")
+    );
+}
+
+#[test]
+fn templates_avoid_inline_font_sizes() {
+    // `style="font-size:11.5px"` 这类内联字号绕过全部标尺，也绕过了上面所有
+    // 只扫 CSS 的检查——曾经真有 2 处在侧栏里躺了很久。
+    let dir = crate_dir().join("templates");
+    let mut stack = vec![dir.clone()];
+    let mut offenders = Vec::new();
+    while let Some(path) = stack.pop() {
+        for entry in fs::read_dir(&path).expect("读模板目录") {
+            let entry = entry.expect("目录项");
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "html") {
+                continue;
+            }
+            for (index, line) in read(&path).lines().enumerate() {
+                if !line.contains("style=") {
+                    continue;
+                }
+                for prop in ["font-size", "border-radius"] {
+                    if line.contains(prop) && line.contains(':') {
+                        offenders.push(format!(
+                            "  {}:{} —— 内联 {prop}",
+                            path.strip_prefix(&dir).unwrap_or(&path).display(),
+                            index + 1
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "模板里用内联样式写了字号/圆角（绕过标尺）：\n{}\n\n\
+         改用组件类或 `text-xs/sm/base/xl/2xl` 这几档。",
+        offenders.join("\n")
+    );
+}
+
 // ── 棘轮：存量基线 ───────────────────────────────────────────────────────
 //
 // 🔻 这些数字只许变小。每收敛一处就减一，直至清零后把对应规则改成「禁止」。
 
-/// `border-radius: <n>px` 的存量（53 处）。目标：全部走 var(--ada-radius-*)。
-const BASELINE_RADIUS: &[(u32, usize)] = &[
-    (4, 1),
-    (5, 4),
-    (6, 5),
-    (7, 9),
-    (8, 13),
-    (9, 3),
-    (10, 4),
-    (13, 1),
-    (14, 1),
-];
+/// 圆角字面值：**已清零**，不再允许任何 `border-radius: <n>px`。
+const BASELINE_RADIUS: &[(u32, usize)] = &[];
 
-/// `font-size: <n>px` 的存量（98 处）。半档已全部收成整数档。
-const BASELINE_FONT_SIZE: &[(u32, usize)] = &[
-    (10, 23),
-    (11, 33),
-    (12, 27),
-    (13, 15),
-    (14, 2),
-    (15, 1),
-    (16, 1),
-];
+/// 字号字面值：**已清零**，不再允许任何 `font-size: <n>px`。
+const BASELINE_FONT_SIZE: &[(u32, usize)] = &[];
 
-/// 图标尺寸的存量（7 档）。目标：收敛到 12 / 14 / 18。
-const BASELINE_ICON_SIZE: &[(u32, usize)] =
-    &[(11, 2), (12, 8), (13, 6), (14, 11), (15, 3), (16, 1), (20, 1)];
+/// 图标尺寸只许三档：12 行内 / 14 操作 / 18 强调。
+/// Rust 里写的是数字（用不了 CSS 变量），所以这里直接白名单。
+const ICON_SCALE: &[u32] = &[12, 14, 18];
 
 #[test]
 fn no_new_hardcoded_radius() {
@@ -345,6 +462,17 @@ fn icon_sizes_come_from_the_scale() {
             }
         }
     }
-    assert!(!found.is_empty(), "没扫描到任何图标尺寸，正则可能失效了");
-    assert_ratchet("图标尺寸", &found, BASELINE_ICON_SIZE);
+    assert!(!found.is_empty(), "没扫描到任何图标尺寸，解析可能失效了");
+    let mut bad = Vec::new();
+    for (size, count) in &found {
+        if !ICON_SCALE.contains(size) {
+            bad.push(format!("  {size}px × {count} —— 只允许 12 / 14 / 18"));
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "图标尺寸跑出标尺了：\n{}\n\n图标尺寸定在 --ada-icon-sm/md/lg 三档，\
+         奇数档会让一行里的图标视觉重心不齐。",
+        bad.join("\n")
+    );
 }

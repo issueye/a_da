@@ -20,7 +20,7 @@
   background: var(--ph-surface);
   color: var(--ph-ink);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--ada-text-base);
   text-align: left;
   cursor: pointer;
   transition: border-color var(--ada-transition), box-shadow var(--ada-transition);
@@ -59,7 +59,7 @@
   overflow-y: auto;
   list-style: none;
   border: 1px solid var(--ph-line);
-  border-radius: 10px;
+  border-radius: var(--ada-radius-md);
   background: var(--ph-elevated);
   box-shadow: var(--ph-shadow);
 }
@@ -72,9 +72,9 @@
   justify-content: space-between;
   gap: 8px;
   padding: 6px 8px;
-  border-radius: 6px;
+  border-radius: var(--ada-radius-sm);
   color: var(--ph-muted);
-  font-size: 13px;
+  font-size: var(--ada-text-base);
   cursor: pointer;
 }
 .ada-select__option:hover,
@@ -88,7 +88,7 @@
 }
 .ada-select__option.is-selected::after {
   content: "✓";
-  font-size: 11px;
+  font-size: var(--ada-text-sm);
 }
 
 /* ── 页签（Tabs 组件）────────────────────────────────────────────────────
@@ -100,8 +100,8 @@
   max-width: 100%;
   flex-wrap: wrap;
   align-items: center;
-  gap: 3px;
-  padding: 3px;
+  gap: 4px;
+  padding: 4px;
   border: 1px solid var(--ph-line);
   border-radius: var(--ada-radius-md);
   background: var(--ph-subtle);
@@ -110,10 +110,10 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 12px;
-  border-radius: 7px;
+  padding: 6px 12px;
+  border-radius: var(--ada-radius-sm);
   color: var(--ph-muted);
-  font-size: 13px;
+  font-size: var(--ada-text-base);
   font-weight: 500;
   line-height: 1.5;
   text-decoration: none;
@@ -132,11 +132,11 @@
 }
 .ada-tabs__count {
   min-width: 18px;
-  padding: 0 5px;
+  padding: 0 6px;
   border-radius: var(--ada-radius-pill);
   background: var(--ph-subtle);
   color: var(--ph-faint);
-  font-size: 10px;
+  font-size: var(--ada-text-xs);
   font-weight: 600;
   line-height: 16px;
   text-align: center;
@@ -176,7 +176,7 @@
   max-width: calc(100vw - 48px);
   padding: 18px 20px 16px;
   border: 1px solid var(--ph-line);
-  border-radius: 14px;
+  border-radius: var(--ada-radius-lg);
   background: var(--ph-elevated);
   box-shadow: 0 24px 64px -24px rgba(24, 24, 27, 0.45);
 }
@@ -192,13 +192,13 @@
 .ada-modal__title {
   margin: 0 0 8px;
   color: var(--ph-ink);
-  font-size: 14px;
+  font-size: var(--ada-text-base);
   font-weight: 600;
 }
 .ada-modal__message {
   margin: 0 0 16px;
   color: var(--ph-muted);
-  font-size: 13px;
+  font-size: var(--ada-text-base);
   line-height: 1.6;
 }
 .ada-modal__actions {
@@ -231,11 +231,11 @@ body.ada-modal-open {
   height: 32px;
   padding: 0 10px;
   border: 1px solid var(--ph-line-strong);
-  border-radius: 8px;
+  border-radius: var(--ada-radius-md);
   background: var(--ph-surface);
   color: var(--ph-ink);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--ada-text-base);
 }
 .ada-remote__search:focus {
   outline: none;
@@ -245,21 +245,21 @@ body.ada-modal-open {
 .ada-remote__count {
   flex-shrink: 0;
   color: var(--ph-faint);
-  font-size: 11px;
+  font-size: var(--ada-text-xs);
   font-variant-numeric: tabular-nums;
 }
 .ada-remote__body {
   max-height: min(58vh, 520px);
   overflow-y: auto;
   border: 1px solid var(--ph-line);
-  border-radius: 10px;
+  border-radius: var(--ada-radius-md);
   background: var(--ph-canvas);
 }
 .ada-remote__summary {
   padding: 8px 10px;
   border-bottom: 1px solid var(--ph-line);
   color: var(--ph-faint);
-  font-size: 11px;
+  font-size: var(--ada-text-sm);
 }
 .ada-remote__summary b {
   color: var(--ph-ink);
@@ -280,7 +280,7 @@ body.ada-modal-open {
   padding: 6px 10px;
   background: var(--ph-subtle);
   color: var(--ph-muted);
-  font-size: 11px;
+  font-size: var(--ada-text-sm);
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -288,7 +288,7 @@ body.ada-modal-open {
   margin-left: auto;
   color: var(--ph-faint);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 10px;
+  font-size: var(--ada-text-xs);
   font-weight: 400;
 }
 .ada-remote__rows {
@@ -301,7 +301,7 @@ body.ada-modal-open {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 3px 10px;
+  padding: 4px 10px;
   border-top: 1px solid color-mix(in srgb, var(--ph-line) 55%, transparent);
 }
 .ada-remote__row:first-child {
@@ -317,7 +317,7 @@ body.ada-modal-open {
   white-space: nowrap;
   color: var(--ph-ink);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 12px;
+  font-size: var(--ada-text-sm);
 }
 .ada-remote__row.is-added .ada-remote__id {
   color: var(--ph-faint);
@@ -325,7 +325,7 @@ body.ada-modal-open {
 .ada-remote__added {
   flex-shrink: 0;
   color: var(--ph-faint);
-  font-size: 11px;
+  font-size: var(--ada-text-sm);
 }
 .ada-remote__row form {
   flex-shrink: 0;
@@ -334,5 +334,5 @@ body.ada-modal-open {
   margin: 0;
   padding: 14px 12px;
   color: var(--ph-faint);
-  font-size: 12px;
+  font-size: var(--ada-text-sm);
 }
