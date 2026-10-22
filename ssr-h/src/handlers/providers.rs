@@ -383,6 +383,7 @@ pub async fn providers(
         tabs,
         active_tab: active_tab.to_string(),
         model_new_modal,
+        remote_modal: remote_models_modal(),
         model_table,
     };
     Ok(render(&page)?.into_response())
@@ -407,6 +408,20 @@ async fn provider_entry(state: &AppState, id: &str) -> Result<Value, AppError> {
 fn provider_back(id: &str, tab: &str, notice: &str) -> Response {
     redirect(&format!(
         "/providers?provider={}&tab={}&notice={}",
+        encode_query(id),
+        normalize_tab(Some(tab)),
+        encode_query(notice)
+    ))
+}
+
+/// 保存后回跳；`back=remote` 时把弹窗一起带回来（弹窗内容由 htmx 重新拉取）。
+fn provider_back_from(id: &str, tab: &str, notice: &str, back: Option<&str>) -> Response {
+    let dialog = match back.map(str::trim) {
+        Some("remote") => "&dialog=remote-models",
+        _ => "",
+    };
+    redirect(&format!(
+        "/providers?provider={}&tab={}&notice={}{dialog}",
         encode_query(id),
         normalize_tab(Some(tab)),
         encode_query(notice)
@@ -464,6 +479,10 @@ pub struct ModelForm {
     max_output_tokens: Option<String>,
     #[serde(rename = "supportsImages")]
     supports_images: Option<String>,
+    /// 添加动作的来源：`remote` 表示从「远程模型」弹窗里点的，
+    /// 保存后要带着弹窗回跳，否则每加一个模型弹窗就没了。
+    #[serde(default)]
+    back: Option<String>,
 }
 
 fn parse_u64(text: Option<&str>, fallback: u64) -> u64 {
@@ -640,7 +659,7 @@ pub async fn add_provider_model(
     }
     models.push(model_value(&form, &model_id));
     match state.agent.save_provider(&entry).await {
-        Ok(_) => Ok(provider_back(&id, "models", "model_added")),
+        Ok(_) => Ok(provider_back_from(&id, "models", "model_added", form.back.as_deref())),
         Err(error) => Ok(provider_failed(&id, "models", "添加模型失败", error)),
     }
 }
@@ -872,70 +891,130 @@ pub async fn fetch_provider_models(
     }
 }
 
+/// 远程模型列表（弹窗内容）：按厂商分组 + 已添加标记。
+///
+/// 远端动辄返回 90+ 个模型，平铺一列没人翻得动，所以：
+/// - 按 `vendor/model` 的厂商前缀分组，组头带数量，大组在前；
+/// - 行里只留 id 与一个按钮，上下文/输出长度收进 `title`；
+/// - 已在列表里的排到组尾并置灰，避免"点了没反应"。
 fn remote_models_html(value: &Value, provider_id: &str, existing: &[String]) -> String {
-    let models = array_at(value, "models");
+    let models: Vec<&Value> = array_at(value, "models")
+        .iter()
+        .filter(|model| !str_at(model, "id").is_empty())
+        .collect();
     if models.is_empty() {
-        return "<p class=\"text-xs text-faint\">端点已响应，但没有返回可用模型；可以在下面手动添加。</p>"
+        return "<p class=\"ada-remote__empty\">端点已响应，但没有返回可用模型；可以用「新增模型」手动添加。</p>"
             .to_string();
     }
+    let mut groups: std::collections::BTreeMap<&str, Vec<&Value>> = std::collections::BTreeMap::new();
+    for model in &models {
+        let id = str_at(model, "id");
+        let vendor = id.split('/').next().unwrap_or(id);
+        groups.entry(vendor).or_default().push(model);
+    }
+    let mut ordered: Vec<(&str, Vec<&Value>)> = groups.into_iter().collect();
+    ordered.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(b.0)));
+    // 只有一个模型的厂商不单独开头：94 个模型里三十多个是"独苗"，
+    // 每个都占一行组头，列表反而被切得看不出结构。它们统一收进「其它」。
+    let mut sections: Vec<(&str, Vec<&Value>)> = Vec::new();
+    let mut singletons: Vec<&Value> = Vec::new();
+    for (vendor, list) in ordered {
+        if list.len() >= 2 {
+            sections.push((vendor, list));
+        } else {
+            singletons.extend(list);
+        }
+    }
+    if !singletons.is_empty() {
+        singletons.sort_by(|a, b| str_at(a, "id").cmp(str_at(b, "id")));
+        sections.push(("其它", singletons));
+    }
+
     let mut out = String::new();
     out.push_str(&format!(
-        "<p class=\"text-xs text-muted\">远端返回 {} 个模型，点“添加”加入当前供应商：</p>",
+        "<div class=\"ada-remote__summary\">远端返回 <b>{}</b> 个模型（按厂商分组）</div>",
         models.len()
     ));
-    out.push_str("<div class=\"mt-2 max-h-64 space-y-1 overflow-y-auto\">");
-    for model in models {
-        let model_id = str_at(model, "id");
-        if model_id.is_empty() {
-            continue;
-        }
-        let already = existing.iter().any(|known| known == model_id);
-        let name = {
-            let name = str_at(model, "name");
-            if name.is_empty() {
-                model_id.to_string()
-            } else {
-                name.to_string()
-            }
-        };
-        let context_window = model_text(model, "contextWindow");
-        let max_output_tokens = model_text(model, "maxOutputTokens");
-        if already {
-            out.push_str(&format!(
-                "<div class=\"flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line bg-surface px-2.5 py-1.5\">\
-                   <span class=\"font-mono text-[11px] text-muted\">{}</span>\
-                   <span class=\"badge badge-neutral\">已在列表</span></div>",
-                escape_html(model_id)
-            ));
-            continue;
-        }
+    out.push_str("<div class=\"ada-remote__groups\">");
+    for (vendor, mut list) in sections {
+        let is_added = |model: &Value| existing.iter().any(|known| known == str_at(model, "id"));
+        list.sort_by(|a, b| {
+            is_added(a)
+                .cmp(&is_added(b))
+                .then_with(|| str_at(a, "id").cmp(str_at(b, "id")))
+        });
         out.push_str(&format!(
-            r#"<form method="post" action="/providers/{provider}/models" class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line bg-surface px-2.5 py-1.5">"#,
-            provider = encode_query(provider_id)
+            "<section class=\"ada-remote__group\"><h3 class=\"ada-remote__vendor\"><span>{}</span><span class=\"ada-remote__badge\">{}</span></h3><ul class=\"ada-remote__rows\">",
+            escape_html(vendor),
+            list.len()
         ));
+        for model in list {
+            out.push_str(&remote_model_row(model, provider_id, existing));
+        }
+        out.push_str("</ul></section>");
+    }
+    out.push_str("</div>");
+    out
+}
+
+fn remote_model_row(model: &Value, provider_id: &str, existing: &[String]) -> String {
+    let model_id = str_at(model, "id");
+    let raw_name = str_at(model, "name");
+    let name = if raw_name.is_empty() { model_id } else { raw_name };
+    let context_window = model_text(model, "contextWindow");
+    let max_output_tokens = model_text(model, "maxOutputTokens");
+    let mut meta = Vec::new();
+    if !context_window.is_empty() {
+        meta.push(format!("上下文 {context_window}"));
+    }
+    if !max_output_tokens.is_empty() {
+        meta.push(format!("最大输出 {max_output_tokens}"));
+    }
+    let already = existing.iter().any(|known| known == model_id);
+    let action = if already {
+        "<span class=\"ada-remote__added\">已添加</span>".to_string()
+    } else {
+        let mut fields = String::new();
         for (field, value) in [
             ("id", model_id),
-            ("name", name.as_str()),
+            ("name", name),
             ("contextWindow", context_window.as_str()),
             ("maxOutputTokens", max_output_tokens.as_str()),
         ] {
             if value.is_empty() {
                 continue;
             }
-            out.push_str(&format!(
+            fields.push_str(&format!(
                 "<input type=\"hidden\" name=\"{field}\" value=\"{}\">",
                 escape_html(value)
             ));
         }
-        out.push_str(
-            "<input type=\"hidden\" name=\"supportsImages\" value=\"on\">\
-             <span class=\"font-mono text-[11px] text-ink\">",
-        );
-        out.push_str(&escape_html(model_id));
-        out.push_str("</span><button class=\"btn btn-secondary btn-xs\" type=\"submit\">添加</button></form>");
-    }
-    out.push_str("</div>");
-    out
+        format!(
+            "<form method=\"post\" action=\"/providers/{provider}/models\">{fields}<input type=\"hidden\" name=\"back\" value=\"remote\"><button class=\"btn btn-secondary btn-xs\" type=\"submit\">添加</button></form>",
+            provider = encode_query(provider_id)
+        )
+    };
+    format!(
+        "<li class=\"ada-remote__row{added}\" data-remote-row data-name=\"{key}\"><span class=\"ada-remote__id\" title=\"{title}\">{label}</span>{action}</li>",
+        added = if already { " is-added" } else { "" },
+        key = escape_html(&model_id.to_lowercase()),
+        title = escape_html(&meta.join(" · ")),
+        label = escape_html(model_id),
+    )
+}
+
+/// 「远程模型」弹窗外壳：搜索框常驻，列表由 htmx 换进 `#remote-models-body`。
+fn remote_models_modal() -> String {
+    let body = "<div class=\"ada-remote\">\
+<div class=\"ada-remote__bar\">\
+<input class=\"ada-remote__search\" type=\"search\" placeholder=\"搜索模型 id，例如 qwen3\" data-remote-search data-modal-autofocus>\
+<span class=\"ada-remote__count\" data-remote-count>获取中…</span>\
+</div>\
+<div class=\"ada-remote__body\" id=\"remote-models-body\">\
+<p class=\"ada-remote__empty\">正在向端点获取模型列表…</p>\
+</div>\
+</div>";
+    Modal::new("remote-models", "远程模型").wide().body(body).render()
 }
 
 /// `POST /providers/{id}/test`：调 `config.checkProvider`，返回结果片段。
@@ -992,6 +1071,44 @@ mod tests {
     }
 
     #[test]
+    fn remote_models_are_grouped_by_vendor_and_mark_the_added_ones() {
+        let value = json!({"models": [
+            {"id": "Qwen/Qwen3-8-Max", "contextWindow": 262144},
+            {"id": "Qwen/Qwen3-7-Plus"},
+            {"id": "MiniMaxAI/MiniMax-M2.5"},
+            {"id": "bare-model"}
+        ]});
+        let html = remote_models_html(&value, "prov 1", &["Qwen/Qwen3-7-Plus".to_string()]);
+        // Qwen 有两个模型 → 单独成组；另外两个是"独苗" → 合并进「其它」。
+        // 注意别直接数 `ada-remote__group`：容器 `ada-remote__groups` 也会命中。
+        assert_eq!(html.matches("class=\"ada-remote__group\"").count(), 2, "{html}");
+        assert!(html.contains(">其它<"), "独苗厂商应合并成「其它」: {html}");
+        // 已在列表里：只给「已添加」，不再给按钮
+        assert!(html.contains("ada-remote__added"), "{html}");
+        assert_eq!(html.matches(">添加</button>").count(), 3, "{html}");
+        // 已添加的排在组内末尾
+        let fresh = html.find("Qwen/Qwen3-8-Max").expect("fresh model");
+        let added = html.find("Qwen/Qwen3-7-Plus").expect("added model");
+        assert!(fresh < added, "已添加的应排在后面: {html}");
+        // 元信息收进 title，不占行
+        assert!(html.contains("上下文 262144"), "{html}");
+    }
+
+    #[test]
+    fn back_from_remote_reopens_the_dialog() {
+        let response = provider_back_from("p1", "models", "model_added", Some("remote"));
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "/providers?provider=p1&tab=models&notice=model_added&dialog=remote-models"
+        );
+        let plain = provider_back_from("p1", "models", "model_added", None);
+        assert_eq!(
+            plain.headers().get(header::LOCATION).unwrap(),
+            "/providers?provider=p1&tab=models&notice=model_added"
+        );
+    }
+
+    #[test]
     fn provider_back_keeps_the_calling_tab() {
         let response = provider_back("prov 1", "models", "model added");
         assert_eq!(
@@ -1030,6 +1147,7 @@ mod tests {
             context_window: Some("64000".to_string()),
             max_output_tokens: None,
             supports_images: None,
+            back: None,
         };
         let value = model_value(&form, "m1");
         assert_eq!(value["name"], json!("m1"));

@@ -147,15 +147,21 @@
               </div>
               <div class="flex flex-wrap items-center gap-2">
                 <button class="btn btn-secondary btn-xs" type="button" data-modal-open="model-new">新增模型</button>
+                {# 打开弹窗；弹窗内容由下面的 loader 在 `ada:modal-open` 时按需拉取。 #}
                 <button class="btn btn-secondary btn-xs" type="button"
-                        hx-post="/providers/{{ p.id }}/models/fetch"
-                        hx-include="#provider-form"
-                        hx-target="#remote-models"
-                        hx-swap="innerHTML">获取远程模型</button>
+                        data-modal-open="remote-models">获取远程模型</button>
               </div>
             </div>
 
-            <div id="remote-models" class="mt-2"></div>
+            {# 弹窗打开时由 components.js 触发这个 loader：POST 拿远端模型列表，
+               结果换进弹窗里的 #remote-models-body（弹窗外壳不动，搜索词也保住）。 #}
+            <div id="remote-models-loader" hidden
+                 data-modal-src="remote-models"
+                 hx-post="/providers/{{ p.id }}/models/fetch"
+                 hx-include="#provider-form"
+                 hx-trigger="ada-modal-load"
+                 hx-target="#remote-models-body"
+                 hx-swap="innerHTML"></div>
 
             {{ model_table|safe }}
           </section>
@@ -167,6 +173,7 @@
        必须放在页签容器**之外**：面板带 hidden 时，里面的 <ada-modal> 会跟着不可见。 #}
     {{ p.modals|safe }}
     {{ model_new_modal|safe }}
+    {{ remote_modal|safe }}
   </section>
   {% endif %}
 </div>

@@ -293,6 +293,80 @@
     });
   }
 
+  /* ── 远程模型弹窗：按需加载 + 就地过滤 ───────────────────────────────── */
+  /* 弹窗内容不走首屏：远端可能返回上百个模型，只有真的点开才值得去要。
+     `ada:modal-open` 由 <ada-modal> 派发，这里把它转成 loader 的 htmx 事件。 */
+  function bindModalSources() {
+    document.addEventListener('ada:modal-open', function (event) {
+      var id = event.detail && event.detail.id;
+      if (!id || !window.htmx) return;
+      var source = document.querySelector('[data-modal-src="' + id + '"]');
+      if (source) window.htmx.trigger(source, 'ada-modal-load');
+    });
+  }
+
+  /* `?dialog=<id>`：从弹窗里提交表单后回跳，弹窗要自己站起来。 */
+  function openDialogFromQuery() {
+    var match = /[?&]dialog=([^&]+)/.exec(window.location.search || '');
+    if (!match) return;
+    var id = decodeURIComponent(match[1]);
+    if (!id) return;
+    window.setTimeout(function () {
+      if (window.AdaElements) window.AdaElements.openModal(id);
+    }, 0);
+  }
+
+  /* 搜索只在本地过滤已渲染的行，不再请求一次：
+     94 行 DOM 过滤是微秒级，往返一次要几百毫秒。 */
+  function applyRemoteFilter(input) {
+    var root = input.closest('.ada-remote');
+    if (!root) return;
+    var rows = root.querySelectorAll('[data-remote-row]');
+    var needle = input.value.trim().toLowerCase();
+    var visible = 0;
+    for (var i = 0; i < rows.length; i += 1) {
+      var name = rows[i].getAttribute('data-name') || '';
+      var hit = !needle || name.indexOf(needle) !== -1;
+      rows[i].hidden = !hit;
+      if (hit) visible += 1;
+    }
+    var groups = root.querySelectorAll('.ada-remote__group');
+    for (var g = 0; g < groups.length; g += 1) {
+      groups[g].hidden = !groups[g].querySelector('[data-remote-row]:not([hidden])');
+    }
+    var count = root.querySelector('[data-remote-count]');
+    if (count) {
+      count.textContent = needle ? visible + ' / ' + rows.length : rows.length + ' 个模型';
+    }
+  }
+
+  function syncRemoteCount() {
+    var root = document.querySelector('.ada-remote');
+    if (!root) return;
+    var rows = root.querySelectorAll('[data-remote-row]');
+    var count = root.querySelector('[data-remote-count]');
+    if (count && rows.length) count.textContent = rows.length + ' 个模型';
+  }
+
+  var remoteFilterBound = false;
+  function bindRemoteFilter() {
+    if (remoteFilterBound) return;
+    remoteFilterBound = true;
+    document.addEventListener('input', function (event) {
+      var input = event.target;
+      if (!input || !input.matches || !input.matches('[data-remote-search]')) return;
+      applyRemoteFilter(input);
+    });
+    // htmx 换完列表：搜索框里已经有词就重新套一次，否则只更新计数。
+    document.body.addEventListener('htmx:afterSwap', function (event) {
+      var target = event.target;
+      if (!target || target.id !== 'remote-models-body') return;
+      var input = document.querySelector('[data-remote-search]');
+      if (input && input.value.trim()) applyRemoteFilter(input);
+      else syncRemoteCount();
+    });
+  }
+
   /* ── 8. live 轮询后的重建 ────────────────────────────────────────────── */
   function watchTranscript() {
     var transcript = document.getElementById('transcript');
@@ -486,6 +560,9 @@
     bindRowMenuDocument();
     bindToolOutputs();
     bindPlusMenu();
+    bindModalSources();
+    bindRemoteFilter();
+    openDialogFromQuery();
     // 运行中的工具每秒刷新一次耗时：1s 粒度足够，也能让"它还在跑"看得见。
     window.setInterval(tickRunningElapsed, 1000);
     watchTranscript();

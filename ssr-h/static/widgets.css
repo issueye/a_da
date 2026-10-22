@@ -181,7 +181,7 @@
   box-shadow: 0 24px 64px -24px rgba(24, 24, 27, 0.45);
 }
 .ada-modal__panel--wide {
-  width: 560px;
+  width: 640px;
 }
 .ada-modal__body {
   margin: 0;
@@ -210,4 +210,129 @@
 /* 弹窗打开时锁住页面滚动（原生 <dialog> 自动做，纯 DOM 组件要自己做） */
 body.ada-modal-open {
   overflow: hidden;
+}
+
+/* ── 远程模型弹窗 ─────────────────────────────────────────────────────────
+   远端动辄上百个模型：搜索框常驻、按厂商分组、列表自己滚，
+   而不是把 94 行摊在页面上把别的信息推走。 */
+.ada-remote {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ada-remote__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ada-remote__search {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--ph-line-strong);
+  border-radius: 8px;
+  background: var(--ph-surface);
+  color: var(--ph-ink);
+  font-family: inherit;
+  font-size: 12.5px;
+}
+.ada-remote__search:focus {
+  outline: none;
+  border-color: var(--ada-focus-border);
+  box-shadow: var(--ada-focus-ring);
+}
+.ada-remote__count {
+  flex-shrink: 0;
+  color: var(--ph-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.ada-remote__body {
+  max-height: min(58vh, 520px);
+  overflow-y: auto;
+  border: 1px solid var(--ph-line);
+  border-radius: 10px;
+  background: var(--ph-canvas);
+}
+.ada-remote__summary {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--ph-line);
+  color: var(--ph-faint);
+  font-size: 11px;
+}
+.ada-remote__summary b {
+  color: var(--ph-ink);
+  font-weight: 600;
+}
+.ada-remote__group + .ada-remote__group {
+  border-top: 1px solid var(--ph-line);
+}
+/* 组头吸顶：滚到组中段还知道自己在哪个厂商里 */
+.ada-remote__vendor {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 10px;
+  background: var(--ph-subtle);
+  color: var(--ph-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.ada-remote__badge {
+  margin-left: auto;
+  color: var(--ph-faint);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: 10px;
+  font-weight: 400;
+}
+.ada-remote__rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ada-remote__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 10px;
+  border-top: 1px solid color-mix(in srgb, var(--ph-line) 55%, transparent);
+}
+.ada-remote__row:first-child {
+  border-top: 0;
+}
+.ada-remote__row:hover {
+  background: var(--ph-surface);
+}
+.ada-remote__id {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ph-ink);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: 11.5px;
+}
+.ada-remote__row.is-added .ada-remote__id {
+  color: var(--ph-faint);
+}
+.ada-remote__added {
+  flex-shrink: 0;
+  color: var(--ph-faint);
+  font-size: 10.5px;
+}
+.ada-remote__row form {
+  flex-shrink: 0;
+}
+.ada-remote__empty {
+  margin: 0;
+  padding: 14px 12px;
+  color: var(--ph-faint);
+  font-size: 12px;
 }

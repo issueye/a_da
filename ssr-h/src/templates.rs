@@ -299,6 +299,8 @@ pub struct ProvidersPage {
     pub active_tab: String,
     /// "新增模型"弹窗（组件库渲染；列表区的「新增模型」按钮用 data-modal-open 打开）。
     pub model_new_modal: String,
+    /// "远程模型"弹窗：搜索框常驻，列表由 htmx 按需换进弹窗里。
+    pub remote_modal: String,
     /// 模型表（组件库渲染；模板只负责摆放）。
     pub model_table: String,
 }
