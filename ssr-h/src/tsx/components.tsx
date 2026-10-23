@@ -292,6 +292,13 @@ function Form(props: any) {
   );
 }
 
+/** 任务状态 → 样式类：`completed|done` → done，`in_progress|running` → running。 */
+function todoState(status: any) {
+  if (status === "completed" || status === "done") return "done";
+  if (status === "in_progress" || status === "running") return "running";
+  return "pending";
+}
+
 function Todo(props: any) {
   __check("Todo", props, ["steps", "notes"]);
   const steps = props.steps || [];
@@ -300,21 +307,24 @@ function Todo(props: any) {
     <div class="ada-todo__list-wrap">
       {props.notes ? <p class="ada-todo__notes"><span>备注：</span>{props.notes}</p> : null}
       <ol class="ada-todo__list">
-        {steps.map((step: any) => (
-          <li class={"ada-todo__step is-" + (step.status || "pending")}>
-            <Icon
-              name={
-                step.status === "completed" || step.status === "done"
-                  ? "i-check-circle"
-                  : step.status === "in_progress" || step.status === "running"
-                    ? "i-arrow-right"
-                    : "i-circle"
-              }
-              size={13}
-            />
-            <span>{step.title}</span>
-          </li>
-        ))}
+        {steps.map((step: any) => {
+          const state = todoState(step.status);
+          return (
+            <li class={"ada-todo__step is-" + state}>
+              <Icon
+                name={
+                  state === "done"
+                    ? "i-check-circle"
+                    : state === "running"
+                      ? "i-arrow-right"
+                      : "i-circle"
+                }
+                size={13}
+              />
+              <span>{step.title}</span>
+            </li>
+          );
+        })}
       </ol>
     </div>
   );

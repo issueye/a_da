@@ -1,0 +1,593 @@
+//! 侧栏（应用外壳左侧列）。
+//!
+//! 结构（自上而下）：
+//!
+//! 1. 品牌
+//! 2. 新会话（描边按钮：侧栏里唯一的填充色留给"当前会话"）
+//! 3. 工作区切换器（一行：名字 + 会话数 + 箭头；点进 `/workspaces`）
+//! 4. 会话搜索（仅聊天页）
+//! 5. 会话列表：**唯一**的伸缩与滚动区
+//! 6. 系统导航（前端插件链接 + 插件/供应商/概览）
+//! 7. 主题 + 网关
+//!
+//! 为什么由组件库渲染而不是模板：这段标记原先在 `chat.html` 与 `layout.html`
+//! 各有一份（约 70 行逐字重复），改一次要改两处，漏一处就出现"首页与二级页
+//! 侧栏不一样"。收进这里之后，模板只写 `{{ base.sidebar|safe }}`。
+//!
+//! 折叠态（`.ada-shell.is-sidebar-collapsed`）不隐藏侧栏，而是切成 56px 窄轨：
+//! 收起之后仍能新建、跳会话、进系统页，不再"一收就没"。
+
+use crate::plugins::NavLink;
+use crate::templates::{PageBase, ThreadRow, WorkspaceGroup};
+use crate::ui::icons::icon;
+use crate::ui::theme::{attr, class_list, escape};
+
+/// 窄轨里最多列出几条会话：再多就失去"一眼定位"的意义。
+const RAIL_THREAD_LIMIT: usize = 8;
+/// 底部直出几条插件链接，其余收成"查看全部"。
+const PLUGIN_LINK_LIMIT: usize = 3;
+
+#[derive(Debug, Clone)]
+pub struct Sidebar {
+    pub active: String,
+    pub workspace_name: String,
+    pub workspace_path: String,
+    pub gateway: String,
+    /// "新会话"提交到哪个工作区（空串 = 不带该字段，交给 agent 的当前项目）。
+    pub submit_workspace: String,
+    pub groups: Vec<WorkspaceGroup>,
+    pub active_thread_id: String,
+    pub plugin_nav: Vec<NavLink>,
+    pub sidebar_top: String,
+    pub sidebar_bottom: String,
+    /// 是否渲染会话搜索（只有聊天页有列表）。
+    pub search: bool,
+    /// 连接状态：`None` = 本页不掌握，不画状态点（宁可不显示，也不猜）。
+    pub connected: Option<bool>,
+}
+
+impl Sidebar {
+    /// 从页面外壳取公共字段；树与搜索由调用方按需补。
+    pub fn from_base(base: &PageBase) -> Self {
+        Self {
+            active: base.active.clone(),
+            workspace_name: base.active_workspace_name.clone(),
+            workspace_path: base.active_workspace.clone(),
+            gateway: base.gateway.clone(),
+            submit_workspace: String::new(),
+            groups: Vec::new(),
+            active_thread_id: String::new(),
+            plugin_nav: base.plugin_nav.clone(),
+            sidebar_top: base.slots.sidebar_top.clone(),
+            sidebar_bottom: base.slots.sidebar_bottom.clone(),
+            search: false,
+            connected: None,
+        }
+    }
+
+    pub fn with_tree(
+        mut self,
+        groups: Vec<WorkspaceGroup>,
+        active_thread_id: impl Into<String>,
+        submit_workspace: impl Into<String>,
+    ) -> Self {
+        self.groups = groups;
+        self.active_thread_id = active_thread_id.into();
+        self.submit_workspace = submit_workspace.into();
+        self.search = true;
+        self
+    }
+
+    pub fn connected(mut self, connected: Option<bool>) -> Self {
+        self.connected = connected;
+        self
+    }
+
+    pub fn render(&self) -> String {
+        format!(
+            r#"<aside class="ada-sidebar" id="chat-sidebar" aria-label="侧栏">{}{}</aside>"#,
+            self.full(),
+            self.rail()
+        )
+    }
+
+    // ── 展开态 ───────────────────────────────────────────────────────────
+
+    fn full(&self) -> String {
+        let mut out = String::with_capacity(2048);
+        out.push_str(r#"<div class="ada-side">"#);
+        out.push_str(&self.brand());
+        out.push_str(&self.sidebar_top);
+        out.push_str(&self.new_thread_form("ada-btn ada-btn--secondary ada-btn--sm", false));
+        out.push_str(&self.workspace_switch());
+        if self.search {
+            out.push_str(&self.search_box());
+        }
+        out.push_str(&self.list());
+        out.push_str(&self.util_nav());
+        out.push_str(&self.sidebar_bottom);
+        out.push_str(&self.foot());
+        out.push_str("</div>");
+        out
+    }
+
+    fn brand(&self) -> String {
+        format!(
+            r#"<a href="/" class="ada-brand" aria-label="返回对话"><span class="ada-brand__mark">{}</span><span class="ada-brand__name">a_da</span><span class="ada-brand__badge">SSR</span></a>"#,
+            icon("i-diamond", 18)
+        )
+    }
+
+    fn new_thread_form(&self, button_class: &str, icon_only: bool) -> String {
+        let workspace = if self.submit_workspace.is_empty() {
+            String::new()
+        } else {
+            format!(
+                r#"<input type="hidden" name="workspace" value="{}">"#,
+                escape(&self.submit_workspace)
+            )
+        };
+        let body = if icon_only {
+            icon("i-plus", 14)
+        } else {
+            format!("{}<span>新会话</span>", icon("i-plus", 14))
+        };
+        format!(
+            r#"<form class="{}" method="post" action="/threads"><input type="hidden" name="title" value="新会话">{workspace}<button class="{button_class}" type="submit"{title}>{body}</button></form>"#,
+            if icon_only {
+                "ada-rail__new"
+            } else {
+                "ada-new"
+            },
+            title = if icon_only {
+                attr("title", "新会话")
+            } else {
+                String::new()
+            },
+        )
+    }
+
+    /// 一行工作区切换器：`图标 + 目录名 + 会话数 + 箭头`。
+    ///
+    /// 取代原先的"分区标题 + 全路径药丸 + 组头当前徽标"三处表达——同一个状态
+    /// 说三遍，占掉约 100px 却不增加信息。完整路径进 `title`。
+    fn workspace_switch(&self) -> String {
+        let count: usize = self.groups.iter().map(|group| group.count).sum();
+        let count_html = if count == 0 {
+            String::new()
+        } else {
+            format!(r#"<span class="ada-ws-switch__count">{count}</span>"#)
+        };
+        format!(
+            r#"<a class="ada-ws-switch" href="/workspaces"{title}>{folder}<span class="ada-ws-switch__name">{name}</span>{count_html}{caret}</a>"#,
+            title = attr(
+                "title",
+                &format!("当前工作区：{}（点击切换）", self.workspace_path)
+            ),
+            folder = icon("i-folder", 14),
+            name = escape(&self.workspace_name),
+            caret = icon("i-chevron-down", 12),
+        )
+    }
+
+    fn search_box(&self) -> String {
+        format!(
+            r#"<div class="ada-search">{icon}<input id="chat-thread-search" class="ada-search__input" type="search" placeholder="搜索会话…" autocomplete="off" aria-label="搜索会话"><kbd class="ada-search__kbd">Ctrl K</kbd><span class="ada-search__count" hidden></span></div>"#,
+            icon = icon("i-search", 14),
+        )
+    }
+
+    /// 会话列表：整条侧栏唯一的滚动区。
+    fn list(&self) -> String {
+        let empty_hint = r#"<p class="ada-list-empty" id="thread-empty" hidden>没有匹配的会话 <button type="button" class="ada-list-empty__clear">清除</button></p>"#;
+        format!(
+            r#"<div class="ada-thread-list" id="thread-list">{}{empty_hint}</div>"#,
+            self.tree()
+        )
+    }
+
+    /// 会话树：当前工作区的会话直接铺开（切换器就是它的表头），
+    /// 其它工作区收成可折叠分组。只有 1 个工作区时不会出现任何组头。
+    fn tree(&self) -> String {
+        if self.groups.is_empty() {
+            return r#"<p class="ada-list-empty">还没有会话</p>"#.to_string();
+        }
+        // 当前工作区排最前，且不带组头——否则"中间夹一个无头分组"会失去归属。
+        let head = self
+            .groups
+            .iter()
+            .find(|group| group.active)
+            .or_else(|| self.groups.first());
+        let mut out = String::with_capacity(1024);
+        if let Some(head) = head {
+            if head.threads.is_empty() {
+                out.push_str(r#"<p class="ada-ws__empty">暂无会话</p>"#);
+            } else {
+                for thread in &head.threads {
+                    out.push_str(&self.thread_row(thread));
+                }
+            }
+        }
+        for group in self.groups.iter().filter(|group| !group.active) {
+            out.push_str(&self.other_group(group));
+        }
+        out
+    }
+
+    fn thread_row(&self, thread: &ThreadRow) -> String {
+        let active = !self.active_thread_id.is_empty() && thread.id == self.active_thread_id;
+        let classes = class_list(&["ada-thread", if active { "is-active" } else { "" }]);
+        // 条目数不进可见行（它几乎不被读，却占掉整行 30% 的高度），只留在 title 里。
+        let hint = format!("{} · {} 项", thread.title, thread.item_count);
+        let dot = if thread.running {
+            r#"<span class="ada-thread__dot" title="运行中" aria-label="运行中"></span>"#
+                .to_string()
+        } else {
+            String::new()
+        };
+        format!(
+            r#"<a class="{classes}" href="/threads/{id}"{hint}><span class="ada-thread__title">{title}</span>{dot}</a>"#,
+            id = escape(&thread.id),
+            hint = attr("title", &hint),
+            title = escape(&thread.title),
+        )
+    }
+
+    fn other_group(&self, group: &WorkspaceGroup) -> String {
+        let mut threads = String::new();
+        if group.threads.is_empty() {
+            threads.push_str(r#"<p class="ada-ws__empty">暂无会话</p>"#);
+        } else {
+            for thread in &group.threads {
+                threads.push_str(&self.thread_row(thread));
+            }
+        }
+        let running = if group.running {
+            r#"<span class="ada-ws__running" title="该工作区有会话正在运行"><span class="ada-dot ada-dot--warn"></span></span>"#.to_string()
+        } else {
+            String::new()
+        };
+        format!(
+            r#"<div class="ada-ws" data-ws-key="{key}"><details class="ada-ws__details"><summary class="ada-ws__summary"{path}>{chevron}{folder}<span class="ada-ws__name">{name}</span>{running}<span class="ada-ws__count">{count}</span></summary><div class="ada-ws__threads">{threads}</div></details><div class="ada-ws__actions"><form method="post" action="/threads"><input type="hidden" name="title" value="新会话"><input type="hidden" name="workspace" value="{path_raw}"><button class="ada-ws__action" type="submit" title="在此工作区新建对话" aria-label="在此工作区新建对话">{plus}</button></form><form method="post" action="/workspaces/select"><input type="hidden" name="path" value="{path_raw}"><button class="ada-ws__action" type="submit" title="切换到该工作区" aria-label="切换到该工作区">{check}</button></form></div></div>"#,
+            key = escape(&group.key),
+            path = attr("title", &group.path),
+            chevron = icon("i-chevron", 12),
+            folder = icon("i-folder", 14),
+            name = escape(&group.name),
+            count = group.count,
+            threads = threads,
+            path_raw = escape(&group.path),
+            plus = icon("i-plus", 12),
+            check = icon("i-check", 12),
+        )
+    }
+
+    /// 系统导航：插件链接 + 插件 / 供应商 / 概览。
+    ///
+    /// 这些是低频设置面，放在底部是已经被训练出来的位置；同时把顶部让给会话列表。
+    fn util_nav(&self) -> String {
+        let mut out = String::with_capacity(512);
+        out.push_str(r#"<nav class="ada-nav ada-nav--util" aria-label="系统">"#);
+        if !self.plugin_nav.is_empty() {
+            out.push_str(r#"<div class="ada-nav__label"><span>前端插件</span></div>"#);
+            for link in self.plugin_nav.iter().take(PLUGIN_LINK_LIMIT) {
+                out.push_str(&format!(
+                    r#"<a class="ada-nav__item" href="{href}"{title}>{icon}<span class="ada-nav__text">{label}</span></a>"#,
+                    href = escape(&link.href),
+                    title = attr("title", &link.plugin_id),
+                    icon = icon("i-plug", 14),
+                    label = escape(&link.label),
+                ));
+            }
+            let rest = self.plugin_nav.len().saturating_sub(PLUGIN_LINK_LIMIT);
+            if rest > 0 {
+                out.push_str(&format!(
+                    r#"<a class="ada-nav__item ada-nav__item--more" href="/extensions">还有 {rest} 个…</a>"#
+                ));
+            }
+        }
+        out.push_str(&self.nav_item("extensions", "i-plug", "插件", "/extensions"));
+        out.push_str(&self.nav_item("providers", "i-server", "供应商", "/providers"));
+        out.push_str(&self.nav_item("dashboard", "i-chart", "概览", "/overview"));
+        out.push_str("</nav>");
+        out
+    }
+
+    fn nav_item(&self, key: &str, icon_key: &str, label: &str, href: &str) -> String {
+        let active = self.active == key;
+        let classes = class_list(&["ada-nav__item", if active { "is-active" } else { "" }]);
+        let current = if active {
+            r#" aria-current="page""#.to_string()
+        } else {
+            String::new()
+        };
+        format!(
+            r#"<a class="{classes}" href="{href}"{current}>{icon}<span class="ada-nav__text">{label}</span></a>"#,
+            icon = icon(icon_key, 14),
+            label = escape(label),
+        )
+    }
+
+    fn foot(&self) -> String {
+        let (dot, status) = match self.connected {
+            Some(true) => (
+                r#"<span class="ada-gateway__dot is-on"></span>"#.to_string(),
+                "已连接".to_string(),
+            ),
+            Some(false) => (
+                r#"<span class="ada-gateway__dot is-off"></span>"#.to_string(),
+                "未连接".to_string(),
+            ),
+            None => (String::new(), String::new()),
+        };
+        let title = if status.is_empty() {
+            self.gateway.clone()
+        } else {
+            format!("{status} · {}", self.gateway)
+        };
+        format!(
+            r#"<div class="ada-sidebar__foot"><button class="ada-icon-btn ada-theme" type="button" data-theme-toggle title="切换深浅色" aria-label="切换深浅色"><span class="ada-theme__moon">{moon}</span><span class="ada-theme__sun">{sun}</span></button><span class="ada-gateway"{title}>{dot}<span class="ada-gateway__addr">{addr}</span></span></div>"#,
+            moon = icon("i-moon", 14),
+            sun = icon("i-sun", 14),
+            title = attr("title", &title),
+            addr = escape(&display_address(&self.gateway)),
+        )
+    }
+
+    // ── 折叠窄轨 ─────────────────────────────────────────────────────────
+    //
+    // 收起后不再是 `display:none`：品牌、新建、最近的会话、系统页都还在，
+    // 用户不需要为了跳一条会话把侧栏重新展开。
+
+    fn rail(&self) -> String {
+        let mut out = String::with_capacity(1024);
+        out.push_str(r#"<div class="ada-rail">"#);
+        out.push_str(&format!(
+            r#"<a class="ada-rail__mark" href="/" title="a_da · 返回对话" aria-label="返回对话">{}</a>"#,
+            icon("i-diamond", 18)
+        ));
+        out.push_str(&self.new_thread_form("ada-rail__btn ada-rail__btn--primary", true));
+        // 窄轨里的搜索：点它先展开侧栏再聚焦输入框（见 chat.js）。
+        // 少了这一颗，收起侧栏就等于把"找会话"这条路径断掉。
+        if self.search {
+            out.push_str(&format!(
+                r#"<button class="ada-rail__btn" type="button" data-rail-search title="搜索会话（Ctrl K）" aria-label="搜索会话">{}</button>"#,
+                icon("i-search", 18)
+            ));
+        }
+        let threads = self.recent_threads();
+        if !threads.is_empty() {
+            out.push_str(r#"<span class="ada-rail__sep"></span>"#);
+            for thread in threads {
+                out.push_str(&self.rail_thumb(thread));
+            }
+        }
+        out.push_str(r#"<span class="ada-rail__spacer"></span>"#);
+        out.push_str(&self.rail_link("extensions", "i-plug", "插件", "/extensions"));
+        out.push_str(&self.rail_link("providers", "i-server", "供应商", "/providers"));
+        out.push_str(&self.rail_link("dashboard", "i-chart", "概览", "/overview"));
+        out.push_str(&format!(
+            r#"<button class="ada-rail__btn" type="button" data-theme-toggle title="切换深浅色" aria-label="切换深浅色">{}</button>"#,
+            icon("i-moon", 14)
+        ));
+        out.push_str("</div>");
+        out
+    }
+
+    fn recent_threads(&self) -> Vec<&ThreadRow> {
+        let head = self
+            .groups
+            .iter()
+            .find(|group| group.active)
+            .or_else(|| self.groups.first());
+        head.map(|group| {
+            group
+                .threads
+                .iter()
+                .take(RAIL_THREAD_LIMIT)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+    }
+
+    fn rail_thumb(&self, thread: &ThreadRow) -> String {
+        let active = !self.active_thread_id.is_empty() && thread.id == self.active_thread_id;
+        let classes = class_list(&["ada-rail__thumb", if active { "is-active" } else { "" }]);
+        // 没有真头像可放：取标题首字当锚点，完整标题进 title。
+        let initial = thread
+            .title
+            .trim()
+            .chars()
+            .next()
+            .map(|ch| ch.to_string())
+            .unwrap_or_else(|| "·".to_string());
+        format!(
+            r#"<a class="{classes}" href="/threads/{id}"{title}>{initial}</a>"#,
+            id = escape(&thread.id),
+            title = attr("title", &thread.title),
+            initial = escape(&initial),
+        )
+    }
+
+    fn rail_link(&self, key: &str, icon_key: &str, label: &str, href: &str) -> String {
+        let classes = class_list(&[
+            "ada-rail__btn",
+            if self.active == key { "is-active" } else { "" },
+        ]);
+        format!(
+            r#"<a class="{classes}" href="{href}"{title}>{icon}</a>"#,
+            title = attr("title", label),
+            icon = icon(icon_key, 18),
+        )
+    }
+}
+
+/// `http://127.0.0.1:52353` → `127.0.0.1:52353`：窄栏里的等宽地址不该把协议头
+/// 也算成"信息"，它只会把有用的端口挤出可视区。
+fn display_address(gateway: &str) -> String {
+    let trimmed = gateway.trim();
+    for scheme in [
+        "http://", "https://", "ws://", "wss://", "pipe://", "unix://",
+    ] {
+        if let Some(rest) = trimmed.strip_prefix(scheme) {
+            return rest.trim_end_matches('/').to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn group(name: &str, active: bool, threads: Vec<ThreadRow>) -> WorkspaceGroup {
+        WorkspaceGroup {
+            key: name.to_string(),
+            path: format!("C:\\work\\{name}"),
+            name: name.to_string(),
+            count: threads.len(),
+            running: threads.iter().any(|thread| thread.running),
+            active,
+            threads,
+        }
+    }
+
+    fn thread(id: &str, title: &str) -> ThreadRow {
+        ThreadRow {
+            id: id.to_string(),
+            title: title.to_string(),
+            workspace: "C:\\work\\app".to_string(),
+            mode: "craft".to_string(),
+            running: false,
+            item_count: 12,
+            created_at: 1,
+        }
+    }
+
+    fn sample() -> Sidebar {
+        Sidebar {
+            active: "chat".to_string(),
+            workspace_name: "app".to_string(),
+            workspace_path: "C:\\work\\app".to_string(),
+            gateway: "http://127.0.0.1:52353".to_string(),
+            submit_workspace: "C:\\work\\app".to_string(),
+            groups: vec![
+                group(
+                    "app",
+                    true,
+                    vec![thread("t1", "写一个侧栏"), thread("t2", "排查管道")],
+                ),
+                group("other", false, vec![thread("t3", "别的会话")]),
+            ],
+            active_thread_id: "t2".to_string(),
+            plugin_nav: vec![
+                NavLink {
+                    plugin_id: "hello".to_string(),
+                    label: "Hello 插件".to_string(),
+                    href: "/p/hello".to_string(),
+                },
+                NavLink {
+                    plugin_id: "weather".to_string(),
+                    label: "天气".to_string(),
+                    href: "/p/weather".to_string(),
+                },
+                NavLink {
+                    plugin_id: "chart".to_string(),
+                    label: "图表".to_string(),
+                    href: "/p/chart".to_string(),
+                },
+                NavLink {
+                    plugin_id: "fourth".to_string(),
+                    label: "第四个".to_string(),
+                    href: "/p/fourth".to_string(),
+                },
+            ],
+            sidebar_top: String::new(),
+            sidebar_bottom: String::new(),
+            search: true,
+            connected: Some(true),
+        }
+    }
+
+    #[test]
+    fn sidebar_renders_one_scroll_region_and_a_real_new_thread_form() {
+        let html = sample().render();
+        assert_eq!(
+            html.matches("class=\"ada-thread-list\"").count(),
+            1,
+            "会话列表必须是唯一的滚动区"
+        );
+        assert!(html.contains(r#"method="post" action="/threads""#));
+        assert!(
+            html.contains(r#"<input type="hidden" name="workspace" value="C:\work\app">"#),
+            "新会话要落在当前工作区"
+        );
+    }
+
+    #[test]
+    fn active_workspace_has_no_group_header() {
+        let html = sample().render();
+        // 当前工作区的会话直接铺开：切换器就是它的表头，不再出现"当前"徽标。
+        assert!(
+            !html.contains("ada-ws__badge"),
+            "当前工作区不该有第二处标记"
+        );
+        assert!(html.contains(r#"href="/threads/t1""#));
+        // 其它工作区仍然可折叠，并保留两个组头操作。
+        assert!(html.contains("data-ws-key=\"other\""));
+        assert!(html.contains(r#"action="/workspaces/select""#));
+    }
+
+    #[test]
+    fn done_threads_keep_their_count_in_the_title_only() {
+        let html = sample().render();
+        assert!(
+            html.contains("写一个侧栏 · 12 项"),
+            "条目数只留在 title 里，不进可见行"
+        );
+        assert!(!html.contains(">12 项<"), "可见行里不该再出现条目数");
+    }
+
+    #[test]
+    fn rail_stays_usable_when_collapsed() {
+        let html = sample().render();
+        assert!(html.contains(r#"class="ada-rail""#));
+        assert!(
+            html.contains("class=\"ada-rail__thumb\""),
+            "收起后仍要能跳最近会话"
+        );
+        assert!(html.contains(r#"href="/providers""#), "窄轨保留系统导航");
+    }
+
+    #[test]
+    fn gateway_drops_the_scheme_but_keeps_the_full_uri_in_title() {
+        assert_eq!(
+            display_address("http://127.0.0.1:52353/"),
+            "127.0.0.1:52353"
+        );
+        assert_eq!(display_address("pipe://\\\\.\\pipe\\ada"), r"\\.\pipe\ada");
+        let html = sample().render();
+        assert!(html.contains(">127.0.0.1:52353<"));
+        assert!(html.contains("title=\"已连接 · http://127.0.0.1:52353\""));
+    }
+
+    #[test]
+    fn search_count_and_empty_hint_are_present_for_js_progressive_enhancement() {
+        let html = sample().render();
+        assert!(html.contains(r#"id="chat-thread-search""#));
+        assert!(html.contains(r#"class="ada-search__count" hidden"#));
+        assert!(html.contains(r#"id="thread-empty" hidden"#));
+        // 没有 JS 时只剩输入框，不会出现"0/0"这种假计数。
+        assert!(!html.contains(">0/0<"));
+    }
+
+    #[test]
+    fn pages_without_a_list_do_not_render_a_dead_search_box() {
+        let mut sidebar = sample();
+        sidebar.groups.clear();
+        sidebar.search = false;
+        let html = sidebar.render();
+        assert!(!html.contains("chat-thread-search"));
+        assert!(html.contains("还没有会话"));
+    }
+}

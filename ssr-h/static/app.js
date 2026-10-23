@@ -132,11 +132,12 @@
     if (field.form) field.form.submit();
   });
 
-  /* ── 3. 侧栏：≤760px 是抽屉，>760px 是折叠 ─────────────────────────────
+  /* ── 3. 侧栏：≤760px 是抽屉，>760px 是 56px 窄轨 ───────────────────────
      两套形态共用一个按钮（data-sidebar-toggle），但状态不同：
        · 窄屏：.ada-sidebar.is-open + 遮罩，点遮罩/Esc 关闭；
-       · 宽屏：.ada-shell.is-sidebar-collapsed（CSS 里 display:none），偏好存 localStorage。
-     早先只有窄屏有规则，宽屏点按钮什么也不会发生（按钮却一直显示）。 */
+       · 宽屏：.ada-shell.is-sidebar-collapsed（CSS 里收成窄轨，不是隐藏），
+         偏好存 localStorage。窄轨的目的是"收起不等于失去导航"，
+         所以别再改回 display:none —— 那会让折叠 = 自断一臂。 */
   var COLLAPSE_KEY = 'a_da_sidebar_collapsed';
   var narrowQuery = window.matchMedia('(max-width: 760px)');
 

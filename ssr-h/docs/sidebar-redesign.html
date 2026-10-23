@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ssr-h 侧栏优化方案</title>
+<style>
+  :root{
+    --ph-canvas:#fafafa;--ph-surface:#fff;--ph-elevated:#fff;--ph-line:#e4e4e7;--ph-line-strong:#d4d4d8;
+    --ph-ink:#18181b;--ph-muted:#52525b;--ph-faint:#71717a;
+    --ph-brand:#2563eb;--ph-brand-strong:#1d4ed8;--ph-brand-soft:#eff6ff;--ph-brand-ink:#1d4ed8;
+    --ph-subtle:#f4f4f5;--ph-warn-ink:#b45309;--ph-warn-soft:#fffbeb;--ph-danger-ink:#be123c;--ph-success-ink:#047857;
+    --R6:6px;--R10:10px;--R14:14px;
+    --T10:10px;--T11:11px;--T12:12px;--T13:13px;--T14:14px;--T16:16px;
+    --mono:ui-monospace,"Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;padding:40px 32px 96px;background:#f7f7f8;color:var(--ph-ink);
+    font:14px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .doc{max-width:1180px;margin:0 auto}
+  .doc-hd{margin-bottom:32px}
+  .doc-hd h1{margin:0 0 8px;font-size:26px;font-weight:650;letter-spacing:-.02em}
+  .doc-hd p{margin:0;color:var(--ph-muted);max-width:760px}
+  .doc-hd .meta{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}
+  .tag{padding:2px 8px;border:1px solid var(--ph-line-strong);border-radius:var(--R6);
+       background:var(--ph-surface);color:var(--ph-muted);font-size:11px;font-family:var(--mono)}
+  h2{display:flex;align-items:center;gap:10px;margin:44px 0 14px;font-size:17px;font-weight:650;letter-spacing:-.01em}
+  h2 .num{display:grid;place-items:center;width:22px;height:22px;border-radius:var(--R6);
+          background:var(--ph-ink);color:#fff;font-size:11px;font-family:var(--mono);font-weight:600}
+  h3{margin:24px 0 8px;font-size:13px;font-weight:600;letter-spacing:.04em;color:var(--ph-muted)}
+  p{margin:8px 0}
+  .card{background:var(--ph-surface);border:1px solid var(--ph-line);border-radius:var(--R14);padding:20px 22px}
+  .summary{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:16px}
+  .summary .card{padding:16px 18px}
+  .summary b{display:block;font-size:13px;margin-bottom:4px}
+  .summary span{color:var(--ph-muted);font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--ph-line);vertical-align:top}
+  th{color:var(--ph-faint);font-weight:600;font-size:11px;letter-spacing:.05em;text-transform:uppercase;
+     background:var(--ph-subtle)}
+  td code,.mono{font-family:var(--mono);font-size:11.5px}
+  td code{background:var(--ph-subtle);padding:1px 5px;border-radius:4px;color:var(--ph-muted)}
+  .sev{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10.5px;font-weight:600;white-space:nowrap}
+  .sev.p0{background:#fff1f2;color:var(--ph-danger-ink)}
+  .sev.p1{background:var(--ph-warn-soft);color:var(--ph-warn-ink)}
+  .sev.p2{background:var(--ph-subtle);color:var(--ph-muted)}
+
+  /* ── 对照画板 ───────────────────────────────────────── */
+  .stage{display:flex;gap:28px;align-items:flex-start;margin-top:20px;padding:24px;
+         background:var(--ph-surface);border:1px solid var(--ph-line);border-radius:var(--R14);overflow-x:auto}
+  .board{position:relative;flex:0 0 auto}
+  .board__cap{display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:11px;color:var(--ph-faint);
+              font-family:var(--mono);letter-spacing:.02em}
+  .board__cap b{color:var(--ph-ink);font-family:inherit;font-size:12px;font-weight:600;letter-spacing:0}
+  .frame{width:264px;height:700px;display:flex;flex-direction:column;gap:4px;padding:8px 10px;
+         background:var(--ph-subtle);border:1px solid var(--ph-line);border-radius:var(--R14);overflow:hidden}
+  .frame.rail{width:56px;padding:8px 6px;align-items:center;gap:6px}
+  .frame.after{padding:10px 12px;gap:6px}
+  /* 标注点 */
+  .dot{position:absolute;display:grid;place-items:center;width:16px;height:16px;border-radius:50%;
+       background:var(--ph-ink);color:#fff;font-size:9.5px;font-family:var(--mono);font-weight:600;z-index:5}
+
+  /* ── 现状（按 chat.html + shell.css 还原） ─────────── */
+  .b-brand{display:flex;align-items:center;gap:10px;padding:4px 6px 8px}
+  .b-mark{display:grid;place-items:center;width:28px;height:28px;border-radius:var(--R10);
+          background:linear-gradient(135deg,var(--ph-brand),var(--ph-brand-strong));color:#fff;flex:0 0 auto}
+  .b-name{font-size:var(--T16);font-weight:650;letter-spacing:-.02em}
+  .b-badge{margin-left:auto;padding:2px 6px;border:1px solid var(--ph-line-strong);border-radius:var(--R6);
+           color:var(--ph-faint);font-family:var(--mono);font-size:var(--T10)}
+  .b-primary{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:40px;
+             border:0;border-radius:var(--R10);background:var(--ph-brand);color:#fff;font-size:var(--T14);
+             font-family:inherit;font-weight:500}
+  .b-nav{display:flex;flex-direction:column;gap:2px}
+  .b-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--R10);
+          color:var(--ph-muted);font-size:var(--T14)}
+  .b-item svg{color:var(--ph-faint);flex:0 0 auto}
+  .b-item.on{background:var(--ph-brand-soft);color:var(--ph-brand-ink);font-weight:550}
+  .b-item.on svg{color:var(--ph-brand-ink)}
+  .b-sec{padding:8px 6px 0;margin-top:4px;border-top:1px solid var(--ph-line)}
+  .b-sec__label{display:flex;justify-content:space-between;padding:0 4px 4px;color:var(--ph-faint);
+                font-size:var(--T10);font-weight:600;letter-spacing:.06em}
+  .b-pill{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--ph-line);
+          border-radius:var(--R10);background:var(--ph-surface);color:var(--ph-muted);
+          font-family:var(--mono);font-size:var(--T12)}
+  .b-pill span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .b-search{position:relative;padding:8px 2px 2px}
+  .b-search input{width:100%;height:30px;padding:0 8px 0 29px;border:1px solid var(--ph-line);
+                  border-radius:var(--R10);background:var(--ph-surface);color:var(--ph-muted);
+                  font:inherit;font-size:var(--T12);outline:none}
+  .b-search svg{position:absolute;left:11px;top:19px;color:var(--ph-faint)}
+  .b-list{flex:1 1 auto;min-height:96px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;padding:4px 0 8px}
+  .b-group{display:flex;align-items:center;gap:6px;min-height:28px;padding:4px 62px 4px 8px;
+           border-radius:var(--R6);color:var(--ph-muted);font-size:var(--T12)}
+  .b-group .g-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+  .b-group .g-badge{padding:0 6px;border-radius:999px;background:var(--ph-brand);color:#fff;font-size:10px;line-height:15px}
+  .b-group .g-count{min-width:16px;padding:0 6px;border-radius:999px;background:var(--ph-line);
+                    color:var(--ph-faint);font-family:var(--mono);font-size:10px;line-height:15px;text-align:center}
+  .b-threads{display:flex;flex-direction:column;gap:2px;margin:2px 0 4px 14px;padding-left:6px;border-left:1px solid var(--ph-line)}
+  .b-thread{display:flex;flex-direction:column;gap:4px;padding:8px 10px;border-radius:var(--R10);color:var(--ph-muted)}
+  .b-thread .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--T14)}
+  .b-thread .m{display:flex;align-items:center;gap:6px;color:var(--ph-faint);font-size:var(--T10)}
+  .b-thread.on{background:var(--ph-brand-soft)}
+  .b-thread.on .t{color:var(--ph-brand-ink);font-weight:600}
+  .b-foot{display:flex;align-items:center;gap:8px;padding:10px 4px 2px;border-top:1px solid var(--ph-line)}
+  .b-gw{display:flex;align-items:center;gap:6px;min-width:0;color:var(--ph-faint);
+        font-family:var(--mono);font-size:var(--T10)}
+  .b-gw span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* ── 方案（重设计） ─────────────────────────────────── */
+  .a-hd{display:flex;align-items:center;gap:8px;padding:2px 2px 6px}
+  .a-hd .b-name{font-size:15px;font-weight:650}
+  .a-hd .a-collapse{margin-left:auto;display:grid;place-items:center;width:26px;height:26px;border:0;
+                    border-radius:var(--R6);background:transparent;color:var(--ph-faint)}
+  .a-new{display:flex;align-items:center;gap:8px;justify-content:center;height:32px;border:1px solid var(--ph-line-strong);
+         border-radius:var(--R10);background:var(--ph-surface);color:var(--ph-ink);font-size:var(--T13);font-weight:500}
+  .a-ws{display:flex;align-items:center;gap:8px;height:34px;padding:0 8px;border-radius:var(--R10);
+        color:var(--ph-ink);font-size:var(--T13);font-weight:600;background:var(--ph-surface);border:1px solid transparent}
+  .a-ws .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .a-ws .cnt{color:var(--ph-faint);font-family:var(--mono);font-size:11px;font-weight:400}
+  .a-search{position:relative;display:flex;align-items:center}
+  .a-search input{width:100%;height:32px;padding:0 52px 0 30px;border:1px solid var(--ph-line);
+                  border-radius:var(--R10);background:var(--ph-surface);color:var(--ph-ink);
+                  font:inherit;font-size:var(--T12);outline:none}
+  .a-search svg{position:absolute;left:9px;color:var(--ph-faint)}
+  .a-search kbd{position:absolute;right:7px;padding:1px 5px;border:1px solid var(--ph-line);border-radius:4px;
+                background:var(--ph-subtle);color:var(--ph-faint);font:10px/1.4 var(--mono)}
+  .a-div{height:1px;background:var(--ph-line);margin:6px 0 2px}
+  .a-list{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:1px;padding:2px 0 6px}
+  .a-group{display:flex;align-items:center;gap:6px;height:24px;padding:0 6px;margin-top:4px;
+           color:var(--ph-faint);font-size:var(--T11);font-weight:600;letter-spacing:.03em}
+  .a-group .cnt{margin-left:auto;font-family:var(--mono);font-size:10px;font-weight:400}
+  .a-row{display:flex;align-items:center;gap:8px;height:32px;padding:0 8px;border-radius:var(--R6);
+         color:var(--ph-muted);font-size:var(--T13);text-decoration:none}
+  .a-row .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .a-row .d{width:6px;height:6px;border-radius:50%;background:var(--ph-warn-ink);flex:0 0 auto}
+  .a-row .more{opacity:0;color:var(--ph-faint);display:grid;place-items:center;width:18px;height:18px;flex:0 0 auto}
+  .a-row:hover .more{opacity:1}
+  .a-row.on{background:var(--ph-brand-soft);color:var(--ph-brand-ink);font-weight:600}
+  .a-row.on .more{opacity:.6}
+  .a-nav{display:flex;flex-direction:column;gap:1px;padding:2px 0 0}
+  .a-nav a{display:flex;align-items:center;gap:9px;height:28px;padding:0 8px;border-radius:var(--R6);
+           color:var(--ph-muted);font-size:var(--T12);text-decoration:none}
+  .a-nav a svg{color:var(--ph-faint);flex:0 0 auto}
+  .a-nav .kbd{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--ph-faint)}
+  .a-foot{display:flex;align-items:center;gap:8px;padding:8px 2px 0;border-top:1px solid var(--ph-line)}
+  .a-status{display:flex;align-items:center;gap:6px;min-width:0;color:var(--ph-faint);font-size:11px}
+  .a-status .dot-ok{width:6px;height:6px;border-radius:50%;background:var(--ph-success-ink);flex:0 0 auto}
+  .a-status .addr{font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .a-theme{margin-left:auto;display:grid;place-items:center;width:26px;height:26px;border:0;
+           border-radius:var(--R6);background:transparent;color:var(--ph-faint)}
+  /* 窄轨 */
+  .rail .r-btn{display:grid;place-items:center;width:34px;height:34px;border:0;border-radius:var(--R10);
+               background:transparent;color:var(--ph-muted);flex:0 0 auto}
+  .rail .r-btn.primary{background:var(--ph-brand);color:#fff}
+  .rail .r-btn.on{background:var(--ph-brand-soft);color:var(--ph-brand-ink)}
+  .rail .r-sep{width:20px;height:1px;background:var(--ph-line);margin:4px 0}
+  .rail .r-thumb{display:grid;place-items:center;width:30px;height:30px;border-radius:var(--R10);
+                 background:var(--ph-surface);border:1px solid var(--ph-line);color:var(--ph-muted);
+                 font-size:11px;font-weight:600;flex:0 0 auto}
+  .rail .r-thumb.on{background:var(--ph-brand-soft);border-color:transparent;color:var(--ph-brand-ink)}
+  .rail .spacer{flex:1}
+
+  .legend{display:grid;grid-template-columns:repeat(2,1fr);gap:8px 28px;margin-top:18px;font-size:12.5px}
+  .legend div{display:flex;gap:9px;align-items:flex-start;color:var(--ph-muted)}
+  .legend i{display:grid;place-items:center;width:16px;height:16px;flex:0 0 auto;border-radius:50%;
+            background:var(--ph-ink);color:#fff;font:9.5px/1 var(--mono);font-style:normal;margin-top:1px}
+  .legend b{color:var(--ph-ink);font-weight:600}
+
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:4px 0;color:var(--ph-muted)}
+  li b{color:var(--ph-ink)}
+  .note{padding:12px 16px;border-left:2px solid var(--ph-brand);background:var(--ph-brand-soft);
+        border-radius:0 var(--R10) var(--R10) 0;font-size:12.5px;color:#1e3a8a}
+  .note b{color:#172554}
+  @media (max-width:1080px){ .summary{grid-template-columns:1fr} .legend{grid-template-columns:1fr} .cols{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+<div class="doc">
+
+<div class="doc-hd">
+  <h1>ssr-h 侧栏优化方案</h1>
+  <p>针对 <span class="mono">ssr-h</span> 左侧栏（品牌 / 新会话 / 主导航 / 工作区 / 会话树 / 插件 / 页脚 共 7 段）的结构与视觉权重做一次收敛。目标不是换皮，是把「我现在在哪、下一步做什么」这两个问题在 264px 内一次说清。</p>
+  <div class="meta">
+    <span class="tag">依据：chat.html · layout.html · shell.css · pages.css · UED.md §5–§7</span>
+    <span class="tag">画板按 1:1 真实尺寸渲染</span>
+  </div>
+</div>
+
+<div class="summary">
+  <div class="card"><b>一 · 视觉权重倒置</b><span>实心蓝「新会话」40px 全宽是侧栏最重的元素，比当前选中会话重得多 —— 视线第一落点是「新建」而不是「我在哪」。</span></div>
+  <div class="card"><b>二 · 同一个状态说了三遍</b><span>「当前工作区」同时由 section 药丸（完整路径）、工作区树组头「当前」徽标、搜索占位符表达，占掉约 100px 却零新增信息。</span></div>
+  <div class="card"><b>三 · 密度与层级不足</b><span>会话项两行实测约 56px（UED 记的 44 是估算，padding + 两个行高 + 间距把它撑大了），1000px 视口下一屏只有 9 条；标题还用 muted 色，7 段信息共用一根 1px 线。</span></div>
+</div>
+
+<h2><span class="num">1</span>现状诊断</h2>
+<div class="card" style="padding:0;overflow:hidden">
+<table>
+<thead><tr><th style="width:52px">级别</th><th style="width:210px">现象</th><th style="width:190px">位置</th><th>影响</th></tr></thead>
+<tbody>
+<tr><td><span class="sev p0">P0</span></td><td>新会话为 <code>ada-btn--primary</code> 实心蓝、40px 全宽</td><td>chat.html:42 / layout.html:41</td><td>侧栏最重的色块是「动作」而非「上下文」；当前会话的 <code>brand-soft</code> 底在它旁边几乎看不出选中</td></tr>
+<tr><td><span class="sev p0">P0</span></td><td>当前工作区三重表达</td><td>chat.html:67-73 药丸 + workspace_tree.html:12 组头徽标 + chat.html:77 占位符</td><td>药丸显示 <code>C:\Users\issue\.a-da</code> 这类全路径，被 ellipsis 切掉尾部（目录名才是身份）；重复占用 68px 垂直空间</td></tr>
+<tr><td><span class="sev p0">P0</span></td><td>会话行实测约 56px（标题 14px + 元信息 10px 两行）</td><td>shell.css:236-283</td><td>1000px 视口会话区只剩约 490px，一屏 9 条；<code>89 项</code> 这类装饰性元信息占掉整行 30% 的高度，而它几乎不被读</td></tr>
+<tr><td><span class="sev p0">P0</span></td><td>侧栏同时存在两处独立滚动边界</td><td>shell.css:125-132（插件区 max-height:124 + 自滚）、:220（会话区自滚）</td><td>插件到第 3 个就出现两条滚动条；124px 高度下插件名只能显示 2 个</td></tr>
+<tr><td><span class="sev p1">P1</span></td><td>会话标题色 <code>--ph-muted #52525b</code>、14px/400</td><td>shell.css:263-269</td><td>整列看起来都像「次要／不可点」，只有 1 条蓝色高亮能读；扫读成本高</td></tr>
+<tr><td><span class="sev p1">P1</span></td><td>全局导航 4 项平铺在会话树上方</td><td>chat.html:48-65</td><td>「会话」与「插件/供应商/概览」不是同一层级，却并列占 144px；把会话列表往下挤</td></tr>
+<tr><td><span class="sev p1">P1</span></td><td>导航图标 15px、stroke 1.75、色 <code>--ph-faint</code></td><td>shell.css:99-102</td><td>浅灰底上图标对比不足，四种图标视觉密度差异大（2×2 方格 vs 双横条），像 disabled</td></tr>
+<tr><td><span class="sev p1">P1</span></td><td>960px 断点未落地</td><td>pages.css:307 / UED §5.1</td><td>264px 一直顶到 760px 才变抽屉，961–1100px 区间主区被压</td></tr>
+<tr><td><span class="sev p1">P2</span></td><td>折叠态只有 <code>display:none</code></td><td>pages.css:321-325</td><td>收起后连会话切换能力一起消失；<code>display</code> 也无法过渡</td></tr>
+<tr><td><span class="sev p2">P2</span></td><td>会话项无 hover 操作（重命名/删除/复制链接）</td><td>workspace_tree.html:22-28</td><td>操作只挂在工作区组头上；单条会话完全不可管理</td></tr>
+<tr><td><span class="sev p2">P2</span></td><td>搜索无结果计数、无空态</td><td>chat.js:191-212</td><td>整组 <code>hidden</code> 后界面变成空白，用户无法判断是「没匹配」还是「列表挂了」</td></tr>
+<tr><td><span class="sev p2">P2</span></td><td>侧栏标记在 <code>chat.html</code> 与 <code>layout.html</code> 各复制一份</td><td>两文件 26-98 行几乎逐字相同</td><td>任何改版都要改两遍，漏一处就出现「首页和二级页侧栏不一样」</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2><span class="num">2</span>方案对照</h2>
+<p>左：现行实现（按 <span class="mono">chat.html</span> + <span class="mono">shell.css</span> 逐条还原）；中：重设计默认态；右：56px 折叠窄轨。三块均为 1:1 尺寸。</p>
+
+<div class="stage">
+
+  <!-- 现状 -->
+  <div class="board">
+    <div class="board__cap"><b>现状</b> 264px</div>
+    <div class="frame">
+      <div class="b-brand">
+        <span class="b-mark"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5 21.5 12 12 21.5 2.5 12Z"/></svg></span>
+        <span class="b-name">a_da</span>
+        <span class="b-badge">SSR</span>
+      </div>
+
+      <button class="b-primary">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        新会话
+      </button>
+
+      <nav class="b-nav">
+        <span class="b-item on"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></svg><span>会话</span></span>
+        <span class="b-item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg><span>插件</span></span>
+        <span class="b-item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 8h.01M7 17h.01"/></svg><span>供应商</span></span>
+        <span class="b-item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20h18"/><path d="M6 20v-6"/><path d="M11 20V8"/><path d="M16 20v-9"/><path d="M21 20V5"/></svg><span>概览</span></span>
+      </nav>
+
+      <div class="b-sec">
+        <div class="b-sec__label"><span>工作区</span><span style="letter-spacing:0;font-weight:500">添加/切换</span></div>
+        <div class="b-pill">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="color:var(--ph-faint);flex:0 0 auto"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
+          <span>C:\Users\issue\.a-da</span>
+        </div>
+      </div>
+
+      <div class="b-search">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input placeholder="搜索工作区或会话…" readonly>
+      </div>
+
+      <div class="b-list">
+        <div class="b-group">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" style="color:var(--ph-faint)"><path d="m9 6 6 6-6 6"/></svg>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="color:var(--ph-brand)"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
+          <span class="g-name">a_da</span>
+          <span class="g-badge">当前</span>
+          <span class="g-count">4</span>
+        </div>
+        <div class="b-threads">
+          <div class="b-thread"><span class="t">测试 TODO 列表</span><span class="m"><span>89 项</span></span></div>
+          <div class="b-thread on"><span class="t">值得关注的AI新闻</span><span class="m"><span>12 项</span></span></div>
+          <div class="b-thread"><span class="t">你好</span><span class="m"><span>6 项</span></span></div>
+          <div class="b-thread"><span class="t">添加一个查询天气的插件</span><span class="m"><span>106 项</span></span></div>
+        </div>
+      </div>
+
+      <div class="b-sec">
+        <div class="b-sec__label"><span>前端插件</span><span style="letter-spacing:0;font-weight:500">管理</span></div>
+        <span class="b-item" style="padding:6px 10px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v6M15 3v6"/><path d="M6 9h12v3a6 6 0 0 1-12 0Z"/><path d="M12 18v3"/></svg><span>Hello 插件</span></span>
+      </div>
+
+      <div class="b-foot">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="color:var(--ph-muted);flex:0 0 auto"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+        <span class="b-gw">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v6M15 3v6"/><path d="M6 9h12v3a6 6 0 0 1-12 0Z"/><path d="M12 18v3"/></svg>
+          <span>http://127.0.0.1:52353</span>
+        </span>
+      </div>
+    </div>
+    <span class="dot" style="left:-8px;top:90px">1</span>
+    <span class="dot" style="left:-8px;top:329px">2</span>
+    <span class="dot" style="left:-8px;top:375px">3</span>
+    <span class="dot" style="left:-8px;top:414px">5</span>
+    <span class="dot" style="left:-8px;top:521px">4</span>
+    <span class="dot" style="left:-8px;top:643px">6</span>
+  </div>
+
+  <!-- 方案 -->
+  <div class="board">
+    <div class="board__cap"><b>方案 · 默认态</b> 264px</div>
+    <div class="frame after">
+      <div class="a-hd">
+        <span class="b-mark"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5 21.5 12 12 21.5 2.5 12Z"/></svg></span>
+        <span class="b-name">a_da</span>
+        <button class="a-collapse" title="收起侧栏"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/><path d="m15 10-2 2 2 2"/></svg></button>
+      </div>
+
+      <button class="a-new">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        新会话
+      </button>
+
+      <div class="a-ws">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="color:var(--ph-brand);flex:0 0 auto"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
+        <span class="nm">a_da</span>
+        <span class="cnt">4</span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color:var(--ph-faint);flex:0 0 auto"><path d="m6 9 6 6 6-6"/></svg>
+      </div>
+
+      <div class="a-search">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input placeholder="搜索会话…" readonly>
+        <kbd>Ctrl K</kbd>
+      </div>
+
+      <div class="a-div"></div>
+
+      <div class="a-list">
+        <a class="a-row"><span class="t">测试 TODO 列表</span><span class="more">···</span></a>
+        <a class="a-row on"><span class="t">值得关注的AI新闻</span><span class="more">···</span></a>
+        <a class="a-row"><span class="t">你好</span><span class="more">···</span></a>
+        <a class="a-row"><span class="t">添加一个查询天气的插件</span><span class="d" title="运行中"></span></a>
+        <div class="a-group" style="margin-top:10px">~/work/other<span class="cnt">2</span></div>
+        <a class="a-row"><span class="t">重构网关的断线重连</span><span class="more">···</span></a>
+        <a class="a-row"><span class="t">排查 linux 管道端点解析</span><span class="more">···</span></a>
+      </div>
+
+      <div class="a-nav">
+        <a href="#"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v6M15 3v6"/><path d="M6 9h12v3a6 6 0 0 1-12 0Z"/><path d="M12 18v3"/></svg><span>插件</span></a>
+        <a href="#"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 8h.01M7 17h.01"/></svg><span>供应商</span></a>
+        <a href="#"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20h18"/><path d="M6 20v-6"/><path d="M11 20V8"/><path d="M16 20v-9"/><path d="M21 20V5"/></svg><span>概览</span></a>
+      </div>
+
+      <div class="a-foot">
+        <span class="a-status"><span class="dot-ok"></span><span class="addr">127.0.0.1:52353</span></span>
+        <button class="a-theme" title="切换深浅色"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg></button>
+      </div>
+    </div>
+    <span class="dot" style="left:-8px;top:86px">1</span>
+    <span class="dot" style="left:-8px;top:125px">2</span>
+    <span class="dot" style="left:-8px;top:164px">3</span>
+    <span class="dot" style="left:-8px;top:251px">4</span>
+    <span class="dot" style="left:-8px;top:353px">5</span>
+    <span class="dot" style="left:-8px;top:622px">6</span>
+  </div>
+
+  <!-- 窄轨 -->
+  <div class="board">
+    <div class="board__cap"><b>折叠窄轨</b> 56px</div>
+    <div class="frame rail">
+      <span class="b-mark" style="margin-bottom:2px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5 21.5 12 12 21.5 2.5 12Z"/></svg></span>
+      <button class="r-btn primary" title="新会话"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+      <button class="r-btn" title="搜索会话 ⌘K"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></button>
+      <span class="r-sep"></span>
+      <span class="r-thumb" title="测试 TODO 列表">测</span>
+      <span class="r-thumb on" title="值得关注的AI新闻">值</span>
+      <span class="r-thumb" title="你好">你</span>
+      <span class="r-thumb" title="添加一个查询天气的插件">添</span>
+      <span class="spacer"></span>
+      <button class="r-btn" title="插件"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v6M15 3v6"/><path d="M6 9h12v3a6 6 0 0 1-12 0Z"/><path d="M12 18v3"/></svg></button>
+      <button class="r-btn" title="供应商"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 8h.01M7 17h.01"/></svg></button>
+      <button class="r-btn" title="概览"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20h18"/><path d="M6 20v-6"/><path d="M11 20V8"/><path d="M16 20v-9"/><path d="M21 20V5"/></svg></button>
+      <button class="r-btn" title="展开侧栏"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/><path d="m13 10 2 2-2 2"/></svg></button>
+    </div>
+  </div>
+</div>
+
+<div class="legend">
+  <div><i>1</i><span><b>主操作降级</b>：实心蓝 → <code>line-strong</code> 描边 + ink 文字，高 40→32。侧栏里唯一的填充色留给「当前会话」。</span></div>
+  <div><i>2</i><span><b>工作区切换器合并</b>：section 标签 + 全路径药丸 + 树组头三处合一，改为一行 <code>文件夹图标 + 目录名 + 会话数 + ⌄</code>，点击开切换面板；完整路径进 <code>title</code>。</span></div>
+  <div><i>3</i><span><b>搜索加结果面</b>：输入框 30→32px，右侧 <code>Ctrl K</code>；有内容时右侧变为 <code>3 / 18</code>，无匹配显示「没有匹配的会话 · 清除」。</span></div>
+  <div><i>4</i><span><b>会话行 32px 单行</b>：标题 13px/500 提为 ink；<code>N 项</code> 移进 <code>title</code>；运行中改为行尾 6px warn 点；hover 出现 <code>···</code>（重命名/删除/复制链接）。密度 9 → 15 条/屏。</span></div>
+  <div><i>5</i><span><b>分层靠留白</b>：3 根通栏 1px 线 + 列表左侧 14px 导轨，收敛为 2 根线（列表上下）；多工作区不再靠「组头 + 导轨」表达，改用 12px 缩进 + 组头小字。</span></div>
+  <div><i>6</i><span><b>导航下沉 + 状态简化</b>：插件/供应商/概览移到底部（与主题、连接状态同区）；网关只留 <code>host:port</code> + 绿点，<code>http://</code> 去掉，不再让 10px 等宽字承担主要信息。</span></div>
+</div>
+
+<h2><span class="num">3</span>规格</h2>
+<div class="cols">
+  <div class="card" style="padding:0;overflow:hidden">
+    <table>
+      <thead><tr><th>项</th><th>现状</th><th>目标</th></tr></thead>
+      <tbody>
+      <tr><td>侧栏宽</td><td>264 / ≤760 抽屉</td><td>264；961–1100 → 236；≤760 抽屉（补 960 断点）</td></tr>
+      <tr><td>侧栏内边距</td><td>8 / 10</td><td>10 / 12（上下 / 左右）</td></tr>
+      <tr><td>会话行高</td><td>≈56（两行，实测）</td><td>32（单行）</td></tr>
+      <tr><td>会话标题</td><td>14px / 400 / <code>--ph-muted</code></td><td>13px / 500 / <code>--ph-ink</code></td></tr>
+      <tr><td>选中态</td><td><code>brand-soft</code> 底 + <code>brand-ink</code> 字</td><td>保持（唯一使用浅蓝底的列表态）</td></tr>
+      <tr><td>分组标题</td><td>12px / 600 / muted</td><td>11px / 600 / <code>--ph-faint</code> + 计数</td></tr>
+      <tr><td>主按钮</td><td>40 实心 <code>--ph-brand</code></td><td>32 描边 <code>--ph-line-strong</code> + ink</td></tr>
+      <tr><td>导航项</td><td>36 / 14px / 15px 图标</td><td>28 / 12px / 14px 图标（底部区）</td></tr>
+      <tr><td>分隔线</td><td>3 根通栏 + 列表左侧导轨</td><td>2 根（列表上下），其余用 8/12px 留白</td></tr>
+      <tr><td>折叠态</td><td><code>display:none</code></td><td>56px 窄轨，宽度过渡 160ms</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div>
+    <div class="note" style="margin-bottom:12px">
+      <b>不伪造数据。</b>新方案的行内只放已存在的字段（标题 / running / 会话数）。时间列、未读徽标需要后端在 <span class="mono">workspace_tree</span> 的数据结构里补字段，属于可选的第二步，不在本次视觉改版里偷偷塞假值。
+    </div>
+    <h3>为什么导航放底部</h3>
+    <ul>
+      <li>「会话」不是一个目的地，而是这个应用本身 —— 它在导航里出现，反而暗示「还有别的会话页」。</li>
+      <li>插件 / 供应商 / 概览 是低频设置面，底部是行业里已被训练出来的位置（Slack、Linear、Notion 侧栏左下角）。</li>
+      <li>腾出的空间全部还给会话列表：配合行高收敛，一屏从 9 条到 15 条。</li>
+      <li>底部与主题、连接状态同区，构成稳定的「系统区」，不再随会话数量上下浮动。</li>
+    </ul>
+    <h3>为什么删掉「工作区」独立分区</h3>
+    <ul>
+      <li>工作区本质是「这批会话属于哪个目录」，它是列表的<b>表头</b>，不是列表外的一个控件。</li>
+      <li>多个工作区时，组头（<span class="mono">~/work/other · 2</span>）已经承担切换职责；只有一个工作区时不该出现第二套表达。</li>
+      <li>路径显示改为 目录名 + 父目录缩写（<span class="mono">~/.a-da</span>），完整路径放 <span class="mono">title</span>，不再从右侧截断把身份切掉。</li>
+    </ul>
+  </div>
+</div>
+
+<h2><span class="num">4</span>落地顺序</h2>
+<div class="card">
+<h3>第 0 步（必须先做）· 抽单一真源</h3>
+<p>侧栏标记在 <span class="mono">templates/chat.html</span> 与 <span class="mono">templates/layout.html</span> 各有一份（26–98 行），改版必须改两遍。先抽 <span class="mono">templates/partials/sidebar.html</span>，两个外壳 <span class="mono">{% include %}</span>，再动样式。否则后面每一步都是双倍工作量 + 漂移风险。</p>
+
+<h3>第 1 步 · 结构（纯模板，不动 CSS 也能先看见效果）</h3>
+<ul>
+  <li>删 <span class="mono">.ada-section</span>（工作区药丸）整段，改为 <span class="mono">.ada-ws-switch</span> 一行式切换器。</li>
+  <li>主导航 4 项拆两处：会话项移除（当前页即会话），其余三项下移到底部 <span class="mono">.ada-nav--utility</span>。</li>
+  <li>会话行去掉 <span class="mono">.ada-thread__meta</span> 里的「N 项」，改挂 <span class="mono">title</span> 属性。</li>
+</ul>
+
+<h3>第 2 步 · 视觉（shell.css 局部重写）</h3>
+<ul>
+  <li><span class="mono">.ada-thread</span>：<span class="mono">flex-direction: row</span>、<span class="mono">height: 32px</span>、标题 13px/500 ink。</li>
+  <li><span class="mono">.ada-btn--primary</span> 在侧栏内改用新的 <span class="mono">.ada-btn--ghost</span> 变体（描边）。</li>
+  <li>删除 <span class="mono">.ada-section</span> 的 <span class="mono">border-top</span>，只保留列表上下两根；<span class="mono">.ada-section--plugins</span> 的独立滚动 <span class="mono">max-height</span> 一并去掉（插件已入底部区，无需自滚）。</li>
+</ul>
+
+<h3>第 3 步 · 交互（chat.js / app.js）</h3>
+<ul>
+  <li>搜索加计数字与空态；<span class="mono">⌘K</span> / <span class="mono">Ctrl K</span> 聚焦、<span class="mono">Esc</span> 清空。</li>
+  <li>会话行 hover 的 <span class="mono">···</span> 菜单（复用现有 <span class="mono">ada-modal.js</span>，别新起一套）。</li>
+  <li>折叠改为窄轨：<span class="mono">is-sidebar-collapsed</span> 不再 <span class="mono">display:none</span>，改宽度 264 → 56 + 文字渐隐。</li>
+</ul>
+
+<h3>第 4 步 · 响应式与验收</h3>
+<ul>
+  <li>补 <span class="mono">@media (max-width: 1100px)</span> 的 236px，与 UED §5.1 对齐。</li>
+  <li>验收：1280/1440/960/860 无横向溢出；Light/Dark 两套下 32px 行的 hover 底可见；键盘可达（Tab 走完树、<span class="mono">⌘K</span> 可达搜索）；窄轨下所有 tooltip 有语义文本。</li>
+</ul>
+</div>
+
+<p style="margin-top:28px;color:var(--ph-faint);font-size:12px">画板中的示例会话名取自 <span class="mono">docs/preview.png</span> 截图，仅用于对照；第二组「~/work/other」是演示多工作区形态的占位。</p>
+
+</div>
+</body>
+</html>

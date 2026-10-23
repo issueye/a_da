@@ -1,5 +1,12 @@
 import { Chip, Notice } from "ssr-h:components";
-import { bandOf, percentOf, tokensOf } from "./components/weather";
+import {
+  bandOf,
+  cacheOf,
+  formatTokens,
+  percentOf,
+  percentText,
+  tokensOf,
+} from "./components/weather";
 
 /**
  * Token 天气完整页：把"当前会话的上下文用量"渲染成天气。
@@ -13,11 +20,14 @@ export function Page(props: any) {
   const band = bandOf(percent);
   const used = tokens && tokens.used ? tokens.used : 0;
   const windowSize = tokens && tokens.window ? tokens.window : 0;
+  const cache = cacheOf(tokens);
+  const usedText = formatTokens(used);
+  const windowText = windowSize > 0 ? formatTokens(windowSize) : "—";
   const threadTitle = tokens && tokens.threadTitle ? tokens.threadTitle : "（没有活动会话）";
   const model = tokens && tokens.model ? tokens.model : "未知";
   const slug = props.page && props.page.slug ? props.page.slug : "weather";
   const href = "/ext/" + props.plugin.id + "/" + slug;
-  const pct = percent === null ? "—" : percent + "%";
+  const pct = percentText(percent);
 
   return (
     <div
@@ -44,7 +54,7 @@ export function Page(props: any) {
         <div class="tw-meter">
           <div class="tw-meter__meta">
             <span>上下文用量</span>
-            <strong>{percent === null ? "暂无数据" : used + " / " + windowSize + " tokens"}</strong>
+            <strong>{percent === null ? "暂无数据" : usedText + " / " + windowText + " tokens"}</strong>
           </div>
           <progress class="tw-progress" value={percent === null ? 0 : percent} max="100"></progress>
         </div>
@@ -52,17 +62,33 @@ export function Page(props: any) {
         <div class="tw-stats">
           <div class="tw-stat">
             <span class="tw-stat__label">已用</span>
-            <strong class="tw-stat__value">{used}</strong>
+            <strong class="tw-stat__value" title={used + " tokens"}>{usedText}</strong>
             <span class="tw-stat__unit">tokens</span>
           </div>
           <div class="tw-stat">
             <span class="tw-stat__label">窗口</span>
-            <strong class="tw-stat__value">{windowSize > 0 ? windowSize : "—"}</strong>
+            <strong class="tw-stat__value" title={windowSize + " tokens"}>{windowText}</strong>
             <span class="tw-stat__unit">tokens</span>
           </div>
           <div class="tw-stat">
             <span class="tw-stat__label">已用比例</span>
             <strong class="tw-stat__value">{pct}</strong>
+          </div>
+          <div class="tw-stat">
+            <span class="tw-stat__label">缓存命中</span>
+            <strong
+              class="tw-stat__value"
+              title={
+                cache.percent === null
+                  ? "模型没有返回 cachedTokens，无法计算命中率"
+                  : cache.stale
+                    ? "本轮模型未报缓存，数字来自上一次上报缓存的调用（" + cache.cached + " cached tokens）"
+                    : cache.cached + " cached tokens"
+              }
+            >
+              {percentText(cache.percent) + (cache.stale ? "*" : "")}
+            </strong>
+            <span class="tw-stat__unit">{cache.cached > 0 ? formatTokens(cache.cached) : "—"}</span>
           </div>
           <div class="tw-stat tw-stat--wide">
             <span class="tw-stat__label">会话</span>
@@ -83,8 +109,8 @@ export function Page(props: any) {
       ) : null}
 
       <p class="tw-note tw-note--page">
-        口径：最近一次模型调用的 promptTokens ÷ contextWindow（与引擎的上下文治理同源）。
-        数据由服务端注入 props.data.tokens，插件只负责显示。
+        口径：最近一次模型调用的 promptTokens ÷ contextWindow（与引擎的上下文治理同源）；
+        缓存命中 = cachedTokens ÷ promptTokens。数据由服务端注入 props.data.tokens，插件只负责显示。
       </p>
     </div>
   );

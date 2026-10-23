@@ -148,6 +148,14 @@ impl AgentClient {
         self.rpc("config.checkProvider", params).await
     }
 
+    /// 推理等级（`config.setEffort`：`low | medium | high | max`）。
+    ///
+    /// 与 desktop-ui 的设置项同源：网关落在 `config.json` 的 `effort` 并广播快照，
+    /// 不在本进程里留第二份状态。
+    pub async fn set_effort(&self, effort: &str) -> Result<Value> {
+        self.rpc("config.setEffort", json!({ "effort": effort })).await
+    }
+
     pub async fn plugins(&self) -> Result<Value> {
         self.get("/api/plugins").await
     }

@@ -905,6 +905,186 @@
   color: var(--ph-warn-ink);
 }
 
+/* ── 模型选择器（DeepSeek 式：模型 + 推理等级） ──────────────────────────
+   一枚工具行药丸，点开向上弹出面板（输入框贴着视口底部，向下必被裁）。
+   两层 <details>：外层是面板，内层是两个分组；无 JS 也能开合、能提交。 */
+.ada-model-picker {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 2;
+  min-width: 0;
+}
+.ada-model-picker__summary {
+  list-style: none;
+  cursor: pointer;
+}
+.ada-model-picker__summary::-webkit-details-marker {
+  display: none;
+}
+.ada-model-picker[open] > .ada-model-picker__summary {
+  background: var(--ph-subtle);
+  color: var(--ph-ink);
+}
+.ada-model-picker__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.ada-model-picker__effort {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: var(--ada-radius-pill);
+  background: var(--ph-brand-soft);
+  color: var(--ph-brand-ink);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: var(--ada-text-xs);
+  font-weight: 600;
+}
+.ada-model-picker__panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 50;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  max-height: 420px;
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid var(--ph-line-strong);
+  border-radius: var(--ada-radius-md);
+  background: var(--ph-elevated);
+  box-shadow: var(--ph-shadow);
+}
+.ada-model-picker__group {
+  border-radius: var(--ada-radius-sm);
+}
+.ada-model-picker__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--ada-radius-sm);
+  color: var(--ph-muted);
+  font-size: var(--ada-text-sm);
+  list-style: none;
+  cursor: pointer;
+}
+.ada-model-picker__row::-webkit-details-marker {
+  display: none;
+}
+.ada-model-picker__row:hover,
+.ada-model-picker__group[open] > .ada-model-picker__row {
+  background: var(--ph-subtle);
+  color: var(--ph-ink);
+}
+.ada-model-picker__row-label {
+  flex-shrink: 0;
+}
+.ada-model-picker__row-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ph-ink);
+  font-family: var(--mono-font, Consolas, monospace);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ada-model-picker__row .ada-icon {
+  flex-shrink: 0;
+  color: var(--ph-faint);
+  transition: transform var(--ada-transition);
+}
+.ada-model-picker__group[open] > .ada-model-picker__row .ada-icon {
+  transform: rotate(90deg);
+}
+.ada-model-picker__list {
+  max-height: 240px;
+  padding: 4px 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-top: 1px solid var(--ph-line);
+}
+.ada-model-picker__provider {
+  margin: 6px 10px 2px;
+  color: var(--ph-faint);
+  font-size: var(--ada-text-xs);
+  font-weight: 600;
+}
+.ada-model-picker__form {
+  margin: 0;
+}
+.ada-model-picker__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--ada-radius-sm);
+  background: transparent;
+  color: var(--ph-ink);
+  font-family: inherit;
+  font-size: var(--ada-text-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--ada-transition), color var(--ada-transition);
+}
+.ada-model-picker__item:hover {
+  background: var(--ph-subtle);
+}
+.ada-model-picker__item.is-current {
+  background: var(--ph-brand-soft);
+  color: var(--ph-brand-ink);
+}
+.ada-model-picker__item-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+.ada-model-picker__item-name,
+.ada-model-picker__item-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ada-model-picker__item-id {
+  color: var(--ph-faint);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: var(--ada-text-xs);
+}
+.ada-model-picker__item.is-current .ada-model-picker__item-id {
+  color: var(--ph-brand-ink);
+  opacity: 0.8;
+}
+.ada-model-picker__check {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--ph-brand-ink);
+}
+.ada-model-picker__manage {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  margin-top: 2px;
+  border-top: 1px solid var(--ph-line);
+  color: var(--ph-muted);
+  font-size: var(--ada-text-sm);
+  text-decoration: none;
+  transition: color var(--ada-transition), background var(--ada-transition);
+}
+.ada-model-picker__manage:hover {
+  background: var(--ph-subtle);
+  color: var(--ph-ink);
+}
+.ada-model-picker__manage .ada-icon {
+  color: var(--ph-faint);
+}
+
 /* 窄卡片：先丢掉"侧栏已经有"的信息，别把一串标签压成省略号堆。
    工作区名在侧栏与页面标题各有一份，这里丢掉不影响判断。 */
 @container (max-width: 560px) {
@@ -1018,7 +1198,7 @@
   flex-wrap: wrap;
   gap: 6px 18px;
   max-width: 860px;
-  margin: 10px auto 0;
+  margin: 0px auto 8px;
   color: var(--ph-faint);
   font-size: var(--ada-text-sm);
 }

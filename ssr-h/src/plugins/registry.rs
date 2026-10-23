@@ -49,6 +49,8 @@ pub struct PluginRecord {
     pub assets_dir: Option<PathBuf>,
     /// 相对 assets 目录的 CSS 路径。
     pub styles: Vec<String>,
+    /// 相对 assets 目录的 JS 路径（注入页面 `<head>`）。
+    pub scripts: Vec<String>,
     pub errors: Vec<String>,
     /// 模板相对路径 → 已编译 TSX。
     pub tsx_templates: HashMap<String, Arc<CompiledTsx>>,
@@ -132,6 +134,7 @@ fn failed_record(root: &Path, id: &str, message: &str) -> PluginRecord {
         root: root.to_path_buf(),
         assets_dir: None,
         styles: Vec::new(),
+        scripts: Vec::new(),
         errors: vec![message.to_string()],
         tsx_templates: HashMap::new(),
         fingerprint: 0,
@@ -272,31 +275,16 @@ impl PluginRegistry {
             root,
             assets_dir,
             styles: Vec::new(),
+            scripts: Vec::new(),
             errors: Vec::new(),
             tsx_templates: HashMap::new(),
             fingerprint: 0,
         };
 
-        if !manifest.styles.is_empty() {
-            match &record.assets_dir {
-                Some(assets) => {
-                    for style in &manifest.styles {
-                        match safe_join(&record.root, assets, style) {
-                            Ok(path) if path.is_file() => {
-                                record.styles.push(style.trim().to_string());
-                            }
-                            Ok(_) => record.errors.push(format!("插件样式不存在: {style}")),
-                            Err(error) => record
-                                .errors
-                                .push(format!("插件样式路径不合法 `{style}`: {error}")),
-                        }
-                    }
-                }
-                None => record.errors.push(
-                    "插件声明了 styles，但没有可用的 assets 目录（默认 static/）".to_string(),
-                ),
-            }
-        }
+        let styles = collect_assets(&mut record, &manifest.styles, "样式");
+        record.styles = styles;
+        let scripts = collect_assets(&mut record, &manifest.scripts, "脚本");
+        record.scripts = scripts;
 
         let mut paths: Vec<String> = Vec::new();
         for entry in &record.slots {
@@ -485,21 +473,34 @@ impl PluginRegistry {
 
     /// 所有启用插件的 CSS 链接（带插件指纹，重载后浏览器会重新取）。
     pub fn styles(&self) -> Vec<String> {
-        let mut styles = Vec::new();
+        self.active_assets(AssetKind::Style)
+    }
+
+    /// 所有启用插件的 JS 链接（注入 `<head>` 并 `defer`，同样带指纹）。
+    pub fn scripts(&self) -> Vec<String> {
+        self.active_assets(AssetKind::Script)
+    }
+
+    fn active_assets(&self, kind: AssetKind) -> Vec<String> {
+        let mut links = Vec::new();
         for plugin in self.list() {
             if !plugin.is_active() {
                 continue;
             }
-            for style in &plugin.styles {
-                styles.push(format!(
+            let files = match kind {
+                AssetKind::Style => &plugin.styles,
+                AssetKind::Script => &plugin.scripts,
+            };
+            for file in files {
+                links.push(format!(
                     "/ext/{}/assets/{}?v={:x}",
-                    plugin.id, style, plugin.fingerprint
+                    plugin.id, file, plugin.fingerprint
                 ));
             }
         }
-        styles.sort();
-        styles.dedup();
-        styles
+        links.sort();
+        links.dedup();
+        links
     }
 
     pub fn dashboard_widgets(&self) -> Vec<PluginWidget> {
@@ -622,7 +623,7 @@ pub async fn render_slot_off_thread(
     }
 }
 
-/// 顺序渲染一批插槽，只占一个阻塞线程（页面外壳一次要渲染十个插槽）。
+/// 顺序渲染一批插槽，只占一个阻塞线程（页面外壳一次要渲染十一个插槽）。
 pub async fn render_slots_off_thread(
     registry: Arc<PluginRegistry>,
     slots: &[Slot],
@@ -788,6 +789,37 @@ fn resolve_assets_dir(root: &Path, declared: Option<&str>) -> Option<PathBuf> {
                 .then(|| default.canonicalize().unwrap_or(default))
         }
     }
+}
+
+/// 插件资源的两类清单：样式与脚本。
+#[derive(Debug, Clone, Copy)]
+enum AssetKind {
+    Style,
+    Script,
+}
+
+/// 校验并收集一组资源路径（缺失/越界都记进插件的 `errors`，不拖垮整个插件）。
+fn collect_assets(record: &mut PluginRecord, files: &[String], label: &str) -> Vec<String> {
+    let mut collected = Vec::new();
+    if files.is_empty() {
+        return collected;
+    }
+    let Some(assets) = record.assets_dir.clone() else {
+        record.errors.push(format!(
+            "插件声明了{label}，但没有可用的 assets 目录（默认 static/）"
+        ));
+        return collected;
+    };
+    for file in files {
+        match safe_join(&record.root, assets.as_path(), file) {
+            Ok(path) if path.is_file() => collected.push(file.trim().to_string()),
+            Ok(_) => record.errors.push(format!("插件{label}不存在: {file}")),
+            Err(error) => record
+                .errors
+                .push(format!("插件{label}路径不合法 `{file}`: {error}")),
+        }
+    }
+    collected
 }
 
 fn safe_join(plugin_root: &Path, base: &Path, relative: &str) -> Result<PathBuf> {
@@ -1225,5 +1257,98 @@ export function Page() {
         // 没有用量时也不能空着：给一颗"Token 用量"的兜底胶囊。
         let slot = registry.render_slot_with(Slot::ComposerAbove, &RenderContext::default());
         assert!(slot.html.contains("Token 用量"), "{}", slot.html);
+    }
+
+    /// 天气插件的展示细节：M/K 缩写 + 缓存命中率（都来自 `props.data.tokens`）。
+    #[test]
+    fn token_weather_plugin_formats_tokens_and_cache() {
+        let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
+        let registry = PluginRegistry::new(&plugins_dir);
+        let plugin = registry.find("token-weather").expect("token-weather exists");
+        let context = RenderContext::default().with_data(serde_json::json!({
+            "tokens": {
+                "available": true,
+                "used": 18684,
+                "window": 1_000_000,
+                "percent": 2,
+                "cached": 16000,
+                "cachePercent": 86,
+                "completion": 569,
+                "threadId": "t1",
+                "threadTitle": "提交代码",
+                "model": "senseaudio/deepseek-v4.1-flash"
+            }
+        }));
+        let (_, html) = registry
+            .read_page_with(&plugin, "weather", &context)
+            .expect("weather page renders");
+        assert!(html.contains("18.7K"), "已用应缩写成 18.7K: {html}");
+        assert!(html.contains("1M"), "窗口应缩写成 1M: {html}");
+        assert!(html.contains("86%"), "缓存命中率没渲染: {html}");
+        assert!(html.contains("16K"), "缓存 token 数没渲染: {html}");
+
+        // 输入框上方的浮窗：同一份数据 + 输出 tokens。
+        let slot = registry.render_slot_with(Slot::ComposerAbove, &context);
+        assert!(slot.html.contains("18.7K / 1M"), "{}", slot.html);
+        assert!(slot.html.contains("86%"), "{}", slot.html);
+        assert!(slot.html.contains("569"), "输出 token 数没渲染: {}", slot.html);
+    }
+
+    /// 任务卡片插件：把核心推演好的 `data.todo` 渲染成会话区右上角的悬浮卡。
+    #[test]
+    fn task_plan_plugin_renders_the_derived_plan() {
+        let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
+        let registry = PluginRegistry::new(&plugins_dir);
+        let plugin = registry.find("task-plan").expect("task-plan 插件应当被发现");
+        assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
+        assert_eq!(plugin.scripts, vec!["task-plan.js"]);
+        assert!(
+            registry
+                .scripts()
+                .iter()
+                .any(|script| script.starts_with("/ext/task-plan/assets/task-plan.js?v=")),
+            "scripts: {:?}",
+            registry.scripts()
+        );
+
+        let context = RenderContext::default().with_data(serde_json::json!({
+            "todo": {
+                "done": 2,
+                "total": 3,
+                "allDone": false,
+                "active": "写条目",
+                "notes": "先读再写",
+                "markdown": "### 任务规划步骤 (2/3)\n- [x] 读列表\n- [x] 建表\n- [ ] 写条目",
+                "steps": [
+                    { "id": "t1", "title": "读列表", "status": "completed" },
+                    { "id": "t2", "title": "建表", "status": "completed" },
+                    { "id": "t3", "title": "写条目", "status": "in_progress" }
+                ]
+            }
+        }));
+        let slot = registry.render_slot_with(Slot::ChatCorner, &context);
+        assert_eq!(slot.contributors, 1, "slot: {slot:?}");
+        assert!(slot.html.contains("任务规划"), "{}", slot.html);
+        assert!(slot.html.contains("2/3"), "{}", slot.html);
+        assert!(slot.html.contains("2 / 3 已完成"), "{}", slot.html);
+        assert!(slot.html.contains("写条目"), "{}", slot.html);
+        assert!(slot.html.contains("先读再写"), "{}", slot.html);
+        // 步骤清单复用组件库（核心只管数据，标题/状态由插件决定）。
+        assert!(slot.html.contains("is-done"), "{}", slot.html);
+        assert!(slot.html.contains("is-running"), "{}", slot.html);
+        assert!(slot.html.contains("- [x] 读列表"), "{}", slot.html);
+        assert!(
+            slot.html.contains(r#"data-plugin-scope="task-plan""#),
+            "{}",
+            slot.html
+        );
+
+        // 没有计划时卡片根本不出现：不画 0/0 的空面板。
+        let empty = registry.render_slot_with(Slot::ChatCorner, &RenderContext::default());
+        assert!(empty.html.is_empty(), "{:?}", empty.html);
+
+        // 默认只挂在 chat.corner；composer.above 不受影响（改 plugin.json 才换位置）。
+        let above = registry.render_slot_with(Slot::ComposerAbove, &context);
+        assert!(!above.html.contains("任务规划"), "{}", above.html);
     }
 }

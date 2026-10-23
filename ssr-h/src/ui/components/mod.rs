@@ -26,6 +26,7 @@ mod disclosure;
 mod input;
 mod messages;
 mod modal;
+mod model_picker;
 mod model_table;
 mod select;
 mod slot;
@@ -40,6 +41,9 @@ pub use disclosure::{Disclosure, Panel};
 pub use input::TextField;
 pub use messages::{AssistantMessage, EmptyState, Notice, UserMessage};
 pub use modal::{ConfirmDialog, Modal};
+pub use model_picker::{
+    effort_label, model_chip_inner, normalize_effort, ModelChoice, ModelGroup, ModelPicker,
+};
 pub use model_table::{ModelTable, ModelTableRow};
 pub use select::Select;
 pub use slot::{render_slot, Slot};

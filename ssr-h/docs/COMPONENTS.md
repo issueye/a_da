@@ -2,6 +2,8 @@
 
 > 组件库（`src/ui/` + `static/components.css` + `static/components.js`）与插件插槽体系（`src/plugins/`）。
 > 目标：**界面契约只有一处**、**插件异常不拖垮主应用**、**SSR 与客户端看到同一份事实**。
+>
+> 插件能拿到的数据字段与各点位可用性见 [PLUGIN-DATA.md](PLUGIN-DATA.md)。
 
 ---
 
@@ -110,7 +112,8 @@ ssr-h/
 | `TextField` | 单行输入 | `label` `hint` `icon` |
 | `Select` | 下拉选择（**非**原生 `<select>`） | `option` `options` `value` `title` |
 | `Tabs` / `TabItem` | 页签导航条（同一实体的多块内容切换） | `id`（DOM id 前缀） `label` `item` `active` |
-| `ModelTable` | 供应商模型表：固定列宽、省略号 + `title` tooltip、行级操作菜单 | `ModelTable::new(provider_id, provider_name, rows)` |\n| `ToolCall` | 工具调用卡片：折叠行 + 参数 + 长输出 12 行预览 / 展开全文 | `ToolCall::new(...)` |
+| `ModelTable` | 供应商模型表：固定列宽、省略号 + `title` tooltip、行级操作菜单 | `ModelTable::new(provider_id, provider_name, rows)` |
+| `ModelPicker` | 输入框的模型选择器：药丸 + 向上弹层（模型分组 / 推理等级） | `ModelPicker::from_providers(values, active_provider_id, model, effort, thread_id)` |\n| `ToolCall` | 工具调用卡片：折叠行 + 参数 + 长输出 12 行预览 / 展开全文 | `ToolCall::new(...)` |
 | `ConfirmDialog` | 共享确认弹窗（**非** `<dialog>` / `window.confirm`） | `ConfirmDialog::markup()` |
 | `Modal` | 通用弹窗（编辑表单等；同一套 `[data-modal]` 控制器） | `id` `title` `body` `actions` `wide` |
 | `Disclosure` | 折叠行（工具/思考/压缩） | `icon` `label` `detail` `sub` `meta` `badge` `body` |
@@ -263,6 +266,7 @@ ssr-h/
 | `sidebar.top` | 侧栏顶部（品牌区下方） |
 | `sidebar.bottom` | 侧栏底部（插件导航之后） |
 | `topbar.right` | 顶栏右侧操作区 |
+| `chat.corner` | 会话区**右上角**的悬浮点位（贴右上角浮在对话流之上；只在聊天页） |
 | `composer.left` | 输入框工具行左侧 |
 | `composer.right` | 输入框工具行右侧 |
 | `composer.footer` | 输入框下方辅助区 |
@@ -276,6 +280,10 @@ ssr-h/
 `composer.above` 的特别之处：它**浮在对话流之上**——用 `position: sticky; bottom: 10px` 吸在滚动容器底部，
 滚动到底时自然落到内容末尾，不会一直挡着正文；容器 `pointer-events: none`，只有插件自己的卡片可交互。
 适合放"当前任务状态""快捷统计"这类小卡片（`.ada-float` 外观已内置，插件可直接用）。
+
+`chat.corner` 是同一类点位的"上方版本"：绝对定位在会话区右上角（顶栏下方），
+给**常驻状态卡**（任务规划）用——它不该插进正文流，也不该占顶栏高度。
+两个点位都随 SSE `parts` / 2 秒 live 轮询刷新（`parts.corner` / `parts.above`）。
 
 ### 7.2 清单格式
 
@@ -291,8 +299,10 @@ ssr-h/
 ```
 
 - `slot`：必须是清单里的合法插槽名，**写错在加载阶段就报错**（而不是"挂上去却没生效"）；
-- `template`：相对插件根目录的 HTML 片段；
-- `order`：同一插槽内排序，小的在前。
+- `template`：相对插件根目录的 `.tsx`（页面/插槽/仪表盘都只接受 TSX）；
+- `order`：同一插槽内排序，小的在前；
+- `assets` / `styles` / `scripts`：静态资源目录（默认 `static/`）、要注入 `<head>` 的 CSS 与 JS
+  （相对 assets，只接受 `.css` / `.js`；CSS 会被包进 `@scope`，JS 以 `defer` 加载）。
 
 ### 7.3 生命周期
 
@@ -319,14 +329,14 @@ register → load → mount → render → unmount → destroy
 
 ### 7.5 悬浮点位示例
 
-`frontend-plugins/float-demo/` 是一个最小示例：在 `composer.above` 挂一张卡片，
-卡片里的数据由插件自带的 `static/float.js` 拉 `/api/plugins` 得到（服务端与客户端同一份事实），
-脚本全部包在 `try/catch` 里，读不到数据只降级文案，不影响主应用。
+`frontend-plugins/task-plan/` 是现成的例子：同一张任务卡片可以挂 `chat.corner`（会话区右上角，默认）
+或 `composer.above`（输入框上方），改清单里的一行即可切换；卡片数据由核心投影到
+`props.data.todo`，浏览器增强（展开偏好、复制）由 `scripts` 注入的 `static/task-plan.js` 承担。
 
 ### 7.6 SSR / 客户端一致性
 
 - 插件内容**在服务端渲染进 HTML**，首屏即可见，不依赖 JS；
-- 客户端增强由插件自带的 `static/*.js` 承担（沿用既有 assets 机制）；
+- 客户端增强由插件自带的 `static/*.js` 承担（在清单 `scripts` 里声明，服务端注入 `<head>`，`defer`）；
 - `components.js` 拉取 `/api/plugins`，把插槽贡献数写回 `data-contributors`，插件与调试面板据此工作；
 - 插件片段是**本地受信任内容**（同目录约定），渲染前做体积上限与路径越界校验。
 
@@ -344,9 +354,11 @@ register → load → mount → render → unmount → destroy
 
 ---
 
-## 10. 任务规划（todo 工具）面板
+## 10. 任务规划（todo 工具）卡片
 
-参考 desktop-ui 的 `TodoFloatingPanel`：任务清单**不插在正文流里**，而是悬浮在会话区右上角。
+任务清单**不插在正文流里**，也**不再由应用壳渲染**：它是 `frontend-plugins/task-plan/` 插件，
+默认挂 `chat.corner`（会话区右上角）；把清单里的 `slot` 改成 `composer.above` 就换到输入框上方。
+核心只负责**推演状态**并投影数据，卡片长什么样归插件。
 
 ### 10.1 计划状态推演（唯一真源）
 
@@ -363,18 +375,30 @@ register → load → mount → render → unmount → destroy
 > 那样面板会停在旧计划上（desktop-ui 实测 7/12，正文却写着 13/13）。
 > 这一点由 `src/ui/todo.rs` 里的 7 个单元测试锁住。
 
-### 10.2 界面
+推演结果由 `src/handlers/mod.rs::todo_view` 投影成 `props.data.todo`：
+
+```json
+{ "done": 4, "total": 4, "allDone": true, "active": "…", "notes": null,
+  "markdown": "### 任务规划步骤 (4/4)\n- [x] …",
+  "steps": [{ "id": "…", "title": "…", "status": "pending|in_progress|completed" }] }
+```
+
+没有规划过时是 `null`，插件据此不渲染卡片（不画 `0/0`）。
+
+### 10.2 界面（插件实现）
 
 | 状态 | 形态 |
 |---|---|
 | 收起（默认） | 一枚胶囊药丸：列表图标 + 「任务规划」+ `3/12` 进度 + 当前步骤标题 |
 | 展开 | 320px 卡片：头部（标题 + `3 / 12 已完成` + 复制 + 收起）+ 备注 + 步骤清单（最大 256px 内滚） |
 
-- 步骤状态：完成=绿勾 + 删除线；进行中=蓝箭头 + 脉冲 + 品牌浅底；待办=灰色空心圆。
-- 一键复制 Markdown 清单（`- [x] 标题` 形式）。
-- 展开/收起用 `<details>/<summary>` 实现：**没有 JS 也能开合**；JS 只负责把偏好记进
-  `localStorage`（与 desktop-ui 同键 `a_da_todo_panel_collapsed`）。
-- 工具行里展开 `todo` 工具时，同一份清单也会排版显示（原始 JSON 退居其次）。
+- 步骤状态：完成=绿勾 + 删除线；进行中=蓝箭头 + 脉冲 + 品牌浅底；待办=灰色空心圆；
+- 一键复制 Markdown 清单（`- [x] 标题` 形式；走组件库的 `[data-copy]` 委托）；
+- 展开/收起用 `<details>/<summary>`：**没有 JS 也能开合**；插件 JS 只负责把偏好记进
+  `localStorage`（与 desktop-ui 同键 `a_da_todo_panel_collapsed`），并在 `parts` 替换后重新套用；
+- 插件 CSS/JS 分别由清单的 `styles` / `scripts` 注入（CSS 包进 `@scope`，JS `defer`）；
+- 工具行里展开 `todo` 工具时，同一份清单也会排版显示（核心 `TodoList`，与插件共用
+  `.ada-todo__list*` 样式）。
 
 ## 8. 新增一个组件的做法
 

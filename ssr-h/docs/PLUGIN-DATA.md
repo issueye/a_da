@@ -1,0 +1,184 @@
+# 前端插件的注入数据（点位数据结构）
+
+> 适用版本：`ssr-h` v0.10+（`ModelPicker` / `data.usage` 扩展之后）。
+> 这份文档是**插件作者与宿主之间的数据契约**：字段名、类型、可用性与刷新时机。
+> 组件与插槽机制见 [TSX.md](TSX.md) / [COMPONENTS.md](COMPONENTS.md)。
+
+## 1. 一次渲染拿到什么
+
+服务端在**每个插槽 / 页面 / 仪表盘卡片**渲染时构造一份 `props`，TSX 是纯函数：
+
+```jsonc
+{
+  "plugin": { "id": "token-weather", "name": "Token 天气", "version": "0.1.0", "description": "…" },
+  "page":   { "slug": "weather", "title": "Token 天气" },        // 仅插件独立页面
+  "slot":   { "name": "composer.above", "order": 10, "index": 0 }, // 仅插槽
+  "app":    { "workspace": "E:/proj", "gateway": "http://127.0.0.1:52353", "product": "ssr-h · agent frontend", "version": "0.1.0" },
+  "route":  { "path": "chat", "query": "" },                      // 插件页面会被覆盖成 /ext/{id}/{slug}
+  "data":   { /* 见 §2 */ }
+}
+```
+
+- 每次渲染都重新构造：**模块级变量不要缓存 props**，下一次 `parts` 刷新就会换掉；
+- 拿不到数据时字段是 `null`，不是 `0` / `""`：`percent === null` 表示"算不出来"，
+  不是"0%"（`0%` 会被误读成上下文很空）；
+- 数据结构只做**加法**：新增字段会写在这里；已有字段语义不变。
+
+## 2. `data` 字段
+
+### 2.1 总览
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `plugin_count` | number | 当前注册的前端插件数 |
+| `render.at` | number | 本次渲染时刻（epoch ms），做"几秒前"用 |
+| `tokens` | object | 当前会话的用量（§2.2；没有快照时为"全 0 + available=false"） |
+| `thread` | object \| null | 当前会话摘要（§2.3） |
+| `model` | object | 当前模型与供应商（§2.4，**不含密钥**） |
+| `config` | object | 运行配置（§2.5） |
+| `workspace` | object | 工作区（§2.6） |
+| `counts` | object | 计数（§2.7） |
+| `todo` | object \| null | `todo` 工具的当前计划（§2.8） |
+
+### 2.2 `tokens`（上下文 / 缓存用量）
+
+| 字段 | 类型 | 来源 / 口径 |
+|---|---|---|
+| `available` | bool | 是否找到"最近一次带用量的助手回复" |
+| `used` | number | 最近一次 `usage.promptTokens`（当前上下文规模，不是累计消费） |
+| `window` | number | `config.contextWindow`（0 = 未配置） |
+| `percent` | number \| null | `used ÷ window`，四舍五入整数百分比；窗口为 0 时 `null` |
+| `cached` | number | `usage.cachedTokens`（见下方"来源"） |
+| `cachePercent` | number \| null | `cached ÷ 该次调用的 promptTokens`（整数，四舍五入） |
+| `cacheRate` | number \| null | 同上，但保留一位小数（`99.8`）；展示优先用它 |
+| `cacheStale` | bool | `true` = 本轮调用未报缓存，数字来自**更早一次**上报过缓存的调用 |
+| `completion` | number | `usage.completionTokens` |
+| `thinking` | number | `usage.thinkingTokens`（推理 token；没报就是 0） |
+| `total` | number | `usage.totalTokens`（缺失时用 `used + completion`） |
+| `tokensPerSec` | number \| null | `completion ÷ (durationMs/1000)`；耗时 < 200ms 或没有输出时为 `null` |
+| `durationMs` | number | 最近一次模型调用的耗时 |
+| `threadId` | string | 这条用量属于哪条会话 |
+| `threadTitle` | string | 与侧栏同口径的显示名（"新会话"用首条用户消息兜底） |
+| `model` | string | 当前模型 id（兼容字段；完整信息看 `data.model`） |
+
+> 这些数**全部来自模型自己报回的 usage**，服务端不做估算。插件不要把 `0` 当成
+> "没有数据"：看 `available` / `percent === null`。
+>
+> 缓存字段不是每次调用都有：`cached` / `cachePercent` 优先取本轮；本轮没报时
+> 回落到最近一次上报过 `cachedTokens` 的调用，并置 `cacheStale = true`。
+> 展示时请标注来源（例如在百分比后加 `*`，tooltip 写"来自上一次上报"），
+> 不要把它当成本轮命中率。
+
+### 2.3 `thread`
+
+```json
+{ "id": "thread_…", "title": "提交代码", "workspace": "E:/proj", "mode": "code",
+  "agentId": "ada-coding", "createdAt": 1761000000000,
+  "running": true, "waiting": false, "isSubagent": false }
+```
+
+没有活动会话时是 `null`。`mode` 为 `code` / `pm`；`running`/`waiting` 来自快照的
+`runningThreadIds` / `waitingThreadIds`。
+
+### 2.4 `model`
+
+```json
+{ "id": "senseaudio/deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash",
+  "providerId": "senseaudio", "providerName": "SenseAudio", "protocol": "openai_chat" }
+```
+
+- `name` 取供应商模型表里的显示名；找不到时回落成 `id`；
+- 🔴 **永远不包含 `apiKey` / 自定义请求头**：原始 `providers[]` 不进插件上下文。
+
+### 2.5 `config`
+
+```json
+{ "approval": "ask", "effort": "high", "mode": "code", "contextWindow": 1000000,
+  "maxOutputTokens": 64000, "supportsImages": true, "retryCount": 5 }
+```
+
+- `approval`: `auto` / `ask` / `readonly` / `full`
+- `effort`: `low` / `medium` / `high` / `max`（推理等级）
+- `maxOutputTokens` 可能是 `null`；`contextWindow` 为 0 表示未配置。
+
+### 2.6 `workspace`
+
+| 字段 | 含义 |
+|---|---|
+| `project` | agent 的当前项目（快照 `workspace.project`） |
+| `current` | 当前会话所属目录（会话没绑定时回落 `project`） |
+| `publicWorkspace` | 对外可见工作区（`~/.a-da/workspace` 一类的公共目录） |
+
+### 2.7 `counts`
+
+| 字段 | 含义 |
+|---|---|
+| `threads` | 快照里的会话总数 |
+| `running` / `waiting` | 运行中 / 等待批准的会话数（全工作区） |
+| `queue` | **当前会话**的排队消息数 |
+| `approvals` | 当前会话里 `waiting_approval` 的工具卡数 |
+
+### 2.8 `todo`
+
+```json
+{ "done": 2, "total": 3, "allDone": false, "active": "写条目",
+  "notes": "可选备注", "markdown": "### 任务规划步骤 (2/3)\n- [x] …",
+  "steps": [{ "id": "t1", "title": "读列表", "status": "completed" }] }
+```
+
+`status`：`pending` / `in_progress` / `completed`。没有规划过时为 `null`。
+状态推演（`set` 替换 / `update` 按 id 合并 / `get` 只读）只在核心做，插件不要重演。
+
+## 3. 点位与刷新时机
+
+| 插槽 | 出现在 | 内容刷新 |
+|---|---|---|
+| `sidebar.top` / `sidebar.bottom` | 所有页面（侧栏） | 整页加载 / 跳转 |
+| `topbar.right` | 聊天页与二级页顶栏 | 整页加载（聊天页另有状态药丸 OOB） |
+| `chat.corner` | **仅聊天页**，会话区右上角 | 首屏 + SSE `parts.corner` / 2s live 轮询 |
+| `composer.left` / `composer.right` | 聊天页输入框工具行 | 整页加载（`live` 会整块换输入框辅助区，但工具行不换） |
+| `composer.footer` | 聊天页输入框下方辅助区 | 首屏 + `parts.aux` / 2s live 轮询 |
+| `composer.above` | 聊天页右下角悬浮区 | 首屏 + `parts.above` / 2s live 轮询 |
+| `transcript.after` | 聊天页对话流末尾 | 首屏（整段同步时随对话流重渲染） |
+| `extensions.list` | `/extensions` | 整页加载 |
+| `dashboard.widgets` | `/overview` | 整页加载 / 5s 片段刷新（如插件自己声明） |
+
+`data` 的可用性取决于**渲染点有没有快照**：
+
+| 渲染点 | `data` |
+|---|---|
+| 聊天页首屏 | 完整（当前会话，显式 thread） |
+| 聊天 `parts` / `/live` | 完整（当前会话，显式 thread；items 是投影后的工具卡 + 助手 usage，够算 `tokens` / `todo` / `counts.approvals`） |
+| 插件独立页 `/ext/{id}/{slug}` | 完整（快照的 `activeThreadId`） |
+| 概览卡片 `dashboard.widgets` | 完整（快照的 `activeThreadId`） |
+| `/workspaces`（有快照） | 完整（快照的 `activeThreadId`） |
+| `/providers`、`/extensions`、错误页 | **只有 `plugin_count`**（`tokens = null` 语义：字段缺省，不要假设结构） |
+
+> 判断"有没有数据"用字段本身（`props.data.tokens ? … : …`），不要按路由猜。
+
+## 4. 写插件的几条硬规矩
+
+1. **只读**：`props` 是数据不是句柄；没有事件、没有 `fetch`、没有 `window`。
+   要交互就用表单/Htmx（`POST` 到自己的路由）或 `<details>` 渐进增强。
+2. **数字自己格式化**：核心给原始数值；展示层统一用 `formatTokens`
+   （≥1M → `1.2M`、≥1K → `18.7K`、其余整数）之类的一处实现，别每个卡片各写一份。
+3. **空值语义**：`null` = 算不出来；`0` = 真的是 0。别把 `null` 渲染成 `0%`。
+4. **密钥红线**：`data` 里没有 apiKey；插件也不要试图从别处读配置。
+5. **体积**：`data` 会随每次 `parts`（约 500ms）重新序列化；不要在模板里
+   `JSON.stringify(props)` 输出整份数据。
+6. **可降级**：任何字段缺失都要能渲染（老网关 / 断线时 `tokens` 会是 0 值）。
+
+## 5. 示例：天气插件怎么用
+
+```tsx
+const t = props.data.tokens;
+const cache = typeof t?.cachePercent === "number" ? t.cachePercent : null;
+const used = t ? t.used : 0;
+const windowSize = t ? t.window : 0;
+
+<p>缓存命中 {cache === null ? "—" : cache + "%"}</p>
+<p>{formatTokens(used)} / {formatTokens(windowSize)} tokens</p>
+```
+
+完整实现见 [`frontend-plugins/token-weather/`](../frontend-plugins/token-weather/)，
+数据投影的唯一出口在 `src/handlers/mod.rs::plugin_data`。

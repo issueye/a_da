@@ -204,6 +204,9 @@ fn app(state: AppState) -> Router {
         .route("/threads/{id}", get(handlers::chat_thread))
         .route("/threads/{id}/send", post(handlers::send_message))
         .route("/threads/{id}/abort", post(handlers::abort_thread))
+        // 模型选择器（DeepSeek 式弹层）：切换模型 / 推理等级后回到原会话。
+        .route("/model/select", post(handlers::select_model))
+        .route("/model/effort", post(handlers::select_effort))
         .route("/threads/{id}/retry", post(handlers::retry_thread))
         .route("/threads/{id}/queue/clear", post(handlers::clear_queue))
         .route(

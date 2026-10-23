@@ -3,7 +3,8 @@
 > 独立目录、独立 crate、独立端口；**不加入根 workspace**，不影响现有 Electron / desktop-ui / gateway。
 
 UED 设计基线、组件规范与 desktop-ui 对齐差距见 [docs/UED.md](docs/UED.md)。
-组件库与插件插槽体系的架构说明见 [docs/COMPONENTS.md](docs/COMPONENTS.md)。
+组件库与插件插槽体系的架构说明见 [docs/COMPONENTS.md](docs/COMPONENTS.md)；
+插槽/页面注入的数据契约（字段、类型、刷新时机）见 [docs/PLUGIN-DATA.md](docs/PLUGIN-DATA.md)。
 
 ## 目标
 
@@ -18,8 +19,15 @@ UED 设计基线、组件规范与 desktop-ui 对齐差距见 [docs/UED.md](docs
 - 助手正文用 `pulldown-cmark` 渲染 Markdown，再经 `ammonia` 白名单清洗后输出；工具/思考折叠展示。
 - 页面通过 **SSE**（`GET /threads/{id}/stream`）实时更新：服务端持有一条到网关的长连接，订阅增量帧 `evt.state.patch`，把**变过的 item** 渲染成 HTML 推给浏览器——助手正文按 item 原位替换（约 25FPS 合帧），新增/删除卡片才整段同步一次对话流；审批/排队托盘、任务规划、顶栏状态、输入框辅助区走 `parts` 事件（最小间隔 500ms）。断流时 `EventSource` 自动重连，期间由同一段脚本用 2 秒 `fetch` 轮询 `/threads/{id}/live` 兜底，重连后自动停掉。发送消息仍走服务端 WS RPC 后整页跳回。
 - 输入框：Enter 发送、Shift+Enter 换行、随内容自动增高；代码块悬停有复制按钮；思考/工具折叠按 item id 在增量同步后保持展开状态，并还原面板内部的滚动位置（否则展开的工具会自己滚回顶部）；只有接近底部时才自动跟随新内容。
+- **模型选择（参考 DeepSeek）**：输入框右下角的药丸显示「模型 + 推理等级（Auto/Low/Medium/High）」，
+  点开是向上弹出的面板：`模型` 按供应商分组的清单（点一条即切到该供应商 + 该模型）、`推理等级`
+  （写网关的 `config.setEffort`）、底部「管理供应商与模型」进 `/providers`。无 JS 也能开合与提交；
+  点外面 / Esc 关闭由 `chat.js` 增强；live 轮询只替换药丸标签 `#composer-model`，不会把菜单关掉。
 - 向上阅读时对话区底部出现「回到最新」胶囊：点一下回到底部并恢复自动跟随。它是核心 UI（不依赖插件插槽），水平居中，不会和右下角 `composer.above` 的插件悬浮卡抢位置。
-- 任务规划（`todo` 工具）悬浮在会话区右上角，默认收成胶囊药丸（进度 + 当前步骤），展开是步骤清单卡片；计划按 `set`/`update`/`get` 的动作推演，不是倒序取最后一张卡片。
+- 任务规划（`todo` 工具）由 **`frontend-plugins/task-plan/` 插件**渲染：默认挂在会话区右上角（`chat.corner`），
+  收成胶囊药丸（进度 + 当前步骤）/ 展开是步骤清单卡片；改 `plugin.json` 的 `slot` 可换到输入框上方
+  （`composer.above`）。计划仍按 `set`/`update`/`get` 的动作在核心推演（不是倒序取最后一张卡片），
+  插件只消费 `props.data.todo` 的投影。
 - 对话流：工具与思考采用 desktop-ui 的单行日志式——单行显示图标、中文标签、目标对象与真实耗时，展开后是左侧导轨线里的参数/输出面板；工具输出按 Markdown 渲染（JSON 走等宽原文）。
 - 侧栏支持按标题搜索会话**和工作区名**（工作区名命中时整组展开）；插件 / 供应商 / 概览 / 插件页也共用同一套侧栏外壳，不再切回旧布局。
 - 图标统一为 14–16px 线性 SVG（替代早期字符符号）；工具/思考用单行日志式展示；输入框为桌面端形态（大圆角输入卡 + 底部工具行：工作区/审批档位/模型 + 近黑圆形发送键）；窄窗口（≤760px）侧栏收为抽屉，顶栏出汉堡按钮；**宽屏下同一个按钮是"收起/展开侧栏"**（状态存 `localStorage`，跨刷新保持）；中止等危险操作用共享确认对话框（原生 `<dialog>`）。
@@ -168,6 +176,7 @@ ssr-h/frontend-plugins/hello-tsx/
   components/card.tsx     # 相对 import 的组件（可选）
   static/                 # 插件静态资源（可选）
   static/hello.css        # 插件自定义样式（由 manifest styles 注入）
+  static/hello.js         # 插件自定义脚本（由 manifest scripts 注入，defer）
 ```
 
 `plugin.json`：
@@ -200,8 +209,15 @@ ssr-h/frontend-plugins/hello-tsx/
   （`display: contents`，不改变布局）；浏览器不支持 `@scope` 时整段样式被忽略（安全降级）。
   请用插件内容 class 选择器，不要依赖 `:root`/`body`；`@import`/`@charset` 放在作用域内无效，
   `@keyframes` 名称仍建议加插件前缀。
-- **插槽（slots）**：把 TSX 挂到界面的固定位置（`composer.left` / `composer.right` / `composer.footer` / `composer.above` / `sidebar.top` / `sidebar.bottom` / `topbar.right` / `transcript.after` / `extensions.list` / `dashboard.widgets`）。插槽内容在服务端渲染进 HTML；插件加载失败只影响它自己，界面退回默认实现。
-- `composer.above` 的插件（如 Token 天气）随 SSE `parts` 刷新：投影里带**当前会话**的助手 `usage`（不是快照的 `activeThreadId`），轮次收尾后会延迟补拉一次条目，所以不会停在「晴天 0%」。点击天气胶囊展开**浮层**（分档/百分比/已用/窗口/会话/模型），不跳页；完整页面仍保留入口。浮层是插件自己的 `<details class="ada-popover">`，`chat.js` 在 `parts` 替换后按 `id` 还原展开状态，并支持点外部/Esc 关闭。
+- **自定义 JS**：`scripts` 字段与 `styles` 同口径（相对 assets 目录、只接受 `.js`），服务端把
+  `<script src="/ext/{id}/assets/...?v=指纹" defer>` 注入所有页面 `<head>`。SSR 出来的插槽
+  （`<details>` 开合、复制、偏好记忆）需要浏览器行为时用它；HTML 白名单**不开放 `<script>` 标签**。
+- **插槽（slots）**：把 TSX 挂到界面的固定位置（`chat.corner` / `composer.left` / `composer.right` / `composer.footer` / `composer.above` / `sidebar.top` / `sidebar.bottom` / `topbar.right` / `transcript.after` / `extensions.list` / `dashboard.widgets`）。插槽内容在服务端渲染进 HTML；插件加载失败只影响它自己，界面退回默认实现。
+  `chat.corner` 是会话区**右上角**的悬浮点位（`.ada-corner-dock`，只在聊天页存在）。
+- `composer.above` 的插件（如 Token 天气）随 SSE `parts` 刷新：投影里带**当前会话**的助手 `usage`（不是快照的 `activeThreadId`），轮次收尾后会延迟补拉一次条目，所以不会停在「晴天 0%」。点击天气胶囊展开**浮层**（分档/百分比/已用/窗口/**缓存命中**/输出/会话/模型），不跳页；完整页面仍保留入口。token 数按 `M`/`K` 缩写、精确值在 `title` 里；缓存字段缺失时显示 `—` 而不是 `0%`。浮层是插件自己的 `<details class="ada-popover">`，`chat.js` 在 `parts` 替换后按 `id` 还原展开状态，并支持点外部/Esc 关闭。
+- `chat.corner` 的插件（如任务卡片）随 `parts` 的 `corner` 字段刷新：`props.data.todo` 是核心推演好的当前计划
+  （`done` / `total` / `active` / `notes` / `markdown` / `steps[].status`），没有计划时是 `null`。
+  同一张卡片改挂 `composer.above` 也可用（见 `frontend-plugins/task-plan/README.md`），但不要两个都声明。
 - 可在扩展页逐个**停用/启用**插件（`POST /extensions/{id}/disable|enable`），停用后贡献立即消失、界面回到默认实现；`GET /api/plugins` 暴露插件与插槽状态。
 - 插件只接受 `.tsx` 模板；插件代码是**本地受信任内容**，不要在不受信任的目录里放插件。
 
@@ -258,7 +274,9 @@ export function Page(props: any) {
   含内置组件库的模块页约 3.4ms（组件库每次 Context 都要初始化，后续可做池化/预编译）；
 - **示例插件**：`frontend-plugins/hello-tsx/`（最小页面 / 仪表盘 / 插槽）、
   `frontend-plugins/token-weather/`（按上下文用量显示天气：完整页面 + 输入框上方胶囊/浮层 +
-  概览卡片，演示相对 import、`details` 浮层与 SSE `parts` 刷新；说明见插件目录内的 README）；
+  概览卡片，演示相对 import、`details` 浮层与 SSE `parts` 刷新；说明见插件目录内的 README）、
+  `frontend-plugins/task-plan/`（任务规划卡片：`chat.corner` 右上角 / `composer.above` 两处可挂，
+  演示 `props.data.todo` 数据契约、插件 CSS 与 `scripts` 注入的浏览器增强）；
   完整 TSX 说明见 [docs/TSX.md](docs/TSX.md)。
 - **调试用 `console.log`**：TSX 在服务端跑，输出进 **ssr-h 进程日志**（`INFO ssr_h::plugin:
   [插件id/页面] …`），浏览器 DevTools 里看不到；Boa 本身没有 `console`，这是内置的
@@ -277,12 +295,12 @@ export function Page(props: any) {
 ## 当前实现边界
 
 - 这是 SSR/HTMX 原型，不是现有 desktop-ui 的替代：聊天发送通过服务端 WS RPC，页面正文由 SSE 增量更新（断流时退回 2 秒轮询），动作完成后整体跳转；
-- 已实现：只读概览、会话列表/详情、发送、中止、重试、审批、排队（提升/删除/清空）、任务规划、
+- 已实现：只读概览、会话列表/详情、发送、中止、重试、审批、排队（提升/删除/清空）、任务规划（task-plan 插件）、
   **供应商管理**（新建 / 编辑连接 / 删除 / 设为当前 / 测试连接 / 获取远程模型 / 模型增删改，对齐 desktop-ui）、
   插件重载与启停、**TSX 服务端插件**（`.tsx` 页面/插槽/仪表盘，OXC + Boa + 内置 TSX 组件库）；
 - 核心页面壳仍是 Askama 编译期模板；TSX 只覆盖插件扩展面，不替代整页布局与数据获取；
 - 侧栏会话列表仍是页面加载时的快照（顶栏运行状态由 live 更新）；新会话/其它客户端的变更需要刷新；
-- 图片会显示"含 N 张图片"标记但**不渲染图片内容**；模式/审批档位/模型仍只读；
+- 图片会显示"含 N 张图片"标记但**不渲染图片内容**；模式/审批档位仍只读（模型与推理等级可在输入框的模型菜单里切换）；
 - TSX 的相对 import 由 OXC + Boa 原生加载，不需要 Bun/Node；npm 依赖仍不支持，
   且没有 wall-clock 超时（只有循环/递归/输出预算）；
 - 不做登录鉴权；非回环监听必须显式 `--allow-remote` + `--ui-token`，且只提供明文 HTTP。

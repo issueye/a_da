@@ -82,16 +82,18 @@
       <p class="mt-1 text-xs leading-5 text-faint">可以直接“使用此目录”，或在上面新建一个文件夹。</p>
     </div>
     {% else %}
-    <ul class="ada-picker__list">
-      {% for entry in entries %}
-      <li>
-        <a class="ada-picker__entry" href="{{ entry.href }}" title="{{ entry.path }}">
-          <svg class="ada-icon" width="14" height="14" aria-hidden="true"><use href="#i-folder"></use></svg>
-          <span>{{ entry.name }}</span>
-        </a>
-      </li>
-      {% endfor %}
-    </ul>
+    <div class="ada-picker__body">
+      <ul class="ada-picker__list">
+        {% for entry in entries %}
+        <li>
+          <a class="ada-picker__entry" href="{{ entry.href }}" title="{{ entry.path }}">
+            <svg class="ada-icon" width="14" height="14" aria-hidden="true"><use href="#i-folder"></use></svg>
+            <span>{{ entry.name }}</span>
+          </a>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
     {% endif %}
   </section>
 </div>

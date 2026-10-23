@@ -16,6 +16,7 @@ pub(super) use rows::thread_rows;
 use axum::extract::{Form, Path, Query, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
+use serde::Deserialize;
 use serde_json::Value;
 
 use super::*;
@@ -27,7 +28,6 @@ use crate::ui::{
 };
 struct ComposerArgs<'a> {
     thread_id: &'a str,
-    model: &'a str,
     approval: &'a str,
     approval_tone: &'a str,
     workspace_label: &'a str,
@@ -94,7 +94,7 @@ fn plus_menu(thread_id: &str) -> String {
     )
 }
 
-fn composer_html(slots: &SlotContent, args: &ComposerArgs<'_>) -> String {
+fn composer_html(slots: &SlotContent, args: &ComposerArgs<'_>, model_picker: &str) -> String {
     // 左组：更多操作、工作区、审批档位。
     let mut left = String::new();
     left.push_str(&plus_menu(args.thread_id));
@@ -115,12 +115,9 @@ fn composer_html(slots: &SlotContent, args: &ComposerArgs<'_>) -> String {
     ));
     left.push_str(&slots.composer_left);
 
-    // 右组：模型（能跳到供应商页）+ 发送。
+    // 右组：模型选择（DeepSeek 式弹层）+ 发送。
     let mut right = String::new();
-    right.push_str(&format!(
-        r#"<span id="composer-model">{}</span>"#,
-        model_chip_html(args.model)
-    ));
+    right.push_str(model_picker);
     right.push_str(&slots.composer_right);
     right.push_str(&SendButton::new("发送").title("发送（Enter）").render());
 
@@ -251,14 +248,11 @@ fn approval_chip_html(label: &str, tone: &str) -> String {
     )
 }
 
-fn model_chip_html(model: &str) -> String {
-    // 模型能真的换：链到供应商页，所以这里**该有**箭头。
-    format!(
-        r#"<a class="ada-tool ada-tool--model" href="/providers" title="当前模型：{label}（在供应商页更换）">{glyph}<span class="ada-tool__label">{label}</span>{caret}</a>"#,
-        label = escape(model),
-        glyph = ui::icon("i-sparkles", 14),
-        caret = ui::icon("i-chevron-down", 12),
-    )
+/// 药丸内部的标签：模型名 + 推理等级（外层是模型选择器的 `<summary>`）。
+///
+/// live 轮询只替换 `#composer-model` 的内容，菜单本身（`<details>`）不会被关掉。
+fn model_chip_html(model: &str, effort: &str) -> String {
+    ui::model_chip_inner(model, effort)
 }
 
 /// 顶栏右侧的刷新 / 停止（插件插槽在模板里单独保留）。
@@ -293,7 +287,8 @@ fn action_failed(thread_id: &str, prefix: &str, error: anyhow::Error) -> Respons
 
 struct LiveParts {
     trays: String,
-    todo: String,
+    /// 会话区右上角的插件插槽（任务规划卡片就在这一格）。
+    corner: String,
     topbar_status: String,
     topbar_actions: String,
     aux: String,
@@ -324,6 +319,7 @@ async fn live_parts(
     let approval = approval_label(&mode);
     let tone = approval_tone(&mode);
     let model = model_of(snapshot, &Value::Null);
+    let effort = effort_of(snapshot, &Value::Null);
     let workspace = str_at(thread, "workspace");
     let (workspace_label, workspace_path) = if workspace.is_empty() {
         (
@@ -333,10 +329,10 @@ async fn live_parts(
     } else {
         (workspace_label(workspace), workspace)
     };
-    // 这里只换辅助区与输入框上方，不必把十个插槽都渲染一遍。
+    // 这里只换辅助区、输入框上方与会话区右上角，不必把十一个插槽都渲染一遍。
     // 🔴 必须带真实上下文：早先用 `render_slot()`（默认 `RenderContext`），
     // 于是首屏渲染正常、2 秒后第一次轮询就把 `props.app.*` / `props.data.*` 刷成空。
-    // 两个插槽共用同一份（带 `data.tokens`）的上下文，首屏与轮询看到的数据才一致。
+    // 三个插槽共用同一份（带 `data.tokens` / `data.todo`）的上下文，首屏与轮询看到的数据才一致。
     let chat_context = super::render_context_with_tokens(state, "chat", snapshot, Some(thread_id));
     let footer = crate::plugins::render_slot_off_thread(
         std::sync::Arc::clone(&state.frontend),
@@ -347,6 +343,13 @@ async fn live_parts(
     let above = crate::plugins::render_slot_off_thread(
         std::sync::Arc::clone(&state.frontend),
         Slot::ComposerAbove,
+        chat_context.clone(),
+    )
+    .await;
+    // 任务规划这类常驻卡片：插件挂在会话区右上角，数据与轮询同源。
+    let corner = crate::plugins::render_slot_off_thread(
+        std::sync::Arc::clone(&state.frontend),
+        Slot::ChatCorner,
         chat_context,
     )
     .await;
@@ -356,7 +359,6 @@ async fn live_parts(
     };
     let args = ComposerArgs {
         thread_id,
-        model: &model,
         approval: &approval,
         approval_tone: &tone,
         workspace_label: &workspace_label,
@@ -369,13 +371,13 @@ async fn live_parts(
     };
     LiveParts {
         trays,
-        todo: todo_html(raw_items),
+        corner: corner.html,
         topbar_status: topbar_status_html(running, true),
         topbar_actions: topbar_actions_html(thread_id, running),
         aux: composer_aux_html(&slots, &args),
         composer_above: above.html,
         approval_chip: approval_chip_html(&approval, &tone),
-        model_chip: model_chip_html(&model),
+        model_chip: model_chip_html(&model, &effort),
     }
 }
 
@@ -395,7 +397,7 @@ async fn load_chat(
                 message: format!("无法连接 agent 网关：{}", public_reason(&error)),
             });
             return Ok(ChatPage {
-                base: base(state, "未连接", "chat", Some(flash)).await,
+                base: offline_base(state, Some(flash)).await,
                 threads: Vec::new(),
                 workspaces: Vec::new(),
                 current_workspace: String::new(),
@@ -405,7 +407,6 @@ async fn load_chat(
                 transcript_empty: ui::render_empty_thread(),
                 trays_html: String::new(),
                 composer_html: String::new(),
-                todo_html: String::new(),
                 topbar_status: topbar_status_html(false, false),
                 topbar_actions: String::new(),
                 connected: false,
@@ -468,6 +469,7 @@ async fn load_chat(
 
     let config = state.agent.config().await.unwrap_or(Value::Null);
     let model = model_of(&snapshot, &config);
+    let effort = effort_of(&snapshot, &config);
     let mode = approval_mode(&snapshot, &config);
     let approval = approval_label(&mode);
     let approval_tone = approval_tone(&mode);
@@ -486,18 +488,69 @@ async fn load_chat(
         .filter(|path| !path.is_empty())
         .unwrap_or_else(|| state.agent.workspace.clone());
     let is_running = running.contains(&active_thread_id);
-    let context = super::render_context(state, "chat");
-    let slots = slot_content(&state.frontend, context).await;
 
+    let mut base = base_with_snapshot(
+        state,
+        &title,
+        "chat",
+        flash_from_query(query),
+        Some(&snapshot),
+        // 插槽属于"正在渲染的这条会话"：深链接聚焦失败时也不能拿错计划/用量。
+        Some(active_thread_id.as_str()),
+    )
+    .await;
+    // 直接打开某条会话时，`base` 里的 active_workspace 是 agent 的当前项目；
+    // 侧栏与"新会话"应以**当前会话**的工作区为准，这里覆盖一次。
+    if !active_workspace.is_empty() {
+        base.active_workspace = active_workspace.clone();
+        base.active_workspace_name = workspace_name(&active_workspace);
+    }
+    // 侧栏整块重渲一次：base 里只有公共字段，工作区树与"当前会话"是本页才知道的。
+    base.sidebar = ui::sidebar::Sidebar::from_base(&base)
+        .with_tree(workspaces.clone(), active_thread_id.clone(), active_workspace.clone())
+        .connected(Some(true))
+        .render();
+
+    // 模型选择器：按供应商分组的模型清单 + 推理等级（数据来自 `/api/providers`）。
+    // 只有真要渲染输入框时才多打这一枪；切换动作本身走 `/model/select|effort` 表单。
+    let model_picker = if active_thread_id.is_empty() {
+        String::new()
+    } else {
+        let providers = state.agent.providers().await.unwrap_or(Value::Null);
+        let active_provider_id = {
+            let from_providers = str_at(&providers, "activeProviderId");
+            if from_providers.is_empty() {
+                config
+                    .get("saved")
+                    .and_then(|saved| saved.get("activeProviderId"))
+                    .and_then(Value::as_str)
+                    .or_else(|| config.get("activeProviderId").and_then(Value::as_str))
+                    .unwrap_or("")
+            } else {
+                from_providers
+            }
+        };
+        ui::ModelPicker::from_providers(
+            &providers,
+            active_provider_id,
+            &model,
+            &effort,
+            &active_thread_id,
+        )
+        .render()
+    };
+
+    // 输入框的插槽直接复用 `base.slots`（同一份带 `data.tokens` / `data.todo` 的上下文）。
+    // 早先这里另用 `render_context()` 渲染一遍：composer.above 的用量/计划会突然空掉，
+    // 而且十一个插槽的 TSX 要跑两次——同一份事实不该有两个入口。
     // 没有活动会话时不给输入框：提交到 `/threads//send` 只会得到一个错误。
     let composer_html = if active_thread_id.is_empty() {
         String::new()
     } else {
         composer_html(
-            &slots,
+            &base.slots,
             &ComposerArgs {
                 thread_id: &active_thread_id,
-                model: &model,
                 approval: &approval,
                 approval_tone: &approval_tone,
                 workspace_label: &workspace_label,
@@ -508,23 +561,9 @@ async fn load_chat(
                 approval_count,
                 stats: active_value.map(|value| turn_stats(&snapshot, value)).unwrap_or_default(),
             },
+            &model_picker,
         )
     };
-
-    let mut base = base_with_snapshot(
-        state,
-        &title,
-        "chat",
-        flash_from_query(query),
-        Some(&snapshot),
-    )
-    .await;
-    // 直接打开某条会话时，`base` 里的 active_workspace 是 agent 的当前项目；
-    // 侧栏与"新会话"应以**当前会话**的工作区为准，这里覆盖一次。
-    if !active_workspace.is_empty() {
-        base.active_workspace = active_workspace.clone();
-        base.active_workspace_name = workspace_name(&active_workspace);
-    }
 
     Ok(ChatPage {
         base,
@@ -537,11 +576,19 @@ async fn load_chat(
         transcript_empty: ui::render_empty_thread(),
         trays_html: trays,
         composer_html,
-        todo_html: todo_html(raw_items),
         topbar_status: topbar_status_html(is_running, true),
         topbar_actions: topbar_actions_html(&active_thread_id, is_running),
         connected: true,
     })
+}
+
+/// 离线壳：侧栏照常渲染（没有会话树），但连接状态要如实显示"未连接"。
+async fn offline_base(state: &AppState, flash: Option<Flash>) -> PageBase {
+    let mut base = base(state, "未连接", "chat", flash).await;
+    base.sidebar = ui::sidebar::Sidebar::from_base(&base)
+        .connected(Some(false))
+        .render();
+    base
 }
 
 /// `hx-swap-oob` 片段：把这块 HTML 写进页面里同 id 的元素。
@@ -567,17 +614,25 @@ fn no_store_html(html: String) -> Response {
 /// 网关断开时的 live 响应：只更新“未连接”状态，**不碰**对话流内容。
 async fn live_offline(state: &AppState, thread_id: &str) -> Response {
     let label = workspace_label(&state.agent.workspace);
+    // 断开时没有快照，用量与任务计划都无从谈起：插件会显示"无数据"/不渲染卡片，
+    // 而不是停在旧数字上骗人。
+    let context = super::render_context(state, "chat");
     let footer = crate::plugins::render_slot_off_thread(
         std::sync::Arc::clone(&state.frontend),
         Slot::ComposerFooter,
-        super::render_context(state, "chat"),
+        context.clone(),
     )
     .await;
-    // 断开时没有快照，用量无从谈起：插件会显示"无数据"，而不是停在旧数字上骗人。
     let above = crate::plugins::render_slot_off_thread(
         std::sync::Arc::clone(&state.frontend),
         Slot::ComposerAbove,
-        super::render_context(state, "chat"),
+        context.clone(),
+    )
+    .await;
+    let corner = crate::plugins::render_slot_off_thread(
+        std::sync::Arc::clone(&state.frontend),
+        Slot::ChatCorner,
+        context,
     )
     .await;
     let slots = SlotContent {
@@ -586,7 +641,6 @@ async fn live_offline(state: &AppState, thread_id: &str) -> Response {
     };
     let args = ComposerArgs {
         thread_id,
-        model: "未连接",
         approval: "未连接",
         approval_tone: "neutral",
         workspace_label: &label,
@@ -603,13 +657,14 @@ async fn live_offline(state: &AppState, thread_id: &str) -> Response {
             &topbar_status_html(false, false),
         ),
         oob("topbar-actions", &topbar_actions_html(thread_id, false)),
+        oob("chat-corner", &corner.html),
         oob("composer-above", &above.html),
         oob("composer-aux", &composer_aux_html(&slots, &args)),
         oob(
             "composer-approval",
             &approval_chip_html("未连接", "neutral"),
         ),
-        oob("composer-model", &model_chip_html("未连接")),
+        oob("composer-model", &model_chip_html("未连接", "")),
     ]
     .concat();
     no_store_html(body)
@@ -648,7 +703,7 @@ pub async fn live(State(state): State<AppState>, Path(thread_id): Path<String>) 
     let body = [
         oob("transcript", &transcript_html(items)),
         oob("ada-trays", &parts.trays),
-        oob("ada-todo-dock", &parts.todo),
+        oob("chat-corner", &parts.corner),
         oob("topbar-status", &parts.topbar_status),
         oob("topbar-actions", &parts.topbar_actions),
         // 输入框上方的插件悬浮区：用量会随对话变化，跟其他区域一起每 2 秒刷新。
@@ -751,6 +806,90 @@ pub async fn create_thread(
         )));
     };
     Ok(redirect(&format!("/threads/{id}")))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ModelSelectForm {
+    provider: String,
+    model: String,
+    thread: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EffortSelectForm {
+    effort: String,
+    thread: Option<String>,
+}
+
+/// 表单里的 `thread` 只用于"切完回哪一页"：只接受合法会话 id，防止把跳转拼成任意路径。
+fn safe_thread(thread: Option<&str>) -> Option<&str> {
+    thread
+        .map(str::trim)
+        .filter(|id| {
+            !id.is_empty()
+                && id
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+        })
+}
+
+fn back_to_thread(thread: Option<&str>, notice: &str) -> Response {
+    match safe_thread(thread) {
+        Some(id) => redirect(&format!("/threads/{id}?notice={notice}")),
+        None => redirect(&format!("/?notice={notice}")),
+    }
+}
+
+fn failed_before_redirect(thread: Option<&str>, prefix: &str, error: anyhow::Error) -> Response {
+    match safe_thread(thread) {
+        Some(id) => action_failed(id, prefix, error),
+        None => {
+            tracing::warn!("{prefix}: {error:#}");
+            redirect(&format!(
+                "/?error={}",
+                encode_query(&format!("{prefix}：{}", public_reason(&error)))
+            ))
+        }
+    }
+}
+
+/// 切换模型：`provider.setActive`（供应商 + 模型一起切，与供应商页的"使用"同一动作）。
+pub async fn select_model(
+    State(state): State<AppState>,
+    Form(form): Form<ModelSelectForm>,
+) -> Result<Response, AppError> {
+    let provider = form.provider.trim();
+    let model = form.model.trim();
+    if provider.is_empty() || model.is_empty() {
+        return Err(AppError::bad("切换模型缺少 provider / model"));
+    }
+    match state.agent.set_active_provider(provider, Some(model)).await {
+        Ok(_) => Ok(back_to_thread(form.thread.as_deref(), "model_selected")),
+        Err(error) => Ok(failed_before_redirect(
+            form.thread.as_deref(),
+            "切换模型失败",
+            error,
+        )),
+    }
+}
+
+/// 推理等级：`config.setEffort`（与 desktop-ui 设置项同源，网关落盘并广播快照）。
+pub async fn select_effort(
+    State(state): State<AppState>,
+    Form(form): Form<EffortSelectForm>,
+) -> Result<Response, AppError> {
+    let effort = form.effort.trim().to_ascii_lowercase();
+    if !matches!(effort.as_str(), "low" | "medium" | "high" | "max") {
+        return Err(AppError::bad(format!("未知的推理等级: {effort}")));
+    }
+    match state.agent.set_effort(&effort).await {
+        Ok(_) => Ok(back_to_thread(form.thread.as_deref(), "effort_selected")),
+        Err(error) => Ok(failed_before_redirect(
+            form.thread.as_deref(),
+            "更新推理等级失败",
+            error,
+        )),
+    }
 }
 
 pub async fn send_message(

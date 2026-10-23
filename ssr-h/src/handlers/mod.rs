@@ -140,6 +140,8 @@ fn flash_from_query(query: &PageQuery) -> Option<Flash> {
         "approved" => "已提交批准结果".to_string(),
         "rejected" => "已提交拒绝结果".to_string(),
         "retried" => "已请求重试上一轮".to_string(),
+        "model_selected" => "已切换模型".to_string(),
+        "effort_selected" => "已更新推理等级".to_string(),
         "queue_promoted" => "已把排队消息提升到队首".to_string(),
         "queue_removed" => "已删除排队消息".to_string(),
         "queue_cleared" => "已清空当前会话的排队消息".to_string(),
@@ -165,22 +167,26 @@ fn flash_from_query(query: &PageQuery) -> Option<Flash> {
 }
 
 async fn base(state: &AppState, title: &str, active: &str, flash: Option<Flash>) -> PageBase {
-    base_with_snapshot(state, title, active, flash, None).await
+    base_with_snapshot(state, title, active, flash, None, None).await
 }
 
 /// 页面外壳 + 快照。
 ///
-/// 有快照的页面（聊天页）把 `data.tokens` 一起给插槽，插件才能在输入框上方显示
-/// 实时用量；没有快照的页面（供应商/扩展）维持原样，插件读到 `tokens = null`。
+/// 有快照的页面（聊天页）把 `data.tokens` / `data.todo` 一起给插槽，插件才能显示
+/// 实时用量与任务计划；没有快照的页面（供应商/扩展）维持原样，插件读到 `null`。
+///
+/// `thread_id` 是"这些插槽属于哪条会话"：聊天页传正在渲染的那条（深链接时即使
+/// `thread.focus` 没生效，卡片也不会拿错会话的计划）；其它页面传 `None`。
 async fn base_with_snapshot(
     state: &AppState,
     title: &str,
     active: &str,
     flash: Option<Flash>,
     snapshot: Option<&Value>,
+    thread_id: Option<&str>,
 ) -> PageBase {
     let context = match snapshot {
-        Some(snapshot) => render_context_with_tokens(state, active, snapshot, None),
+        Some(snapshot) => render_context_with_tokens(state, active, snapshot, thread_id),
         None => render_context(state, active),
     };
     let slots = slot_content(&state.frontend, context).await;
@@ -194,7 +200,7 @@ async fn base_with_snapshot(
         .filter(|workspace| !workspace.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| state.agent.workspace.clone());
-    PageBase {
+    let mut base = PageBase {
         title: title.to_string(),
         active: active.to_string(),
         active_workspace_name: workspace_name(&active_workspace),
@@ -203,12 +209,18 @@ async fn base_with_snapshot(
         product: "ssr-h · agent frontend".to_string(),
         plugin_nav: state.frontend.nav_links(),
         plugin_styles: state.frontend.styles(),
+        plugin_scripts: state.frontend.scripts(),
         flash,
         slots,
         icons: ui::sprite(),
+        sidebar: String::new(),
         // 每个页面外壳都带一份确认弹窗（组件库渲染），二级页不再退回原生 confirm。
         confirm_dialog: ConfirmDialog::markup(),
-    }
+    };
+    // 侧栏由组件库渲染（模板只摆位置）。二级页没有会话树，先给一份不含列表的；
+    // 聊天页拿到工作区树后再覆盖一次。
+    base.sidebar = ui::sidebar::Sidebar::from_base(&base).render();
+    base
 }
 
 /// 插件片段/页面的只读上下文：不把 `AppState` 整个暴露给模板。
@@ -227,22 +239,58 @@ fn render_context(state: &AppState, active: &str) -> RenderContext {
 
 /// 带上下文用量的渲染上下文。
 ///
-/// 只有拿得到 `snapshot` 的页面（插件页、概览卡片）才有 `data.tokens`；
-/// 拿不到时插件就这么写 `props.data.tokens` 为 `null`，页面照常渲染。
+/// 只有拿得到 `snapshot` 的页面（插件页、概览卡片）才有完整的 `data`；
+/// 拿不到时插件读到 `tokens = null` / `thread = null`，页面照常渲染。
 ///
 /// `thread_id` 是"这个插槽属于哪条会话"：聊天页传当前会话，二级页传 `None`
 /// （沿用快照的 `activeThreadId`）。不传会出现"界面在看 A，天气插件按快照的
 /// activeThreadId（可能是 B）算用量"——实测显示成 0%。
+///
+/// 数据结构见 [docs/PLUGIN-DATA.md](../../docs/PLUGIN-DATA.md)。
 fn render_context_with_tokens(
     state: &AppState,
     active: &str,
     snapshot: &Value,
     thread_id: Option<&str>,
 ) -> RenderContext {
-    render_context(state, active).with_data(serde_json::json!({
-        "plugin_count": state.frontend.count(),
+    render_context(state, active)
+        .with_data(plugin_data(snapshot, thread_id, state.frontend.count()))
+}
+
+/// 插件可见的数据投影（唯一出口）。
+///
+/// 只给**事实**：数量、状态、来自模型自己报回的 usage；不给 apiKey、不给原始
+/// `providers[]`（里面带密钥）。新增字段要同步 `docs/PLUGIN-DATA.md`。
+fn plugin_data(snapshot: &Value, thread_id: Option<&str>, plugin_count: usize) -> Value {
+    let thread = thread_view(snapshot, thread_id);
+    serde_json::json!({
+        "plugin_count": plugin_count,
+        // 渲染时刻（epoch ms）：插件做"几秒前"之类的相对时间时用它，别信浏览器时钟。
+        "render": { "at": now_ms() },
         "tokens": token_usage_view(snapshot, thread_id),
-    }))
+        "thread": thread_summary(thread, snapshot),
+        "model": model_view(snapshot),
+        "config": config_view(snapshot),
+        "workspace": workspace_view(snapshot, thread),
+        "counts": counts_view(snapshot, thread),
+        // 任务规划（`todo` 工具）的当前计划：卡片由 `task-plan` 插件渲染，
+        // 计划状态的推演仍留在核心（set/update/get 的语义只有一处）。
+        "todo": todo_view(snapshot, thread_id),
+    })
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn percent_of(part: u64, whole: u64) -> Option<u64> {
+    (whole > 0).then(|| {
+        let scaled = part.saturating_mul(100).saturating_add(whole / 2);
+        (scaled / whole).min(100)
+    })
 }
 
 /// 当前会话的**上下文用量**（给插件用）。
@@ -251,24 +299,48 @@ fn render_context_with_tokens(
 /// 除以 `config.contextWindow`——是"这一轮实际塞进窗口的输入规模"，不是累计消费，
 /// 也不是按字符估算。窗口未配置（0）时 `percent` 为 `null`，由插件自己决定怎么显示。
 fn token_usage_view(snapshot: &Value, thread_id: Option<&str>) -> Value {
-    let threads = array_at(snapshot, "threads");
-    let wanted = thread_id
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| str_at(snapshot, "activeThreadId").to_string());
-    let thread = threads
-        .iter()
-        .find(|thread| !wanted.is_empty() && str_at(thread, "id") == wanted)
-        .or_else(|| threads.first());
-    let used = thread.map(last_prompt_tokens).unwrap_or(0);
+    let thread = thread_view(snapshot, thread_id);
+    let latest = thread.and_then(last_usage);
+    let usage = latest.map(|(usage, _)| usage).cloned().unwrap_or(Value::Null);
+    let duration = latest.map(|(_, duration)| duration).unwrap_or(0);
+    let number = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let used = number("promptTokens");
+    let completion = number("completionTokens");
+    let thinking = number("thinkingTokens");
+    let total = {
+        let raw = number("totalTokens");
+        if raw > 0 { raw } else { used.saturating_add(completion) }
+    };
+    // 缓存命中率：优先最近一次调用；模型不是每次都报 `cachedTokens`，缺失时回落到
+    // 最近一次**上报过缓存**的调用，并用 `cacheStale` 如实标记（别把旧值当成本轮）。
+    let cache_usage = latest
+        .map(|(usage, _)| usage)
+        .filter(|usage| usage.get("cachedTokens").is_some())
+        .or_else(|| thread.and_then(last_usage_with_cache));
+    let cache_stale = match (latest.map(|(usage, _)| usage), cache_usage) {
+        (Some(latest_usage), Some(cache_usage)) => !std::ptr::eq(latest_usage, cache_usage),
+        _ => false,
+    };
+    let cached = cache_usage
+        .and_then(|usage| usage.get("cachedTokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let cache_rate = cache_usage.and_then(|usage| {
+        let cached = usage.get("cachedTokens").and_then(Value::as_u64)?;
+        let prompt = usage.get("promptTokens").and_then(Value::as_u64).unwrap_or(0);
+        (prompt > 0).then(|| {
+            // 保留一位小数：缓存命中常在 99.x%，四舍五入成 100% 会让人以为"从不 miss"。
+            ((cached as f64) * 1000.0 / (prompt as f64)).round() / 10.0
+        })
+    });
+    let cache_percent = cache_rate.map(|rate| rate.round() as u64);
     let window = snapshot
         .get("config")
         .and_then(|config| config.get("contextWindow"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
     tracing::debug!(
-        thread = %wanted,
+        thread = thread.map(|thread| str_at(thread, "id")).unwrap_or(""),
         found = thread.is_some(),
         items = thread
             .and_then(|thread| thread.get("items"))
@@ -279,32 +351,29 @@ fn token_usage_view(snapshot: &Value, thread_id: Option<&str>) -> Value {
         window,
         "token usage view"
     );
-    let percent = (window > 0).then(|| {
-        // 四舍五入到整数百分比；窗口已知时用它分档（晴 / 多云 / 阴 / 暴雨）。
-        let scaled = used.saturating_mul(100);
-        (scaled.saturating_add(window / 2) / window).min(100)
-    });
+    let percent = percent_of(used, window);
     // 会话显示名与侧栏同口径：原始标题是"新会话"时，用第一条用户消息兜底。
     // 否则插件浮窗会显示"新会话"，而界面标题早就变成任务名了。
-    let thread_title = thread
-        .map(|thread| {
-            let raw = str_at(thread, "title").trim();
-            if raw.is_empty() || raw == "新会话" {
-                array_at(thread, "items")
-                    .iter()
-                    .find(|item| str_at(item, "kind") == "user")
-                    .map(|item| short_title(str_at(item, "text"), 30))
-                    .filter(|title| !title.is_empty())
-                    .unwrap_or_else(|| "新会话".to_string())
-            } else {
-                raw.to_string()
-            }
-        })
-        .unwrap_or_default();
+    let thread_title = thread.map(thread_title).unwrap_or_default();
     serde_json::json!({
+        "available": latest.is_some(),
         "used": used,
         "window": window,
         "percent": percent,
+        // 缓存命中：模型报回的 cachedTokens ÷ promptTokens（没有缓存字段时为空）。
+        "cached": cached,
+        "cachePercent": cache_percent,
+        // 一位小数的精确命中率（99.8 而不是 100）；老插件可继续用 cachePercent。
+        "cacheRate": cache_rate,
+        // 本轮没有上报缓存、数字来自更早一次调用时为 true（UI 应标注来源）。
+        "cacheStale": cache_stale,
+        "completion": completion,
+        "thinking": thinking,
+        "total": total,
+        // 速度：completionTokens ÷ durationMs；太短的调用算不出有意义的速率。
+        "tokensPerSec": (duration >= 200 && completion > 0)
+            .then(|| (completion.saturating_mul(1000) / duration).max(1)),
+        "durationMs": duration,
         "threadId": thread.map(|thread| str_at(thread, "id")).unwrap_or(""),
         "threadTitle": thread_title,
         "model": snapshot
@@ -315,23 +384,258 @@ fn token_usage_view(snapshot: &Value, thread_id: Option<&str>) -> Value {
     })
 }
 
-/// 会话里**最近一次**带用量的助手回复的输入规模。
+/// 最近一次**上报了** `cachedTokens` 的助手回复的 `usage`。
+///
+/// 有些模型只在部分请求里返回缓存明细；没有它时不要显示 0%，但可以沿用
+/// 上一条真实上报（UI 用 `cacheStale` 标注"不是本轮"）。
+fn last_usage_with_cache(thread: &Value) -> Option<&Value> {
+    array_at(thread, "items").iter().rev().find_map(|item| {
+        if str_at(item, "kind") != "assistant" {
+            return None;
+        }
+        item.get("usage")
+            .filter(|usage| usage.get("cachedTokens").and_then(Value::as_u64).is_some())
+    })
+}
+
+/// 会话里**最近一次**带用量的助手回复的 `usage` 与耗时。
 ///
 /// 一轮里有多次工具调用时，最后一条助手卡的 promptTokens 就是"当前上下文大小"；
 /// 流式中的助手卡还没有 usage，要跳过而不是当成 0。
-fn last_prompt_tokens(thread: &Value) -> u64 {
-    array_at(thread, "items")
+fn last_usage(thread: &Value) -> Option<(&Value, u64)> {
+    array_at(thread, "items").iter().rev().find_map(|item| {
+        if str_at(item, "kind") != "assistant" {
+            return None;
+        }
+        let usage = item.get("usage")?;
+        let prompt = usage
+            .get("promptTokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if prompt == 0 {
+            return None;
+        }
+        Some((usage, item.get("durationMs").and_then(Value::as_u64).unwrap_or(0)))
+    })
+}
+
+/// 会话摘要（给插件）。
+fn thread_summary(thread: Option<&Value>, snapshot: &Value) -> Value {
+    let Some(thread) = thread else {
+        return Value::Null;
+    };
+    let id = str_at(thread, "id");
+    let mode = {
+        let mode = str_at(thread, "mode");
+        if mode.is_empty() { "code" } else { mode }
+    };
+    serde_json::json!({
+        "id": id,
+        "title": thread_title(thread),
+        "workspace": str_at(thread, "workspace"),
+        "mode": mode,
+        "agentId": str_at(thread, "agentId"),
+        "createdAt": thread.get("createdAt").and_then(Value::as_u64).unwrap_or(0),
+        "running": id_list_contains(snapshot, "runningThreadIds", id),
+        "waiting": id_list_contains(snapshot, "waitingThreadIds", id),
+        "isSubagent": thread.get("isSubagent").and_then(Value::as_bool).unwrap_or(false),
+    })
+}
+
+/// 当前模型与所属供应商（**不含密钥**：只投影 id / 名称 / 协议）。
+fn model_view(snapshot: &Value) -> Value {
+    let config = snapshot.get("config");
+    let model = config
+        .and_then(|config| config.get("model"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let provider_id = str_at(snapshot, "activeProviderId");
+    let provider = array_at(snapshot, "providers")
         .iter()
-        .rev()
-        .find_map(|item| {
-            if str_at(item, "kind") != "assistant" {
-                return None;
-            }
-            item.get("usage")
-                .and_then(|usage| usage.get("promptTokens"))
-                .and_then(Value::as_u64)
+        .find(|provider| !provider_id.is_empty() && str_at(provider, "id") == provider_id);
+    let display_name = provider
+        .and_then(|provider| provider.get("models"))
+        .and_then(Value::as_array)
+        .and_then(|models| {
+            models
+                .iter()
+                .find(|entry| str_at(entry, "id") == model)
+                .and_then(|entry| entry.get("name"))
+                .and_then(Value::as_str)
         })
-        .unwrap_or(0)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(model);
+    serde_json::json!({
+        "id": model,
+        "name": display_name,
+        "providerId": provider_id,
+        "providerName": provider.map(|provider| str_at(provider, "name")).unwrap_or(""),
+        "protocol": provider.map(|provider| str_at(provider, "protocol")).unwrap_or(""),
+    })
+}
+
+/// 配置快照里与"这一轮怎么跑"有关的字段（不含供应商密钥）。
+fn config_view(snapshot: &Value) -> Value {
+    let config = snapshot.get("config");
+    let text = |key: &str| {
+        config
+            .and_then(|config| config.get(key))
+            .and_then(Value::as_str)
+    };
+    serde_json::json!({
+        "approval": text("approval").unwrap_or("auto"),
+        "effort": text("effort").unwrap_or("max"),
+        "mode": text("mode").unwrap_or("code"),
+        "contextWindow": config
+            .and_then(|config| config.get("contextWindow"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        "maxOutputTokens": config
+            .and_then(|config| config.get("maxOutputTokens"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "supportsImages": config
+            .and_then(|config| config.get("supportsImages"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "retryCount": config
+            .and_then(|config| config.get("retryCount"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+    })
+}
+
+/// 工作区：agent 的当前项目 + 当前会话所属目录。
+fn workspace_view(snapshot: &Value, thread: Option<&Value>) -> Value {
+    let project = snapshot
+        .get("workspace")
+        .and_then(|workspace| workspace.get("project"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let current = thread
+        .map(|thread| str_at(thread, "workspace"))
+        .filter(|workspace| !workspace.is_empty())
+        .unwrap_or(project);
+    serde_json::json!({
+        "project": project,
+        "current": current,
+        "publicWorkspace": str_at(snapshot, "publicWorkspace"),
+    })
+}
+
+/// 计数：给插槽做"今天有多少活"这类概览，不必自己遍历 threads。
+fn counts_view(snapshot: &Value, thread: Option<&Value>) -> Value {
+    let thread_id = thread.map(|thread| str_at(thread, "id")).unwrap_or("");
+    let queue = array_at(snapshot, "queue")
+        .iter()
+        .filter(|item| thread_id.is_empty() || str_at(item, "threadId") == thread_id)
+        .count();
+    let approvals = thread
+        .map(|thread| {
+            array_at(thread, "items")
+                .iter()
+                .filter(|item| {
+                    matches!(str_at(item, "status"), "waiting_approval" | "waiting")
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    serde_json::json!({
+        "threads": array_at(snapshot, "threads").len(),
+        "running": array_at(snapshot, "runningThreadIds").len(),
+        "waiting": array_at(snapshot, "waitingThreadIds").len(),
+        "queue": queue,
+        "approvals": approvals,
+    })
+}
+
+fn id_list_contains(snapshot: &Value, key: &str, id: &str) -> bool {
+    !id.is_empty()
+        && array_at(snapshot, key)
+            .iter()
+            .any(|value| value.as_str() == Some(id))
+}
+
+/// 会话显示名：与侧栏同口径（"新会话"用首条用户消息兜底）。
+fn thread_title(thread: &Value) -> String {
+    title_from_items(str_at(thread, "title"), array_at(thread, "items"))
+}
+
+/// 标题解析的单一实现：原始标题是"新会话"/空时，用首条用户消息的短标题兜底。
+///
+/// 聊天页的 `parts` 快照只保留工具卡与助手用量（不含用户消息），所以投影时
+/// 必须先用**完整 items** 把标题解析好写回，否则插件浮窗会在 2 秒后从
+/// "提交代码"变成"新会话"。
+fn title_from_items(raw: &str, items: &[Value]) -> String {
+    let raw = raw.trim();
+    if raw.is_empty() || raw == "新会话" {
+        items
+            .iter()
+            .find(|item| str_at(item, "kind") == "user")
+            .map(|item| short_title(str_at(item, "text"), 30))
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| "新会话".to_string())
+    } else {
+        raw.to_string()
+    }
+}
+
+/// 插件视角的"当前会话"：显式 `thread_id` 优先，其次快照的激活会话，再其次第一条。
+///
+/// 显式 id 必须优先：界面可能正看着 A，而快照的 `activeThreadId` 还是 B
+/// （聚焦还没生效 / 另开了一个 Tab），插槽不能按 B 算数据。
+fn thread_view<'a>(snapshot: &'a Value, thread_id: Option<&str>) -> Option<&'a Value> {
+    let threads = array_at(snapshot, "threads");
+    let wanted = thread_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| str_at(snapshot, "activeThreadId").to_string());
+    threads
+        .iter()
+        .find(|thread| !wanted.is_empty() && str_at(thread, "id") == wanted)
+        .or_else(|| threads.first())
+}
+
+/// 任务规划（`todo` 工具）的当前计划（给插件用）。
+///
+/// 只投影**推演后**的结果：`set` 替换 / `update` 按 id 增量合并 / `get` 只读，
+/// 都由 [`ui::derive_todo_plan`] 负责（唯一的语义实现）。插件不该、也不需要
+/// 把一张张 todo 卡片自己重演一遍——那正是 desktop-ui 曾经停在旧计划上的原因。
+///
+/// 没有规划过、当前会话不在快照里、或快照没带 items 时给 `null`：
+/// 插件据此不渲染卡片，而不是画一张 `0/0` 的空面板。
+fn todo_view(snapshot: &Value, thread_id: Option<&str>) -> Value {
+    let Some(thread) = thread_view(snapshot, thread_id) else {
+        return Value::Null;
+    };
+    let Some(plan) = ui::derive_todo_plan(array_at(thread, "items")) else {
+        return Value::Null;
+    };
+    let steps = plan
+        .steps
+        .iter()
+        .map(|step| {
+            serde_json::json!({
+                "id": step.id,
+                "title": step.title,
+                "status": match step.status {
+                    ui::TodoStatus::Completed => "completed",
+                    ui::TodoStatus::InProgress => "in_progress",
+                    ui::TodoStatus::Pending => "pending",
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "done": plan.completed(),
+        "total": plan.steps.len(),
+        "allDone": plan.all_done(),
+        "active": plan.active_step().map(|step| step.title.clone()).unwrap_or_default(),
+        "notes": plan.notes,
+        "markdown": plan.to_markdown(),
+        "steps": steps,
+    })
 }
 
 /// 组装输入框（组件库 + 插件插槽）。
@@ -339,7 +643,7 @@ fn last_prompt_tokens(thread: &Value) -> u64 {
 /// 工具行左右两侧与辅助区都是**插件插槽**：插件可以往里放自己的控件，
 /// 插件挂了或坏了，插槽退回默认实现，输入框照常可用。
 ///
-/// 十个插槽一次性丢进阻塞线程池渲染（TSX 是同步 CPU 活），别在这里逐个 `await`。
+/// 十一个插槽一次性丢进阻塞线程池渲染（TSX 是同步 CPU 活），别在这里逐个 `await`。
 async fn slot_content(registry: &Arc<PluginRegistry>, context: RenderContext) -> SlotContent {
     let outputs = crate::plugins::render_slots_off_thread(
         Arc::clone(registry),
@@ -357,6 +661,7 @@ async fn slot_content(registry: &Arc<PluginRegistry>, context: RenderContext) ->
         sidebar_top: pick(Slot::SidebarTop),
         sidebar_bottom: pick(Slot::SidebarBottom),
         topbar_right: pick(Slot::TopbarRight),
+        chat_corner: pick(Slot::ChatCorner),
         composer_left: pick(Slot::ComposerLeft),
         composer_right: pick(Slot::ComposerRight),
         composer_footer: pick(Slot::ComposerFooter),
@@ -652,6 +957,201 @@ mod tests {
         assert_eq!(view["window"], 0);
         assert!(view["percent"].is_null());
         assert_eq!(view["threadId"], "");
+    }
+
+    #[test]
+    fn token_usage_falls_back_to_the_last_reported_cache() {
+        // 模型并非每轮都报 cachedTokens：本轮没报时沿用上一条真实上报，并标记 stale。
+        let thread = thread(
+            "t1",
+            vec![
+                serde_json::json!({
+                    "kind": "assistant",
+                    "usage": { "promptTokens": 10000, "completionTokens": 10, "cachedTokens": 9000 }
+                }),
+                serde_json::json!({ "kind": "user", "text": "再来" }),
+                serde_json::json!({
+                    "kind": "assistant",
+                    "usage": { "promptTokens": 20000, "completionTokens": 10 }
+                }),
+            ],
+        );
+        let view = token_usage_view(&snapshot(serde_json::json!([thread]), 100_000), None);
+        assert_eq!(view["used"], 20000);
+        assert_eq!(view["cached"], 9000);
+        assert_eq!(view["cachePercent"], 90);
+        assert_eq!(view["cacheRate"], 90.0);
+        assert_eq!(view["cacheStale"], true, "{view}");
+    }
+
+    #[test]
+    fn token_usage_cache_is_not_stale_when_the_latest_turn_reports_it() {
+        let thread = thread(
+            "t1",
+            vec![serde_json::json!({
+                "kind": "assistant",
+                "usage": { "promptTokens": 10000, "completionTokens": 10, "cachedTokens": 8500 }
+            })],
+        );
+        let view = token_usage_view(&snapshot(serde_json::json!([thread]), 100_000), None);
+        assert_eq!(view["cachePercent"], 85);
+        assert_eq!(view["cacheStale"], false, "{view}");
+    }
+
+    fn todo_item(action: &str, items: Value) -> Value {
+        serde_json::json!({
+            "kind": "tool",
+            "name": "todo",
+            "rawArgs": serde_json::json!({ "action": action, "items": items }).to_string(),
+        })
+    }
+
+    #[test]
+    fn plugin_data_exposes_thread_model_config_counts_and_cache() {
+        let thread = serde_json::json!({
+            "id": "t1",
+            "title": "提交代码",
+            "workspace": "E:/proj",
+            "mode": "code",
+            "agentId": "ada-coding",
+            "createdAt": 1234,
+            "items": [
+                {
+                    "kind": "assistant",
+                    "durationMs": 2000,
+                    "usage": {
+                        "promptTokens": 10000,
+                        "completionTokens": 500,
+                        "totalTokens": 10500,
+                        "cachedTokens": 8500
+                    }
+                },
+                { "kind": "tool", "status": "waiting_approval" },
+                { "kind": "tool", "status": "done" }
+            ]
+        });
+        let snapshot = serde_json::json!({
+            "activeThreadId": "t1",
+            "runningThreadIds": ["t1"],
+            "waitingThreadIds": [],
+            "queue": [{ "threadId": "t1" }, { "threadId": "t2" }],
+            "threads": [thread],
+            "config": {
+                "model": "m1",
+                "approval": "ask",
+                "effort": "high",
+                "mode": "code",
+                "contextWindow": 100000,
+                "maxOutputTokens": 8000,
+                "supportsImages": true,
+                "retryCount": 5
+            },
+            "activeProviderId": "p1",
+            "providers": [{
+                "id": "p1",
+                "name": "供应商",
+                "protocol": "openai_chat",
+                "apiKey": "SECRET-TOKEN",
+                "models": [{ "id": "m1", "name": "DeepSeek V4.1" }]
+            }],
+            "workspace": { "project": "E:/agent" },
+            "publicWorkspace": "E:/pub"
+        });
+        let data = plugin_data(&snapshot, Some("t1"), 3);
+        assert_eq!(data["plugin_count"], 3);
+        assert_eq!(data["tokens"]["cachePercent"], 85, "{data}");
+        assert_eq!(data["tokens"]["cacheRate"], 85.0, "{data}");
+        assert_eq!(data["tokens"]["cached"], 8500);
+        assert_eq!(data["tokens"]["completion"], 500);
+        assert_eq!(data["tokens"]["total"], 10500);
+        assert_eq!(data["tokens"]["tokensPerSec"], 250);
+        assert_eq!(data["tokens"]["durationMs"], 2000);
+        assert_eq!(data["tokens"]["available"], true);
+        assert_eq!(data["thread"]["title"], "提交代码");
+        assert_eq!(data["thread"]["running"], true);
+        assert_eq!(data["thread"]["waiting"], false);
+        assert_eq!(data["model"]["name"], "DeepSeek V4.1");
+        assert_eq!(data["model"]["providerName"], "供应商");
+        assert_eq!(data["config"]["effort"], "high");
+        assert_eq!(data["config"]["maxOutputTokens"], 8000);
+        assert_eq!(data["counts"]["queue"], 1, "只数当前会话的排队");
+        assert_eq!(data["counts"]["approvals"], 1);
+        assert_eq!(data["workspace"]["current"], "E:/proj");
+        assert!(data["render"]["at"].as_u64().unwrap_or(0) > 0);
+        // 数据投影绝不能带供应商密钥。
+        assert!(!data.to_string().contains("SECRET-TOKEN"), "{data}");
+    }
+
+    #[test]
+    fn plugin_data_without_a_snapshot_is_null_instead_of_empty_strings() {
+        let data = plugin_data(&Value::Null, None, 2);
+        assert!(data["thread"].is_null(), "{data}");
+        assert!(data["todo"].is_null(), "{data}");
+        assert_eq!(data["tokens"]["available"], false);
+        assert_eq!(data["counts"]["threads"], 0);
+        assert_eq!(data["plugin_count"], 2);
+    }
+
+    #[test]
+    fn todo_view_projects_the_derived_plan() {
+        // 插件只消费推演后的结果：set 建基线、update 按 id 合并，都该体现在投影里。
+        let thread = thread(
+            "t1",
+            vec![
+                todo_item(
+                    "set",
+                    serde_json::json!([
+                        { "id": "t1", "title": "读列表", "status": "completed" },
+                        { "id": "t2", "title": "写条目", "status": "in_progress" },
+                        { "id": "t3", "title": "验证", "status": "pending" }
+                    ]),
+                ),
+                todo_item(
+                    "update",
+                    serde_json::json!([{ "id": "t2", "title": "写条目", "status": "completed" }]),
+                ),
+            ],
+        );
+        let view = todo_view(&snapshot(serde_json::json!([thread]), 100_000), Some("t1"));
+        assert_eq!(view["done"], 2, "{view}");
+        assert_eq!(view["total"], 3, "{view}");
+        assert_eq!(view["allDone"], false, "{view}");
+        assert_eq!(view["active"], "验证", "{view}");
+        assert_eq!(view["steps"][1]["status"], "completed", "{view}");
+        assert!(
+            view["markdown"].as_str().unwrap_or("").contains("- [x] 写条目"),
+            "{view}"
+        );
+    }
+
+    #[test]
+    fn todo_view_is_null_without_a_plan() {
+        let thread = thread("t1", vec![serde_json::json!({ "kind": "assistant", "text": "hi" })]);
+        assert!(todo_view(&snapshot(serde_json::json!([thread]), 100_000), None).is_null());
+        assert!(todo_view(&Value::Null, None).is_null());
+    }
+
+    #[test]
+    fn todo_view_follows_the_requested_thread() {
+        let first = thread(
+            "t1",
+            vec![todo_item(
+                "set",
+                serde_json::json!([{ "id": "a", "title": "A", "done": true }]),
+            )],
+        );
+        let second = thread(
+            "t2",
+            vec![todo_item(
+                "set",
+                serde_json::json!([{ "id": "b", "title": "B", "done": false }]),
+            )],
+        );
+        let snap = snapshot(serde_json::json!([first, second]), 100_000);
+        // 显式 thread_id 优先（界面看着 B、快照激活的却可能还是 A）。
+        assert_eq!(todo_view(&snap, Some("t2"))["steps"][0]["title"], "B");
+        // 不传时跟 activeThreadId（本夹具是 t1）。
+        assert_eq!(todo_view(&snap, None)["steps"][0]["title"], "A");
     }
 }
 

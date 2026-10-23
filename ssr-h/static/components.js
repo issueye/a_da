@@ -184,52 +184,6 @@
       });
   }
 
-  /* ── 5. 任务规划面板：记住展开/收起偏好 ────────────────────────────── */
-  var TODO_COLLAPSED_KEY = 'a_da_todo_panel_collapsed';
-
-  function bindTodoPanel() {
-    var panel = document.querySelector('.ada-todo');
-    if (!panel) return;
-    if (panel.dataset.adaBound === '1') return;
-    panel.dataset.adaBound = '1';
-
-    var readPref = function () {
-      try {
-        return window.localStorage.getItem(TODO_COLLAPSED_KEY);
-      } catch (error) {
-        return null;
-      }
-    };
-    var writePref = function (collapsed) {
-      try {
-        window.localStorage.setItem(TODO_COLLAPSED_KEY, collapsed ? '1' : '0');
-      } catch (error) {
-        /* 隐私模式下不可用：忽略即可 */
-      }
-    };
-
-    // 上次是展开态 → 这次直接展开（live 轮询替换面板后同样适用）。
-    if (readPref() === '0') {
-      panel.open = true;
-    }
-    var sync = function () {
-      panel.setAttribute('data-state', panel.open ? 'expanded' : 'collapsed');
-      writePref(!panel.open);
-    };
-    panel.addEventListener('toggle', sync);
-    sync();
-
-    // 复制按钮在 summary 里：点它不该顺带把面板开合。
-    // 注意**不要** stopPropagation —— 复制动作是 document 上的委托，
-    // 截断冒泡会让"复制"永远不执行（历史 bug）。
-    var copy = panel.querySelector('.ada-todo__copy');
-    if (copy) {
-      copy.addEventListener('click', function (event) {
-        event.preventDefault();
-      });
-    }
-  }
-
   /* ── 工具输出：单层「展开全部」────────────────────────────────────────── */
   /* 全文服务端已经渲染进 DOM，这里只切 data-expanded：
      不重新请求，也不改布局宽度以外的东西。按钮文案自己记原始值。 */
@@ -374,14 +328,6 @@
     new MutationObserver(function () {
       bindDisclosures(transcript);
     }).observe(transcript, { childList: true });
-  }
-
-  function watchTodoDock() {
-    var dock = document.getElementById('ada-todo-dock');
-    if (!dock || !window.MutationObserver) return;
-    new MutationObserver(function () {
-      bindTodoPanel();
-    }).observe(dock, { childList: true });
   }
 
   /* ── 9. 页签（Tabs）────────────────────────────────────────────────────
@@ -554,7 +500,6 @@
   function boot() {
     bindDisclosures(document);
     bindComposer();
-    bindTodoPanel();
     bindTabs(document);
     bindRowMenus(document);
     bindRowMenuDocument();
@@ -566,7 +511,6 @@
     // 运行中的工具每秒刷新一次耗时：1s 粒度足够，也能让"它还在跑"看得见。
     window.setInterval(tickRunningElapsed, 1000);
     watchTranscript();
-    watchTodoDock();
     loadSlotRegistry();
   }
 

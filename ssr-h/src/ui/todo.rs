@@ -1,4 +1,7 @@
-//! 任务规划（`todo` 工具）的计划状态推演与 UI。
+//! 任务规划（`todo` 工具）的计划状态推演与步骤清单。
+//!
+//! 悬浮卡片（收起药丸 + 展开面板）由前端插件 `frontend-plugins/task-plan/` 渲染，
+//! 这里只保留**推演语义**（唯一真源）与工具行展开区共用的 [`TodoList`]。
 //!
 //! 与 desktop-ui 的 `utils/todo-plan.ts` 保持同一套语义：
 //!
@@ -294,63 +297,6 @@ impl Render for TodoList {
             .join("");
         format!(
             "<div class=\"ada-todo__list-wrap\">{notes}<ol class=\"ada-todo__list\">{items}</ol></div>"
-        )
-    }
-}
-
-/// 悬浮任务规划面板：默认收起的药丸 + 展开的卡片。
-#[derive(Debug, Clone, Default)]
-pub struct TodoPanel {
-    pub plan: TodoPlan,
-    /// DOM id（同一页面只允许一个面板）。
-    pub dom_id: String,
-}
-impl Render for TodoPanel {
-    fn render(&self) -> String {
-        let plan = &self.plan;
-        let total = plan.steps.len();
-        let done = plan.completed();
-        let all_done = plan.all_done();
-        let active = plan
-            .active_step()
-            .map(|step| step.title.clone())
-            .unwrap_or_default();
-        let state_class = if all_done { "is-done" } else { "is-active" };
-        // 收起时只留"当前在做什么"；全部完成则不重复提示。
-        let active_html = if all_done || active.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "<span class=\"ada-todo__active\">{}</span>",
-                escape(&active)
-            )
-        };
-        // 展开态的头部：进度 + 复制 + 收起提示。
-        let head_right = format!(
-            "<span class=\"ada-todo__head-right\"><button class=\"ada-todo__copy\" type=\"button\" data-copy=\"{markdown}\" data-copy-label=\"复制\">{copy}<span>复制</span></button><span class=\"ada-todo__collapse\">{up}收起</span></span>",
-            markdown = escape(&plan.to_markdown()),
-            copy = icon("i-copy", 12),
-            up = icon("i-chevron-up", 12),
-        );
-        format!(
-            r#"<details class="ada-todo {state}" data-state="collapsed" data-done="{done}" data-total="{total}">
-  <summary class="ada-todo__summary" title="点击展开任务规划步骤">
-    <span class="ada-todo__head-left">{icon}<span class="ada-todo__title ada-todo__title--collapsed">任务规划</span><span class="ada-todo__title ada-todo__title--expanded">任务规划步骤</span><span class="ada-todo__count ada-todo__count--collapsed">{done}/{total}</span><span class="ada-todo__count ada-todo__count--expanded">{done} / {total} 已完成</span>{active}</span>
-    {head_right}
-  </summary>
-  <div class="ada-todo__body">{body}</div>
-</details>"#,
-            state = state_class,
-            done = done,
-            total = total,
-            icon = icon("i-list", 12),
-            head_right = head_right,
-            active = active_html,
-            body = TodoList {
-                steps: plan.steps.clone(),
-                notes: plan.notes.clone(),
-            }
-            .render(),
         )
     }
 }

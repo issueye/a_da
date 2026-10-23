@@ -216,7 +216,7 @@ pub async fn workspace_picker(
     // 当前浏览目录若还是空串，就让"选择此目录"不可点（模板按 current.is_empty() 判断）。
     let page_base = match snapshot.as_ref() {
         Some(snapshot) => {
-            base_with_snapshot(&state, "工作区", "workspaces", flash, Some(snapshot)).await
+            base_with_snapshot(&state, "工作区", "workspaces", flash, Some(snapshot), None).await
         }
         None => base(&state, "工作区", "workspaces", flash).await,
     };

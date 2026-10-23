@@ -61,23 +61,62 @@ function Page(props: any) {
   "route":  { "path": "...", "query": "..." },
   "data":   {
     "plugin_count": 3,
+    "render": { "at": 1761000000000 },
     "tokens": {
+      "available": true,
       "used": 12000,
       "window": 128000,
       "percent": 9,
+      "cached": 9000,
+      "cachePercent": 75,
+      "cacheRate": 75,
+      "cacheStale": false,
+      "completion": 400,
+      "thinking": 1200,
+      "total": 12400,
+      "tokensPerSec": 42,
+      "durationMs": 9500,
       "threadId": "…",
       "threadTitle": "…",
       "model": "deepseek-chat"
+    },
+    "thread": { "id": "…", "title": "…", "workspace": "…", "mode": "code",
+                "agentId": "ada-coding", "createdAt": 0,
+                "running": true, "waiting": false, "isSubagent": false },
+    "model": { "id": "…", "name": "…", "providerId": "…", "providerName": "…", "protocol": "openai_chat" },
+    "config": { "approval": "ask", "effort": "high", "mode": "code", "contextWindow": 128000,
+                "maxOutputTokens": 64000, "supportsImages": true, "retryCount": 5 },
+    "workspace": { "project": "…", "current": "…", "publicWorkspace": "…" },
+    "counts": { "threads": 6, "running": 1, "waiting": 0, "queue": 0, "approvals": 0 },
+    "todo": {
+      "done": 2,
+      "total": 3,
+      "allDone": false,
+      "active": "写条目",
+      "notes": "可选备注",
+      "markdown": "### 任务规划步骤 (2/3)\n- [x] …",
+      "steps": [{ "id": "…", "title": "…", "status": "pending|in_progress|completed" }]
     }
   }
 }
 ```
 
-`data.tokens` 是**当前会话的上下文用量**：最近一次模型调用如实报回的
-`usage.promptTokens ÷ config.contextWindow`（与引擎的上下文治理同源，不做估算）。
-`percent` 为 `null` 表示算不出来（没有会话 / 窗口未配置 / 网关不可达）——插件要自己
-决定显示什么，别当成 0%。**只有拿得到快照的渲染点才有这个字段**：聊天页（含每 2 秒的
-live 轮询）、插件独立页、概览卡片有；供应商/扩展等二级页的插槽只有 `plugin_count`。
+`data` 的**完整字段表、类型与各渲染点的可用性**见 [PLUGIN-DATA.md](PLUGIN-DATA.md)。
+
+`data.tokens` 是**当前会话的上下文用量与缓存**：最近一次模型调用如实报回的
+`usage.promptTokens ÷ config.contextWindow`（与引擎的上下文治理同源，不做估算），
+缓存命中是 `usage.cachedTokens ÷ promptTokens`。`percent` / `cachePercent` 为 `null`
+表示算不出来（没有会话 / 窗口未配置 / 模型没报缓存字段）——插件要自己决定显示什么，
+别当成 0%。**只有拿得到快照的渲染点才有这些字段**：聊天页（含每 2 秒的 live 轮询）、
+插件独立页、概览卡片有；供应商/扩展等二级页的插槽只有 `plugin_count`。
+
+`data.thread` / `data.model` / `data.config` / `data.workspace` / `data.counts` 是
+为插槽准备的**会话与运行环境投影**（不含任何密钥）；`data.render.at` 是本次渲染时刻，
+做"几秒前"这类相对时间用它，别信浏览器时钟。
+
+`data.todo` 是**当前会话的任务规划**（`todo` 工具）推演后的结果：`set` 替换 /
+`update` 按 id 增量合并 / `get` 只读，由 `src/ui/todo.rs::derive_todo_plan` 算好再投影。
+没有规划过时是 `null`——插件据此不渲染卡片（不要画 `0/0` 的空面板）。
 
 ## 3. 内置 TSX 组件库
 
@@ -98,28 +137,36 @@ live 轮询）、插件独立页、概览卡片有；供应商/扩展等二级�
 - `frontend-plugins/token-weather/`：**按上下文用量显示天气**（0-30% 晴 / 31-60% 多云 /
   61-85% 阴 / >85% 暴雨）。三处形态：独立页面、输入框上方胶囊（`composer.above`，随
   live 轮询每 2 秒刷新）、概览卡片。顺带演示相对 import（`components/weather.tsx` 三处共用）、
-  `props.data.tokens` 数据契约，以及 `hx-get` + `hx-select` 做页面自刷新；
+  `props.data.tokens` 数据契约（含 `cachedTokens` 缓存命中与 `M`/`K` 缩写），
+  以及 `hx-get` + `hx-select` 做页面自刷新；
+- `frontend-plugins/task-plan/`：**任务规划卡片**。演示 `props.data.todo` 数据契约、
+  `chat.corner`（会话区右上角）与 `composer.above`（输入框上方）两处挂载点可切换，
+  以及 `scripts` 注入的浏览器增强（展开偏好 / 复制按钮不误触开合）；
 - `plugin.json` 里所有 `template` / `dashboard` 都必须是 `.tsx`；
 
-### 自定义 CSS
+### 自定义 CSS / JS
 
-在插件目录放 CSS（通常在 assets 目录下），在 manifest 里声明：
+在插件目录放 CSS/JS（通常在 assets 目录下），在 manifest 里声明：
 
 ```json
 {
   "assets": "static",
-  "styles": ["hello.css"]
+  "styles": ["hello.css"],
+  "scripts": ["hello.js"]
 }
 ```
 
 ```text
 plugin.json
 static/hello.css
+static/hello.js
 ```
 
-- `styles` 是相对 **assets 目录**的路径，只接受 `.css`，不能是绝对路径或包含 `..`；
+- `styles` / `scripts` 是相对 **assets 目录**的路径，分别只接受 `.css` / `.js`，
+  不能是绝对路径或包含 `..`；
 - 服务端把 `<link rel="stylesheet" href="/ext/{id}/assets/hello.css?v={fingerprint}">`
-  注入所有页面 `<head>`，并把 CSS 包装为：
+  与 `<script src="/ext/{id}/assets/hello.js?v={fingerprint}" defer>` 注入所有页面 `<head>`；
+  CSS 会被包装为：
   ```css
   @scope ([data-plugin-scope="hello-tsx"]) to ([data-plugin-scope]) {
     /* 插件 CSS */
@@ -127,11 +174,13 @@ static/hello.css
   ```
   因此选择器只能命中该插件的包裹层内部，不会污染应用壳或其他插件；
 - 插件页面/插槽/仪表盘内容会自动带上 `data-plugin-scope="<id>"` 包裹层
-  （`display: contents`，不改变布局）；CSS 改动后重载插件，指纹变化会刷新浏览器缓存；
+  （`display: contents`，不改变布局）；CSS/JS 改动后重载插件，指纹变化会刷新浏览器缓存；
 - 浏览器不支持 `@scope` 时整段插件样式被忽略（安全降级，不会污染）；
 - 请用插件内容 class 选择器，不要依赖 `:root`/`body`；`@import`/`@charset` 在作用域内无效，
   `@keyframes` 名称仍建议加插件前缀；
-- CSS 是本地受信任内容，不做 sanitizer；不要从不可信目录安装插件。
+- 🔴 **HTML 白名单不开放 `<script>` 标签**：浏览器端行为只能走 manifest `scripts`（或 `hx-*` / Alpine），
+  不要在模板里写内联 `<script>`；
+- CSS/JS 是本地受信任内容，不做 sanitizer；不要从不可信目录安装插件。
 
 ## 5. 安全与预算
 

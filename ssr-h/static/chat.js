@@ -185,12 +185,18 @@
 })();
 
 /* 侧栏会话搜索：纯前端过滤标题，不改变当前会话。
-   live 轮询会重渲染 #thread-list，因此要重新套用过滤并保住滚动位置。 */
+   过滤同时维护三件事：行的 hidden、结果计数（N / 总数）、以及"没有匹配"的空态——
+   以前整组 hidden 之后界面就是一片空白，用户分不清"没匹配"和"列表挂了"。
+   列表若被重新渲染，滚动位置与过滤结果都会重新套用。 */
 (() => {
   const initThreadSearch = () => {
     const input = document.getElementById('chat-thread-search');
-    const list = document.getElementById('thread-list');
     if (!input) return;
+    const list = document.getElementById('thread-list');
+    const box = input.closest('.ada-search');
+    const count = box && box.querySelector('.ada-search__count');
+    const empty = document.getElementById('thread-empty');
+    const clear = empty && empty.querySelector('.ada-list-empty__clear');
 
     let listScroll = 0;
     const apply = () => {
@@ -211,9 +217,61 @@
         group.hidden = Boolean(query) && !nameHit && !hasVisible;
         if (query && (nameHit || hasVisible) && details) details.open = true;
       });
+
+      const rows = document.querySelectorAll('.ada-thread');
+      const visible = document.querySelectorAll('.ada-thread:not([hidden])').length;
+      if (box) box.classList.toggle('is-searching', Boolean(query));
+      if (count) {
+        count.hidden = !query;
+        count.textContent = query ? `${visible} / ${rows.length}` : '';
+      }
+      if (empty) empty.hidden = !(query && visible === 0);
     };
 
     input.addEventListener('input', apply);
+    input.addEventListener('keydown', (event) => {
+      // Esc 清空而不是"关掉整个侧栏"：焦点在搜索框里时用户想撤掉的是查询。
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        input.value = '';
+        apply();
+      }
+    });
+    if (clear) {
+      clear.addEventListener('click', () => {
+        input.value = '';
+        apply();
+        input.focus();
+      });
+    }
+
+    // 侧栏有两种收起形态：窄屏抽屉（未打开）与宽屏窄轨（is-sidebar-collapsed）。
+    // 都得先展开再聚焦——否则焦点落在 display:none 的输入框上，按了 Ctrl K 毫无反应。
+    const reveal = () => {
+      const side = document.getElementById('chat-sidebar');
+      const wrap = document.querySelector('.ada-shell');
+      const toggle = document.querySelector('[data-sidebar-toggle]');
+      const narrow = window.matchMedia('(max-width: 760px)').matches;
+      const drawerClosed = narrow && side && !side.classList.contains('is-open');
+      const railCollapsed = !narrow && wrap && wrap.classList.contains('is-sidebar-collapsed');
+      if ((drawerClosed || railCollapsed) && toggle) toggle.click();
+      input.focus();
+      input.select();
+    };
+
+    // Ctrl/⌘ + K 直达搜索
+    document.addEventListener('keydown', (event) => {
+      const key = event.key.toLowerCase();
+      if (!(event.ctrlKey || event.metaKey) || key !== 'k') return;
+      if (window.AdaComponents && window.AdaComponents.modalOpen && window.AdaComponents.modalOpen()) return;
+      event.preventDefault();
+      reveal();
+    });
+
+    // 窄轨里的搜索按钮
+    document.querySelectorAll('[data-rail-search]').forEach((button) => {
+      button.addEventListener('click', reveal);
+    });
 
     if (list) {
       list.addEventListener('scroll', () => { listScroll = list.scrollTop; }, { passive: true });
@@ -295,7 +353,7 @@
 
   const PART_TARGETS = {
     trays: 'ada-trays',
-    todo: 'ada-todo-dock',
+    corner: 'chat-corner',
     topbarStatus: 'topbar-status',
     topbarActions: 'topbar-actions',
     aux: 'composer-aux',
@@ -366,6 +424,42 @@
     stopPolling();
     pollTimer = window.setTimeout(pollOnce, 2000);
   }
+
+  /* ── 模型选择器：点外面 / Esc 关闭；同一层只展开一个分组 ────────────────
+     外层是 `<details>`（面板），内层两个 `<details>`（模型 / 推理等级）。
+     没有这段脚本也能用：summary 自己可开合、菜单项是真表单。 */
+  const bindModelPicker = () => {
+    const picker = document.querySelector('.ada-model-picker');
+    if (!picker || picker.dataset.adaBound === '1') return;
+    picker.dataset.adaBound = '1';
+    const groups = picker.querySelectorAll('.ada-model-picker__group');
+    groups.forEach((group) => {
+      group.addEventListener('toggle', () => {
+        if (!group.open) return;
+        groups.forEach((other) => {
+          if (other !== group) other.open = false;
+        });
+      });
+    });
+    picker.addEventListener('toggle', () => {
+      if (picker.open) return;
+      groups.forEach((group) => {
+        group.open = false;
+      });
+    });
+  };
+  bindModelPicker();
+  document.addEventListener('click', (event) => {
+    document.querySelectorAll('details.ada-model-picker[open]').forEach((picker) => {
+      if (!picker.contains(event.target)) picker.open = false;
+    });
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    document.querySelectorAll('details.ada-model-picker[open]').forEach((picker) => {
+      picker.open = false;
+    });
+  });
 
   let source = null;
   /* 只有**真的收到事件**才算流可用。

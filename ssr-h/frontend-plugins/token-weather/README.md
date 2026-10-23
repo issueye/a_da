@@ -6,8 +6,13 @@
   - `page.tsx` → 独立页面 `/ext/token-weather/weather`（完整用量明细）；
   - `dashboard.tsx` → 概览页卡片；
   - `slot.tsx` → `composer.above` 插槽里的天气胶囊，点击展开**浮层**（不跳页）。
-- **数据来自服务端**：`props.data.tokens`（最近一次模型调用的 `promptTokens ÷ contextWindow`），
-  插件本身不发请求、不读文件——Boa 运行时没有 fs/net。
+- **数据来自服务端**：`props.data.tokens`（最近一次模型调用的 `promptTokens ÷ contextWindow`
+  与 `cachedTokens ÷ promptTokens`），插件本身不发请求、不读文件——Boa 运行时没有 fs/net；
+- **可读的数字**：`18,684` 显示成 `18.7K`、`1,000,000` 显示成 `1M`（`components/weather.tsx::formatTokens`），
+  原始值放进 `title`，悬停仍能看到精确数；
+- **缓存命中率**：模型报回 `cachedTokens` 时显示 `缓存命中 86%`；本轮没报时回落到
+  上一次上报缓存的调用并标 `86%*`（tooltip 说明来源）；完全没报过时显示 `—`，
+  不会用 `0%` 假装"完全没命中"；
 - **实时刷新**：聊天页的 `<details class="ada-popover">` 由 SSE `parts` 每 500ms 重渲染一次；
   `chat.js` 会按 `id` 还原展开状态，点外部 / `Esc` 关闭，所以浮层不会被更新关掉。
 - **相对 import**：`slot.tsx` / `page.tsx` 共用 `components/weather.tsx` 里的分档规则，
@@ -33,5 +38,9 @@
 
 ## 口径
 
-百分比 = 最近一次模型调用的 `promptTokens ÷ contextWindow`，与引擎的上下文治理同源；
-窗口未配置（`contextWindow = 0`）时显示「无数据」，不拿 0% 冒充。
+- 上下文百分比 = 最近一次模型调用的 `promptTokens ÷ contextWindow`，与引擎的上下文治理同源；
+  窗口未配置（`contextWindow = 0`）时显示「无数据」，不拿 0% 冒充。
+- 缓存命中率 = `cachedTokens ÷ promptTokens`，优先取本轮调用；本轮模型没报时回落到
+  最近一次上报过缓存的调用（标 `*`，tooltip 说明"来自上一次"）；完全没报过才是 `—`。
+- token 显示统一走 `formatTokens`：≥1M 用 `M`、≥1K 用 `K`（一位小数），其余整数；
+  完整精确值保留在 `title` 里。

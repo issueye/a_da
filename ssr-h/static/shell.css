@@ -31,29 +31,76 @@
   color: var(--ph-ink);
 }
 
+/* ── 外壳 ───────────────────────────────────────────────────────────────── */
+
 .ada-shell {
   display: flex;
   height: 100vh;
   height: 100dvh;
 }
+
+/* 侧栏：展开 264，折叠成 56px 窄轨。
+   折叠**不再**是 display:none —— 收起之后品牌、新建、最近会话、系统页都还在，
+   用户不必为了跳一条会话把侧栏重新拉开。宽度过渡让展开/收起有方向感。 */
 .ada-sidebar {
   width: 264px;
-  flex-shrink: 0;
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 8px 10px;
   background: var(--ph-subtle);
   border-right: 1px solid var(--ph-line);
-  /* 固定裁切：底部（主题/网关）必须常驻，不能让它滚出视口。
-     空间不够时由 .ada-thread-list 让位（见下方）。 */
   overflow: hidden;
+  transition: width var(--ada-transition) ease;
 }
+
+/* 展开态：一条纵向列。只有会话列表伸缩与滚动，其余分区保持自身高度。 */
+.ada-side {
+  width: 264px;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  padding: 10px 12px;
+  height: 100%;
+}
+
+/* 窄轨默认不渲染：display:none 同时让读屏器跳过这一份重复的导航。 */
+.ada-rail {
+  display: none;
+}
+
+.ada-shell.is-sidebar-collapsed .ada-sidebar {
+  width: 56px;
+}
+.ada-shell.is-sidebar-collapsed .ada-side {
+  display: none;
+}
+.ada-shell.is-sidebar-collapsed .ada-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-height: 0;
+  padding: 10px 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ada-sidebar {
+    transition: none;
+  }
+}
+
+/* ── 品牌 ───────────────────────────────────────────────────────────────── */
+
 .ada-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 4px 6px 8px;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 2px 4px 4px;
   text-decoration: none;
 }
 .ada-brand__mark {
@@ -61,145 +108,98 @@
   place-items: center;
   width: 28px;
   height: 28px;
+  flex: 0 0 auto;
   border-radius: var(--ada-radius-md);
   background: linear-gradient(135deg, var(--ph-brand), var(--ph-brand-strong));
   color: #fff;
 }
 .ada-brand__name {
+  color: var(--ph-ink);
   font-size: var(--ada-text-md);
   font-weight: 650;
   letter-spacing: -0.02em;
 }
 .ada-brand__badge {
   margin-left: auto;
-  padding: 2px 6px;
+  padding: 0 6px;
   border: 1px solid var(--ph-line-strong);
   border-radius: var(--ada-radius-sm);
   color: var(--ph-faint);
   font-family: var(--mono-font, Consolas, monospace);
   font-size: var(--ada-text-xs);
 }
-/* 侧栏导航 */
-.ada-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.ada-nav__item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: var(--ada-radius-md);
-  color: var(--ph-muted);
-  font-size: var(--ada-text-base);
-  text-decoration: none;
-  transition: background var(--ada-transition), color var(--ada-transition);
-}
-.ada-nav__item .ada-icon {
-  color: var(--ph-faint);
-  transition: color var(--ada-transition);
-}
-.ada-nav__item:hover {
-  background: var(--ph-line);
-  color: var(--ph-ink);
-}
-.ada-nav__item.is-active {
-  background: var(--ph-brand-soft);
-  color: var(--ph-brand-ink);
-  font-weight: 550;
-}
-.ada-nav__item.is-active .ada-icon {
-  color: var(--ph-brand-ink);
-}
-/* 侧栏分区 */
-/* 侧栏是固定高度列：只有会话列表和插件区该让位，
-   其余分区必须保持自身高度，否则窗口一矮就被压成一条线。 */
-.ada-brand,
-.ada-sidebar > .ada-nav,
-.ada-section,
-.ada-sidebar__foot {
+
+/* ── 新会话 ─────────────────────────────────────────────────────────────── */
+/* 描边按钮：侧栏里唯一的填充色要留给"当前会话"。
+   主操作比"我在哪"还响，视线第一落点就会跑到"新建"上。 */
+.ada-new {
   flex-shrink: 0;
 }
-/* 插件区：插件数量不定，空间不足时自己内部滚（原本是模板里的 inline style） */
-.ada-section--plugins {
-  flex-shrink: 1;
-  min-height: 0;
-  max-height: 124px;
-  overflow-y: auto;
-  /* 滚到底不把整页一起带走 */
-  overscroll-behavior: contain;
+.ada-new .ada-btn {
+  width: 100%;
+  height: 32px;
+  gap: 6px;
 }
 
-.ada-section {
-  padding: 8px 6px 0;
-  margin-top: 4px;
-  border-top: 1px solid var(--ph-line);
-}
-.ada-section__label {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 4px 4px;
-  color: var(--ph-faint);
-  font-size: var(--ada-text-xs);
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-.ada-section__label a {
-  color: var(--ph-faint);
-  font-weight: 500;
-  letter-spacing: 0;
-  text-decoration: none;
-}
-.ada-section__label a:hover {
-  color: var(--ph-muted);
-}
-.ada-workspace {
+/* ── 工作区切换器 ───────────────────────────────────────────────────────── */
+/* 一行代替原先的"分区标题 + 全路径药丸 + 组头当前徽标"三处表达；
+   完整路径进 title，显示的目录名不再被 ellipsis 从尾部切掉。 */
+.ada-ws-switch {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-width: 0;
-  padding: 8px 10px;
-  border: 1px solid var(--ph-line);
+  flex-shrink: 0;
+  height: 32px;
+  padding: 0 8px;
   border-radius: var(--ada-radius-md);
-  background: var(--ph-surface);
-  color: var(--ph-muted);
-  font-family: var(--mono-font, Consolas, monospace);
-  font-size: var(--ada-text-sm);
-  text-decoration: none;
-  transition: border-color var(--ada-transition), color var(--ada-transition);
-}
-.ada-workspace:hover {
-  border-color: var(--ada-focus-border);
   color: var(--ph-ink);
+  font-size: var(--ada-text-base);
+  font-weight: 600;
+  text-decoration: none;
+  transition: background var(--ada-transition), color var(--ada-transition);
 }
-.ada-workspace .ada-icon {
+.ada-ws-switch:hover {
+  background: var(--ph-line);
+}
+.ada-ws-switch > .ada-icon:first-child {
+  color: var(--ph-brand);
+}
+.ada-ws-switch > .ada-icon:last-child {
   color: var(--ph-faint);
 }
-.ada-workspace span {
+.ada-ws-switch__name {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 搜索 */
+.ada-ws-switch__count {
+  flex: 0 0 auto;
+  color: var(--ph-faint);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: var(--ada-text-xs);
+  font-weight: 400;
+}
+
+/* ── 搜索 ───────────────────────────────────────────────────────────────── */
+
 .ada-search {
   position: relative;
-  padding: 8px 2px 2px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
 }
-.ada-search__icon {
+.ada-search > .ada-icon {
   position: absolute;
   left: 9px;
-  top: 50%;
-  transform: translateY(-52%);
   color: var(--ph-faint);
   pointer-events: none;
 }
 .ada-search__input {
   width: 100%;
-  height: 30px;
-  padding: 0 8px 0 29px;
+  height: 32px;
+  padding: 0 52px 0 30px;
   border: 1px solid var(--ph-line);
   border-radius: var(--ada-radius-md);
   background: var(--ph-surface);
@@ -216,36 +216,64 @@
 .ada-search__input::placeholder {
   color: var(--ph-faint);
 }
-/* 会话列表 */
+.ada-search__kbd {
+  position: absolute;
+  right: 8px;
+  padding: 0 5px;
+  border: 1px solid var(--ph-line);
+  border-radius: var(--ada-radius-sm);
+  background: var(--ph-subtle);
+  color: var(--ph-faint);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: var(--ada-text-xs);
+  line-height: 16px;
+  pointer-events: none;
+}
+/* 有输入时收起快捷键提示，让位给结果计数 */
+.ada-search.is-searching .ada-search__kbd {
+  display: none;
+}
+.ada-search__count {
+  position: absolute;
+  right: 8px;
+  color: var(--ph-muted);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: var(--ada-text-xs);
+  pointer-events: none;
+}
+.ada-search__count[hidden] {
+  display: none;
+}
+
+/* ── 会话列表 ───────────────────────────────────────────────────────────── */
+/* 侧栏唯一的伸缩 + 滚动区。行高 32：一屏能看见的会话从 9 条涨到 15 条左右。 */
 .ada-thread-list {
-  /* 侧栏唯一的伸缩区：承载工作区树 + 会话列表。
-     其它分区都 flex-shrink:0，所以空间不够时只由它让位。 */
   flex: 1 1 auto;
-  /* 保底三条会话的高度：再挤也要能看见列表，而不是剩一条彩边 */
-  min-height: 96px;
+  min-height: 0;
   overflow-y: auto;
   /* 会话增删会跨越滚动阈值，预留位置避免标题串位 */
   scrollbar-gutter: stable;
-  /* 滚到底不把整页一起带走 */
   overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 4px 0 8px;
+  gap: 1px;
+  padding: 2px 0 6px;
 }
 .ada-thread {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 8px 10px;
-  border-radius: var(--ada-radius-md);
-  color: var(--ph-muted);
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: var(--ada-radius-sm);
+  color: var(--ph-ink);
+  font-size: var(--ada-text-base);
   text-decoration: none;
-  transition: background var(--ada-transition);
+  transition: background var(--ada-transition), color var(--ada-transition);
 }
 .ada-thread:hover {
   background: var(--ph-line);
-  color: var(--ph-ink);
 }
 /* `hidden` 属性在 UA 样式里只是 `display:none`，会被上面的 `display:flex` 盖掉
    （搜索过滤靠的就是 `hidden`）。这里显式提升优先级。 */
@@ -255,32 +283,47 @@
 }
 .ada-thread.is-active {
   background: var(--ph-brand-soft);
-}
-.ada-thread.is-active .ada-thread__title {
   color: var(--ph-brand-ink);
   font-weight: 600;
 }
 .ada-thread__title {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--ada-text-base);
-  line-height: 1.45;
 }
-.ada-thread__meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+/* 运行中只剩一个点：文案「运行中」不再挤占标题宽度，语义留在 title/aria 里。 */
+.ada-thread__dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--ph-warn-ink);
+}
+
+/* 空态：没有会话 / 没有匹配 */
+.ada-list-empty {
+  margin: 4px 6px;
   color: var(--ph-faint);
-  font-size: var(--ada-text-xs);
+  font-size: var(--ada-text-sm);
 }
-.ada-thread__running {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--ph-warn-ink);
-  font-weight: 500;
+.ada-list-empty[hidden] {
+  display: none;
 }
+.ada-list-empty__clear {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ph-brand-ink);
+  font-family: inherit;
+  font-size: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* ── 状态点 ─────────────────────────────────────────────────────────────── */
+
 .ada-dot {
   width: 6px;
   height: 6px;
@@ -306,14 +349,91 @@
     opacity: 0.3;
   }
 }
-/* 侧栏底部 */
+
+/* ── 系统导航（底部）─────────────────────────────────────────────────────── */
+/* 插件 / 供应商 / 概览是低频设置面，放底部；顶部的位置全部让给会话列表。 */
+.ada-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.ada-nav--util {
+  flex-shrink: 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--ph-line);
+}
+.ada-nav__label {
+  padding: 4px 8px 2px;
+  color: var(--ph-faint);
+  font-size: var(--ada-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+.ada-nav__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--ada-radius-sm);
+  color: var(--ph-muted);
+  font-size: var(--ada-text-sm);
+  text-decoration: none;
+  transition: background var(--ada-transition), color var(--ada-transition);
+}
+.ada-nav__item > .ada-icon {
+  flex: 0 0 auto;
+  color: var(--ph-faint);
+  transition: color var(--ada-transition);
+}
+.ada-nav__item:hover {
+  background: var(--ph-line);
+  color: var(--ph-ink);
+}
+.ada-nav__item:hover > .ada-icon {
+  color: var(--ph-muted);
+}
+.ada-nav__item.is-active {
+  background: var(--ph-brand-soft);
+  color: var(--ph-brand-ink);
+  font-weight: 600;
+}
+.ada-nav__item.is-active > .ada-icon {
+  color: var(--ph-brand-ink);
+}
+.ada-nav__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ada-nav__item--more {
+  color: var(--ph-faint);
+}
+
+/* ── 侧栏底部 ───────────────────────────────────────────────────────────── */
+
 .ada-sidebar__foot {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
   margin-top: auto;
-  padding: 10px 4px 2px;
+  padding: 8px 2px 0;
   border-top: 1px solid var(--ph-line);
+}
+/* 主题切换：两枚图标由 html.light/dark 决定显隐（见 layout.css） */
+.ada-theme {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+}
+.ada-theme__moon,
+.ada-theme__sun {
+  display: grid;
+  place-items: center;
 }
 .ada-gateway {
   display: flex;
@@ -321,14 +441,113 @@
   gap: 6px;
   min-width: 0;
   color: var(--ph-faint);
-  font-family: var(--mono-font, Consolas, monospace);
-  font-size: var(--ada-text-xs);
+  font-size: var(--ada-text-sm);
 }
-.ada-gateway span {
+.ada-gateway__dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--ph-faint);
+}
+.ada-gateway__dot.is-on {
+  background: var(--ph-success-ink);
+}
+.ada-gateway__dot.is-off {
+  background: var(--ph-danger-ink);
+}
+.ada-gateway__addr {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: var(--ada-text-xs);
 }
+
+/* ── 折叠窄轨 ───────────────────────────────────────────────────────────── */
+/* 56px 里只放"能立刻用上"的入口：品牌、新建、最近会话、系统页、主题。 */
+
+.ada-rail__mark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border-radius: var(--ada-radius-md);
+  background: linear-gradient(135deg, var(--ph-brand), var(--ph-brand-strong));
+  color: #fff;
+  text-decoration: none;
+}
+.ada-rail__new {
+  flex: 0 0 auto;
+}
+.ada-rail__btn {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ada-radius-md);
+  background: transparent;
+  color: var(--ph-muted);
+  cursor: pointer;
+  transition: background var(--ada-transition), color var(--ada-transition);
+}
+.ada-rail__btn:hover {
+  background: var(--ph-line);
+  color: var(--ph-ink);
+}
+.ada-rail__btn--primary,
+.ada-rail__btn--primary:hover {
+  background: var(--ph-brand);
+  color: #fff;
+}
+.ada-rail__btn--primary:hover {
+  background: var(--ph-brand-strong);
+}
+.ada-rail__btn.is-active {
+  background: var(--ph-brand-soft);
+  color: var(--ph-brand-ink);
+}
+.ada-rail__sep {
+  width: 20px;
+  height: 1px;
+  flex: 0 0 auto;
+  margin: 2px 0;
+  background: var(--ph-line);
+}
+.ada-rail__spacer {
+  flex: 1 1 auto;
+  min-height: 8px;
+}
+.ada-rail__thumb {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border: 1px solid var(--ph-line);
+  border-radius: var(--ada-radius-md);
+  background: var(--ph-surface);
+  color: var(--ph-muted);
+  font-size: var(--ada-text-sm);
+  font-weight: 600;
+  text-decoration: none;
+  transition: background var(--ada-transition), border-color var(--ada-transition),
+    color var(--ada-transition);
+}
+.ada-rail__thumb:hover {
+  border-color: var(--ph-line-strong);
+  color: var(--ph-ink);
+}
+.ada-rail__thumb.is-active {
+  border-color: transparent;
+  background: var(--ph-brand-soft);
+  color: var(--ph-brand-ink);
+}
+
 /* 主区 */
 .ada-main {
   flex: 1;
@@ -412,7 +631,8 @@
   width: 100%;
   max-width: 860px;
   margin: 0 auto;
-  padding: 18px 28px 32px;
+  /* 底部留出插件悬浮区 + 「回到最新」的高度：它们是覆盖层，不占流式布局。 */
+  padding: 18px 28px 52px;
 }
 /* Flash 是浮动 toast，不占主布局空间；位置固定在顶栏下方居中。 */
 .ada-flash {
@@ -606,28 +826,26 @@
 }
 
 /* ── 工作区树（侧栏） ─────────────────────────────────────────────────────
-   一个工作区 = 一个 <details>；操作按钮放在 details 外，折叠时也能新建/切换。 */
-.ada-ws-tree {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
+   当前工作区的会话直接铺开——切换器就是它的表头，所以组头不再重复"当前"；
+   其它工作区各是一个 <details>。操作按钮放在 details 外，折叠时也能新建/切换。 */
 .ada-ws {
   position: relative;
-  border-radius: var(--ada-radius-md);
+  flex-shrink: 0;
+  border-radius: var(--ada-radius-sm);
 }
 .ada-ws__details {
-  border-radius: var(--ada-radius-md);
+  border-radius: var(--ada-radius-sm);
 }
 .ada-ws__summary {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 28px;
-  padding: 4px 62px 4px 8px;
+  min-height: 24px;
+  padding: 2px 56px 2px 8px;
   border-radius: var(--ada-radius-sm);
   color: var(--ph-muted);
   font-size: var(--ada-text-sm);
+  font-weight: 600;
   cursor: pointer;
   list-style: none;
   user-select: none;
@@ -638,10 +856,7 @@
 }
 .ada-ws__summary:hover {
   background: var(--ph-line);
-}
-.ada-ws.is-active > .ada-ws__details > .ada-ws__summary {
-  background: var(--ph-brand-soft);
-  color: var(--ph-brand-ink);
+  color: var(--ph-muted);
 }
 .ada-ws__chevron {
   flex-shrink: 0;
@@ -655,29 +870,12 @@
   flex-shrink: 0;
   color: var(--ph-faint);
 }
-.ada-ws.is-active .ada-ws__folder {
-  color: var(--ph-brand);
-}
 .ada-ws__name {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 600;
-}
-.ada-ws__badge {
-  flex-shrink: 0;
-  padding: 0 6px;
-  border-radius: var(--ada-radius-pill);
-  background: var(--ph-brand);
-  color: #fff;
-  font-size: var(--ada-text-xs);
-  line-height: 15px;
-}
-.ada-ws__running {
-  display: inline-flex;
-  flex-shrink: 0;
 }
 .ada-ws__count {
   flex-shrink: 0;
@@ -688,21 +886,40 @@
   color: var(--ph-faint);
   font-family: var(--mono-font, Consolas, monospace);
   font-size: var(--ada-text-xs);
-  line-height: 15px;
+  font-weight: 400;
+  line-height: 14px;
   text-align: center;
+}
+.ada-ws__running {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.ada-ws__threads {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 4px 10px;
+  padding-left: 8px;
+  /* 只有组内层用导轨：它表达"这些属于上面那组"，不是分区线 */
+  border-left: 1px solid var(--ph-line);
+}
+.ada-ws__empty {
+  margin: 4px 8px;
+  color: var(--ph-faint);
+  font-size: var(--ada-text-sm);
+  font-style: italic;
 }
 .ada-ws__actions {
   position: absolute;
-  top: 4px;
-  right: 4px;
+  top: 0;
+  right: 2px;
   display: flex;
   gap: 2px;
   opacity: 0;
   transition: opacity var(--ada-transition);
 }
 .ada-ws:hover .ada-ws__actions,
-.ada-ws:focus-within .ada-ws__actions,
-.ada-ws.is-active .ada-ws__actions {
+.ada-ws:focus-within .ada-ws__actions {
   opacity: 1;
 }
 @media (hover: none) {
@@ -719,8 +936,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   padding: 0;
   border: 0;
   border-radius: var(--ada-radius-sm);
@@ -731,25 +948,4 @@
 .ada-ws__action:hover {
   background: var(--ph-surface);
   color: var(--ph-ink);
-}
-.ada-ws__threads {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 2px 0 4px 14px;
-  padding-left: 6px;
-  border-left: 1px solid var(--ph-line);
-}
-.ada-ws__empty {
-  margin: 2px 0 2px 4px;
-  color: var(--ph-faint);
-  font-size: var(--ada-text-sm);
-  font-style: italic;
-}
-.ada-ws-stats {
-  margin-top: auto;
-  padding: 8px 4px 2px;
-  color: var(--ph-faint);
-  font-size: var(--ada-text-xs);
-  text-align: center;
 }

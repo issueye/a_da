@@ -409,7 +409,9 @@ pub(super) fn turn_stats(snapshot: &Value, thread: &Value) -> TurnStats {
     let number = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
     let prompt = number("promptTokens");
     let completion = number("completionTokens");
-    let cached = number("cachedTokens");
+    // 缓存字段**缺失** ≠ 缓存为 0：缺失时算不出命中率，就别摆一个 0%（那会读成
+    // "一点都没命中"）。模型真的报 0 时仍然显示 0%。
+    let cached = usage.get("cachedTokens").and_then(Value::as_u64);
     let duration = item.get("durationMs").and_then(Value::as_u64).unwrap_or(0);
     let window = snapshot
         .get("config")
@@ -426,7 +428,7 @@ pub(super) fn turn_stats(snapshot: &Value, thread: &Value) -> TurnStats {
         // 太短的调用算不出有意义的速率（一个 200ms 的回复会算出三位数）。
         tokens_per_sec: (duration >= 200 && completion > 0)
             .then(|| (completion.saturating_mul(1000) / duration).max(1)),
-        cache_hit: percent_of(cached, prompt),
+        cache_hit: cached.and_then(|cached| percent_of(cached, prompt)),
         context: percent_of(prompt, window),
     }
 }
@@ -816,6 +818,21 @@ pub(super) fn approval_label(mode: &str) -> String {
     .to_string()
 }
 
+/// 推理等级的真值：`low | medium | high | max`（与 desktop-ui 设置项同源）。
+///
+/// 快照优先（运行时值），其次是 `/api/config` 的 `saved` / 顶层（旧网关）。
+/// 缺省 `max` = 自动（与 [`crate::ui::model_picker::normalize_effort`] 口径一致）。
+pub(super) fn effort_of(snapshot: &Value, config: &Value) -> String {
+    snapshot
+        .get("config")
+        .and_then(|cfg| cfg.get("effort"))
+        .or_else(|| config.get("saved").and_then(|saved| saved.get("effort")))
+        .or_else(|| config.get("effort"))
+        .and_then(Value::as_str)
+        .map(|effort| effort.to_string())
+        .unwrap_or_else(|| "max".to_string())
+}
+
 /// 审批档位的语义色：完全访问是危险档（红），每次询问是提醒档（琥珀）。
 pub(super) fn approval_tone(mode: &str) -> String {
     match mode {
@@ -1020,19 +1037,6 @@ pub(super) fn trays_html(
     )
 }
 
-/// 任务规划：按 set/update/get 的动作推演当前计划（不是“倒序找最后一张卡片”）。
-pub(super) fn todo_html(raw_items: &[Value]) -> String {
-    ui::derive_todo_plan(raw_items)
-        .map(|plan| {
-            ui::TodoPanel {
-                plan,
-                dom_id: "ada-todo".to_string(),
-            }
-            .render()
-        })
-        .unwrap_or_default()
-}
-
 pub(super) fn render_string<T: Template>(template: &T) -> String {
     template.render().unwrap_or_else(|error| {
         tracing::error!("模板渲染失败: {error}");
@@ -1225,5 +1229,12 @@ mod tests {
         let empty = turn_stats(&snapshot, &json!({"items": []}));
         assert_eq!(empty.tokens_per_sec, None);
         assert_eq!(empty.cache_hit, None);
+
+        // 模型没报 `cachedTokens`：是"算不出来"，不是"命中 0%"。
+        let no_cache = json!({"items": [
+            {"kind": "assistant", "durationMs": 2000,
+             "usage": {"promptTokens": 100, "completionTokens": 10}}
+        ]});
+        assert_eq!(turn_stats(&snapshot, &no_cache).cache_hit, None);
     }
 }

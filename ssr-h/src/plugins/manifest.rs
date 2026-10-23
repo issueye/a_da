@@ -20,6 +20,10 @@ pub enum Slot {
     SidebarBottom,
     /// 顶栏右侧（操作按钮区）。
     TopbarRight,
+    /// 会话区**右上角**的悬浮点位（贴右上角浮在对话流之上；只在聊天页存在）。
+    ///
+    /// 给"常驻状态卡"（任务规划之类）用：它不该插进正文流，也不该占顶栏高度。
+    ChatCorner,
     /// 输入框工具行左侧。
     ComposerLeft,
     /// 输入框工具行右侧。
@@ -43,6 +47,7 @@ impl Slot {
             Slot::SidebarTop => "sidebar.top",
             Slot::SidebarBottom => "sidebar.bottom",
             Slot::TopbarRight => "topbar.right",
+            Slot::ChatCorner => "chat.corner",
             Slot::ComposerLeft => "composer.left",
             Slot::ComposerRight => "composer.right",
             Slot::ComposerFooter => "composer.footer",
@@ -59,6 +64,7 @@ impl Slot {
             Slot::SidebarTop,
             Slot::SidebarBottom,
             Slot::TopbarRight,
+            Slot::ChatCorner,
             Slot::ComposerLeft,
             Slot::ComposerRight,
             Slot::ComposerFooter,
@@ -152,6 +158,11 @@ pub struct Manifest {
     /// 插件 CSS（相对 assets 目录；只接受 `.css`，例如 `weather.css`）。
     #[serde(default)]
     pub styles: Vec<String>,
+    /// 插件 JS（相对 assets 目录；只接受 `.js`，例如 `todo-card.js`）。
+    ///
+    /// 由服务端注入所有页面 `<head>`（`defer`），用于给 SSR 出来的插槽补交互。
+    #[serde(default)]
+    pub scripts: Vec<String>,
 }
 
 impl Manifest {
@@ -199,25 +210,34 @@ impl Manifest {
             }
         }
         for style in &self.styles {
-            let style = style.trim();
-            if style.is_empty() || !style.ends_with(".css") {
-                bail!("插件样式必须是 .css 文件");
-            }
-            if style.starts_with('/')
-                || style.contains('\\')
-                || style.split('/').any(|part| part == ".." || part.is_empty())
-            {
-                bail!("插件样式路径不合法: {style}");
-            }
-            if !style
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/'))
-            {
-                bail!("插件样式路径只能包含字母、数字、_ - . /: {style}");
-            }
+            validate_asset_path(style, ".css", "样式")?;
+        }
+        for script in &self.scripts {
+            validate_asset_path(script, ".js", "脚本")?;
         }
         Ok(())
     }
+}
+
+/// 插件资源路径校验（CSS / JS 共用一套口径）。
+fn validate_asset_path(relative: &str, extension: &str, label: &str) -> Result<()> {
+    let relative = relative.trim();
+    if relative.is_empty() || !relative.ends_with(extension) {
+        bail!("插件{label}必须是 {extension} 文件");
+    }
+    if relative.starts_with('/')
+        || relative.contains('\\')
+        || relative.split('/').any(|part| part == ".." || part.is_empty())
+    {
+        bail!("插件{label}路径不合法: {relative}");
+    }
+    if !relative
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/'))
+    {
+        bail!("插件{label}路径只能包含字母、数字、_ - . /: {relative}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -263,5 +283,40 @@ mod tests {
             let error = manifest_with_styles(vec![bad]).validate().unwrap_err();
             assert!(format!("{error}").contains("样式"), "{bad}: {error}");
         }
+    }
+
+    fn manifest_with_scripts(scripts: Vec<&str>) -> Manifest {
+        serde_json::from_value(serde_json::json!({
+            "id": "demo",
+            "name": "Demo",
+            "version": "0.1.0",
+            "pages": [{ "slug": "home", "title": "Home", "template": "page.tsx" }],
+            "scripts": scripts,
+        }))
+        .expect("manifest")
+    }
+
+    #[test]
+    fn scripts_must_be_relative_js_files() {
+        // 插件 JS 由服务端注入所有页面，所以路径口径与样式完全一致。
+        assert!(manifest_with_scripts(vec!["todo.js", "lib/card.js"])
+            .validate()
+            .is_ok());
+        for bad in ["todo.ts", "../todo.js", "/todo.js", "a//b.js"] {
+            let error = manifest_with_scripts(vec![bad]).validate().unwrap_err();
+            assert!(format!("{error}").contains("脚本"), "{bad}: {error}");
+        }
+    }
+
+    #[test]
+    fn chat_corner_is_a_known_slot() {
+        let manifest: Manifest = serde_json::from_value(serde_json::json!({
+            "id": "demo",
+            "name": "Demo",
+            "slots": [{ "slot": "chat.corner", "template": "slot.tsx" }],
+        }))
+        .expect("manifest");
+        assert!(manifest.validate().is_ok());
+        assert_eq!(Slot::parse("chat.corner").unwrap(), Slot::ChatCorner);
     }
 }

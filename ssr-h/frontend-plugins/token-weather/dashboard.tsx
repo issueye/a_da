@@ -1,5 +1,12 @@
 import { Chip } from "ssr-h:components";
-import { bandOf, percentOf, tokensOf } from "./components/weather";
+import {
+  bandOf,
+  cacheOf,
+  formatTokens,
+  percentOf,
+  percentText,
+  tokensOf,
+} from "./components/weather";
 
 /** 概览页卡片：同一套分档，省掉明细，只留一眼能看懂的天气。 */
 export function Page(props: any) {
@@ -8,6 +15,7 @@ export function Page(props: any) {
   const band = bandOf(percent);
   const used = tokens && tokens.used ? tokens.used : 0;
   const windowSize = tokens && tokens.window ? tokens.window : 0;
+  const cache = cacheOf(tokens);
 
   return (
     <div class={"tw-dash tw-" + band.key}>
@@ -18,7 +26,9 @@ export function Page(props: any) {
           <Chip text={percent === null ? "无数据" : percent + "%"} tone={band.tone} />
         </div>
         <p class="tw-dash__meta">
-          {percent === null ? "还没有用量数据" : used + " / " + windowSize + " tokens"}
+          {percent === null
+            ? "还没有用量数据"
+            : formatTokens(used) + " / " + formatTokens(windowSize) + " tokens · 缓存 " + percentText(cache.percent) + (cache.stale ? "*" : "")}
         </p>
         <progress
           class="tw-progress tw-progress--sm"

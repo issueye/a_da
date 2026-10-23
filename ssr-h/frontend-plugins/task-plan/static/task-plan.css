@@ -1,0 +1,154 @@
+/* 任务卡片（task-plan 插件）。
+   只在插件自己的作用域内生效（服务端把本文件包进 @scope）；
+   颜色/圆角/字号一律用 design/tokens.css 与 components.css 的标尺，不写死色值。 */
+
+.tp-card {
+  position: relative;
+  width: 320px;
+  max-width: calc(100vw - 48px);
+  border: 0;
+  background: transparent;
+}
+
+/* 收起态：一枚胶囊药丸（进度 + 当前步骤） */
+.tp-card > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 28px;
+  max-width: 380px;
+  padding: 0 10px;
+  border: 1px solid var(--ph-line-strong);
+  border-radius: var(--ada-radius-pill);
+  background: var(--ph-elevated);
+  color: var(--ph-ink);
+  font-size: var(--ada-text-sm);
+  font-weight: 600;
+  box-shadow: var(--ph-shadow);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  transition: border-color var(--ada-transition), background var(--ada-transition);
+}
+.tp-card > summary::-webkit-details-marker {
+  display: none;
+}
+.tp-card > summary:hover {
+  border-color: var(--ph-faint);
+}
+
+.tp-card__head-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.tp-card__head-right {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* 收起/展开两套文案：收起只报进度，展开才说"已完成" */
+.tp-card__title--expanded,
+.tp-card__count--expanded {
+  display: none;
+}
+.tp-card[open] .tp-card__title--collapsed,
+.tp-card[open] .tp-card__count--collapsed {
+  display: none;
+}
+.tp-card[open] .tp-card__title--expanded,
+.tp-card[open] .tp-card__count--expanded {
+  display: inline-block;
+}
+.tp-card[open] .tp-card__head-right {
+  display: inline-flex;
+}
+
+.tp-card__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  font-size: var(--ada-text-sm);
+  font-weight: 600;
+}
+.tp-card__count {
+  /* 进度是硬信息：宁可让标题省略，也不许它换行或被挤没。 */
+  flex-shrink: 0;
+  white-space: nowrap;
+  padding: 0 6px;
+  border-radius: var(--ada-radius-pill);
+  background: var(--ph-brand-soft);
+  color: var(--ph-brand-ink);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: var(--ada-text-xs);
+  font-weight: 600;
+}
+.tp-card.is-done .tp-card__count {
+  background: var(--ph-success-soft);
+  color: var(--ph-success-ink);
+}
+.tp-card__active {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ph-muted);
+  font-size: var(--ada-text-sm);
+  font-weight: 400;
+}
+
+.tp-card__copy,
+.tp-card__collapse {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: var(--ada-radius-sm);
+  border: 0;
+  background: transparent;
+  color: var(--ph-muted);
+  font-family: inherit;
+  font-size: var(--ada-text-sm);
+  cursor: pointer;
+  transition: background var(--ada-transition), color var(--ada-transition);
+}
+.tp-card__copy:hover,
+.tp-card__collapse:hover {
+  background: var(--ph-subtle);
+  color: var(--ph-ink);
+}
+
+/* 展开态：details 变成卡片，summary 变成头部 */
+.tp-card[open] {
+  border: 1px solid var(--ph-line-strong);
+  border-radius: var(--ada-radius-lg);
+  background: var(--ph-elevated);
+  box-shadow: var(--ph-shadow);
+  overflow: hidden;
+}
+.tp-card[open] > summary .tp-card__head-left {
+  flex: 0 1 auto;
+}
+.tp-card[open] > summary {
+  height: auto;
+  max-width: none;
+  padding: 12px;
+  border: 0;
+  border-bottom: 1px solid var(--ph-line);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  cursor: default;
+}
+.tp-card[open] .tp-card__active {
+  display: none;
+}
+.tp-card__body {
+  padding: 10px 12px 12px;
+}

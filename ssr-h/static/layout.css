@@ -31,7 +31,9 @@
 
 /* 主题切换：浅色显示月亮（目标暗色），深色显示太阳（目标亮色） */
 html.light .icon-sun,
-html.dark .icon-moon {
+html.dark .icon-moon,
+html.light .ada-theme__sun,
+html.dark .ada-theme__moon {
   display: none;
 }
 

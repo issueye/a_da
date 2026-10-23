@@ -66,6 +66,50 @@ function percentOf(tokens: any): any {
   return tokens && typeof tokens.percent === "number" ? tokens.percent : null;
 }
 
+/** 缓存命中率（`cachedTokens ÷ promptTokens`）；模型没报缓存字段时是 `null`。 */
+function cacheOf(tokens: any): {
+  percent: number | null;
+  cached: number;
+  stale: boolean;
+} {
+  const cached =
+    tokens && typeof tokens.cached === "number" && tokens.cached > 0
+      ? tokens.cached
+      : 0;
+  // 优先用一位小数的 `cacheRate`（99.8%），老数据回落到整数 `cachePercent`。
+  const percent =
+    tokens && typeof tokens.cacheRate === "number"
+      ? tokens.cacheRate
+      : tokens && typeof tokens.cachePercent === "number"
+        ? tokens.cachePercent
+        : null;
+  // 本轮没报缓存、数字来自上一条真实上报：标记 `*`，别把它当成本轮命中率。
+  const stale = !!(tokens && tokens.cacheStale);
+  return { percent, cached, stale };
+}
+
+/** token 数 → 紧凑文本：`1M` / `1.2M` / `18.7K` / `412`（一位小数，去尾零）。 */
+function formatTokens(value: any): string {
+  const n = typeof value === "number" && isFinite(value) ? value : 0;
+  if (n >= 1000000) {
+    return trimDecimal(n / 1000000) + "M";
+  }
+  if (n >= 1000) {
+    return trimDecimal(n / 1000) + "K";
+  }
+  return String(Math.round(n));
+}
+
+function trimDecimal(value: number): string {
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+/** 百分比整数；拿不到就给 `—`（不要用 0% 假装很空）。 */
+function percentText(percent: any): string {
+  return typeof percent === "number" ? percent + "%" : "—";
+}
+
 /** 百分比 → 天气档位；`null` 走"未知"。 */
 function bandOf(percent: any): Band {
   if (typeof percent !== "number" || percent < 0) {
@@ -79,4 +123,13 @@ function bandOf(percent: any): Band {
   return BANDS[BANDS.length - 1];
 }
 
-export { BANDS, UNKNOWN, tokensOf, percentOf, bandOf };
+export {
+  BANDS,
+  UNKNOWN,
+  tokensOf,
+  percentOf,
+  bandOf,
+  cacheOf,
+  formatTokens,
+  percentText,
+};

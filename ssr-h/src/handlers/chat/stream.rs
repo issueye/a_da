@@ -254,7 +254,7 @@ async fn render_parts(state: &AppState, view: &StreamView) -> Option<String> {
     Some(
         json!({
             "trays": parts.trays,
-            "todo": parts.todo,
+            "corner": parts.corner,
             "topbarStatus": parts.topbar_status,
             "topbarActions": parts.topbar_actions,
             "aux": parts.aux,
@@ -502,9 +502,9 @@ impl StreamView {
     /// 给 `live_parts` 用的快照：meta 原样，目标会话只放**工具卡 + 助手用量**。
     ///
     /// 托盘只关心 `waiting_approval` 的工具、任务规划只关心 `todo` 工具；
-    /// 插件（Token 天气）的 `props.data.tokens` 只读助手卡的 `usage.promptTokens`。
-    /// 没必要把整段对话（长会话上千条、单体几十 KB）每 500ms 克隆一遍，
-    /// 但**不能只留工具卡**——那会让用量插件读到 0，界面显示"晴天 0%"。
+    /// 插件（Token 天气）的 `props.data.tokens` 读助手卡的 `usage` 与 `durationMs`
+    /// （缓存命中、tok/s 都从这里来）。没必要把整段对话（长会话上千条、单体几十 KB）
+    /// 每 500ms 克隆一遍，但**不能只留工具卡**——那会让用量插件读到 0，界面显示"晴天 0%"。
     fn render_parts_snapshot(&self) -> Option<Value> {
         if !self.meta.is_object() {
             return None;
@@ -514,18 +514,25 @@ impl StreamView {
         let thread = threads
             .iter_mut()
             .find(|thread| str_at(thread, "id") == self.thread_id)?;
+        // 标题先按完整 items 解析好：投影只带工具卡 + 助手用量，之后就没法
+        // 再从"首条用户消息"兜底了（否则插件浮窗会显示"新会话"）。
+        let resolved_title = super::super::title_from_items(str_at(thread, "title"), &self.items);
+        thread["title"] = json!(resolved_title);
         let mut items: Vec<Value> = Vec::new();
         for item in &self.items {
             match str_at(item, "kind") {
                 "tool" => items.push(item.clone()),
                 "assistant" => {
-                    // 只投影用量：`last_prompt_tokens` 读 kind + usage.promptTokens，
-                    // 正文/思考文本不需要进入这里。
+                    // 只投影用量与耗时：正文/思考文本不需要进入这里。
                     if let Some(usage) = item.get("usage").filter(|usage| usage.is_object()) {
-                        items.push(json!({
+                        let mut projected = json!({
                             "kind": "assistant",
                             "usage": usage,
-                        }));
+                        });
+                        if let Some(duration) = item.get("durationMs").and_then(Value::as_u64) {
+                            projected["durationMs"] = json!(duration);
+                        }
+                        items.push(projected);
                     }
                 }
                 _ => {}

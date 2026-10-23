@@ -15,20 +15,20 @@
 pub mod components;
 pub mod icons;
 pub mod rows;
+pub mod sidebar;
 pub mod theme;
 pub mod todo;
 
 pub use components::{
-    render_slot, ApprovalTray, AssistantMessage, AuxItem, Button, Chip, Composer, ComposerAux,
-    ConfirmDialog, Disclosure, EmptyState, IconButton, Modal, ModelTable, ModelTableRow, Notice,
+    effort_label, model_chip_inner, normalize_effort, render_slot, ApprovalTray, AssistantMessage,
+    AuxItem, Button, Chip, Composer, ComposerAux, ConfirmDialog, Disclosure, EmptyState,
+    IconButton, Modal, ModelChoice, ModelGroup, ModelPicker, ModelTable, ModelTableRow, Notice,
     Panel, QueueItem, QueueTray, Render, Select, SendButton, Slot, TabItem, Tabs, TextField,
     ToolCall, UserMessage,
 };
 pub use icons::{icon, sprite};
 pub use rows::{render_empty, render_empty_thread, render_row, RowView};
 pub use theme::{ButtonKind, ButtonVariant, Size, Tone};
-pub use todo::{
-    derive_todo_plan, read_todo_items, TodoList, TodoPanel, TodoPlan, TodoStatus, TodoStep,
-};
+pub use todo::{derive_todo_plan, read_todo_items, TodoList, TodoPlan, TodoStatus, TodoStep};
 
 

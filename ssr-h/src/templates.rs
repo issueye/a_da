@@ -22,6 +22,8 @@ pub struct SlotContent {
     pub sidebar_top: String,
     pub sidebar_bottom: String,
     pub topbar_right: String,
+    /// 会话区右上角的悬浮插槽（任务规划之类的常驻卡片）。
+    pub chat_corner: String,
     pub composer_left: String,
     pub composer_right: String,
     pub composer_footer: String,
@@ -46,11 +48,18 @@ pub struct PageBase {
     pub plugin_nav: Vec<NavLink>,
     /// 启用插件声明的 CSS（由 manifest `styles` 注入 `<head>`）。
     pub plugin_styles: Vec<String>,
+    /// 启用插件声明的 JS（由 manifest `scripts` 注入 `<head>`，`defer`）。
+    pub plugin_scripts: Vec<String>,
     pub flash: Option<Flash>,
     /// 插件插槽内容（SSR 期填充）。
     pub slots: SlotContent,
     /// 图标 sprite（组件库生成的唯一图标源）。
     pub icons: String,
+    /// 侧栏整块 HTML（组件库 [`crate::ui::sidebar`] 渲染）。
+    ///
+    /// 侧栏原先在 `chat.html` 与 `layout.html` 各写一份，改一次要改两处；
+    /// 现在模板只摆 `{{ base.sidebar|safe }}`。聊天页拿到工作区树之后会覆盖它。
+    pub sidebar: String,
     /// 共享确认弹窗（组件库渲染）：每个页面外壳都要带上，别在模板里手写一份。
     pub confirm_dialog: String,
 }
@@ -237,8 +246,6 @@ pub struct ChatPage {
     pub trays_html: String,
     /// 组件库渲染好的输入框（含插件插槽）。
     pub composer_html: String,
-    /// 任务规划悬浮面板（组件库渲染）；无规划时为空。
-    pub todo_html: String,
     /// 顶栏状态药丸（运行中 / 审批档位 / 未连接）。
     pub topbar_status: String,
     /// 顶栏刷新 / 停止按钮。
