@@ -7,7 +7,7 @@
 //! 3. 工作区切换器（一行：名字 + 会话数 + 箭头；点进 `/workspaces`）
 //! 4. 会话搜索（仅聊天页）
 //! 5. 会话列表：**唯一**的伸缩与滚动区
-//! 6. 系统导航（前端插件链接 + 插件/供应商/概览）
+//! 6. 系统导航（前端插件链接 + 插件/概览）
 //! 7. 主题 + 网关
 //!
 //! 为什么由组件库渲染而不是模板：这段标记原先在 `chat.html` 与 `layout.html`
@@ -262,7 +262,7 @@ impl Sidebar {
         )
     }
 
-    /// 系统导航：插件链接 + 插件 / 供应商 / 概览。
+    /// 系统导航：插件链接 + 插件 / 概览。
     ///
     /// 这些是低频设置面，放在底部是已经被训练出来的位置；同时把顶部让给会话列表。
     fn util_nav(&self) -> String {
@@ -287,7 +287,6 @@ impl Sidebar {
             }
         }
         out.push_str(&self.nav_item("extensions", "i-plug", "插件", "/extensions"));
-        out.push_str(&self.nav_item("providers", "i-server", "供应商", "/providers"));
         out.push_str(&self.nav_item("dashboard", "i-chart", "概览", "/overview"));
         out.push_str("</nav>");
         out
@@ -364,7 +363,6 @@ impl Sidebar {
         }
         out.push_str(r#"<span class="ada-rail__spacer"></span>"#);
         out.push_str(&self.rail_link("extensions", "i-plug", "插件", "/extensions"));
-        out.push_str(&self.rail_link("providers", "i-server", "供应商", "/providers"));
         out.push_str(&self.rail_link("dashboard", "i-chart", "概览", "/overview"));
         out.push_str(&format!(
             r#"<button class="ada-rail__btn" type="button" data-theme-toggle title="切换深浅色" aria-label="切换深浅色">{}</button>"#,
@@ -556,7 +554,8 @@ mod tests {
             html.contains("class=\"ada-rail__thumb\""),
             "收起后仍要能跳最近会话"
         );
-        assert!(html.contains(r#"href="/providers""#), "窄轨保留系统导航");
+        assert!(!html.contains(r#"href="/providers""#), "供应商已插件化，核心入口应移除");
+        assert!(html.contains(r#"href="/extensions""#), "窄轨保留系统导航");
     }
 
     #[test]
@@ -591,3 +590,4 @@ mod tests {
         assert!(html.contains("还没有会话"));
     }
 }
+

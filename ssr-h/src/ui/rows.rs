@@ -182,4 +182,3 @@ pub fn render_empty(title: &str, description: &str, icon: &str) -> String {
     }
     .render()
 }
-

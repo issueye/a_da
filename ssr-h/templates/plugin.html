@@ -1,22 +1,4 @@
 {% extends "layout.html" %}
 {% block content %}
-<div class="section-head">
-  <div>
-    <div class="flex flex-wrap items-center gap-2">
-      <span class="badge badge-brand">前端插件</span>
-      <span class="text-xs text-faint">{{ plugin_name }}</span>
-    </div>
-    <h1 class="page-title mt-2">{{ page_title }}</h1>
-    <p class="page-sub">这是插件提供的独立页面；内容来自插件目录，按原样片段渲染。</p>
-  </div>
-  <a class="btn btn-ghost btn-sm" href="/extensions">
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
-    返回扩展
-  </a>
-</div>
-
-<div class="card mt-4 p-5">
-  <div data-plugin-scope="{{ plugin_id }}">{{ html|safe }}</div>
-</div>
+<div data-plugin-scope="{{ plugin_id }}">{{ html|safe }}</div>
 {% endblock %}
-

@@ -6,19 +6,20 @@
 
 use axum::extract::{Form, Path, Query, State};
 use axum::http::{header, HeaderValue, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::*;
-use crate::ui::{
-    Button, ButtonKind, ButtonVariant, IconButton, Modal, ModelTable, Render, Select, Size, TabItem,
-    Tabs,
-};
 
-/// 详情区页签的 DOM id 前缀：`Tabs` 按它生成 `…-tab-{key}` / `…-panel-{key}`，
-/// 模板里的两个面板 id 必须与它保持一致（改了这里也要改模板）。
-const DETAIL_TABS: &str = "provider-detail";
+/// 读取字符串配置；缺失/非字符串时给空串。
+fn config_str(config: &Value, key: &str) -> String {
+    config
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
 
 /// 页签 key 只有两个，查询参数写错时回落到「供应商信息」（不报错、渲染可预期）。
 fn normalize_tab(tab: Option<&str>) -> &'static str {
@@ -112,14 +113,35 @@ fn model_text(model: &Value, key: &str) -> String {
         .unwrap_or_default()
 }
 
-fn provider_cards(values: &Value, active_id: &str, current_model: &str) -> Vec<ProviderCard> {
-    array_at(values, "providers")
+/// 给插件页面的供应商只读投影：**绝不含 apiKey / 自定义请求头原文**。
+///
+/// 只投影 id / 名称 / 协议 / 端点 / 掩码后的密钥提示 / 模型行；写操作仍走
+/// 核心 `/providers/*` 动作端点，插件只负责渲染。
+pub(crate) fn provider_admin_view(
+    snapshot: &Value,
+    selected: Option<&str>,
+    tab: Option<&str>,
+) -> Value {
+    let config = snapshot.get("config").cloned().unwrap_or(Value::Null);
+    let active_id = snapshot
+        .get("activeProviderId")
+        .and_then(Value::as_str)
+        .or_else(|| config.get("activeProviderId").and_then(Value::as_str))
+        .unwrap_or("")
+        .to_string();
+    let current_model = config_str(&config, "model");
+    let raw = snapshot
+        .get("providers")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let providers: Vec<Value> = raw
         .iter()
-        .map(|value| {
-            let id = str_at(value, "id").to_string();
+        .map(|provider| {
+            let id = str_at(provider, "id").to_string();
             let active = !active_id.is_empty() && active_id == id;
-            let api_key = str_at(value, "apiKey");
-            let models: Vec<ProviderModelRow> = value
+            let api_key = str_at(provider, "apiKey");
+            let models: Vec<Value> = provider
                 .get("models")
                 .and_then(Value::as_array)
                 .map(Vec::as_slice)
@@ -136,262 +158,92 @@ fn provider_cards(values: &Value, active_id: &str, current_model: &str) -> Vec<P
                             name.to_string()
                         }
                     };
-                    ProviderModelRow {
-                        current: active && !current_model.is_empty() && model_id == current_model,
-                        index,
-                        id: model_id,
-                        name,
-                        context_window: model_text(model, "contextWindow"),
-                        max_output_tokens: model_text(model, "maxOutputTokens"),
-                        supports_images: model
-                            .get("supportsImages")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(true),
-                    }
+                    serde_json::json!({
+                        "index": index,
+                        "id": model_id,
+                        "name": name,
+                        "contextWindow": model_text(model, "contextWindow"),
+                        "maxOutputTokens": model_text(model, "maxOutputTokens"),
+                        "supportsImages": model.get("supportsImages").and_then(Value::as_bool).unwrap_or(true),
+                        "current": active && !current_model.is_empty() && str_at(model, "id") == current_model,
+                    })
                 })
                 .collect();
-            ProviderCard {
-                href: format!("/providers?provider={}", encode_query(&id)),
-                id,
-                name: str_at(value, "name").to_string(),
-                protocol: {
-                    let protocol = str_at(value, "protocol");
-                    if protocol.is_empty() {
-                        "openai_chat".to_string()
-                    } else {
-                        protocol.to_string()
-                    }
-                },
-                protocol_label: protocol_label(str_at(value, "protocol")).to_string(),
-                base_url: str_at(value, "baseUrl").to_string(),
-                proxy_url: str_at(value, "proxyUrl").to_string(),
-                headers: headers_text(value),
-                api_key_set: !api_key.trim().is_empty(),
-                api_key_hint: mask_api_key(api_key),
-                model_count: models.len(),
-                active,
-                models,
-                modals: String::new(),
-                delete_form: String::new(),
-            }
+            serde_json::json!({
+                "id": id,
+                "name": str_at(provider, "name"),
+                "protocol": str_at(provider, "protocol"),
+                "protocolLabel": protocol_label(str_at(provider, "protocol")),
+                "baseUrl": str_at(provider, "baseUrl"),
+                "proxyUrl": str_at(provider, "proxyUrl"),
+                "headers": headers_text(provider),
+                "apiKeySet": !api_key.trim().is_empty(),
+                "apiKeyHint": mask_api_key(api_key),
+                "modelCount": models.len(),
+                "active": active,
+                "models": models,
+            })
         })
-        .collect()
-}
-
-/// 列表行右侧的「删除供应商」动作：整行是链接，删除必须另起一个表单（不能塞进 `<a>` 里）。
-fn provider_delete_form(id: &str, name: &str, can_delete: bool) -> String {
-    if !can_delete {
-        return IconButton::new("i-trash", "至少保留一个供应商")
-            .attrs("disabled")
-            .render();
+        .collect();
+    let mut current_base_url = config_str(&config, "baseUrl");
+    if current_base_url.is_empty() {
+        current_base_url = providers
+            .iter()
+            .find(|provider| provider.get("id").and_then(Value::as_str) == Some(active_id.as_str()))
+            .and_then(|provider| provider.get("baseUrl"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
     }
-    IconButton::new("i-trash", format!("删除供应商「{name}」"))
-        .action(format!("/providers/{}/delete", encode_query(id)))
-        .attrs(format!(
-            "data-confirm=\"{}\"",
-            escape_html(&format!("删除供应商「{name}」？该操作不可恢复。"))
-        ))
-        .render()
-}
-
-/// 模型编辑/新增弹窗：两者共用一张表单，只有 action、标题与预填值不同。
-fn model_modal(provider_id: &str, model: Option<&ProviderModelRow>) -> String {
-    let provider_id = encode_query(provider_id);
-    let (modal_id, title, action, submit_label) = match model {
-        Some(row) => (
-            format!("model-{}", row.index),
-            "编辑模型".to_string(),
-            format!("/providers/{provider_id}/models/{}", row.index),
-            "保存模型",
-        ),
-        None => (
-            "model-new".to_string(),
-            "新增模型".to_string(),
-            format!("/providers/{provider_id}/models"),
-            "添加到列表",
-        ),
-    };
-    let (id_value, name, context_window, max_output, supports_images) = match model {
-        Some(row) => (
-            escape_html(&row.id),
-            escape_html(&row.name),
-            escape_html(&row.context_window),
-            escape_html(&row.max_output_tokens),
-            row.supports_images,
-        ),
-        None => (
-            String::new(),
-            String::new(),
-            "128000".to_string(),
-            "8192".to_string(),
-            true,
-        ),
-    };
-    let form = format!(
-        r#"<form method="post" action="{action}" class="ada-modal__form">
-  <div class="ada-form-grid">
-    <label class="field"><span class="label">模型 ID</span>
-      <input class="input font-mono" name="id" value="{id_value}" placeholder="gpt-4o-mini" required data-modal-autofocus>
-    </label>
-    <label class="field"><span class="label">显示名</span>
-      <input class="input" name="name" value="{name}" placeholder="留空则用模型 ID">
-    </label>
-    <label class="field"><span class="label">上下文窗口</span>
-      <input class="input" name="contextWindow" value="{context_window}" inputmode="numeric" placeholder="128000">
-    </label>
-    <label class="field"><span class="label">最大输出</span>
-      <input class="input" name="maxOutputTokens" value="{max_output}" inputmode="numeric" placeholder="8192">
-    </label>
-  </div>
-  <label class="checkbox-row"><input type="checkbox" name="supportsImages" value="on"{checked}> 支持图片输入</label>
-  <div class="ada-modal__actions">{cancel}{submit}</div>
-</form>"#,
-        checked = if supports_images { " checked" } else { "" },
-        cancel = Button::new("取消")
-            .variant(ButtonVariant::Secondary)
-            .size(Size::Sm)
-            .kind(ButtonKind::Button)
-            .attrs("data-modal-close")
-            .render(),
-        submit = Button::new(submit_label)
-            .variant(ButtonVariant::Primary)
-            .size(Size::Sm)
-            .kind(ButtonKind::Submit)
-            .render(),
-    );
-    Modal::new(modal_id, title).wide().body(form).render()
-}
-
-fn config_str(config: &Value, key: &str) -> String {
-    config
-        .get("saved")
-        .and_then(|saved| saved.get(key))
-        .and_then(Value::as_str)
-        .or_else(|| config.get(key).and_then(Value::as_str))
-        .unwrap_or("")
-        .to_string()
-}
-
-pub async fn providers(
-    State(state): State<AppState>,
-    Query(query): Query<PageQuery>,
-) -> Result<Response, AppError> {
-    let config = state.agent.config().await.unwrap_or(Value::Null);
-    let values = state.agent.providers().await.unwrap_or(Value::Null);
-    let active_id = values
-        .get("activeProviderId")
-        .and_then(Value::as_str)
-        .or_else(|| config.get("activeProviderId").and_then(Value::as_str))
-        .unwrap_or("")
-        .to_string();
-    let current_model = config_str(&config, "model");
-    let cards = provider_cards(&values, &active_id, &current_model);
-    let wanted = query
-        .provider
-        .clone()
+    let requested = selected
+        .map(str::trim)
         .filter(|id| !id.is_empty())
         .unwrap_or_else(|| {
             if active_id.is_empty() {
-                cards
+                providers
                     .first()
-                    .map(|card| card.id.clone())
-                    .unwrap_or_default()
+                    .and_then(|value| value.get("id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
             } else {
-                active_id.clone()
+                &active_id
             }
         });
-    let mut selected = cards
+    let selected_id = if providers
         .iter()
-        .find(|card| card.id == wanted)
-        .cloned()
-        .or_else(|| cards.first().cloned());
-    // 每个模型的编辑弹窗 + 一个"新增模型"弹窗（都是组件库渲染的 HTML）。
-    let model_new_modal = model_modal(
-        &selected
-            .as_ref()
-            .map(|card| card.id.clone())
-            .unwrap_or_default(),
-        None,
-    );
-    if let Some(card) = selected.as_mut() {
-        let provider_id = card.id.clone();
-        let modals: String = card
-            .models
-            .iter()
-            .map(|model| model_modal(&provider_id, Some(model)))
-            .collect();
-        card.modals = modals;
-    }
-    let can_delete = cards.len() > 1;
-    // 「删除供应商」放到列表行右侧：整行是链接，删除按钮必须自带表单。
-    let mut cards = cards;
-    for card in cards.iter_mut() {
-        card.delete_form = provider_delete_form(&card.id, &card.name, can_delete);
-    }
-    let protocols = protocol_options();
-    // 协议下拉走组件库的 Select（原生 <select> 的弹层不受控，深色主题下尤其扎眼）。
-    let protocol_select = Select::new("protocol")
-        .options(
-            protocols
-                .iter()
-                .map(|option| (option.value.clone(), option.label.clone())),
-        )
-        .value(
-            selected
-                .as_ref()
-                .map(|card| card.protocol.clone())
-                .unwrap_or_default(),
-        )
-        .title("协议")
-        .render();
-    let active_tab = normalize_tab(query.tab.as_deref());
-    // 页签导航是**真实链接**：没有 JS 时点一下就是整页刷新到该页签；地址里带着
-    // provider 与 tab，刷新/收藏/从网关跳回来都落在同一处。JS 只把同页跳转变成就地切换。
-    let tabs = match selected.as_ref() {
-        Some(card) => Tabs::new(DETAIL_TABS, "供应商详情")
-            .active(active_tab)
-            .item(TabItem::new(
-                "connection",
-                "供应商信息",
-                format!(
-                    "/providers?provider={}&tab=connection",
-                    encode_query(&card.id)
-                ),
-            ))
-            .item(
-                TabItem::new(
-                    "models",
-                    "模型列表",
-                    format!("/providers?provider={}&tab=models", encode_query(&card.id)),
-                )
-                .count(card.model_count),
-            )
-            .render(),
-        None => String::new(),
+        .any(|provider| provider.get("id").and_then(Value::as_str) == Some(requested))
+    {
+        requested.to_string()
+    } else {
+        providers
+            .first()
+            .and_then(|value| value.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
     };
-    let model_table = selected
-        .as_ref()
-        .map(|card| ModelTable::new(&card.id, &card.name, &card.models).render())
-        .unwrap_or_default();
-    let page = ProvidersPage {
-        base: base(&state, "供应商", "providers", flash_from_query(&query)).await,
-        providers: cards,
-        selected,
-        current_model,
-        current_base_url: config_str(&config, "baseUrl"),
-        protocol_select,
-        tabs,
-        active_tab: active_tab.to_string(),
-        model_new_modal,
-        remote_modal: remote_models_modal(),
-        model_table,
-    };
-    Ok(render(&page)?.into_response())
+    serde_json::json!({
+        "providers": providers,
+        "selectedId": selected_id,
+        "activeTab": normalize_tab(tab),
+        "currentModel": current_model,
+        "currentBaseUrl": current_base_url,
+        "canDeleteProviders": raw.len() > 1,
+        "protocols": protocol_options()
+            .into_iter()
+            .map(|option| serde_json::json!({ "value": option.value, "label": option.label }))
+            .collect::<Vec<_>>(),
+    })
 }
 
-/// 读一条供应商实体：**所有动作都先读整条、改字段、整体写回**。
-///
-/// 后端 `provider.save` 是"存在即替换"，只发改动的字段会把模型列表写成空。
+pub async fn providers_redirect(uri: axum::http::Uri) -> Redirect {
+    let query = uri
+        .query()
+        .filter(|query| !query.is_empty())
+        .map(|query| format!("?{query}"))
+        .unwrap_or_default();
+    Redirect::to(&format!("/ext/provider-admin/providers{query}"))
+}
 async fn provider_entry(state: &AppState, id: &str) -> Result<Value, AppError> {
     let values = state.agent.providers().await.map_err(|error| {
         AppError::upstream(format!("读取供应商失败：{}", public_reason(&error)))
@@ -439,6 +291,95 @@ fn provider_failed(id: &str, tab: &str, prefix: &str, error: anyhow::Error) -> R
     ))
 }
 
+/// 只接受插件页面/供应商页的相对回跳，避免开放重定向。
+fn safe_plugin_next(raw: Option<&str>) -> Option<String> {
+    let raw = raw?.trim();
+    if !raw.starts_with("/")
+        || raw.starts_with("//")
+        || raw.contains('\\')
+        || raw.chars().any(char::is_control)
+        || !(raw.starts_with("/ext/") || raw.starts_with("/providers"))
+    {
+        return None;
+    }
+    Some(raw.to_string())
+}
+
+fn append_query(mut base: String, params: &[(&str, &str)]) -> String {
+    for (key, value) in params {
+        let separator = if base.contains('?') { '&' } else { '?' };
+        base.push(separator);
+        base.push_str(&format!("{key}={}", encode_query(value)));
+    }
+    base
+}
+
+fn provider_back_with_next(id: &str, tab: &str, notice: &str, next: Option<&str>) -> Response {
+    if let Some(base) = safe_plugin_next(next) {
+        return redirect(&append_query(
+            base,
+            &[
+                ("provider", id),
+                ("tab", normalize_tab(Some(tab))),
+                ("notice", notice),
+            ],
+        ));
+    }
+    provider_back(id, tab, notice)
+}
+
+fn provider_back_from_with_next(
+    id: &str,
+    tab: &str,
+    notice: &str,
+    back: Option<&str>,
+    next: Option<&str>,
+) -> Response {
+    if let Some(base) = safe_plugin_next(next) {
+        let mut params = vec![
+            ("provider", id.to_string()),
+            ("tab", normalize_tab(Some(tab)).to_string()),
+            ("notice", notice.to_string()),
+        ];
+        if back.map(str::trim) == Some("remote") {
+            params.push(("dialog", "remote-models".to_string()));
+        }
+        let rendered: Vec<(&str, &str)> = params
+            .iter()
+            .map(|(key, value)| (*key, value.as_str()))
+            .collect();
+        return redirect(&append_query(base, &rendered));
+    }
+    provider_back_from(id, tab, notice, back)
+}
+
+fn provider_failed_with_next(
+    id: &str,
+    tab: &str,
+    prefix: &str,
+    error: anyhow::Error,
+    next: Option<&str>,
+) -> Response {
+    if let Some(base) = safe_plugin_next(next) {
+        tracing::warn!("{prefix}: {error:#}");
+        let message = format!("{prefix}：{}", public_reason(&error));
+        return redirect(&append_query(
+            base,
+            &[
+                ("provider", id),
+                ("tab", normalize_tab(Some(tab))),
+                ("error", message.as_str()),
+            ],
+        ));
+    }
+    provider_failed(id, tab, prefix, error)
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct NextQuery {
+    next: Option<String>,
+}
+
 fn now_millis() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -467,6 +408,8 @@ pub struct ProviderForm {
 #[derive(Debug, Deserialize)]
 pub struct ActivateForm {
     model: Option<String>,
+    #[serde(default)]
+    next: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -483,6 +426,8 @@ pub struct ModelForm {
     /// 保存后要带着弹窗回跳，否则每加一个模型弹窗就没了。
     #[serde(default)]
     back: Option<String>,
+    #[serde(default)]
+    next: Option<String>,
 }
 
 fn parse_u64(text: Option<&str>, fallback: u64) -> u64 {
@@ -510,7 +455,10 @@ fn model_value(form: &ModelForm, model_id: &str) -> Value {
     })
 }
 
-pub async fn create_provider(State(state): State<AppState>) -> Result<Response, AppError> {
+pub async fn create_provider(
+    State(state): State<AppState>,
+    Query(query): Query<NextQuery>,
+) -> Result<Response, AppError> {
     let id = format!("prov_{}", now_millis());
     let entry = json!({
         "id": id,
@@ -527,44 +475,66 @@ pub async fn create_provider(State(state): State<AppState>) -> Result<Response, 
         }]
     });
     match state.agent.save_provider(&entry).await {
-        Ok(_) => Ok(provider_back(&id, "connection", "provider_created")),
-        Err(error) => Ok(provider_failed(&id, "connection", "新建供应商失败", error)),
+        Ok(_) => Ok(provider_back_with_next(
+            &id,
+            "connection",
+            "provider_created",
+            query.next.as_deref(),
+        )),
+        Err(error) => Ok(provider_failed_with_next(
+            &id,
+            "connection",
+            "新建供应商失败",
+            error,
+            query.next.as_deref(),
+        )),
     }
 }
 
 pub async fn save_provider(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<NextQuery>,
     Form(form): Form<ProviderForm>,
 ) -> Result<Response, AppError> {
-    let name = form.name.unwrap_or_default().trim().to_string();
+    let name = form.name.clone().unwrap_or_default().trim().to_string();
     if name.is_empty() {
-        return Ok(provider_failed(
+        return Ok(provider_failed_with_next(
             &id,
             "connection",
             "保存供应商失败",
             anyhow::anyhow!("供应商名称不能为空"),
+            query.next.as_deref(),
         ));
     }
-    let base_url = form.base_url.unwrap_or_default().trim().to_string();
+    let base_url = form.base_url.clone().unwrap_or_default().trim().to_string();
     if base_url.is_empty() {
-        return Ok(provider_failed(
+        return Ok(provider_failed_with_next(
             &id,
             "connection",
             "保存供应商失败",
             anyhow::anyhow!("API 端点 (Base URL) 不能为空"),
+            query.next.as_deref(),
         ));
     }
     let mut entry = provider_entry(&state, &id).await?;
     entry["name"] = json!(name);
     entry["baseUrl"] = json!(base_url);
-    entry["protocol"] = json!(form.protocol.unwrap_or_else(|| "openai_chat".to_string()));
+    entry["protocol"] = json!(form
+        .protocol
+        .clone()
+        .unwrap_or_else(|| "openai_chat".to_string()));
     if form.clear_api_key.is_some() {
         entry["apiKey"] = json!("");
-    } else if let Some(key) = form.api_key.filter(|key| !key.trim().is_empty()) {
+    } else if let Some(key) = form.api_key.clone().filter(|key| !key.trim().is_empty()) {
         entry["apiKey"] = json!(key.trim());
     }
-    let proxy_url = form.proxy_url.unwrap_or_default().trim().to_string();
+    let proxy_url = form
+        .proxy_url
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     match entry.as_object_mut() {
         Some(object) if proxy_url.is_empty() => {
             object.remove("proxyUrl");
@@ -572,7 +542,7 @@ pub async fn save_provider(
         Some(_) => entry["proxyUrl"] = json!(proxy_url),
         None => {}
     }
-    match parse_headers(&form.headers.unwrap_or_default()) {
+    match parse_headers(&form.headers.clone().unwrap_or_default()) {
         Value::Null => {
             if let Some(object) = entry.as_object_mut() {
                 object.remove("customHeaders");
@@ -582,15 +552,37 @@ pub async fn save_provider(
     }
 
     if let Err(error) = state.agent.save_provider(&entry).await {
-        return Ok(provider_failed(&id, "connection", "保存供应商失败", error));
+        return Ok(provider_failed_with_next(
+            &id,
+            "connection",
+            "保存供应商失败",
+            error,
+            query.next.as_deref(),
+        ));
     }
     if form.make_active.is_some() {
         if let Err(error) = state.agent.set_active_provider(&id, None).await {
-            return Ok(provider_failed(&id, "connection", "设为激活供应商失败", error));
+            return Ok(provider_failed_with_next(
+                &id,
+                "connection",
+                "设为激活供应商失败",
+                error,
+                query.next.as_deref(),
+            ));
         }
-        return Ok(provider_back(&id, "connection", "provider_saved_activated"));
+        return Ok(provider_back_with_next(
+            &id,
+            "connection",
+            "provider_saved_activated",
+            query.next.as_deref(),
+        ));
     }
-    Ok(provider_back(&id, "connection", "provider_saved"))
+    Ok(provider_back_with_next(
+        &id,
+        "connection",
+        "provider_saved",
+        query.next.as_deref(),
+    ))
 }
 
 pub async fn activate_provider(
@@ -603,18 +595,45 @@ pub async fn activate_provider(
         .set_active_provider(&id, form.model.as_deref())
         .await
     {
-        Ok(_) => Ok(provider_back(&id, "models", "provider_activated")),
-        Err(error) => Ok(provider_failed(&id, "models", "切换激活供应商失败", error)),
+        Ok(_) => Ok(provider_back_with_next(
+            &id,
+            "models",
+            "provider_activated",
+            form.next.as_deref(),
+        )),
+        Err(error) => Ok(provider_failed_with_next(
+            &id,
+            "models",
+            "切换激活供应商失败",
+            error,
+            form.next.as_deref(),
+        )),
     }
 }
 
 pub async fn delete_provider(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<NextQuery>,
 ) -> Result<Response, AppError> {
     match state.agent.delete_provider(&id).await {
-        Ok(_) => Ok(redirect("/providers?notice=provider_deleted")),
-        Err(error) => Ok(provider_failed(&id, "connection", "删除供应商失败", error)),
+        Ok(_) => {
+            if let Some(base) = safe_plugin_next(query.next.as_deref()) {
+                Ok(redirect(&append_query(
+                    base,
+                    &[("notice", "provider_deleted")],
+                )))
+            } else {
+                Ok(redirect("/providers?notice=provider_deleted"))
+            }
+        }
+        Err(error) => Ok(provider_failed_with_next(
+            &id,
+            "connection",
+            "删除供应商失败",
+            error,
+            query.next.as_deref(),
+        )),
     }
 }
 
@@ -625,11 +644,12 @@ pub async fn add_provider_model(
 ) -> Result<Response, AppError> {
     let model_id = form.id.clone().unwrap_or_default().trim().to_string();
     if model_id.is_empty() {
-        return Ok(provider_failed(
+        return Ok(provider_failed_with_next(
             &id,
             "models",
             "添加模型失败",
             anyhow::anyhow!("模型 ID 不能为空"),
+            form.next.as_deref(),
         ));
     }
     let mut entry = provider_entry(&state, &id).await?;
@@ -642,25 +662,39 @@ pub async fn add_provider_model(
         })
         .and_then(Value::as_array_mut);
     let Some(models) = models else {
-        return Ok(provider_failed(
+        return Ok(provider_failed_with_next(
             &id,
             "models",
             "添加模型失败",
             anyhow::anyhow!("供应商数据格式异常（models 不是数组）"),
+            form.next.as_deref(),
         ));
     };
     if models.iter().any(|model| str_at(model, "id") == model_id) {
-        return Ok(provider_failed(
+        return Ok(provider_failed_with_next(
             &id,
             "models",
             "添加模型失败",
             anyhow::anyhow!("模型 {model_id} 已存在"),
+            form.next.as_deref(),
         ));
     }
     models.push(model_value(&form, &model_id));
     match state.agent.save_provider(&entry).await {
-        Ok(_) => Ok(provider_back_from(&id, "models", "model_added", form.back.as_deref())),
-        Err(error) => Ok(provider_failed(&id, "models", "添加模型失败", error)),
+        Ok(_) => Ok(provider_back_from_with_next(
+            &id,
+            "models",
+            "model_added",
+            form.back.as_deref(),
+            form.next.as_deref(),
+        )),
+        Err(error) => Ok(provider_failed_with_next(
+            &id,
+            "models",
+            "添加模型失败",
+            error,
+            form.next.as_deref(),
+        )),
     }
 }
 
@@ -906,7 +940,8 @@ fn remote_models_html(value: &Value, provider_id: &str, existing: &[String]) -> 
         return "<p class=\"ada-remote__empty\">端点已响应，但没有返回可用模型；可以用「新增模型」手动添加。</p>"
             .to_string();
     }
-    let mut groups: std::collections::BTreeMap<&str, Vec<&Value>> = std::collections::BTreeMap::new();
+    let mut groups: std::collections::BTreeMap<&str, Vec<&Value>> =
+        std::collections::BTreeMap::new();
     for model in &models {
         let id = str_at(model, "id");
         let vendor = id.split('/').next().unwrap_or(id);
@@ -960,7 +995,11 @@ fn remote_models_html(value: &Value, provider_id: &str, existing: &[String]) -> 
 fn remote_model_row(model: &Value, provider_id: &str, existing: &[String]) -> String {
     let model_id = str_at(model, "id");
     let raw_name = str_at(model, "name");
-    let name = if raw_name.is_empty() { model_id } else { raw_name };
+    let name = if raw_name.is_empty() {
+        model_id
+    } else {
+        raw_name
+    };
     let context_window = model_text(model, "contextWindow");
     let max_output_tokens = model_text(model, "maxOutputTokens");
     let mut meta = Vec::new();
@@ -1001,20 +1040,6 @@ fn remote_model_row(model: &Value, provider_id: &str, existing: &[String]) -> St
         title = escape_html(&meta.join(" · ")),
         label = escape_html(model_id),
     )
-}
-
-/// 「远程模型」弹窗外壳：搜索框常驻，列表由 htmx 换进 `#remote-models-body`。
-fn remote_models_modal() -> String {
-    let body = "<div class=\"ada-remote\">\
-<div class=\"ada-remote__bar\">\
-<input class=\"ada-remote__search\" type=\"search\" placeholder=\"搜索模型 id，例如 qwen3\" data-remote-search data-modal-autofocus>\
-<span class=\"ada-remote__count\" data-remote-count>获取中…</span>\
-</div>\
-<div class=\"ada-remote__body\" id=\"remote-models-body\">\
-<p class=\"ada-remote__empty\">正在向端点获取模型列表…</p>\
-</div>\
-</div>";
-    Modal::new("remote-models", "远程模型").wide().body(body).render()
 }
 
 /// `POST /providers/{id}/test`：调 `config.checkProvider`，返回结果片段。
@@ -1081,7 +1106,11 @@ mod tests {
         let html = remote_models_html(&value, "prov 1", &["Qwen/Qwen3-7-Plus".to_string()]);
         // Qwen 有两个模型 → 单独成组；另外两个是"独苗" → 合并进「其它」。
         // 注意别直接数 `ada-remote__group`：容器 `ada-remote__groups` 也会命中。
-        assert_eq!(html.matches("class=\"ada-remote__group\"").count(), 2, "{html}");
+        assert_eq!(
+            html.matches("class=\"ada-remote__group\"").count(),
+            2,
+            "{html}"
+        );
         assert!(html.contains(">其它<"), "独苗厂商应合并成「其它」: {html}");
         // 已在列表里：只给「已添加」，不再给按钮
         assert!(html.contains("ada-remote__added"), "{html}");
@@ -1118,6 +1147,26 @@ mod tests {
     }
 
     #[test]
+    fn provider_admin_projection_never_leaks_api_key() {
+        let snapshot = json!({
+            "activeProviderId": "p1",
+            "config": { "model": "m1", "baseUrl": "https://example.test/v1" },
+            "providers": [{
+                "id": "p1", "name": "Provider", "protocol": "openai_chat",
+                "baseUrl": "https://example.test/v1", "apiKey": "sk-secret-value-1234",
+                "models": [{ "id": "m1", "name": "Model", "contextWindow": 1000 }]
+            }]
+        });
+        let view = provider_admin_view(&snapshot, None, Some("models"));
+        let text = serde_json::to_string(&view).unwrap();
+        assert!(!text.contains("sk-secret-value-1234"), "{text}");
+        assert!(text.contains("apiKeyHint"), "{text}");
+        assert_eq!(view["selectedId"], "p1");
+        assert_eq!(view["activeTab"], "models");
+        assert_eq!(view["providers"][0]["models"][0]["current"], true);
+    }
+
+    #[test]
     fn api_key_is_masked_and_never_renderable_whole() {
         assert_eq!(mask_api_key(""), "");
         assert_eq!(mask_api_key("short"), "已配置");
@@ -1148,6 +1197,7 @@ mod tests {
             max_output_tokens: None,
             supports_images: None,
             back: None,
+            next: None,
         };
         let value = model_value(&form, "m1");
         assert_eq!(value["name"], json!("m1"));
@@ -1167,4 +1217,7 @@ mod tests {
         assert_eq!(value["contextWindow"], json!(128000));
     }
 }
+
+
+
 

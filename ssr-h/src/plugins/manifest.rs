@@ -158,6 +158,9 @@ pub struct Manifest {
     /// 插件 CSS（相对 assets 目录；只接受 `.css`，例如 `weather.css`）。
     #[serde(default)]
     pub styles: Vec<String>,
+    /// 插件能力声明（目前只用于宿主动作/数据注入的显式授权）。
+    #[serde(default)]
+    pub capabilities: Vec<String>,
     /// 插件 JS（相对 assets 目录；只接受 `.js`，例如 `todo-card.js`）。
     ///
     /// 由服务端注入所有页面 `<head>`（`defer`），用于给 SSR 出来的插槽补交互。
@@ -212,6 +215,11 @@ impl Manifest {
         for style in &self.styles {
             validate_asset_path(style, ".css", "样式")?;
         }
+        for capability in &self.capabilities {
+            if !matches!(capability.as_str(), "providers.read") {
+                bail!("不支持的插件能力: {capability}");
+            }
+        }
         for script in &self.scripts {
             validate_asset_path(script, ".js", "脚本")?;
         }
@@ -227,7 +235,9 @@ fn validate_asset_path(relative: &str, extension: &str, label: &str) -> Result<(
     }
     if relative.starts_with('/')
         || relative.contains('\\')
-        || relative.split('/').any(|part| part == ".." || part.is_empty())
+        || relative
+            .split('/')
+            .any(|part| part == ".." || part.is_empty())
     {
         bail!("插件{label}路径不合法: {relative}");
     }
@@ -276,9 +286,11 @@ mod tests {
 
     #[test]
     fn styles_must_be_relative_css_files() {
-        assert!(manifest_with_styles(vec!["weather.css", "nested/badge.css"])
-            .validate()
-            .is_ok());
+        assert!(
+            manifest_with_styles(vec!["weather.css", "nested/badge.css"])
+                .validate()
+                .is_ok()
+        );
         for bad in ["style.scss", "../style.css", "/style.css", "a//b.css"] {
             let error = manifest_with_styles(vec![bad]).validate().unwrap_err();
             assert!(format!("{error}").contains("样式"), "{bad}: {error}");
@@ -319,4 +331,19 @@ mod tests {
         assert!(manifest.validate().is_ok());
         assert_eq!(Slot::parse("chat.corner").unwrap(), Slot::ChatCorner);
     }
+}
+
+#[test]
+fn capabilities_are_an_explicit_allowlist() {
+    let mut ok: Manifest = serde_json::from_value(serde_json::json!({
+        "id": "demo",
+        "name": "Demo",
+        "version": "0.1.0",
+        "capabilities": ["providers.read"],
+        "pages": [{ "slug": "home", "title": "Home", "template": "page.tsx" }],
+    }))
+    .expect("manifest");
+    assert!(ok.validate().is_ok());
+    ok.capabilities.push("providers.write".to_string());
+    assert!(ok.validate().is_err());
 }

@@ -334,6 +334,9 @@ mod tests {
             .started_at(Some(1_700_000_000_000))
             .render();
         assert!(html.contains(r#"data-phase="running""#), "{html}");
-        assert!(html.contains(r#"data-started-at="1700000000000""#), "{html}");
+        assert!(
+            html.contains(r#"data-started-at="1700000000000""#),
+            "{html}"
+        );
     }
 }

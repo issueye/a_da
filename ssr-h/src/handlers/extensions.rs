@@ -161,6 +161,7 @@ pub async fn reload_agent(State(state): State<AppState>) -> Result<Response, App
 pub async fn plugin_page(
     State(state): State<AppState>,
     Path((plugin_id, slug)): Path<(String, String)>,
+    Query(query): Query<PageQuery>,
 ) -> Result<Response, AppError> {
     let plugin = state.frontend.find(&plugin_id).ok_or_else(|| {
         AppError::new(
@@ -171,7 +172,43 @@ pub async fn plugin_page(
     // 插件页可以读 `props.data.tokens`（当前会话上下文用量）。网关不可达时退化成
     // 空快照——插件拿到 percent = null 自己显示"无数据"，页面不要因此 500。
     let snapshot = state.agent.snapshot().await.unwrap_or(Value::Null);
-    let context = super::render_context_with_tokens(&state, "extensions", &snapshot, None);
+    let mut context = super::render_context_with_tokens(&state, "extensions", &snapshot, None);
+    context.route.path = format!("/ext/{plugin_id}/{slug}");
+    let mut route_query = Vec::new();
+    if let Some(provider) = query.provider.as_deref().filter(|value| !value.is_empty()) {
+        route_query.push(format!("provider={}", encode_query(provider)));
+    }
+    if let Some(tab) = query.tab.as_deref().filter(|value| !value.is_empty()) {
+        route_query.push(format!("tab={}", encode_query(tab)));
+    }
+    context.route.query = route_query.join("&");
+    if plugin
+        .capabilities
+        .iter()
+        .any(|capability| capability == "providers.read")
+    {
+        // snapshot 里的 providers 是精简投影，连接表单需要完整字段（proxy/headers）；
+        // 这里额外取 providers RPC，密钥仍只在宿主侧，投影时只输出掩码。
+        let providers = state.agent.providers().await.unwrap_or(Value::Null);
+        let config = state.agent.config().await.unwrap_or(Value::Null);
+        let source = serde_json::json!({
+            "activeProviderId": providers
+                .get("activeProviderId")
+                .cloned()
+                .or_else(|| config.get("activeProviderId").cloned())
+                .unwrap_or(Value::Null),
+            "config": config,
+            "providers": providers.get("providers").cloned().unwrap_or(Value::Array(Vec::new())),
+        });
+        let provider_admin = super::providers::provider_admin_view(
+            &source,
+            query.provider.as_deref(),
+            query.tab.as_deref(),
+        );
+        if let Some(data) = context.data.as_object_mut() {
+            data.insert("providerAdmin".to_string(), provider_admin);
+        }
+    }
     let (page_title, html) = crate::plugins::read_page_off_thread(
         std::sync::Arc::clone(&state.frontend),
         plugin_id.clone(),
@@ -185,7 +222,7 @@ pub async fn plugin_page(
             &state,
             &format!("{} · {}", plugin.name, page_title),
             "extensions",
-            None,
+            flash_from_query(&query),
         )
         .await,
         plugin_id: plugin.id,

@@ -149,7 +149,7 @@
 | `/workspaces/mkdir` | 新建目录 | `fs.mkdir` → 进入新目录 |
 | `/overview` | 概览 | 会话数、运行中、模型、前端插件数 |
 | `/extensions` | 扩展 | 前端插件 + agent 插件；两套重载入口 |
-| `/providers` | 供应商 | 左列选供应商、右侧改连接参数与模型；密钥不回显 |
+| `/ext/provider-admin/providers` | 供应商 | 前端插件页；左列选供应商、右侧改连接参数与模型；密钥不回显 |\n| `/providers` | 旧入口 | 303 跳到插件页，保留动作端点的回退路径 |
 | `/ext/{id}/{slug}` | 前端插件页 | 运行时 HTML 片段 + 静态资源 |
 | `/ext/{id}/assets/*` | 插件资源 | 路径规范化 + 根目录越界拒绝 |
 
@@ -693,4 +693,5 @@ Enter 发送 · Shift+Enter 换行
 - [static/chat.js](../static/chat.js)
 - [src/markdown.rs](../src/markdown.rs)
 - [src/frontend_plugins.rs](../src/frontend_plugins.rs)
+
 

@@ -153,9 +153,7 @@ mod tests {
                 "供应商信息",
                 "/providers?provider=p1&tab=connection",
             ))
-            .item(
-                TabItem::new("models", "模型列表", "/providers?provider=p1&tab=models").count(5),
-            )
+            .item(TabItem::new("models", "模型列表", "/providers?provider=p1&tab=models").count(5))
             .render();
         assert!(html.starts_with(r#"<div class="ada-tabs__list""#), "{html}");
         assert!(html.contains(r#"role="tablist""#));
@@ -195,5 +193,3 @@ mod tests {
         assert!(html.contains("含 2 张图片"));
     }
 }
-
-

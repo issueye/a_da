@@ -49,8 +49,10 @@ const INPUT_ATTRS: &[&str] = &[
     "step",
     "required",
     "readonly",
+    "checked",
 ];
 const LABEL_ATTRS: &[&str] = &["for"];
+const TEXTAREA_ATTRS: &[&str] = &["name", "rows", "placeholder", "disabled"];
 
 /// 全部内置元素（进程内只构造一次）。
 pub fn builtin_elements() -> &'static [ElementDef] {
@@ -119,6 +121,8 @@ fn build_builtin_elements() -> Vec<ElementDef> {
     element!("samp");
     element!("var");
     element!("table");
+    element!("colgroup");
+    element!("col", &[], void);
     element!("caption");
     element!("thead");
     element!("tbody");
@@ -151,6 +155,7 @@ fn build_builtin_elements() -> Vec<ElementDef> {
     element!("button", BUTTON_ATTRS);
     element!("form", FORM_ATTRS);
     element!("input", INPUT_ATTRS, void);
+    element!("textarea", TEXTAREA_ATTRS);
     element!("label", LABEL_ATTRS);
     // TSX 组件库使用的自定义元素（行为在 static/ada-select.js / ada-modal.js）。
     element!("ada-select");

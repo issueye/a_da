@@ -39,6 +39,7 @@
 | `workspace` | object | 工作区（§2.6） |
 | `counts` | object | 计数（§2.7） |
 | `todo` | object \| null | `todo` 工具的当前计划（§2.8） |
+| `providerAdmin` | object | 供应商只读投影（§2.9；仅声明 `providers.read` 的插件） |
 
 ### 2.2 `tokens`（上下文 / 缓存用量）
 
@@ -129,6 +130,32 @@
 `status`：`pending` / `in_progress` / `completed`。没有规划过时为 `null`。
 状态推演（`set` 替换 / `update` 按 id 合并 / `get` 只读）只在核心做，插件不要重演。
 
+### 2.9 `providerAdmin`
+
+仅当插件 manifest 声明了 `providers.read` 时注入；页面路径仍由宿主的
+`/ext/{id}/{slug}` 提供。API Key **永远不出现在这里**，只有掩码提示。
+
+```json
+{
+  "providers": [{
+    "id": "prov_…", "name": "commandcode_chat", "protocol": "openai_chat",
+    "protocolLabel": "OpenAI Chat", "baseUrl": "https://…", "proxyUrl": "http://…",
+    "headers": "x-api-key: …", "apiKeySet": true, "apiKeyHint": "sk-t…7890",
+    "modelCount": 3, "active": true,
+    "models": [{ "index": 0, "id": "…", "name": "…", "contextWindow": "1000000",
+                 "maxOutputTokens": "65536", "supportsImages": true, "current": false }]
+  }],
+  "selectedId": "prov_…", "activeTab": "models",
+  "currentModel": "…", "currentBaseUrl": "…",
+  "canDeleteProviders": true,
+  "protocols": [{ "value": "openai_chat", "label": "OpenAI Chat" }]
+}
+```
+
+- `headers` 是**自定义请求头原文**：它可能含额外凭据，`providers.read` 应只授予可信插件；
+- 写操作不在 TSX 里执行：表单提交到核心 `/providers/*`，成功后宿主按 `Referer`
+  把重定向改回插件页（`?provider=…&tab=…&notice=…`）；
+- API Key 输入框提交后直接到核心，不经过 Boa；插件只负责渲染“已配置 + 掩码”。
 ## 3. 点位与刷新时机
 
 | 插槽 | 出现在 | 内容刷新 |
@@ -152,7 +179,7 @@
 | 插件独立页 `/ext/{id}/{slug}` | 完整（快照的 `activeThreadId`） |
 | 概览卡片 `dashboard.widgets` | 完整（快照的 `activeThreadId`） |
 | `/workspaces`（有快照） | 完整（快照的 `activeThreadId`） |
-| `/providers`、`/extensions`、错误页 | **只有 `plugin_count`**（`tokens = null` 语义：字段缺省，不要假设结构） |
+| `/extensions`、错误页 | **只有 `plugin_count`**（`tokens = null` 语义：字段缺省，不要假设结构） |
 
 > 判断"有没有数据"用字段本身（`props.data.tokens ? … : …`），不要按路由猜。
 
@@ -182,3 +209,5 @@ const windowSize = t ? t.window : 0;
 
 完整实现见 [`frontend-plugins/token-weather/`](../frontend-plugins/token-weather/)，
 数据投影的唯一出口在 `src/handlers/mod.rs::plugin_data`。
+
+

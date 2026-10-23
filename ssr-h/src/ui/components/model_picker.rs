@@ -136,8 +136,8 @@ impl ModelPicker {
                 escape(&group.provider_name)
             ));
             for choice in &group.models {
-                let current = group.provider_id == self.active_provider_id
-                    && choice.id == self.model;
+                let current =
+                    group.provider_id == self.active_provider_id && choice.id == self.model;
                 // 名称和 id 相同时只显示一行：同一串字重复两遍只是噪音。
                 let id_html = if choice.name == choice.id {
                     String::new()
@@ -171,7 +171,11 @@ impl ModelPicker {
                     },
                     name = escape(&choice.name),
                     id = id_html,
-                    check = if current { icon("i-check", 12) } else { String::new() },
+                    check = if current {
+                        icon("i-check", 12)
+                    } else {
+                        String::new()
+                    },
                 ));
             }
         }
@@ -210,7 +214,11 @@ impl ModelPicker {
                 },
                 label = escape(label),
                 desc = escape(desc),
-                check = if selected { icon("i-check", 12) } else { String::new() },
+                check = if selected {
+                    icon("i-check", 12)
+                } else {
+                    String::new()
+                },
             ));
         }
         out
@@ -241,7 +249,7 @@ impl Render for ModelPicker {
       </summary>
       <div class="ada-model-picker__list">{efforts}</div>
     </details>
-    <a class="ada-model-picker__manage" href="/providers">
+    <a class="ada-model-picker__manage" href="/ext/provider-admin/providers">
       {manage_icon}<span>管理供应商与模型</span>
     </a>
   </div>
@@ -346,7 +354,10 @@ mod tests {
         assert!(html.contains("DeepSeek V4.1 Flash"), "{html}");
         // 当前模型 / 当前等级各只有一个勾选标记。
         assert_eq!(html.matches("is-current").count(), 2, "{html}");
-        assert!(html.contains(r#"name="provider" value="senseaudio""#), "{html}");
+        assert!(
+            html.contains(r#"name="provider" value="senseaudio""#),
+            "{html}"
+        );
         assert!(html.contains(r#"action="/model/select""#), "{html}");
         assert!(html.contains(r#"action="/model/effort""#), "{html}");
         assert!(html.contains("High"), "{html}");
@@ -397,3 +408,4 @@ mod tests {
         assert!(html.contains("推理等级"), "{html}");
     }
 }
+

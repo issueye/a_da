@@ -179,8 +179,7 @@ async fn stream_loop(
             last_heartbeat = Instant::now();
         }
 
-        let resync_due =
-            resync || resync_at.map(|at| Instant::now() >= at).unwrap_or(false);
+        let resync_due = resync || resync_at.map(|at| Instant::now() >= at).unwrap_or(false);
         if resync_due {
             // 进入投影态（立即）或轮次收尾（延迟一拍）：补齐完整 item 集合。
             resync = false;
@@ -473,7 +472,8 @@ impl StreamView {
     }
 
     /// 当前会话是否处于"快照会带完整 items"的状态。
-    fn projected(&self) -> bool {        let meta = &self.meta;
+    fn projected(&self) -> bool {
+        let meta = &self.meta;
         if meta.get("activeThreadId").and_then(Value::as_str) == Some(self.thread_id.as_str()) {
             return true;
         }
@@ -778,8 +778,7 @@ mod tests {
         assert!(
             items
                 .iter()
-                .any(|item| item["kind"] == "assistant"
-                    && item["usage"]["promptTokens"] == 43_614),
+                .any(|item| item["kind"] == "assistant" && item["usage"]["promptTokens"] == 43_614),
             "用量插件依赖助手卡的 usage.promptTokens：{items:?}"
         );
         assert!(

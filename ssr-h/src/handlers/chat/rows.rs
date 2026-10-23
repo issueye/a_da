@@ -356,7 +356,11 @@ pub(super) fn elapsed_label(value: &Value, status: &str) -> String {
             let elapsed = now_ms() - start;
             // 起点明显不合理（时钟漂移、单位写错）就不要显示天文数字。
             if (0..86_400_000).contains(&elapsed) {
-                let prefix = if status == "waiting_approval" { "待批 " } else { "已 " };
+                let prefix = if status == "waiting_approval" {
+                    "待批 "
+                } else {
+                    "已 "
+                };
                 return format!("{prefix}{}", duration_text(elapsed as u64));
             }
         }
@@ -484,12 +488,7 @@ fn failed_status(raw: &str) -> bool {
 ///
 /// 全部来自工具自己的返回值（`output` / `patch` / `details`），不做估算；
 /// 拿不到就**留空**——编一个"完成"上去比空着更糟。
-fn result_summary(
-    name: &str,
-    args: &Value,
-    item: &Value,
-    todo: &[ui::TodoStep],
-) -> (String, Tone) {
+fn result_summary(name: &str, args: &Value, item: &Value, todo: &[ui::TodoStep]) -> (String, Tone) {
     let status = str_at(item, "status");
     if !finished_status(status) {
         return (String::new(), Tone::Neutral);
@@ -521,11 +520,7 @@ fn result_summary(
                 (format!("+{added} -{removed}"), tone)
             }),
         "run_command" | "run_background" => exit_code(item).map(|code| {
-            let tone = if code != 0 {
-                Tone::Danger
-            } else {
-                neutral
-            };
+            let tone = if code != 0 { Tone::Danger } else { neutral };
             (format!("exit {code}"), tone)
         }),
         "run_tests" => test_summary(output),

@@ -221,7 +221,7 @@ fn app(state: AppState) -> Router {
             "/approvals/{call_id}/decision",
             post(handlers::decide_approval),
         )
-        .route("/providers", get(handlers::providers))
+        .route("/providers", get(handlers::providers_redirect))
         .route("/workspaces", get(handlers::workspace_picker))
         .route("/workspaces/select", post(handlers::select_workspace))
         .route("/workspaces/mkdir", post(handlers::make_workspace_dir))
@@ -274,6 +274,7 @@ fn app(state: AppState) -> Router {
         .with_state(state.clone())
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
+        .layer(axum::middleware::from_fn(handlers::rewrite_plugin_redirect))
         // 必须最外层：先做 Host/Origin/令牌校验，再进压缩与业务。
         .layer(axum::middleware::from_fn_with_state(state, guard::guard))
 }
@@ -452,3 +453,4 @@ fn static_asset(bytes: &'static [u8], content_type: &'static str) -> Response {
     )
         .into_response()
 }
+

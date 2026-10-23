@@ -8,8 +8,9 @@
 //! 新增页面请按家族放进对应子模块，不要再往本文件里堆。
 
 use askama::Template;
-use axum::extract::State;
+use axum::extract::{Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
+use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::Value;
@@ -110,6 +111,49 @@ pub struct SendForm {
 pub struct ApprovalForm {
     thread_id: String,
     approved: String,
+}
+
+fn plugin_redirect_target(referer: Option<&str>, location: &str) -> Option<String> {
+    let referer = referer?.parse::<axum::http::Uri>().ok()?;
+    let path = referer.path();
+    if !path.starts_with("/ext/")
+        || path.starts_with("//")
+        || path.contains('\\')
+        || path.split('/').any(|part| part == "..")
+    {
+        return None;
+    }
+    if location != "/providers" && !location.starts_with("/providers?") {
+        return None;
+    }
+    match location.split_once('?') {
+        Some((_, query)) if !query.is_empty() => Some(format!("{path}?{query}")),
+        _ => Some(path.to_string()),
+    }
+}
+
+/// 供应商动作原本回跳 `/providers`；从插件页提交时按 Referer 改回插件页。
+pub async fn rewrite_plugin_redirect(request: Request, next: Next) -> Response {
+    let referer = request
+        .headers()
+        .get(header::REFERER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let mut response = next.run(request).await;
+    let Some(location) = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+    else {
+        return response;
+    };
+    if let Some(target) = plugin_redirect_target(referer.as_deref(), &location) {
+        if let Ok(value) = HeaderValue::from_str(&target) {
+            response.headers_mut().insert(header::LOCATION, value);
+        }
+    }
+    response
 }
 
 fn flash_from_query(query: &PageQuery) -> Option<Flash> {
@@ -253,8 +297,11 @@ fn render_context_with_tokens(
     snapshot: &Value,
     thread_id: Option<&str>,
 ) -> RenderContext {
-    render_context(state, active)
-        .with_data(plugin_data(snapshot, thread_id, state.frontend.count()))
+    render_context(state, active).with_data(plugin_data(
+        snapshot,
+        thread_id,
+        state.frontend.count(),
+    ))
 }
 
 /// 插件可见的数据投影（唯一出口）。
@@ -301,7 +348,10 @@ fn percent_of(part: u64, whole: u64) -> Option<u64> {
 fn token_usage_view(snapshot: &Value, thread_id: Option<&str>) -> Value {
     let thread = thread_view(snapshot, thread_id);
     let latest = thread.and_then(last_usage);
-    let usage = latest.map(|(usage, _)| usage).cloned().unwrap_or(Value::Null);
+    let usage = latest
+        .map(|(usage, _)| usage)
+        .cloned()
+        .unwrap_or(Value::Null);
     let duration = latest.map(|(_, duration)| duration).unwrap_or(0);
     let number = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
     let used = number("promptTokens");
@@ -309,7 +359,11 @@ fn token_usage_view(snapshot: &Value, thread_id: Option<&str>) -> Value {
     let thinking = number("thinkingTokens");
     let total = {
         let raw = number("totalTokens");
-        if raw > 0 { raw } else { used.saturating_add(completion) }
+        if raw > 0 {
+            raw
+        } else {
+            used.saturating_add(completion)
+        }
     };
     // 缓存命中率：优先最近一次调用；模型不是每次都报 `cachedTokens`，缺失时回落到
     // 最近一次**上报过缓存**的调用，并用 `cacheStale` 如实标记（别把旧值当成本轮）。
@@ -327,7 +381,10 @@ fn token_usage_view(snapshot: &Value, thread_id: Option<&str>) -> Value {
         .unwrap_or(0);
     let cache_rate = cache_usage.and_then(|usage| {
         let cached = usage.get("cachedTokens").and_then(Value::as_u64)?;
-        let prompt = usage.get("promptTokens").and_then(Value::as_u64).unwrap_or(0);
+        let prompt = usage
+            .get("promptTokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         (prompt > 0).then(|| {
             // 保留一位小数：缓存命中常在 99.x%，四舍五入成 100% 会让人以为"从不 miss"。
             ((cached as f64) * 1000.0 / (prompt as f64)).round() / 10.0
@@ -415,7 +472,10 @@ fn last_usage(thread: &Value) -> Option<(&Value, u64)> {
         if prompt == 0 {
             return None;
         }
-        Some((usage, item.get("durationMs").and_then(Value::as_u64).unwrap_or(0)))
+        Some((
+            usage,
+            item.get("durationMs").and_then(Value::as_u64).unwrap_or(0),
+        ))
     })
 }
 
@@ -427,7 +487,11 @@ fn thread_summary(thread: Option<&Value>, snapshot: &Value) -> Value {
     let id = str_at(thread, "id");
     let mode = {
         let mode = str_at(thread, "mode");
-        if mode.is_empty() { "code" } else { mode }
+        if mode.is_empty() {
+            "code"
+        } else {
+            mode
+        }
     };
     serde_json::json!({
         "id": id,
@@ -534,9 +598,7 @@ fn counts_view(snapshot: &Value, thread: Option<&Value>) -> Value {
         .map(|thread| {
             array_at(thread, "items")
                 .iter()
-                .filter(|item| {
-                    matches!(str_at(item, "status"), "waiting_approval" | "waiting")
-                })
+                .filter(|item| matches!(str_at(item, "status"), "waiting_approval" | "waiting"))
                 .count()
         })
         .unwrap_or(0);
@@ -645,12 +707,8 @@ fn todo_view(snapshot: &Value, thread_id: Option<&str>) -> Value {
 ///
 /// 十一个插槽一次性丢进阻塞线程池渲染（TSX 是同步 CPU 活），别在这里逐个 `await`。
 async fn slot_content(registry: &Arc<PluginRegistry>, context: RenderContext) -> SlotContent {
-    let outputs = crate::plugins::render_slots_off_thread(
-        Arc::clone(registry),
-        Slot::all(),
-        context,
-    )
-    .await;
+    let outputs =
+        crate::plugins::render_slots_off_thread(Arc::clone(registry), Slot::all(), context).await;
     let mut by_slot: std::collections::HashMap<&'static str, String> = Slot::all()
         .iter()
         .zip(outputs)
@@ -798,10 +856,7 @@ fn thread_row(value: &Value, running: &[String]) -> ThreadRow {
             }
         },
         item_count: items.map(Vec::len).unwrap_or(0),
-        created_at: value
-            .get("createdAt")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
+        created_at: value.get("createdAt").and_then(Value::as_u64).unwrap_or(0),
     }
 }
 
@@ -833,6 +888,31 @@ pub async fn not_found(State(state): State<AppState>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_referer_rewrites_provider_redirect_back_to_plugin_page() {
+        assert_eq!(
+            plugin_redirect_target(
+                Some("http://127.0.0.1:8788/ext/provider-admin/providers?provider=p1"),
+                "/providers?provider=p1&tab=models&notice=model_added"
+            ),
+            Some(
+                "/ext/provider-admin/providers?provider=p1&tab=models&notice=model_added"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            plugin_redirect_target(Some("http://127.0.0.1:8788/"), "/providers"),
+            None
+        );
+        assert_eq!(
+            plugin_redirect_target(
+                Some("http://127.0.0.1:8788/ext/evil/../admin"),
+                "/providers"
+            ),
+            None
+        );
+    }
 
     #[test]
     fn public_reason_redacts_tokens_and_keeps_only_the_first_line() {
@@ -1119,14 +1199,20 @@ mod tests {
         assert_eq!(view["active"], "验证", "{view}");
         assert_eq!(view["steps"][1]["status"], "completed", "{view}");
         assert!(
-            view["markdown"].as_str().unwrap_or("").contains("- [x] 写条目"),
+            view["markdown"]
+                .as_str()
+                .unwrap_or("")
+                .contains("- [x] 写条目"),
             "{view}"
         );
     }
 
     #[test]
     fn todo_view_is_null_without_a_plan() {
-        let thread = thread("t1", vec![serde_json::json!({ "kind": "assistant", "text": "hi" })]);
+        let thread = thread(
+            "t1",
+            vec![serde_json::json!({ "kind": "assistant", "text": "hi" })],
+        );
         assert!(todo_view(&snapshot(serde_json::json!([thread]), 100_000), None).is_null());
         assert!(todo_view(&Value::Null, None).is_null());
     }
@@ -1166,4 +1252,3 @@ pub use dashboard::*;
 pub use extensions::*;
 pub use providers::*;
 pub use workspaces::*;
-

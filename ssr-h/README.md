@@ -21,7 +21,7 @@ UED 设计基线、组件规范与 desktop-ui 对齐差距见 [docs/UED.md](docs
 - 输入框：Enter 发送、Shift+Enter 换行、随内容自动增高；代码块悬停有复制按钮；思考/工具折叠按 item id 在增量同步后保持展开状态，并还原面板内部的滚动位置（否则展开的工具会自己滚回顶部）；只有接近底部时才自动跟随新内容。
 - **模型选择（参考 DeepSeek）**：输入框右下角的药丸显示「模型 + 推理等级（Auto/Low/Medium/High）」，
   点开是向上弹出的面板：`模型` 按供应商分组的清单（点一条即切到该供应商 + 该模型）、`推理等级`
-  （写网关的 `config.setEffort`）、底部「管理供应商与模型」进 `/providers`。无 JS 也能开合与提交；
+  （写网关的 `config.setEffort`）、底部「管理供应商与模型」进插件页 `/ext/provider-admin/providers`。无 JS 也能开合与提交；
   点外面 / Esc 关闭由 `chat.js` 增强；live 轮询只替换药丸标签 `#composer-model`，不会把菜单关掉。
 - 向上阅读时对话区底部出现「回到最新」胶囊：点一下回到底部并恢复自动跟随。它是核心 UI（不依赖插件插槽），水平居中，不会和右下角 `composer.above` 的插件悬浮卡抢位置。
 - 任务规划（`todo` 工具）由 **`frontend-plugins/task-plan/` 插件**渲染：默认挂在会话区右上角（`chat.corner`），
@@ -34,7 +34,7 @@ UED 设计基线、组件规范与 desktop-ui 对齐差距见 [docs/UED.md](docs
 - 审批：`waiting_approval` 工具在输入框上方托盘展示命令/参数与等待时长，可批准/拒绝；托盘随事件流出现/消失（断流时由兜底轮询接管），不需要手工刷新。
 - 排队：当前会话的排队消息可见，可提升、删除、清空（提升会中断当前回答，已加确认）。
 - 失败：`notice.level=error` 的卡片带「重试这一轮」；动作失败会回到会话页用 flash 说明原因，不再把整页换成裸错误页。
-- 聊天页在网关断开时保留界面壳并显示「未连接」，已打开会话的 SSE 会自动重连、期间由兜底轮询继续探测，恢复后自动接回；首屏就未连接时请点「重新连接」；`/overview`、`/providers` 等二级页仍会直接显示错误页。
+- 聊天页在网关断开时保留界面壳并显示「未连接」，已打开会话的 SSE 会自动重连、期间由兜底轮询继续探测，恢复后自动接回；首屏就未连接时请点「重新连接」；`/overview` 等二级页仍会直接显示错误页。
 
 ## 工作区
 
@@ -142,9 +142,10 @@ node tools/verify-ssr-workspaces.mjs
 
 ## 供应商管理
 
-`/providers` 是 Master-Detail：左列选供应商，右列用两个页签分别改**供应商信息**（连接参数）
-与**模型列表**。页签是真实链接（`?provider=…&tab=models`）：无 JS 时整页刷新到该页签，
-有 JS 时就地切换；保存/新增/删除模型后回跳到发起动作的那个页签。能力与 desktop-ui 对齐：
+供应商管理由前端插件 **`provider-admin`** 提供，页面在 `/ext/provider-admin/providers`；
+原核心入口 `/providers` 只做 303 跳到插件页，不再渲染旧管理页。插件页是 Master-Detail：
+左列选供应商，右列用两个页签分别改**供应商信息**（连接参数）与**模型列表**。页签是真实链接
+（`?provider=…&tab=models`），保存/新增/删除模型后回到插件页。能力与 desktop-ui 对齐：
 
 | 能力 | 路由 | 说明 |
 |---|---|---|
@@ -160,7 +161,8 @@ node tools/verify-ssr-workspaces.mjs
 两条实现约束：
 
 - **每次动作都"读整条 → 改字段 → 整条写回"**：`provider.save` 是"存在即替换"，只发改动字段会把模型列表写成空；
-- **API Key 不回显**：页面只有 `已配置 + sk-…7f3a`，输入框留空＝不修改，勾“清空密钥”才真的清空。
+- **API Key 不回显**：插件页只有 `已配置 + sk-…7f3a`，输入框留空＝不修改，勾“清空密钥”才真的清空；
+  API Key 输入框直接提交核心，不进入 Boa。
   这是与 desktop-ui 唯一的有意差异。
 
 ## 动态前端插件
@@ -304,5 +306,7 @@ export function Page(props: any) {
 - TSX 的相对 import 由 OXC + Boa 原生加载，不需要 Bun/Node；npm 依赖仍不支持，
   且没有 wall-clock 超时（只有循环/递归/输出预算）；
 - 不做登录鉴权；非回环监听必须显式 `--allow-remote` + `--ui-token`，且只提供明文 HTTP。
+
+
 
 

@@ -1,0 +1,17 @@
+{
+  "id": "provider-admin",
+  "name": "供应商管理",
+  "version": "0.1.4",
+  "description": "供应商与模型管理的前端插件版本：页面由 TSX 渲染，读写仍走宿主的安全供应商接口（API Key 不进入 Boa）。",
+  "capabilities": ["providers.read"],
+  "assets": "static",
+  "styles": ["provider-admin.css"],
+  "nav": [{ "label": "供应商", "slug": "providers" }],
+  "pages": [{ "slug": "providers", "title": "供应商", "template": "page.tsx" }]
+}
+
+
+
+
+
+

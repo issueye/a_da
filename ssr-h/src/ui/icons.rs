@@ -146,6 +146,10 @@ pub const ICONS: &[IconDef] = &[
     ),
     icon!("i-menu", r#"<path d="M4 6h16M4 12h16M4 18h16"/>"#),
     icon!(
+        "i-more",
+        r#"<path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3" stroke-linecap="round"/>"#
+    ),
+    icon!(
         "i-git-branch",
         r#"<line x1="6" x2="6" y1="4" y2="16"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>"#
     ),

@@ -30,5 +30,3 @@ pub use icons::{icon, sprite};
 pub use rows::{render_empty, render_empty_thread, render_row, RowView};
 pub use theme::{ButtonKind, ButtonVariant, Size, Tone};
 pub use todo::{derive_todo_plan, read_todo_items, TodoList, TodoPlan, TodoStatus, TodoStep};
-
-

@@ -154,36 +154,6 @@ pub struct QueueRow {
     pub text: String,
 }
 
-/// 供应商详情里的一个可用模型（对应 `ModelEntry`）；定义在组件库里，模板只做别名。
-pub use crate::ui::ModelTableRow as ProviderModelRow;
-
-/// 供应商卡片：列表与详情共用一份数据（详情多带几个可编辑字段）。
-#[derive(Debug, Clone)]
-pub struct ProviderCard {
-    pub id: String,
-    /// 左列链接（`id` 已做查询编码，别在模板里再拼）。
-    pub href: String,
-    pub name: String,
-    pub protocol: String,
-    pub protocol_label: String,
-    pub base_url: String,
-    pub proxy_url: String,
-    /// `k: v; k2: v2` 文本形式，编辑框直接回填。
-    pub headers: String,
-    /// 是否已配置密钥（密钥本身**不回显**，只在后端）。
-    pub api_key_set: bool,
-    /// 打码后的提示，例如 `sk-…7f3a`。
-    pub api_key_hint: String,
-    pub model_count: usize,
-    pub active: bool,
-    pub models: Vec<ProviderModelRow>,
-    /// 该供应商每个模型的编辑弹窗（组件库渲染好的 HTML，模板直接塞进去）。
-    pub modals: String,
-    /// 列表行右侧的「删除供应商」动作（组件库渲染；最后一个供应商是禁用态）。
-    pub delete_form: String,
-}
-
-#[derive(Debug, Clone)]
 pub struct FrontendPluginRow {
     pub id: String,
     pub name: String,
@@ -285,31 +255,6 @@ pub struct WorkspacesPage {
 pub struct ProtocolOption {
     pub value: String,
     pub label: String,
-}
-
-#[derive(Template)]
-#[template(path = "providers.html")]
-pub struct ProvidersPage {
-    pub base: PageBase,
-    /// 左列的供应商清单（顺序＝后端顺序）。
-    pub providers: Vec<ProviderCard>,
-    /// 右列的当前选中项。
-    pub selected: Option<ProviderCard>,
-    /// 当前生效的模型与端点（顶部状态条）。
-    pub current_model: String,
-    pub current_base_url: String,
-    /// 协议下拉的组件渲染结果（Select 组件，非原生 `<select>`）。
-    pub protocol_select: String,
-    /// 详情区的页签导航条（组件库渲染）。面板由模板摆放，id 前缀与它一致。
-    pub tabs: String,
-    /// 当前页签 key（`connection` / `models`），决定哪块面板不渲染 `hidden`。
-    pub active_tab: String,
-    /// "新增模型"弹窗（组件库渲染；列表区的「新增模型」按钮用 data-modal-open 打开）。
-    pub model_new_modal: String,
-    /// "远程模型"弹窗：搜索框常驻，列表由 htmx 按需换进弹窗里。
-    pub remote_modal: String,
-    /// 模型表（组件库渲染；模板只负责摆放）。
-    pub model_table: String,
 }
 
 #[derive(Template)]

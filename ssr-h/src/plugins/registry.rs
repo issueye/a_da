@@ -51,6 +51,8 @@ pub struct PluginRecord {
     pub styles: Vec<String>,
     /// 相对 assets 目录的 JS 路径（注入页面 `<head>`）。
     pub scripts: Vec<String>,
+    /// 插件能力声明（决定宿主是否注入供应商只读数据）。
+    pub capabilities: Vec<String>,
     pub errors: Vec<String>,
     /// 模板相对路径 → 已编译 TSX。
     pub tsx_templates: HashMap<String, Arc<CompiledTsx>>,
@@ -94,6 +96,7 @@ pub struct PluginSnapshot {
     pub status: String,
     pub slots: Vec<String>,
     pub errors: Vec<String>,
+    pub capabilities: Vec<String>,
     pub tsx_compiled: usize,
 }
 
@@ -135,6 +138,7 @@ fn failed_record(root: &Path, id: &str, message: &str) -> PluginRecord {
         assets_dir: None,
         styles: Vec::new(),
         scripts: Vec::new(),
+        capabilities: Vec::new(),
         errors: vec![message.to_string()],
         tsx_templates: HashMap::new(),
         fingerprint: 0,
@@ -276,6 +280,7 @@ impl PluginRegistry {
             assets_dir,
             styles: Vec::new(),
             scripts: Vec::new(),
+            capabilities: manifest.capabilities.clone(),
             errors: Vec::new(),
             tsx_templates: HashMap::new(),
             fingerprint: 0,
@@ -449,6 +454,7 @@ impl PluginRegistry {
                     .map(|entry| entry.slot.clone())
                     .collect(),
                 errors: record.errors,
+                capabilities: record.capabilities,
                 tsx_compiled: record.tsx_templates.len(),
             })
             .collect()
@@ -646,7 +652,26 @@ pub async fn render_slots_off_thread(
     }
 }
 
-/// 渲染插件独立页面（阻塞线程池）。
+/// TSX/Boa 的递归求值比 Tokio 阻塞池默认栈更深；页面/插槽渲染放到独立大栈线程，
+/// 避免 `tokio-rt-worker` 的 2MB 栈被一整页嵌套组件打爆。
+async fn run_with_large_stack<T, F>(name: &'static str, task: F) -> anyhow::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name(format!("ssr-tsx-{name}"))
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            let _ = sender.send(task());
+        })
+        .map_err(|error| anyhow!("创建 TSX 渲染线程失败: {error}"))?;
+    receiver
+        .await
+        .map_err(|error| anyhow!("TSX 渲染线程异常退出: {error}"))
+}
+/// 渲染插件独立页面（独立大栈线程；Boa 递归深度高于 Tokio 阻塞池默认栈）。
 pub async fn read_page_off_thread(
     registry: Arc<PluginRegistry>,
     plugin_id: String,
@@ -659,7 +684,7 @@ pub async fn read_page_off_thread(
             .ok_or_else(|| anyhow!("前端插件不存在: {plugin_id}"))?;
         registry.read_page_with(&plugin, &slug, &cx)
     };
-    tokio::task::spawn_blocking(task)
+    run_with_large_stack("page", task)
         .await
         .map_err(|error| anyhow!("插件页面渲染任务失败: {error}"))?
 }
@@ -1264,7 +1289,9 @@ export function Page() {
     fn token_weather_plugin_formats_tokens_and_cache() {
         let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
         let registry = PluginRegistry::new(&plugins_dir);
-        let plugin = registry.find("token-weather").expect("token-weather exists");
+        let plugin = registry
+            .find("token-weather")
+            .expect("token-weather exists");
         let context = RenderContext::default().with_data(serde_json::json!({
             "tokens": {
                 "available": true,
@@ -1291,7 +1318,11 @@ export function Page() {
         let slot = registry.render_slot_with(Slot::ComposerAbove, &context);
         assert!(slot.html.contains("18.7K / 1M"), "{}", slot.html);
         assert!(slot.html.contains("86%"), "{}", slot.html);
-        assert!(slot.html.contains("569"), "输出 token 数没渲染: {}", slot.html);
+        assert!(
+            slot.html.contains("569"),
+            "输出 token 数没渲染: {}",
+            slot.html
+        );
     }
 
     /// 任务卡片插件：把核心推演好的 `data.todo` 渲染成会话区右上角的悬浮卡。
@@ -1299,7 +1330,9 @@ export function Page() {
     fn task_plan_plugin_renders_the_derived_plan() {
         let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
         let registry = PluginRegistry::new(&plugins_dir);
-        let plugin = registry.find("task-plan").expect("task-plan 插件应当被发现");
+        let plugin = registry
+            .find("task-plan")
+            .expect("task-plan 插件应当被发现");
         assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
         assert_eq!(plugin.scripts, vec!["task-plan.js"]);
         assert!(
@@ -1352,3 +1385,4 @@ export function Page() {
         assert!(!above.html.contains("任务规划"), "{}", above.html);
     }
 }
+

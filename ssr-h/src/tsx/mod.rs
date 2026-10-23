@@ -31,7 +31,9 @@ use std::sync::{Arc, OnceLock};
 
 use boa_engine::builtins::promise::PromiseState;
 use boa_engine::module::{resolve_module_specifier, Module, ModuleLoader, ModuleRequest, Referrer};
-use boa_engine::{js_string, Context, JsError, JsNativeError, JsResult, JsValue, NativeFunction, Source};
+use boa_engine::{
+    js_string, Context, JsError, JsNativeError, JsResult, JsValue, NativeFunction, Source,
+};
 use oxc_allocator::Allocator;
 use oxc_codegen::Codegen;
 use oxc_parser::Parser;
@@ -226,8 +228,7 @@ fn install_console(context: &mut Context, label: &str) -> Result<(), String> {
         .eval(Source::from_bytes(CONSOLE_SHIM))
         .map_err(|error| format!("console 初始化失败: {error}"))?;
     let label = serde_json::to_string(label).unwrap_or_else(|_| "\"plugin\"".to_string());
-    let setup =
-        format!("globalThis.console = __ssrMakeConsole({label}, {MAX_CONSOLE_LINES});");
+    let setup = format!("globalThis.console = __ssrMakeConsole({label}, {MAX_CONSOLE_LINES});");
     context
         .eval(Source::from_bytes(&setup))
         .map_err(|error| format!("console 初始化失败: {error}"))?;
@@ -848,9 +849,7 @@ fn render_element(
                     text.clone()
                 };
                 if is_htmx && !html::hx_value_allowed(key, &text) {
-                    return Err(format!(
-                        "标签 <{tag}> 的 `{key}` 不允许 `js:` 内联脚本值"
-                    ));
+                    return Err(format!("标签 <{tag}> 的 `{key}` 不允许 `js:` 内联脚本值"));
                 }
                 attrs.push_str(&format!(" {key}=\"{}\"", escape(&text)));
             }
@@ -1181,8 +1180,11 @@ function Page() {
         let html = render_tsx(source, &Value::Null).expect("disclosure render");
         assert!(html.contains("data-key=\"tool-1\""), "{html}");
 
-        let html = render_tsx(r##"function Page() { return <li key="a">x</li>; }"##, &Value::Null)
-            .expect("li render");
+        let html = render_tsx(
+            r##"function Page() { return <li key="a">x</li>; }"##,
+            &Value::Null,
+        )
+        .expect("li render");
         assert!(!html.contains("key"), "{html}");
     }
 
@@ -1374,4 +1376,3 @@ export function Page() {
         let _ = std::fs::remove_dir_all(&root);
     }
 }
-

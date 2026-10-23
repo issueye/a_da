@@ -23,8 +23,8 @@ use super::*;
 use crate::plugins::Slot;
 use crate::ui::theme::escape;
 use crate::ui::{
-    self, AuxItem, Button, ButtonVariant, Chip, Composer, ComposerAux, IconButton,
-    Render, SendButton, Size, Tone,
+    self, AuxItem, Button, ButtonVariant, Chip, Composer, ComposerAux, IconButton, Render,
+    SendButton, Size, Tone,
 };
 struct ComposerArgs<'a> {
     thread_id: &'a str,
@@ -507,7 +507,11 @@ async fn load_chat(
     }
     // 侧栏整块重渲一次：base 里只有公共字段，工作区树与"当前会话"是本页才知道的。
     base.sidebar = ui::sidebar::Sidebar::from_base(&base)
-        .with_tree(workspaces.clone(), active_thread_id.clone(), active_workspace.clone())
+        .with_tree(
+            workspaces.clone(),
+            active_thread_id.clone(),
+            active_workspace.clone(),
+        )
         .connected(Some(true))
         .render();
 
@@ -559,7 +563,9 @@ async fn load_chat(
                 running: is_running,
                 queue_len,
                 approval_count,
-                stats: active_value.map(|value| turn_stats(&snapshot, value)).unwrap_or_default(),
+                stats: active_value
+                    .map(|value| turn_stats(&snapshot, value))
+                    .unwrap_or_default(),
             },
             &model_picker,
         )
@@ -652,10 +658,7 @@ async fn live_offline(state: &AppState, thread_id: &str) -> Response {
         stats: TurnStats::default(),
     };
     let body = [
-        oob(
-            "topbar-status",
-            &topbar_status_html(false, false),
-        ),
+        oob("topbar-status", &topbar_status_html(false, false)),
         oob("topbar-actions", &topbar_actions_html(thread_id, false)),
         oob("chat-corner", &corner.html),
         oob("composer-above", &above.html),
@@ -823,14 +826,12 @@ pub struct EffortSelectForm {
 
 /// 表单里的 `thread` 只用于"切完回哪一页"：只接受合法会话 id，防止把跳转拼成任意路径。
 fn safe_thread(thread: Option<&str>) -> Option<&str> {
-    thread
-        .map(str::trim)
-        .filter(|id| {
-            !id.is_empty()
-                && id
-                    .chars()
-                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
-        })
+    thread.map(str::trim).filter(|id| {
+        !id.is_empty()
+            && id
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    })
 }
 
 fn back_to_thread(thread: Option<&str>, notice: &str) -> Response {

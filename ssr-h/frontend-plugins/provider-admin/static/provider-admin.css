@@ -1,0 +1,348 @@
+.pa-page {
+  border: 1px solid var(--ph-line);
+  border-radius: 14px;
+  --pa-accent: #2563eb;
+  display: grid;
+  gap: 12px;
+}
+.pa-head {
+  display: flex;
+  border-bottom: 1px solid var(--ph-line);
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+}
+/* 内容 */
+.pa-body {
+  padding: 8px 12px;
+}
+
+.pa-kicker {
+  color: var(--ph-faint);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+}
+.pa-title {
+  margin-top: 2px;
+  color: var(--ph-ink);
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+.pa-sub {
+  margin-top: 4px;
+  max-width: 680px;
+  color: var(--ph-muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+.pa-stats {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.pa-stat {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--ph-line);
+  border-radius: 14px;
+  background: var(--ph-surface);
+  box-shadow: 0 12px 30px -26px rgba(15, 23, 42, 0.3);
+}
+.pa-stat__label {
+  display: block;
+  color: var(--ph-faint);
+  font-size: 10px;
+}
+.pa-stat strong {
+  display: block;
+  overflow: hidden;
+  margin-top: 5px;
+  color: var(--ph-ink);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pa-layout {
+  display: flex;
+  height: 470px;
+}
+.pa-list {
+  overflow: hidden;
+  border: 1px solid var(--ph-line);
+  border-right: none;
+  border-radius: 16px 0 0 16px;
+  background: var(--ph-surface);
+  height: 100%;
+}
+.pa-list__head {
+  line-height: 14px;
+  padding: 12px;
+  border-bottom: 1px solid var(--ph-line);
+  color: var(--ph-faint);
+  font-size: 10px;
+}
+.pa-provider {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--ph-line);
+}
+.pa-provider:last-child { border-bottom: 0; }
+.pa-provider.is-selected { background: var(--ph-brand-soft); }
+.pa-provider__link {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 5px;
+  color: inherit;
+  text-decoration: none;
+}
+.pa-provider__name {
+  overflow: hidden;
+  color: var(--ph-ink);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pa-provider__meta {
+  overflow: hidden;
+  color: var(--ph-faint);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pa-provider__delete {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ph-faint);
+  cursor: pointer;
+}
+.pa-provider__delete:hover {
+  background: var(--ph-danger-soft);
+  color: var(--ph-danger-ink);
+}
+.pa-detail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--ph-line);
+  border-radius: 0 16px 16px 0;
+  background: var(--ph-surface);
+  box-shadow: 0 18px 44px -34px rgba(15, 23, 42, 0.35);
+}
+.pa-detail__head {
+  line-height: 22px;
+  padding: 12px;
+  border-bottom: 1px solid var(--ph-line);
+}
+.pa-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--ph-line);
+}
+.pa-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 10px;
+  border-bottom: 2px solid transparent;
+  color: var(--ph-muted);
+  font-size: 12px;
+  text-decoration: none;
+}
+.pa-tab:hover { color: var(--ph-ink); }
+.pa-tab.is-active {
+  border-bottom-color: var(--ph-brand);
+  color: var(--ph-ink);
+  font-weight: 600;
+}
+.pa-tab__count {
+  display: inline-grid;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--ph-subtle);
+  color: var(--ph-faint);
+  font-size: 9px;
+}
+.pa-pane { padding: 14px; height: 430px; }
+.pa-form { display: grid; gap: 11px; }
+.pa-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+.pa-field {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  color: var(--ph-muted);
+  font-size: 10.5px;
+}
+.pa-textarea {
+  min-height: 76px;
+  resize: vertical;
+  line-height: 1.5;
+}
+.pa-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.pa-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ph-muted);
+  font-size: 11px;
+}
+.pa-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.pa-models-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.pa-section-title {
+  margin: 0;
+  color: var(--ph-ink);
+  font-size: 14px;
+  font-weight: 650;
+}
+.pa-section-sub {
+  margin: 3px 0 0;
+  color: var(--ph-faint);
+  font-size: 10.5px;
+}
+
+.pa-page .ada-model-table__actions { overflow: visible; }
+.pa-page .ada-model-table {
+  border-radius: 10px;
+  border: 1px solid var(--ph-line);
+}
+.pa-page .ada-model-table th {
+  color: var(--ph-faint);
+  font-size: 10px;
+  font-weight: 500;
+}
+@media (max-width: 900px) {
+  .pa-layout { grid-template-columns: 1fr; }
+  .pa-stats { grid-template-columns: 1fr; }
+  .pa-grid { grid-template-columns: 1fr; }
+}
+
+.pa-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--ph-line);
+}
+
+.pa-modal-hint {
+  margin: 0;
+  padding: 18px 4px;
+  color: var(--ph-faint);
+  font-size: 11px;
+  text-align: center;
+}
+.pa-page .ada-modal__body {
+  max-height: 68vh;
+  overflow-y: auto;
+}
+
+.pa-remote-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 0 8px;
+  background: var(--ph-elevated);
+}
+.pa-remote-toolbar .pa-modal-hint {
+  padding: 0;
+  text-align: left;
+}
+
+/* 模型表限制在详情卡内：纵向滚动表体，横向滚动只发生在表格容器里。 */
+.pa-pane--models {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.pa-pane--models .pa-models-head {
+  flex: 0 0 auto;
+}
+.pa-table-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--ph-line);
+  border-radius: 10px;
+  background: var(--ph-surface);
+}
+.pa-table-scroll .ada-model-table {
+  min-width: 620px;
+  border: 0;
+  border-radius: 0;
+}
+.pa-table-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--ph-surface);
+}
+.pa-table-scroll .ada-model-table th,
+.pa-table-scroll .ada-model-table td {
+  padding-right: 6px;
+  padding-left: 6px;
+}
+
+/* 固定首列（模型 ID）与末列（操作）：横向滚动时始终可见。 */
+.pa-table-scroll .ada-model-table th:first-child,
+.pa-table-scroll .ada-model-table td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: var(--ph-surface);
+  box-shadow: 1px 0 0 var(--ph-line);
+}
+.pa-table-scroll .ada-model-table th:last-child,
+.pa-table-scroll .ada-model-table td:last-child {
+  position: sticky;
+  right: 0;
+  z-index: 3;
+  background: var(--ph-surface);
+  box-shadow: -1px 0 0 var(--ph-line);
+}
+.pa-table-scroll .ada-model-table thead th:first-child,
+.pa-table-scroll .ada-model-table thead th:last-child {
+  z-index: 4;
+}
