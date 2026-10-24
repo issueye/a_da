@@ -865,9 +865,24 @@ pub async fn create_thread(
         .as_deref()
         .map(str::trim)
         .filter(|workspace| !workspace.is_empty());
-    let result = match workspace {
-        Some(workspace) => state.agent.create_thread_in(title, workspace).await,
-        None => state.agent.create_thread(title).await,
+    // 模式只在**新建时**可选（开始后不可切，与 desktop-ui 的 ModeSlider 一致）；
+    // 未知值按缺省处理，不因为一个畸形参数让建会话失败。
+    let mode = form
+        .mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|mode| matches!(*mode, "code" | "plan" | "create" | "pm"));
+    let result = match (workspace, mode) {
+        (Some(workspace), Some(mode)) => {
+            state.agent.create_thread_in(title, workspace, Some(mode)).await
+        }
+        (Some(workspace), None) => state.agent.create_thread_in(title, workspace, None).await,
+        (None, Some(mode)) => {
+            state.agent
+                .create_thread_in(title, &state.agent.workspace, Some(mode))
+                .await
+        }
+        (None, None) => state.agent.create_thread(title).await,
     };
     let result = match result {
         Ok(result) => result,
@@ -913,10 +928,13 @@ fn safe_thread(thread: Option<&str>) -> Option<&str> {
     })
 }
 
-fn back_to_thread(thread: Option<&str>, notice: &str) -> Response {
+/// `notice_query` 是完整查询片段（如 `notice=model_selected`）：key 以 `notice=`
+/// 字面量出现在调用点，才能被 `handlers::tests::notice_literals_are_translated`
+/// 的源码扫描守门到。
+fn back_to_thread(thread: Option<&str>, notice_query: &str) -> Response {
     match safe_thread(thread) {
-        Some(id) => redirect(&format!("/threads/{id}?notice={notice}")),
-        None => redirect(&format!("/?notice={notice}")),
+        Some(id) => redirect(&format!("/threads/{id}?{notice_query}")),
+        None => redirect(&format!("/?{notice_query}")),
     }
 }
 
@@ -944,7 +962,10 @@ pub async fn select_model(
         return Err(AppError::bad("切换模型缺少 provider / model"));
     }
     match state.agent.set_active_provider(provider, Some(model)).await {
-        Ok(_) => Ok(back_to_thread(form.thread.as_deref(), "model_selected")),
+        Ok(_) => Ok(back_to_thread(
+            form.thread.as_deref(),
+            "notice=model_selected",
+        )),
         Err(error) => Ok(failed_before_redirect(
             form.thread.as_deref(),
             "切换模型失败",
@@ -963,7 +984,10 @@ pub async fn select_effort(
         return Err(AppError::bad(format!("未知的推理等级: {effort}")));
     }
     match state.agent.set_effort(&effort).await {
-        Ok(_) => Ok(back_to_thread(form.thread.as_deref(), "effort_selected")),
+        Ok(_) => Ok(back_to_thread(
+            form.thread.as_deref(),
+            "notice=effort_selected",
+        )),
         Err(error) => Ok(failed_before_redirect(
             form.thread.as_deref(),
             "更新推理等级失败",
@@ -1011,9 +1035,14 @@ pub async fn decide_approval(
     );
     match state.agent.decide_approval(&call_id, approved).await {
         Ok(_) => {
-            let notice = if approved { "approved" } else { "rejected" };
+            // key 写成 `notice=` 字面量，供源码扫描守门对账（见 handlers::NOTICE_TEXTS）。
+            let notice_query = if approved {
+                "notice=approved"
+            } else {
+                "notice=rejected"
+            };
             Ok(redirect(&format!(
-                "/threads/{}?notice={notice}",
+                "/threads/{}?{notice_query}",
                 form.thread_id
             )))
         }
@@ -1204,10 +1233,50 @@ pub async fn answer_question(
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct QueueActionForm {
+    /// 界面渲染那一帧的文本指纹（`queue_rows` 同源，截断 240 字符）。
+    /// 缺省（旧页面 / 手写请求）时不做校验，只保护真实界面里的陈旧帧。
+    expect: Option<String>,
+}
+
+/// 排队动作的陈旧帧防护：与服务端当前队列里同下标消息的文本比对。
+/// 快照拿不到就放行——真正的门槛是紧接着的 RPC，网关挂着时它同样会失败。
+async fn queue_expect_current(
+    state: &AppState,
+    thread_id: &str,
+    index: usize,
+    expect: Option<&str>,
+) -> bool {
+    let Some(expect) = expect else {
+        return true;
+    };
+    let Ok(snapshot) = state.agent.snapshot().await else {
+        return true;
+    };
+    queue_rows(&snapshot, thread_id)
+        .into_iter()
+        .find(|row| row.index == index)
+        .map(|row| row.text == expect)
+        .unwrap_or(false)
+}
+
+fn queue_stale(thread_id: &str) -> Response {
+    let message = "排队已变化（可能已被其它客户端改动），请确认后再操作";
+    redirect(&format!(
+        "/threads/{thread_id}?error={}",
+        encode_query(message)
+    ))
+}
+
 pub async fn promote_queue(
     State(state): State<AppState>,
     Path((thread_id, index)): Path<(String, usize)>,
+    Form(form): Form<QueueActionForm>,
 ) -> Result<Response, AppError> {
+    if !queue_expect_current(&state, &thread_id, index, form.expect.as_deref()).await {
+        return Ok(queue_stale(&thread_id));
+    }
     match state.agent.promote_queue(index, &thread_id).await {
         Ok(_) => Ok(redirect(&format!(
             "/threads/{thread_id}?notice=queue_promoted"
@@ -1219,7 +1288,11 @@ pub async fn promote_queue(
 pub async fn remove_queue(
     State(state): State<AppState>,
     Path((thread_id, index)): Path<(String, usize)>,
+    Form(form): Form<QueueActionForm>,
 ) -> Result<Response, AppError> {
+    if !queue_expect_current(&state, &thread_id, index, form.expect.as_deref()).await {
+        return Ok(queue_stale(&thread_id));
+    }
     match state.agent.remove_queue(index).await {
         Ok(_) => Ok(redirect(&format!(
             "/threads/{thread_id}?notice=queue_removed"

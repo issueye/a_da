@@ -279,6 +279,17 @@ pub struct PluginPage {
     pub html: String,
 }
 
+/// 二级页的离线壳：保留页面外壳（侧栏/顶栏），内容区是「未连接」+ 重新连接。
+///
+/// 概览/扩展这类页面的数据全来自网关快照或 RPC；连不上时如实说"未连接"，
+/// 不用 0 值冒充统计（UED：无真实数据时不显示假统计）。
+#[derive(Template)]
+#[template(path = "offline.html")]
+pub struct OfflinePage {
+    pub base: PageBase,
+    pub reason: String,
+}
+
 #[derive(Template)]
 #[template(path = "error.html")]
 pub struct ErrorPage {

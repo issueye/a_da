@@ -64,7 +64,19 @@ async fn dashboard_view(state: &AppState) -> Result<DashboardView, AppError> {
 }
 
 pub async fn dashboard(State(state): State<AppState>) -> Result<Response, AppError> {
-    let view = dashboard_view(&state).await?;
+    let view = match dashboard_view(&state).await {
+        Ok(view) => view,
+        // 快照读不到 = 网关断线。二级页不再甩裸错误页：保留外壳 + 如实说"未连接"
+        // （统计卡不出现，避免 0 值冒充真实数字）。
+        Err(error) => {
+            let reason = error.message.clone();
+            let page = OfflinePage {
+                base: offline_page_base(&state, "概览", "dashboard", None).await,
+                reason,
+            };
+            return Ok(render(&page)?.into_response());
+        }
+    };
     let page = DashboardPage {
         base: base(&state, "概览", "dashboard", None).await,
         view,

@@ -40,7 +40,8 @@ pub struct QuestionItem {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingQuestion {
     pub call_id: String,
-    /// 提问卡片的 `at`（epoch ms），算"已等待 Ns"用。
+    /// 提问卡片的 `startedAt`（绝对 epoch ms），算"已等待 Ns"用；
+    /// 0 = 不知道（不显示）。不拿排序序号 `at` 当时间戳。
     pub asked_at: u64,
     pub items: Vec<QuestionItem>,
 }
@@ -118,7 +119,8 @@ fn bool_at(raw: &Value, camel: &str, snake: &str) -> Option<bool> {
 /// 把一条提问（单题或多题）归一化成 [`PendingQuestion`]。
 ///
 /// 归一化之后 `items` **恒非空**：单题也会被包成一项，渲染侧只认一种结构。
-/// `asked_at` 事件本身不带，由提取方（工具卡的 `at`）补。
+/// `asked_at` 事件本身不带，由提取方补——用工具卡的 `startedAt`（绝对毫秒），
+/// **不能**用 `at`（那是卡片排序序号，不是时间戳）。
 pub fn normalize_question(question_val: &Value, call_id: &str) -> Option<PendingQuestion> {
     if !question_val.is_object() {
         return None;
@@ -191,7 +193,12 @@ pub fn pending_questions_from_items(raw_items: &[Value]) -> Vec<PendingQuestion>
         let Some(mut question) = normalize_question(question_val, &call_id) else {
             continue;
         };
-        question.asked_at = item.get("at").and_then(Value::as_u64).unwrap_or(0);
+        // 等待时长只认 `startedAt`（绝对毫秒）：`at` 是排序序号，拿它当时间戳
+        // 会和行内 `elapsed_label` 得出两套互相矛盾的数字。
+        question.asked_at = item
+            .get("startedAt")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         found.push(question);
     }
     found.reverse();
@@ -386,6 +393,8 @@ mod tests {
     fn tool_item(call_id: &str, question: Value, status: &str, at: u64) -> Value {
         json!({
             "kind": "tool", "id": format!("item_{call_id}"), "at": at,
+            // 等待时长按 startedAt（绝对毫秒）算；at 是排序序号
+            "startedAt": at,
             "callId": call_id, "name": "ask_user", "args": {},
             "rawArgs": "{}", "status": status,
             "details": {"question": question},

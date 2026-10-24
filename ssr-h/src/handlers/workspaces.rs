@@ -271,7 +271,7 @@ pub async fn select_workspace(
 
     let thread_id = match existing {
         Some(id) => id,
-        None => match state.agent.create_thread_in("新会话", &path).await {
+        None => match state.agent.create_thread_in("新会话", &path, None).await {
             Ok(result) => match result
                 .get("threadId")
                 .and_then(Value::as_str)

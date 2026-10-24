@@ -184,12 +184,36 @@ impl Sidebar {
             ));
         }
         let body = format!(
-            r#"<p class="ada-wspick__hint">新会话将建在所选工作区（只绑定会话，不切换项目）。要添加磁盘上的新目录，<a href="/workspaces">浏览全部工作区</a>。</p><form method="post" action="/threads"><input type="hidden" name="title" value="新会话"><div class="ada-wspick">{rows}</div><div class="ada-modal__actions"><button class="ada-btn ada-btn--secondary ada-btn--sm" type="button" data-modal-close>取消</button><button class="ada-btn ada-btn--primary ada-btn--sm" type="submit">{plus}新建会话</button></div></form>"#,
+            r#"<p class="ada-wspick__hint">模式在新建时选定（开始后不可切换）；工作区只绑定会话，不切换项目。要添加磁盘上的新目录，<a href="/workspaces">浏览全部工作区</a>。</p><form method="post" action="/threads"><input type="hidden" name="title" value="新会话"><div class="ada-wspick__label">模式</div><div class="ada-wspick__modes" role="radiogroup" aria-label="会话模式">{modes}</div><div class="ada-wspick__label">工作区</div><div class="ada-wspick">{rows}</div><div class="ada-modal__actions"><button class="ada-btn ada-btn--secondary ada-btn--sm" type="button" data-modal-close>取消</button><button class="ada-btn ada-btn--primary ada-btn--sm" type="submit">{plus}新建会话</button></div></form>"#,
+            modes = Self::mode_choices(),
             plus = icon("i-plus", 14),
         );
         crate::ui::Modal::new("new-thread", "新建会话")
             .body(body)
             .render()
+    }
+
+    /// 会话模式的四个选项（与 desktop-ui 的 ModeSlider 同档：编码/规划/创造/PM）。
+    ///
+    /// 分段控件的视觉选中态由原生 radio 的 `:checked` 驱动——无 JS 也能选，
+    /// 弹窗里的提交表单把 mode 一并交给 POST /threads（→ thread.create 的 mode）。
+    fn mode_choices() -> String {
+        let options = [
+            ("code", "编码", true),
+            ("plan", "规划", false),
+            ("create", "创造", false),
+            ("pm", "PM", false),
+        ];
+        options
+            .into_iter()
+            .map(|(value, label, checked)| {
+                format!(
+                    r#"<label class="ada-wspick__mode"><input type="radio" name="mode" value="{value}"{checked}><span>{label}</span></label>"#,
+                    checked = if checked { " checked" } else { "" },
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
     }
 
     /// 一行工作区切换器：`图标 + 目录名 + 会话数 + 箭头`。
@@ -733,6 +757,10 @@ mod tests {
             html.contains(r#"name="workspace" value="C:\work\other""#),
             "{html}"
         );
+        // 模式分段：四档 radio，编码缺省选中；随表单提交给 thread.create 的 mode
+        assert_eq!(html.matches(r#"name="mode" value=""#).count(), 4, "{html}");
+        assert!(html.contains(r#"name="mode" value="code" checked"#), "{html}");
+        assert!(html.contains(r#"name="mode" value="pm""#), "{html}");
         // 弹窗内的提交表单不带拦截标记，避免二次拦截（切片到弹窗闭合为止，
         // 别把后面的窄轨表单也算进来）
         let modal_start = html

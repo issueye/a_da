@@ -54,7 +54,17 @@ pub async fn extensions(
     Query(query): Query<PageQuery>,
 ) -> Result<Response, AppError> {
     let frontend = frontend_rows(&state);
-    let agent_value = state.agent.plugins().await.unwrap_or(Value::Null);
+    let agent_value = match state.agent.plugins().await {
+        Ok(value) => value,
+        // 网关断线：保留外壳 + 「未连接」，不把 agent 插件数显示成 0
+        Err(error) => {
+            let page = OfflinePage {
+                base: offline_page_base(&state, "扩展", "extensions", flash_from_query(&query)).await,
+                reason: format!("无法连接 agent 网关：{}", public_reason(&error)),
+            };
+            return Ok(render(&page)?.into_response());
+        }
+    };
     let agent = agent_rows(&agent_value);
     let page = ExtensionsPage {
         base: base(&state, "扩展", "extensions", flash_from_query(&query)).await,

@@ -1,0 +1,13 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="empty-state">
+  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color: var(--ph-warn-ink)"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+  <p class="text-sm font-semibold text-ink">未连接</p>
+  <p class="mt-1 text-xs text-muted">{{ reason }}</p>
+  <p class="mt-1 text-xs text-faint">请确认桌面端或网关仍在运行，然后重新连接。已加载的页面不会伪造数据。</p>
+  <div class="mt-4 flex gap-2">
+    <a class="ada-btn ada-btn--primary ada-btn--sm" href="">重新连接</a>
+    <a class="ada-btn ada-btn--secondary ada-btn--sm" href="/">返回会话</a>
+  </div>
+</div>
+{% endblock %}

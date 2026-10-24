@@ -169,19 +169,26 @@ impl AgentClient {
     }
 
     pub async fn create_thread(&self, title: &str) -> Result<Value> {
-        self.create_thread_in(title, &self.workspace).await
+        self.create_thread_in(title, &self.workspace, None).await
     }
 
     /// 在指定工作区里新建会话。
     ///
     /// 工作区是**会话属性**：同一个 agent 进程能看到所有工作区的会话，
     /// 所以不需要为切换工作区重连；新建时把目标路径带上即可。
-    pub async fn create_thread_in(&self, title: &str, workspace: &str) -> Result<Value> {
-        self.post(
-            "/api/threads",
-            json!({ "title": title, "workspace": workspace }),
-        )
-        .await
+    pub async fn create_thread_in(
+        &self,
+        title: &str,
+        workspace: &str,
+        mode: Option<&str>,
+    ) -> Result<Value> {
+        // 网关的 POST /threads 是 THREAD_CREATE 的透明代理（BodyMode::MergeOptional），
+        // mode 原样透传给 thread.create —— 建会话时就把模式定下来。
+        let mut body = json!({ "title": title, "workspace": workspace });
+        if let Some(mode) = mode {
+            body["mode"] = json!(mode);
+        }
+        self.post("/api/threads", body).await
     }
 
     /// 把某个目录设为当前工作区（`workspace.add`：设 active project + 记入会话目录索引）。

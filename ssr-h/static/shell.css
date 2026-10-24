@@ -435,6 +435,49 @@
 .ada-wspick__row input:checked ~ .ada-wspick__check {
   opacity: 1;
 }
+.ada-wspick__label {
+  margin: 10px 0 4px;
+  color: var(--ph-faint);
+  font-size: var(--ada-text-xs);
+}
+/* 模式分段（四档）：原生 radio 驱动选中态，键盘可达 */
+.ada-wspick__modes {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+.ada-wspick__mode {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 4px;
+  border: 1px solid var(--ph-line);
+  border-radius: var(--ada-radius-md);
+  color: var(--ph-muted);
+  font-size: var(--ada-text-sm);
+  cursor: pointer;
+  transition: background var(--ada-transition), border-color var(--ada-transition),
+    color var(--ada-transition);
+}
+.ada-wspick__mode:hover {
+  background: var(--ph-subtle);
+}
+.ada-wspick__mode input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.ada-wspick__mode:has(input:checked) {
+  border-color: var(--ph-brand);
+  background: var(--ph-brand-soft);
+  color: var(--ph-brand-ink);
+  font-weight: 600;
+}
+.ada-wspick__mode:has(input:focus-visible) {
+  outline: 2px solid var(--ph-brand);
+  outline-offset: 1px;
+}
 .ada-wspick__hint {
   margin: 0;
   color: var(--ph-faint);

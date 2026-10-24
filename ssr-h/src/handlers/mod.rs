@@ -100,6 +100,8 @@ pub struct CreateThreadForm {
     title: String,
     /// 目标工作区；缺省时由侧栏/后端决定（通常是当前激活工作区）。
     workspace: Option<String>,
+    /// 会话模式（code / plan / create / pm）；缺省 code。开始后不再可切（与 desktop-ui 一致）。
+    mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,6 +158,55 @@ pub async fn rewrite_plugin_redirect(request: Request, next: Next) -> Response {
     response
 }
 
+/// notice key → 中文文案，**单一真源**。
+///
+/// 🔴 新增「动作成功回跳」必须在这里登记，否则横幅会把英文 key 原样显示给用户；
+/// `tests::notice_literals_are_translated` 扫描 `src/` 里的 `notice=<key>` 字面量守着这张表。
+/// 已知盲区：以参数形式传给 `provider_back` / `provider_back_dialog`（providers.rs）的
+/// key 不在扫描范围内，改那两个函数的调用点时人工对照本表。
+const NOTICE_TEXTS: &[(&str, &str)] = &[
+    ("frontend_reloaded", "前端插件已重新扫描"),
+    ("agent_reloaded", "已请求 agent 重载插件；新增工具将在下一条消息生效"),
+    ("created", "会话已创建"),
+    ("sent", "消息已发送"),
+    ("aborted", "已请求中止当前轮次"),
+    ("approved", "已提交批准结果"),
+    ("rejected", "已提交拒绝结果"),
+    ("retried", "已请求重试上一轮"),
+    ("model_selected", "已切换模型"),
+    ("effort_selected", "已更新推理等级"),
+    ("approval_auto", "审批档位已切换为「自动批准」"),
+    ("approval_ask", "审批档位已切换为「每次询问」"),
+    ("approval_readonly", "审批档位已切换为「严格只读」"),
+    ("approval_full", "审批档位已切换为「完全访问」"),
+    ("queue_promoted", "已把排队消息提升到队首"),
+    ("queue_removed", "已删除排队消息"),
+    ("queue_cleared", "已清空当前会话的排队消息"),
+    ("workspace_selected", "已切换工作区"),
+    ("workspace_created", "已在工作区创建会话"),
+    ("workspace_mkdir", "已新建目录"),
+    ("plugin_enabled", "插件已启用并挂载到界面"),
+    ("plugin_disabled", "插件已停用，界面已回到默认实现"),
+    ("provider_created", "已新建供应商，填好端点与密钥后保存"),
+    ("provider_saved", "供应商连接参数已保存"),
+    ("provider_saved_activated", "已保存并设为当前供应商"),
+    ("provider_activated", "已切换当前供应商"),
+    ("provider_deleted", "供应商已删除"),
+    ("model_added", "模型已加入该供应商"),
+    ("model_saved", "模型参数已保存"),
+    ("model_deleted", "模型已从该供应商移除"),
+    ("thread_renamed", "已重命名会话"),
+    ("thread_deleted", "已删除会话"),
+    ("answered", "已提交回答"),
+];
+
+fn notice_text(notice: &str) -> Option<String> {
+    NOTICE_TEXTS
+        .iter()
+        .find(|(key, _)| *key == notice)
+        .map(|(_, text)| (*text).to_string())
+}
+
 fn flash_from_query(query: &PageQuery) -> Option<Flash> {
     if let Some(error) = &query.error {
         return Some(Flash {
@@ -164,54 +215,44 @@ fn flash_from_query(query: &PageQuery) -> Option<Flash> {
         });
     }
     let notice = query.notice.as_deref()?;
-    let message = match notice {
-        "frontend_reloaded" => {
-            let failed = query.failed.unwrap_or(0);
-            if failed > 0 {
-                format!(
-                    "前端插件已重新扫描：{} 个（{} 个加载失败，见下方错误）",
-                    query.count.unwrap_or(0),
-                    failed
-                )
-            } else {
-                format!("前端插件已重新扫描：当前 {} 个", query.count.unwrap_or(0))
-            }
+    let message = if notice == "frontend_reloaded" {
+        // 唯一需要 query 参数（count/failed）的分支；表里的同名条目只作守门对账用。
+        let failed = query.failed.unwrap_or(0);
+        if failed > 0 {
+            format!(
+                "前端插件已重新扫描：{} 个（{} 个加载失败，见下方错误）",
+                query.count.unwrap_or(0),
+                failed
+            )
+        } else {
+            format!("前端插件已重新扫描：当前 {} 个", query.count.unwrap_or(0))
         }
-        "agent_reloaded" => "已请求 agent 重载插件；新增工具将在下一条消息生效".to_string(),
-        "created" => "会话已创建".to_string(),
-        "sent" => "消息已发送".to_string(),
-        "aborted" => "已请求中止当前轮次".to_string(),
-        "approved" => "已提交批准结果".to_string(),
-        "rejected" => "已提交拒绝结果".to_string(),
-        "retried" => "已请求重试上一轮".to_string(),
-        "model_selected" => "已切换模型".to_string(),
-        "effort_selected" => "已更新推理等级".to_string(),
-        "approval_auto" => "审批档位已切换为「自动批准」".to_string(),
-        "approval_ask" => "审批档位已切换为「每次询问」".to_string(),
-        "approval_readonly" => "审批档位已切换为「严格只读」".to_string(),
-        "approval_full" => "审批档位已切换为「完全访问」".to_string(),
-        "queue_promoted" => "已把排队消息提升到队首".to_string(),
-        "queue_removed" => "已删除排队消息".to_string(),
-        "queue_cleared" => "已清空当前会话的排队消息".to_string(),
-        "workspace_selected" => "已切换工作区".to_string(),
-        "workspace_created" => "已在工作区创建会话".to_string(),
-        "workspace_mkdir" => "已新建目录".to_string(),
-        "plugin_enabled" => "插件已启用并挂载到界面".to_string(),
-        "plugin_disabled" => "插件已停用，界面已回到默认实现".to_string(),
-        "provider_created" => "已新建供应商，填好端点与密钥后保存".to_string(),
-        "provider_saved" => "供应商连接参数已保存".to_string(),
-        "provider_saved_activated" => "已保存并设为当前供应商".to_string(),
-        "provider_activated" => "已切换当前供应商".to_string(),
-        "provider_deleted" => "供应商已删除".to_string(),
-        "model_added" => "模型已加入该供应商".to_string(),
-        "model_saved" => "模型参数已保存".to_string(),
-        "model_deleted" => "模型已从该供应商移除".to_string(),
-        other => other.to_string(),
+    } else {
+        notice_text(notice).unwrap_or_else(|| {
+            tracing::warn!("未登记中文文案的 notice key：{notice}（横幅会直接显示 key）");
+            notice.to_string()
+        })
     };
     Some(Flash {
         kind: "success".to_string(),
         message,
     })
+}
+
+/// 二级页的离线壳基座：保留侧栏但把连接状态点画成"未连接"。
+///
+/// 与聊天页的 offline_base 同口径；页面内容换成 [`OfflinePage`]，不渲染假统计。
+async fn offline_page_base(
+    state: &AppState,
+    title: &str,
+    active: &str,
+    flash: Option<Flash>,
+) -> PageBase {
+    let mut base = base(state, title, active, flash).await;
+    base.sidebar = ui::sidebar::Sidebar::from_base(&base)
+        .connected(Some(false))
+        .render();
+    base
 }
 
 async fn base(state: &AppState, title: &str, active: &str, flash: Option<Flash>) -> PageBase {
@@ -983,6 +1024,74 @@ mod tests {
     #[test]
     fn encode_query_percent_encodes_utf8_and_reserved_chars() {
         assert_eq!(encode_query("a b&c=中"), "a+b%26c%3D%E4%B8%AD");
+    }
+
+    /// 收集 `src/` 里所有 `notice=<key>` 字面量（含 format 字符串与测试断言里的）。
+    /// 动态拼接（`notice={}`）抓不到 key、天然跳过；`notice=approval_` 这类前缀
+    /// 允许命中「以它开头的完整映射」（approval_auto…）。
+    fn notice_keys_in_source() -> Vec<String> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut keys: Vec<String> = Vec::new();
+        let mut stack = vec![root];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let Ok(source) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                let mut rest = source.as_str();
+                while let Some(pos) = rest.find("notice=") {
+                    rest = &rest[pos + "notice=".len()..];
+                    let key: String = rest
+                        .chars()
+                        .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                        .collect();
+                    if !key.is_empty() {
+                        keys.push(key);
+                    }
+                }
+            }
+        }
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
+    #[test]
+    fn notice_literals_are_translated() {
+        let keys = notice_keys_in_source();
+        assert!(
+            !keys.is_empty(),
+            "源码扫描应能找到 notice= 字面量，扫描器本身坏了"
+        );
+        for key in keys {
+            let exact = NOTICE_TEXTS.iter().any(|(k, _)| *k == key);
+            let dynamic_prefix = NOTICE_TEXTS.iter().any(|(k, _)| k.starts_with(key.as_str()));
+            assert!(
+                exact || dynamic_prefix,
+                "notice key `{key}` 出现在源码里但没有登记中文文案（NOTICE_TEXTS），\
+                 横幅会把它原样显示给用户"
+            );
+        }
+    }
+
+    #[test]
+    fn notice_text_covers_the_three_keys_added_with_this_table() {
+        // 这三个 key 曾以英文裸串形式上过线（建议 04），锁一下防止回归。
+        assert_eq!(notice_text("thread_renamed").as_deref(), Some("已重命名会话"));
+        assert_eq!(notice_text("thread_deleted").as_deref(), Some("已删除会话"));
+        assert_eq!(notice_text("answered").as_deref(), Some("已提交回答"));
+        assert_eq!(notice_text("no_such_notice"), None);
     }
 
     fn snapshot(threads: serde_json::Value, window: u64) -> Value {

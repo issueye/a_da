@@ -66,7 +66,7 @@ fn question_field(question: &PendingQuestion, item_id: &str, field: &str) -> Str
 impl Render for QuestionTray {
     fn render(&self) -> String {
         let q = &self.question;
-        let waited = waited_from_at(q.asked_at);
+        let waited = waited_from_ms(q.asked_at);
         // 多题 = 一次一题翻页（desktop-ui 同款交互）：每题一个 `data-page-item`，
         // 翻页条服务端渲染成 `hidden`，由 `chat.js` 的 `data-question-pager` 契约激活；
         // 无 JS 时翻页条保持隐藏、全部题目平铺（阅读基线不丢）。
@@ -170,16 +170,17 @@ impl QuestionTray {
     }
 }
 
-/// 等待时长文案（与审批托盘同款口径；审批侧从 item.at 取值后也走这里）。
-pub fn waited_from_at(at: u64) -> String {
-    if at == 0 {
+/// 等待时长文案。入参是**绝对毫秒时间戳**（`startedAt`）——不是排序用的 `at`；
+/// 0 / 缺失表示不知道，返回空串（宁缺毋错，不拿序号估时长）。
+pub fn waited_from_ms(when: u64) -> String {
+    if when == 0 {
         return String::new();
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
-        .unwrap_or(at);
-    let seconds = now.saturating_sub(at) / 1000;
+        .unwrap_or(when);
+    let seconds = now.saturating_sub(when) / 1000;
     if seconds < 60 {
         format!("已等待 {seconds}s")
     } else if seconds < 3600 {
@@ -212,8 +213,11 @@ impl Render for QueueTray {
             .items
             .iter()
             .map(|item| {
+                // `expect` 是渲染那一帧的文本指纹（与 `queue_rows` 同源，已截断 240 字符）：
+                // 服务端在真正执行前拿它和当前队列同下标的消息比对，识别陈旧帧，
+                // 避免"别的客户端删了一条之后，这里一点就误伤相邻消息"。
                 format!(
-                    r#"<div class="ada-tray__row"><span class="ada-tray__order">{order}</span><span class="ada-tray__text" title="{text}">{text}</span><form method="post" action="/threads/{thread}/queue/{index}/promote" class="ada-tray__form" data-confirm="提升会中断当前回答并立即执行这条消息，确定吗？"><button class="ada-tray__link" type="submit" title="提升到队首（会中断当前轮次）">提升</button></form><form method="post" action="/threads/{thread}/queue/{index}/remove" class="ada-tray__form" data-confirm="确定删除这条排队消息吗？"><button class="ada-tray__link ada-tray__link--danger" type="submit" title="删除">删除</button></form></div>"#,
+                    r#"<div class="ada-tray__row"><span class="ada-tray__order">{order}</span><span class="ada-tray__text" title="{text}">{text}</span><form method="post" action="/threads/{thread}/queue/{index}/promote" class="ada-tray__form" data-confirm="提升会中断当前回答并立即执行这条消息，确定吗？"><input type="hidden" name="expect" value="{text}"><button class="ada-tray__link" type="submit" title="提升到队首（会中断当前轮次）">提升</button></form><form method="post" action="/threads/{thread}/queue/{index}/remove" class="ada-tray__form" data-confirm="确定删除这条排队消息吗？"><input type="hidden" name="expect" value="{text}"><button class="ada-tray__link ada-tray__link--danger" type="submit" title="删除">删除</button></form></div>"#,
                     order = item.order,
                     text = escape(&item.text),
                     thread = escape(&item.thread_id),
@@ -283,5 +287,24 @@ mod tests {
         assert!(!html.contains("data-page-bar"), "{html}");
         assert!(!html.contains("data-page-item"), "{html}");
         assert!(html.contains("name=\"choice\""), "{html}");
+    }
+
+    #[test]
+    fn queue_rows_carry_text_fingerprint_for_stale_frame_guard() {
+        let html = QueueTray {
+            items: vec![QueueItem {
+                index: 3,
+                order: 1,
+                text: "继续修一下 <面板> \"引号\"".to_string(),
+                thread_id: "t1".to_string(),
+            }],
+        }
+        .render();
+        // 提升与删除两张表单都必须带同一份指纹（服务端靠它识别陈旧帧）。
+        assert_eq!(html.matches("name=\"expect\"").count(), 2, "{html}");
+        assert!(
+            html.contains("value=\"继续修一下 &lt;面板&gt; &quot;引号&quot;\""),
+            "{html}"
+        );
     }
 }

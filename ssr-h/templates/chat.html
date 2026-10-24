@@ -54,7 +54,7 @@
     <div class="ada-corner-dock" id="chat-corner" aria-label="会话状态卡">{{ base.slots.chat_corner|safe }}</div>
 
     {% if let Some(f) = base.flash %}
-    <div class="ada-flash alert {% if f.kind == "error" %}alert-danger{% else if f.kind == "success" %}alert-success{% else %}alert-info{% endif %}" data-flash="{{ f.kind }}" role="status">
+    <div class="ada-flash alert {% if f.kind == "error" %}alert-danger{% else if f.kind == "success" %}alert-success{% else %}alert-info{% endif %}" data-flash="{{ f.kind }}" role="{% if f.kind == "error" %}alert{% else %}status{% endif %}">
       <p class="alert-message">{{ f.message }}</p>
       <button class="ada-flash__close" type="button" data-dismiss aria-label="关闭提示" title="关闭">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
@@ -117,7 +117,9 @@
     <div class="ada-float-dock" id="composer-above" aria-label="插件悬浮区">{{ base.slots.composer_above|safe }}</div>
     </div>
 
-    <div class="ada-trays" id="ada-trays">{{ trays_html|safe }}</div>
+    {# 托盘是"agent 正在等用户"的唯一信号源：新审批/提问经 SSE 换帧到达时，
+       polite 播报让读屏用户也能感知（不打断正在输入的焦点）。 #}
+    <div class="ada-trays" id="ada-trays" role="region" aria-live="polite" aria-label="待处理事项">{{ trays_html|safe }}</div>
 
     {% if !composer_html.is_empty() %}{{ composer_html|safe }}{% endif %}
   </main>

@@ -849,8 +849,10 @@ pub(super) fn workspace_label(workspace: &str) -> String {
 }
 
 pub(super) fn waited_label(value: &Value) -> String {
-    let at = value.get("at").and_then(Value::as_u64).unwrap_or(0);
-    ui::waited_from_at(at)
+    // 用 `startedAt`（绝对毫秒）算等待时长——`at` 是排序序号，不是时间戳，
+    // 与行内 `elapsed_label` 同一口径（拿不到就干脆不显示，不拿 at 兜底）。
+    let started = value.get("startedAt").and_then(Value::as_u64).unwrap_or(0);
+    ui::waited_from_ms(started)
 }
 
 pub(super) fn approval_rows(raw_items: &[Value]) -> Vec<ApprovalRow> {
@@ -1061,6 +1063,20 @@ mod tests {
         let config = json!({"saved":{"approval":"ask"}});
         assert_eq!(approval_mode(&snapshot, &config), "ask");
         assert_eq!(approval_mode(&snapshot, &Value::Null), "auto");
+    }
+
+    #[test]
+    fn waited_label_uses_started_at_not_sort_ordinal() {
+        // 回归锁（建议 05）：只有排序序号 `at` 时必须不显示等待时长，
+        // 否则「已等待 20000 天」这类天文数字会出现在托盘里。
+        assert_eq!(waited_label(&json!({"at": 1})), "");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap();
+        let label = waited_label(&json!({"at": 1, "startedAt": now - 4_000}));
+        assert!(label.starts_with("已等待 "), "{label}");
+        assert!(!label.contains("d "), "不应出现按天计的等待时长: {label}");
     }
 
     #[test]

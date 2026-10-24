@@ -20,7 +20,7 @@ pub mod theme;
 pub mod todo;
 
 pub use components::{
-    effort_label, model_chip_inner, normalize_effort, render_slot, waited_from_at, ApprovalTray,
+    effort_label, model_chip_inner, normalize_effort, render_slot, waited_from_ms, ApprovalTray,
     AssistantMessage, AuxItem, Button, Chip, Composer, ComposerAux, ConfirmDialog, Disclosure,
     EmptyState, IconButton, Modal, ModelChoice, ModelGroup, ModelPicker, ModelTable, ModelTableRow,
     Notice, Panel, QueueItem, QuestionTray, QueueTray, Render, Select, SendButton, Slot, TabItem,
