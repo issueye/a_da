@@ -7,7 +7,9 @@ type Band = {
   max: number;
   key: string;
   label: string;
+  /** 线性 SVG 图标名（icons.rs 的 i-* 集合），渲染走组件库 <Icon> */
   icon: string;
+  /** 应用语义色：success / brand / warn / danger / neutral */
   tone: string;
   advice: string;
 };
@@ -17,7 +19,7 @@ const BANDS: Band[] = [
     max: 30,
     key: "sunny",
     label: "晴天",
-    icon: "☀️",
+    icon: "i-sun",
     tone: "success",
     advice: "上下文很宽松，长日志、长文件可以放心贴。",
   },
@@ -25,7 +27,7 @@ const BANDS: Band[] = [
     max: 60,
     key: "cloudy",
     label: "多云",
-    icon: "⛅",
+    icon: "i-cloud",
     tone: "brand",
     advice: "用掉一半了：工具输出尽量精简，别整份往上下文里倒。",
   },
@@ -33,7 +35,7 @@ const BANDS: Band[] = [
     max: 85,
     key: "overcast",
     label: "阴天",
-    icon: "☁️",
+    icon: "i-cloud-fog",
     tone: "warn",
     advice: "快到顶了：先压缩历史，或者开一个新会话。",
   },
@@ -41,7 +43,7 @@ const BANDS: Band[] = [
     max: 100,
     key: "storm",
     label: "暴雨",
-    icon: "🌧️",
+    icon: "i-cloud-rain",
     tone: "danger",
     advice: "随时会撞上下文窗口：立刻压缩或新开会话，否则这一轮会失败。",
   },
@@ -51,7 +53,7 @@ const UNKNOWN: Band = {
   max: 100,
   key: "unknown",
   label: "未知",
-  icon: "🌫️",
+  icon: "i-circle",
   tone: "neutral",
   advice: "还没拿到用量：先在对话里说一句话，或者检查网关是否连上。",
 };

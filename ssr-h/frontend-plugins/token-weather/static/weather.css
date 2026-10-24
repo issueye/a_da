@@ -1,52 +1,48 @@
-/* Token 天气：作用域由 ssr-h 注入的 @scope 保证，这里只写插件内部 class。 */
+/* Token 天气：作用域由 ssr-h 注入的 @scope 保证，这里只写插件内部 class。
+   品牌一致性口径：accent 全部取自应用的 --ph-* 语义对（随深浅主题自动切换），
+   不自备色板；表面走 surface/elevated/line/shadow 令牌，无渐变无发光；
+   圆角/字号/等宽字体都用全局令牌。分档语义：晴=success、多云=brand、
+   阴=warn、暴雨=danger、未知=neutral（与应用的状态色语言同源）。 */
 
-.tw-popover {
-  --tw-accent: #64748b;
-  --tw-accent-soft: rgba(100, 116, 139, 0.14);
-  --tw-accent-ring: rgba(100, 116, 139, 0.24);
+.tw-popover,
+.tw-page,
+.tw-dash {
+  --tw-accent: var(--ph-muted);
+  --tw-accent-soft: var(--ph-subtle);
 }
 .tw-sunny {
-  --tw-accent: #f59e0b;
-  --tw-accent-soft: rgba(245, 158, 11, 0.14);
-  --tw-accent-ring: rgba(245, 158, 11, 0.26);
+  --tw-accent: var(--ph-success-ink);
+  --tw-accent-soft: var(--ph-success-soft);
 }
 .tw-cloudy {
-  --tw-accent: #3b82f6;
-  --tw-accent-soft: rgba(59, 130, 246, 0.14);
-  --tw-accent-ring: rgba(59, 130, 246, 0.26);
+  --tw-accent: var(--ph-brand-ink);
+  --tw-accent-soft: var(--ph-brand-soft);
 }
 .tw-overcast {
-  --tw-accent: #64748b;
-  --tw-accent-soft: rgba(100, 116, 139, 0.16);
-  --tw-accent-ring: rgba(100, 116, 139, 0.28);
+  --tw-accent: var(--ph-warn-ink);
+  --tw-accent-soft: var(--ph-warn-soft);
 }
 .tw-storm {
-  --tw-accent: #e11d48;
-  --tw-accent-soft: rgba(225, 29, 72, 0.14);
-  --tw-accent-ring: rgba(225, 29, 72, 0.28);
+  --tw-accent: var(--ph-danger-ink);
+  --tw-accent-soft: var(--ph-danger-soft);
 }
 .tw-unknown {
-  --tw-accent: #71717a;
-  --tw-accent-soft: rgba(113, 113, 122, 0.14);
-  --tw-accent-ring: rgba(113, 113, 122, 0.24);
+  --tw-accent: var(--ph-faint);
+  --tw-accent-soft: var(--ph-subtle);
 }
 
 /* ── 胶囊触发器 ─────────────────────────────────────────────────────── */
 .tw-chip {
   gap: 5px;
-  border-color: color-mix(in srgb, var(--tw-accent) 22%, var(--ph-line));
-  background: linear-gradient(120deg, var(--tw-accent-soft), var(--ph-surface));
-  box-shadow: 0 5px 16px -8px var(--tw-accent-ring);
-  transition: box-shadow 160ms ease, border-color 160ms ease, transform 160ms ease;
+  border-color: color-mix(in srgb, var(--tw-accent) 24%, var(--ph-line));
+  background: var(--tw-accent-soft);
+  transition: border-color var(--ada-transition), background var(--ada-transition);
 }
 .tw-chip:hover {
-  border-color: color-mix(in srgb, var(--tw-accent) 42%, var(--ph-line));
-  box-shadow: 0 8px 22px -10px var(--tw-accent-ring);
+  border-color: color-mix(in srgb, var(--tw-accent) 46%, var(--ph-line));
 }
 .tw-chip__icon {
-  font-size: 13px;
-  line-height: 1;
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.12));
+  color: var(--tw-accent);
 }
 .tw-chip__caret {
   width: 11px;
@@ -54,7 +50,7 @@
   margin-left: 1px;
   flex: 0 0 auto;
   color: var(--ph-faint);
-  transition: transform 160ms ease;
+  transition: transform var(--ada-transition);
   transform-origin: center;
 }
 .tw-popover[open] .tw-chip__caret {
@@ -69,49 +65,29 @@
   width: min(360px, calc(100vw - 32px));
   padding: 0;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--tw-accent) 20%, var(--ph-line));
-  border-radius: 20px;
-  background:
-    radial-gradient(120% 90% at 100% 0%, var(--tw-accent-soft), transparent 55%),
-    linear-gradient(165deg, var(--ph-elevated), var(--ph-surface));
-  box-shadow:
-    0 28px 70px -22px rgba(15, 23, 42, 0.55),
-    0 10px 26px -16px rgba(15, 23, 42, 0.38),
-    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  border: 1px solid color-mix(in srgb, var(--tw-accent) 22%, var(--ph-line));
+  border-radius: var(--ada-radius-lg);
+  background: var(--ph-elevated);
+  box-shadow: var(--ph-shadow);
   color: var(--ph-muted);
 }
 
-.tw-panel__aura {
-  position: absolute;
-  top: -34px;
-  right: -26px;
-  width: 120px;
-  height: 120px;
-  border-radius: 999px;
-  background: radial-gradient(closest-side, var(--tw-accent-soft), transparent 75%);
-  pointer-events: none;
-}
 .tw-panel__head {
-  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 16px 16px 12px;
+  padding: 14px 16px 12px;
 }
 .tw-panel__orb {
   display: grid;
-  width: 46px;
-  height: 46px;
+  width: 44px;
+  height: 44px;
   flex: 0 0 auto;
   place-items: center;
-  border: 1px solid color-mix(in srgb, var(--tw-accent) 28%, transparent);
-  border-radius: 15px;
-  background: linear-gradient(145deg, var(--tw-accent-soft), var(--ph-elevated));
-  box-shadow:
-    0 8px 18px -10px var(--tw-accent-ring),
-    inset 0 1px 0 rgba(255, 255, 255, 0.35);
-  font-size: 22px;
-  line-height: 1;
+  border: 1px solid color-mix(in srgb, var(--tw-accent) 26%, var(--ph-line));
+  border-radius: var(--ada-radius-md);
+  background: var(--tw-accent-soft);
+  color: var(--tw-accent);
 }
 .tw-panel__copy {
   min-width: 0;
@@ -119,9 +95,9 @@
 }
 .tw-panel__kicker {
   color: var(--ph-faint);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.14em;
 }
 .tw-panel__title {
   display: flex;
@@ -129,15 +105,15 @@
   gap: 7px;
   margin-top: 2px;
   color: var(--ph-ink);
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 650;
   letter-spacing: -0.02em;
 }
 .tw-panel__pct {
   color: var(--tw-accent);
+  font-family: var(--mono-font, Consolas, monospace);
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0;
 }
 .tw-panel__advice {
   margin-top: 4px;
@@ -166,7 +142,7 @@
 .tw-progress {
   display: block;
   width: 100%;
-  height: 9px;
+  height: 8px;
   overflow: hidden;
   border: 0;
   border-radius: 999px;
@@ -179,13 +155,12 @@
 }
 .tw-progress::-webkit-progress-value {
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--tw-accent), color-mix(in srgb, var(--tw-accent) 55%, #fff));
-  box-shadow: 0 0 12px -2px var(--tw-accent-ring);
+  background: var(--tw-accent);
   transition: width 240ms ease;
 }
 .tw-progress::-moz-progress-bar {
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--tw-accent), color-mix(in srgb, var(--tw-accent) 55%, #fff));
+  background: var(--tw-accent);
 }
 .tw-progress--sm {
   height: 6px;
@@ -201,8 +176,8 @@
   min-width: 0;
   padding: 9px 10px;
   border: 1px solid var(--ph-line);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--ph-surface) 82%, transparent);
+  border-radius: var(--ada-radius-md);
+  background: var(--ph-surface);
 }
 .tw-stat--wide {
   grid-column: 1 / -1;
@@ -214,12 +189,12 @@
 .tw-stat__label {
   display: block;
   color: var(--ph-faint);
-  font-size: 9.5px;
+  font-size: 10px;
   letter-spacing: 0.04em;
 }
 .tw-stat__value {
   color: var(--ph-ink);
-  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-family: var(--mono-font, Consolas, monospace);
   font-size: 15px;
   font-weight: 600;
   line-height: 1.3;
@@ -227,7 +202,7 @@
 .tw-stat__unit {
   margin-left: 3px;
   color: var(--ph-faint);
-  font-size: 9px;
+  font-size: 10px;
 }
 .tw-stat__text {
   overflow: hidden;
@@ -246,11 +221,11 @@
   margin-top: 12px;
   padding: 10px 16px 13px;
   border-top: 1px solid var(--ph-line);
-  background: color-mix(in srgb, var(--ph-subtle) 42%, transparent);
+  background: var(--ph-subtle);
 }
 .tw-note {
   color: var(--ph-faint);
-  font-size: 9.5px;
+  font-size: 10px;
   line-height: 1.4;
 }
 .tw-note--page {
@@ -258,79 +233,32 @@
   font-size: 10.5px;
 }
 
-/* ── 独立页 ─────────────────────────────────────────────────────────── */
+/* ── 独立页（与 provider-admin 的页头/卡片同构） ─────────────────────── */
 .tw-page {
-  --tw-accent: #64748b;
-  --tw-accent-soft: rgba(100, 116, 139, 0.14);
-  --tw-accent-ring: rgba(100, 116, 139, 0.24);
   display: grid;
   gap: 12px;
 }
-.tw-page.tw-sunny {
-  --tw-accent: #f59e0b;
-  --tw-accent-soft: rgba(245, 158, 11, 0.14);
-  --tw-accent-ring: rgba(245, 158, 11, 0.26);
-}
-.tw-page.tw-cloudy {
-  --tw-accent: #3b82f6;
-  --tw-accent-soft: rgba(59, 130, 246, 0.14);
-  --tw-accent-ring: rgba(59, 130, 246, 0.26);
-}
-.tw-page.tw-overcast {
-  --tw-accent: #64748b;
-  --tw-accent-soft: rgba(100, 116, 139, 0.16);
-  --tw-accent-ring: rgba(100, 116, 139, 0.28);
-}
-.tw-page.tw-storm {
-  --tw-accent: #e11d48;
-  --tw-accent-soft: rgba(225, 29, 72, 0.14);
-  --tw-accent-ring: rgba(225, 29, 72, 0.28);
-}
-.tw-page.tw-unknown {
-  --tw-accent: #71717a;
-  --tw-accent-soft: rgba(113, 113, 122, 0.14);
-  --tw-accent-ring: rgba(113, 113, 122, 0.24);
-}
 
 .tw-hero {
-  position: relative;
   display: flex;
   align-items: center;
   gap: 14px;
-  overflow: hidden;
-  padding: 20px;
-  border: 1px solid color-mix(in srgb, var(--tw-accent) 18%, var(--ph-line));
-  border-radius: 20px;
-  background:
-    radial-gradient(90% 120% at 100% 0%, var(--tw-accent-soft), transparent 58%),
-    linear-gradient(150deg, var(--ph-elevated), var(--ph-surface));
-  box-shadow:
-    0 18px 44px -28px rgba(15, 23, 42, 0.4),
-    inset 0 1px 0 rgba(255, 255, 255, 0.4);
-}
-.tw-hero__glow {
-  position: absolute;
-  top: -50px;
-  right: -30px;
-  width: 180px;
-  height: 180px;
-  border-radius: 999px;
-  background: radial-gradient(closest-side, var(--tw-accent-soft), transparent 72%);
-  pointer-events: none;
+  padding: 18px 20px;
+  border: 1px solid color-mix(in srgb, var(--tw-accent) 20%, var(--ph-line));
+  border-radius: var(--ada-radius-lg);
+  background: var(--ph-surface);
+  box-shadow: var(--ph-shadow);
 }
 .tw-hero__orb {
   display: grid;
-  width: 56px;
-  height: 56px;
+  width: 52px;
+  height: 52px;
   flex: 0 0 auto;
   place-items: center;
-  border: 1px solid color-mix(in srgb, var(--tw-accent) 28%, transparent);
-  border-radius: 18px;
-  background: linear-gradient(145deg, var(--tw-accent-soft), var(--ph-elevated));
-  box-shadow:
-    0 12px 24px -14px var(--tw-accent-ring),
-    inset 0 1px 0 rgba(255, 255, 255, 0.35);
-  font-size: 27px;
+  border: 1px solid color-mix(in srgb, var(--tw-accent) 26%, var(--ph-line));
+  border-radius: var(--ada-radius-md);
+  background: var(--tw-accent-soft);
+  color: var(--tw-accent);
 }
 .tw-hero__body {
   min-width: 0;
@@ -338,14 +266,14 @@
 }
 .tw-kicker {
   color: var(--ph-faint);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.14em;
 }
 .tw-hero__title {
   margin-top: 2px;
   color: var(--ph-ink);
-  font-size: 21px;
+  font-size: 20px;
   font-weight: 650;
   letter-spacing: -0.03em;
   line-height: 1.2;
@@ -360,11 +288,9 @@
 .tw-card {
   padding: 16px;
   border: 1px solid var(--ph-line);
-  border-radius: 18px;
+  border-radius: var(--ada-radius-lg);
   background: var(--ph-surface);
-  box-shadow:
-    0 16px 40px -30px rgba(15, 23, 42, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  box-shadow: var(--ph-shadow);
 }
 .tw-card .tw-stats {
   padding: 12px 0 0;
@@ -372,37 +298,9 @@
 
 /* ── 概览卡片 ───────────────────────────────────────────────────────── */
 .tw-dash {
-  --tw-accent: #64748b;
-  --tw-accent-soft: rgba(100, 116, 139, 0.14);
-  --tw-accent-ring: rgba(100, 116, 139, 0.24);
   display: flex;
   align-items: center;
   gap: 12px;
-}
-.tw-dash.tw-sunny {
-  --tw-accent: #f59e0b;
-  --tw-accent-soft: rgba(245, 158, 11, 0.14);
-  --tw-accent-ring: rgba(245, 158, 11, 0.26);
-}
-.tw-dash.tw-cloudy {
-  --tw-accent: #3b82f6;
-  --tw-accent-soft: rgba(59, 130, 246, 0.14);
-  --tw-accent-ring: rgba(59, 130, 246, 0.26);
-}
-.tw-dash.tw-overcast {
-  --tw-accent: #64748b;
-  --tw-accent-soft: rgba(100, 116, 139, 0.16);
-  --tw-accent-ring: rgba(100, 116, 139, 0.28);
-}
-.tw-dash.tw-storm {
-  --tw-accent: #e11d48;
-  --tw-accent-soft: rgba(225, 29, 72, 0.14);
-  --tw-accent-ring: rgba(225, 29, 72, 0.28);
-}
-.tw-dash.tw-unknown {
-  --tw-accent: #71717a;
-  --tw-accent-soft: rgba(113, 113, 122, 0.14);
-  --tw-accent-ring: rgba(113, 113, 122, 0.24);
 }
 .tw-dash__orb {
   display: grid;
@@ -410,11 +308,10 @@
   height: 42px;
   flex: 0 0 auto;
   place-items: center;
-  border: 1px solid color-mix(in srgb, var(--tw-accent) 24%, transparent);
-  border-radius: 14px;
-  background: linear-gradient(145deg, var(--tw-accent-soft), var(--ph-surface));
-  box-shadow: 0 8px 18px -12px var(--tw-accent-ring);
-  font-size: 21px;
+  border: 1px solid color-mix(in srgb, var(--tw-accent) 24%, var(--ph-line));
+  border-radius: var(--ada-radius-md);
+  background: var(--tw-accent-soft);
+  color: var(--tw-accent);
 }
 .tw-dash__body {
   min-width: 0;
@@ -443,5 +340,3 @@
     transition: none;
   }
 }
-
-

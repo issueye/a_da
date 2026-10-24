@@ -1,4 +1,4 @@
-import { Chip, Notice } from "ssr-h:components";
+import { Chip, Icon, Notice } from "ssr-h:components";
 import {
   bandOf,
   cacheOf,
@@ -40,8 +40,7 @@ export function Page(props: any) {
       hx-select="#token-weather"
     >
       <section class="tw-hero">
-        <div class="tw-hero__glow" aria-hidden="true"></div>
-        <span class="tw-hero__orb" aria-hidden="true">{band.icon}</span>
+        <span class="tw-hero__orb" aria-hidden="true"><Icon name={band.icon} size={24} /></span>
         <div class="tw-hero__body">
           <div class="tw-kicker">CONTEXT WEATHER</div>
           <h2 class="tw-hero__title">{band.label}</h2>

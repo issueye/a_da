@@ -1,4 +1,4 @@
-import { Chip } from "ssr-h:components";
+import { Chip, Icon } from "ssr-h:components";
 import {
   bandOf,
   cacheOf,
@@ -19,7 +19,7 @@ export function Page(props: any) {
 
   return (
     <div class={"tw-dash tw-" + band.key}>
-      <span class="tw-dash__orb" aria-hidden="true">{band.icon}</span>
+      <span class="tw-dash__orb" aria-hidden="true"><Icon name={band.icon} size={20} /></span>
       <div class="tw-dash__body">
         <div class="tw-dash__head">
           <span class="tw-dash__title">{band.label}</span>

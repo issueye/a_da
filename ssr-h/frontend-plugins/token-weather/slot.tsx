@@ -38,16 +38,14 @@ export function Page(props: any) {
   return (
     <details class={"ada-popover tw-popover tw-" + band.key} id="token-weather-popover">
       <summary class={"ada-chip ada-chip--" + band.tone + " tw-chip"} title={detail} aria-label="Token 天气详情">
-        <span class="tw-chip__icon" aria-hidden="true">{band.icon}</span>
+        <Icon name={band.icon} size={13} class="tw-chip__icon" />
         <span class="ada-chip__text">{label}</span>
         <Icon name="i-chevron-down" size={11} class="tw-chip__caret" />
       </summary>
 
       <div class="ada-popover__panel tw-panel">
-        <div class="tw-panel__aura" aria-hidden="true"></div>
-
-        <div class="tw-panel__head">
-          <span class="tw-panel__orb" aria-hidden="true">{band.icon}</span>
+          <div class="tw-panel__head">
+          <span class="tw-panel__orb" aria-hidden="true"><Icon name={band.icon} size={22} /></span>
           <div class="tw-panel__copy">
             <div class="tw-panel__kicker">CONTEXT WEATHER</div>
             <div class="tw-panel__title">
