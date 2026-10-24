@@ -241,6 +241,8 @@ ssr-h/frontend-plugins/hello-tsx/
   （`done` / `total` / `active` / `notes` / `markdown` / `steps[].status`），没有计划时是 `null`。
   同一张卡片改挂 `composer.above` 也可用（见 `frontend-plugins/task-plan/README.md`），但不要两个都声明。
 - 可在扩展页逐个**停用/启用**插件（`POST /extensions/{id}/disable|enable`），停用后贡献立即消失、界面回到默认实现；`GET /api/plugins` 暴露插件与插槽状态。
+  停用状态**落盘在插件目录旁的 `.ssr-h-state.json`**（只记停用的 id），重启后仍然生效；
+  文件坏了按全启用处理并在下次停用时重写，不会把插件锁死在停用态。
 - **插件自带 JSON API**（`api` 声明）：端点在 `/ext/{id}/api/{path}`，TSX 入口函数
   **返回什么就序列化什么**（不走 JSX runtime）。动态扩展的口子是**一条静态分发路由**，
   端点查找走注册表——`/extensions` 点重载后新端点立即生效，不需要重启。

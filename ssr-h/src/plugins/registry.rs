@@ -204,6 +204,9 @@ impl PluginRegistry {
             .write()
             .map_err(|_| anyhow!("插件注册表锁异常"))?;
         let previous = std::mem::take(&mut *guard);
+        // 持久化的停用集合：热重载的停用态由下面的 previous 分支保留（内存），
+        // 这里补的是**跨进程**的那份——重启后首次扫描也要保持停用。
+        let persisted_disabled = self.load_disabled_state();
 
         for mut record in discovered {
             // 两个目录声明同一个 id 时不能"都塞进去"：`find` 只会命中第一个，
@@ -237,6 +240,11 @@ impl PluginRegistry {
                     }
                 }
                 None => {
+                    // 首次加载（重启后的首次扫描 / 新插件）：应用持久化的停用状态
+                    if persisted_disabled.contains(&record.id) {
+                        record.enabled = false;
+                        record.status = PluginStatus::Disabled;
+                    }
                     report.added.push(record.id.clone());
                     report.total += 1;
                 }
@@ -330,25 +338,81 @@ impl PluginRegistry {
         Ok(Some(record))
     }
 
-    pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<()> {
-        let mut guard = self
-            .plugins
-            .write()
-            .map_err(|_| anyhow!("插件注册表锁异常"))?;
-        let record = guard
-            .iter_mut()
-            .find(|record| record.id == id)
-            .ok_or_else(|| anyhow!("前端插件不存在: {id}"))?;
-        if let PluginStatus::Failed(reason) = &record.status {
-            bail!("插件 {id} 加载失败，无法启用：{reason}");
-        }
-        record.enabled = enabled;
-        record.status = if enabled {
-            PluginStatus::Ready
-        } else {
-            PluginStatus::Disabled
+    /// 停用状态文件：`<插件目录>/.ssr-h-state.json`。
+    ///
+    /// 放在插件目录**层**而不是任何插件目录内——指纹按插件根目录收集文件，
+    /// 这份文件不会搅动指纹；扫描器跳过非目录项，也不会把它当插件。
+    /// 格式刻意最小：`{ "disabled": ["id", …] }`，缺省即启用。
+    fn state_file(&self) -> PathBuf {
+        self.dir.join(".ssr-h-state.json")
+    }
+
+    fn load_disabled_state(&self) -> Vec<String> {
+        let Ok(raw) = fs::read_to_string(self.state_file()) else {
+            return Vec::new();
         };
-        Ok(())
+        match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(value) => value
+                .get("disabled")
+                .and_then(|list| list.as_array())
+                .map(|list| {
+                    list.iter()
+                        .filter_map(|item| item.as_str().map(str::to_string))
+                        .filter(|id| !id.trim().is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Err(error) => {
+                // 坏文件只警告并当作"全启用"：状态文件坏了不该把插件锁死在停用态
+                tracing::warn!(
+                    "插件停用状态文件解析失败（忽略，{}）: {error}",
+                    self.state_file().display()
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    fn persist_disabled_state(&self, disabled: &[String]) -> Result<()> {
+        let body = serde_json::json!({ "disabled": disabled }).to_string();
+        let tmp = self.dir.join(".ssr-h-state.json.tmp");
+        fs::write(&tmp, body)
+            .with_context(|| format!("写入插件停用状态失败: {}", tmp.display()))?;
+        // Windows 的 rename 不覆盖已存在目标，先删再换
+        let _ = fs::remove_file(self.state_file());
+        fs::rename(&tmp, self.state_file())
+            .with_context(|| format!("落盘插件停用状态失败: {}", self.state_file().display()))
+    }
+
+    pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+        {
+            let mut guard = self
+                .plugins
+                .write()
+                .map_err(|_| anyhow!("插件注册表锁异常"))?;
+            let record = guard
+                .iter_mut()
+                .find(|record| record.id == id)
+                .ok_or_else(|| anyhow!("前端插件不存在: {id}"))?;
+            if let PluginStatus::Failed(reason) = &record.status {
+                bail!("插件 {id} 加载失败，无法启用：{reason}");
+            }
+            record.enabled = enabled;
+            record.status = if enabled {
+                PluginStatus::Ready
+            } else {
+                PluginStatus::Disabled
+            };
+        }
+        // 停用状态落盘：重启后仍生效。文件里只记**停用**的 id（缺省即启用）；
+        // 插件目录被删不清条目——重新放回来时保持原状态是合理语义。
+        let mut disabled = self.load_disabled_state();
+        if enabled {
+            disabled.retain(|item| item != id);
+        } else if !disabled.iter().any(|item| item == id) {
+            disabled.push(id.to_string());
+        }
+        self.persist_disabled_state(&disabled)
     }
 
     pub fn render_slot(&self, slot: Slot) -> SlotOutput {
@@ -1436,5 +1500,55 @@ export function Page() {
         let above = registry.render_slot_with(Slot::ComposerAbove, &context);
         assert!(!above.html.contains("任务规划"), "{}", above.html);
     }
-}
 
+    use super::*;
+
+    /// 停用状态必须跨「重启」存活：新建注册表 = 模拟一次重启。
+    #[test]
+    fn disabled_state_survives_a_registry_restart() {
+        let root = temp_root("persist-disabled");
+        let _ = write_tsx_plugin(&root);
+        let registry = PluginRegistry::new(&root);
+        registry.set_enabled("tsx-demo", false).unwrap();
+        assert!(!registry.find("tsx-demo").unwrap().is_active());
+
+        let restarted = PluginRegistry::new(&root);
+        let plugin = restarted.find("tsx-demo").unwrap();
+        assert!(!plugin.is_active(), "重启后停用状态必须保留");
+        assert!(matches!(plugin.status, PluginStatus::Disabled));
+
+        // 重新启用后重启，同样保持启用
+        restarted.set_enabled("tsx-demo", true).unwrap();
+        let again = PluginRegistry::new(&root);
+        assert!(again.find("tsx-demo").unwrap().is_active());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 状态文件坏了不锁死插件：当作全启用处理，且下次停用会重写文件。
+    #[test]
+    fn corrupt_state_file_does_not_block_loading() {
+        let root = temp_root("corrupt-state");
+        let _ = write_tsx_plugin(&root);
+        fs::write(root.join(".ssr-h-state.json"), "{not json").unwrap();
+        let registry = PluginRegistry::new(&root);
+        assert!(registry.find("tsx-demo").unwrap().is_active());
+        registry.set_enabled("tsx-demo", false).unwrap();
+        let restarted = PluginRegistry::new(&root);
+        assert!(!restarted.find("tsx-demo").unwrap().is_active());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 热重载（同一注册表实例 reload）也要保持停用态——此前靠内存 previous，
+    /// 现在两份来源必须一致。
+    #[test]
+    fn hot_reload_keeps_disabled_state() {
+        let root = temp_root("reload-disabled");
+        let _ = write_tsx_plugin(&root);
+        let registry = PluginRegistry::new(&root);
+        registry.set_enabled("tsx-demo", false).unwrap();
+        registry.reload().unwrap();
+        assert!(!registry.find("tsx-demo").unwrap().is_active());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+}

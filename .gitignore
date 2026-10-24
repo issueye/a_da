@@ -11,6 +11,10 @@ tmp
 # Rust 编译产物
 target/
 agent_core/target/
+cargo_target_ada/
+
+# ssr-h 前端插件的停用状态（跟随 --plugins-dir，属运行时产物）
+.ssr-h-state.json
 
 # 工具/编辑器的本地状态目录（不是项目内容）
 .commandcode/
