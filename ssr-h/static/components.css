@@ -69,12 +69,16 @@
 }
 
 /* ── 焦点态（全库统一） ─────────────────────────────────────────────────── */
+/* 按钮/链接这类"点一下触发"的控件用 outline 光环（不改变盒子尺寸）。
+   🔴 文本框**不在这里**：浏览器对文本输入在鼠标点击时也会匹配 `:focus-visible`，
+   再叠一层 outline 就成了"硬描边 + 柔光环"两套焦点（插件输入框与对话输入框
+   观感不一致的根因）。文本框统一走下面 `.ada-input:focus` 的品牌描边 + 3px 光环，
+   与 `.ada-composer__card:focus-within`、`.ada-select__trigger`、搜索框同一套。 */
 .ada-focusable:focus-visible,
 .ada-btn:focus-visible,
 .ada-icon-btn:focus-visible,
 .ada-chip:focus-visible,
 .ada-disclosure__summary:focus-visible,
-.ada-input:focus-visible,
 .ada-tabs__tab:focus-visible,
 .ada-send:focus-visible {
   outline: 2px solid var(--ada-focus-border);
