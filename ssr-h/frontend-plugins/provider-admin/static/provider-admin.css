@@ -3,6 +3,10 @@
   border-radius: 14px;
   --pa-accent: #2563eb;
   display: grid;
+  /* 🔴 单个 auto 轨道会被子项的 min-content 撑开：模型表有 620px 的 min-width，
+     窄屏下整张卡片会被撑到 620px、溢出视口（表格自己的横向滚动因此不生效）。
+     minmax(0,1fr) 强制轨道可收缩，横向滚动留在 .pa-table-scroll 里。 */
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 .pa-head {
@@ -57,6 +61,9 @@ a.pa-current:hover {
 }
 /* 内容 */
 .pa-body {
+  /* grid/flex 子项的自动最小尺寸是 min-content：不解除的话，620px 的表
+     会把整条链路（page → body → layout → detail）一起撑宽 */
+  min-width: 0;
   padding: 8px 12px;
 }
 
@@ -83,6 +90,7 @@ a.pa-current:hover {
 .pa-layout {
   display: flex;
   align-items: stretch;
+  min-width: 0;
   min-height: 440px;
 }
 .pa-list {
@@ -205,6 +213,7 @@ a.pa-current:hover {
   font-size: 9px;
 }
 .pa-pane {
+  min-width: 0;
   min-height: 408px;
   padding: 14px 16px;
 }
@@ -322,6 +331,7 @@ a.pa-current:hover {
 .pa-pane--models {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
 }
 .pa-pane--models .pa-models-head {
@@ -329,6 +339,7 @@ a.pa-current:hover {
 }
 .pa-table-scroll {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   overflow: auto;
   border: 1px solid var(--ph-line);
