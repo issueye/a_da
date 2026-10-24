@@ -12,9 +12,9 @@
 pub mod manifest;
 pub mod registry;
 
-pub use manifest::{Manifest, NavEntry, PageEntry, Slot, SlotEntry};
+pub use manifest::{ApiEntry, ApiMethod, Manifest, NavEntry, PageEntry, Slot, SlotEntry};
 pub use registry::{
-    dashboard_widgets_off_thread, read_page_off_thread, render_slot_off_thread,
+    api_props, dashboard_widgets_off_thread, read_page_off_thread, render_slot_off_thread,
     render_slots_off_thread, NavLink, PluginRecord, PluginRegistry, PluginSnapshot, PluginStatus,
     PluginWidget, ReloadReport, SlotOutput,
 };

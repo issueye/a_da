@@ -196,6 +196,13 @@ try {
   }
   // 「当前」徽标已废除（侧栏单测专门守着）：当前工作区不再有组头，切换器就是它的表头
   check(page.body.includes('ada-ws-switch__name">alpha<'), '当前工作区有"当前"标记')
+  // 新会话的工作区选择弹窗：radio 单选列表 + 当前工作区预选
+  check(
+    page.body.includes('data-modal="new-thread"') &&
+      page.body.includes('ada-wspick__row') &&
+      page.body.includes(`name="workspace" value="${wsAlpha}" checked`),
+    '新会话弹窗渲染工作区单选（当前项预选）',
+  )
   check(
     page.body.includes(`name="workspace" value="${wsAlpha}"`),
     '顶部"新会话"提交到当前工作区',

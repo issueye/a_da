@@ -14,7 +14,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use crate::context::RenderContext;
 use crate::tsx::{self, CompiledTsx};
 
-use super::manifest::{Manifest, NavEntry, PageEntry, Slot, SlotEntry};
+use super::manifest::{ApiEntry, ApiMethod, Manifest, NavEntry, PageEntry, Slot, SlotEntry};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginStatus {
@@ -53,6 +53,8 @@ pub struct PluginRecord {
     pub scripts: Vec<String>,
     /// 插件能力声明（决定宿主是否注入供应商只读数据）。
     pub capabilities: Vec<String>,
+    /// 插件自带的 HTTP API 端点（`/ext/{id}/api/{path}`）。
+    pub api: Vec<ApiEntry>,
     pub errors: Vec<String>,
     /// 模板相对路径 → 已编译 TSX。
     pub tsx_templates: HashMap<String, Arc<CompiledTsx>>,
@@ -138,6 +140,7 @@ fn failed_record(root: &Path, id: &str, message: &str) -> PluginRecord {
         assets_dir: None,
         styles: Vec::new(),
         scripts: Vec::new(),
+        api: Vec::new(),
         capabilities: Vec::new(),
         errors: vec![message.to_string()],
         tsx_templates: HashMap::new(),
@@ -281,6 +284,7 @@ impl PluginRegistry {
             styles: Vec::new(),
             scripts: Vec::new(),
             capabilities: manifest.capabilities.clone(),
+            api: manifest.api,
             errors: Vec::new(),
             tsx_templates: HashMap::new(),
             fingerprint: 0,
@@ -300,6 +304,9 @@ impl PluginRegistry {
         }
         if let Some(dashboard) = &record.dashboard {
             paths.push(dashboard.clone());
+        }
+        for entry in &record.api {
+            paths.push(entry.template.clone());
         }
         paths.sort();
         paths.dedup();
@@ -436,6 +443,29 @@ impl PluginRegistry {
             .read()
             .ok()
             .and_then(|guard| guard.iter().find(|plugin| plugin.id == id).cloned())
+    }
+
+    /// 查找插件的 API 端点（**热**：注册表是换帧级重扫的，重载后新端点立即生效）。
+    ///
+    /// 方法与路径都精确匹配；插件未启用/未就绪一律 None——API 面与页面/插槽
+    /// 共享同一条「停用即消失」的降级规则。
+    pub fn find_api(
+        &self,
+        id: &str,
+        method: ApiMethod,
+        path: &str,
+    ) -> Option<(ApiEntry, std::sync::Arc<tsx::CompiledTsx>)> {
+        let plugin = self.find(id)?;
+        if !plugin.is_active() {
+            return None;
+        }
+        let entry = plugin
+            .api
+            .iter()
+            .find(|entry| entry.parsed_method().ok() == Some(method) && entry.path.trim() == path.trim())?
+            .clone();
+        let template = plugin.tsx_templates.get(&entry.template)?.clone();
+        Some((entry, template))
     }
 
     pub fn snapshot(&self) -> Vec<PluginSnapshot> {
@@ -756,6 +786,28 @@ fn tsx_props(
             "index": index,
         });
     }
+    value
+}
+
+/// API 处理器的 props：与页面/插槽同源（plugin/app/route/data），额外带 `api` 请求面
+/// （method / path / query / body）。
+///
+/// `data` 只到 `plugin_count` 为止——API 可能被客户端高频调用，不该每次拖一份会话
+/// 快照；需要会话数据的端点让调用方带 id 走核心路由，模板自己不碰会话。
+pub fn api_props(
+    record: &PluginRecord,
+    cx: &RenderContext,
+    entry: &ApiEntry,
+    query: serde_json::Value,
+    body: serde_json::Value,
+) -> serde_json::Value {
+    let mut value = tsx_props(record, cx, None, None);
+    value["api"] = serde_json::json!({
+        "method": entry.method.as_str(),
+        "path": entry.path,
+        "query": query,
+        "body": body,
+    });
     value
 }
 

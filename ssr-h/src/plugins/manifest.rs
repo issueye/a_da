@@ -142,6 +142,75 @@ pub struct PageEntry {
     pub template: String,
 }
 
+/// 插件 API 端点的 HTTP 方法。刻意的白名单：插件 API 是同源数据面，
+/// 不需要 PUT/DELETE 之类的全套 REST（读写都要过宿主的语义）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ApiMethod {
+    Get,
+    Post,
+}
+
+impl ApiMethod {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ApiMethod::Get => "get",
+            ApiMethod::Post => "post",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Result<ApiMethod> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "get" => Ok(ApiMethod::Get),
+            "post" => Ok(ApiMethod::Post),
+            other => bail!("不支持的插件 API 方法 `{other}`（只接受 get / post）"),
+        }
+    }
+}
+
+/// 插件清单里的一条 API 端点声明。
+///
+/// 端点地址是 `/ext/{id}/api/{path}`，`path` 只接受静态段（小写字母/数字/`-`/`_`，
+/// 可用 `/` 分层）；查询参数与请求体经 `props.api` 交给模板，路径参数刻意不支持——
+/// 那会把分发器变成一台小型路由器，白名单校验的面积跟着翻倍。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApiEntry {
+    pub method: String,
+    /// 相对 `/ext/{id}/api/` 的路径，如 `info` 或 `compute/ratio`。
+    pub path: String,
+    /// 相对插件根目录的 TSX 模板；入口函数**返回什么就序列化什么**（不走 JSX）。
+    pub template: String,
+}
+
+impl ApiEntry {
+    pub fn parsed_method(&self) -> Result<ApiMethod> {
+        ApiMethod::parse(&self.method)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        self.parsed_method()?;
+        let path = self.path.trim();
+        if path.is_empty()
+            || !path
+                .split('/')
+                .all(|segment| {
+                    !segment.is_empty()
+                        && segment
+                            .chars()
+                            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
+                })
+        {
+            bail!(
+                "插件 API 路径 `{}` 不合法（只接受小写字母/数字/-/_，用 / 分层，且不含空段）",
+                self.path
+            );
+        }
+        if !self.template.trim().ends_with(".tsx") {
+            bail!("插件 API `{}` 的 template 必须是 .tsx", self.path);
+        }
+        Ok(())
+    }
+}
+
 /// `plugin.json`。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -174,6 +243,9 @@ pub struct Manifest {
     /// 由服务端注入所有页面 `<head>`（`defer`），用于给 SSR 出来的插槽补交互。
     #[serde(default)]
     pub scripts: Vec<String>,
+    /// 插件自带的 HTTP API 端点（`/ext/{id}/api/{path}`，TSX 处理器返回 JSON）。
+    #[serde(default)]
+    pub api: Vec<ApiEntry>,
 }
 
 impl Manifest {
@@ -230,6 +302,16 @@ impl Manifest {
         }
         for script in &self.scripts {
             validate_asset_path(script, ".js", "脚本")?;
+        }
+        for entry in &self.api {
+            entry.validate()?;
+        }
+        // 同一 (method, path) 声明两次是清单笔误，加载期就报出来
+        let mut seen = std::collections::HashSet::new();
+        for entry in &self.api {
+            if !seen.insert((entry.parsed_method().ok(), entry.path.trim().to_string())) {
+                bail!("插件 API `{} {}` 重复声明", entry.method, entry.path);
+            }
         }
         Ok(())
     }
@@ -354,4 +436,50 @@ fn capabilities_are_an_explicit_allowlist() {
     assert!(ok.validate().is_ok());
     ok.capabilities.push("providers.write".to_string());
     assert!(ok.validate().is_err());
+}
+
+#[test]
+fn api_entries_are_validated() {
+    let ok: Manifest = serde_json::from_value(serde_json::json!({
+        "id": "demo",
+        "name": "Demo",
+        "api": [
+            { "method": "get", "path": "info", "template": "api/info.tsx" },
+            { "method": "post", "path": "compute/ratio", "template": "api/echo.tsx" },
+        ],
+    }))
+    .expect("manifest");
+    assert!(ok.validate().is_ok());
+
+    // 路径穿越 / 大写 / 空段都拒绝
+    for bad in ["../etc", "Info", "a//b", "/abs"] {
+        let manifest: Manifest = serde_json::from_value(serde_json::json!({
+            "id": "demo",
+            "name": "Demo",
+            "api": [{ "method": "get", "path": bad, "template": "api/info.tsx" }],
+        }))
+        .expect("manifest");
+        assert!(manifest.validate().is_err(), "path `{bad}` 应被拒绝");
+    }
+
+    // 方法白名单：只接受 get / post
+    let manifest: Manifest = serde_json::from_value(serde_json::json!({
+        "id": "demo",
+        "name": "Demo",
+        "api": [{ "method": "delete", "path": "info", "template": "api/info.tsx" }],
+    }))
+    .expect("manifest");
+    assert!(manifest.validate().is_err());
+
+    // 同一 (method, path) 重复声明是清单笔误
+    let manifest: Manifest = serde_json::from_value(serde_json::json!({
+        "id": "demo",
+        "name": "Demo",
+        "api": [
+            { "method": "get", "path": "info", "template": "api/a.tsx" },
+            { "method": "get", "path": "info", "template": "api/b.tsx" },
+        ],
+    }))
+    .expect("manifest");
+    assert!(manifest.validate().is_err());
 }

@@ -6,6 +6,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 
 use super::*;
+use crate::plugins::ApiMethod;
 
 fn frontend_rows(state: &AppState) -> Vec<FrontendPluginRow> {
     state
@@ -231,6 +232,113 @@ pub async fn plugin_page(
         html,
     };
     Ok(render(&page)?.into_response())
+}
+
+/// 插件 API 的请求体上限：JSON 数据面不是文件传输面，超限直接 413。
+const API_BODY_LIMIT: usize = 256 * 1024;
+
+fn api_error(status: StatusCode, message: &str) -> Response {
+    (
+        status,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json; charset=utf-8"),
+        )],
+        serde_json::json!({ "error": message }).to_string(),
+    )
+        .into_response()
+}
+
+/// `GET/POST /ext/{id}/api/{path}`：插件自带的 JSON API（manifest `api` 声明）。
+///
+/// 动态扩展的口子是**一条静态分发路由**，而不是重建 Router：axum Router 在 serve
+/// 之后不可变，而插件注册表本来就是热换的——端点查找走注册表，`/extensions`
+/// 点重载后新端点立即生效（页面 `/ext/{id}/{slug}` 是同一个模式）。
+///
+/// 请求信息经 `props.api` 进入模板（method / path / query / body，POST 体必须是
+/// JSON 且不超限）；响应就是入口函数的返回值（`tsx::render_json`，不走 JSX）。
+/// 安全面与页面/插槽同一条规则：插件停用或加载失败，端点立即消失；POST 过
+/// guard 的同源校验。
+pub async fn plugin_api(
+    State(state): State<AppState>,
+    method: axum::http::Method,
+    Path((plugin_id, path)): Path<(String, String)>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+    body: axum::body::Bytes,
+) -> Response {
+    let api_method = match method {
+        axum::http::Method::GET => ApiMethod::Get,
+        axum::http::Method::POST => ApiMethod::Post,
+        _ => return api_error(StatusCode::METHOD_NOT_ALLOWED, "插件 API 只支持 GET / POST"),
+    };
+    let Some((entry, template)) = state.frontend.find_api(&plugin_id, api_method, &path) else {
+        return api_error(
+            StatusCode::NOT_FOUND,
+            "插件 API 端点不存在（或插件已停用/加载失败）",
+        );
+    };
+
+    let body_value = if api_method == ApiMethod::Post {
+        if body.len() > API_BODY_LIMIT {
+            return api_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                &format!("请求体超过 {} KB 上限", API_BODY_LIMIT / 1024),
+            );
+        }
+        match serde_json::from_slice::<Value>(&body) {
+            Ok(value) => value,
+            Err(error) => {
+                return api_error(
+                    StatusCode::BAD_REQUEST,
+                    &format!("请求体不是合法 JSON: {error}"),
+                )
+            }
+        }
+    } else {
+        Value::Null
+    };
+
+    let Some(record) = state.frontend.find(&plugin_id) else {
+        return api_error(StatusCode::NOT_FOUND, "插件不存在");
+    };
+    let mut cx = super::render_context(&state, "extensions");
+    cx.route.path = format!("/ext/{plugin_id}/api/{}", entry.path);
+    let query_value = Value::Object(
+        query
+            .into_iter()
+            .map(|(key, value)| (key, Value::String(value)))
+            .collect(),
+    );
+    let props = crate::plugins::api_props(&record, &cx, &entry, query_value, body_value);
+
+    let rendered = tokio::task::spawn_blocking(move || crate::tsx::render_json(&template, &props))
+        .await
+        .map_err(|error| anyhow::anyhow!("API 任务失败: {error}"))
+        .and_then(|inner| inner.map_err(|error| anyhow::anyhow!(error)));
+    match rendered {
+        Ok(value) => (
+            StatusCode::OK,
+            [
+                (
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json; charset=utf-8"),
+                ),
+                (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+            ],
+            serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string()),
+        )
+            .into_response(),
+        Err(error) => {
+            tracing::warn!(
+                "插件 {plugin_id} API `{}` 执行失败: {error:#}",
+                entry.path
+            );
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "插件 API 执行失败（详见服务端日志）",
+            )
+        }
+    }
 }
 
 fn scope_plugin_css(plugin_id: &str, css: &str) -> String {

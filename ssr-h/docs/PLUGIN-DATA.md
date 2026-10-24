@@ -186,6 +186,28 @@
 - 这份数据没有敏感信息，**不需要 capability**（与 `todo` 同级；
   `providerAdmin` 要 gate 是因为 headers 可能带凭据）。
 
+### 2.10 `api`（插件 API 端点的请求面）
+
+`plugin.json` 声明 `api` 后，端点在 `/ext/{id}/api/{path}`，由 TSX 入口函数处理——
+**返回什么就序列化什么**（不走 JSX runtime；写 JSX 得到的是 VNode 对象）。
+
+```jsonc
+{
+  "method": "get",              // get / post（白名单）
+  "path": "info",               // 端点路径（静态段）
+  "query": { "from": "browser" },  // 查询参数（键值对）
+  "body": { "text": "…" }          // POST 的 JSON 体；GET 为 null
+}
+```
+
+- 请求体必须是 JSON 且 ≤256KB，否则 400/413；响应 `no-store`；
+- `props.data` 只有 `plugin_count`——API 可能被高频调用，**不拖会话快照**；
+  需要会话数据的端点让调用方带 id 走核心路由；
+- 端点查找走注册表（热）：`/extensions` 重载后新端点立即生效；插件停用/加载失败
+  端点立即消失（404 JSON）；
+- 插件浏览器 JS 可以 fetch 这些同源端点（CSP `connect-src 'self'`），
+  完整示例见 `frontend-plugins/hello-tsx/`（`api/info.tsx` + `static/hello.js`）。
+
 ## 3. 点位与刷新时机
 
 | 插槽 | 出现在 | 内容刷新 |

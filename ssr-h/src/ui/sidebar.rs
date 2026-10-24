@@ -19,6 +19,7 @@
 
 use crate::plugins::NavLink;
 use crate::templates::{PageBase, ThreadRow, WorkspaceGroup};
+use crate::ui::components::Render;
 use crate::ui::icons::icon;
 use crate::ui::theme::{attr, class_list, escape};
 
@@ -99,6 +100,7 @@ impl Sidebar {
         out.push_str(&self.brand());
         out.push_str(&self.sidebar_top);
         out.push_str(&self.new_thread_form("ada-btn ada-btn--secondary ada-btn--sm", false));
+        out.push_str(&self.new_thread_modal());
         out.push_str(&self.workspace_switch());
         if self.search {
             out.push_str(&self.search_box());
@@ -133,7 +135,7 @@ impl Sidebar {
             format!("{}<span>新会话</span>", icon("i-plus", 14))
         };
         format!(
-            r#"<form class="{}" method="post" action="/threads"><input type="hidden" name="title" value="新会话">{workspace}<button class="{button_class}" type="submit"{title}>{body}</button></form>"#,
+            r#"<form class="{}" method="post" action="/threads" data-new-thread><input type="hidden" name="title" value="新会话">{workspace}<button class="{button_class}" type="submit"{title}>{body}</button></form>"#,
             if icon_only {
                 "ada-rail__new"
             } else {
@@ -145,6 +147,37 @@ impl Sidebar {
                 String::new()
             },
         )
+    }
+
+    /// 新会话的工作区选择弹窗（参考 desktop-ui 的 `WorkspaceSelector`：列表 + 当前项打勾）。
+    ///
+    /// 只在有工作区树时渲染（二级页没有分组数据，保持直提当前工作区的原行为）。
+    /// 触发是渐进增强：`form[data-new-thread]` 的提交被 app.js 拦下来改成开弹窗，
+    /// 无 JS 时表单直提——和原来一样落到当前工作区。选中的工作区只绑定新会话，
+    /// 不切换 agent 的当前项目（与组头 `+` 同语义）。
+    fn new_thread_modal(&self) -> String {
+        if self.groups.is_empty() {
+            return String::new();
+        }
+        let mut rows = String::with_capacity(self.groups.len() * 200);
+        for group in &self.groups {
+            let checked = if group.active { " checked" } else { "" };
+            let active_class = if group.active { " is-active" } else { "" };
+            rows.push_str(&format!(
+                r#"<label class="ada-wspick__row{active_class}" title="{path}"><input class="ada-wspick__radio" type="radio" name="workspace" value="{path}"{checked}><span class="ada-wspick__name">{name}</span><span class="ada-wspick__count">{count}</span><span class="ada-wspick__check">{check}</span></label>"#,
+                path = escape(&group.path),
+                name = escape(&group.name),
+                count = group.count,
+                check = icon("i-check", 14),
+            ));
+        }
+        let body = format!(
+            r#"<p class="ada-wspick__hint">新会话将建在所选工作区（只绑定会话，不切换项目）。要添加磁盘上的新目录，<a href="/workspaces">浏览全部工作区</a>。</p><form method="post" action="/threads"><input type="hidden" name="title" value="新会话"><div class="ada-wspick">{rows}</div><div class="ada-modal__actions"><button class="ada-btn ada-btn--secondary ada-btn--sm" type="button" data-modal-close>取消</button><button class="ada-btn ada-btn--primary ada-btn--sm" type="submit">{plus}新建会话</button></div></form>"#,
+            plus = icon("i-plus", 14),
+        );
+        crate::ui::Modal::new("new-thread", "新建会话")
+            .body(body)
+            .render()
     }
 
     /// 一行工作区切换器：`图标 + 目录名 + 会话数 + 箭头`。
@@ -637,6 +670,40 @@ mod tests {
         );
         let dom_id = Sidebar::ws_dom_id("other");
         assert!(html.contains(&format!(r#"id="{dom_id}""#)), "{html}");
+    }
+
+    #[test]
+    fn new_thread_picker_lists_workspaces_with_current_checked() {
+        let html = sample().render();
+        assert!(html.contains(r#"data-modal="new-thread""#), "{html}");
+        // 拦截标记挂在侧栏与窄轨的新会话表单上（app.js 据此先弹窗再提交）
+        assert!(html.matches("data-new-thread").count() >= 2, "{html}");
+        // 当前工作区预选；其它工作区可选但不勾
+        assert!(
+            html.contains(r#"name="workspace" value="C:\work\app" checked"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"name="workspace" value="C:\work\other""#),
+            "{html}"
+        );
+        // 弹窗内的提交表单不带拦截标记，避免二次拦截（切片到弹窗闭合为止，
+        // 别把后面的窄轨表单也算进来）
+        let modal_start = html
+            .find(r#"data-modal="new-thread""#)
+            .expect("modal rendered");
+        let modal_end = modal_start + html[modal_start..].find("</ada-modal>").expect("modal closes");
+        let modal = &html[modal_start..modal_end];
+        assert!(!modal.contains("data-new-thread"), "{modal}");
+    }
+
+    #[test]
+    fn pages_without_groups_keep_direct_new_thread_form() {
+        let mut sidebar = sample();
+        sidebar.groups.clear();
+        let html = sidebar.render();
+        assert!(!html.contains(r#"data-modal="new-thread""#), "{html}");
+        assert!(html.contains("data-new-thread"), "{html}");
     }
 }
 

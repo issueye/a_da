@@ -566,7 +566,7 @@ impl ModuleLoader for TsxModuleLoader {
     }
 }
 
-fn evaluate_module(module: &TsxModule, props: &Value) -> Result<Value, String> {
+fn evaluate_module(module: &TsxModule, props: &Value, call: EntryCall) -> Result<Value, String> {
     let props_json =
         serde_json::to_string(props).map_err(|error| format!("props 序列化失败: {error}"))?;
     let loader = Rc::new(TsxModuleLoader::new(module.modules.clone()));
@@ -623,7 +623,10 @@ fn evaluate_module(module: &TsxModule, props: &Value) -> Result<Value, String> {
         .global_object()
         .set(js_string!("__SSR_PAGE__"), page, false, &mut context)
         .map_err(|error| format!("挂载 TSX 入口失败: {error}"))?;
-    let program = format!("JSON.stringify(h(__SSR_PAGE__, {props_json}))");
+    let program = match call {
+        EntryCall::VNode => format!("JSON.stringify(h(__SSR_PAGE__, {props_json}))"),
+        EntryCall::Raw => format!("JSON.stringify(__SSR_PAGE__({props_json}))"),
+    };
     let value = context
         .eval(Source::from_bytes(&program))
         .map_err(|error| format!("TSX 执行失败: {error}"))?;
@@ -638,12 +641,27 @@ fn evaluate_module(module: &TsxModule, props: &Value) -> Result<Value, String> {
 /// 用已编译的 TSX 渲染 HTML。每次渲染使用新的 Boa Context，模块状态不会跨请求泄漏。
 pub fn render(compiled: &CompiledTsx, props: &Value) -> Result<String, String> {
     let vnode = match &compiled.entry {
-        TsxEntry::Script(js) => evaluate_page(js, "Page", props)?,
-        TsxEntry::Module(module) => evaluate_module(module, props)?,
+        TsxEntry::Script(js) => evaluate_page(js, "Page", props, EntryCall::VNode)?,
+        TsxEntry::Module(module) => evaluate_module(module, props, EntryCall::VNode)?,
     };
     let mut out = String::new();
     render_node(&vnode, &mut out, 0)?;
     Ok(out)
+}
+
+/// 把已编译 TSX 的入口当作 **JSON API 处理器**执行：入口函数的返回值直接序列化。
+///
+/// 与 [`render`] 的差别只在入口调用形态：不走 JSX runtime 的 `h`，返回什么就是什么——
+/// 所以 api 模板里写 JSX 没有意义（得到的是 VNode 对象而不是渲染结果）。
+/// 返回值要能被 `JSON.stringify`（对象/数组/标量；函数与循环引用在这一步失败并报 500）。
+/// 沙箱预算与 HTML 渲染同一套（循环/递归上限），无 fs/net/process。
+pub fn render_json(compiled: &CompiledTsx, props: &Value) -> Result<Value, String> {
+    // evaluate_* 本身就把入口返回值 JSON.stringify 后解析成了 Value——Raw 形态下
+    // 这个 Value 就是「返回什么就序列化什么」的结果，不需要再过一遍字符串。
+    match &compiled.entry {
+        TsxEntry::Script(js) => evaluate_page(js, "Page", props, EntryCall::Raw),
+        TsxEntry::Module(module) => evaluate_module(module, props, EntryCall::Raw),
+    }
 }
 
 /// 把一段 TSX 直接渲染成 HTML（测试/工具使用）。
@@ -692,7 +710,15 @@ fn transform_tsx(source: &str, filename: &str) -> Result<String, String> {
     Ok(Codegen::new().build(&program).code)
 }
 
-fn evaluate_page(js: &str, entry: &str, props: &Value) -> Result<Value, String> {
+/// 入口函数的调用形态：HTML 渲染走 JSX runtime（`h(Page, props)` 产 VNode），
+/// JSON API 直接调用入口函数（`Page(props)` 产原始对象）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryCall {
+    VNode,
+    Raw,
+}
+
+fn evaluate_page(js: &str, entry: &str, props: &Value, call: EntryCall) -> Result<Value, String> {
     let props_json =
         serde_json::to_string(props).map_err(|error| format!("props 序列化失败: {error}"))?;
     let mut context = Context::default();
@@ -706,7 +732,10 @@ fn evaluate_page(js: &str, entry: &str, props: &Value) -> Result<Value, String> 
     install_component_library(&mut context)?;
     install_console(&mut context, &console_label(props))?;
     // 末尾用 `;` 断开上一条语句，避免 ASI 把调用吞进函数声明。
-    let program = format!("{js}\n;JSON.stringify(h({entry}, {props_json}));");
+    let program = match call {
+        EntryCall::VNode => format!("{js}\n;JSON.stringify(h({entry}, {props_json}));"),
+        EntryCall::Raw => format!("{js}\n;JSON.stringify({entry}({props_json}));"),
+    };
     let value = context
         .eval(Source::from_bytes(&program))
         .map_err(|error| format!("TSX 执行失败: {error}"))?;
@@ -1275,7 +1304,7 @@ function Page() {
         let started = Instant::now();
         let mut vnode = Value::Null;
         for _ in 0..N {
-            vnode = evaluate_page(&js, "Page", &props).expect("eval");
+            vnode = evaluate_page(&js, "Page", &props, EntryCall::VNode).expect("eval");
         }
         let eval_time = started.elapsed();
 
@@ -1374,5 +1403,48 @@ export function Page() {
             elapsed / N
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod api_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// API 模板不走 JSX runtime：返回什么就序列化什么，props.api 原样可达。
+    #[test]
+    fn api_entry_returns_raw_json() {
+        let compiled = compile(
+            // 脚本模式（无 import/export）：入口函数直接可被 evaluate_page 调用
+            "function Page(props: any) { const text = (props.api && props.api.body && props.api.body.text) || ''; return { ok: text.length > 0, upper: text.toUpperCase(), nested: { at: props.data.plugin_count } }; }",
+            "api.tsx",
+        )
+        .expect("compile");
+        let props = json!({
+            "data": { "plugin_count": 3 },
+            "api": { "method": "post", "path": "echo", "query": {}, "body": { "text": "hello" } },
+        });
+        let value = render_json(&compiled, &props).expect("json");
+        assert_eq!(value["ok"], json!(true));
+        assert_eq!(value["upper"], json!("HELLO"));
+        assert_eq!(value["nested"]["at"], json!(3));
+    }
+
+    /// 写 JSX 的 api 模板不会渲染成 HTML——拿到的是 VNode 对象，这是刻意的
+    /// （渲染 HTML 是页面模板的事，API 面只出数据），但必须能安全序列化。
+    #[test]
+    fn api_entry_with_jsx_returns_vnode_object_without_rendering() {
+        let compiled = compile("function Page(props: any) { return <div class=\"x\">hi</div>; }", "api.tsx")
+            .expect("compile");
+        let value = render_json(&compiled, &json!({})).expect("json");
+        assert_eq!(value["type"], json!("div"), "{value}");
+    }
+
+    /// 返回函数/循环引用在 JSON.stringify 阶段失败，必须报错而不是静默出空。
+    #[test]
+    fn api_entry_returning_a_function_is_an_error() {
+        let compiled = compile("function Page(props: any) { return function () {}; }", "api.tsx")
+            .expect("compile");
+        assert!(render_json(&compiled, &json!({})).is_err());
     }
 }

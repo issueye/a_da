@@ -132,6 +132,27 @@
     if (field.form) field.form.submit();
   });
 
+  /* ── 4. 新会话的工作区选择弹窗 ─────────────────────────────────────────
+     侧栏「新会话」的本意是直提当前工作区；聊天页有 `data-modal="new-thread"`
+     弹窗（ui::Modal 渲染，radio 列表与 desktop-ui 的 WorkspaceSelector 同形），
+     这里把直提拦下来改成先弹窗——弹窗内的表单才是真正的提交（选中的工作区
+     只绑定新会话，不切换 agent 当前项目）。
+     无 JS / 二级页（没渲染弹窗）时保持原行为：表单直提当前工作区。 */
+  document.addEventListener(
+    'submit',
+    function (event) {
+      var form = event.target;
+      if (!form || !form.matches || !form.matches('form[data-new-thread]')) return;
+      var modal = document.querySelector('ada-modal[data-modal="new-thread"]');
+      if (!modal || !window.AdaComponents || typeof window.AdaComponents.openModal !== 'function') {
+        return;
+      }
+      event.preventDefault();
+      window.AdaComponents.openModal('new-thread');
+    },
+    true
+  );
+
   /* ── 3. 侧栏：≤760px 是抽屉，>760px 是 56px 窄轨 ───────────────────────
      两套形态共用一个按钮（data-sidebar-toggle），但状态不同：
        · 窄屏：.ada-sidebar.is-open + 遮罩，点遮罩/Esc 关闭；

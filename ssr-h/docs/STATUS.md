@@ -32,6 +32,8 @@
 - [x] 折叠状态与面板滚动位置在增量/整段同步后保持；仅接近底部时自动跟随 + 「回到最新」胶囊
 - [x] **模型选择器**（v0.10）：模型药丸弹出按供应商分组的清单 + 推理等级（`provider.setActive` / `config.setEffort`），无 JS 可开合
 - [x] 网关断开时聊天页保留壳并显示「未连接」+ 重新连接
+- [x] **新会话工作区选择弹窗**（2026-10-24）：radio 列表 + 当前项预选（参考 desktop-ui
+      WorkspaceSelector），选中的工作区只绑定新会话；无 JS 直提当前工作区
 
 ### 2. 工作区
 
@@ -65,7 +67,10 @@
 - [x] 插件加载失败只影响自身，界面退回默认实现；可逐插件停用/启用；`GET /api/plugins`
 - [x] 内置 TSX 组件库（Button / Chip / Notice / Panel / Modal / Form / Todo / 消息类等）
 - [x] 安全校验：标签 / 属性名 / URL 三重校验、`hx-*` 显式白名单（拒 `hx-on*` 与 `js:` 值）、Boa 无 fs/net/process、循环/递归/输出/嵌套预算
-- [x] 示例插件：`hello-tsx`（最小三件套）、`token-weather`（SSE `parts` 刷新 + 浮层）、`task-plan`（任务规划卡，`chat.corner` / `composer.above` 可挂）
+- [x] 示例插件：`hello-tsx`（最小三件套 + JSON API）、`token-weather`（SSE `parts` 刷新 + 浮层）、`task-plan`（任务规划卡，`chat.corner` / `composer.above` 可挂）
+- [x] **插件自带 JSON API**（2026-10-24）：manifest `api` 声明 → `/ext/{id}/api/{path}`，
+      TSX 入口返回值直接序列化（不走 JSX）；一条静态分发路由 + 注册表热查找实现动态扩展，
+      重载即生效；请求面在 `props.api`，方法白名单 GET/POST、体 ≤256KB
 - [x] 任务规划数据契约：核心按 `set` / `update` / `get` 动作推演计划，插件只消费 `props.data.todo` 投影
 - [x] 声明式核心行为契约：`data-ada-scroll-bottom`、`data-confirm` 等由 `chat.js` 事件委托承接
 

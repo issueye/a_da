@@ -56,7 +56,9 @@ UED 设计基线、组件规范与 desktop-ui 对齐差距见 [docs/UED.md](docs
 - **侧栏随事件流增量刷新**：会话树在 SSE `parts` / 兜底轮询里整块换新（`#thread-list`），
   其它客户端的新会话、改名、运行状态点不再要手动刷新；组折叠状态按 `data-ws-key` 记忆（`localStorage`）；
 - 组内只有空占位会话的工作区（例如刚添加、还没说话）也会出现——每个空工作区保留最新的一条空会话，有真实内容后自动收掉占位；
-- 顶部「新会话」提交到当前会话所属工作区（没有活动会话时用 agent 的当前项目）；
+- 顶部「新会话」弹出**工作区选择**（radio 列表、当前项预选、带会话数，参考 desktop-ui
+  的 WorkspaceSelector；选中的工作区只绑定新会话，不切换项目），无 JS 时保持原行为
+  ——直提当前会话所属工作区（没有活动会话时用 agent 的当前项目）；
 - 搜索框同时过滤会话标题与工作区**名称及完整路径**（同名目录靠路径区分），工作区命中时整组展开。
 
 `/workspaces` 是添加/选择工作区的目录浏览器：左侧是磁盘、主目录与最近工作区，右侧浏览子目录，可新建文件夹，最后「使用此目录」把该目录设为当前工作区并打开/新建会话。
@@ -207,8 +209,12 @@ ssr-h/frontend-plugins/hello-tsx/
   "dashboard": "dashboard.tsx",
   "assets": "static",
   "styles": ["hello.css"],
+  "scripts": ["hello.js"],
   "slots": [
     { "slot": "composer.left", "template": "slot.tsx", "order": 20 }
+  ],
+  "api": [
+    { "method": "get", "path": "info", "template": "api/info.tsx" }
   ]
 }
 ```
@@ -235,6 +241,13 @@ ssr-h/frontend-plugins/hello-tsx/
   （`done` / `total` / `active` / `notes` / `markdown` / `steps[].status`），没有计划时是 `null`。
   同一张卡片改挂 `composer.above` 也可用（见 `frontend-plugins/task-plan/README.md`），但不要两个都声明。
 - 可在扩展页逐个**停用/启用**插件（`POST /extensions/{id}/disable|enable`），停用后贡献立即消失、界面回到默认实现；`GET /api/plugins` 暴露插件与插槽状态。
+- **插件自带 JSON API**（`api` 声明）：端点在 `/ext/{id}/api/{path}`，TSX 入口函数
+  **返回什么就序列化什么**（不走 JSX runtime）。动态扩展的口子是**一条静态分发路由**，
+  端点查找走注册表——`/extensions` 点重载后新端点立即生效，不需要重启。
+  请求信息在 `props.api`（method/path/query/body，POST 体必须是 JSON 且 ≤256KB）；
+  方法白名单 GET/POST；`data` 只到 `plugin_count`（API 面不拖会话快照）。
+  CSP 是 `connect-src 'self'`：插件浏览器 JS 正好可以 fetch 自己的这些同源端点
+  （见 `hello-tsx` 的 `static/hello.js` 演示）。示例：`/ext/hello-tsx/api/info`。
 - 插件只接受 `.tsx` 模板；插件代码是**本地受信任内容**，不要在不受信任的目录里放插件。
 
 ### 插件实现「置底/回到最新」按钮

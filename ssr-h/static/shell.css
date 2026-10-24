@@ -367,13 +367,79 @@
   font-size: var(--ada-text-sm);
 }
 
+/* 新会话的工作区选择弹窗（desktop-ui WorkspaceSelector 同形：列表 + 当前项打勾）。
+   选中态由原生 radio 的 :checked 驱动——无 JS 也能选；行就是 label，整行可点。 */
+.ada-wspick {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+  max-height: 40vh;
+  overflow-y: auto;
+  /* 滚到底不把整页一起带走 */
+  overscroll-behavior: contain;
+}
+.ada-wspick__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--ph-line);
+  border-radius: var(--ada-radius-md);
+  cursor: pointer;
+  transition: border-color var(--ada-transition), background var(--ada-transition);
+}
+.ada-wspick__row:hover {
+  background: var(--ph-subtle);
+}
+.ada-wspick__row:focus-within {
+  border-color: var(--ph-brand);
+}
+.ada-wspick__radio {
+  flex-shrink: 0;
+  accent-color: var(--ph-brand);
+}
+.ada-wspick__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ph-ink);
+  font-size: var(--ada-text-sm);
+}
+.ada-wspick__row.is-active .ada-wspick__name {
+  font-weight: 600;
+}
+.ada-wspick__count {
+  flex-shrink: 0;
+  color: var(--ph-faint);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: var(--ada-text-xs);
+}
+.ada-wspick__check {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--ph-brand-ink);
+  opacity: 0;
+  transition: opacity var(--ada-transition);
+}
+.ada-wspick__row input:checked ~ .ada-wspick__check {
+  opacity: 1;
+}
+.ada-wspick__hint {
+  margin: 0;
+  color: var(--ph-faint);
+  font-size: var(--ada-text-sm);
+  line-height: 1.55;
+}
+
 /* 空态：没有会话 / 没有匹配 */
 .ada-list-empty {
   margin: 4px 6px;
   color: var(--ph-faint);
   font-size: var(--ada-text-sm);
-}
-.ada-list-empty[hidden] {
+}.ada-list-empty[hidden] {
   display: none;
 }
 .ada-list-empty__clear {

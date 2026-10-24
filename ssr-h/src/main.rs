@@ -260,6 +260,10 @@ fn app(state: AppState) -> Router {
         .route("/agent-plugins/reload", post(handlers::reload_agent))
         .route("/api/plugins", get(handlers::plugins_api))
         .route("/ext/{id}/assets/{*path}", get(handlers::plugin_asset))
+        .route(
+            "/ext/{id}/api/{*path}",
+            get(handlers::plugin_api).post(handlers::plugin_api),
+        )
         .route("/ext/{id}/{slug}", get(handlers::plugin_page))
         .route("/static/app.css", get(static_css))
         // 组件库按层拆开：引用顺序必须保持 components → layout → widgets → shell → pages，
