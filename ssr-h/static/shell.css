@@ -727,7 +727,10 @@
   /* 预留滚动条位：流式输出时内容长度反复跨过滚动阈值，
      不留位会让整块正文左右跳 10px。 */
   scrollbar-gutter: stable;
-  scroll-behavior: smooth;
+  /* 🔴 不要在这里写 scroll-behavior: smooth：它会把你所有的 scrollTop 赋值
+     （打开会话的初始置底、流式跟随）都变成动画——动画期间内容高度还在变，
+     停在半途就是"打开会话不在底部"。平滑感只在「回到最新」按钮上要，
+     由 chat.js 在点击处显式指定 behavior: 'smooth'。 */
 }
 /* 回到最新：sticky 在滚动容器底部、水平居中（避开右下角的插件悬浮区）。
    只有向上阅读（不接近底部）时才显示，由 chat.js 切换 `hidden`。 */

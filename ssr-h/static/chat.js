@@ -24,9 +24,14 @@
     return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   };
 
-  const scrollToBottom = () => {
+  /* behavior：'instant'（默认）用于打开会话的初始置底与流式跟随——这些是
+     机械跟手，动画只会让跟随追不上输出；'smooth' 只给「回到最新」按钮
+     （用户主动点击，平滑才有"我在回去"的感觉）。
+     🔴 不要在 CSS 里写 scroll-behavior: smooth：它会把 scrollTop 赋值也变成
+     动画，打开会话的置底会被后续内容变化打断、停在半途。 */
+  const scrollToBottom = (behavior) => {
     const el = scroller();
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: behavior || 'instant' });
   };
 
   /* "回到最新"按钮：只在离开底部时出现。
@@ -146,7 +151,7 @@
     if (!button) return;
     event.preventDefault();
     stickToBottom = true;
-    scrollToBottom();
+    scrollToBottom('smooth');
     syncBottomButtons();
   });
 
@@ -168,13 +173,32 @@
     enhanceCodeBlocks();
     const transcript = transcriptOf();
     if (transcript && window.MutationObserver) {
+      // 打开会话后的**第一次**整段变化（SSE 首帧全量同步替换正文）无条件置底——
+      // 此时用户还没开始阅读，位置恢复/平滑都不该介入；之后恢复跟随语义。
+      let firstSync = true;
       new MutationObserver(() => {
         enhanceCodeBlocks();
+        if (firstSync) {
+          firstSync = false;
+          scrollToBottom();
+          syncBottomButtons();
+          return;
+        }
         restoreScroll();
       }).observe(transcript, { childList: true });
     }
     scrollToBottom();
     syncBottomButtons();
+    // 字体/图片落定（load）后仍可能改变内容高度：补一次置底。
+    // 用户若已经在往上翻（stickToBottom 为 false），尊重用户。
+    if (document.readyState !== 'complete') {
+      window.addEventListener('load', () => {
+        if (stickToBottom) {
+          scrollToBottom();
+          syncBottomButtons();
+        }
+      });
+    }
   };
 
   if (document.readyState === 'loading') {
