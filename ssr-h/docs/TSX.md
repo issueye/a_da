@@ -185,7 +185,10 @@ static/hello.js
 ## 5. 安全与预算
 
 - Boa 环境**不注入** fs/net/process；插件脚本只能算数据；
-- 循环 100,000 次、递归 64 层、输出 1 MB、VNode 嵌套 64 层；
+- **wall-clock 预算**（2026-10-24）：每次渲染跑在独立大栈线程上，超时（环境变量
+  `A_DA_TSX_BUDGET_MS`，缺省 500ms）即报错返回、渲染线程被放弃——循环/递归预算
+  保证被放弃的线程最终自行结束，不会永久泄漏。正常渲染在个位数毫秒级；
+- 循环 20,000 次、递归 64 层、输出 1 MB、VNode 嵌套 64 层；
 - 文本默认转义；HTML 标签白名单；URL scheme 校验；
 - **属性名必须过字符校验**（`^[A-Za-z_:][-A-Za-z0-9_:.]*$`）：值会被转义，但名字里出现
   `"` 或空格就能把 `data-x` 撑成 `data-x" onmouseover="…`，凭空造出一个事件属性。
@@ -193,10 +196,10 @@ static/hello.js
 - **HTMX 属性走显式白名单**（`hx-get/post/put/patch/delete/target/swap/trigger/include/…`）：
   `hx-on*` 等价于内联脚本（浏览器会把属性名小写化，所以写 `hx-ON:click` 一样能执行），
   `hx-vals` / `hx-headers` / `hx-trigger` 里的 `js:` 值会被 HTMX 求值——这些都拒。
-- **没有内存上限**：`"x".repeat(1e9)` 这类分配会直接把进程撑爆——Rust 的分配失败是
-  `abort`，`catch_unwind` 拦不住。输出 1 MB 的上限是**构造完之后**才检查的。
-- **没有 wall-clock deadline**：Boa 0.22 不提供中断 API，异常长计算仍可能占住线程。
-  真隔离需要 worker/子进程（可超时、可 kill）。
+- **没有内存上限**（Boa 0.22 的 GC 配置是私有的，作者留了 TODO）：`"x".repeat(1e9)`
+  这类一次性大分配仍是 `abort`（`catch_unwind` 拦不住），输出 1 MB 的上限是**构造完
+  之后**才检查的。wall-clock 能挡「慢模板拖住请求」，挡不住单次渲染内的瞬时大分配。
+  真内存隔离需要 worker/子进程（可超时、可 kill），或等上游暴露堆约束。
 - 插件仍是**本地受信任内容**；不要从不可信来源安装 `.tsx`。
 
 ## 5.1 调试：console.log 往哪里打
@@ -254,9 +257,10 @@ CARGO_TARGET_DIR=../cargo_target_ada CARGO_BUILD_JOBS=2 \
 
 - **没有 TypeScript 类型检查**：类型注解被 OXC 剥掉；原生组件属性是手工白名单，
   复合组件 props 没有运行时校验。后续从 `ComponentSpec` 生成 `.d.ts` + schema。
-- **没有 wall-clock deadline、也没有内存上限**：Boa 0.22 没有 interrupt API，预算只有
-  循环/递归/输出/嵌套四项；一次性大分配（`repeat`、`Array.join`）能直接 abort 进程。
-  真隔离需要 worker/子进程（可超时、可 kill），或接受"插件 = 可信代码"这个前提。
+- **wall-clock 已有（2026-10-24），内存上限仍没有**：渲染跑在独立线程上，超时报错返回
+  （线程被放弃，循环预算保证终止）；但 Boa 0.22 没有堆约束 API，一次性大分配
+  （`repeat`、`Array.join`）在放弃判定到达前仍能逼近进程内存上限。真隔离需要
+  worker/子进程（可超时、可 kill），或等上游暴露堆约束。
 - **Context 每次新建**：约 1.7ms/页；复用可到约 0.6ms，但要先解决 Realm/全局状态隔离。
 - **npm 依赖不支持**：内置 loader 只解析插件目录内的相对模块；需要 npm 包时必须在插件
   发布阶段预打包/内联，或后续增加显式的依赖安装流程。

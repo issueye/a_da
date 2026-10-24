@@ -313,7 +313,7 @@ pub async fn plugin_api(
     );
     let props = crate::plugins::api_props(&record, &cx, &entry, query_value, body_value);
 
-    let rendered = tokio::task::spawn_blocking(move || crate::tsx::render_json(&template, &props))
+    let rendered = tokio::task::spawn_blocking(move || crate::tsx::render_json(template, &props))
         .await
         .map_err(|error| anyhow::anyhow!("API 任务失败: {error}"))
         .and_then(|inner| inner.map_err(|error| anyhow::anyhow!(error)));

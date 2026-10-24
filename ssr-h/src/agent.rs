@@ -153,8 +153,15 @@ impl AgentClient {
     /// 与 desktop-ui 的设置项同源：网关落在 `config.json` 的 `effort` 并广播快照，
     /// 不在本进程里留第二份状态。
     pub async fn set_effort(&self, effort: &str) -> Result<Value> {
-        self.rpc("config.setEffort", json!({ "effort": effort }))
-            .await
+        self.rpc("config.setEffort", json!({ "effort": effort })).await
+    }
+
+    /// 切换审批档位（`config.setApproval`：auto / ask / readonly / full）。
+    ///
+    /// 后端会落盘并广播——快照的 `config.approval` 变化会让 parts 重发，
+    /// 输入框的档位弹层随之更新。
+    pub async fn set_approval_mode(&self, mode: &str) -> Result<Value> {
+        self.rpc("config.setApproval", json!({ "mode": mode })).await
     }
 
     pub async fn plugins(&self) -> Result<Value> {

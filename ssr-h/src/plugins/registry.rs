@@ -456,7 +456,7 @@ impl PluginRegistry {
 
         let mut contributions: Vec<(i32, String, String)> = Vec::new();
         for (order, id, template, props) in targets {
-            match catch_unwind(AssertUnwindSafe(|| tsx::render(&template, &props))) {
+            match catch_unwind(AssertUnwindSafe(|| tsx::render(template.clone(), &props))) {
                 Ok(Ok(html)) => {
                     if !html.is_empty() {
                         contributions.push((order, id, html));
@@ -621,7 +621,7 @@ impl PluginRegistry {
                 continue;
             };
             let props = tsx_props(&plugin, cx, None, None);
-            match catch_unwind(AssertUnwindSafe(|| tsx::render(template, &props))) {
+            match catch_unwind(AssertUnwindSafe(|| tsx::render(template.clone(), &props))) {
                 Ok(Ok(html)) => widgets.push(PluginWidget {
                     plugin_id: plugin.id.clone(),
                     plugin_name: plugin.name.clone(),
@@ -665,7 +665,7 @@ impl PluginRegistry {
         let props = tsx_props(plugin, cx, Some(page), None);
         // 页面渲染也要隔离 panic：插槽/卡片早就这么做了，页面漏掉的话
         // 一个诡异模板会让连接直接断掉（用户只看到空白，日志里也没有 500 可读）。
-        let html = match catch_unwind(AssertUnwindSafe(|| tsx::render(template, &props))) {
+        let html = match catch_unwind(AssertUnwindSafe(|| tsx::render(template.clone(), &props))) {
             Ok(Ok(html)) => html,
             Ok(Err(error)) => {
                 return Err(anyhow!("插件页面 `{}` 渲染失败：{error}", page.template))
@@ -1285,15 +1285,9 @@ mod tests {
                 "protocols": [ { "value": "openai_chat", "label": "OpenAI Chat" } ]
             }
         }));
-        // debug 构建下 Boa/OXC 的栈帧很肥，测试线程默认栈会溢出——
-        // 生产路径是 spawn_blocking 线程（渲染正常），这里给足栈空间对齐语义。
-        let (title, html) = std::thread::Builder::new()
-            .stack_size(32 * 1024 * 1024)
-            .spawn(move || registry.read_page_with(&plugin, "providers", &cx))
-            .expect("spawn render thread")
-            .join()
-            .expect("render thread")
-            .unwrap();
+        // 渲染自带 32MB 大栈线程与 wall-clock 预算（tsx::run_with_budget），
+        // 测试线程不再需要手动给栈。
+        let (title, html) = registry.read_page_with(&plugin, "providers", &cx).unwrap();
         assert_eq!(title, "供应商");
         // 页头当前模型药丸（可点，去它的模型页签）；旧的两张 stat 大卡不再渲染
         assert!(html.contains("pa-current"), "{html}");

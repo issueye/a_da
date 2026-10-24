@@ -29,6 +29,8 @@ use crate::ui::{
 struct ComposerArgs<'a> {
     thread_id: &'a str,
     approval: &'a str,
+    /// 审批档位原值（auto/ask/readonly/full）：弹层用它标出当前项。
+    approval_mode: &'a str,
     approval_tone: &'a str,
     workspace_label: &'a str,
     workspace_path: &'a str,
@@ -111,7 +113,7 @@ fn composer_html(slots: &SlotContent, args: &ComposerArgs<'_>, model_picker: &st
     // 用独立容器包住：live 轮询只换这一个（不重建整条工具行）。
     left.push_str(&format!(
         r#"<span id="composer-approval">{}</span>"#,
-        approval_chip_html(args.approval, args.approval_tone)
+        approval_picker_html(args.approval_mode, args.approval, args.approval_tone, args.thread_id)
     ));
     left.push_str(&slots.composer_left);
 
@@ -234,17 +236,55 @@ fn topbar_status_html(running: bool, connected: bool) -> String {
     out
 }
 
-fn approval_chip_html(label: &str, tone: &str) -> String {
-    // 只读项：不给箭头（切换在桌面端设置里），但语义色保留，便于一眼看出档位危险与否。
+/// 审批档位弹层：输入框工具行的药丸点开是四档选择（无 JS 可用）。
+///
+/// 当前档位打勾且不可再点；「完全访问」是安全降级动作，走共享确认弹窗
+/// （data-confirm 在 form 上，app.js 拦截）。菜单随 `parts` 的
+/// `composer-approval` 整块换新，`id` 供 replaceKeepingOpen 还原开合
+/// （换帧不关菜单，与模型选择器同口径）。`mode` 为空（未连接）保持只读药丸。
+fn approval_picker_html(mode: &str, label: &str, tone: &str, thread_id: &str) -> String {
     let (icon, modifier) = match tone {
         "danger" => ("i-shield-check", "ada-tool--danger"),
         "warn" => ("i-shield-check", "ada-tool--warn"),
         _ => ("i-shield", ""),
     };
+    if mode.is_empty() {
+        return format!(
+            r#"<span class="ada-tool {modifier}" title="审批档位">{glyph}<span class="ada-tool__label">{label}</span></span>"#,
+            glyph = ui::icon(icon, 14),
+            label = escape(label),
+        );
+    }
+    let options = [
+        ("auto", "自动批准", ""),
+        ("ask", "每次询问", ""),
+        ("readonly", "严格只读", ""),
+        (
+            "full",
+            "完全访问",
+            r#" data-confirm="切换到「完全访问」后，工具执行将不再逐一询问，确定吗？""#,
+        ),
+    ];
+    let mut rows = String::new();
+    for (value, option_label, confirm) in options {
+        let is_current = value == mode;
+        let check = if is_current {
+            ui::icon("i-check", 12)
+        } else {
+            String::new()
+        };
+        rows.push_str(&format!(
+            r#"<form method="post" action="/approval/mode"{confirm}><input type="hidden" name="thread_id" value="{thread}"><input type="hidden" name="mode" value="{value}"><button class="ada-approval-picker__option" type="submit"{disabled}>{check}<span>{option_label}</span></button></form>"#,
+            thread = escape(thread_id),
+            value = value,
+            confirm = confirm,
+            disabled = if is_current { " disabled" } else { "" },
+        ));
+    }
     format!(
-        r#"<span class="ada-tool {modifier}" title="审批档位：在桌面端设置中调整">{glyph}<span class="ada-tool__label">{label}</span></span>"#,
+        r#"<details class="ada-popover ada-approval-picker" id="approval-picker"><summary class="ada-tool {modifier}" title="审批档位（点击切换）">{glyph}<span class="ada-tool__label">{label}</span>{caret}</summary><div class="ada-popover__panel ada-approval-picker__panel" role="menu">{rows}</div></details>"#,
         glyph = ui::icon(icon, 14),
-        label = escape(label),
+        caret = ui::icon("i-chevron-down", 12),
     )
 }
 
@@ -385,6 +425,7 @@ async fn live_parts(
     let args = ComposerArgs {
         thread_id,
         approval: &approval,
+        approval_mode: &mode,
         approval_tone: &tone,
         workspace_label: &workspace_label,
         workspace_path,
@@ -401,7 +442,7 @@ async fn live_parts(
         topbar_actions: topbar_actions_html(thread_id, running),
         aux: composer_aux_html(&slots, &args),
         composer_above: above.html,
-        approval_chip: approval_chip_html(&approval, &tone),
+        approval_chip: approval_picker_html(&mode, &approval, &tone, thread_id),
         model_chip: model_chip_html(&model, &effort),
         thread_list,
     }
@@ -590,6 +631,7 @@ async fn load_chat(
             &ComposerArgs {
                 thread_id: &active_thread_id,
                 approval: &approval,
+                approval_mode: &mode,
                 approval_tone: &approval_tone,
                 workspace_label: &workspace_label,
                 workspace_path: &workspace_path,
@@ -682,6 +724,7 @@ async fn live_offline(state: &AppState, thread_id: &str) -> Response {
     let args = ComposerArgs {
         thread_id,
         approval: "未连接",
+        approval_mode: "",
         approval_tone: "neutral",
         workspace_label: &label,
         workspace_path: &state.agent.workspace,
@@ -699,7 +742,7 @@ async fn live_offline(state: &AppState, thread_id: &str) -> Response {
         oob("composer-aux", &composer_aux_html(&slots, &args)),
         oob(
             "composer-approval",
-            &approval_chip_html("未连接", "neutral"),
+            &approval_picker_html("", "未连接", "neutral", ""),
         ),
         oob("composer-model", &model_chip_html("未连接", "")),
     ]
@@ -1069,6 +1112,42 @@ pub async fn delete_thread(
                 Ok(redirect(&format!("/?error={}", encode_query(&message))))
             } else {
                 Ok(action_failed(&back, "删除会话失败", error))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApprovalModeForm {
+    mode: String,
+    thread_id: Option<String>,
+}
+
+/// `POST /approval/mode`：页内切换审批档位（`config.setApproval`）。
+///
+/// 后端会落盘并广播——快照 `config.approval` 变化触发 parts 重发，弹层与
+/// 药丸随之更新。「完全访问」在弹层里带 data-confirm，这里再做一次白名单校验。
+pub async fn set_approval_mode(
+    State(state): State<AppState>,
+    Form(form): Form<ApprovalModeForm>,
+) -> Result<Response, AppError> {
+    let mode = form.mode.trim();
+    if !matches!(mode, "auto" | "ask" | "readonly" | "full") {
+        return Err(AppError::bad(format!("未知审批档位: {mode}")));
+    }
+    let back = match form.thread_id.as_deref().map(str::trim) {
+        Some(id) if !id.is_empty() => format!("/threads/{id}"),
+        _ => "/".to_string(),
+    };
+    match state.agent.set_approval_mode(mode).await {
+        Ok(_) => Ok(redirect(&format!("{back}?notice=approval_{}", encode_query(mode)))),
+        Err(error) => {
+            if back == "/" {
+                tracing::warn!("切换审批档位失败: {error:#}");
+                let message = format!("切换审批档位失败：{}", public_reason(&error));
+                Ok(redirect(&format!("/?error={}", encode_query(&message))))
+            } else {
+                Ok(action_failed(&back, "切换审批档位失败", error))
             }
         }
     }

@@ -28,6 +28,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use boa_engine::builtins::promise::PromiseState;
 use boa_engine::module::{resolve_module_specifier, Module, ModuleLoader, ModuleRequest, Referrer};
@@ -49,7 +50,12 @@ use crate::ui::theme::escape;
 
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_RENDER_DEPTH: usize = 64;
-const MAX_SCRIPT_LOOP: u64 = 100_000;
+// 循环预算从 100k 收紧到 20k：它是「被放弃的渲染线程」最终会停下的保证，
+// 预算越大，超时放弃后的线程占用内存/CPU 的时间越长。20k 次迭代对任何
+// 合理的 UI 模板（遍历几十条的列表）都绰绰有余。
+const MAX_SCRIPT_LOOP: u64 = 20_000;
+/// 渲染线程栈：Boa/OXC 在 debug 构建下栈帧很肥，默认栈会溢出。
+const RENDER_STACK_SIZE: usize = 32 * 1024 * 1024;
 const MAX_SOURCE_BYTES: usize = 512 * 1024;
 
 const BUILTIN_COMPONENTS_KEY: &str = "__ssr_h_components.js";
@@ -639,14 +645,21 @@ fn evaluate_module(module: &TsxModule, props: &Value, call: EntryCall) -> Result
 }
 
 /// 用已编译的 TSX 渲染 HTML。每次渲染使用新的 Boa Context，模块状态不会跨请求泄漏。
-pub fn render(compiled: &CompiledTsx, props: &Value) -> Result<String, String> {
-    let vnode = match &compiled.entry {
-        TsxEntry::Script(js) => evaluate_page(js, "Page", props, EntryCall::VNode)?,
-        TsxEntry::Module(module) => evaluate_module(module, props, EntryCall::VNode)?,
-    };
-    let mut out = String::new();
-    render_node(&vnode, &mut out, 0)?;
-    Ok(out)
+///
+/// 🔴 渲染跑在**独立线程**上并有 wall-clock 预算（[`render_budget`]）：超时的渲染
+/// 直接报错返回、渲染线程被放弃（循环/递归预算保证它最终自行结束）。Boa 0.22
+/// 没有时钟中断与堆上限的公开 API——这是进程内能做的最诚实的预算边界。
+pub fn render(compiled: Arc<CompiledTsx>, props: &Value) -> Result<String, String> {
+    let props = props.clone();
+    run_with_budget(
+        move || -> Result<String, String> {
+            let vnode = evaluate_compiled(&compiled, &props, EntryCall::VNode)?;
+            let mut out = String::new();
+            render_node(&vnode, &mut out, 0)?;
+            Ok(out)
+        },
+        render_budget(),
+    )
 }
 
 /// 把已编译 TSX 的入口当作 **JSON API 处理器**执行：入口函数的返回值直接序列化。
@@ -654,13 +667,66 @@ pub fn render(compiled: &CompiledTsx, props: &Value) -> Result<String, String> {
 /// 与 [`render`] 的差别只在入口调用形态：不走 JSX runtime 的 `h`，返回什么就是什么——
 /// 所以 api 模板里写 JSX 没有意义（得到的是 VNode 对象而不是渲染结果）。
 /// 返回值要能被 `JSON.stringify`（对象/数组/标量；函数与循环引用在这一步失败并报 500）。
-/// 沙箱预算与 HTML 渲染同一套（循环/递归上限），无 fs/net/process。
-pub fn render_json(compiled: &CompiledTsx, props: &Value) -> Result<Value, String> {
-    // evaluate_* 本身就把入口返回值 JSON.stringify 后解析成了 Value——Raw 形态下
-    // 这个 Value 就是「返回什么就序列化什么」的结果，不需要再过一遍字符串。
+/// 沙箱预算与 HTML 渲染同一套（wall-clock / 循环 / 递归 / 输出上限），无 fs/net/process。
+pub fn render_json(compiled: Arc<CompiledTsx>, props: &Value) -> Result<Value, String> {
+    let props = props.clone();
+    run_with_budget(
+        move || -> Result<Value, String> { evaluate_compiled(&compiled, &props, EntryCall::Raw) },
+        render_budget(),
+    )
+}
+
+fn evaluate_compiled(
+    compiled: &CompiledTsx,
+    props: &Value,
+    call: EntryCall,
+) -> Result<Value, String> {
     match &compiled.entry {
-        TsxEntry::Script(js) => evaluate_page(js, "Page", props, EntryCall::Raw),
-        TsxEntry::Module(module) => evaluate_module(module, props, EntryCall::Raw),
+        TsxEntry::Script(js) => evaluate_page(js, "Page", props, call),
+        TsxEntry::Module(module) => evaluate_module(module, props, call),
+    }
+}
+
+/// 渲染的 wall-clock 预算：环境变量 `A_DA_TSX_BUDGET_MS`（下限 20ms），缺省 500ms。
+///
+/// 正常渲染在个位数毫秒级；这条线挡的是「慢模板拖住请求线程」。
+fn render_budget() -> Duration {
+    static BUDGET: OnceLock<Duration> = OnceLock::new();
+    *BUDGET.get_or_init(|| {
+        std::env::var("A_DA_TSX_BUDGET_MS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .map(|ms| Duration::from_millis(ms.max(20)))
+            .unwrap_or(Duration::from_millis(500))
+    })
+}
+
+/// 在独立大栈线程上执行 `work`（返回 `Result<V, String>`），超过 `budget` 即放弃。
+///
+/// 放弃是安全的：JS 侧有循环/递归预算保证终止，不会出现永久泄漏的线程；
+/// 线程内的 panic 被 `catch_unwind` 收拢成错误，不会带崩进程。
+/// 返回值就是 work 的内层结果：成功给 `V`，panic / 超时给 `String` 错误。
+fn run_with_budget<V, F>(work: F, budget: Duration) -> Result<V, String>
+where
+    V: Send + 'static,
+    F: FnOnce() -> Result<V, String> + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("tsx-render".to_string())
+        .stack_size(RENDER_STACK_SIZE)
+        .spawn(move || {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+            let _ = tx.send(outcome);
+        })
+        .map_err(|error| format!("渲染线程启动失败: {error}"))?;
+    match rx.recv_timeout(budget) {
+        // 线程正常结束：work 的内层 Result 就是结果（成功或业务错误），直接透传
+        Ok(Ok(value)) => value,
+        Ok(Err(_)) => Err("TSX 渲染 panic，已隔离".to_string()),
+        Err(_) => Err(format!(
+            "TSX 渲染超过时间预算（>{budget:?}）：已放弃渲染线程（循环/递归预算会让它自行结束）"
+        )),
     }
 }
 
@@ -668,7 +734,7 @@ pub fn render_json(compiled: &CompiledTsx, props: &Value) -> Result<Value, Strin
 #[cfg(test)]
 pub fn render_tsx(source: &str, props: &Value) -> Result<String, String> {
     let compiled = compile(source, "spike.tsx")?;
-    render(&compiled, props)
+    render(compiled, props)
 }
 
 fn has_module_syntax(source: &str) -> bool {
@@ -1251,7 +1317,7 @@ function Page() {
         .unwrap();
         let compiled = compile_file(&root.join("page.tsx"), &root).expect("compile");
         let props = serde_json::json!({ "plugin": { "id": "demo" } });
-        let html = render(&compiled, &props).expect("module render");
+        let html = render(compiled, &props).expect("module render");
         assert!(html.contains("class=\"m\""), "{html}");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1385,11 +1451,11 @@ export function Page() {
         let compiled = compile_file(&root.join("page.tsx"), &root).expect("compile module");
         let props = serde_json::json!({});
         for _ in 0..5 {
-            render(&compiled, &props).expect("warm module");
+            render(compiled.clone(), &props).expect("warm module");
         }
         let started = Instant::now();
         for _ in 0..N {
-            let html = render(&compiled, &props).expect("render module");
+            let html = render(compiled.clone(), &props).expect("render module");
             assert!(html.contains("ada-chip--brand"), "{html}");
         }
         let elapsed = started.elapsed();
@@ -1424,7 +1490,7 @@ mod api_tests {
             "data": { "plugin_count": 3 },
             "api": { "method": "post", "path": "echo", "query": {}, "body": { "text": "hello" } },
         });
-        let value = render_json(&compiled, &props).expect("json");
+        let value = render_json(compiled, &props).expect("json");
         assert_eq!(value["ok"], json!(true));
         assert_eq!(value["upper"], json!("HELLO"));
         assert_eq!(value["nested"]["at"], json!(3));
@@ -1436,7 +1502,7 @@ mod api_tests {
     fn api_entry_with_jsx_returns_vnode_object_without_rendering() {
         let compiled = compile("function Page(props: any) { return <div class=\"x\">hi</div>; }", "api.tsx")
             .expect("compile");
-        let value = render_json(&compiled, &json!({})).expect("json");
+        let value = render_json(compiled, &json!({})).expect("json");
         assert_eq!(value["type"], json!("div"), "{value}");
     }
 
@@ -1445,6 +1511,6 @@ mod api_tests {
     fn api_entry_returning_a_function_is_an_error() {
         let compiled = compile("function Page(props: any) { return function () {}; }", "api.tsx")
             .expect("compile");
-        assert!(render_json(&compiled, &json!({})).is_err());
+        assert!(render_json(compiled, &json!({})).is_err());
     }
 }
