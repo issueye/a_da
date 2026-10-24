@@ -26,6 +26,12 @@
 .chat-copy:focus-visible {
   opacity: 1;
 }
+@media (hover: none) {
+  /* 触屏没有 hover：复制按钮必须常驻，否则代码块复制等于不存在 */
+  .chat-copy {
+    opacity: 1;
+  }
+}
 .chat-copy:hover {
   background: var(--ph-subtle);
   color: var(--ph-ink);
@@ -331,6 +337,12 @@
 .ada-thread:hover .ada-thread__actions,
 .ada-thread:focus-within .ada-thread__actions {
   opacity: 1;
+}
+@media (hover: none) {
+  /* 触屏没有 hover：重命名/删除常驻（与工作区组头 `.ada-ws__actions` 同口径） */
+  .ada-thread__actions {
+    opacity: 1;
+  }
 }
 .ada-thread__rename summary,
 .ada-thread__action {
@@ -956,6 +968,22 @@
 }
 .ada-tray--approval {
   border-color: color-mix(in srgb, var(--ph-warn-ink) 35%, var(--ph-line));
+}
+/* 多条审批同屏时的汇总带（卡片仍逐条保留，见 trays_html） */
+.ada-trays__summary {
+  padding: 0 4px;
+  color: var(--ph-warn-ink);
+  font-size: var(--ada-text-xs);
+  font-weight: 600;
+}
+/* 局部提交的就地反馈（成功/失败都不跳页，见 chat.js 的 data-partial） */
+.ada-partial-feedback {
+  margin-left: 8px;
+  color: var(--ph-success-ink);
+  font-size: var(--ada-text-xs);
+}
+.ada-partial-feedback[data-tone="error"] {
+  color: var(--ph-danger-ink);
 }
 .ada-tray__head {
   display: flex;

@@ -14,7 +14,7 @@ pub use stream::live_stream;
 pub(super) use rows::thread_rows;
 
 use axum::extract::{Form, Path, Query, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::Value;
@@ -197,7 +197,7 @@ fn composer_aux(slots: &SlotContent, args: &ComposerArgs<'_>) -> ComposerAux {
                     .size(Size::Sm)
                     .icon("i-trash")
                     .action(format!("/threads/{}/queue/clear", args.thread_id))
-                    .attrs("data-confirm=\"确定清空当前会话的排队消息吗？\"")
+                    .attrs("data-partial data-confirm=\"确定清空当前会话的排队消息吗？\"")
                     .class("ada-aux__action"),
             );
         }
@@ -274,7 +274,7 @@ fn approval_picker_html(mode: &str, label: &str, tone: &str, thread_id: &str) ->
             String::new()
         };
         rows.push_str(&format!(
-            r#"<form method="post" action="/approval/mode"{confirm}><input type="hidden" name="thread_id" value="{thread}"><input type="hidden" name="mode" value="{value}"><button class="ada-approval-picker__option" type="submit"{disabled}>{check}<span>{option_label}</span></button></form>"#,
+            r#"<form method="post" action="/approval/mode" data-partial{confirm}><input type="hidden" name="thread_id" value="{thread}"><input type="hidden" name="mode" value="{value}"><button class="ada-approval-picker__option" type="submit"{disabled}>{check}<span>{option_label}</span></button></form>"#,
             thread = escape(thread_id),
             value = value,
             confirm = confirm,
@@ -954,18 +954,30 @@ fn failed_before_redirect(thread: Option<&str>, prefix: &str, error: anyhow::Err
 /// 切换模型：`provider.setActive`（供应商 + 模型一起切，与供应商页的"使用"同一动作）。
 pub async fn select_model(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Form(form): Form<ModelSelectForm>,
 ) -> Result<Response, AppError> {
+    let partial = wants_partial(&headers);
     let provider = form.provider.trim();
     let model = form.model.trim();
     if provider.is_empty() || model.is_empty() {
-        return Err(AppError::bad("切换模型缺少 provider / model"));
+        let message = "切换模型缺少 provider / model";
+        return if partial {
+            Ok(partial_err(message))
+        } else {
+            Err(AppError::bad(message))
+        };
     }
     match state.agent.set_active_provider(provider, Some(model)).await {
+        Ok(_) if partial => Ok(partial_ok("model_selected")),
         Ok(_) => Ok(back_to_thread(
             form.thread.as_deref(),
             "notice=model_selected",
         )),
+        Err(error) if partial => Ok(partial_err(format!(
+            "切换模型失败：{}",
+            public_reason(&error)
+        ))),
         Err(error) => Ok(failed_before_redirect(
             form.thread.as_deref(),
             "切换模型失败",
@@ -977,17 +989,29 @@ pub async fn select_model(
 /// 推理等级：`config.setEffort`（与 desktop-ui 设置项同源，网关落盘并广播快照）。
 pub async fn select_effort(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Form(form): Form<EffortSelectForm>,
 ) -> Result<Response, AppError> {
+    let partial = wants_partial(&headers);
     let effort = form.effort.trim().to_ascii_lowercase();
     if !matches!(effort.as_str(), "low" | "medium" | "high" | "max") {
-        return Err(AppError::bad(format!("未知的推理等级: {effort}")));
+        let message = format!("未知的推理等级: {effort}");
+        return if partial {
+            Ok(partial_err(message))
+        } else {
+            Err(AppError::bad(message))
+        };
     }
     match state.agent.set_effort(&effort).await {
+        Ok(_) if partial => Ok(partial_ok("effort_selected")),
         Ok(_) => Ok(back_to_thread(
             form.thread.as_deref(),
             "notice=effort_selected",
         )),
+        Err(error) if partial => Ok(partial_err(format!(
+            "更新推理等级失败：{}",
+            public_reason(&error)
+        ))),
         Err(error) => Ok(failed_before_redirect(
             form.thread.as_deref(),
             "更新推理等级失败",
@@ -1024,16 +1048,24 @@ pub async fn abort_thread(
 pub async fn decide_approval(
     State(state): State<AppState>,
     Path(call_id): Path<String>,
+    headers: HeaderMap,
     Form(form): Form<ApprovalForm>,
 ) -> Result<Response, AppError> {
+    let partial = wants_partial(&headers);
     if call_id.trim().is_empty() {
-        return Err(AppError::bad("审批缺少 callId"));
+        let message = "审批缺少 callId";
+        return if partial {
+            Ok(partial_err(message))
+        } else {
+            Err(AppError::bad(message))
+        };
     }
     let approved = matches!(
         form.approved.trim().to_ascii_lowercase().as_str(),
         "true" | "1" | "on" | "yes"
     );
     match state.agent.decide_approval(&call_id, approved).await {
+        Ok(_) if partial => Ok(partial_ok(if approved { "approved" } else { "rejected" })),
         Ok(_) => {
             // key 写成 `notice=` 字面量，供源码扫描守门对账（见 handlers::NOTICE_TEXTS）。
             let notice_query = if approved {
@@ -1046,6 +1078,10 @@ pub async fn decide_approval(
                 form.thread_id
             )))
         }
+        Err(error) if partial => Ok(partial_err(format!(
+            "提交审批失败：{}",
+            public_reason(&error)
+        ))),
         Err(error) => {
             if form.thread_id.trim().is_empty() {
                 tracing::warn!("提交审批失败: {error:#}");
@@ -1158,18 +1194,30 @@ pub struct ApprovalModeForm {
 /// 药丸随之更新。「完全访问」在弹层里带 data-confirm，这里再做一次白名单校验。
 pub async fn set_approval_mode(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Form(form): Form<ApprovalModeForm>,
 ) -> Result<Response, AppError> {
+    let partial = wants_partial(&headers);
     let mode = form.mode.trim();
     if !matches!(mode, "auto" | "ask" | "readonly" | "full") {
-        return Err(AppError::bad(format!("未知审批档位: {mode}")));
+        let message = format!("未知审批档位: {mode}");
+        return if partial {
+            Ok(partial_err(message))
+        } else {
+            Err(AppError::bad(message))
+        };
     }
     let back = match form.thread_id.as_deref().map(str::trim) {
         Some(id) if !id.is_empty() => format!("/threads/{id}"),
         _ => "/".to_string(),
     };
     match state.agent.set_approval_mode(mode).await {
+        Ok(_) if partial => Ok(partial_ok(&format!("approval_{mode}"))),
         Ok(_) => Ok(redirect(&format!("{back}?notice=approval_{}", encode_query(mode)))),
+        Err(error) if partial => Ok(partial_err(format!(
+            "切换审批档位失败：{}",
+            public_reason(&error)
+        ))),
         Err(error) => {
             if back == "/" {
                 tracing::warn!("切换审批档位失败: {error:#}");
@@ -1261,8 +1309,11 @@ async fn queue_expect_current(
         .unwrap_or(false)
 }
 
-fn queue_stale(thread_id: &str) -> Response {
+fn queue_stale(thread_id: &str, partial: bool) -> Response {
     let message = "排队已变化（可能已被其它客户端改动），请确认后再操作";
+    if partial {
+        return partial_err(message);
+    }
     redirect(&format!(
         "/threads/{thread_id}?error={}",
         encode_query(message)
@@ -1272,14 +1323,21 @@ fn queue_stale(thread_id: &str) -> Response {
 pub async fn promote_queue(
     State(state): State<AppState>,
     Path((thread_id, index)): Path<(String, usize)>,
+    headers: HeaderMap,
     Form(form): Form<QueueActionForm>,
 ) -> Result<Response, AppError> {
+    let partial = wants_partial(&headers);
     if !queue_expect_current(&state, &thread_id, index, form.expect.as_deref()).await {
-        return Ok(queue_stale(&thread_id));
+        return Ok(queue_stale(&thread_id, partial));
     }
     match state.agent.promote_queue(index, &thread_id).await {
+        Ok(_) if partial => Ok(partial_ok("queue_promoted")),
         Ok(_) => Ok(redirect(&format!(
             "/threads/{thread_id}?notice=queue_promoted"
+        ))),
+        Err(error) if partial => Ok(partial_err(format!(
+            "提升排队消息失败：{}",
+            public_reason(&error)
         ))),
         Err(error) => Ok(action_failed(&thread_id, "提升排队消息失败", error)),
     }
@@ -1288,14 +1346,21 @@ pub async fn promote_queue(
 pub async fn remove_queue(
     State(state): State<AppState>,
     Path((thread_id, index)): Path<(String, usize)>,
+    headers: HeaderMap,
     Form(form): Form<QueueActionForm>,
 ) -> Result<Response, AppError> {
+    let partial = wants_partial(&headers);
     if !queue_expect_current(&state, &thread_id, index, form.expect.as_deref()).await {
-        return Ok(queue_stale(&thread_id));
+        return Ok(queue_stale(&thread_id, partial));
     }
     match state.agent.remove_queue(index).await {
+        Ok(_) if partial => Ok(partial_ok("queue_removed")),
         Ok(_) => Ok(redirect(&format!(
             "/threads/{thread_id}?notice=queue_removed"
+        ))),
+        Err(error) if partial => Ok(partial_err(format!(
+            "删除排队消息失败：{}",
+            public_reason(&error)
         ))),
         Err(error) => Ok(action_failed(&thread_id, "删除排队消息失败", error)),
     }
@@ -1304,10 +1369,17 @@ pub async fn remove_queue(
 pub async fn clear_queue(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Response, AppError> {
+    let partial = wants_partial(&headers);
     match state.agent.clear_queue(&thread_id).await {
+        Ok(_) if partial => Ok(partial_ok("queue_cleared")),
         Ok(_) => Ok(redirect(&format!(
             "/threads/{thread_id}?notice=queue_cleared"
+        ))),
+        Err(error) if partial => Ok(partial_err(format!(
+            "清空排队消息失败：{}",
+            public_reason(&error)
         ))),
         Err(error) => Ok(action_failed(&thread_id, "清空排队消息失败", error)),
     }

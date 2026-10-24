@@ -13,6 +13,48 @@
   let stickToBottom = true;
   let chatTop = 0;
 
+  /* 阅读位置跨整页跳转/刷新保持（建议 01 的客户端一半）。
+   * 只在「动作回跳」（URL 带 notice/error）或手动刷新时恢复；从别的页面点进来
+   * 仍然默认置底——那时用户要的是最新内容，不是上次的阅读位置。
+   * 服务端渲染的首帧内容已就位，所以 boot 时就能还原。 */
+  const CHATPOS_PREFIX = 'a_da_chatpos:';
+  const threadIdForState = () => {
+    const node = transcriptOf();
+    return (node && node.getAttribute('data-thread-id')) || '';
+  };
+  const shouldRestorePosition = () => {
+    if (/[?&](notice|error)=/.test(window.location.search || '')) return true;
+    const nav = window.performance
+      && window.performance.getEntriesByType
+      && window.performance.getEntriesByType('navigation')[0];
+    return Boolean(nav && nav.type === 'reload');
+  };
+  let restoring = false;
+  const storedChatTop = () => {
+    const id = threadIdForState();
+    if (!id) return 0;
+    try {
+      return Number(sessionStorage.getItem(CHATPOS_PREFIX + id)) || 0;
+    } catch (error) {
+      return 0;
+    }
+  };
+  /* 滚动事件很密：250ms 合并一次，别让 sessionStorage 写入卡住滚动。 */
+  let positionTimer = null;
+  const rememberPosition = () => {
+    if (positionTimer) return;
+    positionTimer = window.setTimeout(() => {
+      positionTimer = null;
+      const id = threadIdForState();
+      if (!id) return;
+      try {
+        sessionStorage.setItem(CHATPOS_PREFIX + id, String(Math.round(chatTop)));
+      } catch (error) {
+        /* 存不进去只影响恢复 */
+      }
+    }, 250);
+  };
+
   /* 展开面板内部的滚动位置，键是 `item id#面板序号`。
      live 轮询整段替换 #transcript 后，新旧节点不是同一个 DOM，
      位置只能靠记录还原——不还原就是"展开的工具每 2 秒自己滚回顶部"。 */
@@ -72,6 +114,7 @@
       chatTop = target.scrollTop;
       stickToBottom = nearBottom();
       syncBottomButtons();
+      rememberPosition();
       return;
     }
     if (target.classList && target.classList.contains('ada-panel__body')) {
@@ -170,30 +213,40 @@
   });
 
   const boot = () => {
+    const restoredTop = shouldRestorePosition() ? storedChatTop() : 0;
+    restoring = restoredTop > 0;
+    if (restoring) {
+      stickToBottom = false;
+      chatTop = restoredTop;
+    }
     enhanceCodeBlocks();
     const transcript = transcriptOf();
     if (transcript && window.MutationObserver) {
-      // 打开会话后的**第一次**整段变化（SSE 首帧全量同步替换正文）无条件置底——
-      // 此时用户还没开始阅读，位置恢复/平滑都不该介入；之后恢复跟随语义。
+      // 打开会话后的**第一次**整段变化（SSE 首帧全量同步替换正文）默认置底——
+      // 但如果本次是从动作回跳/刷新回来，就把位置还给用户（建议 01）。
       let firstSync = true;
       new MutationObserver(() => {
         enhanceCodeBlocks();
         if (firstSync) {
           firstSync = false;
-          scrollToBottom();
+          if (restoring) restoreScroll();
+          else scrollToBottom();
           syncBottomButtons();
           return;
         }
         restoreScroll();
       }).observe(transcript, { childList: true });
     }
-    scrollToBottom();
+    if (restoring) restoreScroll();
+    else scrollToBottom();
     syncBottomButtons();
-    // 字体/图片落定（load）后仍可能改变内容高度：补一次置底。
+    // 字体/图片落定（load）后仍可能改变内容高度：还原/置底各补一次。
     // 用户若已经在往上翻（stickToBottom 为 false），尊重用户。
     if (document.readyState !== 'complete') {
       window.addEventListener('load', () => {
-        if (stickToBottom) {
+        if (restoring) {
+          restoreScroll();
+        } else if (stickToBottom) {
           scrollToBottom();
           syncBottomButtons();
         }
@@ -661,6 +714,19 @@
     if (!window.__adaStream) schedulePoll();
   };
 
+  /* 局部提交成功后立即拉一帧（不等下一轮 parts 的 500ms），反馈更跟手。
+     与兜底轮询共用 applyOob；失败不补发——下一轮 parts 会覆盖。 */
+  window.__adaPullLive = async () => {
+    try {
+      const response = await fetch('/threads/' + encodeURIComponent(threadId) + '/live', {
+        headers: { 'HX-Request': 'true' },
+      });
+      if (response.ok) applyOob(await response.text());
+    } catch (error) {
+      /* 下一轮 parts 会补上 */
+    }
+  };
+
   function schedulePoll() {
     stopPolling();
     pollTimer = window.setTimeout(pollOnce, 2000);
@@ -745,4 +811,162 @@
   }
   // 首屏先排一次兜底：SSE 在几百毫秒内连上时，`open` 会把它取消。
   schedulePoll();
+})();
+
+/* 未发送草稿：整页跳转（切模型/审批等动作、发送失败回跳、刷新）后回填。
+ *
+ * SSR 页面重建时 textarea 是空的，半截长文会直接丢——这是建议 03 里用户损失
+ * 最大的单点。草稿按 threadId 存 sessionStorage：
+ *   - 输入时防抖写、提交瞬间再写一次（覆盖"刚输入就提交"的窗口）；
+ *   - `?notice=sent` 回跳 = 发送成功，清除；
+ *   - 其它回跳/刷新且输入框为空 → 回填并给一条辅助区提示。
+ * 多标签页同名键按"最后写入赢"，可接受（同一会话本来就是同一个草稿）。 */
+(() => {
+  const input = document.querySelector('.ada-composer__input');
+  if (!input) return;
+  const transcript = document.getElementById('transcript');
+  const threadId = (transcript && transcript.getAttribute('data-thread-id')) || '';
+  if (!threadId) return;
+
+  const KEY = 'a_da_draft:' + threadId;
+  const readDraft = () => {
+    try {
+      return sessionStorage.getItem(KEY) || '';
+    } catch (error) {
+      return '';
+    }
+  };
+  const writeDraft = (text) => {
+    try {
+      if (text) sessionStorage.setItem(KEY, text);
+      else sessionStorage.removeItem(KEY);
+    } catch (error) {
+      /* 存不进去只影响恢复 */
+    }
+  };
+
+  const sent = /[?&]notice=sent\b/.test(window.location.search || '');
+  if (sent) {
+    writeDraft('');
+  } else if (!input.value.trim()) {
+    const draft = readDraft();
+    if (draft) {
+      input.value = draft;
+      // 触发组件库的输入监听：自动增高 + 发送键可用态
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      const aux = document.querySelector('.ada-aux');
+      if (aux) {
+        const hint = document.createElement('span');
+        hint.className = 'ada-aux__item ada-aux__item--warn';
+        hint.textContent = '已恢复未发送的草稿';
+        aux.prepend(hint);
+      }
+    }
+  }
+
+  let writeTimer = null;
+  input.addEventListener('input', () => {
+    if (writeTimer) window.clearTimeout(writeTimer);
+    writeTimer = window.setTimeout(() => {
+      writeTimer = null;
+      writeDraft(input.value);
+    }, 400);
+  });
+
+  const form = input.closest('form');
+  if (form) {
+    form.addEventListener('submit', () => {
+      writeDraft(input.value);
+    });
+  }
+})();
+
+/* 局部提交（`form[data-partial]`）：composer 周边的轻动作不再整页跳转。
+ *
+ * 覆盖：切模型 / 推理等级 / 审批档位 / 批准拒绝 / 排队提升删除清空。
+ * 页面不重建 = 阅读位置、展开态、草稿都不动（建议 21）；成功后立刻拉一帧
+ * `/live` 让托盘与药丸跟上（服务端已经写回了）。
+ *
+ * 三个必须踩准的点：
+ *  1. `data-confirm` 的确认流程在 app.js 的**捕获阶段**先 preventDefault——
+ *     这里用冒泡阶段并检查 `defaultPrevented`：第一下只弹确认框，
+ *     确认后的第二次 submit 才真正 fetch。
+ *  2. 请求体用 `URLSearchParams`（→ application/x-www-form-urlencoded）：
+ *     `FormData` 会发 multipart，axum 的 `Form` 提取器不认。
+ *  3. `new FormData(form)` **不会带上被点按钮的 name/value**（审批的
+ *     `approved=true/false` 就在按钮上），必须手动补 submitter。
+ * 任何异常都退回原生提交：服务端照旧 303，行为与没有这段脚本一致。 */
+(() => {
+  const FEEDBACK_CLASS = 'ada-partial-feedback';
+
+  const showFeedback = (form, text, tone) => {
+    let node = form.querySelector('.' + FEEDBACK_CLASS);
+    if (!node) {
+      node = document.createElement('span');
+      node.className = FEEDBACK_CLASS;
+      form.appendChild(node);
+    }
+    node.dataset.tone = tone;
+    node.textContent = text;
+    window.setTimeout(() => {
+      node.remove();
+    }, 2400);
+  };
+
+  document.addEventListener('submit', (event) => {
+    const form = event.target;
+    if (!form || !form.matches || !form.matches('form[data-partial]')) return;
+    if (event.defaultPrevented) return; // 确认弹窗流程先接管
+    if (form.dataset.partialBusy === '1') return;
+
+    const action = form.getAttribute('action');
+    if (!action) return;
+
+    const body = new URLSearchParams();
+    new FormData(form).forEach((value, key) => body.append(key, value));
+    const submitter = event.submitter;
+    if (submitter && submitter.name) body.append(submitter.name, submitter.value || '');
+
+    event.preventDefault();
+    form.dataset.partialBusy = '1';
+    const buttons = Array.from(form.querySelectorAll('button[type="submit"]'));
+    buttons.forEach((button) => {
+      button.disabled = true;
+    });
+
+    const release = () => {
+      form.dataset.partialBusy = '';
+      buttons.forEach((button) => {
+        button.disabled = false;
+      });
+    };
+
+    fetch(action, {
+      method: 'POST',
+      body,
+      headers: { Accept: 'application/json' },
+      credentials: 'same-origin',
+    })
+      .then((response) =>
+        response
+          .json()
+          .catch(() => null)
+          .then((data) => ({ response, data }))
+      )
+      .then(({ response, data }) => {
+        if (response.ok && data && data.ok) {
+          showFeedback(form, data.notice || '已完成', 'ok');
+          if (window.__adaPullLive) void window.__adaPullLive();
+          release();
+          return;
+        }
+        showFeedback(form, (data && data.error) || '操作失败，请重试', 'error');
+        release();
+      })
+      .catch(() => {
+        // 网络/协议异常：退回原生提交（服务端照旧 303）
+        release();
+        form.submit();
+      });
+  });
 })();

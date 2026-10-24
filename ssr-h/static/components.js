@@ -16,8 +16,48 @@
   /* ── 1. 折叠行：整行可点 + 状态同步 ─────────────────────────────────── */
   /* live 轮询会整段替换 #transcript，开合状态必须跨替换保留。
      旧实现按"行类型 + 下标"恢复，打开第 2 个工具行会被恢复到第 1 个；
-     现在按服务端渲染的 data-key（item id）记录。 */
+     现在按服务端渲染的 data-key（item id）记录。
+     🔴 还要跨**整页跳转/刷新**保留（建议 02）：按键存 sessionStorage，
+     按 threadId 命名空间隔离；存不进去（隐私模式）只影响恢复，不拦交互。 */
   var openKeys = Object.create(null);
+  var OPEN_PREFIX = 'a_da_open:';
+  var openPersistTimer = null;
+
+  function openStateKey() {
+    var transcript = document.getElementById('transcript');
+    return (transcript && transcript.getAttribute('data-thread-id')) || '';
+  }
+
+  function restoreOpenKeys() {
+    var thread = openStateKey();
+    if (!thread) return;
+    try {
+      var saved = JSON.parse(sessionStorage.getItem(OPEN_PREFIX + thread) || '[]');
+      if (!Array.isArray(saved)) return;
+      for (var i = 0; i < saved.length; i += 1) {
+        if (typeof saved[i] === 'string') openKeys[saved[i]] = true;
+      }
+    } catch (error) {
+      /* 坏数据按全折叠处理 */
+    }
+  }
+
+  function persistOpenKeys() {
+    if (openPersistTimer) return;
+    openPersistTimer = window.setTimeout(function () {
+      openPersistTimer = null;
+      var thread = openStateKey();
+      if (!thread) return;
+      try {
+        sessionStorage.setItem(
+          OPEN_PREFIX + thread,
+          JSON.stringify(Object.keys(openKeys))
+        );
+      } catch (error) {
+        /* 存不进去只影响刷新恢复 */
+      }
+    }, 200);
+  }
 
   function syncDisclosureState(details) {
     details.setAttribute('data-state', details.open ? 'open' : 'closed');
@@ -28,6 +68,7 @@
     } else {
       delete openKeys[key];
     }
+    persistOpenKeys();
   }
 
   function bindDisclosures(root) {
@@ -498,6 +539,7 @@
 
   /* ── 启动 ───────────────────────────────────────────────────────────── */
   function boot() {
+    restoreOpenKeys();
     bindDisclosures(document);
     bindComposer();
     bindTabs(document);

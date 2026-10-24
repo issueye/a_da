@@ -999,6 +999,16 @@ pub(super) fn trays_html(
         })
         .collect::<Vec<_>>()
         .join("");
+    // 多条审批同屏时补一条汇总带：卡片仍逐条保留（参数必须逐卡可见），
+    // 但用户需要先知道"一共几件事在等我"。
+    let approvals_html = if approvals.len() > 1 {
+        format!(
+            r#"<div class="ada-trays__summary">等待批准 ×{}</div>{approvals_html}"#,
+            approvals.len()
+        )
+    } else {
+        approvals_html
+    };
     let questions_html = match plugin_questions_html {
         Some(html) if !html.trim().is_empty() => html.to_string(),
         _ => crate::questions::pending_questions_from_items(raw_items)

@@ -28,7 +28,7 @@ impl Render for ApprovalTray {
             format!("<pre class=\"ada-tray__args\">{}</pre>", escape(&self.args))
         };
         format!(
-            r#"<div class="ada-tray ada-tray--approval"><div class="ada-tray__head"><span class="ada-tray__icon">{icon}</span><span class="ada-tray__title">需要批准 · {tool}</span><span class="ada-tray__meta">{clock}{waited}</span></div>{args}<div class="ada-tray__actions"><form method="post" action="/approvals/{call}/decision" class="ada-tray__form"><input type="hidden" name="thread_id" value="{thread}"><button class="ada-btn ada-btn--primary ada-btn--sm" type="submit" name="approved" value="true">{check}批准</button><button class="ada-btn ada-btn--secondary ada-btn--sm" type="submit" name="approved" value="false">{cross}拒绝</button></form></div></div>"#,
+            r#"<div class="ada-tray ada-tray--approval"><div class="ada-tray__head"><span class="ada-tray__icon">{icon}</span><span class="ada-tray__title">需要批准 · {tool}</span><span class="ada-tray__meta">{clock}{waited}</span></div>{args}<div class="ada-tray__actions"><form method="post" action="/approvals/{call}/decision" class="ada-tray__form" data-partial><input type="hidden" name="thread_id" value="{thread}"><button class="ada-btn ada-btn--primary ada-btn--sm" type="submit" name="approved" value="true">{check}批准</button><button class="ada-btn ada-btn--secondary ada-btn--sm" type="submit" name="approved" value="false">{cross}拒绝</button></form></div></div>"#,
             icon = icon("i-shield-check", 14),
             tool = escape(&self.tool_name),
             clock = icon("i-clock", 12),
@@ -217,7 +217,7 @@ impl Render for QueueTray {
                 // 服务端在真正执行前拿它和当前队列同下标的消息比对，识别陈旧帧，
                 // 避免"别的客户端删了一条之后，这里一点就误伤相邻消息"。
                 format!(
-                    r#"<div class="ada-tray__row"><span class="ada-tray__order">{order}</span><span class="ada-tray__text" title="{text}">{text}</span><form method="post" action="/threads/{thread}/queue/{index}/promote" class="ada-tray__form" data-confirm="提升会中断当前回答并立即执行这条消息，确定吗？"><input type="hidden" name="expect" value="{text}"><button class="ada-tray__link" type="submit" title="提升到队首（会中断当前轮次）">提升</button></form><form method="post" action="/threads/{thread}/queue/{index}/remove" class="ada-tray__form" data-confirm="确定删除这条排队消息吗？"><input type="hidden" name="expect" value="{text}"><button class="ada-tray__link ada-tray__link--danger" type="submit" title="删除">删除</button></form></div>"#,
+                    r#"<div class="ada-tray__row"><span class="ada-tray__order">{order}</span><span class="ada-tray__text" title="{text}">{text}</span><form method="post" action="/threads/{thread}/queue/{index}/promote" class="ada-tray__form" data-partial data-confirm="提升会中断当前回答并立即执行这条消息，确定吗？"><input type="hidden" name="expect" value="{text}"><button class="ada-tray__link" type="submit" title="提升到队首（会中断当前轮次）">提升</button></form><form method="post" action="/threads/{thread}/queue/{index}/remove" class="ada-tray__form" data-partial data-confirm="确定删除这条排队消息吗？"><input type="hidden" name="expect" value="{text}"><button class="ada-tray__link ada-tray__link--danger" type="submit" title="删除">删除</button></form></div>"#,
                     order = item.order,
                     text = escape(&item.text),
                     thread = escape(&item.thread_id),
@@ -231,7 +231,7 @@ impl Render for QueueTray {
             .first()
             .map(|item| {
                 format!(
-                    r#"<form method="post" action="/threads/{thread}/queue/clear" class="ada-tray__form" data-confirm="确定清空当前会话的排队消息吗？"><button class="ada-tray__link" type="submit">清空</button></form>"#,
+                    r#"<form method="post" action="/threads/{thread}/queue/clear" class="ada-tray__form" data-partial data-confirm="确定清空当前会话的排队消息吗？"><button class="ada-tray__link" type="submit">清空</button></form>"#,
                     thread = escape(&item.thread_id)
                 )
             })

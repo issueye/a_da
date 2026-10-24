@@ -9,7 +9,7 @@
 
 use askama::Template;
 use axum::extract::{Request, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
@@ -205,6 +205,41 @@ fn notice_text(notice: &str) -> Option<String> {
         .iter()
         .find(|(key, _)| *key == notice)
         .map(|(_, text)| (*text).to_string())
+}
+
+/* ── 局部提交（`data-partial`）────────────────────────────────────────────
+ *
+ * composer 周边的轻动作（切模型 / 推理等级 / 审批档位 / 批准拒绝 / 排队增删）
+ * 默认是整页 POST → 303 回跳：页面重建会打断阅读位置、展开态与草稿。
+ * 前端给这类表单加 `data-partial`，fetch 带 `Accept: application/json` 提交；
+ * 服务端命中这个头时返回 JSON 回执（不 303），由客户端就地反馈 + 拉一帧 live。
+ *
+ * 🔴 无 JS / 旧页面照旧走 303：这里只是**多一个分流**，不是替换原有跳转路径。
+ * 文案与跳转式 flash 共用 `NOTICE_TEXTS`，避免两套口径。
+ */
+fn wants_partial(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.contains("application/json"))
+        .unwrap_or(false)
+}
+
+fn partial_ok(notice_key: &str) -> Response {
+    let message = notice_text(notice_key).unwrap_or_else(|| notice_key.to_string());
+    (
+        StatusCode::OK,
+        axum::Json(serde_json::json!({ "ok": true, "notice": message })),
+    )
+        .into_response()
+}
+
+fn partial_err(message: impl Into<String>) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        axum::Json(serde_json::json!({ "ok": false, "error": message.into() })),
+    )
+        .into_response()
 }
 
 fn flash_from_query(query: &PageQuery) -> Option<Flash> {
@@ -1083,6 +1118,16 @@ mod tests {
                  横幅会把它原样显示给用户"
             );
         }
+    }
+
+    #[test]
+    fn wants_partial_reads_accept_json_only() {
+        let mut headers = HeaderMap::new();
+        assert!(!wants_partial(&headers), "没有 Accept 时按整页跳转处理");
+        headers.insert(header::ACCEPT, HeaderValue::from_static("text/html"));
+        assert!(!wants_partial(&headers));
+        headers.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
+        assert!(wants_partial(&headers));
     }
 
     #[test]

@@ -525,10 +525,14 @@ Enter 发送 · Shift+Enter 换行
 |发送|Enter|
 |换行|Shift+Enter|
 |关闭浮层/取消|Escape|
+|侧栏会话搜索|Ctrl/Cmd+K（**ssr-h 当前占用**，见下）|
 |命令面板|Ctrl/Cmd+K（desktop-ui；ssr-h P2）|
-|侧栏搜索|聚焦输入框后直接输入|
+|侧栏搜索（命令面板落地后）|`/` 聚焦搜索框|
 |审批确认|Enter（desktop-ui Confirm）|
 
+- **Ctrl/⌘+K 的归属要显式拍板**（2026-10-24 记）：ssr-h 现在把它绑在「展开侧栏并聚焦会话搜索」
+  （`static/chat.js`）。命令面板（P2）上线时接管 Ctrl+K，侧栏搜索改用 `/`——不要留成双绑，
+  否则同一个键在两种语境下做两件事。
 - 所有可点击元素有 `:focus-visible` 外环；不要只靠 hover。
 - 浮层打开后焦点进入浮层；关闭后回到触发元素。
 - 输入框 `autofocus` 仅在新建/空会话，不要抢滚动阅读的焦点。

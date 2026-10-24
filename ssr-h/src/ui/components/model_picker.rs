@@ -148,7 +148,7 @@ impl ModelPicker {
                     )
                 };
                 out.push_str(&format!(
-                    r#"<form method="post" action="/model/select" class="ada-model-picker__form">
+                    r#"<form method="post" action="/model/select" class="ada-model-picker__form" data-partial>
   <input type="hidden" name="provider" value="{provider}">
   <input type="hidden" name="model" value="{model}">
   <input type="hidden" name="thread" value="{thread}">
@@ -194,7 +194,7 @@ impl ModelPicker {
         for (value, label, desc) in LEVELS {
             let selected = value == current;
             out.push_str(&format!(
-                r#"<form method="post" action="/model/effort" class="ada-model-picker__form">
+                r#"<form method="post" action="/model/effort" class="ada-model-picker__form" data-partial>
   <input type="hidden" name="thread" value="{thread}">
   <button type="submit" name="effort" value="{value}" class="ada-model-picker__item{current}"{aria}>
     <span class="ada-model-picker__item-copy">
