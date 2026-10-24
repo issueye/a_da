@@ -86,6 +86,7 @@ pub const ICONS: &[IconDef] = &[
         r#"<rect x="7" y="7" width="10" height="10" rx="2"/>"#
     ),
     icon!("i-send", r#"<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>"#),
+    icon!("i-arrow-left", r#"<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>"#),
     icon!(
         "i-clock",
         r#"<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>"#

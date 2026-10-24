@@ -113,11 +113,23 @@ impl Sidebar {
         out
     }
 
+    /// 品牌位：对话页是品牌（a_da）；二级页同一位置改成「返回会话」——
+    /// 它本来就链接回对话，但读作 a_da 时没有任何"点我会回去"的示意。
     fn brand(&self) -> String {
-        format!(
-            r#"<a href="/" class="ada-brand" aria-label="返回对话"><span class="ada-brand__mark">{}</span><span class="ada-brand__name">a_da</span><span class="ada-brand__badge">SSR</span></a>"#,
-            icon("i-diamond", 18)
-        )
+        let mark = |icon_key: &str| {
+            format!(r#"<span class="ada-brand__mark">{}</span>"#, icon(icon_key, 18))
+        };
+        if self.active == "chat" {
+            format!(
+                r#"<a href="/" class="ada-brand" aria-label="返回对话">{}<span class="ada-brand__name">a_da</span><span class="ada-brand__badge">SSR</span></a>"#,
+                mark("i-diamond")
+            )
+        } else {
+            format!(
+                r#"<a href="/" class="ada-brand ada-brand--back" aria-label="返回会话" title="返回会话">{}<span class="ada-brand__name">返回会话</span><span class="ada-brand__badge">SSR</span></a>"#,
+                mark("i-arrow-left")
+            )
+        }
     }
 
     fn new_thread_form(&self, button_class: &str, icon_only: bool) -> String {
@@ -412,8 +424,13 @@ impl Sidebar {
         let mut out = String::with_capacity(1024);
         out.push_str(r#"<div class="ada-rail">"#);
         out.push_str(&format!(
-            r#"<a class="ada-rail__mark" href="/" title="a_da · 返回对话" aria-label="返回对话">{}</a>"#,
-            icon("i-diamond", 18)
+            r#"<a class="ada-rail__mark" href="/" title="{rail_title}" aria-label="{rail_title}">{}</a>"#,
+            icon("i-diamond", 18),
+            rail_title = if self.active == "chat" {
+                "a_da · 返回对话"
+            } else {
+                "返回会话"
+            },
         ));
         out.push_str(&self.new_thread_form("ada-rail__btn ada-rail__btn--primary", true));
         // 窄轨里的搜索：点它先展开侧栏再聚焦输入框（见 chat.js）。
@@ -626,6 +643,23 @@ mod tests {
         );
         assert!(!html.contains(r#"href="/providers""#), "供应商已插件化，核心入口应移除");
         assert!(html.contains(r#"href="/extensions""#), "窄轨保留系统导航");
+    }
+
+    /// 二级页的品牌位 = 返回会话（带左箭头），对话页保持品牌原样。
+    #[test]
+    fn brand_reads_back_to_thread_on_secondary_pages() {
+        let mut sidebar = sample();
+        sidebar.active = "dashboard".to_string();
+        let html = sidebar.render();
+        assert!(html.contains("ada-brand--back"), "{html}");
+        assert!(html.contains("返回会话"), "{html}");
+        // 图标名不进输出，箭头以 path 形态存在
+        assert!(html.contains(r#"d="m12 19-7-7 7-7""#), "{html}");
+        assert!(!html.contains(r#"<span class="ada-brand__name">a_da</span>"#), "{html}");
+
+        let chat = sample().render();
+        assert!(chat.contains(r#"<span class="ada-brand__name">a_da</span>"#), "{chat}");
+        assert!(!chat.contains("ada-brand--back"), "{chat}");
     }
 
     #[test]

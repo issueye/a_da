@@ -119,6 +119,14 @@
   font-weight: 650;
   letter-spacing: -0.02em;
 }
+/* 二级页的品牌位 = 返回会话：文字降一级，悬停回归主色 */
+.ada-brand--back .ada-brand__name {
+  color: var(--ph-muted);
+  font-weight: 600;
+}
+.ada-brand--back:hover .ada-brand__name {
+  color: var(--ph-ink);
+}
 .ada-brand__badge {
   margin-left: auto;
   padding: 0 6px;
