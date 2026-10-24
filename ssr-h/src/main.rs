@@ -10,6 +10,7 @@ mod handlers;
 mod html;
 mod markdown;
 mod plugins;
+mod questions;
 mod templates;
 mod tsx;
 mod ui;
@@ -220,6 +221,10 @@ fn app(state: AppState) -> Router {
         .route(
             "/approvals/{call_id}/decision",
             post(handlers::decide_approval),
+        )
+        .route(
+            "/questions/{call_id}/answer",
+            post(handlers::answer_question),
         )
         .route("/providers", get(handlers::providers_redirect))
         .route("/workspaces", get(handlers::workspace_picker))

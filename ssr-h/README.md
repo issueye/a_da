@@ -32,6 +32,15 @@ UED 设计基线、组件规范与 desktop-ui 对齐差距见 [docs/UED.md](docs
 - 侧栏支持按标题搜索会话**和工作区名**（工作区名命中时整组展开）；插件 / 供应商 / 概览 / 插件页也共用同一套侧栏外壳，不再切回旧布局。
 - 图标统一为 14–16px 线性 SVG（替代早期字符符号）；工具/思考用单行日志式展示；输入框为桌面端形态（大圆角输入卡 + 底部工具行：工作区/审批档位/模型 + 近黑圆形发送键）；窄窗口（≤760px）侧栏收为抽屉，顶栏出汉堡按钮；**宽屏下同一个按钮是"收起/展开侧栏"**（状态存 `localStorage`，跨刷新保持）；中止等危险操作用共享确认对话框（原生 `<dialog>`）。
 - 审批：`waiting_approval` 工具在输入框上方托盘展示命令/参数与等待时长，可批准/拒绝；托盘随事件流出现/消失（断流时由兜底轮询接管），不需要手工刷新。
+- 提问（`ask_user`）：待答复的提问在输入框上方展示题目、选项（单选/多选/文本补充），可提交回答；
+  提问卡**浮动覆盖在对话流之上、不占布局空间**（desktop-ui 提问浮窗同款，审批/排队托盘仍是 in-flow）；
+  **多题一次只显示一题 + 上一题/下一题**（`chat.js` 的 `data-question-pager`
+  契约实现）；**已勾选的选项、已输入的文本与当前页码在换帧与整页刷新后都保留**
+  （sessionStorage 按 callId 记忆，提交后清除；无 JS 时全部题目平铺）。对话流里的提问卡只留记录。
+  作答表单提交到核心路由 `POST /questions/{call_id}/answer`
+  （字段约定见 [docs/PLAN-question-panel.md](docs/PLAN-question-panel.md) §4）；
+  渲染默认是核心托盘，`frontend-plugins/ask-user/` 示例插件可接管（`thread.tray` 插槽），
+  停用或失败自动回退核心实现。提问被回答/超时后托盘随事件流消失。
 - 排队：当前会话的排队消息可见，可提升、删除、清空（提升会中断当前回答，已加确认）。
 - 失败：`notice.level=error` 的卡片带「重试这一轮」；动作失败会回到会话页用 flash 说明原因，不再把整页换成裸错误页。
 - 聊天页在网关断开时保留界面壳并显示「未连接」，已打开会话的 SSE 会自动重连、期间由兜底轮询继续探测，恢复后自动接回；首屏就未连接时请点「重新连接」；`/overview` 等二级页仍会直接显示错误页。
@@ -214,8 +223,9 @@ ssr-h/frontend-plugins/hello-tsx/
 - **自定义 JS**：`scripts` 字段与 `styles` 同口径（相对 assets 目录、只接受 `.js`），服务端把
   `<script src="/ext/{id}/assets/...?v=指纹" defer>` 注入所有页面 `<head>`。SSR 出来的插槽
   （`<details>` 开合、复制、偏好记忆）需要浏览器行为时用它；HTML 白名单**不开放 `<script>` 标签**。
-- **插槽（slots）**：把 TSX 挂到界面的固定位置（`chat.corner` / `composer.left` / `composer.right` / `composer.footer` / `composer.above` / `sidebar.top` / `sidebar.bottom` / `topbar.right` / `transcript.after` / `extensions.list` / `dashboard.widgets`）。插槽内容在服务端渲染进 HTML；插件加载失败只影响它自己，界面退回默认实现。
-  `chat.corner` 是会话区**右上角**的悬浮点位（`.ada-corner-dock`，只在聊天页存在）。
+- **插槽（slots）**：把 TSX 挂到界面的固定位置（`chat.corner` / `composer.left` / `composer.right` / `composer.footer` / `composer.above` / `thread.tray` / `sidebar.top` / `sidebar.bottom` / `topbar.right` / `transcript.after` / `extensions.list` / `dashboard.widgets`）。插槽内容在服务端渲染进 HTML；插件加载失败只影响它自己，界面退回默认实现。
+  `chat.corner` 是会话区**右上角**的悬浮点位（`.ada-corner-dock`，只在聊天页存在）；
+  `thread.tray` 是托盘区的**提问段**——输出非空时替换核心提问托盘（审批/排队不受影响），数据契约见 `data.questions`。
 - `composer.above` 的插件（如 Token 天气）随 SSE `parts` 刷新：投影里带**当前会话**的助手 `usage`（不是快照的 `activeThreadId`），轮次收尾后会延迟补拉一次条目，所以不会停在「晴天 0%」。点击天气胶囊展开**浮层**（分档/百分比/已用/窗口/**缓存命中**/输出/会话/模型），不跳页；完整页面仍保留入口。token 数按 `M`/`K` 缩写、精确值在 `title` 里；缓存字段缺失时显示 `—` 而不是 `0%`。浮层是插件自己的 `<details class="ada-popover">`，`chat.js` 在 `parts` 替换后按 `id` 还原展开状态，并支持点外部/Esc 关闭。
 - `chat.corner` 的插件（如任务卡片）随 `parts` 的 `corner` 字段刷新：`props.data.todo` 是核心推演好的当前计划
   （`done` / `total` / `active` / `notes` / `markdown` / `steps[].status`），没有计划时是 `null`。
@@ -278,7 +288,9 @@ export function Page(props: any) {
   `frontend-plugins/token-weather/`（按上下文用量显示天气：完整页面 + 输入框上方胶囊/浮层 +
   概览卡片，演示相对 import、`details` 浮层与 SSE `parts` 刷新；说明见插件目录内的 README）、
   `frontend-plugins/task-plan/`（任务规划卡片：`chat.corner` 右上角 / `composer.above` 两处可挂，
-  演示 `props.data.todo` 数据契约、插件 CSS 与 `scripts` 注入的浏览器增强）；
+  演示 `props.data.todo` 数据契约、插件 CSS 与 `scripts` 注入的浏览器增强）、
+  `frontend-plugins/ask-user/`（提问卡片：`thread.tray` 插槽渲染待答复提问与作答表单，
+  演示 `props.data.questions` 数据契约与"插件替换核心托盘、停用回退"的降级规则）；
   完整 TSX 说明见 [docs/TSX.md](docs/TSX.md)。
 - **调试用 `console.log`**：TSX 在服务端跑，输出进 **ssr-h 进程日志**（`INFO ssr_h::plugin:
   [插件id/页面] …`），浏览器 DevTools 里看不到；Boa 本身没有 `console`，这是内置的
@@ -297,7 +309,8 @@ export function Page(props: any) {
 ## 当前实现边界
 
 - 这是 SSR/HTMX 原型，不是现有 desktop-ui 的替代：聊天发送通过服务端 WS RPC，页面正文由 SSE 增量更新（断流时退回 2 秒轮询），动作完成后整体跳转；
-- 已实现：只读概览、会话列表/详情、发送、中止、重试、审批、排队（提升/删除/清空）、任务规划（task-plan 插件）、
+- 已实现：只读概览、会话列表/详情、发送、中止、重试、审批、提问作答（核心托盘 + `thread.tray` 插件可接管）、
+  排队（提升/删除/清空）、任务规划（task-plan 插件）、
   **供应商管理**（新建 / 编辑连接 / 删除 / 设为当前 / 测试连接 / 获取远程模型 / 模型增删改，对齐 desktop-ui）、
   插件重载与启停、**TSX 服务端插件**（`.tsx` 页面/插槽/仪表盘，OXC + Boa + 内置 TSX 组件库）；
 - 核心页面壳仍是 Askama 编译期模板；TSX 只覆盖插件扩展面，不替代整页布局与数据获取；

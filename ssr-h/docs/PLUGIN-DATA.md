@@ -39,6 +39,7 @@
 | `workspace` | object | 工作区（§2.6） |
 | `counts` | object | 计数（§2.7） |
 | `todo` | object \| null | `todo` 工具的当前计划（§2.8） |
+| `questions` | array | 当前会话**待答复**的提问（§2.10；`thread.tray` 插件用） |
 | `providerAdmin` | object | 供应商只读投影（§2.9；仅声明 `providers.read` 的插件） |
 
 ### 2.2 `tokens`（上下文 / 缓存用量）
@@ -156,6 +157,35 @@
 - 写操作不在 TSX 里执行：表单提交到核心 `/providers/*`，成功后宿主按 `Referer`
   把重定向改回插件页（`?provider=…&tab=…&notice=…`）；
 - API Key 输入框提交后直接到核心，不经过 Boa；插件只负责渲染“已配置 + 掩码”。
+### 2.10 `questions`（待答复的提问）
+
+当前会话里 `ask_user` 工具挂起等待回答的提问（已归一化：单题/多题摊平、
+选项的 `value` 就是作答回传口径）。**没有待答提问时是空数组**，不是 `null`。
+
+```jsonc
+[{
+  "callId": "call_…",          // 作答路由按它寻址：POST /questions/{callId}/answer
+  "askedAt": 1761000000000,     // 提问时刻（epoch ms；"已等待 Ns"用它）
+  "single": true,               // 是否单题（决定表单字段要不要 q_{id}__ 前缀）
+  "questions": [{
+    "id": "q1",                 // 题号（多题作答按它对应）
+    "question": "用哪个环境？",
+    "allowText": true,          // 是否允许文本补充（缺省 true）
+    "multiSelect": false,       // 多选题选项用 checkbox
+    "options": [{ "value": "c1", "label": "开发环境", "description": "…" }]
+  }]
+}]
+```
+
+- `options` 为空数组 + `allowText` 时是纯文本题（可以只提交 `text`）；
+- **写操作不进插件**：作答表单提交到核心路由 `POST /questions/{callId}/answer`，
+  表单字段约定与核心提问托盘共用一套（见
+  [PLAN-question-panel.md](PLAN-question-panel.md) §4），解析端只有一处；
+- 提问被回答 / 超时后 `ask_user` 卡不再是 `awaiting`，下一次 `parts` 投影里
+  这条就消失了——插件不需要自己清除；
+- 这份数据没有敏感信息，**不需要 capability**（与 `todo` 同级；
+  `providerAdmin` 要 gate 是因为 headers 可能带凭据）。
+
 ## 3. 点位与刷新时机
 
 | 插槽 | 出现在 | 内容刷新 |
@@ -166,6 +196,7 @@
 | `composer.left` / `composer.right` | 聊天页输入框工具行 | 整页加载（`live` 会整块换输入框辅助区，但工具行不换） |
 | `composer.footer` | 聊天页输入框下方辅助区 | 首屏 + `parts.aux` / 2s live 轮询 |
 | `composer.above` | 聊天页右下角悬浮区 | 首屏 + `parts.above` / 2s live 轮询 |
+| `thread.tray` | 聊天页托盘区（输入框上方 in-flow）的**提问段** | 首屏 + `parts.trays` / 2s live 轮询；输出非空时**替换核心提问托盘**，为空/停用/失败自动回退核心实现 |
 | `transcript.after` | 聊天页对话流末尾 | 首屏（整段同步时随对话流重渲染） |
 | `extensions.list` | `/extensions` | 整页加载 |
 | `dashboard.widgets` | `/overview` | 整页加载 / 5s 片段刷新（如插件自己声明） |

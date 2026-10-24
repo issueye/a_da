@@ -177,6 +177,11 @@
   .ada-trays {
     padding: 0 16px 8px;
   }
+  /* 浮动的提问卡与容器留同款内边距 */
+  .ada-tray--question {
+    left: 16px;
+    right: 16px;
+  }
 }
 /* 桌面端（>760px）侧栏折叠成 56px 窄轨——宽度与形态都在 shell.css 里，
    这里不能再写 `display:none`，否则一收就把导航能力收没了。 */
@@ -239,11 +244,12 @@
     flex-wrap: wrap;
     gap: 6px;
   }
-  .ada-trays {
-    max-height: 42vh;
-  }
   .ada-tray__args {
     max-height: 90px;
+  }
+  /* 窄屏上浮动提问卡少占一些 */
+  .ada-tray--question {
+    max-height: 52vh;
   }
 }
 

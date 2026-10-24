@@ -362,6 +362,166 @@
     model: 'composer-model',
   };
 
+  /* ── 提问托盘：翻页 + 已填内容保留（data-question-pager 契约）──────────
+   * 多题时一次只显示一题 + 上一题/下一题（desktop-ui 同款交互）。服务端把全部
+   * 题目都渲染出来、翻页条置 `hidden`；这里按契约激活：题目 >= 2 才显示翻页条
+   * 并逐页隐藏。没有这段脚本也能用：翻页条保持隐藏，全部题目平铺（阅读基线）。
+   *
+   * 🔴 已勾选的选项、已输入的文本与当前页码，在 **parts 换帧与整页刷新后都保留**：
+   * - 换帧：替换 innerHTML 前先抓一份表单状态，换完按 `data-page-key`（callId）回填；
+   * - 刷新：input/change 时随手写进 sessionStorage（键 `a_da_question:{callId}`），
+   *   初始化时回填；提交回答后清除，托盘消失后顺手清理孤儿条目。
+   * 核心托盘与 `thread.tray` 插件共用这份行为（同 data-ada-scroll-bottom）。
+   */
+  const questionPageState = new Map();
+  const QUESTION_STATE_PREFIX = 'a_da_question:';
+
+  const isCheckable = (el) => el.type === 'radio' || el.type === 'checkbox';
+
+  const captureQuestionState = (pager) => {
+    const fields = [];
+    pager.querySelectorAll('input[name], textarea[name], select[name]').forEach((el) => {
+      if (el.type === 'hidden') return;
+      fields.push({ name: el.name, type: el.type, value: el.value, checked: !!el.checked });
+    });
+    return { index: Number(pager.dataset.pageCurrent || 0) || 0, fields: fields };
+  };
+
+  /* 键规则两侧必须一致：可勾选控件按 name+value 对号入座（同组多个），
+     文本类只按 name。捕获与恢复各算一遍，靠 `type` 保持同一套规则。 */
+  const stateFieldKey = (field) => {
+    const checkable = field.type === 'radio' || field.type === 'checkbox';
+    return field.name + '\u0000' + (checkable ? field.value : '');
+  };
+
+  const saveQuestionState = (pager) => {
+    const key = pager.dataset.pageKey;
+    if (!key) return;
+    try {
+      sessionStorage.setItem(
+        QUESTION_STATE_PREFIX + key,
+        JSON.stringify(captureQuestionState(pager)),
+      );
+    } catch (error) {
+      /* 存不进去（隐私模式等）只影响刷新恢复，不拦交互 */
+    }
+  };
+
+  const restoreQuestionState = (pager) => {
+    const key = pager.dataset.pageKey;
+    if (!key) return;
+    let saved = null;
+    try {
+      saved = JSON.parse(sessionStorage.getItem(QUESTION_STATE_PREFIX + key) || 'null');
+    } catch (error) {
+      saved = null;
+    }
+    if (!saved || !Array.isArray(saved.fields)) return;
+    if (typeof saved.index === 'number') questionPageState.set(key, saved.index);
+    const savedByKey = new Map();
+    saved.fields.forEach((field) => {
+      savedByKey.set(stateFieldKey(field), field);
+    });
+    pager.querySelectorAll('input[name], textarea[name], select[name]').forEach((el) => {
+      if (el.type === 'hidden') return;
+      const field = savedByKey.get(
+        stateFieldKey({ name: el.name, type: el.type, value: el.value }),
+      );
+      if (!field) return;
+      if (isCheckable(el)) el.checked = !!field.checked;
+      else el.value = field.value;
+    });
+  };
+
+  /* 提问消失（已回答/超时）后清掉对应状态，别让它跟着标签页越积越多。
+     托盘暂时为空（离线壳、断流兜底空帧）时不清理，避免误删在填的回答。 */
+  const pruneQuestionStates = (root) => {
+    const present = new Set();
+    root.querySelectorAll('[data-question-pager]').forEach((pager) => {
+      if (pager.dataset.pageKey) present.add(pager.dataset.pageKey);
+    });
+    if (!present.size) return;
+    try {
+      for (let i = sessionStorage.length - 1; i >= 0; i -= 1) {
+        const storageKey = sessionStorage.key(i);
+        if (!storageKey || !storageKey.startsWith(QUESTION_STATE_PREFIX)) continue;
+        if (!present.has(storageKey.slice(QUESTION_STATE_PREFIX.length))) {
+          sessionStorage.removeItem(storageKey);
+        }
+      }
+    } catch (error) {
+      /* sessionStorage 不可用就算了 */
+    }
+  };
+
+  const initQuestionPagers = (root) => {
+    root.querySelectorAll('[data-question-pager]').forEach((pager) => {
+      restoreQuestionState(pager);
+      if (pager.dataset.adaPager === '1') return;
+      pager.dataset.adaPager = '1';
+      const items = Array.from(pager.querySelectorAll('[data-page-item]'));
+      const bar = pager.querySelector('[data-page-bar]');
+      if (!bar) return;
+      if (items.length < 2) {
+        bar.hidden = true;
+        return;
+      }
+      const key = pager.dataset.pageKey || '';
+      const status = pager.querySelector('[data-page-status]');
+      const prev = pager.querySelector('[data-page-prev]');
+      const next = pager.querySelector('[data-page-next]');
+      let index = Math.min(questionPageState.get(key) || 0, items.length - 1);
+      const show = () => {
+        index = Math.max(0, Math.min(items.length - 1, index));
+        questionPageState.set(key, index);
+        pager.dataset.pageCurrent = String(index);
+        items.forEach((item, i) => {
+          item.hidden = i !== index;
+        });
+        if (status) status.textContent = '第 ' + (index + 1) + ' / ' + items.length + ' 题';
+        if (prev) prev.disabled = index === 0;
+        if (next) next.disabled = index === items.length - 1;
+        saveQuestionState(pager);
+      };
+      if (prev) {
+        prev.addEventListener('click', () => {
+          index -= 1;
+          show();
+        });
+      }
+      if (next) {
+        next.addEventListener('click', () => {
+          index += 1;
+          show();
+        });
+      }
+      bar.hidden = false;
+      show();
+    });
+  };
+
+  /* 用户每次勾选/输入都随手落一份状态（换帧抓取与刷新恢复共用同一份） */
+  const rememberQuestionChange = (event) => {
+    if (!(event.target instanceof Element)) return;
+    const pager = event.target.closest('[data-question-pager]');
+    if (pager) saveQuestionState(pager);
+  };
+  document.addEventListener('input', rememberQuestionChange);
+  document.addEventListener('change', rememberQuestionChange);
+  document.addEventListener('submit', (event) => {
+    if (!(event.target instanceof Element)) return;
+    const pager = event.target.closest('[data-question-pager]');
+    const key = pager && pager.dataset.pageKey;
+    if (key) {
+      questionPageState.delete(key);
+      try {
+        sessionStorage.removeItem(QUESTION_STATE_PREFIX + key);
+      } catch (error) {
+        /* 同上，存不进去就算了 */
+      }
+    }
+  });
+
   /* 替换动态区域时保住展开中的插件气泡：`details[open][id]` 在替换后按 id 还原。
      否则 composer.above 每 500ms 被 parts 换一次，天气小窗会自己关掉。 */
   const replaceKeepingOpen = (target, html) => {
@@ -369,11 +529,14 @@
     target.querySelectorAll('details[open][id]').forEach((node) => {
       openIds.push(node.id);
     });
+    target.querySelectorAll('[data-question-pager]').forEach(saveQuestionState);
     target.innerHTML = html;
     openIds.forEach((id) => {
       const reopened = target.querySelector('[id="' + escapeSelector(id) + '"]');
       if (reopened && reopened.tagName === 'DETAILS') reopened.open = true;
     });
+    initQuestionPagers(target);
+    pruneQuestionStates(target);
   };
 
   const applyParts = (payload) => {
@@ -402,7 +565,12 @@
     const doc = new DOMParser().parseFromString(html, 'text/html');
     doc.querySelectorAll('[hx-swap-oob]').forEach((node) => {
       const target = node.id ? document.getElementById(node.id) : null;
-      if (target) target.innerHTML = node.innerHTML;
+      if (target) {
+        target.querySelectorAll('[data-question-pager]').forEach(saveQuestionState);
+        target.innerHTML = node.innerHTML;
+        initQuestionPagers(target);
+        pruneQuestionStates(target);
+      }
     });
   };
 
@@ -449,6 +617,7 @@
     });
   };
   bindModelPicker();
+  initQuestionPagers(document);
   document.addEventListener('click', (event) => {
     document.querySelectorAll('details.ada-model-picker[open]').forEach((picker) => {
       if (!picker.contains(event.target)) picker.open = false;

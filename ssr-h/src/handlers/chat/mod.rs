@@ -313,7 +313,6 @@ async fn live_parts(
         .and_then(Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let (trays, approval_count, queue_len) = trays_html(snapshot, raw_items, thread_id);
     let running = running_ids(snapshot).iter().any(|id| id == thread_id);
     let mode = approval_mode(snapshot, &Value::Null);
     let approval = approval_label(&mode);
@@ -350,9 +349,18 @@ async fn live_parts(
     let corner = crate::plugins::render_slot_off_thread(
         std::sync::Arc::clone(&state.frontend),
         Slot::ChatCorner,
+        chat_context.clone(),
+    )
+    .await;
+    // 提问段：`thread.tray` 插槽输出非空时替换核心提问托盘（D5 降级规则）。
+    let thread_tray = crate::plugins::render_slot_off_thread(
+        std::sync::Arc::clone(&state.frontend),
+        Slot::ThreadTray,
         chat_context,
     )
     .await;
+    let (trays, approval_count, queue_len) =
+        trays_html(snapshot, raw_items, thread_id, Some(thread_tray.html.trim()));
     let slots = SlotContent {
         composer_footer: footer.html,
         ..SlotContent::default()
@@ -465,7 +473,6 @@ async fn load_chat(
         .iter()
         .map(|item| item_row(item, &active_thread_id))
         .collect();
-    let (trays, approval_count, queue_len) = trays_html(&snapshot, raw_items, &active_thread_id);
 
     let config = state.agent.config().await.unwrap_or(Value::Null);
     let model = model_of(&snapshot, &config);
@@ -514,6 +521,15 @@ async fn load_chat(
         )
         .connected(Some(true))
         .render();
+
+    // 托盘（审批/提问/排队）：`thread.tray` 插槽已在 base.slots 里按同一份
+    // 会话上下文渲染，输出非空时替换核心提问托盘（D5 降级规则）。
+    let (trays, approval_count, queue_len) = trays_html(
+        &snapshot,
+        raw_items,
+        &active_thread_id,
+        Some(base.slots.thread_tray.trim()),
+    );
 
     // 模型选择器：按供应商分组的模型清单 + 推理等级（数据来自 `/api/providers`）。
     // 只有真要渲染输入框时才多打这一枪；切换动作本身走 `/model/select|effort` 表单。
@@ -957,6 +973,57 @@ pub async fn retry_thread(
     match state.agent.retry_thread(&thread_id).await {
         Ok(_) => Ok(redirect(&format!("/threads/{thread_id}?notice=retried"))),
         Err(error) => Ok(action_failed(&thread_id, "重试失败", error)),
+    }
+}
+
+/// 提问作答表单（核心托盘与 `thread.tray` 插件共用字段约定，见
+/// `crate::questions::answer_params_from_form`）。
+///
+/// 字段是动态的（多选的同名多值、多题的 `q_*` 前缀），所以收成键值对序列
+/// 而不是固定 struct；`thread_id` 只用来决定失败后跳回哪个会话。
+pub async fn answer_question(
+    State(state): State<AppState>,
+    Path(call_id): Path<String>,
+    Form(form): Form<Vec<(String, String)>>,
+) -> Result<Response, AppError> {
+    if call_id.trim().is_empty() {
+        return Err(AppError::bad("提问缺少 callId"));
+    }
+    let thread_id = form
+        .iter()
+        .find(|(key, _)| key == "thread_id")
+        .map(|(_, value)| value.trim().to_string())
+        .unwrap_or_default();
+    let back = |query: &str| {
+        if thread_id.is_empty() {
+            redirect(&format!("/{query}"))
+        } else {
+            redirect(&format!("/threads/{thread_id}?{query}"))
+        }
+    };
+    let params = match crate::questions::answer_params_from_form(&form) {
+        Ok(params) => params,
+        Err(message) => return Ok(back(&format!("error={}", encode_query(&message)))),
+    };
+    match state.agent.answer_question(&call_id, params).await {
+        // `resolved=false`：callId 不认识（已超时/已在别处作答）——如实告知，
+        // 不假装成功；后端 dispatch 已经把它从 pending 列表摘掉了，托盘会自己消失。
+        Ok(result) if result.get("resolved").and_then(Value::as_bool) == Some(true) => {
+            Ok(back("notice=answered"))
+        }
+        Ok(_) => Ok(back(&format!(
+            "error={}",
+            encode_query("这条提问已失效（可能已超时或已作答）")
+        ))),
+        Err(error) => {
+            if thread_id.is_empty() {
+                tracing::warn!("提交回答失败: {error:#}");
+                let message = format!("提交回答失败：{}", public_reason(&error));
+                Ok(redirect(&format!("/?error={}", encode_query(&message))))
+            } else {
+                Ok(action_failed(&thread_id, "提交回答失败", error))
+            }
+        }
     }
 }
 

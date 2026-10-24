@@ -1,0 +1,177 @@
+/* 提问卡片（ask-user 插件）。
+   服务端会把整份样式包进 @scope ([data-plugin-scope="ask-user"])，
+   只作用于本插件内容；请用插件自己的 class，不要依赖 :root/body。 */
+.aq-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* 浮动形态：与核心提问托盘（.ada-tray--question）同款——不占布局空间，
+     贴着输入框上方浮在对话流之上；锚是 .ada-trays（position:relative）。 */
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: calc(100% + 2px);
+  max-height: min(62vh, 520px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+@media (max-width: 960px) {
+  .aq-list {
+    left: 16px;
+    right: 16px;
+  }
+}
+@media (max-width: 680px) {
+  .aq-list {
+    max-height: 52vh;
+  }
+}
+.aq-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--ada-question-line, color-mix(in srgb, var(--ph-brand) 35%, var(--ph-line)));
+  border-radius: var(--ada-radius-lg);
+  background: var(--ph-elevated);
+  box-shadow: var(--ph-shadow);
+}
+.aq-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.aq-card__title {
+  color: var(--ph-ink);
+  font-size: var(--ada-text-sm);
+  font-weight: 600;
+}
+.aq-card__meta {
+  margin-left: auto;
+  color: var(--ph-brand-ink);
+  font-size: var(--ada-text-xs);
+}
+.aq-card__item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* 同 shell.css：display:flex 会压过 UA 的 [hidden]，翻页隐藏必须显式声明 */
+.aq-card__item[hidden] {
+  display: none;
+}
+.aq-card__prompt {
+  margin: 0;
+  color: var(--ph-ink);
+  font-size: var(--ada-text-sm);
+  line-height: 1.55;
+}
+.aq-card__options {
+  display: grid;
+  gap: 6px;
+}
+.aq-card__option {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--ph-line);
+  border-radius: var(--ada-radius-md);
+  cursor: pointer;
+  transition: border-color var(--ada-transition), background var(--ada-transition);
+}
+.aq-card__option:hover {
+  background: var(--ph-subtle);
+}
+.aq-card__option:focus-within {
+  border-color: var(--ph-brand);
+}
+.aq-card__option input {
+  flex-shrink: 0;
+  accent-color: var(--ph-brand);
+}
+.aq-card__option-label {
+  color: var(--ph-ink);
+  font-size: var(--ada-text-sm);
+}
+.aq-card__option-desc {
+  color: var(--ph-faint);
+  font-size: var(--ada-text-xs);
+}
+.aq-card__text {
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 10px;
+  border: 1px solid var(--ph-line-strong);
+  border-radius: var(--ada-radius-md);
+  background: var(--ph-canvas);
+  color: var(--ph-ink);
+  font-family: inherit;
+  font-size: var(--ada-text-sm);
+  line-height: 1.55;
+  resize: vertical;
+}
+.aq-card__text::placeholder {
+  color: var(--ph-faint);
+}
+.aq-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+/* 翻页条：插件声明 data-question-pager 契约，行为在核心 chat.js；
+   服务端渲染为 hidden，无 JS 时保持隐藏（全部题目平铺） */
+.aq-card__pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.aq-card__pager[hidden] {
+  display: none;
+}
+.aq-card__pager-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--ph-line-strong);
+  border-radius: var(--ada-radius-md);
+  background: transparent;
+  color: var(--ph-ink);
+  font-family: inherit;
+  font-size: var(--ada-text-sm);
+  cursor: pointer;
+  transition: background var(--ada-transition), opacity var(--ada-transition);
+}
+.aq-card__pager-btn:hover:not(:disabled) {
+  background: var(--ph-subtle);
+}
+.aq-card__pager-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.aq-card__pager-status {
+  color: var(--ph-faint);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: var(--ada-text-xs);
+}
+.aq-card__button {
+  padding: 6px 14px;
+  border: 1px solid var(--ph-brand);
+  border-radius: var(--ada-radius-md);
+  background: var(--ph-brand);
+  color: #fff;
+  font-family: inherit;
+  font-size: var(--ada-text-sm);
+  cursor: pointer;
+  transition: background var(--ada-transition);
+}
+.aq-card__button:hover {
+  background: var(--ph-brand-strong);
+}
+.aq-card__button--ghost {
+  border-color: var(--ph-line-strong);
+  background: transparent;
+  color: var(--ph-ink);
+}
+.aq-card__button--ghost:hover {
+  background: var(--ph-subtle);
+}

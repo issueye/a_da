@@ -29,6 +29,8 @@ pub struct SlotContent {
     pub composer_footer: String,
     /// 输入框上方的悬浮插槽（贴底浮在对话流之上）。
     pub composer_above: String,
+    /// 托盘区里提问段的插槽输出；非空时替换核心提问托盘（D5 降级规则）。
+    pub thread_tray: String,
     pub transcript_after: String,
     pub extensions_list: String,
     pub dashboard_widgets: String,

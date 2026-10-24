@@ -49,7 +49,7 @@
 | 工具状态 | ✅ 已落地 | `waiting_approval` 等状态中文化 |
 | 13px 正文 / 860px 阅读宽度 | ✅ 已落地 | 正文 13px，主区/Composer/浮层统一 860px |
 | 上下文/变更/进程/命令面板 | ○ 待做 | P2 |
-| 提问浮窗 | ○ 待做 | 需要 `question.answer` 表单 |
+| 提问浮窗 | ✅ 已落地 | 输入框上方提问托盘（题目/选项/文本补充/提交回答），随事件流出现消失；`thread.tray` 插件可接管渲染 |
 
 ---
 
@@ -424,10 +424,14 @@ Enter 发送 · Shift+Enter 换行
 |---|---|---|
 | 审批 | Composer 上方的 in-flow 托盘 | 显示工具名、等待时长、待批准原文；批准/拒绝只在这里 |
 | 排队 | Composer 上方的 in-flow 托盘 | 显示当前会话排队消息，可提升/删除/清空 |
-| 提问 | Composer 上方 | 待做：问题、选项/自由输入；回答后关闭 |
+| 提问 | Composer 上方的 in-flow 托盘 | ✅ 已落地：题目 + 选项（radio/checkbox）/ 文本补充 + 提交回答；**多题一次一题翻页**（`data-question-pager` 契约，页码跨刷新记忆，无 JS 平铺）；无选项题有「继续」兜底；对话流里的 ask_user 卡只留记录 |
 | Todo/上下文/变更 | 右侧或浮层 | P2 |
 
-- SSR 版用 **in-flow 托盘**，而不是 absolute overlay：输入框会随 textarea 增高，绝对定位容易压住发送按钮。托盘位于 transcript 与 composer 之间，不覆盖输入框；代价是审批/排队出现时会占用一部分 transcript 高度。
+- SSR 版**审批/排队用 in-flow 托盘**：输入框会随 textarea 增高，绝对定位容易压住发送按钮。
+  托盘位于 transcript 与 composer 之间，不覆盖输入框；代价是审批/排队出现时会占用一部分 transcript 高度。
+- **提问卡是例外（2026-10-24 用户拍板）：浮动覆盖**，不占布局空间——`position: absolute`
+  锚在托盘区顶部（`bottom: 100%`），向上浮在对话流之上，与 desktop-ui 提问浮窗同形态；
+  卡片自带高度上限与滚动，容器不再自裁剪（否则浮出的卡片会被 `overflow` 裁掉）。
 - 审批没有内容预览就不允许批准；必须显示参数/命令/路径。
 - 等待时长给用户“系统还在等”的真实感；超时按安全方向拒绝。
 - 同一 callId 只允许一个操作面；对话流里的工具卡只做记录，操作走托盘。
@@ -574,7 +578,7 @@ Enter 发送 · Shift+Enter 换行
 | 工具中文标签/目标对象 | `tool_label` / `tool_target` | ✅ | v0.5：中文标签 + 文件名/目录 + git 动作翻译 |
 | 工具真实耗时 | `durationMs` | ✅ | v0.5：毫秒值，不用编造时长 |
 | 审批浮窗 | in-flow 审批托盘 | ✅ | 参数预览 + 等待时长 + 批准/拒绝；live 更新 |
-| 提问浮窗 | 无 | ○ | 需要 `question.answer` 表单；P1 |
+| 提问浮窗 | in-flow 提问托盘（核心实现 + `thread.tray` 插件可接管） | ✅ | 归一化投影 `data.questions`；作答走 `POST /questions/{call_id}/answer` → `question.answer` |
 | 排队列表 | in-flow 排队托盘 | ✅ | 可见、提升（中断并确认）、删除、清空 |
 | 失败 Notice + 重试 | Notice + 重试按钮 | ✅ | 仅 `level=error` 显示；按钮是真表单 |
 | 连接状态 | 离线壳 + 重新连接 | ◐ | 聊天页不再直接 502；概览/供应商仍是错误页 |

@@ -323,7 +323,45 @@ fn plugin_data(snapshot: &Value, thread_id: Option<&str>, plugin_count: usize) -
         // 任务规划（`todo` 工具）的当前计划：卡片由 `task-plan` 插件渲染，
         // 计划状态的推演仍留在核心（set/update/get 的语义只有一处）。
         "todo": todo_view(snapshot, thread_id),
+        // 待答复的提问（`ask_user` 工具卡）：`thread.tray` 插件据此渲染作答表单，
+        // 表单字段约定见 [docs/PLAN-question-panel.md](../docs/PLAN-question-panel.md) §4。
+        "questions": questions_view(snapshot, thread_id),
     })
+}
+
+/// 当前会话**待答复的提问**（归一化后的投影，camelCase 线上形状）。
+///
+/// 与核心托盘同源（`pending_questions_from_items`）；没有待答提问时是空数组，
+/// 插件据此决定渲染什么（不渲染也行——核心托盘会接管，见 PLAN D5）。
+fn questions_view(snapshot: &Value, thread_id: Option<&str>) -> Value {
+    let thread = thread_view(snapshot, thread_id);
+    let items = thread.map(|thread| array_at(thread, "items")).unwrap_or(&[]);
+    let questions: Vec<Value> = crate::questions::pending_questions_from_items(items)
+        .iter()
+        .map(|question| {
+            serde_json::json!({
+                "callId": question.call_id,
+                "askedAt": question.asked_at,
+                "single": question.is_single(),
+                "questions": question.items.iter().map(|item| {
+                    serde_json::json!({
+                        "id": item.id,
+                        "question": item.question,
+                        "allowText": item.allow_text,
+                        "multiSelect": item.multi_select,
+                        "options": item.options.iter().map(|option| {
+                            serde_json::json!({
+                                "value": option.value,
+                                "label": option.label,
+                                "description": option.description,
+                            })
+                        }).collect::<Vec<_>>(),
+                    })
+                }).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Value::Array(questions)
 }
 
 fn now_ms() -> u64 {
@@ -602,12 +640,25 @@ fn counts_view(snapshot: &Value, thread: Option<&Value>) -> Value {
                 .count()
         })
         .unwrap_or(0);
+    // 待答复的提问：`ask_user` 卡的状态是 `awaiting`（不是审批），单列一个数
+    let questions = thread
+        .map(|thread| {
+            array_at(thread, "items")
+                .iter()
+                .filter(|item| {
+                    str_at(item, "name") == "ask_user"
+                        && str_at(item, "status") == "awaiting"
+                })
+                .count()
+        })
+        .unwrap_or(0);
     serde_json::json!({
         "threads": array_at(snapshot, "threads").len(),
         "running": array_at(snapshot, "runningThreadIds").len(),
         "waiting": array_at(snapshot, "waitingThreadIds").len(),
         "queue": queue,
         "approvals": approvals,
+        "questions": questions,
     })
 }
 
@@ -724,6 +775,7 @@ async fn slot_content(registry: &Arc<PluginRegistry>, context: RenderContext) ->
         composer_right: pick(Slot::ComposerRight),
         composer_footer: pick(Slot::ComposerFooter),
         composer_above: pick(Slot::ComposerAbove),
+        thread_tray: pick(Slot::ThreadTray),
         transcript_after: pick(Slot::TranscriptAfter),
         extensions_list: pick(Slot::ExtensionsList),
         dashboard_widgets: pick(Slot::DashboardWidgets),

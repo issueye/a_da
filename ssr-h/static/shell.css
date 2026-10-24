@@ -688,7 +688,10 @@
   opacity: 1;
   background: rgba(24, 24, 27, 0.08);
 }
-/* 浮层（审批 / 排队） */
+/* 浮层（审批 / 排队 / 提问）
+   提问卡（.ada-tray--question）是 absolute 浮在对话流上的——不占布局空间。
+   因此容器**不能自滚动**：overflow 会把浮出去的卡片整个裁掉，
+   长内容由各托盘自己内部滚动（审批参数 / 排队列表）。 */
 .ada-trays {
   position: relative;
   z-index: 35;
@@ -699,10 +702,6 @@
   width: 100%;
   max-width: 860px;
   margin: 0 auto;
-  max-height: 38vh;
-  overflow-y: auto;
-  /* 滚到底不把整页一起带走 */
-  overscroll-behavior: contain;
   padding: 0 24px 8px;
 }
 .ada-tray {
@@ -729,6 +728,13 @@
 }
 .ada-tray--queue .ada-tray__icon {
   color: var(--ph-muted);
+}
+/* 排队列表自己内部滚动：容器不再裁剪（提问卡要浮出容器之外） */
+.ada-tray--queue {
+  max-height: 32vh;
+  overflow-y: auto;
+  /* 滚到底不把整页一起带走 */
+  overscroll-behavior: contain;
 }
 .ada-tray__title {
   overflow: hidden;
@@ -823,6 +829,130 @@
 .ada-tray__link--danger:hover {
   background: var(--ph-danger-soft);
   color: var(--ph-danger-ink);
+}
+
+/* 提问托盘：待答复用品牌色表达（UED 状态表），选项是无 JS 可用的原生表单。
+   浮动形态（desktop-ui 提问浮窗同款）：不占布局空间，贴着输入框上方浮在
+   对话流之上——锚是 .ada-trays（position:relative，紧贴 composer 顶部），
+   `bottom: 100%` 让卡片向上生长盖住对话流底部；高度上限内自带滚动。 */
+.ada-tray--question {
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: calc(100% + 2px);
+  max-height: min(62vh, 520px);
+  overflow-y: auto;
+  /* 滚到底不把整页一起带走 */
+  overscroll-behavior: contain;
+  border-color: color-mix(in srgb, var(--ph-brand) 35%, var(--ph-line));
+  box-shadow: 0 16px 40px -16px rgba(24, 24, 27, 0.32), var(--ph-shadow);
+}
+.ada-tray--question .ada-tray__icon,
+.ada-tray--question .ada-tray__meta {
+  color: var(--ph-brand-ink);
+}
+.ada-q {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ada-q__item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* 翻页契约靠 JS 置 hidden 隐藏非当前题；display:flex 是作者样式，
+   会压过 UA 的 [hidden] 规则，必须显式声明，否则"隐藏"根本不生效 */
+.ada-q__item[hidden] {
+  display: none;
+}
+.ada-q__prompt {
+  margin: 0;
+  color: var(--ph-ink);
+  font-size: var(--ada-text-sm);
+  line-height: 1.55;
+}
+.ada-q__options {
+  display: grid;
+  gap: 6px;
+}
+.ada-q__option {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--ph-line);
+  border-radius: var(--ada-radius-md);
+  cursor: pointer;
+  transition: border-color var(--ada-transition), background var(--ada-transition);
+}
+.ada-q__option:hover {
+  background: var(--ph-subtle);
+}
+.ada-q__option:focus-within {
+  border-color: var(--ph-brand);
+}
+.ada-q__option input {
+  flex-shrink: 0;
+  accent-color: var(--ph-brand);
+}
+.ada-q__option-label {
+  color: var(--ph-ink);
+  font-size: var(--ada-text-sm);
+}
+.ada-q__option-desc {
+  color: var(--ph-faint);
+  font-size: var(--ada-text-xs);
+}
+.ada-q__text {
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 10px;
+  border: 1px solid var(--ph-line-strong);
+  border-radius: var(--ada-radius-md);
+  background: var(--ph-canvas);
+  color: var(--ph-ink);
+  font-family: inherit;
+  font-size: var(--ada-text-sm);
+  line-height: 1.55;
+  resize: vertical;
+}
+.ada-q__text::placeholder {
+  color: var(--ph-faint);
+}
+/* 翻页条：服务端渲染为 hidden，chat.js 的 data-question-pager 契约激活 */
+.ada-q__pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ada-q__pager[hidden] {
+  display: none;
+}
+.ada-q__pager-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--ph-line-strong);
+  border-radius: var(--ada-radius-md);
+  background: transparent;
+  color: var(--ph-ink);
+  font-family: inherit;
+  font-size: var(--ada-text-sm);
+  cursor: pointer;
+  transition: background var(--ada-transition), color var(--ada-transition),
+    opacity var(--ada-transition);
+}
+.ada-q__pager-btn:hover:not(:disabled) {
+  background: var(--ph-subtle);
+}
+.ada-q__pager-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ada-q__pager-status {
+  color: var(--ph-faint);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: var(--ada-text-xs);
 }
 
 /* ── 工作区树（侧栏） ─────────────────────────────────────────────────────

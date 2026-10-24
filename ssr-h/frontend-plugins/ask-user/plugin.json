@@ -1,0 +1,9 @@
+{
+  "id": "ask-user",
+  "name": "提问卡片",
+  "version": "0.1.0",
+  "description": "用 thread.tray 插槽渲染待答复的提问（ask_user）并提供作答表单；停用或删除后自动回退到核心提问托盘",
+  "slots": [{ "slot": "thread.tray", "template": "slot.tsx", "order": 10 }],
+  "assets": "static",
+  "styles": ["ask-user.css"]
+}

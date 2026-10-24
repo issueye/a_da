@@ -850,23 +850,7 @@ pub(super) fn workspace_label(workspace: &str) -> String {
 
 pub(super) fn waited_label(value: &Value) -> String {
     let at = value.get("at").and_then(Value::as_u64).unwrap_or(0);
-    if at == 0 {
-        return String::new();
-    }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(at);
-    let seconds = now.saturating_sub(at) / 1000;
-    if seconds < 60 {
-        format!("已等待 {seconds}s")
-    } else if seconds < 3600 {
-        format!("已等待 {}m {:02}s", seconds / 60, seconds % 60)
-    } else if seconds < 86400 {
-        format!("已等待 {}h {:02}m", seconds / 3600, (seconds % 3600) / 60)
-    } else {
-        format!("已等待 {}d {}h", seconds / 86400, (seconds % 86400) / 3600)
-    }
+    ui::waited_from_at(at)
 }
 
 pub(super) fn approval_rows(raw_items: &[Value]) -> Vec<ApprovalRow> {
@@ -987,11 +971,16 @@ pub(crate) fn thread_rows(snapshot: &Value, active_thread_id: &str) -> Vec<Threa
         .collect()
 }
 
-/// 审批 + 排队托盘。返回 `(html, 待批准数, 排队数)`。
+/// 审批 + 提问 + 排队托盘。返回 `(html, 待批准数, 排队数)`。
+///
+/// `plugin_questions_html` 是 `thread.tray` 插槽的输出：**非空时替换核心提问托盘**
+/// （审批/排队不受影响）；插件停用、加载失败或没渲染出东西时传 `None`/空串，
+/// 自动退回核心实现（[docs/PLAN-question-panel.md](../../docs/PLAN-question-panel.md) D5）。
 pub(super) fn trays_html(
     snapshot: &Value,
     raw_items: &[Value],
     thread_id: &str,
+    plugin_questions_html: Option<&str>,
 ) -> (String, usize, usize) {
     let approvals = approval_rows(raw_items);
     let approvals_html = approvals
@@ -1008,6 +997,20 @@ pub(super) fn trays_html(
         })
         .collect::<Vec<_>>()
         .join("");
+    let questions_html = match plugin_questions_html {
+        Some(html) if !html.trim().is_empty() => html.to_string(),
+        _ => crate::questions::pending_questions_from_items(raw_items)
+            .iter()
+            .map(|question| {
+                ui::QuestionTray {
+                    question: question.clone(),
+                    thread_id: thread_id.to_string(),
+                }
+                .render()
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+    };
     let queue = queue_rows(snapshot, thread_id);
     let queue_html = if queue.is_empty() {
         String::new()
@@ -1026,7 +1029,7 @@ pub(super) fn trays_html(
         .render()
     };
     (
-        format!("{approvals_html}{queue_html}"),
+        format!("{approvals_html}{questions_html}{queue_html}"),
         approvals.len(),
         queue.len(),
     )
