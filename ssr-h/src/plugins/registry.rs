@@ -1246,6 +1246,66 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// 供应商管理页：合成数据渲染真实 TSX——既守住示例没有语法/校验错误，
+    /// 也守住页头「当前模型」药丸的新结构（旧的两张 stat 大卡已废）。
+    #[test]
+    fn provider_admin_example_renders_with_current_model_chip() {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
+        let root = temp_root("example-provider");
+        copy_tree(&source, &root);
+        let registry = PluginRegistry::new(&root);
+        let plugin = registry.find("provider-admin").expect("provider-admin exists");
+        assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
+        let cx = RenderContext::default().with_data(serde_json::json!({
+            "plugin_count": 3,
+            "providerAdmin": {
+                "providers": [
+                    { "id": "prov_a", "name": "主力", "protocol": "openai_chat",
+                      "protocolLabel": "OpenAI Chat", "baseUrl": "https://api.example.com/v1",
+                      "proxyUrl": "", "headers": "", "apiKeySet": true, "apiKeyHint": "sk-t…7890",
+                      "modelCount": 2, "active": true,
+                      "models": [
+                        { "index": 0, "id": "m1", "name": "M1", "contextWindow": "1000000",
+                          "maxOutputTokens": "65536", "supportsImages": false, "current": true },
+                        { "index": 1, "id": "m2", "name": "M2", "contextWindow": "1000000",
+                          "maxOutputTokens": "65536", "supportsImages": true, "current": false }
+                      ] },
+                    { "id": "prov_b", "name": "备用", "protocol": "openai_chat",
+                      "protocolLabel": "OpenAI Chat", "baseUrl": "https://b.example.com/v1",
+                      "proxyUrl": "", "headers": "", "apiKeySet": false, "apiKeyHint": "",
+                      "modelCount": 1, "active": false,
+                      "models": [ { "index": 0, "id": "m3", "name": "M3", "contextWindow": "",
+                                    "maxOutputTokens": "", "supportsImages": false, "current": false } ] }
+                ],
+                "selectedId": "prov_a",
+                "activeTab": "connection",
+                "currentModel": "m1",
+                "currentBaseUrl": "https://api.example.com/v1",
+                "canDeleteProviders": true,
+                "protocols": [ { "value": "openai_chat", "label": "OpenAI Chat" } ]
+            }
+        }));
+        // debug 构建下 Boa/OXC 的栈帧很肥，测试线程默认栈会溢出——
+        // 生产路径是 spawn_blocking 线程（渲染正常），这里给足栈空间对齐语义。
+        let (title, html) = std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(move || registry.read_page_with(&plugin, "providers", &cx))
+            .expect("spawn render thread")
+            .join()
+            .expect("render thread")
+            .unwrap();
+        assert_eq!(title, "供应商");
+        // 页头当前模型药丸（可点，去它的模型页签）；旧的两张 stat 大卡不再渲染
+        assert!(html.contains("pa-current"), "{html}");
+        assert!(html.contains("当前模型"), "{html}");
+        assert!(html.contains(r#"href="/ext/provider-admin/providers?provider=prov_a&amp;tab=models""#), "{html}");
+        assert!(!html.contains("pa-stats"), "{html}");
+        // Master-Detail 与页签照旧
+        assert!(html.contains("pa-provider"), "{html}");
+        assert!(html.contains("模型列表"), "{html}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// 递归复制目录（测试用：把真实示例拷进临时目录，与用户运行时状态隔离）。
     fn copy_tree(source: &Path, target: &Path) {
         fs::create_dir_all(target).unwrap();

@@ -31,12 +31,32 @@ export function Page(props: any) {
   const tab = admin.activeTab === "models" ? "models" : "connection";
   const connectionAction = providerAction(selected.id, "");
   const modelAction = providerAction(selected.id, "/models");
+  // 当前生效的模型归谁：链接跳到它的模型页签，而不是当前选中的供应商
+  const activeProvider =
+    providers.find((provider: any) => provider.active) || null;
 
   return (
     <div class="pa-page">
       <header class="pa-head">
-        <div>
+        <div class="pa-head__left">
           <h1 class="pa-title">供应商</h1>
+          {admin.currentModel ? (
+            activeProvider ? (
+              <a
+                class="pa-current"
+                href={providerHref(props, activeProvider.id, "models")}
+                title="当前生效的模型，点击查看它的模型列表"
+              >
+                <span class="pa-current__label">当前模型</span>
+                <strong class="pa-current__value">{admin.currentModel}</strong>
+              </a>
+            ) : (
+              <span class="pa-current pa-current--static">
+                <span class="pa-current__label">当前模型</span>
+                <strong class="pa-current__value">{admin.currentModel}</strong>
+              </span>
+            )
+          ) : null}
         </div>
         <form method="post" action="/providers/new">
           <Button label="新建供应商" variant="primary" size="sm" icon="i-plus" kind="submit" />
@@ -44,11 +64,6 @@ export function Page(props: any) {
       </header>
 
       <div class="pa-body">
-        <div class="pa-stats">
-          <div class="pa-stat"><span class="pa-stat__label">当前模型</span><strong>{admin.currentModel || "未配置"}</strong></div>
-          <div class="pa-stat"><span class="pa-stat__label">当前 BASE URL</span><strong>{admin.currentBaseUrl || "未配置"}</strong></div>
-        </div>
-
         <div class="pa-layout">
           <aside class="pa-list">
             <div class="pa-list__head">已配置的供应商</div>

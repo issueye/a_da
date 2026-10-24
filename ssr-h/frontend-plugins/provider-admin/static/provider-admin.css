@@ -10,7 +10,50 @@
   border-bottom: 1px solid var(--ph-line);
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  gap: 12px;
+  padding: 10px 14px;
+}
+/* 当前生效的模型：一颗可点药丸（去它的模型页签），取代旧的两张大信息卡 */
+.pa-head__left {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.pa-current {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border: 1px solid color-mix(in srgb, var(--ph-brand) 24%, var(--ph-line));
+  border-radius: 999px;
+  background: var(--ph-brand-soft);
+  text-decoration: none;
+  transition: border-color var(--ada-transition);
+}
+a.pa-current:hover {
+  border-color: var(--ph-brand);
+}
+.pa-current--static {
+  cursor: default;
+}
+.pa-current__label {
+  flex-shrink: 0;
+  color: var(--ph-muted);
+  font-size: 10px;
+}
+.pa-current__value {
+  overflow: hidden;
+  min-width: 0;
+  max-width: 340px;
+  color: var(--ph-brand-ink);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: 11.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* 内容 */
 .pa-body {
@@ -37,47 +80,19 @@
   font-size: 11.5px;
   line-height: 1.55;
 }
-.pa-stats {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 10px;
-  margin-bottom: 8px;
-}
-.pa-stat {
-  min-width: 0;
-  padding: 12px 14px;
-  border: 1px solid var(--ph-line);
-  border-radius: 14px;
-  background: var(--ph-surface);
-  box-shadow: 0 12px 30px -26px rgba(15, 23, 42, 0.3);
-}
-.pa-stat__label {
-  display: block;
-  color: var(--ph-faint);
-  font-size: 10px;
-}
-.pa-stat strong {
-  display: block;
-  overflow: hidden;
-  margin-top: 5px;
-  color: var(--ph-ink);
-  font-family: var(--mono-font, Consolas, monospace);
-  font-size: 12px;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .pa-layout {
   display: flex;
-  height: 470px;
+  align-items: stretch;
+  min-height: 440px;
 }
 .pa-list {
   overflow: hidden;
+  flex: 0 0 236px;
+  width: 236px;
   border: 1px solid var(--ph-line);
   border-right: none;
   border-radius: 16px 0 0 16px;
   background: var(--ph-surface);
-  height: 100%;
   display: flex;
   flex-direction: column;
 }
@@ -90,6 +105,8 @@
 }
 .pa-list__body {
   overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .pa-provider {
   position: relative;
@@ -187,7 +204,10 @@
   color: var(--ph-faint);
   font-size: 9px;
 }
-.pa-pane { padding: 14px; height: 430px; }
+.pa-pane {
+  min-height: 408px;
+  padding: 14px 16px;
+}
 .pa-form { display: grid; gap: 11px; }
 .pa-grid {
   display: grid;
@@ -254,8 +274,10 @@
   font-weight: 500;
 }
 @media (max-width: 900px) {
-  .pa-layout { grid-template-columns: 1fr; }
-  .pa-stats { grid-template-columns: 1fr; }
+  /* flex 布局的窄屏形态：列表整行、两列字段改单列 */
+  .pa-layout { flex-direction: column; }
+  .pa-list { flex: 0 0 auto; width: auto; border-right: 1px solid var(--ph-line); border-radius: 16px 16px 0 0; }
+  .pa-detail { border-radius: 0 0 16px 16px; }
   .pa-grid { grid-template-columns: 1fr; }
 }
 
