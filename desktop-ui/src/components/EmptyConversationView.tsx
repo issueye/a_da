@@ -1,6 +1,7 @@
 import React from 'react'
-import { Sparkles, Terminal, CheckCircle2, Search, ListTodo, GitPullRequest, Layers, AlertCircle, Code2 } from 'lucide-react'
+import { Terminal, CheckCircle2, Search, ListTodo, GitPullRequest, Layers, AlertCircle, Code2 } from 'lucide-react'
 import type { AgentMode, ProviderConfig, ApprovalMode, Effort, Thread, QueuedItem } from '../types'
+import { LOGO_URL } from '../brand'
 import { WorkspaceSelector } from './WorkspaceSelector'
 import { Composer } from './Composer'
 import { ModeSlider } from './ModeSlider'
@@ -135,12 +136,10 @@ export const EmptyConversationView: React.FC<EmptyConversationViewProps> = ({
       <div className="w-full max-w-2xl flex flex-col items-center space-y-5 my-auto transition-all duration-300">
         {/* 1. 标题与徽标 */}
         <div className="flex flex-col items-center text-center space-y-2">
-          <div className={`w-12 h-12 rounded-2xl ${
-            isPm
-              ? 'bg-amber-500/10 dark:bg-amber-500/15 border-amber-500/20 text-amber-600 dark:text-amber-400'
-              : 'bg-blue-500/10 dark:bg-blue-500/15 border-blue-500/20 text-blue-600 dark:text-blue-400'
-          } border flex items-center justify-center shadow-sm`}>
-            {isPm ? <ListTodo size={24} /> : <Sparkles size={24} />}
+          <div className={`w-12 h-12 rounded-2xl overflow-hidden border shadow-sm ${
+            isPm ? 'border-amber-500/20' : 'border-blue-500/20'
+          }`}>
+            <img src={LOGO_URL} alt="" className="w-full h-full object-cover" />
           </div>
           <div className="flex items-center space-x-2">
             <h1 className="text-xl md:text-2xl font-bold text-zinc-900 dark:text-zinc-100 tracking-tight">

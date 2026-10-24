@@ -288,6 +288,8 @@ fn app(state: AppState) -> Router {
         )
         .route("/ext/{id}/{slug}", get(handlers::plugin_page))
         .route("/static/app.css", get(static_css))
+        // 产品 LOGO：源码树 `assets/logo.png` 是唯一真源，编译期内嵌。
+        .route("/static/logo.png", get(static_logo_png))
         // 组件库按层拆开：引用顺序必须保持 components → layout → widgets → shell → pages，
         // 与拆分前的单文件串联顺序一致（层叠行为不变）。
         .route("/static/components.css", get(static_components_css))
@@ -430,6 +432,11 @@ async fn static_ada_modal_js() -> Response {
         include_bytes!("../static/ada-modal.js"),
         "text/javascript; charset=utf-8",
     )
+}
+
+/// 产品 LOGO（`assets/logo.png`：黑天鹅 + 暖米白底，也是 Black Swan 主题的来源）。
+async fn static_logo_png() -> Response {
+    static_asset(include_bytes!("../../assets/logo.png"), "image/png")
 }
 
 /// 组件库交互脚本（焦点态、折叠、复制、插槽）。

@@ -7,7 +7,6 @@ import {
   Moon,
   Settings,
   Puzzle,
-  Terminal,
   Circle,
   Command,
   History,
@@ -15,6 +14,7 @@ import {
   Copy,
 } from 'lucide-react'
 import type { AgentMode, ApprovalMode } from '../types'
+import { LOGO_URL } from '../brand'
 import { agentClient } from '../client/ws-client'
 import {
   windowMinimize,
@@ -105,9 +105,13 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       {/* 左侧：Logo与标题 */}
       <div className="flex items-center space-x-2.5 pointer-events-none">
         <div className="flex items-center space-x-1.5 font-bold tracking-wide text-zinc-900 dark:text-zinc-100">
-          <div className="w-5 h-5 rounded-md bg-blue-600 flex items-center justify-center text-white text-[11px] font-black shadow-sm">
-            <Terminal size={12} strokeWidth={2.5} />
-          </div>
+          <img
+            src={LOGO_URL}
+            alt=""
+            width={20}
+            height={20}
+            className="w-5 h-5 rounded-md object-cover shadow-sm"
+          />
           <span className="text-sm font-semibold tracking-tight">a_da</span>
           <span className="text-[10px] px-1.5 py-0.2 rounded font-mono font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
             {displayProduct}

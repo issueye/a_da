@@ -207,40 +207,43 @@
 | Create | `emerald-500` | `emerald-400` | 创造模式 |
 | Danger | `rose-600/red-600` | `rose-400` | 停止、失败、删除 |
 
-#### ssr-h 当前 Token
+#### ssr-h 当前 Token（Black Swan 主题，2026-10-24）
 
 `ssr-h` 复用 `plugin-hub` 的 `--ph-*` 设计变量，和 desktop-ui 的 zinc 体系“同调但不同名”，迁移时按语义映射，不要按色值硬拷贝。
+主调取自 LOGO：宣纸暖白 `#F6F3EC` + 墨黑 `#16171A`（详见 [design/COLOR-SYSTEM.md](../../design/COLOR-SYSTEM.md)）。
 
 | Token | Light | Dark | 语义 |
 |---|---|---|---|
-| `--ph-canvas` | `#fafafa` | `#131316` | 页面画布 |
-| `--ph-surface` | `#ffffff` | `#1b1b1f` | 主区/卡片 |
-| `--ph-elevated` | `#ffffff` | `#202024` | 浮层/菜单 |
-| `--ph-line` | `#e4e4e7` | `#2c2c32` | 普通分割线 |
-| `--ph-line-strong` | `#d4d4d8` | `#3f3f46` | 输入框/强调边框 |
-| `--ph-ink` | `#18181b` | `#f4f4f5` | 主文字 |
-| `--ph-muted` | `#52525b` | `#a1a1aa` | 次级文字 |
-| `--ph-faint` | `#71717a` | `#8b8b93` | 辅助文字 |
-| `--ph-brand` | `#2563eb` | `#2563eb` | 主色 |
-| `--ph-brand-strong` | `#1d4ed8` | `#1d4ed8` | hover/强调 |
-| `--ph-brand-soft` | `#eff6ff` | `rgba(59,130,246,.14)` | 品牌浅底 |
-| `--ph-brand-ink` | `#1d4ed8` | `#93c5fd` | 品牌文字 |
-| `--ph-subtle` | `#f4f4f5` | `#202024` | 侧栏/浅底 |
-| `--ph-success-soft` | `#ecfdf5` | `rgba(16,185,129,.14)` | 成功浅底 |
-| `--ph-success-ink` | `#047857` | `#6ee7b7` | 成功文字 |
-| `--ph-warn-soft` | `#fffbeb` | `rgba(245,158,11,.14)` | 警告浅底 |
-| `--ph-warn-ink` | `#b45309` | `#fcd34d` | 警告文字 |
-| `--ph-danger-soft` | `#fff1f2` | `rgba(244,63,94,.14)` | 危险浅底 |
-| `--ph-danger-ink` | `#be123c` | `#fda4af` | 危险文字 |
-| `--ph-code-bg` | `#18181b` | `#101014` | 代码块 |
-| `--ph-code-ink` | `#e4e4e7` | `#e4e4e7` | 代码文字 |
+| `--ph-canvas` | `#f6f3ec` | `#121110` | 页面画布（LOGO 底色） |
+| `--ph-surface` | `#fcfaf5` | `#1a1917` | 主区/卡片 |
+| `--ph-elevated` | `#ffffff` | `#22201d` | 浮层/菜单 |
+| `--ph-line` | `#e6e0d4` | `#2e2b27` | 普通分割线 |
+| `--ph-line-strong` | `#d5ccbc` | `#433f38` | 输入框/强调边框 |
+| `--ph-ink` | `#16171a` | `#f3efe6` | 主文字（LOGO 墨色） |
+| `--ph-muted` | `#54524c` | `#b9b2a5` | 次级文字 |
+| `--ph-faint` | `#6e6a60` | `#928b7e` | 辅助文字 |
+| `--ph-brand` | `#16171a` | `#f3efe6` | 主色（墨；暗色反转为纸白） |
+| `--ph-brand-strong` | `#000000` | `#ffffff` | hover/按下 |
+| `--ph-brand-soft` | `#ece5d8` | `rgba(243,239,230,.12)` | 品牌浅底（暖沙） |
+| `--ph-brand-ink` | `#16171a` | `#f0e7d6` | 品牌文字 |
+| `--ph-on-brand` | `#f6f3ec` | `#16171a` | 品牌底上的文字/图标 |
+| `--ph-subtle` | `#f0ebe1` | `#201e1b` | 侧栏/浅底 |
+| `--ph-success-soft` | `#e7f0e7` | `#1b2a22` | 成功浅底 |
+| `--ph-success-ink` | `#2f6b4a` | `#8fd3b0` | 成功文字 |
+| `--ph-warn-soft` | `#f8eedc` | `#2c2418` | 警告浅底 |
+| `--ph-warn-ink` | `#8a5a12` | `#e8c583` | 警告文字 |
+| `--ph-danger-soft` | `#f8e7e4` | `#2e1d1b` | 危险浅底 |
+| `--ph-danger-ink` | `#a3342b` | `#f0a59c` | 危险文字 |
+| `--ph-code-bg` | `#17181b` | `#0e0d0c` | 代码块（LOGO 墨色） |
+| `--ph-code-ink` | `#ede8dd` | `#ede8dd` | 代码文字 |
 
 **规范**：
 
-- 品牌蓝只用于“主操作、focus、当前选中、链接”，不要大面积铺底。
+- 品牌色只用于“主操作、focus、当前选中”，不要大面积铺底；单色品牌下链接必须带下划线。
+- **品牌底上的文字一律用 `--ph-on-brand`**，不许写死 `#fff`（暗色主按钮是米白底）。
 - 状态色必须成对使用“浅底 + 深字”；不要只换文字色导致暗色对比不足。
 - 失败/停止使用 danger；等待批准使用 warn；运行中使用 brand 或 warn（当前顶栏用 warn，对话工具用中性）。
-- 正文对比度不低于 WCAG AA（普通文字 4.5:1）。
+- 正文对比度不低于 WCAG AA（普通文字 4.5:1）；当前色板最低组合为 4.87:1。
 
 ### 6.2 字体与排版
 
@@ -280,8 +283,10 @@
 ### 6.4 图标与插画
 
 - desktop-ui 使用 lucide 线性图标，尺寸 11–16px；按钮内图标与文字间距 4–6px。
-- `ssr-h` 已落地统一的 14–16px 线性 SVG 图标集（stroke 1.75、圆角线帽、`currentColor`）：品牌菱形、新会话、会话/插件/供应商/概览导航、工作区、搜索、主题日月、刷新、停止、发送、时钟、批准/拒绝、删除、提升、折叠箭头、思考、工具、告警、机器人头像、审批盾牌、插件插头、外链、菜单。v0.4 起不再使用字符符号。
-- 空状态/品牌位可用几何 mark（当前 `◆`），不加装饰性大插画，保持工具型产品气质。
+- `ssr-h` 已落地统一的 14–16px 线性 SVG 图标集（stroke 1.75、圆角线帽、`currentColor`）：新会话、会话/插件/供应商/概览导航、工作区、搜索、主题日月、刷新、停止、发送、时钟、批准/拒绝、删除、提升、折叠箭头、思考、工具、告警、机器人头像、审批盾牌、插件插头、外链、菜单。v0.4 起不再使用字符符号。
+- **品牌 mark 使用产品 LOGO**（`assets/logo.png`，黑天鹅 + 暖米白底）：侧栏品牌位 / 窄轨 / 空状态 /
+  站点 favicon 统一走 `/static/logo.png`（ssr-h 编译期内嵌；desktop-ui 用 `LOGO_URL`，Electron 窗口与
+  exe 图标沿用 `assets/logo.ico`）。不加装饰性大插画，保持工具型产品气质。
 
 ### 6.5 动效
 

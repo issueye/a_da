@@ -132,6 +132,15 @@
       `prefers-reduced-motion` 下停转。实机回归：`verify-ssr-streaming.mjs` 断言页面容器与 parts 下发
 - [x] ~~窄断点弹窗被侧栏裁剪修复~~（2026-10-24 的弹窗 portal）——**已随「新建会话」弹窗移除而删除**：
       现在侧栏里没有任何视口级弹窗；选择挪到空会话页后不再有 transform 包含块的问题
+- [x] **Black Swan 主题**（2026-10-24）：主调取自 `assets/logo.png`（宣纸暖白 `#F6F3EC` +
+      墨黑 `#16171A`），蓝色主色退场。共享令牌 `design/tokens.css` 深浅两套替换、新增
+      `--ph-on-brand`（暗色主按钮反转为米白底）、组件/插件里的 `#fff` 与蓝色硬编码清零、
+      Tailwind 产物重建。设计说明与对比度见 [design/COLOR-SYSTEM.md](../../design/COLOR-SYSTEM.md)；
+      desktop-ui 仍待 Phase 2（29 个文件的 `blue-*` 需语义迁移）
+- [x] **产品 LOGO 统一为 `assets/logo.png`**（2026-10-24）：ssr-h 内嵌提供 `/static/logo.png`，
+      侧栏品牌位 / 窄轨 / 空状态 / favicon 全部换用；desktop-ui 标题栏与空状态用 `LOGO_URL`
+      （Vite `publicDir: '../assets'`，不复制第二份），favicon 同源；Electron 窗口/exe 图标沿用
+      `assets/logo.ico`（electron-builder 已配置）
 
 ### 7. 交互改造 M0（止血批，2026-10-24）
 

@@ -260,7 +260,7 @@ pub fn render_new_conversation(
 
     format!(
         r#"<div class="ada-empty ada-empty--newconv">
-  <span class="ada-empty__mark"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5 21.5 12 12 21.5 2.5 12Z"/></svg></span>
+  <span class="ada-empty__mark"><img class="ada-empty__logo" src="/static/logo.png" alt="" width="32" height="32" decoding="async"></span>
   <h2 class="ada-empty__title">开始一段新的对话</h2>
   <p class="ada-empty__desc">模式在开始后不可切换；工作区只绑定这条会话，不切换当前项目。</p>
   <div class="ada-newconv__controls">

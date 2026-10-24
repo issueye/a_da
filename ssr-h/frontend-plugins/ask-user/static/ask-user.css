@@ -158,7 +158,7 @@
   border: 1px solid var(--ph-brand);
   border-radius: var(--ada-radius-md);
   background: var(--ph-brand);
-  color: #fff;
+  color: var(--ph-on-brand);
   font-family: inherit;
   font-size: var(--ada-text-sm);
   cursor: pointer;

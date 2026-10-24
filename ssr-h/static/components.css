@@ -141,7 +141,8 @@
 }
 .ada-btn--primary {
   background: var(--ph-brand);
-  color: #fff;
+  /* 不要在品牌底上写死白色：暗色主题的品牌底是米白，白字会消失 */
+  color: var(--ph-on-brand);
 }
 .ada-btn--primary:hover {
   background: var(--ph-brand-strong);
@@ -841,6 +842,14 @@
   background: var(--ph-brand-soft);
   color: var(--ph-brand-ink);
 }
+/* 空状态里的产品 LOGO（与侧栏同一份 assets/logo.png） */
+.ada-empty__logo {
+  display: block;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--ada-radius-md);
+  object-fit: cover;
+}
 .ada-empty__title {
   margin: 14px 0 6px;
   font-size: var(--ada-text-md);
@@ -1304,8 +1313,8 @@
   border: 0;
   border-radius: 50%;
   background: var(--ph-brand);
-  color: #ffffff;
-  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.24);
+  color: var(--ph-on-brand);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ph-brand) 24%, transparent);
   cursor: pointer;
   transition: background var(--ada-transition), transform var(--ada-transition),
     box-shadow var(--ada-transition);

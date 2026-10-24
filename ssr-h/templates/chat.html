@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ base.title }} · a_da</title>
+  <link rel="icon" type="image/png" href="/static/logo.png">
   <script src="/static/theme.js?v=18"></script>
   <link rel="stylesheet" href="/static/app.css?v=24">
   <link rel="stylesheet" href="/static/components.css?v=31">
@@ -85,7 +86,7 @@
           {% else %}
           <div class="ada-empty">
             <span class="ada-empty__mark">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5 21.5 12 12 21.5 2.5 12Z"/></svg>
+              <img class="ada-empty__logo" src="/static/logo.png" alt="" width="32" height="32" decoding="async">
             </span>
             <h2 class="ada-empty__title">开始一段新的对话</h2>
             <p class="ada-empty__desc">左侧会自动列出本地会话。新建会话后，在下方输入框向 agent 发送任务。</p>

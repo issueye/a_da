@@ -120,8 +120,7 @@ impl Sidebar {
         };
         if self.active == "chat" {
             format!(
-                r#"<a href="/" class="ada-brand" aria-label="返回对话">{}<span class="ada-brand__name">a_da</span><span class="ada-brand__badge">SSR</span></a>"#,
-                mark("i-diamond")
+                r#"<a href="/" class="ada-brand" aria-label="返回对话"><span class="ada-brand__mark ada-brand__mark--logo"><img class="ada-brand__logo" src="/static/logo.png" alt="" width="28" height="28" decoding="async"></span><span class="ada-brand__name">a_da</span><span class="ada-brand__badge">SSR</span></a>"#
             )
         } else {
             format!(
@@ -393,7 +392,12 @@ impl Sidebar {
         out.push_str(r#"<div class="ada-rail">"#);
         out.push_str(&format!(
             r#"<a class="ada-rail__mark" href="/" title="{rail_title}" aria-label="{rail_title}">{}</a>"#,
-            icon("i-diamond", 18),
+            if self.active == "chat" {
+                r#"<img class="ada-rail__logo" src="/static/logo.png" alt="" width="24" height="24" decoding="async">"#
+                    .to_string()
+            } else {
+                icon("i-diamond", 18)
+            },
             rail_title = if self.active == "chat" {
                 "a_da · 返回对话"
             } else {

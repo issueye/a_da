@@ -1,7 +1,8 @@
 /** @type {import('tailwindcss').Config} */
 // plugin-hub 的设计令牌层：颜色全部指向 `static/input.css` 里的 CSS 变量，
 // 这样亮/暗主题只在一处切换，模板里不再到处写 `dark:` 变体。
-// 调色板与桌面端 `desktop-ui/` 对齐：zinc 中性灰 + 蓝色主色。
+// 当前主题：Black Swan（墨 + 宣纸暖白，取自 assets/logo.png；见 design/COLOR-SYSTEM.md）。
+// 桌面端 desktop-ui 仍用自己的 Tailwind 调色板，Phase 2 再收敛到同一主题。
 module.exports = {
   // 两个前端的模板共用同一份产物（ssr-h 的 app.css 就是这个文件的构建结果），
   // 所以两边的模板与源码都要扫。只扫 plugin-hub 会让 ssr-h 里用到、

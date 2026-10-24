@@ -1,7 +1,7 @@
 .pa-page {
   border: 1px solid var(--ph-line);
   border-radius: 14px;
-  --pa-accent: #2563eb;
+  --pa-accent: var(--ph-brand);
   display: grid;
   /* 🔴 单个 auto 轨道会被子项的 min-content 撑开：模型表有 620px 的 min-width，
      窄屏下整张卡片会被撑到 620px、溢出视口（表格自己的横向滚动因此不生效）。

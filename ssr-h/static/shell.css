@@ -119,6 +119,18 @@
   background: linear-gradient(135deg, var(--ph-brand), var(--ph-brand-strong));
   color: #fff;
 }
+/* 产品 LOGO（assets/logo.png 经 /static/logo.png 内嵌提供）：
+   图自带暖米白底与圆角，容器不再铺品牌渐变。 */
+.ada-brand__mark--logo {
+  background: transparent;
+}
+.ada-brand__logo {
+  display: block;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--ada-radius-md);
+  object-fit: cover;
+}
 .ada-brand__name {
   color: var(--ph-ink);
   font-size: var(--ada-text-md);
@@ -1046,6 +1058,16 @@
   background: linear-gradient(135deg, var(--ph-brand), var(--ph-brand-strong));
   color: #fff;
   text-decoration: none;
+}
+.ada-rail__mark:has(.ada-rail__logo) {
+  background: transparent;
+}
+.ada-rail__logo {
+  display: block;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--ada-radius-sm);
+  object-fit: cover;
 }
 .ada-rail__new {
   flex: 0 0 auto;
