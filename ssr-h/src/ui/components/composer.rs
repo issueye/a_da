@@ -125,8 +125,11 @@ impl Render for Composer {
             .unwrap_or_default();
         // 快捷键提示只出现在下方辅助区一处：卡片里再来一行，
         // 聚焦时会变成同一句话上下各一遍。
+        //
+        // 图片预览区在输入卡最上方：选中的图片发送前可见、可逐张移除；
+        // data URI 由 chat.js 写成同名的隐藏 `images` 字段随表单提交。
         format!(
-            r#"<form class="ada-composer" method="post" action="{action}"><div class="ada-composer__card"><textarea class="ada-composer__input" name="text" rows="2" placeholder="{placeholder}" aria-label="消息输入框" required></textarea><div class="ada-composer__bar"><div class="ada-composer__group ada-composer__group--left">{left}</div><div class="ada-composer__group ada-composer__group--right">{right}</div></div></div></form>{aux}"#,
+            r#"<form class="ada-composer" method="post" action="{action}"><div class="ada-composer__card"><div class="ada-composer__images" id="composer-images" hidden></div><textarea class="ada-composer__input" name="text" rows="2" placeholder="{placeholder}" aria-label="消息输入框" required></textarea><div class="ada-composer__bar"><div class="ada-composer__group ada-composer__group--left">{left}</div><div class="ada-composer__group ada-composer__group--right">{right}</div></div></div></form>{aux}"#,
             action = escape(&self.action),
             placeholder = escape(&self.placeholder),
             left = self.left,

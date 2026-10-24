@@ -435,6 +435,7 @@
   const PART_TARGETS = {
     trays: 'ada-trays',
     corner: 'chat-corner',
+    runStatus: 'run-status',
     topbarStatus: 'topbar-status',
     topbarActions: 'topbar-actions',
     aux: 'composer-aux',
@@ -968,5 +969,228 @@
         release();
         form.submit();
       });
+  });
+})();
+
+/* 图片输入：选图 / 粘贴 / 拖入 → 预览 → 随消息提交（data URI）。
+ *
+ * 约定：
+ *  - 前端只做**提前反馈**（类型/大小/张数），真正的白名单与上限在服务端
+ *    `collect_images` 里再判一次——绕过 accept 也塞不进非法内容；
+ *  - 选中的图片变成同名的隐藏 `images` 字段（同名多值，服务端按多值收）；
+ *  - 有图无字也允许发送：textarea 的 required 与发送键可用态由组件库按
+ *    "有没有 images 字段"重算（见 components.js::syncSend）。 */
+(() => {
+  const form = document.querySelector('.ada-composer');
+  if (!form) return;
+  const card = form.querySelector('.ada-composer__card');
+  const input = form.querySelector('.ada-composer__input');
+  const pick = form.querySelector('[data-image-pick]');
+  const fileInput = form.querySelector('[data-image-input]');
+  const preview = form.querySelector('#composer-images');
+  if (!card || !input || !pick || !fileInput || !preview) return;
+
+  const MAX_IMAGES = 4;
+  const MAX_BYTES = 8 * 1024 * 1024;
+  const ALLOWED = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+  let images = [];
+  let errorTimer = null;
+
+  const showError = (text) => {
+    let node = form.querySelector('.ada-composer__image-error');
+    if (!node) {
+      node = document.createElement('p');
+      node.className = 'ada-composer__image-error';
+      node.setAttribute('role', 'alert');
+      preview.after(node);
+    }
+    node.textContent = text;
+    if (errorTimer) window.clearTimeout(errorTimer);
+    errorTimer = window.setTimeout(() => {
+      node.remove();
+      errorTimer = null;
+    }, 3200);
+  };
+
+  const sync = () => {
+    preview.innerHTML = '';
+    images.forEach((src, index) => {
+      const thumb = document.createElement('span');
+      thumb.className = 'ada-composer__thumb';
+      const img = document.createElement('img');
+      img.src = src;
+      img.alt = '已选图片 ' + (index + 1);
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'ada-composer__thumb-remove';
+      remove.setAttribute('aria-label', '移除这张图片');
+      remove.textContent = '×';
+      remove.addEventListener('click', () => {
+        images.splice(index, 1);
+        sync();
+      });
+      thumb.appendChild(img);
+      thumb.appendChild(remove);
+      preview.appendChild(thumb);
+    });
+    preview.hidden = images.length === 0;
+
+    form.querySelectorAll('input[data-image-value]').forEach((node) => node.remove());
+    images.forEach((src) => {
+      const field = document.createElement('input');
+      field.type = 'hidden';
+      field.name = 'images';
+      field.value = src;
+      field.setAttribute('data-image-value', '1');
+      form.appendChild(field);
+    });
+    pick.disabled = images.length >= MAX_IMAGES;
+    pick.classList.toggle('is-disabled', images.length >= MAX_IMAGES);
+    // 交给组件库重算发送键可用态 / textarea required（纯图片消息）
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+
+  const addFiles = (files) => {
+    for (const file of Array.from(files || [])) {
+      if (!ALLOWED.includes(file.type)) {
+        showError('仅支持 PNG / JPEG / WebP / GIF 图片');
+        continue;
+      }
+      if (file.size > MAX_BYTES) {
+        showError('单张图片不能超过 8 MB');
+        continue;
+      }
+      if (images.length >= MAX_IMAGES) {
+        showError('最多附带 ' + MAX_IMAGES + ' 张图片');
+        break;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === 'string') {
+          images.push(reader.result);
+          sync();
+        }
+      };
+      reader.onerror = () => showError('读取图片失败');
+      reader.readAsDataURL(file);
+    }
+  };
+
+  pick.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => {
+    addFiles(fileInput.files);
+    fileInput.value = '';
+  });
+
+  // 粘贴：只拦剪贴板里的图片，文本粘贴照常。
+  input.addEventListener('paste', (event) => {
+    const data = event.clipboardData;
+    if (!data || !data.items) return;
+    const files = [];
+    for (const item of data.items) {
+      if (item.type && item.type.indexOf('image/') === 0) {
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+    }
+    if (files.length) {
+      event.preventDefault();
+      addFiles(files);
+    }
+  });
+
+  // 拖入输入卡：只在文件拖拽时接管，链接/文本拖拽保持原样。
+  card.addEventListener('dragover', (event) => {
+    if (!event.dataTransfer) return;
+    const types = Array.from(event.dataTransfer.types || []);
+    if (!types.includes('Files')) return;
+    event.preventDefault();
+    card.classList.add('is-drop-target');
+  });
+  card.addEventListener('dragleave', () => card.classList.remove('is-drop-target'));
+  card.addEventListener('drop', (event) => {
+    if (!event.dataTransfer) return;
+    event.preventDefault();
+    card.classList.remove('is-drop-target');
+    addFiles(event.dataTransfer.files);
+  });
+})();
+
+/* 图片查看：点对话流里的图片在**当前页面**浮层打开（不再跳新标签）。
+ * 关键点：
+ *  - 对话流里的 `<a href="data:…" target="_blank">` 保留为无 JS 兜底；
+ *  - 浮层是视口级 fixed 覆盖（z-index 高于输入区与托盘），Esc / 点遮罩 / 关闭按钮都能关；
+ *  - 打开时锁页面滚动、焦点进关闭按钮，关闭后焦点还给触发元素。 */
+(() => {
+  let viewer = null;
+  let lastFocus = null;
+
+  const onKey = (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    close();
+  };
+
+  function close() {
+    if (!viewer) return;
+    viewer.remove();
+    viewer = null;
+    document.body.classList.remove('ada-image-viewer-open');
+    document.removeEventListener('keydown', onKey);
+    if (lastFocus && typeof lastFocus.focus === 'function') lastFocus.focus();
+    lastFocus = null;
+  }
+
+  function open(src, alt) {
+    close();
+    lastFocus = document.activeElement;
+    viewer = document.createElement('div');
+    viewer.className = 'ada-image-viewer';
+    viewer.setAttribute('role', 'dialog');
+    viewer.setAttribute('aria-modal', 'true');
+    viewer.setAttribute('aria-label', '查看图片');
+
+    const image = document.createElement('img');
+    image.src = src;
+    image.alt = alt || '图片';
+
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'ada-image-viewer__close';
+    closeButton.setAttribute('aria-label', '关闭');
+    closeButton.title = '关闭（Esc）';
+    closeButton.innerHTML =
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+
+    viewer.appendChild(image);
+    viewer.appendChild(closeButton);
+    viewer.addEventListener('click', (event) => {
+      // 点遮罩或关闭按钮关闭；点图片本身保留（便于看细节）。
+      if (event.target === viewer || event.target.closest('.ada-image-viewer__close')) {
+        event.preventDefault();
+        close();
+      }
+    });
+    document.body.appendChild(viewer);
+    document.body.classList.add('ada-image-viewer-open');
+    document.addEventListener('keydown', onKey);
+    closeButton.focus();
+  }
+
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!target || !target.closest) return;
+    const link = target.closest('a.ada-msg__image');
+    if (link) {
+      const image = link.querySelector('img');
+      if (image) {
+        event.preventDefault();
+        open(image.src, image.alt);
+        return;
+      }
+    }
+    // 输入框里已选图片的缩略图也能点开看（移除按钮不是 img，不会误触）。
+    const thumb = target.closest('.ada-composer__thumb img');
+    if (thumb) open(thumb.src, thumb.alt);
   });
 })();

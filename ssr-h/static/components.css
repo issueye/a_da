@@ -647,6 +647,76 @@
 .ada-msg--user {
   justify-content: flex-end;
 }
+/* 用户消息里的图片：缩略图一排，点开原图（data URI 新标签页打开） */
+.ada-msg__image-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.ada-msg__image {
+  display: block;
+  overflow: hidden;
+  width: 112px;
+  height: 84px;
+  border: 1px solid var(--ph-line);
+  border-radius: var(--ada-radius-sm);
+  background: var(--ph-subtle);
+}
+.ada-msg__image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* 固定缩略框 + 裁切：小图标也看得见，大图点开看原图 */
+  object-fit: cover;
+  cursor: zoom-in;
+}
+.ada-composer__thumb img {
+  cursor: zoom-in;
+}
+
+/* ── 图片查看浮层（当前页面内查看，不开新标签）────────────────────────────
+   视口级覆盖，层级高于托盘与输入区；Esc / 点遮罩 / 关闭按钮都能关。
+   打开时 body 锁滚动（.ada-image-viewer-open），关闭后焦点还给触发元素。 */
+.ada-image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(24, 24, 27, 0.78);
+}
+.ada-image-viewer img {
+  display: block;
+  /* 固定大画布 + contain：大图缩放到可读尺寸，小图也放大展示（不裁切、不变形） */
+  width: min(92vw, 1400px);
+  height: min(86vh, 900px);
+  object-fit: contain;
+  border-radius: var(--ada-radius-lg);
+  /* 不铺底色：contain 的留白直接露出遮罩，避免看起来像多了一圈白框 */
+  box-shadow: 0 24px 64px -24px rgba(0, 0, 0, 0.6);
+}
+.ada-image-viewer__close {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 50%;
+  background: rgba(24, 24, 27, 0.6);
+  color: #ffffff;
+  cursor: pointer;
+}
+.ada-image-viewer__close:hover {
+  background: rgba(24, 24, 27, 0.85);
+}
+.ada-image-viewer-open {
+  overflow: hidden;
+}
 .ada-bubble {
   max-width: 680px;
   padding: 8px 14px;
@@ -826,6 +896,67 @@
 }
 .ada-composer__input::placeholder {
   color: var(--ph-faint);
+}
+/* 已选图片预览：发送前可见、可逐张移除。`hidden` 必须显式还原成 none——
+   下面的 display:flex 会覆盖 UA 的 [hidden] 规则。 */
+.ada-composer__images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 16px 0;
+}
+.ada-composer__images[hidden] {
+  display: none;
+}
+.ada-composer__thumb {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  overflow: hidden;
+  border: 1px solid var(--ph-line);
+  border-radius: var(--ada-radius-sm);
+  background: var(--ph-subtle);
+}
+.ada-composer__thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.ada-composer__thumb-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(24, 24, 27, 0.62);
+  color: #ffffff;
+  font-size: var(--ada-text-xs);
+  line-height: 1;
+  cursor: pointer;
+}
+.ada-composer__thumb-remove:hover {
+  background: rgba(24, 24, 27, 0.82);
+}
+.ada-composer__attach.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+.ada-composer__image-error {
+  width: 100%;
+  margin: 0;
+  padding: 6px 16px 0;
+  color: var(--ph-danger-ink);
+  font-size: var(--ada-text-xs);
+}
+.ada-composer__card.is-drop-target {
+  border-color: var(--ph-brand);
+  box-shadow: var(--ada-focus-ring);
 }
 .ada-composer__bar {
   display: flex;

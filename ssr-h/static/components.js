@@ -155,7 +155,11 @@
     if (!input) return;
 
     var syncSend = function () {
-      if (send) send.disabled = input.value.trim().length === 0;
+      // 有图片时允许"纯图片消息"：发送键可用、textarea 不再必填。
+      var owner = input.closest('form');
+      var hasImages = !!(owner && owner.querySelector('input[name="images"]'));
+      if (send) send.disabled = input.value.trim().length === 0 && !hasImages;
+      input.required = !hasImages;
     };
     var grow = function () {
       input.style.height = 'auto';
@@ -171,7 +175,8 @@
       if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
         var form = input.closest('form');
-        if (form && input.value.trim().length > 0) form.requestSubmit();
+        var hasImages = !!(form && form.querySelector('input[name="images"]'));
+        if (form && (input.value.trim().length > 0 || hasImages)) form.requestSubmit();
       }
     });
     input.addEventListener('focus', function () {
@@ -537,23 +542,8 @@
     );
   }
 
-  /* ── 视口级弹窗：从侧栏里搬出来 ──────────────────────────────────────────
-   * 「新建会话」弹窗由侧栏组件渲染（它需要工作区列表），但 ≤760px 时侧栏是
-   * 抽屉：`.ada-sidebar { transform: translateX(-100%) }` 会让抽屉成为
-   * `position: fixed` 后代的包含块——弹窗的 `inset: 0` 于是只有 264px 宽，
-   * 再被侧栏的 `overflow: hidden` 裁掉右半（断点越小越明显）。
-   * 启动时把侧栏里的弹窗提升到 body：它们此刻都是 hidden，无闪烁，且弹窗
-   * 本来就是视口级组件，不该寄居在可裁剪 / 可变换的容器里。 */
-  function portalSidebarModals() {
-    var modals = document.querySelectorAll('#chat-sidebar .ada-modal');
-    for (var i = 0; i < modals.length; i += 1) {
-      document.body.appendChild(modals[i]);
-    }
-  }
-
   /* ── 启动 ───────────────────────────────────────────────────────────── */
   function boot() {
-    portalSidebarModals();
     restoreOpenKeys();
     bindDisclosures(document);
     bindComposer();

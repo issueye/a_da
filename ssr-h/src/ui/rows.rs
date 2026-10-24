@@ -7,7 +7,8 @@
 use super::components::{
     AssistantMessage, Button, Disclosure, EmptyState, Notice, Panel, Render, ToolCall, UserMessage,
 };
-use super::theme::{ButtonVariant, Size, Tone};
+use super::icons::icon;
+use super::theme::{escape, ButtonVariant, Size, Tone};
 
 /// 一行对话内容（已归一化）。
 #[derive(Debug, Clone, Default)]
@@ -18,6 +19,8 @@ pub struct RowView {
     pub key: String,
     /// 用户消息附带的图片数量。
     pub images: usize,
+    /// 可渲染的图片 data URI（已按格式白名单过滤；数量与 `images` 可能不同）。
+    pub image_srcs: Vec<String>,
     /// 纯文本内容。
     pub text: String,
     /// 助手正文的 Markdown HTML。
@@ -80,6 +83,7 @@ pub fn render_row(view: &RowView, thread_id: &str) -> String {
         "user" => UserMessage {
             text: view.text.clone(),
             images: view.images,
+            image_srcs: view.image_srcs.clone(),
         }
         .render(),
         "assistant" => AssistantMessage {
@@ -162,7 +166,7 @@ pub fn render_row(view: &RowView, thread_id: &str) -> String {
     }
 }
 
-/// 空会话状态。
+/// 空会话状态（live 换帧时用；不带页内控件）。
 pub fn render_empty_thread() -> String {
     EmptyState {
         icon: "i-chat".to_string(),
@@ -171,6 +175,116 @@ pub fn render_empty_thread() -> String {
         action: None,
     }
     .render()
+}
+
+/// 新会话空状态里的一个工作区选项。
+#[derive(Debug, Clone, Default)]
+pub struct WorkspaceChoice {
+    pub path: String,
+    pub name: String,
+    pub count: usize,
+    pub current: bool,
+}
+
+/// 新会话空状态：品牌位 + 模式分段 + 工作区选择。
+///
+/// 取代原先「新建会话」弹窗里的两项选择（弹窗已移除）：点侧栏「新会话」直接
+/// 建一条空会话，模式与工作区就在这条会话的空状态里选，选完即时生效。
+/// **只在这个会话还没有任何消息时渲染**（`chat.html` 按 `items.is_empty()` 分支）；
+/// 发送第一条消息后整页跳回，控件自然消失。模式的"开始后不可切换"由网关的
+/// `thread.setMode` 兜底，工作区同理只在空状态暴露入口。
+pub fn render_new_conversation(
+    thread_id: &str,
+    mode: &str,
+    workspace_name: &str,
+    workspace_path: &str,
+    workspaces: &[WorkspaceChoice],
+) -> String {
+    let modes = [
+        ("code", "编码", "i-code"),
+        ("plan", "规划", "i-list"),
+        ("create", "创造", "i-sparkles"),
+        ("pm", "PM", "i-layers"),
+    ];
+    let current_mode = match mode.trim().to_ascii_lowercase().as_str() {
+        "plan" => "plan",
+        "create" => "create",
+        "pm" => "pm",
+        _ => "code",
+    };
+    let mode_html = modes
+        .iter()
+        .map(|(value, label, icon_key)| {
+            let selected = *value == current_mode;
+            format!(
+                r#"<form class="ada-newconv__mode-form" method="post" action="/threads/{id}/mode"><input type="hidden" name="mode" value="{value}"><button class="ada-wspick__mode{current}" type="submit"{disabled} title="{label}">{glyph}<span>{label}</span></button></form>"#,
+                id = escape(thread_id),
+                value = value,
+                label = label,
+                glyph = icon(icon_key, 12),
+                current = if selected { " is-current" } else { "" },
+                disabled = if selected {
+                    r#" disabled aria-pressed="true""#
+                } else {
+                    r#" aria-pressed="false""#
+                },
+            )
+        })
+        .collect::<String>();
+
+    let items = if workspaces.is_empty() {
+        format!(
+            r#"<p class="ada-newconv__ws-empty">还没有可选的工作区；先<strong>选择工作区</strong>添加一个目录。</p>"#
+        )
+    } else {
+        workspaces
+            .iter()
+            .map(|choice| {
+                format!(
+                    r#"<form method="post" action="/threads/{id}/workspace"><input type="hidden" name="workspace" value="{path}"><button class="ada-newconv__ws-item{current}" type="submit"{disabled} title="{path}">{check}<span class="ada-newconv__ws-name">{name}</span><span class="ada-newconv__ws-count">{count}</span></button></form>"#,
+                    id = escape(thread_id),
+                    path = escape(&choice.path),
+                    current = if choice.current { " is-current" } else { "" },
+                    disabled = if choice.current {
+                        r#" disabled aria-current="true""#
+                    } else {
+                        ""
+                    },
+                    check = icon("i-check", 12),
+                    name = escape(&choice.name),
+                    count = choice.count,
+                )
+            })
+            .collect::<String>()
+    };
+
+    format!(
+        r#"<div class="ada-empty ada-empty--newconv">
+  <span class="ada-empty__mark"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5 21.5 12 12 21.5 2.5 12Z"/></svg></span>
+  <h2 class="ada-empty__title">开始一段新的对话</h2>
+  <p class="ada-empty__desc">模式在开始后不可切换；工作区只绑定这条会话，不切换当前项目。</p>
+  <div class="ada-newconv__controls">
+    <div class="ada-wspick__modes" role="group" aria-label="会话模式">{modes}</div>
+    <div class="ada-newconv__ws-row">
+      <div class="ada-newconv__ws-group">
+        <details class="ada-popover ada-newconv__ws" id="newconv-workspace">
+          <summary class="ada-newconv__ws-trigger" title="当前工作区：{path}">{folder}<span class="ada-newconv__ws-label">{name}</span>{caret}</summary>
+          <div class="ada-newconv__ws-menu" role="menu">{items}<a class="ada-newconv__ws-more" href="/workspaces?bind={id}">浏览全部工作区…</a></div>
+        </details>
+        <a class="ada-newconv__ws-select" href="/workspaces?bind={id}" data-modal-open="workspace-picker">{folder}{select_label}</a>
+      </div>
+    </div>
+  </div>
+</div>"#,
+        modes = mode_html,
+        path = escape(workspace_path),
+        name = escape(workspace_name),
+        folder = icon("i-folder", 14),
+        caret = icon("i-chevron-down", 12),
+        select_label = "选择工作区",
+        items = items,
+        id = escape(thread_id),
+    )
 }
 
 /// 侧栏/主区的通用空状态。

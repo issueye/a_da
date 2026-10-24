@@ -399,102 +399,419 @@
   /* 滚到底不把整页一起带走 */
   overscroll-behavior: contain;
 }
-.ada-wspick__row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--ph-line);
-  border-radius: var(--ada-radius-md);
-  cursor: pointer;
-  transition: border-color var(--ada-transition), background var(--ada-transition);
-}
-.ada-wspick__row:hover {
-  background: var(--ph-subtle);
-}
-.ada-wspick__row:focus-within {
-  border-color: var(--ph-brand);
-}
-.ada-wspick__radio {
-  flex-shrink: 0;
-  accent-color: var(--ph-brand);
-}
-.ada-wspick__name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ph-ink);
-  font-size: var(--ada-text-sm);
-}
-.ada-wspick__row.is-active .ada-wspick__name {
-  font-weight: 600;
-}
-.ada-wspick__count {
-  flex-shrink: 0;
-  color: var(--ph-faint);
-  font-family: var(--mono-font, Consolas, monospace);
-  font-size: var(--ada-text-xs);
-}
-.ada-wspick__check {
-  display: flex;
-  flex-shrink: 0;
-  color: var(--ph-brand-ink);
-  opacity: 0;
-  transition: opacity var(--ada-transition);
-}
-.ada-wspick__row input:checked ~ .ada-wspick__check {
-  opacity: 1;
-}
-.ada-wspick__label {
-  margin: 10px 0 4px;
-  color: var(--ph-faint);
-  font-size: var(--ada-text-xs);
-}
-/* 模式分段（四档）：原生 radio 驱动选中态，键盘可达 */
+/* 模式分段（四档）：空会话页里一档一个提交按钮，当前项选中且禁用。
+   （原「新建会话」弹窗已移除，选择挪到空会话页，见 .ada-newconv__*） */
 .ada-wspick__modes {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
 }
+.ada-newconv__mode-form {
+  display: grid;
+  min-width: 0;
+}
 .ada-wspick__mode {
   position: relative;
   display: flex;
+  width: 100%;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   padding: 7px 4px;
   border: 1px solid var(--ph-line);
   border-radius: var(--ada-radius-md);
+  background: transparent;
   color: var(--ph-muted);
+  font-family: inherit;
   font-size: var(--ada-text-sm);
   cursor: pointer;
   transition: background var(--ada-transition), border-color var(--ada-transition),
     color var(--ada-transition);
 }
+.ada-wspick__mode .ada-icon {
+  opacity: 0.85;
+}
 .ada-wspick__mode:hover {
   background: var(--ph-subtle);
 }
-.ada-wspick__mode input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
+.ada-wspick__mode.is-current {
+  border-color: var(--ph-brand);
+  background: var(--ph-brand-soft);
+  color: var(--ph-brand-ink);
+  font-weight: 600;
+  cursor: default;
 }
-.ada-wspick__mode:has(input:checked) {
+.ada-wspick__mode.is-current:hover {
+  background: var(--ph-brand-soft);
+}
+.ada-wspick__mode:disabled {
+  opacity: 1;
+}
+.ada-wspick__mode:focus-visible {
+  outline: 2px solid var(--ph-brand);
+  outline-offset: 1px;
+}
+
+/* 空会话页：模式 + 工作区（对齐 desktop-ui 的 EmptyConversationView 排布） */
+.ada-empty--newconv {
+  min-height: 52vh;
+}
+.ada-newconv__controls {
+  display: grid;
+  width: min(440px, calc(100vw - 96px));
+  gap: 12px;
+  margin-top: 18px;
+}
+/* 模式分段收窄居中（参考 desktop-ui 的空状态排布） */
+.ada-newconv__controls .ada-wspick__modes {
+  width: min(344px, 100%);
+  justify-self: center;
+}
+.ada-newconv__ws-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+/* 工作区这一排是**一个**胶囊控件：左边当前工作区下拉 + 右边「选择工作区」，
+   中间一条细分隔线（对齐 desktop-ui EmptyConversationView 的分组形态）。 */
+.ada-newconv__ws-group {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--ph-line-strong);
+  border-radius: var(--ada-radius-pill);
+  background: var(--ph-surface);
+  transition: border-color var(--ada-transition);
+}
+.ada-newconv__ws-group:hover {
+  border-color: var(--ph-faint);
+}
+.ada-newconv__ws {
+  position: relative;
+  min-width: 0;
+}
+.ada-newconv__ws-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 6px 8px 6px 12px;
+  border: 0;
+  border-radius: var(--ada-radius-pill);
+  background: transparent;
+  color: var(--ph-ink);
+  font-size: var(--ada-text-sm);
+  cursor: pointer;
+  list-style: none;
+}
+.ada-newconv__ws-trigger::-webkit-details-marker {
+  display: none;
+}
+.ada-newconv__ws-trigger:hover {
+  background: var(--ph-subtle);
+}
+.ada-newconv__ws[open] .ada-newconv__ws-trigger {
+  background: var(--ph-subtle);
+}
+.ada-newconv__ws-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 右边一段：品牌色文字按钮，左侧一条分隔线；圆角只保留右半 */
+.ada-newconv__ws-select {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px 6px 10px;
+  border-left: 1px solid var(--ph-line);
+  border-radius: 0 var(--ada-radius-pill) var(--ada-radius-pill) 0;
+  color: var(--ph-brand-ink);
+  font-size: var(--ada-text-sm);
+  text-decoration: none;
+  transition: background var(--ada-transition);
+}
+.ada-newconv__ws-select:hover {
+  background: var(--ph-brand-soft);
+}
+.ada-newconv__ws-trigger:focus-visible,
+.ada-newconv__ws-select:focus-visible {
+  outline: 2px solid var(--ph-brand);
+  outline-offset: 1px;
+}
+.ada-newconv__ws-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 70;
+  width: min(300px, calc(100vw - 48px));
+  padding: 6px;
+  border: 1px solid var(--ph-line-strong);
+  border-radius: var(--ada-radius-lg);
+  background: var(--ph-elevated);
+  box-shadow: var(--ph-shadow);
+  text-align: left;
+}
+.ada-newconv__ws-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--ada-radius-sm);
+  background: transparent;
+  color: var(--ph-muted);
+  font-family: inherit;
+  font-size: var(--ada-text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.ada-newconv__ws-item:hover {
+  background: var(--ph-subtle);
+  color: var(--ph-ink);
+}
+.ada-newconv__ws-item .ada-icon {
+  flex: 0 0 auto;
+  color: var(--ph-brand-ink);
+  opacity: 0;
+}
+.ada-newconv__ws-item.is-current .ada-icon {
+  opacity: 1;
+}
+.ada-newconv__ws-item:disabled {
+  cursor: default;
+  opacity: 1;
+}
+.ada-newconv__ws-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ada-newconv__ws-count {
+  color: var(--ph-faint);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: var(--ada-text-xs);
+}
+.ada-newconv__ws-more {
+  display: block;
+  margin-top: 4px;
+  padding: 7px 8px 4px;
+  border-top: 1px solid var(--ph-line);
+  color: var(--ph-brand-ink);
+  font-size: var(--ada-text-xs);
+  text-decoration: none;
+}
+.ada-newconv__ws-empty {
+  margin: 0;
+  padding: 8px;
+  color: var(--ph-faint);
+  font-size: var(--ada-text-xs);
+  line-height: 1.55;
+}
+@media (max-width: 560px) {
+  .ada-newconv__ws-group {
+    max-width: 100%;
+  }
+  .ada-newconv__ws-trigger {
+    max-width: 150px;
+  }
+}
+
+/* ── 工作区目录选择弹窗（htmx 片段，见 partials/workspace_picker.html）─────── */
+.wp-picker__close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--ada-radius-sm);
+  background: transparent;
+  color: var(--ph-faint);
+  cursor: pointer;
+}
+.wp-picker__close:hover {
+  background: var(--ph-subtle);
+  color: var(--ph-ink);
+}
+#workspace-picker-body {
+  min-height: 320px;
+}
+.wp-picker {
+  display: grid;
+  gap: 10px;
+}
+.wp-picker__roots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-right: 32px;
+}
+.wp-picker__root {
+  padding: 6px 10px;
+  border: 1px solid var(--ph-line);
+  border-radius: var(--ada-radius-pill);
+  background: var(--ph-surface);
+  color: var(--ph-muted);
+  font-family: inherit;
+  font-size: var(--ada-text-xs);
+  cursor: pointer;
+}
+.wp-picker__root:hover {
+  background: var(--ph-subtle);
+  color: var(--ph-ink);
+}
+.wp-picker__root.is-active {
   border-color: var(--ph-brand);
   background: var(--ph-brand-soft);
   color: var(--ph-brand-ink);
   font-weight: 600;
 }
-.ada-wspick__mode:has(input:focus-visible) {
-  outline: 2px solid var(--ph-brand);
-  outline-offset: 1px;
+.wp-picker__pathbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
-.ada-wspick__hint {
+.wp-picker__up {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--ph-line-strong);
+  border-radius: var(--ada-radius-sm);
+  background: var(--ph-surface);
+  color: var(--ph-muted);
+  cursor: pointer;
+}
+.wp-picker__up:hover {
+  background: var(--ph-subtle);
+  color: var(--ph-ink);
+}
+.wp-picker__path {
+  flex: 1;
+  min-width: 160px;
+  overflow: hidden;
+  padding: 6px 10px;
+  border: 1px solid var(--ph-line);
+  border-radius: var(--ada-radius-sm);
+  background: var(--ph-subtle);
+  color: var(--ph-muted);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: var(--ada-text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wp-picker__mkdir {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+.wp-picker__mkdir-input {
+  width: 168px;
+  height: 32px;
+  padding: 4px 8px;
+  font-size: var(--ada-text-xs);
+}
+.wp-picker__list {
+  height: 320px;
+  padding: 4px;
+  overflow: auto;
+  border: 1px solid var(--ph-line);
+  border-radius: var(--ada-radius-md);
+  background: var(--ph-surface);
+}
+.wp-picker__entry {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 0;
+  border-radius: var(--ada-radius-sm);
+  background: transparent;
+  color: var(--ph-ink);
+  font-family: inherit;
+  font-size: var(--ada-text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.wp-picker__entry:hover {
+  background: var(--ph-subtle);
+}
+.wp-picker__entry .ada-icon {
+  flex: 0 0 auto;
+  color: var(--ph-faint);
+}
+.wp-picker__entry-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wp-picker__entry-hint {
+  color: var(--ph-faint);
+  font-size: var(--ada-text-xs);
+}
+.wp-picker__empty,
+.wp-picker__notice,
+.wp-picker__loading,
+.wp-picker__error {
   margin: 0;
+  padding: 12px;
   color: var(--ph-faint);
   font-size: var(--ada-text-sm);
-  line-height: 1.55;
+  line-height: 1.6;
+  text-align: center;
+}
+.wp-picker__error {
+  color: var(--ph-danger-ink);
+}
+.wp-picker__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.wp-picker__current {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ph-muted);
+  font-size: var(--ada-text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wp-picker__current strong {
+  color: var(--ph-ink);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-weight: 500;
+}
+.wp-picker__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+@media (max-width: 560px) {
+  .wp-picker__mkdir {
+    width: 100%;
+  }
+  .wp-picker__mkdir-input {
+    flex: 1;
+    width: auto;
+  }
+  .wp-picker__list {
+    height: 260px;
+  }
 }
 
 /* 审批档位弹层（输入框工具行）：四档单选，当前项打勾禁用；向上展开 */

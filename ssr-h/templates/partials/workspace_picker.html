@@ -1,0 +1,60 @@
+{% if let Some(message) = error %}
+<p class="wp-picker__error" role="alert">{{ message }}</p>
+{% endif %}
+<div class="wp-picker">
+  <div class="wp-picker__roots" role="tablist" aria-label="磁盘与常用位置">
+    {% for root in roots %}
+    <button class="wp-picker__root{% if root.active %} is-active{% endif %}" type="button"
+      role="tab" aria-selected="{% if root.active %}true{% else %}false{% endif %}"
+      title="{{ root.path }}"
+      hx-get="{{ root.url }}" hx-target="#workspace-picker-body" hx-swap="innerHTML">{{ root.label }}</button>
+    {% endfor %}
+  </div>
+
+  <div class="wp-picker__pathbar">
+    {% if !up_url.is_empty() %}
+    <button class="wp-picker__up" type="button" title="上一级"
+      hx-get="{{ up_url }}" hx-target="#workspace-picker-body" hx-swap="innerHTML">
+      <svg class="ada-icon" width="14" height="14" aria-hidden="true"><use href="#i-arrow-up"></use></svg>
+    </button>
+    {% endif %}
+    <span class="wp-picker__path" title="{{ current }}">{{ current }}</span>
+    <form class="wp-picker__mkdir" hx-post="/workspaces/picker/mkdir"
+      hx-target="#workspace-picker-body" hx-swap="innerHTML">
+      <input type="hidden" name="parent" value="{{ current }}">
+      <input type="hidden" name="thread_id" value="{{ bind_thread }}">
+      <input class="ada-input wp-picker__mkdir-input" name="name" placeholder="新建文件夹名称"
+        required autocomplete="off" aria-label="新建文件夹名称">
+      <button class="ada-btn ada-btn--secondary ada-btn--sm" type="submit">新建文件夹</button>
+    </form>
+  </div>
+
+  <div class="wp-picker__list">
+    {% if truncated %}
+    <p class="wp-picker__notice">目录项过多，已省略 {{ omitted }} 项；可用上方路径直接进入更深的目录。</p>
+    {% endif %}
+    {% if entries.is_empty() %}
+    <p class="wp-picker__empty">这个目录下没有子目录；可以直接「选定此工作区」，或在上面新建文件夹。</p>
+    {% else %}
+    {% for entry in entries %}
+    <button class="wp-picker__entry" type="button" title="{{ entry.path }}"
+      hx-get="{{ entry.url }}" hx-target="#workspace-picker-body" hx-swap="innerHTML">
+      <svg class="ada-icon" width="14" height="14" aria-hidden="true"><use href="#i-folder"></use></svg>
+      <span class="wp-picker__entry-name">{{ entry.name }}</span>
+      <span class="wp-picker__entry-hint">进入</span>
+    </button>
+    {% endfor %}
+    {% endif %}
+  </div>
+
+  <div class="wp-picker__foot">
+    <span class="wp-picker__current">当前选择：<strong title="{{ current }}">{{ current }}</strong></span>
+    <span class="wp-picker__actions">
+      <button class="ada-btn ada-btn--secondary ada-btn--sm" type="button" data-modal-close>取消</button>
+      <form method="post" action="{{ select_action }}">
+        <input type="hidden" name="workspace" value="{{ current }}">
+        <button class="ada-btn ada-btn--primary ada-btn--sm" type="submit"{% if current.is_empty() %} disabled{% endif %}>选定此工作区</button>
+      </form>
+    </span>
+  </div>
+</div>

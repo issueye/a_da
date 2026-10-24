@@ -212,8 +212,12 @@ pub struct ChatPage {
     pub active_thread_id: String,
     /// 已渲染好的对话行。
     pub items: Vec<ItemRow>,
-    /// 空会话时的提示片段。
+    /// 空会话时的提示片段（空会话页用带「模式 + 工作区」的富版本）。
     pub transcript_empty: String,
+    /// 空会话页的「选择工作区」弹窗（目录选择器；非空会话不渲染）。
+    pub workspace_picker: String,
+    /// 输入框左上方的运行状态（旋转弧；空闲时为空）。
+    pub run_status: String,
     /// 审批 + 排队托盘（组件库渲染）。
     pub trays_html: String,
     /// 组件库渲染好的输入框（含插件插槽）。
@@ -230,6 +234,46 @@ pub struct ChatPage {
 pub struct TranscriptPartial {
     pub items: Vec<ItemRow>,
     pub transcript_empty: String,
+}
+
+/// 弹窗目录选择器里的一个根位置（磁盘 / 主目录 / 桌面）。
+#[derive(Debug, Clone)]
+pub struct PickerRoot {
+    pub label: String,
+    pub path: String,
+    /// htmx 加载该根目录的 URL。
+    pub url: String,
+    /// 当前浏览目录是否落在这个根下（高亮用）。
+    pub active: bool,
+}
+
+/// 弹窗里的一级子目录。
+#[derive(Debug, Clone)]
+pub struct PickerEntry {
+    pub name: String,
+    pub path: String,
+    /// htmx 进入该目录的 URL。
+    pub url: String,
+}
+
+/// 工作区目录选择弹窗的片段（htmx 换进 `#workspace-picker-body`）。
+#[derive(Template)]
+#[template(path = "partials/workspace_picker.html")]
+pub struct WorkspacePickerFragment {
+    /// 绑定到哪条会话（空会话页的「选择工作区」）。
+    pub bind_thread: String,
+    /// 当前浏览目录。
+    pub current: String,
+    /// 上一级目录的 htmx URL；根目录时为空。
+    pub up_url: String,
+    /// 「选定此工作区」提交到哪（`/threads/{id}/workspace`）。
+    pub select_action: String,
+    pub roots: Vec<PickerRoot>,
+    pub entries: Vec<PickerEntry>,
+    /// 新建文件夹等操作的错误文案（就地显示，不跳页）。
+    pub error: Option<String>,
+    pub truncated: bool,
+    pub omitted: usize,
 }
 
 /// 工作区选择/添加页：左边驱动器与最近工作区，右边目录浏览。
@@ -250,6 +294,8 @@ pub struct WorkspacesPage {
     /// 目录被后端截断时的提示（`truncated` / `omitted`）。
     pub truncated: bool,
     pub omitted: usize,
+    /// 非空时表示"为这条空会话选工作区"：选中目录只绑定它，不切换当前项目。
+    pub bind_thread: String,
 }
 
 /// 协议下拉项。

@@ -172,6 +172,30 @@ impl AgentClient {
         self.create_thread_in(title, &self.workspace, None).await
     }
 
+    /// 切换会话模式（`thread.setMode`：code / plan / create / pm）。
+    ///
+    /// 🔴 只允许**空会话**：网关对已开始的会话会拒绝并给出原因
+    /// （模式决定 system prompt 与工具集，中途换等于把一段对话劈成两个智能体）。
+    pub async fn set_thread_mode(&self, thread_id: &str, mode: &str) -> Result<Value> {
+        self.rpc(
+            "thread.setMode",
+            json!({ "threadId": thread_id, "mode": mode }),
+        )
+        .await
+    }
+
+    /// 把一条会话绑定到指定工作区（`thread.setWorkspace`：只改会话属性）。
+    ///
+    /// 与 `/workspaces/select` 的 `workspace.add` 不同：**不切换** agent 的当前项目，
+    /// 也不会因为"该工作区没有会话"再多建一条。
+    pub async fn set_thread_workspace(&self, thread_id: &str, workspace: &str) -> Result<Value> {
+        self.rpc(
+            "thread.setWorkspace",
+            json!({ "threadId": thread_id, "workspace": workspace }),
+        )
+        .await
+    }
+
     /// 在指定工作区里新建会话。
     ///
     /// 工作区是**会话属性**：同一个 agent 进程能看到所有工作区的会话，
@@ -215,12 +239,14 @@ impl AgentClient {
         self.post("/api/fs/mkdir", json!({ "path": path })).await
     }
 
-    pub async fn send_message(&self, thread_id: &str, text: &str) -> Result<Value> {
-        self.rpc(
-            "thread.send",
-            json!({ "threadId": thread_id, "text": text }),
-        )
-        .await
+    /// 发送一条用户消息。`images` 是 **data URI**（`data:image/png;base64,…`）；
+    /// 网关的 `thread.send` 原样接收，并交给引擎按协议编成图片内容块。
+    pub async fn send_message(&self, thread_id: &str, text: &str, images: &[String]) -> Result<Value> {
+        let mut params = json!({ "threadId": thread_id, "text": text });
+        if !images.is_empty() {
+            params["images"] = json!(images);
+        }
+        self.rpc("thread.send", params).await
     }
 
     /// 聚焦会话（`thread.focus`）：设为激活会话并打开它的 Tab。

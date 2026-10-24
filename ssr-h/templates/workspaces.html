@@ -6,7 +6,11 @@
       <h1 class="page-title">工作区</h1>
       <span class="badge badge-neutral">{{ roots.len() }} 个位置</span>
     </div>
+    {% if bind_thread.is_empty() %}
     <p class="page-sub">选一个目录作为当前工作区；没有会话的目录会被加进侧栏树并新建一条会话。目录浏览走网关，和桌面端文件选择器是同一组端点。</p>
+    {% else %}
+    <p class="page-sub">为新会话选择工作区：选中的目录只绑定这条会话，不切换当前项目，也不会另建会话。</p>
+    {% endif %}
   </div>
 </div>
 
@@ -18,7 +22,8 @@
   </div>
   <form method="post" action="/workspaces/select">
     <input type="hidden" name="path" value="{{ current }}">
-    <button class="btn btn-primary btn-sm" type="submit">使用此目录</button>
+    {% if !bind_thread.is_empty() %}<input type="hidden" name="thread_id" value="{{ bind_thread }}">{% endif %}
+    <button class="btn btn-primary btn-sm" type="submit">{% if bind_thread.is_empty() %}使用此目录{% else %}绑定到该会话{% endif %}</button>
   </form>
 </div>
 {% endif %}
@@ -48,6 +53,7 @@
       {% for ws in recent %}
       <form method="post" action="/workspaces/select" class="ada-picker__recent-form">
         <input type="hidden" name="path" value="{{ ws.path }}">
+        {% if !bind_thread.is_empty() %}<input type="hidden" name="thread_id" value="{{ bind_thread }}">{% endif %}
         <button class="ada-picker__recent{% if ws.active %} is-active{% endif %}" type="submit" title="{{ ws.path }}">
           <span class="ada-picker__recent-name">{{ ws.name }}</span>
           <span class="ada-picker__recent-meta">{{ ws.sessions }} 会话{% if ws.active %} · 当前{% endif %}</span>
@@ -68,6 +74,7 @@
 
     <form method="post" action="/workspaces/mkdir" class="ada-picker__mkdir">
       <input type="hidden" name="parent" value="{{ current }}">
+      {% if !bind_thread.is_empty() %}<input type="hidden" name="thread_id" value="{{ bind_thread }}">{% endif %}
       <input class="input" name="name" placeholder="新建文件夹名称" required autocomplete="off">
       <button class="btn btn-secondary btn-sm" type="submit">新建目录</button>
     </form>

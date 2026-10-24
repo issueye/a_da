@@ -31,7 +31,11 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-use super::{array_at, item_row, live_parts, str_at, transcript_html, AppState, ItemRow};
+use super::{
+    array_at, empty_conversation_html, item_row, live_parts, str_at, transcript_html, AppState,
+    ItemRow,
+};
+use crate::ui;
 
 /// 合帧窗口：模型 token 的到达频率远高于一次 Markdown 重渲染的成本。
 /// 40ms（25FPS）已经比"逐字"更细，同时把长回答的重渲染次数压下来。
@@ -254,6 +258,7 @@ async fn render_parts(state: &AppState, view: &StreamView) -> Option<String> {
         json!({
             "trays": parts.trays,
             "corner": parts.corner,
+            "runStatus": parts.run_status,
             "topbarStatus": parts.topbar_status,
             "topbarActions": parts.topbar_actions,
             "aux": parts.aux,
@@ -552,7 +557,14 @@ impl StreamView {
             .iter()
             .map(|item| item_row(item, &self.thread_id))
             .collect();
-        Some(transcript_html(items))
+        // 空会话保留「模式 + 工作区」控件：首帧整段同步不能把页面上的选择抹掉。
+        let empty_html = if items.is_empty() {
+            empty_conversation_html(&self.meta, &self.thread_id)
+                .unwrap_or_else(ui::render_empty_thread)
+        } else {
+            ui::render_empty_thread()
+        };
+        Some(transcript_html(items, empty_html))
     }
 }
 

@@ -115,6 +115,9 @@
        没有插件贡献时为空，`.ada-float-dock:empty` 不展示。
        它是 viewport 里的绝对定位覆盖层，不参与文档流。 #}
     <div class="ada-float-dock" id="composer-above" aria-label="插件悬浮区">{{ base.slots.composer_above|safe }}</div>
+    {# 运行状态：与上一行的插件悬浮区同一带（左端）。容器常驻，空闲时为 `:empty` 不占位；
+       SSE `parts` 的 `runStatus` 与兜底轮询同源换新。 #}
+    <div class="ada-run-status-dock" id="run-status">{{ run_status|safe }}</div>
     </div>
 
     {# 托盘是"agent 正在等用户"的唯一信号源：新审批/提问经 SSE 换帧到达时，
@@ -124,6 +127,9 @@
     {% if !composer_html.is_empty() %}{{ composer_html|safe }}{% endif %}
   </main>
 </div>
+
+{# 空会话页的「选择工作区」弹窗：目录片段由 htmx 在打开时懒加载 #}
+{% if !workspace_picker.is_empty() %}{{ workspace_picker|safe }}{% endif %}
 
 {# 共享确认弹窗：组件库渲染，与二级页同一份实现 #}
 {{ base.confirm_dialog|safe }}

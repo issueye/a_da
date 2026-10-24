@@ -19,6 +19,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::extract::DefaultBodyLimit;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -203,7 +204,12 @@ fn app(state: AppState) -> Router {
         .route("/threads/{id}/live", get(handlers::live))
         .route("/threads/{id}/stream", get(handlers::live_stream))
         .route("/threads/{id}", get(handlers::chat_thread))
-        .route("/threads/{id}/send", post(handlers::send_message))
+        .route(
+            "/threads/{id}/send",
+            // 图片以 data URI 随表单提交（最多 4 张、单张 base64 后 ≤12MB）：
+            // axum 默认 2MB 的 body 上限会直接 413，这里按最大合法体积放宽。
+            post(handlers::send_message).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
         .route("/threads/{id}/abort", post(handlers::abort_thread))
         // 模型选择器（DeepSeek 式弹层）：切换模型 / 推理等级后回到原会话。
         .route("/model/select", post(handlers::select_model))
@@ -212,6 +218,12 @@ fn app(state: AppState) -> Router {
         .route("/threads/{id}/retry", post(handlers::retry_thread))
         .route("/threads/{id}/rename", post(handlers::rename_thread))
         .route("/threads/{id}/delete", post(handlers::delete_thread))
+        // 空会话里的模式 / 工作区选择（原「新建会话」弹窗的两项，挪到会话页内）
+        .route("/threads/{id}/mode", post(handlers::set_thread_mode))
+        .route(
+            "/threads/{id}/workspace",
+            post(handlers::set_thread_workspace),
+        )
         .route("/threads/{id}/queue/clear", post(handlers::clear_queue))
         .route(
             "/threads/{id}/queue/{index}/promote",
@@ -233,6 +245,15 @@ fn app(state: AppState) -> Router {
         .route("/workspaces", get(handlers::workspace_picker))
         .route("/workspaces/select", post(handlers::select_workspace))
         .route("/workspaces/mkdir", post(handlers::make_workspace_dir))
+        // 空会话页的弹窗目录选择器（htmx 片段；/workspaces 页面仍是无 JS 兜底）
+        .route(
+            "/workspaces/picker",
+            get(handlers::workspace_picker_fragment),
+        )
+        .route(
+            "/workspaces/picker/mkdir",
+            post(handlers::workspace_picker_mkdir),
+        )
         .route("/providers/new", post(handlers::create_provider))
         .route("/providers/{id}", post(handlers::save_provider))
         .route(

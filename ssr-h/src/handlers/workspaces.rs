@@ -15,29 +15,48 @@
 use std::collections::BTreeMap;
 
 use axum::extract::{Form, Query, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::Value;
 
 use super::*;
-use crate::templates::{FsEntryRow, FsRootRow, WorkspaceGroup, WorkspaceRow, WorkspacesPage};
+use crate::templates::{
+    FsEntryRow, FsRootRow, PickerEntry, PickerRoot, WorkspaceGroup, WorkspacePickerFragment,
+    WorkspaceRow, WorkspacesPage,
+};
 
 #[derive(Debug, Default, Deserialize)]
 pub struct WorkspaceQuery {
     path: Option<String>,
     error: Option<String>,
     notice: Option<String>,
+    /// 绑定到哪条会话（空会话页「选择工作区」入口）：选中的目录只改这条会话，不换项目。
+    bind: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct SelectWorkspaceForm {
     path: String,
+    /// 有值时走「绑定到会话」路径（`thread.setWorkspace`），而不是切换当前项目。
+    thread_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct MkdirForm {
     parent: String,
     name: String,
+    /// 浏览目录时的 bind 上下文，新建目录后要带回去。
+    thread_id: Option<String>,
+}
+
+/// 只接受合法会话 id（拼进 URL 前挡掉任意路径）。
+fn safe_thread_id(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|id| {
+        !id.is_empty()
+            && id
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    })
 }
 
 /// 路径归一化：与 desktop-ui `normalizePathKey` 同一口径
@@ -140,6 +159,16 @@ pub async fn workspace_picker(
     State(state): State<AppState>,
     Query(query): Query<WorkspaceQuery>,
 ) -> Result<Response, AppError> {
+    // `bind=<thread_id>`：从空会话页进来选工作区。选中的目录只绑定那条会话，
+    // 不切换 agent 的当前项目；浏览目录的全过程都要把这个上下文带着走。
+    let bind = safe_thread_id(query.bind.as_deref())
+        .map(str::to_string)
+        .unwrap_or_default();
+    let bind_suffix = if bind.is_empty() {
+        String::new()
+    } else {
+        format!("&bind={}", encode_query(&bind))
+    };
     let mut flash: Option<Flash> = if let Some(error) = query
         .error
         .as_deref()
@@ -199,7 +228,7 @@ pub async fn workspace_picker(
         .or_else(|| roots.first().map(|root| root.path.clone()))
         .unwrap_or_default();
 
-    let (current, parent, entries, truncated, omitted) =
+    let (current, parent, mut entries, truncated, omitted) =
         match load_directories(&state, &requested, flash.as_mut()).await {
             Some((current, parent, entries, truncated, omitted)) => {
                 (current, parent, entries, truncated, omitted)
@@ -212,6 +241,16 @@ pub async fn workspace_picker(
                 0,
             ),
         };
+    // 浏览链接里带上 bind 上下文：进子目录 / 回上级 / 点常用位置都不丢"绑定到会话"。
+    let mut roots = roots;
+    if !bind_suffix.is_empty() {
+        for root in &mut roots {
+            root.href.push_str(&bind_suffix);
+        }
+        for entry in &mut entries {
+            entry.href.push_str(&bind_suffix);
+        }
+    }
 
     // 当前浏览目录若还是空串，就让"选择此目录"不可点（模板按 current.is_empty() 判断）。
     let page_base = match snapshot.as_ref() {
@@ -224,36 +263,55 @@ pub async fn workspace_picker(
         base: page_base,
         roots,
         recent,
-        parent_href: format!("/workspaces?path={}", encode_query(&parent)),
+        parent_href: format!("/workspaces?path={}{}", encode_query(&parent), bind_suffix),
         current,
         parent,
         entries,
         truncated,
         omitted,
+        bind_thread: bind,
     };
     Ok(render(&page)?.into_response())
 }
 
 /// `POST /workspaces/select`：设当前工作区，并打开（没有则新建）一条会话。
+///
+/// 带 `thread_id` 时走另一条路径（空会话页的「选择工作区」）：只把选中目录
+/// **绑定到那条会话**，不切换 agent 的当前项目、也不新建会话。
 pub async fn select_workspace(
     State(state): State<AppState>,
     Form(form): Form<SelectWorkspaceForm>,
 ) -> Result<Response, AppError> {
+    let bind = safe_thread_id(form.thread_id.as_deref());
     let path = form.path.trim().to_string();
     if path.is_empty() {
-        return Ok(workspace_redirect("", "工作区路径不能为空"));
+        return Ok(workspace_redirect("", "工作区路径不能为空", bind));
     }
     // 先用网关的目录列表确认它是真实存在的目录（不要凭 URL 里的字符串建会话）。
     if state.agent.fs_list(&path).await.is_err() {
         return Ok(workspace_redirect(
             &path,
             "无法打开该目录；请确认路径存在且可读",
+            bind,
         ));
+    }
+    if let Some(thread_id) = bind {
+        return match state.agent.set_thread_workspace(thread_id, &path).await {
+            Ok(_) => Ok(redirect(&format!(
+                "/threads/{thread_id}?notice=thread_workspace_set"
+            ))),
+            Err(error) => Ok(workspace_redirect(
+                &path,
+                &format!("切换会话工作区失败：{}", public_reason(&error)),
+                bind,
+            )),
+        };
     }
     if let Err(error) = state.agent.add_workspace(&path).await {
         return Ok(workspace_redirect(
             &path,
             &format!("切换工作区失败：{}", public_reason(&error)),
+            bind,
         ));
     }
 
@@ -282,6 +340,7 @@ pub async fn select_workspace(
                     return Ok(workspace_redirect(
                         &path,
                         "切换工作区失败：网关没有返回新会话 id",
+                        bind,
                     ))
                 }
             },
@@ -289,6 +348,7 @@ pub async fn select_workspace(
                 return Ok(workspace_redirect(
                     &path,
                     &format!("在工作区新建会话失败：{}", public_reason(&error)),
+                    bind,
                 ))
             }
         },
@@ -303,23 +363,35 @@ pub async fn make_workspace_dir(
     State(state): State<AppState>,
     Form(form): Form<MkdirForm>,
 ) -> Result<Response, AppError> {
+    let bind = safe_thread_id(form.thread_id.as_deref());
     let parent = form.parent.trim().to_string();
     let name = form.name.trim().to_string();
     if parent.is_empty() || name.is_empty() {
-        return Ok(workspace_redirect(&parent, "新建目录需要父目录与目录名"));
+        return Ok(workspace_redirect(
+            &parent,
+            "新建目录需要父目录与目录名",
+            bind,
+        ));
     }
     if name.contains('/') || name.contains('\\') || name == ".." || name == "." {
-        return Ok(workspace_redirect(&parent, "目录名不能包含路径分隔符"));
+        return Ok(workspace_redirect(&parent, "目录名不能包含路径分隔符", bind));
     }
     let target = format!("{}/{}", parent.trim_end_matches(['/', '\\']), name);
     match state.agent.fs_mkdir(&target).await {
-        Ok(_) => Ok(redirect(&format!(
-            "/workspaces?path={}&notice=workspace_mkdir",
-            encode_query(&target)
-        ))),
+        Ok(_) => {
+            let bind_suffix = bind
+                .map(|thread_id| format!("&bind={}", encode_query(thread_id)))
+                .unwrap_or_default();
+            Ok(redirect(&format!(
+                "/workspaces?path={}&notice=workspace_mkdir{}",
+                encode_query(&target),
+                bind_suffix
+            )))
+        }
         Err(error) => Ok(workspace_redirect(
             &parent,
             &format!("新建目录失败：{}", public_reason(&error)),
+            bind,
         )),
     }
 }
@@ -412,16 +484,228 @@ fn recent_workspaces(snapshot: &Value, active_workspace: &str) -> Vec<WorkspaceR
         .collect()
 }
 
-/// 失败的目录操作回到选择器：带上路径与原因，不把整页换成裸错误页。
-fn workspace_redirect(path: &str, message: &str) -> Response {
-    let mut target = String::from("/workspaces");
-    if !path.trim().is_empty() {
-        target.push_str("?path=");
-        target.push_str(&encode_query(path));
-        target.push_str("&error=");
-    } else {
-        target.push_str("?error=");
+/* ── 弹窗目录选择器（htmx 片段）────────────────────────────────────────────
+ *
+ * 空会话页的「选择工作区」不再跳整页：弹窗里选目录，片段由 htmx 换进
+ * `#workspace-picker-body`。`/workspaces` 页面保留为无 JS 兜底与侧栏入口。
+ * 片段里的链接全部带 `bind=<thread_id>`，与整页浏览同一套上下文。
+ */
+
+#[derive(Debug, Default, Deserialize)]
+pub struct PickerQuery {
+    path: Option<String>,
+    bind: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PickerMkdirForm {
+    parent: String,
+    name: String,
+    thread_id: Option<String>,
+}
+
+/// `GET /workspaces/picker`：目录浏览片段（弹窗打开时懒加载，点目录再换）。
+pub async fn workspace_picker_fragment(
+    State(state): State<AppState>,
+    Query(query): Query<PickerQuery>,
+) -> Result<Response, AppError> {
+    let bind = safe_thread_id(query.bind.as_deref())
+        .map(str::to_string)
+        .unwrap_or_default();
+    let requested = match query
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        Some(path) => path.to_string(),
+        None => default_picker_path(&state, &bind).await,
+    };
+    picker_fragment(&state, &bind, &requested, None).await
+}
+
+/// `POST /workspaces/picker/mkdir`：弹窗内新建文件夹，成功后进入新目录。
+pub async fn workspace_picker_mkdir(
+    State(state): State<AppState>,
+    Form(form): Form<PickerMkdirForm>,
+) -> Result<Response, AppError> {
+    let bind = safe_thread_id(form.thread_id.as_deref())
+        .map(str::to_string)
+        .unwrap_or_default();
+    let parent = form.parent.trim().to_string();
+    let name = form.name.trim().to_string();
+    if parent.is_empty() || name.is_empty() {
+        return picker_fragment(
+            &state,
+            &bind,
+            &parent,
+            Some("新建目录需要父目录与目录名".to_string()),
+        )
+        .await;
     }
+    if name.contains('/') || name.contains('\\') || name == ".." || name == "." {
+        return picker_fragment(
+            &state,
+            &bind,
+            &parent,
+            Some("目录名不能包含路径分隔符".to_string()),
+        )
+        .await;
+    }
+    let target = format!("{}/{}", parent.trim_end_matches(['/', '\\']), name);
+    match state.agent.fs_mkdir(&target).await {
+        Ok(_) => picker_fragment(&state, &bind, &target, None).await,
+        Err(error) => {
+            picker_fragment(
+                &state,
+                &bind,
+                &parent,
+                Some(format!("新建目录失败：{}", public_reason(&error))),
+            )
+            .await
+        }
+    }
+}
+
+/// 弹窗打开时的初始目录：绑定会话的工作区 → agent 当前项目 → 第一个根。
+async fn default_picker_path(state: &AppState, bind: &str) -> String {
+    if !bind.is_empty() {
+        if let Ok(snapshot) = state.agent.snapshot().await {
+            let path = array_at(&snapshot, "threads")
+                .iter()
+                .find(|thread| str_at(thread, "id") == bind)
+                .map(|thread| str_at(thread, "workspace").trim().to_string())
+                .filter(|path| !path.is_empty());
+            if let Some(path) = path {
+                return path;
+            }
+        }
+    }
+    if !state.agent.workspace.trim().is_empty() {
+        return state.agent.workspace.clone();
+    }
+    state
+        .agent
+        .fs_roots()
+        .await
+        .ok()
+        .and_then(|roots| roots.first().map(|root| str_at(root, "path").to_string()))
+        .unwrap_or_default()
+}
+
+/// 渲染一段时间目录浏览片段。
+async fn picker_fragment(
+    state: &AppState,
+    bind: &str,
+    requested: &str,
+    error: Option<String>,
+) -> Result<Response, AppError> {
+    let (current, parent, entries, truncated, omitted) =
+        match load_directories(state, requested, None).await {
+            Some((current, parent, entries, truncated, omitted)) => {
+                (current, parent, entries, truncated, omitted)
+            }
+            None => (
+                requested.to_string(),
+                parent_of(requested),
+                Vec::new(),
+                false,
+                0,
+            ),
+        };
+    let bind_suffix = if bind.is_empty() {
+        String::new()
+    } else {
+        format!("&bind={}", encode_query(bind))
+    };
+    let picker_url =
+        |path: &str| format!("/workspaces/picker?path={}{}", encode_query(path), bind_suffix);
+    let current_key = workspace_path_key(&current);
+    let roots = state
+        .agent
+        .fs_roots()
+        .await
+        .map(|roots| {
+            roots
+                .iter()
+                .map(|value| {
+                    let path = str_at(value, "path").to_string();
+                    let key = workspace_path_key(&path);
+                    let active = !key.is_empty()
+                        && (current_key == key || current_key.starts_with(&format!("{key}/")));
+                    PickerRoot {
+                        label: str_at(value, "label").to_string(),
+                        url: picker_url(&path),
+                        path,
+                        active,
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let entries = entries
+        .into_iter()
+        .map(|entry| PickerEntry {
+            url: picker_url(&entry.path),
+            name: entry.name,
+            path: entry.path,
+        })
+        .collect();
+    let select_action = if bind.is_empty() {
+        "/workspaces/select".to_string()
+    } else {
+        format!("/threads/{bind}/workspace")
+    };
+    let fragment = WorkspacePickerFragment {
+        bind_thread: bind.to_string(),
+        current,
+        up_url: if parent.is_empty() {
+            String::new()
+        } else {
+            picker_url(&parent)
+        },
+        select_action,
+        roots,
+        entries,
+        error,
+        truncated,
+        omitted,
+    };
+    Ok(fragment_response(render(&fragment)?.0))
+}
+
+fn fragment_response(html: String) -> Response {
+    (
+        axum::http::StatusCode::OK,
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("text/html; charset=utf-8"),
+            ),
+            (
+                axum::http::header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("no-store"),
+            ),
+        ],
+        html,
+    )
+        .into_response()
+}
+
+/// 失败的目录操作回到选择器：带上路径与原因，不把整页换成裸错误页。
+fn workspace_redirect(path: &str, message: &str, bind: Option<&str>) -> Response {
+    let mut target = String::from("/workspaces?");
+    if !path.trim().is_empty() {
+        target.push_str("path=");
+        target.push_str(&encode_query(path));
+        target.push('&');
+    }
+    if let Some(bind) = safe_thread_id(bind) {
+        target.push_str("bind=");
+        target.push_str(&encode_query(bind));
+        target.push('&');
+    }
+    target.push_str("error=");
     target.push_str(&encode_query(message));
     redirect(&target)
 }
@@ -446,6 +730,38 @@ fn parent_of(path: &str) -> String {
 mod tests {
     use super::*;
     use crate::templates::ThreadRow;
+
+    #[test]
+    fn picker_fragment_carries_bind_and_entries() {
+        use askama::Template;
+        let fragment = WorkspacePickerFragment {
+            bind_thread: "t1".to_string(),
+            current: "E:/work".to_string(),
+            up_url: "/workspaces/picker?path=E%3A&bind=t1".to_string(),
+            select_action: "/threads/t1/workspace".to_string(),
+            roots: vec![PickerRoot {
+                label: "本地磁盘 (E:)".to_string(),
+                path: "E:/".to_string(),
+                url: "/workspaces/picker?path=E%3A%2F&bind=t1".to_string(),
+                active: true,
+            }],
+            entries: vec![PickerEntry {
+                name: "alpha".to_string(),
+                path: "E:/work/alpha".to_string(),
+                url: "/workspaces/picker?path=E%3A%2Fwork%2Falpha&bind=t1".to_string(),
+            }],
+            error: None,
+            truncated: false,
+            omitted: 0,
+        };
+        let html = fragment.render().expect("picker fragment");
+        assert!(html.contains(r#"action="/threads/t1/workspace""#), "{html}");
+        assert!(html.contains(r#"name="thread_id" value="t1""#), "{html}");
+        assert!(html.contains("选定此工作区"), "{html}");
+        assert!(html.contains("本地磁盘 (E:)"), "{html}");
+        assert!(html.contains(">alpha<"), "{html}");
+        assert!(html.contains("is-active"), "{html}");
+    }
 
     fn thread(id: &str, workspace: &str, at: u64) -> ThreadRow {
         ThreadRow {

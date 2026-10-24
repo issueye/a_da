@@ -100,7 +100,6 @@ impl Sidebar {
         out.push_str(&self.brand());
         out.push_str(&self.sidebar_top);
         out.push_str(&self.new_thread_form("ada-btn ada-btn--secondary ada-btn--sm", false));
-        out.push_str(&self.new_thread_modal());
         out.push_str(&self.workspace_switch());
         if self.search {
             out.push_str(&self.search_box());
@@ -147,7 +146,7 @@ impl Sidebar {
             format!("{}<span>新会话</span>", icon("i-plus", 14))
         };
         format!(
-            r#"<form class="{}" method="post" action="/threads" data-new-thread><input type="hidden" name="title" value="新会话">{workspace}<button class="{button_class}" type="submit"{title}>{body}</button></form>"#,
+            r#"<form class="{}" method="post" action="/threads"><input type="hidden" name="title" value="新会话">{workspace}<button class="{button_class}" type="submit"{title}>{body}</button></form>"#,
             if icon_only {
                 "ada-rail__new"
             } else {
@@ -159,61 +158,6 @@ impl Sidebar {
                 String::new()
             },
         )
-    }
-
-    /// 新会话的工作区选择弹窗（参考 desktop-ui 的 `WorkspaceSelector`：列表 + 当前项打勾）。
-    ///
-    /// 只在有工作区树时渲染（二级页没有分组数据，保持直提当前工作区的原行为）。
-    /// 触发是渐进增强：`form[data-new-thread]` 的提交被 app.js 拦下来改成开弹窗，
-    /// 无 JS 时表单直提——和原来一样落到当前工作区。选中的工作区只绑定新会话，
-    /// 不切换 agent 的当前项目（与组头 `+` 同语义）。
-    fn new_thread_modal(&self) -> String {
-        if self.groups.is_empty() {
-            return String::new();
-        }
-        let mut rows = String::with_capacity(self.groups.len() * 200);
-        for group in &self.groups {
-            let checked = if group.active { " checked" } else { "" };
-            let active_class = if group.active { " is-active" } else { "" };
-            rows.push_str(&format!(
-                r#"<label class="ada-wspick__row{active_class}" title="{path}"><input class="ada-wspick__radio" type="radio" name="workspace" value="{path}"{checked}><span class="ada-wspick__name">{name}</span><span class="ada-wspick__count">{count}</span><span class="ada-wspick__check">{check}</span></label>"#,
-                path = escape(&group.path),
-                name = escape(&group.name),
-                count = group.count,
-                check = icon("i-check", 14),
-            ));
-        }
-        let body = format!(
-            r#"<p class="ada-wspick__hint">模式在新建时选定（开始后不可切换）；工作区只绑定会话，不切换项目。要添加磁盘上的新目录，<a href="/workspaces">浏览全部工作区</a>。</p><form method="post" action="/threads"><input type="hidden" name="title" value="新会话"><div class="ada-wspick__label">模式</div><div class="ada-wspick__modes" role="radiogroup" aria-label="会话模式">{modes}</div><div class="ada-wspick__label">工作区</div><div class="ada-wspick">{rows}</div><div class="ada-modal__actions"><button class="ada-btn ada-btn--secondary ada-btn--sm" type="button" data-modal-close>取消</button><button class="ada-btn ada-btn--primary ada-btn--sm" type="submit">{plus}新建会话</button></div></form>"#,
-            modes = Self::mode_choices(),
-            plus = icon("i-plus", 14),
-        );
-        crate::ui::Modal::new("new-thread", "新建会话")
-            .body(body)
-            .render()
-    }
-
-    /// 会话模式的四个选项（与 desktop-ui 的 ModeSlider 同档：编码/规划/创造/PM）。
-    ///
-    /// 分段控件的视觉选中态由原生 radio 的 `:checked` 驱动——无 JS 也能选，
-    /// 弹窗里的提交表单把 mode 一并交给 POST /threads（→ thread.create 的 mode）。
-    fn mode_choices() -> String {
-        let options = [
-            ("code", "编码", true),
-            ("plan", "规划", false),
-            ("create", "创造", false),
-            ("pm", "PM", false),
-        ];
-        options
-            .into_iter()
-            .map(|(value, label, checked)| {
-                format!(
-                    r#"<label class="ada-wspick__mode"><input type="radio" name="mode" value="{value}"{checked}><span>{label}</span></label>"#,
-                    checked = if checked { " checked" } else { "" },
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("")
     }
 
     /// 一行工作区切换器：`图标 + 目录名 + 会话数 + 箭头`。
@@ -743,32 +687,13 @@ mod tests {
     }
 
     #[test]
-    fn new_thread_picker_lists_workspaces_with_current_checked() {
+    fn new_thread_is_a_plain_post_and_modal_is_gone() {
+        // 选择挪到了空会话页（模式 + 工作区），侧栏不再渲染弹窗、也不再被 JS 拦截：
+        // 点「新会话」直接建一条空会话，落到当前（或组内）工作区。
         let html = sample().render();
-        assert!(html.contains(r#"data-modal="new-thread""#), "{html}");
-        // 拦截标记挂在侧栏与窄轨的新会话表单上（app.js 据此先弹窗再提交）
-        assert!(html.matches("data-new-thread").count() >= 2, "{html}");
-        // 当前工作区预选；其它工作区可选但不勾
-        assert!(
-            html.contains(r#"name="workspace" value="C:\work\app" checked"#),
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"name="workspace" value="C:\work\other""#),
-            "{html}"
-        );
-        // 模式分段：四档 radio，编码缺省选中；随表单提交给 thread.create 的 mode
-        assert_eq!(html.matches(r#"name="mode" value=""#).count(), 4, "{html}");
-        assert!(html.contains(r#"name="mode" value="code" checked"#), "{html}");
-        assert!(html.contains(r#"name="mode" value="pm""#), "{html}");
-        // 弹窗内的提交表单不带拦截标记，避免二次拦截（切片到弹窗闭合为止，
-        // 别把后面的窄轨表单也算进来）
-        let modal_start = html
-            .find(r#"data-modal="new-thread""#)
-            .expect("modal rendered");
-        let modal_end = modal_start + html[modal_start..].find("</ada-modal>").expect("modal closes");
-        let modal = &html[modal_start..modal_end];
-        assert!(!modal.contains("data-new-thread"), "{modal}");
+        assert!(!html.contains(r#"data-modal="new-thread""#), "{html}");
+        assert!(!html.contains("data-new-thread"), "{html}");
+        assert!(html.contains(r#"method="post" action="/threads""#), "{html}");
     }
 
     #[test]
@@ -777,7 +702,7 @@ mod tests {
         sidebar.groups.clear();
         let html = sidebar.render();
         assert!(!html.contains(r#"data-modal="new-thread""#), "{html}");
-        assert!(html.contains("data-new-thread"), "{html}");
+        assert!(html.contains(r#"method="post" action="/threads""#), "{html}");
     }
 
     use super::*;

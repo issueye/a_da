@@ -647,11 +647,22 @@ pub(super) fn row_view(value: &Value) -> ui::RowView {
     } else {
         str_at(value, "text").to_string()
     };
-    let images = value
+    let image_values = value
         .get("images")
         .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
+        .cloned()
+        .unwrap_or_default();
+    let images = image_values.len();
+    // 只把白名单里的 data URI 交给渲染层：历史数据里可能有别的协议/坏数据，
+    // 直接塞进 `<img src>` 等于把远端抓取面开给会话内容。
+    let image_srcs: Vec<String> = image_values
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|src| super::image_uri_allowed(src))
+        .take(8)
+        .map(str::to_string)
+        .collect();
     let key = str_at(value, "id").to_string();
     let raw_output = value
         .get("output")
@@ -720,6 +731,7 @@ pub(super) fn row_view(value: &Value) -> ui::RowView {
         kind,
         key,
         images,
+        image_srcs,
         text,
         html,
         label,
@@ -905,11 +917,54 @@ pub(super) fn queue_rows(snapshot: &Value, thread_id: &str) -> Vec<QueueRow> {
 }
 
 /// 渲染好的对话片段（SSR 与 live 共用）。
-pub(super) fn transcript_html(items: Vec<ItemRow>) -> String {
+///
+/// `empty_html` 由调用方给：空会话页要用带「模式 + 工作区」控件的版本，
+/// 普通空状态用 [`ui::render_empty_thread`]。SSE 首帧会整段换掉 `#transcript`，
+/// 如果这里退回通用空状态，空会话页上的控件会在连上流的一瞬间被抹掉。
+pub(super) fn transcript_html(items: Vec<ItemRow>, empty_html: String) -> String {
     render_string(&TranscriptPartial {
         items,
-        transcript_empty: ui::render_empty_thread(),
+        transcript_empty: empty_html,
     })
+}
+
+/// 空会话页的富空状态（品牌位 + 模式分段 + 工作区选择）。
+///
+/// 调用方只在**这条会话还没有消息**时使用；拿不到线程数据（离线壳 / 非投影
+/// 快照）时返回 `None`，退回通用空状态。
+pub(super) fn empty_conversation_html(snapshot: &Value, thread_id: &str) -> Option<String> {
+    let threads = array_at(snapshot, "threads");
+    let thread = threads
+        .iter()
+        .find(|thread| str_at(thread, "id") == thread_id)?;
+    let workspace = str_at(thread, "workspace");
+    let mode = str_at(thread, "mode");
+    let active_workspace = snapshot
+        .get("workspace")
+        .and_then(|workspace| workspace.get("project"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|workspace| !workspace.is_empty())
+        .unwrap_or(workspace);
+    let rows = thread_rows(snapshot, thread_id);
+    let groups = super::super::workspaces::workspace_groups(&rows, active_workspace);
+    let target_key = super::super::workspaces::workspace_path_key(workspace);
+    let choices: Vec<ui::WorkspaceChoice> = groups
+        .iter()
+        .map(|group| ui::WorkspaceChoice {
+            path: group.path.clone(),
+            name: group.name.clone(),
+            count: group.count,
+            current: super::super::workspaces::workspace_path_key(&group.path) == target_key,
+        })
+        .collect();
+    Some(ui::render_new_conversation(
+        thread_id,
+        mode,
+        &workspace_label(workspace),
+        workspace,
+        &choices,
+    ))
 }
 
 /// 侧栏会话列表（SSR 与 live 共用）。
@@ -1106,7 +1161,7 @@ mod tests {
     }
 
     #[test]
-    fn user_row_marks_images_instead_of_silently_dropping_them() {
+    fn user_row_renders_image_thumbnails() {
         let row = row_view(&json!({
             "kind":"user",
             "id":"u1",
@@ -1114,7 +1169,27 @@ mod tests {
             "images":["data:image/png;base64,AA"]
         }));
         assert_eq!(row.images, 1);
-        assert!(ui::render_row(&row, "t1").contains("含 1 张图片"));
+        assert_eq!(row.image_srcs.len(), 1);
+        let html = ui::render_row(&row, "t1");
+        assert!(html.contains(r#"class="ada-msg__image""#), "{html}");
+        assert!(html.contains("data:image/png;base64,AA"), "{html}");
+        assert!(html.contains("看一下这张图"), "{html}");
+    }
+
+    #[test]
+    fn user_row_rejects_non_image_data_uris() {
+        // 历史/坏数据里可能有别的协议：不能直接进 `<img src>`，退回"含 N 张图片"。
+        let row = row_view(&json!({
+            "kind":"user",
+            "id":"u2",
+            "text":"坏的",
+            "images":["data:text/html;base64,PHNjcmlwdD4=", "https://evil.invalid/x.png"]
+        }));
+        assert_eq!(row.images, 2);
+        assert!(row.image_srcs.is_empty());
+        let html = ui::render_row(&row, "t1");
+        assert!(html.contains("含 2 张图片"), "{html}");
+        assert!(!html.contains("<img"), "{html}");
     }
 
     #[test]

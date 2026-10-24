@@ -15,24 +15,45 @@ use super::Render;
 #[derive(Debug, Clone)]
 pub struct UserMessage {
     pub text: String,
-    /// 附带图片数量（当前 SSR 版不渲染图片内容，但不能装作没有）。
+    /// 附带图片数量。
     pub images: usize,
+    /// 可渲染的图片 data URI（渲染侧已按格式白名单过滤）。
+    pub image_srcs: Vec<String>,
 }
 
 impl Render for UserMessage {
     fn render(&self) -> String {
-        let images = if self.images > 0 {
+        // 图片在上、文字在下：和 desktop-ui 的用户消息一致。
+        let images = if !self.image_srcs.is_empty() {
             format!(
-                r#"<span class="ada-msg__images" title="ssr-h 暂不显示图片内容">含 {} 张图片</span>"#,
+                r#"<div class="ada-msg__image-grid">{}</div>"#,
+                self.image_srcs
+                    .iter()
+                    .enumerate()
+                    .map(|(index, src)| format!(
+                        r#"<a class="ada-msg__image" href="{src}" target="_blank" rel="noreferrer"><img src="{src}" alt="图片 {number}" loading="lazy"></a>"#,
+                        src = escape(src),
+                        number = index + 1,
+                    ))
+                    .collect::<String>()
+            )
+        } else if self.images > 0 {
+            // 数据在但不是可渲染的 data URI（历史/坏数据）：如实说数量。
+            format!(
+                r#"<span class="ada-msg__images">含 {} 张图片（当前无法预览）</span>"#,
                 self.images
             )
         } else {
             String::new()
         };
+        let text = if self.text.trim().is_empty() {
+            String::new()
+        } else {
+            escape(&self.text)
+        };
         format!(
             r#"<div class="ada-msg ada-msg--user"><div class="ada-bubble">{}{}</div></div>"#,
-            escape(&self.text),
-            images
+            images, text
         )
     }
 }

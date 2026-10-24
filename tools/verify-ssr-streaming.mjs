@@ -68,10 +68,12 @@ const CHUNKS = [
   '确保总时长',
   '超过一秒。',
 ]
+const modelRequests = []
 const model = createServer((req, res) => {
   let body = ''
   req.on('data', (chunk) => (body += chunk))
   req.on('end', async () => {
+    modelRequests.push(body)
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -264,6 +266,7 @@ try {
   const page = await (await fetch(`${ui}/threads/${threadId}`)).text()
   check(page.includes(`data-thread-id="${threadId}"`), '会话页带 data-thread-id')
   check(page.includes('data-item-id='), '对话行带 data-item-id（客户端按它原位替换）')
+  check(page.includes('id="run-status"'), '会话页带运行状态容器（parts 换新目标）')
 
   // 直接读 SSE：解析事件名、正文与到达时间
   const controller = new AbortController()
@@ -313,6 +316,21 @@ try {
   const items = events.filter((ev) => ev.event === 'item')
   const assistant = items.filter((ev) => ev.data.includes('ada-msg--assistant'))
   const parts = events.filter((ev) => ev.event === 'parts')
+
+  const runStatusFrames = parts
+    .map((ev) => {
+      try {
+        return JSON.parse(ev.data).runStatus || ''
+      } catch {
+        return ''
+      }
+    })
+    .filter(Boolean)
+  check(
+    runStatusFrames.some((html) => html.includes('ada-run-status')),
+    '运行状态指示随 parts 下发',
+    `parts ${parts.length} 帧，非空 runStatus ${runStatusFrames.length} 帧`,
+  )
 
   const counts = {}
   for (const ev of events) counts[ev.event] = (counts[ev.event] || 0) + 1
@@ -407,6 +425,49 @@ try {
   })
   const growing = lengths.every((len, index) => index === 0 || len >= lengths[index - 1])
   check(growing, '增量正文长度单调变长', lengths.join(' → '))
+
+  // ── 图片输入：表单 → 网关 → 引擎 → 模型请求 / 会话渲染 ──────────────────
+  const tinyPng =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+  const sentImage = await fetch(`${ui}/threads/${threadId}/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams([
+      ['text', '看这张图'],
+      ['images', tinyPng],
+    ]).toString(),
+    redirect: 'manual',
+  })
+  check(sentImage.status === 303, '带图片的消息被 303 跳回会话页', `HTTP ${sentImage.status}`)
+
+  const withImage = await (await fetch(`${ui}/threads/${threadId}`)).text()
+  check(withImage.includes('class="ada-msg__image"'), '用户消息渲染图片缩略图')
+  check(withImage.includes(tinyPng), '图片 data URI 进入会话正文（不是只报数量）')
+  // 假模型收到的请求里必须有图片内容块（OpenAI 协议的 image_url）
+  check(
+    modelRequests.some((body) => body.includes('data:image/png;base64,')),
+    '模型请求包含图片内容块',
+    modelRequests.at(-1)?.slice(0, 300) || '',
+  )
+
+  // 服务端白名单：非图片 data URI 一律拒收并回 flash（不能塞进会话）
+  const rejected = await fetch(`${ui}/threads/${threadId}/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams([
+      ['text', '坏图片'],
+      ['images', 'data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=='],
+    ]).toString(),
+    redirect: 'manual',
+  })
+  const rejectedTarget = rejected.headers.get('location') || ''
+  check(
+    rejected.status === 303 && rejectedTarget.includes('error='),
+    '非图片 data URI 被服务端拒收',
+    rejectedTarget,
+  )
+  const rejectedPage = rejectedTarget ? await (await fetch(`${ui}${rejectedTarget}`)).text() : ''
+  check(rejectedPage.includes('图片未发送'), '拒收原因以 flash 回给用户')
 } catch (error) {
   failures.push(String(error?.message || error))
   console.error(error)

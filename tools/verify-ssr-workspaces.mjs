@@ -196,12 +196,17 @@ try {
   }
   // 「当前」徽标已废除（侧栏单测专门守着）：当前工作区不再有组头，切换器就是它的表头
   check(page.body.includes('ada-ws-switch__name">alpha<'), '当前工作区有"当前"标记')
-  // 新会话的工作区选择弹窗：radio 单选列表 + 当前工作区预选
+  // 新会话的选择挪进了空会话页：模式分段 + 工作区药丸；不再有新建弹窗
   check(
-    page.body.includes('data-modal="new-thread"') &&
-      page.body.includes('ada-wspick__row') &&
-      page.body.includes(`name="workspace" value="${wsAlpha}" checked`),
-    '新会话弹窗渲染工作区单选（当前项预选）',
+    !page.body.includes('data-modal="new-thread"') &&
+      page.body.includes('ada-newconv__controls') &&
+      page.body.includes(`action="/threads/${alphaThread}/mode"`) &&
+      page.body.includes(`action="/threads/${alphaThread}/workspace"`),
+    '空会话页渲染模式分段与工作区选择（无新建弹窗）',
+  )
+  check(
+    page.body.includes(`/workspaces?bind=${alphaThread}`),
+    '空会话页的「选择工作区」带 bind 上下文',
   )
   check(
     page.body.includes(`name="workspace" value="${wsAlpha}"`),
@@ -241,6 +246,37 @@ try {
   const childPage = await get(`${ui}${mkdir.headers.get('location') || ''}`)
   check(childPage.body.includes(`${wsGamma.replace(/\\/g, '/')}/child`), '新建目录后停留在该目录', childPage.body.slice(0, 200))
   check(childPage.body.includes('使用此目录'), '新建目录可直接作为工作区')
+
+  // ── 6. 弹窗目录选择器（htmx 片段）────────────────────────────────────────
+  const fragment = await get(
+    `${ui}/workspaces/picker?bind=${alphaThread}&path=${encodeURIComponent(wsBase)}`,
+  )
+  check(
+    fragment.status === 200 &&
+      fragment.body.includes('wp-picker') &&
+      fragment.body.includes('>alpha<') &&
+      fragment.body.includes(`action="/threads/${alphaThread}/workspace"`),
+    '弹窗片段列出目录并可绑定到该会话',
+  )
+  const pickerMkdir = await fetch(`${ui}/workspaces/picker/mkdir`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'HX-Request': 'true',
+    },
+    body: new URLSearchParams({
+      parent: wsBase,
+      name: 'picker-new',
+      thread_id: alphaThread,
+    }).toString(),
+  })
+  const pickerMkdirBody = await pickerMkdir.text()
+  check(
+    pickerMkdir.status === 200 &&
+      pickerMkdirBody.includes('picker-new') &&
+      pickerMkdirBody.includes('选定此工作区'),
+    '弹窗内新建文件夹后进入新目录',
+  )
 
   if (process.env.SSR_VERIFY_SERVE === '1') {
     // 手动浏览器验收：保留整套服务不退出，打印入口 URL。

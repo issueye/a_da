@@ -97,9 +97,15 @@ fn plus_menu(thread_id: &str) -> String {
 }
 
 fn composer_html(slots: &SlotContent, args: &ComposerArgs<'_>, model_picker: &str) -> String {
-    // 左组：更多操作、工作区、审批档位。
+    // 左组：更多操作、图片、工作区、审批档位。
     let mut left = String::new();
     left.push_str(&plus_menu(args.thread_id));
+    // 图片输入：选图 / 粘贴 / 拖入都由 chat.js 接管（`data-image-*` 契约），
+    // 隐藏的 file input 让它保持无 JS 时可读（按钮不渲染成假按钮）。
+    left.push_str(&format!(
+        r#"<input class="ada-composer__file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden data-image-input><button class="ada-icon-btn ada-composer__attach" type="button" data-image-pick aria-label="添加图片" title="添加图片（也可粘贴或拖入）">{}</button>"#,
+        ui::icon("i-image", 14)
+    ));
     if !args.workspace_label.is_empty() {
         // 工作区名是"可以短一点"的信息（侧栏有全名），窄屏先让它让位。
         left.push_str(&toolbar_item(
@@ -216,6 +222,19 @@ fn composer_aux_html(slots: &SlotContent, args: &ComposerArgs<'_>) -> String {
     composer_aux(slots, args).render()
 }
 
+/// 输入框左上方（与 `composer.above` 插件同一带）的运行状态指示。
+///
+/// 只有一个**带旋转弧的 SVG**：顶部状态栏已经有"运行中"文字，这里不重复信息，
+/// 只补一个"它还在动"的动效（用户往上翻历史时最容易失去这个感知）。
+/// 空闲时返回空串——容器 `:empty` 不占位。
+fn run_status_html(running: bool) -> String {
+    if !running {
+        return String::new();
+    }
+    r#"<span class="ada-run-status" role="status" aria-live="polite"><svg class="ada-run-status__spin" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-opacity=".25" stroke-width="2"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>运行中</span></span>"#
+        .to_string()
+}
+
 /// 顶栏状态：只放**全局且异常**的信号（运行中 / 未连接）。
 ///
 /// 审批档位不在这里——它在输入框工具栏里，离"发送"更近，才是它该出现的位置。
@@ -329,6 +348,8 @@ struct LiveParts {
     trays: String,
     /// 会话区右上角的插件插槽（任务规划卡片就在这一格）。
     corner: String,
+    /// 输入框左上方的运行状态（旋转弧；空闲时为空）。
+    run_status: String,
     topbar_status: String,
     topbar_actions: String,
     aux: String,
@@ -438,6 +459,7 @@ async fn live_parts(
     LiveParts {
         trays,
         corner: corner.html,
+        run_status: run_status_html(running),
         topbar_status: topbar_status_html(running, true),
         topbar_actions: topbar_actions_html(thread_id, running),
         aux: composer_aux_html(&slots, &args),
@@ -472,6 +494,8 @@ async fn load_chat(
                 active_thread_id: String::new(),
                 items: Vec::new(),
                 transcript_empty: ui::render_empty_thread(),
+                workspace_picker: String::new(),
+                run_status: String::new(),
                 trays_html: String::new(),
                 composer_html: String::new(),
                 topbar_status: topbar_status_html(false, false),
@@ -647,6 +671,30 @@ async fn load_chat(
         )
     };
 
+    // 空会话：把「模式 + 工作区」控件作为 transcript 的空状态交给模板。
+    // SSE 首帧 / 兜底轮询会用同一个 helper 重建（见 stream::render_transcript
+    // 与 live），否则连上流的一瞬间控件会被通用空状态覆盖。
+    let transcript_empty = if items.is_empty() && !active_thread_id.is_empty() {
+        empty_conversation_html(&snapshot, &active_thread_id).unwrap_or_else(ui::render_empty_thread)
+    } else {
+        ui::render_empty_thread()
+    };
+    // 「选择工作区」弹窗：目录片段由 htmx 在打开时懒加载（`ada-modal-load`），
+    // 兜底链接仍指向 /workspaces?bind=…（无 JS 时整页浏览）。
+    let workspace_picker = if items.is_empty() && !active_thread_id.is_empty() {
+        let body = format!(
+            r##"<button class="wp-picker__close" type="button" data-modal-close aria-label="关闭" title="关闭"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+<div id="workspace-picker-body" data-modal-src="workspace-picker" hx-get="/workspaces/picker?bind={bind}" hx-trigger="ada-modal-load" hx-target="#workspace-picker-body" hx-swap="innerHTML"><p class="wp-picker__loading">正在读取目录…</p></div>"##,
+            bind = escape(&active_thread_id)
+        );
+        ui::Modal::new("workspace-picker", "选择工作区目录")
+            .wide()
+            .body(body)
+            .render()
+    } else {
+        String::new()
+    };
+
     Ok(ChatPage {
         base,
         threads,
@@ -655,7 +703,9 @@ async fn load_chat(
         active,
         active_thread_id: active_thread_id.clone(),
         items,
-        transcript_empty: ui::render_empty_thread(),
+        transcript_empty,
+        workspace_picker,
+        run_status: run_status_html(is_running),
         trays_html: trays,
         composer_html,
         topbar_status: topbar_status_html(is_running, true),
@@ -780,10 +830,18 @@ pub async fn live(State(state): State<AppState>, Path(thread_id): Path<String>) 
                 .collect()
         })
         .unwrap_or_default();
+    // 空会话：轮询也要给带「模式 + 工作区」控件的版本，否则 2 秒后的兜底帧
+    // 会把页面上的控件换回通用空状态（SSE 首帧同理，见 stream::render_transcript）。
+    let empty_html = if items.is_empty() {
+        empty_conversation_html(&snapshot, &thread_id).unwrap_or_else(ui::render_empty_thread)
+    } else {
+        ui::render_empty_thread()
+    };
     let body = [
-        oob("transcript", &transcript_html(items)),
+        oob("transcript", &transcript_html(items, empty_html)),
         oob("ada-trays", &parts.trays),
         oob("chat-corner", &parts.corner),
+        oob("run-status", &parts.run_status),
         oob("topbar-status", &parts.topbar_status),
         oob("topbar-actions", &parts.topbar_actions),
         // 侧栏会话树：与 parts 同源（其它客户端的增删改名随轮询进来）。
@@ -1020,16 +1078,75 @@ pub async fn select_effort(
     }
 }
 
+/// 单张图片 data URI 的上限（base64 后约 8.7 MB 原图）：与前端上限一致。
+const MAX_IMAGE_DATA_URI: usize = 12 * 1024 * 1024;
+/// 一条消息最多附带的图片数。
+const MAX_IMAGES: usize = 4;
+/// 允许的图片类型（与前端 `accept` 一致；不认的格式一律拒收）。
+const ALLOWED_IMAGE_PREFIXES: [&str; 5] = [
+    "data:image/png;base64,",
+    "data:image/jpeg;base64,",
+    "data:image/jpg;base64,",
+    "data:image/webp;base64,",
+    "data:image/gif;base64,",
+];
+
+/// 是否是可渲染的图片 data URI（渲染与提交两侧共用）。
+fn image_uri_allowed(uri: &str) -> bool {
+    ALLOWED_IMAGE_PREFIXES
+        .iter()
+        .any(|prefix| uri.starts_with(prefix))
+}
+
+/// 从表单键值对里收集 `images`（同名多值）并做服务端校验。
+///
+/// 🔴 不信任前端：格式白名单 + 张数上限 + 单张大小上限都在这里再判一次。
+/// 前端的 `accept`/大小检查只是提前反馈，绕过它也不能把任意内容塞进会话。
+fn collect_images(pairs: &[(String, String)]) -> Result<Vec<String>, String> {
+    let images: Vec<String> = pairs
+        .iter()
+        .filter(|(key, _)| key == "images")
+        .map(|(_, value)| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect();
+    if images.len() > MAX_IMAGES {
+        return Err(format!("最多附带 {MAX_IMAGES} 张图片"));
+    }
+    for image in &images {
+        if !image_uri_allowed(image) {
+            return Err("图片格式不支持（仅 PNG / JPEG / WebP / GIF）".to_string());
+        }
+        if image.len() > MAX_IMAGE_DATA_URI {
+            return Err("单张图片超过大小上限（8 MB）".to_string());
+        }
+    }
+    Ok(images)
+}
+
 pub async fn send_message(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
-    Form(form): Form<SendForm>,
+    Form(form): Form<Vec<(String, String)>>,
 ) -> Result<Response, AppError> {
-    let text = form.text.trim();
-    if text.is_empty() {
+    let text = form
+        .iter()
+        .find(|(key, _)| key == "text")
+        .map(|(_, value)| value.trim().to_string())
+        .unwrap_or_default();
+    let images = match collect_images(&form) {
+        Ok(images) => images,
+        Err(message) => {
+            return Ok(redirect(&format!(
+                "/threads/{thread_id}?error={}",
+                encode_query(&format!("图片未发送：{message}"))
+            )))
+        }
+    };
+    // 纯图片消息允许发送（文本可以为空）——与 desktop-ui 一致。
+    if text.is_empty() && images.is_empty() {
         return Ok(redirect(&format!("/threads/{thread_id}")));
     }
-    match state.agent.send_message(&thread_id, text).await {
+    match state.agent.send_message(&thread_id, &text, &images).await {
         Ok(_) => Ok(redirect(&format!("/threads/{thread_id}?notice=sent"))),
         Err(error) => Ok(action_failed(&thread_id, "发送消息失败", error)),
     }
@@ -1230,6 +1347,72 @@ pub async fn set_approval_mode(
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ThreadModeForm {
+    mode: String,
+}
+
+/// `POST /threads/{id}/mode`：空会话里选模式（对齐 desktop-ui 的 ModeSlider）。
+///
+/// 只允许空会话——网关对已开始的会话会拒绝（`thread.setMode`），这里把它的
+/// 原因如实回给用户；成功后回跳会话页，顶栏模式徽标与空状态的选中态一起刷新。
+pub async fn set_thread_mode(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+    Form(form): Form<ThreadModeForm>,
+) -> Result<Response, AppError> {
+    let mode = form.mode.trim().to_ascii_lowercase();
+    if !matches!(mode.as_str(), "code" | "plan" | "create" | "pm") {
+        return Ok(redirect(&format!(
+            "/threads/{thread_id}?error={}",
+            encode_query(&format!("未知的会话模式: {mode}"))
+        )));
+    }
+    match state.agent.set_thread_mode(&thread_id, &mode).await {
+        Ok(_) => Ok(redirect(&format!(
+            "/threads/{thread_id}?notice=thread_mode_set"
+        ))),
+        Err(error) => Ok(action_failed(&thread_id, "切换会话模式失败", error)),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ThreadWorkspaceForm {
+    /// 空状态药丸菜单提交 `workspace`；`/workspaces?bind=` 的选目录表单提交 `path`。
+    workspace: Option<String>,
+    path: Option<String>,
+}
+
+/// `POST /threads/{id}/workspace`：把空会话绑到另一个工作区。
+///
+/// 与 `/workspaces/select` 的区别：**不切换** agent 的当前项目，也不新建会话——
+/// 只改这条会话的属性（`thread.setWorkspace`）。
+pub async fn set_thread_workspace(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+    Form(form): Form<ThreadWorkspaceForm>,
+) -> Result<Response, AppError> {
+    let path = form
+        .workspace
+        .as_deref()
+        .or(form.path.as_deref())
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(str::to_string);
+    let Some(path) = path else {
+        return Ok(redirect(&format!(
+            "/threads/{thread_id}?error={}",
+            encode_query("切换工作区需要目录路径")
+        )));
+    };
+    match state.agent.set_thread_workspace(&thread_id, &path).await {
+        Ok(_) => Ok(redirect(&format!(
+            "/threads/{thread_id}?notice=thread_workspace_set"
+        ))),
+        Err(error) => Ok(action_failed(&thread_id, "切换会话工作区失败", error)),
+    }
+}
+
 /// 提问作答表单（核心托盘与 `thread.tray` 插件共用字段约定，见
 /// `crate::questions::answer_params_from_form`）。
 ///
@@ -1382,5 +1565,54 @@ pub async fn clear_queue(
             public_reason(&error)
         ))),
         Err(error) => Ok(action_failed(&thread_id, "清空排队消息失败", error)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pairs(entries: &[(&str, &str)]) -> Vec<(String, String)> {
+        entries
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn collect_images_accepts_whitelisted_data_uris() {
+        let images = collect_images(&pairs(&[
+            ("text", "hi"),
+            ("images", "data:image/png;base64,AA"),
+            ("images", "data:image/jpeg;base64,BB"),
+        ]))
+        .expect("valid images");
+        assert_eq!(images.len(), 2);
+    }
+
+    #[test]
+    fn collect_images_rejects_other_schemes_and_too_many() {
+        assert!(collect_images(&pairs(&[("images", "data:text/html;base64,AA")])).is_err());
+        assert!(collect_images(&pairs(&[("images", "https://evil.invalid/a.png")])).is_err());
+        let too_many: Vec<(String, String)> = (0..=MAX_IMAGES)
+            .map(|_| ("images".to_string(), "data:image/png;base64,AA".to_string()))
+            .collect();
+        assert!(collect_images(&too_many).is_err());
+    }
+
+    #[test]
+    fn collect_images_rejects_oversized_uri() {
+        let oversized = format!(
+            "data:image/png;base64,{}",
+            "A".repeat(MAX_IMAGE_DATA_URI)
+        );
+        assert!(collect_images(&pairs(&[("images", oversized.as_str())])).is_err());
+    }
+
+    #[test]
+    fn collect_images_ignores_blank_values() {
+        assert!(collect_images(&pairs(&[("images", "  ")]))
+            .expect("blank is fine")
+            .is_empty());
     }
 }

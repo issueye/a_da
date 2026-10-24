@@ -184,12 +184,24 @@ mod tests {
     }
 
     #[test]
-    fn user_message_shows_an_image_count() {
+    fn user_message_renders_thumbnails_and_falls_back_to_a_count() {
         let html = UserMessage {
             text: "看图".to_string(),
             images: 2,
+            image_srcs: vec!["data:image/png;base64,AA".to_string()],
         }
         .render();
-        assert!(html.contains("含 2 张图片"));
+        assert!(html.contains(r#"class="ada-msg__image""#), "{html}");
+        assert!(html.contains("data:image/png;base64,AA"), "{html}");
+
+        // 数据不可渲染（只剩数量）时如实报数量，不渲染空网格。
+        let fallback = UserMessage {
+            text: "看图".to_string(),
+            images: 2,
+            image_srcs: Vec::new(),
+        }
+        .render();
+        assert!(fallback.contains("含 2 张图片"), "{fallback}");
+        assert!(!fallback.contains("ada-msg__image-grid"), "{fallback}");
     }
 }

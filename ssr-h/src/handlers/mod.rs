@@ -105,11 +105,6 @@ pub struct CreateThreadForm {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SendForm {
-    text: String,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct ApprovalForm {
     thread_id: String,
     approved: String,
@@ -197,6 +192,8 @@ const NOTICE_TEXTS: &[(&str, &str)] = &[
     ("model_deleted", "模型已从该供应商移除"),
     ("thread_renamed", "已重命名会话"),
     ("thread_deleted", "已删除会话"),
+    ("thread_mode_set", "已切换会话模式"),
+    ("thread_workspace_set", "已切换会话工作区"),
     ("answered", "已提交回答"),
 ];
 
