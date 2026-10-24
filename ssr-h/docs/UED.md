@@ -566,7 +566,8 @@ Enter 发送 · Shift+Enter 换行
 | desktop-ui 能力 | ssr-h 对应 | 状态 | 说明 |
 |---|---|---|---|
 | TitleBar（窗口控制/拖拽） | `chat-topbar` | ◐ | 无窗口控制；浏览器标签替代 |
-| 侧栏（树/拖动/悬停操作） | `chat-sidebar` + `partials/workspace_tree.html` | ◐ | 有工作区树；无子智能体树、无拖动改宽、无删除/导出 |
+| 侧栏（树/拖动/悬停操作） | `chat-sidebar` + 工作区树 | ◐ | 有工作区树 + 会话行内重命名/删除（`thread.update`/`thread.delete`）；无子智能体树、无拖动改宽 |
+| 会话列表实时性 | `#thread-list` 随 parts/OOB 换新 | ✅ | 其它客户端的增删/改名/运行点随事件流进来；切换器与系统导航仍是整页快照 |
 | 工作区树 / 添加 / 切换 | 侧栏树 + `/workspaces` | ✅ | 按 workspace 分组；组内新建；目录浏览器选择目录后打开/新建会话 |
 | 会话搜索 | `chat-thread-search` | ✅ | 纯前端过滤工作区名与会话标题 |
 | TabStrip 多标签 | 无 | ○ | 浏览器标签替代；P2 |

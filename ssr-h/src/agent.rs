@@ -213,8 +213,7 @@ impl AgentClient {
     ///
     /// 快照只给"激活 / 打开的 Tab / 运行中 / 子智能体"会话带 items，所以从侧栏
     /// 打开一条历史会话前必须先聚焦，否则正文是空的。
-    pub async fn focus_thread(&self, thread_id: &str) -> Result<Value> {
-        self.rpc("thread.focus", json!({ "threadId": thread_id }))
+    pub async fn focus_thread(&self, thread_id: &str) -> Result<Value> {        self.rpc("thread.focus", json!({ "threadId": thread_id }))
             .await
     }
 
@@ -261,6 +260,21 @@ impl AgentClient {
 
     pub async fn clear_queue(&self, thread_id: &str) -> Result<Value> {
         self.rpc("queue.clear", json!({ "threadId": thread_id }))
+            .await
+    }
+
+    /// 重命名会话（`thread.update` 只改 title 字段）。
+    pub async fn rename_thread(&self, thread_id: &str, title: &str) -> Result<Value> {
+        self.rpc(
+            "thread.update",
+            json!({ "threadId": thread_id, "title": title }),
+        )
+        .await
+    }
+
+    /// 删除会话（后端会连带删除该会话的落盘文件，动作前必须有用户确认）。
+    pub async fn delete_thread(&self, thread_id: &str) -> Result<Value> {
+        self.rpc("thread.delete", json!({ "threadId": thread_id }))
             .await
     }
 

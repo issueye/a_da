@@ -209,6 +209,8 @@ fn app(state: AppState) -> Router {
         .route("/model/select", post(handlers::select_model))
         .route("/model/effort", post(handlers::select_effort))
         .route("/threads/{id}/retry", post(handlers::retry_thread))
+        .route("/threads/{id}/rename", post(handlers::rename_thread))
+        .route("/threads/{id}/delete", post(handlers::delete_thread))
         .route("/threads/{id}/queue/clear", post(handlers::clear_queue))
         .route(
             "/threads/{id}/queue/{index}/promote",

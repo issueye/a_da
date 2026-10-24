@@ -17,7 +17,15 @@ import { createServer as createNetServer } from 'node:net'
 
 const REPO = 'E:\\codes\\rust_projects\\a_da'
 const GATEWAY = join(REPO, 'dist', 'ada-gateway.exe')
-const SSR = process.env.SSR_H_EXE || join(REPO, '..', 'cargo_target_ada', 'debug', 'ssr-h.exe')
+// ssr-h 的构建目录是 <repo>/cargo_target_ada（ssr-h/ 用 CARGO_TARGET_DIR=../ 编译）；
+// 旧路径在仓库外一级，是历史上留下的陈旧二进制——只作兜底，别让它盖住新构建。
+const SSR =
+  process.env.SSR_H_EXE ||
+  [
+    join(REPO, 'cargo_target_ada', 'debug', 'ssr-h.exe'),
+    join(REPO, '..', 'cargo_target_ada', 'debug', 'ssr-h.exe'),
+  ].find((candidate) => existsSync(candidate)) ||
+  join(REPO, 'cargo_target_ada', 'debug', 'ssr-h.exe')
 
 const failures = []
 const check = (ok, what, extra = '') => {

@@ -179,43 +179,51 @@ impl Sidebar {
 
     /// 会话列表：整条侧栏唯一的滚动区。
     fn list(&self) -> String {
-        let empty_hint = r#"<p class="ada-list-empty" id="thread-empty" hidden>没有匹配的会话 <button type="button" class="ada-list-empty__clear">清除</button></p>"#;
         format!(
-            r#"<div class="ada-thread-list" id="thread-list">{}{empty_hint}</div>"#,
-            self.tree()
+            r#"<div class="ada-thread-list" id="thread-list">{}</div>"#,
+            Self::thread_list_inner(&self.groups, &self.active_thread_id)
+        )
+    }
+
+    /// `#thread-list` 的 innerHTML：树 + 空态提示。
+    ///
+    /// 这一段是 **live parts 的增量换新单元**（chat.js 的 `threads` 目标整块替换
+    /// innerHTML）：其它客户端的新会话/改名/运行点不再要手动刷新。空态提示必须
+    /// 一起进这里——搜索 JS 按 id 找它，换帧后引用由 apply() 现查。
+    pub fn thread_list_inner(groups: &[WorkspaceGroup], active_thread_id: &str) -> String {
+        format!(
+            "{}{}",
+            Self::render_tree(groups, active_thread_id),
+            r#"<p class="ada-list-empty" id="thread-empty" hidden>没有匹配的会话 <button type="button" class="ada-list-empty__clear">清除</button></p>"#,
         )
     }
 
     /// 会话树：当前工作区的会话直接铺开（切换器就是它的表头），
     /// 其它工作区收成可折叠分组。只有 1 个工作区时不会出现任何组头。
-    fn tree(&self) -> String {
-        if self.groups.is_empty() {
+    fn render_tree(groups: &[WorkspaceGroup], active_thread_id: &str) -> String {
+        if groups.is_empty() {
             return r#"<p class="ada-list-empty">还没有会话</p>"#.to_string();
         }
         // 当前工作区排最前，且不带组头——否则"中间夹一个无头分组"会失去归属。
-        let head = self
-            .groups
-            .iter()
-            .find(|group| group.active)
-            .or_else(|| self.groups.first());
+        let head = groups.iter().find(|group| group.active).or_else(|| groups.first());
         let mut out = String::with_capacity(1024);
         if let Some(head) = head {
             if head.threads.is_empty() {
                 out.push_str(r#"<p class="ada-ws__empty">暂无会话</p>"#);
             } else {
                 for thread in &head.threads {
-                    out.push_str(&self.thread_row(thread));
+                    out.push_str(&Self::render_thread_row(thread, active_thread_id));
                 }
             }
         }
-        for group in self.groups.iter().filter(|group| !group.active) {
-            out.push_str(&self.other_group(group));
+        for group in groups.iter().filter(|group| !group.active) {
+            out.push_str(&Self::render_other_group(group, active_thread_id));
         }
         out
     }
 
-    fn thread_row(&self, thread: &ThreadRow) -> String {
-        let active = !self.active_thread_id.is_empty() && thread.id == self.active_thread_id;
+    fn render_thread_row(thread: &ThreadRow, active_thread_id: &str) -> String {
+        let active = !active_thread_id.is_empty() && thread.id == active_thread_id;
         let classes = class_list(&["ada-thread", if active { "is-active" } else { "" }]);
         // 条目数不进可见行（它几乎不被读，却占掉整行 30% 的高度），只留在 title 里。
         let hint = format!("{} · {} 项", thread.title, thread.item_count);
@@ -225,21 +233,36 @@ impl Sidebar {
         } else {
             String::new()
         };
+        // 回跳目标 = 提交时所在的会话（删的就是它时由服务端回首页）。
         format!(
-            r#"<a class="{classes}" href="/threads/{id}"{hint}><span class="ada-thread__title">{title}</span>{dot}</a>"#,
+            r#"<div class="{classes}"><a class="ada-thread__link" href="/threads/{id}"{hint}><span class="ada-thread__title">{title}</span>{dot}</a><span class="ada-thread__actions"><details class="ada-thread__rename"><summary title="重命名会话" aria-label="重命名会话">{edit}</summary><form class="ada-thread__rename-form" method="post" action="/threads/{id}/rename"><input type="hidden" name="back" value="{back}"><input class="ada-input ada-focusable" name="title" value="{title}" maxlength="200" aria-label="会话标题" placeholder="会话标题"><button class="ada-btn ada-btn--sm ada-btn--primary" type="submit">保存</button></form></details><form method="post" action="/threads/{id}/delete" data-confirm="删除会话「{title}」？会话历史将一并删除，不可恢复。"><input type="hidden" name="back" value="{back}"><button class="ada-thread__action" type="submit" title="删除会话" aria-label="删除会话">{trash}</button></form></span></div>"#,
             id = escape(&thread.id),
             hint = attr("title", &hint),
             title = escape(&thread.title),
+            back = escape(active_thread_id),
+            edit = icon("i-edit", 12),
+            trash = icon("i-trash", 12),
         )
     }
 
-    fn other_group(&self, group: &WorkspaceGroup) -> String {
+    /// 组头 `<details>` 的稳定 DOM id：key 里有盘符/斜杠不能直接当 id，
+    /// FNV-1a 32 位足够——live 换帧靠它还原展开状态（replaceKeepingOpen）。
+    fn ws_dom_id(key: &str) -> String {
+        let mut hash: u32 = 0x811c_9dc5;
+        for byte in key.as_bytes() {
+            hash ^= u32::from(*byte);
+            hash = hash.wrapping_mul(0x0100_0193);
+        }
+        format!("ws-{hash:08x}")
+    }
+
+    fn render_other_group(group: &WorkspaceGroup, active_thread_id: &str) -> String {
         let mut threads = String::new();
         if group.threads.is_empty() {
             threads.push_str(r#"<p class="ada-ws__empty">暂无会话</p>"#);
         } else {
             for thread in &group.threads {
-                threads.push_str(&self.thread_row(thread));
+                threads.push_str(&Self::render_thread_row(thread, active_thread_id));
             }
         }
         let running = if group.running {
@@ -248,8 +271,10 @@ impl Sidebar {
             String::new()
         };
         format!(
-            r#"<div class="ada-ws" data-ws-key="{key}"><details class="ada-ws__details"><summary class="ada-ws__summary"{path}>{chevron}{folder}<span class="ada-ws__name">{name}</span>{running}<span class="ada-ws__count">{count}</span></summary><div class="ada-ws__threads">{threads}</div></details><div class="ada-ws__actions"><form method="post" action="/threads"><input type="hidden" name="title" value="新会话"><input type="hidden" name="workspace" value="{path_raw}"><button class="ada-ws__action" type="submit" title="在此工作区新建对话" aria-label="在此工作区新建对话">{plus}</button></form><form method="post" action="/workspaces/select"><input type="hidden" name="path" value="{path_raw}"><button class="ada-ws__action" type="submit" title="切换到该工作区" aria-label="切换到该工作区">{check}</button></form></div></div>"#,
+            r#"<div class="ada-ws" data-ws-key="{key}" data-ws-path="{path_attr}"><details class="ada-ws__details" id="{dom_id}"><summary class="ada-ws__summary"{path}>{chevron}{folder}<span class="ada-ws__name">{name}</span>{running}<span class="ada-ws__count">{count}</span></summary><div class="ada-ws__threads">{threads}</div></details><div class="ada-ws__actions"><form method="post" action="/threads"><input type="hidden" name="title" value="新会话"><input type="hidden" name="workspace" value="{path_raw}"><button class="ada-ws__action" type="submit" title="在此工作区新建对话" aria-label="在此工作区新建对话">{plus}</button></form><form method="post" action="/workspaces/select"><input type="hidden" name="path" value="{path_raw}"><button class="ada-ws__action" type="submit" title="切换到该工作区（会设为当前项目）" aria-label="切换到该工作区">{check}</button></form></div></div>"#,
             key = escape(&group.key),
+            path_attr = escape(&group.path),
+            dom_id = Self::ws_dom_id(&group.key),
             path = attr("title", &group.path),
             chevron = icon("i-chevron", 12),
             folder = icon("i-folder", 14),
@@ -588,6 +613,30 @@ mod tests {
         let html = sidebar.render();
         assert!(!html.contains("chat-thread-search"));
         assert!(html.contains("还没有会话"));
+    }
+
+    #[test]
+    fn thread_rows_carry_inline_rename_and_delete_actions() {
+        let html = sample().render();
+        assert!(html.contains("action=\"/threads/t1/rename\""), "{html}");
+        assert!(html.contains("action=\"/threads/t1/delete\""), "{html}");
+        // 删除必须过确认弹窗；回跳目标是当前会话（sample 的 active 是 t2）
+        assert!(html.contains("data-confirm"), "{html}");
+        assert!(
+            html.contains(r#"<input type="hidden" name="back" value="t2">"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn workspace_groups_get_stable_details_ids_and_path_attributes() {
+        let html = sample().render();
+        assert!(
+            html.contains(r#"data-ws-path="C:\work\other""#),
+            "搜索要能匹配完整路径: {html}"
+        );
+        let dom_id = Sidebar::ws_dom_id("other");
+        assert!(html.contains(&format!(r#"id="{dom_id}""#)), "{html}");
     }
 }
 

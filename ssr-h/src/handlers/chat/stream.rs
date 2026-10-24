@@ -260,6 +260,7 @@ async fn render_parts(state: &AppState, view: &StreamView) -> Option<String> {
             "above": parts.composer_above,
             "approval": parts.approval_chip,
             "model": parts.model_chip,
+            "threads": parts.thread_list,
         })
         .to_string(),
     )

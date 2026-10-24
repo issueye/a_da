@@ -296,6 +296,12 @@ struct LiveParts {
     composer_above: String,
     approval_chip: String,
     model_chip: String,
+    /// 侧栏会话树（`#thread-list` 的 innerHTML）。
+    ///
+    /// parts 指纹早已监视 threads/running（stream.rs `parts_fingerprint`）——
+    /// 数据通了一半，这里补上渲染与 OOB 通道：其它客户端的新会话/改名/运行点
+    /// 不再要手动刷新（STATUS TODO「侧栏会话列表增量刷新」）。
+    thread_list: String,
 }
 
 /// 渲染对话流**之外**的动态区域（托盘 / 任务规划 / 顶栏 / 输入框辅助区）。
@@ -361,6 +367,17 @@ async fn live_parts(
     .await;
     let (trays, approval_count, queue_len) =
         trays_html(snapshot, raw_items, thread_id, Some(thread_tray.html.trim()));
+    // 侧栏树与首屏同源（thread_rows 的空占位过滤 + workspace_groups 分组排序），
+    // 分组锚点与首屏一致：当前会话的工作区，缺了回落 agent 的当前项目。
+    let tree_workspace = if workspace.is_empty() {
+        state.agent.workspace.as_str()
+    } else {
+        workspace
+    };
+    let thread_list = ui::sidebar::Sidebar::thread_list_inner(
+        &workspace_groups(&thread_rows(snapshot, thread_id), tree_workspace),
+        thread_id,
+    );
     let slots = SlotContent {
         composer_footer: footer.html,
         ..SlotContent::default()
@@ -386,6 +403,7 @@ async fn live_parts(
         composer_above: above.html,
         approval_chip: approval_chip_html(&approval, &tone),
         model_chip: model_chip_html(&model, &effort),
+        thread_list,
     }
 }
 
@@ -725,6 +743,8 @@ pub async fn live(State(state): State<AppState>, Path(thread_id): Path<String>) 
         oob("chat-corner", &parts.corner),
         oob("topbar-status", &parts.topbar_status),
         oob("topbar-actions", &parts.topbar_actions),
+        // 侧栏会话树：与 parts 同源（其它客户端的增删改名随轮询进来）。
+        oob("thread-list", &parts.thread_list),
         // 输入框上方的插件悬浮区：用量会随对话变化，跟其他区域一起每 2 秒刷新。
         oob("composer-above", &parts.composer_above),
         oob("composer-aux", &parts.aux),
@@ -973,6 +993,84 @@ pub async fn retry_thread(
     match state.agent.retry_thread(&thread_id).await {
         Ok(_) => Ok(redirect(&format!("/threads/{thread_id}?notice=retried"))),
         Err(error) => Ok(action_failed(&thread_id, "重试失败", error)),
+    }
+}
+
+/// 重命名/删除会话的回跳目标：侧栏动作可能发生在**非当前**会话的行上，
+/// `back` 记录提交时所在的会话，动作后回到那里；删的就是当前会话时回首页。
+fn thread_action_back(form_back: Option<&str>, deleted_or_target: &str) -> String {
+    match form_back.map(str::trim).filter(|back| !back.is_empty()) {
+        Some(back) if back != deleted_or_target => format!("/threads/{back}"),
+        _ => "/".to_string(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RenameThreadForm {
+    title: String,
+    back: Option<String>,
+}
+
+/// `POST /threads/{id}/rename`：重命名会话（`thread.update` 的 title 字段）。
+pub async fn rename_thread(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+    Form(form): Form<RenameThreadForm>,
+) -> Result<Response, AppError> {
+    let title = form.title.trim();
+    let back = thread_action_back(form.back.as_deref(), &thread_id);
+    if title.is_empty() {
+        return Ok(redirect(&format!(
+            "{back}?error={}",
+            encode_query("会话标题不能为空")
+        )));
+    }
+    match state.agent.rename_thread(&thread_id, title).await {
+        Ok(_) => Ok(redirect(&format!("{back}?notice=thread_renamed"))),
+        Err(error) => {
+            if back == "/" {
+                tracing::warn!("重命名会话失败: {error:#}");
+                let message = format!("重命名会话失败：{}", public_reason(&error));
+                Ok(redirect(&format!("/?error={}", encode_query(&message))))
+            } else {
+                Ok(action_failed(&back, "重命名会话失败", error))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteThreadForm {
+    back: Option<String>,
+}
+
+/// `POST /threads/{id}/delete`：删除会话（后端连带删落盘文件；前端有 data-confirm）。
+///
+/// 删的就是当前会话（或没有回跳目标）时回首页——首页会自动选中下一条；
+/// 删的是别的会话时回提交时所在的会话。
+pub async fn delete_thread(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+    Form(form): Form<DeleteThreadForm>,
+) -> Result<Response, AppError> {
+    if thread_id.trim().is_empty() {
+        return Err(AppError::bad("删除会话缺少 threadId"));
+    }
+    match state.agent.delete_thread(&thread_id).await {
+        Ok(_) => Ok(redirect(&format!(
+            "{}?notice=thread_deleted",
+            thread_action_back(form.back.as_deref(), &thread_id)
+        ))),
+        Err(error) => {
+            let back = thread_action_back(form.back.as_deref(), &thread_id);
+            if back == "/" {
+                tracing::warn!("删除会话失败: {error:#}");
+                let message = format!("删除会话失败：{}", public_reason(&error));
+                Ok(redirect(&format!("/?error={}", encode_query(&message))))
+            } else {
+                Ok(action_failed(&back, "删除会话失败", error))
+            }
+        }
     }
 }
 

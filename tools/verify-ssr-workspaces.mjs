@@ -17,7 +17,15 @@ import { createServer as createNetServer } from 'node:net'
 
 const REPO = 'E:\\codes\\rust_projects\\a_da'
 const GATEWAY = join(REPO, 'dist', 'ada-gateway.exe')
-const SSR = process.env.SSR_H_EXE || join(REPO, '..', 'cargo_target_ada', 'debug', 'ssr-h.exe')
+// ssr-h 的构建目录是 <repo>/cargo_target_ada（ssr-h/ 用 CARGO_TARGET_DIR=../ 编译）；
+// 旧路径在仓库外一级，是历史上留下的陈旧二进制——只作兜底，别让它盖住新构建。
+const SSR =
+  process.env.SSR_H_EXE ||
+  [
+    join(REPO, 'cargo_target_ada', 'debug', 'ssr-h.exe'),
+    join(REPO, '..', 'cargo_target_ada', 'debug', 'ssr-h.exe'),
+  ].find((candidate) => existsSync(candidate)) ||
+  join(REPO, 'cargo_target_ada', 'debug', 'ssr-h.exe')
 
 const failures = []
 const check = (ok, what, extra = '') => {
@@ -172,7 +180,11 @@ try {
   // ── 1. 侧栏树 ──────────────────────────────────────────────────────────
   const page = await get(`${ui}/threads/${alphaThread}`)
   check(page.status === 200, '会话页可打开', `HTTP ${page.status}`)
-  check(page.body.includes('class="ada-ws-tree"'), '侧栏渲染工作区树')
+  // v0.6 侧栏收进组件库后：列表容器是 ada-thread-list，其它工作区是 ada-ws 折叠组
+  check(
+    page.body.includes('id="thread-list"') && page.body.includes('class="ada-ws"'),
+    '侧栏渲染工作区树',
+  )
   check(page.body.includes('>alpha<'), '树里出现 alpha 工作区')
   check(page.body.includes('>beta<'), '树里出现 beta 工作区（跨工作区会话）')
   if (!page.body.includes('>beta<')) {
@@ -182,7 +194,8 @@ try {
     )
     console.log('  会话标题：', (page.body.match(/ada-thread__title[^>]*>[^<]+/g) || []).join(' | '))
   }
-  check(page.body.includes('ada-ws__badge'), '当前工作区有"当前"标记')
+  // 「当前」徽标已废除（侧栏单测专门守着）：当前工作区不再有组头，切换器就是它的表头
+  check(page.body.includes('ada-ws-switch__name">alpha<'), '当前工作区有"当前"标记')
   check(
     page.body.includes(`name="workspace" value="${wsAlpha}"`),
     '顶部"新会话"提交到当前工作区',
@@ -204,7 +217,7 @@ try {
   check(location.startsWith('/threads/'), '跳转到该工作区的会话页', location)
   const gammaPage = location ? await get(`${ui}${location}`) : { body: '' }
   check(gammaPage.body.includes('>gamma<'), '新工作区出现在侧栏树里')
-  check(gammaPage.body.includes('ada-ws__badge'), '新工作区成为当前工作区')
+  check(gammaPage.body.includes('ada-ws-switch__name">gamma<'), '新工作区成为当前工作区')
   check(gammaPage.body.includes('新会话'), '没有会话的工作区被建了一条新会话')
 
   // ── 4. 选择已有会话的工作区：打开已有会话，不重复建 ─────────────────────

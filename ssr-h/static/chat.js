@@ -195,8 +195,6 @@
     const list = document.getElementById('thread-list');
     const box = input.closest('.ada-search');
     const count = box && box.querySelector('.ada-search__count');
-    const empty = document.getElementById('thread-empty');
-    const clear = empty && empty.querySelector('.ada-list-empty__clear');
 
     let listScroll = 0;
     const apply = () => {
@@ -204,11 +202,13 @@
       document.querySelectorAll('.ada-thread').forEach((item) => {
         item.hidden = Boolean(query) && !item.textContent.toLowerCase().includes(query);
       });
-      // 工作区树：会话全被过滤掉时把整组藏起来；工作区名命中则整组展开、会话全显示。
+      // 工作区树：会话全被过滤掉时把整组藏起来；工作区名或**完整路径**命中
+      // 则整组展开、会话全显示——同名目录（E:/a/app 与 D:/b/app）靠路径区分。
       document.querySelectorAll('.ada-ws').forEach((group) => {
         const details = group.querySelector('details');
         const name = (group.querySelector('.ada-ws__name')?.textContent || '').toLowerCase();
-        const nameHit = Boolean(query) && name.includes(query);
+        const path = (group.getAttribute('data-ws-path') || '').toLowerCase();
+        const nameHit = Boolean(query) && (name.includes(query) || path.includes(query));
         const rows = group.querySelectorAll('.ada-thread');
         if (nameHit) {
           rows.forEach((row) => { row.hidden = false; });
@@ -225,7 +225,9 @@
         count.hidden = !query;
         count.textContent = query ? `${visible} / ${rows.length}` : '';
       }
-      if (empty) empty.hidden = !(query && visible === 0);
+      // 空态提示按 id 现查：#thread-list 会被 live parts 整块换新，init 时抓的引用会过期。
+      const emptyNode = document.getElementById('thread-empty');
+      if (emptyNode) emptyNode.hidden = !(query && visible === 0);
     };
 
     input.addEventListener('input', apply);
@@ -237,8 +239,10 @@
         apply();
       }
     });
-    if (clear) {
-      clear.addEventListener('click', () => {
+    // 清除按钮在 #thread-list 里，会随换帧重建——委托到列表上，重建后依然可用。
+    if (list) {
+      list.addEventListener('click', (event) => {
+        if (!event.target.closest('.ada-list-empty__clear')) return;
         input.value = '';
         apply();
         input.focus();
@@ -360,6 +364,7 @@
     above: 'composer-above',
     approval: 'composer-approval',
     model: 'composer-model',
+    threads: 'thread-list',
   };
 
   /* ── 提问托盘：翻页 + 已填内容保留（data-question-pager 契约）──────────
@@ -522,8 +527,55 @@
     }
   });
 
+  /* ── 工作区分组：折叠状态记忆（data-ws-key → localStorage）──────────────
+   * 组的展开状态按 key 存下来，刷新后保持；换帧时 replaceKeepingOpen 按 id
+   * 还原当前会话内的开合，这里的存储值与之始终一致（toggle 时随手写）。
+   */
+  const WS_OPEN_PREFIX = 'a_da_ws_open:';
+
+  const initWorkspaceTree = (root) => {
+    root.querySelectorAll('.ada-ws__details').forEach((details) => {
+      const group = details.closest('.ada-ws');
+      const key = (group && group.getAttribute('data-ws-key')) || '';
+      if (!key || details.dataset.adaWsBound === '1') return;
+      details.dataset.adaWsBound = '1';
+      let stored = null;
+      try {
+        stored = localStorage.getItem(WS_OPEN_PREFIX + key);
+      } catch (error) {
+        stored = null;
+      }
+      if (stored === '1') details.open = true;
+      else if (stored === '0') details.open = false;
+      details.addEventListener('toggle', () => {
+        try {
+          localStorage.setItem(WS_OPEN_PREFIX + key, details.open ? '1' : '0');
+        } catch (error) {
+          /* 存不进去只影响刷新记忆 */
+        }
+      });
+    });
+  };
+
+  /* 重命名内联表单：展开即聚焦全选（Enter 提交、Esc 关闭由 details 语义承接） */
+  const initThreadMenus = (root) => {
+    root.querySelectorAll('.ada-thread__rename').forEach((details) => {
+      if (details.dataset.adaMenuBound === '1') return;
+      details.dataset.adaMenuBound = '1';
+      details.addEventListener('toggle', () => {
+        if (!details.open) return;
+        const input = details.querySelector('input[name="title"]');
+        if (input) {
+          input.focus();
+          input.select();
+        }
+      });
+    });
+  };
+
   /* 替换动态区域时保住展开中的插件气泡：`details[open][id]` 在替换后按 id 还原。
-     否则 composer.above 每 500ms 被 parts 换一次，天气小窗会自己关掉。 */
+     否则 composer.above 每 500ms 被 parts 换一次，天气小窗会自己关掉；
+     工作区分组的 `<details>` 同理（按组头的稳定 id 还原展开状态）。 */
   const replaceKeepingOpen = (target, html) => {
     const openIds = [];
     target.querySelectorAll('details[open][id]').forEach((node) => {
@@ -536,6 +588,8 @@
       if (reopened && reopened.tagName === 'DETAILS') reopened.open = true;
     });
     initQuestionPagers(target);
+    initWorkspaceTree(target);
+    initThreadMenus(target);
     pruneQuestionStates(target);
   };
 
@@ -565,12 +619,7 @@
     const doc = new DOMParser().parseFromString(html, 'text/html');
     doc.querySelectorAll('[hx-swap-oob]').forEach((node) => {
       const target = node.id ? document.getElementById(node.id) : null;
-      if (target) {
-        target.querySelectorAll('[data-question-pager]').forEach(saveQuestionState);
-        target.innerHTML = node.innerHTML;
-        initQuestionPagers(target);
-        pruneQuestionStates(target);
-      }
+      if (target) replaceKeepingOpen(target, node.innerHTML);
     });
   };
 
@@ -618,6 +667,8 @@
   };
   bindModelPicker();
   initQuestionPagers(document);
+  initWorkspaceTree(document);
+  initThreadMenus(document);
   document.addEventListener('click', (event) => {
     document.querySelectorAll('details.ada-model-picker[open]').forEach((picker) => {
       if (!picker.contains(event.target)) picker.open = false;
