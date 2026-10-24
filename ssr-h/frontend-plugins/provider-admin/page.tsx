@@ -52,22 +52,24 @@ export function Page(props: any) {
         <div class="pa-layout">
           <aside class="pa-list">
             <div class="pa-list__head">已配置的供应商</div>
-            {providers.map((provider: any) => (
-              <div class={"pa-provider" + (provider.id === selected.id ? " is-selected" : "")}>
-                <a class="pa-provider__link" href={providerHref(props, provider.id, tab)}>
-                  <span class="pa-provider__name">{provider.name}</span>
-                  <span class="pa-provider__meta">{provider.modelCount} 个模型 · {provider.protocolLabel}</span>
-                </a>
-                {provider.active ? <Chip text="当前" tone="success" /> : null}
-                {admin.canDeleteProviders ? (
-                  <form method="post" action={providerAction(provider.id, "/delete")} data-confirm={"删除供应商「" + provider.name + "」？"}>
-                    <button class="pa-provider__delete" type="submit" aria-label="删除供应商" title="删除供应商">
-                      <Icon name="i-trash" size={13} />
-                    </button>
-                  </form>
-                ) : null}
-              </div>
-            ))}
+            <div class="pa-list__body">
+              {providers.map((provider: any) => (
+                <div class={"pa-provider" + (provider.id === selected.id ? " is-selected" : "")}>
+                  <a class="pa-provider__link" href={providerHref(props, provider.id, tab)}>
+                    <span class="pa-provider__name">{provider.name}</span>
+                    <span class="pa-provider__meta">{provider.modelCount} 个模型 · {provider.protocolLabel}</span>
+                  </a>
+                  {provider.active ? <Chip text="当前" tone="success" /> : null}
+                  {admin.canDeleteProviders ? (
+                    <form method="post" action={providerAction(provider.id, "/delete")} data-confirm={"删除供应商「" + provider.name + "」？"}>
+                      <button class="pa-provider__delete" type="submit" aria-label="删除供应商" title="删除供应商">
+                        <Icon name="i-trash" size={13} />
+                      </button>
+                    </form>
+                  ) : null}
+                </div>
+              ))}
+            </div>
           </aside>
 
           <section class="pa-detail">
@@ -106,7 +108,7 @@ export function Page(props: any) {
               <div class="pa-pane pa-pane--models">
                 <div class="pa-models-head">
                   <div class="pa-actions">
-                    <button class="btn btn-secondary btn-sm" type="button" data-modal-open="remote-models" hx-post={providerAction(selected.id, "/models/fetch")} hx-target="#pa-remote-models-body" hx-swap="innerHTML">获取远程模型</button>
+                    <button class="btn btn-secondary btn-sm" type="button" data-modal-open="remote-models">获取远程模型</button>
                     <button class="btn btn-primary btn-sm" type="button" data-modal-open="model-new">新增模型</button>
                   </div>
                 </div>
@@ -151,6 +153,8 @@ export function Page(props: any) {
                     </tbody>
                   </table>
                 </div>
+
+                <div id="pa-remote-loader" hidden data-modal-src="remote-models" hx-post={providerAction(selected.id, "/models/fetch")} hx-trigger="ada-modal-load" hx-target="#pa-remote-models-body" hx-swap="innerHTML"></div>
 
                 <Modal id="remote-models" title="获取远程模型" wide>
                   <div class="pa-remote-toolbar">
@@ -203,6 +207,7 @@ export function Page(props: any) {
     </div>
   );
 }
+
 
 
 
