@@ -119,6 +119,7 @@ pub fn render_row(view: &RowView, thread_id: &str) -> String {
             &view.todo_steps,
             view.todo_notes.as_deref(),
         )
+        .key(&view.key)
         .result(&view.result, view.result_tone)
         .running(view.running)
         .started_at(view.started_at)

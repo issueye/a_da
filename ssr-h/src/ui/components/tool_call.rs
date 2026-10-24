@@ -34,6 +34,10 @@ pub struct ToolCall<'a> {
     pub started_at: Option<i64>,
     /// 输出总行数（按截断前原文统计）。
     pub total_lines: usize,
+    /// 稳定身份（item id）→ details 的 data-key。**没有它，展开态无法跨
+    /// 流式替换保留**：components.js 按 data-key 记录/回填 openKeys，空 key
+    /// 的行在 item 更新（状态/耗时/输出变化）替换节点时必然被收起。
+    pub key: &'a str,
 }
 
 impl<'a> ToolCall<'a> {
@@ -70,7 +74,14 @@ impl<'a> ToolCall<'a> {
             running: false,
             started_at: None,
             total_lines: 0,
+            key: "",
         }
+    }
+
+    /// 稳定身份（item id）——流式期间行会被反复替换，展开态靠它恢复。
+    pub fn key(mut self, key: &'a str) -> Self {
+        self.key = key;
+        self
     }
 
     /// 结果尾标：折叠态回答"这一步得到了什么"。
@@ -144,6 +155,9 @@ impl Render for ToolCall<'_> {
         }
 
         let mut row = Disclosure::new("tool", self.icon, self.label);
+        if !self.key.is_empty() {
+            row = row.key(self.key);
+        }
         if !self.target.is_empty() {
             row = row.detail(self.target);
         }
@@ -284,6 +298,17 @@ mod tests {
         let html = call("ok").render();
         assert!(html.contains("执行输出"), "{html}");
         assert!(!html.contains("data-ada-expand"), "{html}");
+    }
+
+    /// 稳定身份（item id）必须落到 details 的 data-key 上——流式期间行被反复
+    /// 替换，components.js 靠它恢复展开态；没有它展开的工具行会被自动收起。
+    #[test]
+    fn tool_row_carries_data_key_for_fold_state_restoration() {
+        let with_key = call("ok").key("item_7").render();
+        assert!(with_key.contains(r#"data-key="item_7""#), "{with_key}");
+        // 没给 key 的调用方（历史行为）不输出空 data-key
+        let without = call("ok").render();
+        assert!(!without.contains("data-key"), "{without}");
     }
 
     #[test]

@@ -1211,10 +1211,15 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// 真实示例必须能编译并渲染。🔴 在**临时副本**上测：真实目录里可能有用户的
+    /// 停用状态（.ssr-h-state.json，运行时产物）——直接读它，示例测试就会跟着
+    /// 用户点过什么而随机红；测试也绝不能反过来写用户的状态文件。
     #[test]
     fn hello_tsx_example_compiles_and_renders() {
-        let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
-        let registry = PluginRegistry::new(&plugins_dir);
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
+        let root = temp_root("example-copy");
+        copy_tree(&source, &root);
+        let registry = PluginRegistry::new(&root);
         let plugin = registry.find("hello-tsx").expect("hello-tsx exists");
         assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
         assert!(
@@ -1238,6 +1243,20 @@ mod tests {
         assert!(widgets
             .iter()
             .any(|widget| widget.html.contains("TSX 运行时卡片")));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 递归复制目录（测试用：把真实示例拷进临时目录，与用户运行时状态隔离）。
+    fn copy_tree(source: &Path, target: &Path) {
+        fs::create_dir_all(target).unwrap();
+        for entry in fs::read_dir(source).unwrap().flatten() {
+            let to = target.join(entry.file_name());
+            if entry.path().is_dir() {
+                copy_tree(&entry.path(), &to);
+            } else if entry.file_name() != ".ssr-h-state.json" {
+                fs::copy(entry.path(), &to).unwrap();
+            }
+        }
     }
 
     #[test]
