@@ -29,7 +29,9 @@
       详见 [PLAN-question-panel.md](PLAN-question-panel.md)
 - [x] Markdown 渲染（pulldown-cmark + ammonia 白名单，GFM）、代码块悬停复制
 - [x] 思考 / 工具单行日志式（v0.5）：中文标签、目标对象、真实耗时、结果尾标、状态语义色、执行中活计时
-- [x] 折叠状态与面板滚动位置在增量/整段同步后保持；仅接近底部时自动跟随 + 「回到最新」胶囊
+- [x] **折叠状态与面板滚动位置在增量/整段同步后保持**；仅接近底部时自动跟随 + 「回到最新」胶囊
+- [x] **打开会话默认置底**（2026-10-24）：去掉滚动容器全局 smooth（动画会被首帧同步/字体落定打断），
+      boot / 首次整段同步 / load 落定三处强制瞬时置底；「回到最新」显式平滑
 - [x] **模型选择器**（v0.10）：模型药丸弹出按供应商分组的清单 + 推理等级（`provider.setActive` / `config.setEffort`），无 JS 可开合
 - [x] 网关断开时聊天页保留壳并显示「未连接」+ 重新连接
 - [x] **新会话工作区选择弹窗**（2026-10-24）：radio 列表 + 当前项预选（参考 desktop-ui
@@ -44,6 +46,8 @@
       删当前会话回首页，删其它会话留在当前页
 - [x] 组折叠状态按 `data-ws-key` 记忆（`localStorage`，跨刷新保持）；搜索匹配工作区名称与完整路径
 - [x] 搜索同时过滤工作区名与会话标题，工作区名命中整组展开
+- [x] **二级页品牌位改为「返回会话」**（2026-10-24）：对话页保持 a_da 品牌，概览/插件页同一位置
+      渲染「← 返回会话」（新增 `i-arrow-left` 图标），窄轨 title/aria 同步
 - [x] `/workspaces` 目录浏览器：磁盘 / 主目录 / 最近工作区，浏览与新建目录（走网关 `fs.roots` / `fs.list` / `fs.mkdir`，不自己读盘）
 - [x] `workspaces/select` 设为当前工作区并打开最近会话（没有则 `thread.create`）
 
@@ -56,6 +60,8 @@
 - [x] 测试连接：`config.checkProvider`（仅参数校验，见「未实现」注记）
 - [x] API Key 不回显（`已配置 + sk-…7f3a`，留空＝不修改）——与 desktop-ui 唯一的有意差异
 - [x] 旧入口 `/providers` 303 跳插件页，动作端点保留回退
+- [x] **界面优化**（2026-10-24）：页头「当前模型」可点药丸（取代两张信息大卡）、布局去写死高度、
+      左列定宽 236px、≤900px 断点修正
 
 ### 4. 动态前端插件体系
 
@@ -65,9 +71,14 @@
 - [x] 插槽：`chat.corner` / `composer.left|right|footer|above` / `sidebar.top|bottom` / `topbar.right` / `transcript.after` / `extensions.list` / `dashboard.widgets`
 - [x] 作用域隔离 CSS（`@scope ([data-plugin-scope])` + 指纹缓存）；自定义 JS 注入（defer）
 - [x] 插件加载失败只影响自身，界面退回默认实现；可逐插件停用/启用；`GET /api/plugins`
+- [x] **停用状态落盘**（2026-10-24）：`.ssr-h-state.json`（插件目录旁，只记停用 id），
+      重启后保持；坏文件按全启用处理
+- [x] **插件导航选中态**（2026-10-24）：插件页的 active 是 `ext:{id}`，侧栏「前端插件」链接按它点亮
 - [x] 内置 TSX 组件库（Button / Chip / Notice / Panel / Modal / Form / Todo / 消息类等）
 - [x] 安全校验：标签 / 属性名 / URL 三重校验、`hx-*` 显式白名单（拒 `hx-on*` 与 `js:` 值）、Boa 无 fs/net/process、循环/递归/输出/嵌套预算
-- [x] 示例插件：`hello-tsx`（最小三件套 + JSON API）、`token-weather`（SSE `parts` 刷新 + 浮层）、`task-plan`（任务规划卡，`chat.corner` / `composer.above` 可挂）
+- [x] 示例插件：`hello-tsx`（最小三件套 + JSON API）、`token-weather`（SSE `parts` 刷新 + 浮层；
+      2026-10-24 品牌一致性对齐：emoji 换线性 SVG 图标（新增 i-cloud/i-cloud-fog/i-cloud-rain）、
+      accent 走 `--ph-*` 语义对、去渐变/发光装饰）、`task-plan`（任务规划卡，`chat.corner` / `composer.above` 可挂）
 - [x] **插件自带 JSON API**（2026-10-24）：manifest `api` 声明 → `/ext/{id}/api/{path}`，
       TSX 入口返回值直接序列化（不走 JSX）；一条静态分发路由 + 注册表热查找实现动态扩展，
       重载即生效；请求面在 `props.api`，方法白名单 GET/POST、体 ≤256KB
