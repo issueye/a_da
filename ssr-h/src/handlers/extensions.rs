@@ -222,7 +222,9 @@ pub async fn plugin_page(
         base: base(
             &state,
             &format!("{} · {}", plugin.name, page_title),
-            "extensions",
+            // 侧栏按它点亮「前端插件」链接：ext:{id} 精确到插件，而不是粗到
+            // "extensions"（那样亮的是「插件」项，用户点的是哪个插件反而没反馈）
+            &format!("ext:{}", plugin.id),
             flash_from_query(&query),
         )
         .await,

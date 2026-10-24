@@ -329,8 +329,20 @@ impl Sidebar {
         if !self.plugin_nav.is_empty() {
             out.push_str(r#"<div class="ada-nav__label"><span>前端插件</span></div>"#);
             for link in self.plugin_nav.iter().take(PLUGIN_LINK_LIMIT) {
+                // 插件页的 active 是 `ext:{plugin_id}`（见 plugin_page）——
+                // 点开哪个插件，哪个链接就要亮，否则点了像没点上。
+                let active = self.active == format!("ext:{}", link.plugin_id);
+                let classes = class_list(&[
+                    "ada-nav__item",
+                    if active { "is-active" } else { "" },
+                ]);
+                let current = if active {
+                    r#" aria-current="page""#.to_string()
+                } else {
+                    String::new()
+                };
                 out.push_str(&format!(
-                    r#"<a class="ada-nav__item" href="{href}"{title}>{icon}<span class="ada-nav__text">{label}</span></a>"#,
+                    r#"<a class="{classes}" href="{href}"{current}{title}>{icon}<span class="ada-nav__text">{label}</span></a>"#,
                     href = escape(&link.href),
                     title = attr("title", &link.plugin_id),
                     icon = icon("i-plug", 14),
@@ -705,5 +717,38 @@ mod tests {
         assert!(!html.contains(r#"data-modal="new-thread""#), "{html}");
         assert!(html.contains("data-new-thread"), "{html}");
     }
-}
 
+    use super::*;
+
+    /// 点开哪个插件，哪个导航链接就要亮（active 是 plugin_page 传的 ext:{id}），
+    /// 且「插件」项不该跟着亮——它只代表 /extensions 页本身。
+    #[test]
+    fn plugin_nav_link_is_active_on_its_own_plugin_page() {
+        let mut sidebar = sample();
+        sidebar.active = "ext:hello".to_string();
+        let html = sidebar.render();
+        // hello 的链接有选中态 + aria-current
+        let hello_index = html.find(r#"href="/p/hello""#).expect("hello link");
+        let row = &html[hello_index.saturating_sub(200)..html.len().min(hello_index + 200)];
+        assert!(row.contains("is-active"), "{row}");
+        assert!(row.contains("aria-current"), "{row}");
+        // 「插件」（/extensions）不亮：插件页不是扩展列表页
+        let ext_index = html.find(r#"href="/extensions""#).expect("extensions link");
+        let row = &html[ext_index.saturating_sub(160)..html.len().min(ext_index + 60)];
+        assert!(
+            !row.contains(r#"class="ada-nav__item is-active""#),
+            "插件页不该点亮「插件」项: {row}"
+        );
+    }
+
+    /// 聊天页所有插件链接都不亮。
+    #[test]
+    fn plugin_nav_links_are_plain_on_chat_page() {
+        let sidebar = sample();
+        let html = sidebar.render();
+        let hello_index = html.find(r#"href="/p/hello""#).expect("hello link");
+        let row = &html[hello_index.saturating_sub(200)..html.len().min(hello_index + 200)];
+        assert!(!row.contains("is-active"), "{row}");
+    }
+
+}
