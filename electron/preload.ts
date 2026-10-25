@@ -43,8 +43,9 @@ const CONTROLS_CSS = `
   /* 标题栏是窗口 chrome：必须压在所有应用模态层（ada-modal z-index: 90）之上，
      否则弹窗打开时最小化/最大化/关闭点不动。 */
   .ada-topbar { position: relative; z-index: 100; -webkit-app-region: drag; app-region: drag; }
-  .ada-topbar button, .ada-topbar a, .ada-topbar input, .ada-topbar select,
-  .ada-topbar textarea, .ada-topbar [role="button"], .ada-electron-controls {
+  .ada-topbar button, .ada-topbar a, .ada-topbar summary, .ada-topbar input,
+  .ada-topbar select, .ada-topbar textarea, .ada-topbar [role="button"],
+  .ada-electron-controls {
     -webkit-app-region: no-drag; app-region: no-drag;
   }
   .ada-electron-controls {

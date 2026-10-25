@@ -2,6 +2,10 @@
 .pm-popover {
   position: relative;
   display: inline-flex;
+  /* Electron 无边框窗口：顶栏是拖拽区；插件的 summary/面板必须显式退出拖拽，
+     否则真实鼠标点击被当成拖窗口，details 根本不会展开。 */
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 .pm-trigger {
   list-style: none;

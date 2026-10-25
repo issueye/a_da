@@ -408,6 +408,15 @@ try {
     ),
     '顶栏由插件提供进程管理入口',
   )
+  // 🔴 顶栏在 Electron 里是拖拽区；summary 必须显式 no-drag，
+  // 否则真实鼠标点击会变成拖窗口（CDP 注入点击绕过拖拽区，测不出来）。
+  check(
+    (await evaluate(
+      cdp,
+      `getComputedStyle(document.querySelector('#process-manager > summary')).getPropertyValue('-webkit-app-region').trim()`,
+    )) === 'no-drag',
+    '进程管理入口退出 Electron 拖拽区（真实点击可展开）',
+  )
   await clickLabel(cdp, '进程管理')
   await waitUntil(
     () => evaluate(cdp, `document.querySelector("#process-manager")?.open === true`),

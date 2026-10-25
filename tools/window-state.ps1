@@ -1,7 +1,10 @@
 param(
   [Parameter(Mandatory = $true)][int]$ProcessId,
-  [ValidateSet('state', 'restore', 'minimize', 'maximize')][string]$Action = 'state',
-  [string]$TitlePrefix = 'a_da'
+  [ValidateSet('state', 'restore', 'minimize', 'maximize', 'click')][string]$Action = 'state',
+  [string]$TitlePrefix = 'a_da',
+  # 仅 click：相对窗口左上角的物理像素坐标（调用方按 devicePixelRatio 换算）。
+  [int]$RelX = 0,
+  [int]$RelY = 0
 )
 
 Add-Type @"
@@ -17,6 +20,12 @@ public class HeadlessWin {
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr i);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 
   public static IntPtr Find(uint pid, string prefix) {
     IntPtr found = IntPtr.Zero;
@@ -51,6 +60,21 @@ switch ($Action) {
   'minimize' { [void][HeadlessWin]::ShowWindow($hwnd, 6); Start-Sleep -Milliseconds 500 }
   'maximize' { [void][HeadlessWin]::ShowWindow($hwnd, 3); Start-Sleep -Milliseconds 500 }
   'restore'  { [void][HeadlessWin]::ShowWindow($hwnd, 9); Start-Sleep -Milliseconds 600 }
+  'click' {
+    $rect = New-Object HeadlessWin+RECT
+    [void][HeadlessWin]::GetWindowRect($hwnd, [ref]$rect)
+    [void][HeadlessWin]::ShowWindow($hwnd, 9)
+    # 与官方验收脚本同一套抢前台手法：ALT 轻敲后再 SetForegroundWindow。
+    [HeadlessWin]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
+    [HeadlessWin]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
+    [void][HeadlessWin]::SetForegroundWindow($hwnd)
+    Start-Sleep -Milliseconds 400
+    [void][HeadlessWin]::SetCursorPos($rect.Left + $RelX, $rect.Top + $RelY)
+    Start-Sleep -Milliseconds 150
+    [HeadlessWin]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+    [HeadlessWin]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 350
+  }
 }
 
 @{
