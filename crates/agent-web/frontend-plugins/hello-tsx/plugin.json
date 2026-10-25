@@ -9,7 +9,6 @@
   "nav": [{ "label": "Hello TSX", "slug": "hello" }],
   "pages": [{ "slug": "hello", "title": "Hello TSX", "template": "page.tsx" }],
   "dashboard": "dashboard.tsx",
-  "slots": [{ "slot": "composer.left", "template": "slot.tsx", "order": 40 }],
   "api": [
     { "method": "get", "path": "info", "template": "api/info.tsx" },
     { "method": "post", "path": "echo", "template": "api/echo.tsx" }

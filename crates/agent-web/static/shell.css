@@ -883,6 +883,10 @@
 .ada-approval-picker__option .ada-icon {
   color: var(--ph-brand-ink);
 }
+.ada-approval-picker__check {
+  display: inline-flex;
+  margin-left: auto;
+}
 
 /* 空态：没有会话 / 没有匹配 */
 .ada-list-empty {

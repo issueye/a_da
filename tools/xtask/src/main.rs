@@ -304,8 +304,14 @@ fn ship_product(product: &str, gui: bool, out_dir: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 递归复制目录（出包时携带示例插件）。目标已存在时覆盖同名文件。
+/// 递归复制目录（出包时携带示例插件）。
+///
+/// 目标存在时**先清空**再复制：插件会有删除/改名，单纯覆盖会把已经删掉的文件
+/// 留在产物里（例如 hello-tsx 移除 composer.left 后，旧 slot.tsx 仍会被打进去）。
 fn copy_dir_all(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    if dst.exists() {
+        fs::remove_dir_all(dst)?;
+    }
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;

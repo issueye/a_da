@@ -541,6 +541,8 @@ function checkDevServer(url: string, timeoutMs = 800): Promise<boolean> {
  * 再窄就只能靠右栏变抽屉 + 侧栏折叠来撑，不值得。
  */
 const WINDOW_MIN_WIDTH = 860
+/// SSR 页面在 450px 仍有抽屉侧栏 + 单列对话，允许比 React 三栏界面更窄。
+const SSR_WINDOW_MIN_WIDTH = 450
 const WINDOW_MIN_HEIGHT = 620
 
 /**
@@ -558,7 +560,7 @@ const WINDOW_MIN_HEIGHT = 620
  * 注意：这里只决定**首次**大小。用户拖过窗口之后不记忆（Electron 不会自动保存），
  * 想要"记得上次大小"需要额外持久化，属另一件事。
  */
-function resolveInitialWindowSize(): { width: number; height: number } {
+function resolveInitialWindowSize(minWidth = WINDOW_MIN_WIDTH): { width: number; height: number } {
   const clamp = (value: number, lo: number, hi: number) => Math.min(Math.max(value, lo), hi)
   const { width: areaWidth, height: areaHeight } = screen.getPrimaryDisplay().workAreaSize
 
@@ -566,7 +568,7 @@ function resolveInitialWindowSize(): { width: number; height: number } {
   const preferredHeight = Math.round(clamp(areaHeight * 0.78, 720, 900))
 
   return {
-    width: Math.min(preferredWidth, Math.max(WINDOW_MIN_WIDTH, areaWidth - 40)),
+    width: Math.min(preferredWidth, Math.max(minWidth, areaWidth - 40)),
     height: Math.min(preferredHeight, Math.max(WINDOW_MIN_HEIGHT, areaHeight - 40)),
   }
 }
@@ -665,9 +667,10 @@ async function createMainWindow(): Promise<BrowserWindow> {
 
   const cli = parseCliArgs()
   const uiMode = resolveUiMode(cli)
-  appendLauncherLog(`界面来源: ${uiMode}`)
+  const minWidth = uiMode === 'ssr' ? SSR_WINDOW_MIN_WIDTH : WINDOW_MIN_WIDTH
+  appendLauncherLog(`界面来源: ${uiMode}（最小宽度 ${minWidth}px）`)
 
-  const initial = resolveInitialWindowSize()
+  const initial = resolveInitialWindowSize(minWidth)
   appendLauncherLog(
     `初始窗口: ${initial.width}x${initial.height}（工作区 ${screen.getPrimaryDisplay().workAreaSize.width}x${screen.getPrimaryDisplay().workAreaSize.height}）`
   )
@@ -676,7 +679,7 @@ async function createMainWindow(): Promise<BrowserWindow> {
     title: 'a_da',
     width: initial.width,
     height: initial.height,
-    minWidth: WINDOW_MIN_WIDTH,
+    minWidth,
     minHeight: WINDOW_MIN_HEIGHT,
     center: true,
     // 始终无边框；SSR 模式由 preload 在页面顶栏注入窗口控制（见 preload.ts）。

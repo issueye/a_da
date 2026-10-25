@@ -133,7 +133,7 @@ function Page(props: any) {
 
 ## 4. 插件示例
 
-- `frontend-plugins/hello-tsx/`：页面 / 仪表盘 / `composer.left` 插槽；
+- `frontend-plugins/hello-tsx/`：页面 / 仪表盘 / JSON API（不占用输入框插槽）；
 - `frontend-plugins/token-weather/`：**按上下文用量显示天气**（0-30% 晴 / 31-60% 多云 /
   61-85% 阴 / >85% 暴雨）。三处形态：独立页面、输入框上方胶囊（`composer.above`，随
   live 轮询每 2 秒刷新）、概览卡片。顺带演示相对 import（`components/weather.tsx` 三处共用）、

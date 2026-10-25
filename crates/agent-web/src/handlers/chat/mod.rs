@@ -275,29 +275,35 @@ fn approval_picker_html(mode: &str, label: &str, tone: &str, thread_id: &str) ->
         );
     }
     let options = [
-        ("auto", "自动批准", ""),
-        ("ask", "每次询问", ""),
-        ("readonly", "严格只读", ""),
+        ("auto", "自动批准", "i-sparkles", ""),
+        ("ask", "每次询问", "i-chat", ""),
+        ("readonly", "严格只读", "i-file", ""),
         (
             "full",
             "完全访问",
+            "i-shield-check",
             r#" data-confirm="切换到「完全访问」后，工具执行将不再逐一询问，确定吗？""#,
         ),
     ];
     let mut rows = String::new();
-    for (value, option_label, confirm) in options {
+    for (value, option_label, icon, confirm) in options {
         let is_current = value == mode;
         let check = if is_current {
-            ui::icon("i-check", 12)
+            format!(
+                r#"<span class="ada-approval-picker__check">{}</span>"#,
+                ui::icon("i-check", 12)
+            )
         } else {
             String::new()
         };
         rows.push_str(&format!(
-            r#"<form method="post" action="/approval/mode" data-partial{confirm}><input type="hidden" name="thread_id" value="{thread}"><input type="hidden" name="mode" value="{value}"><button class="ada-approval-picker__option" type="submit"{disabled}>{check}<span>{option_label}</span></button></form>"#,
+            r#"<form method="post" action="/approval/mode" data-partial{confirm}><input type="hidden" name="thread_id" value="{thread}"><input type="hidden" name="mode" value="{value}"><button class="ada-approval-picker__option" type="submit"{disabled}>{glyph}<span>{option_label}</span>{check}</button></form>"#,
             thread = escape(thread_id),
             value = value,
             confirm = confirm,
             disabled = if is_current { " disabled" } else { "" },
+            glyph = ui::icon(icon, 13),
+            check = check,
         ));
     }
     format!(
@@ -1614,5 +1620,21 @@ mod tests {
         assert!(collect_images(&pairs(&[("images", "  ")]))
             .expect("blank is fine")
             .is_empty());
+    }
+
+    #[test]
+    fn approval_picker_options_have_svg_icons_and_current_check() {
+        let html = approval_picker_html("ask", "每次询问", "warn", "t1");
+        for label in ["自动批准", "每次询问", "严格只读", "完全访问"] {
+            assert!(html.contains(label), "缺少档位：{label}");
+        }
+        // 4 个选项各一个图标 + 当前项的勾 + 药丸本体 + caret。
+        assert_eq!(
+            html.matches("<svg class=\"ada-icon\"").count(),
+            7,
+            "每个档位都应有 SVG 图标：{html}"
+        );
+        assert!(html.contains("ada-approval-picker__check"), "{html}");
+        assert!(!html.contains("TSX 插槽"), "工具栏不应再有演示胶囊");
     }
 }

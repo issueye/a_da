@@ -1274,12 +1274,13 @@ mod tests {
         assert_eq!(title, "Hello TSX");
         assert!(html.contains("页面由 TSX 在服务端渲染"), "{html}");
         assert!(html.contains("插件 3"), "{html}");
+        // hello-tsx 只是最小示例：不再占用 composer.left，避免工具栏常驻一个演示胶囊。
+        assert!(plugin.slots.is_empty(), "slots: {:?}", plugin.slots);
         let slot = registry.render_slot_with(Slot::ComposerLeft, &cx);
         assert!(
-            slot.html.contains("TSX 插槽"),
-            "slot: {}; failed: {:?}",
-            slot.html,
-            slot.failed
+            !slot.html.contains("TSX 插槽"),
+            "hello-tsx 不应再占用 composer.left：{}",
+            slot.html
         );
         let widgets = registry.dashboard_widgets_with(&cx);
         assert!(widgets

@@ -367,6 +367,39 @@ try {
     'SSR 会话页输入框与发送键',
   )
 
+  // 1. 审批档位弹层：每个选项都有 SVG 图标（4 图标 + 当前项勾 + 药丸 + caret）。
+  const approvalPicker = await evaluate(
+    cdp,
+    'document.querySelector("#approval-picker")?.outerHTML || ""',
+  )
+  check(
+    (approvalPicker.match(/<svg/g) || []).length >= 5,
+    '审批档位弹层每个选项都带 SVG 图标',
+    `${(approvalPicker.match(/<svg/g) || []).length} 个 svg`,
+  )
+  check(
+    !(await evaluate(cdp, 'document.body.innerText')).includes('TSX 插槽'),
+    '工具栏不再显示「TSX 插槽」演示胶囊',
+  )
+
+  // 2. 最窄 450px：侧栏变抽屉、无横向溢出。
+  await cdp.send('Emulation.setDeviceMetricsOverride', {
+    width: 450,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  })
+  await sleep(400)
+  const narrow = await evaluate(
+    cdp,
+    '({ inner: window.innerWidth, scroll: document.documentElement.scrollWidth, body: document.body.scrollWidth, menu: Boolean(document.querySelector(".ada-menu-toggle")) && getComputedStyle(document.querySelector(".ada-menu-toggle")).display !== "none" })',
+  )
+  check(narrow.inner === 450, '450px 视口生效', JSON.stringify(narrow))
+  check(narrow.scroll <= narrow.inner + 1, '450px 下无横向溢出', JSON.stringify(narrow))
+  check(narrow.menu === true, '450px 下侧栏折叠为抽屉按钮', JSON.stringify(narrow))
+  await cdp.send('Emulation.clearDeviceMetricsOverride')
+  await sleep(300)
+
   await evaluate(cdp, 'document.querySelector("textarea").focus()')
   await cdp.send('Input.insertText', { text: 'Electron SSR 请回复一句话。' })
   await waitUntil(
