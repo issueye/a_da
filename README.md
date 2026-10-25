@@ -379,7 +379,8 @@ bun run typecheck            # 门一：前端 tsc --noEmit
 
 | 脚本 | 验什么 |
 |---|---|
-| `pwsh -NoProfile -File tools/verify-desktop-shell.ps1` | 桌面壳：拉起网关 → 界面接入 → 窗口控制 → 状态同步 → 退出清理（弹窗开着时点最大化仍须生效） |
+| `pwsh -NoProfile -File tools/verify-desktop-shell.ps1` | 桌面壳：拉起网关 → 界面接入 → 窗口控制 → 状态同步 → 退出清理（弹窗开着时点最大化仍须生效）；锁屏时自动改用 CDP 无头验收 |
+| `node tools/verify-desktop-shell-headless.mjs` | 无头版桌面壳验收：CDP 真实命中渲染层 + 原生窗口状态，锁屏/CI 可用 |
 | `pwsh -NoProfile -File tools/verify-retry-and-disconnect.ps1` | 重试与断线：真产品走真 JSON-RPC（改用户配置前先备份后还原） |
 | `bun tools/verify-card-order-e2e.mjs [--with-tool]` | 卡片顺序：比较**收尾前后界面上**的顺序 |
 | `bun tools/verify-full-access-paths.mjs` | 权限档位：`full` 能读工作区外与插件/技能目录、凭据仍拒、`ask` 仍守边界 |

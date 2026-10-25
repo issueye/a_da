@@ -19,6 +19,10 @@
 #   pwsh -NoProfile -File tools/verify-desktop-shell.ps1 -Dev
 #
 # 注意：会真的动鼠标（点窗口按钮），跑的时候别抢鼠标。
+#
+# 锁屏环境（LogonUI 在运行）：真实鼠标点击无法到达窗口，脚本会自动改用
+# `verify-desktop-shell-headless.mjs`（Electron CDP 注入渲染层输入）执行同一组
+# 行为断言；输出会明确标注"改用无头验收"，不会假装像素级检查跑过。
 param(
   [string]$Exe = '',
   [string]$WorkDir = '',
@@ -41,6 +45,25 @@ if ($env:ELECTRON_RUN_AS_NODE) {
 }
 $useVite = [bool]$Dev
 if ($Exe) { $Exe = (Resolve-Path -LiteralPath $Exe).Path }
+
+# 锁屏时无法把窗口顶到前台，真实鼠标点击会落在锁屏界面上。
+# 这时改用 CDP 无头验收：同样是渲染层真实命中 + 原生窗口状态 + 进程清理，
+# 只是输入通道从 OS 鼠标换成调试协议（像素级图标/按钮簇检查无法执行，输出会写明）。
+if (-not $Dev -and (Get-Process LogonUI -ErrorAction SilentlyContinue)) {
+  Write-Host '检测到工作站锁屏（LogonUI 在运行）：真实鼠标点击不可用，改用无头 CDP 验收。'
+  $headless = Join-Path $PSScriptRoot 'verify-desktop-shell-headless.mjs'
+  if (-not (Test-Path -LiteralPath $headless)) {
+    Write-Host "FAIL: 缺少无头验收脚本 $headless"
+    exit 1
+  }
+  if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+    Write-Host 'FAIL: 未找到 node，无法运行无头验收'
+    exit 1
+  }
+  $env:A_DA_ELECTRON_EXE = $Exe
+  & node $headless
+  exit $LASTEXITCODE
+}
 $artDir = Join-Path $RepoRoot 'tmp'
 New-Item -ItemType Directory -Force -Path $artDir | Out-Null
 $appHome = if ($env:A_DA_HOME) { $env:A_DA_HOME } else { Join-Path $env:USERPROFILE '.a-da' }

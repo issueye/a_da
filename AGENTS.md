@@ -39,7 +39,8 @@ cargo xtask verify --fast                     # 上面四道静态门一次跑�
 bun run electron:dev                          # Electron 桌面端开发（前端热重载 + 网关监督）
 bun run electron:pack                         # 打包 Electron 免安装版 (dist/electron/win-unpacked)
 cargo run -p agent-gateway -- --port 52353    # 网页访问：页面与 /rpc 同端口（浏览器开 http://127.0.0.1:52353/）
-pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面壳验收（Electron 交付形态）
+pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面壳验收（Electron 交付形态；锁屏时自动走无头 CDP 回退）
+node tools/verify-desktop-shell-headless.mjs                             # 无头版：锁屏/CI 下用 CDP 真实命中渲染层
 ```
 
 - **`typecheck` 与 `cargo test` 是两个独立的门，两个都要过**，别只跑一个。
@@ -199,7 +200,10 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
   undefined，界面里的错再也查不到；`preload-error` / `render-process-gone` / `did-fail-load`
   一并转发。打包后的 exe 没有控制台，**应用日志是唯一证据**（§17）。
 - **桌面壳的行为要按"点一下"验收**：`pwsh -NoProfile -File tools/verify-desktop-shell.ps1`
-  （Electron 交付形态）。真鼠标点窗口按钮 + 读 `launcher.log`
+  （Electron 交付形态）。**锁屏时**（`LogonUI` 在运行）真实鼠标到不了窗口，脚本会明确提示并
+  改用 `tools/verify-desktop-shell-headless.mjs`：用 Electron CDP 的 `Input.dispatchMouseEvent`
+  真实命中渲染层、用 `tools/window-state.ps1` 读原生窗口状态，覆盖同一组行为断言
+  （像素级按钮簇/图标截图检查无法执行，输出会写明）。真鼠标点窗口按钮 + 读 `launcher.log`
   断言"拉起网关 → 界面接入 → 窗口控制 → 状态同步 → 退出清理"。脚本注释里记了必踩的坑：
   窗口句柄要按标题找（`MainWindowHandle` 会挑到隐藏/辅助窗口）、按钮定位要按「与背景色的差异」
   而不是亮度（暗色主题下整条标题栏都算"暗"）、每次点击前重新量窗口矩形（最大化会改坐标）、
