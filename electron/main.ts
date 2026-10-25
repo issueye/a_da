@@ -679,9 +679,8 @@ async function createMainWindow(): Promise<BrowserWindow> {
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
     center: true,
-    // SSR 页面没有自绘标题栏，用系统原生边框保留最小化/最大化/关闭；
-    // desktop 模式仍是原来的无边框 + React 标题栏。
-    frame: uiMode === 'desktop' ? false : true,
+    // 始终无边框；SSR 模式由 preload 在页面顶栏注入窗口控制（见 preload.ts）。
+    frame: false,
     backgroundColor: '#18181b',
     icon: getAppIcon(),
     webPreferences: {
@@ -691,6 +690,9 @@ async function createMainWindow(): Promise<BrowserWindow> {
       sandbox: false,
       webSecurity: false,
       allowRunningInsecureContent: true,
+      // preload 靠这个参数决定是否给 SSR 顶栏注入窗口控制；
+      // desktop 模式（React 自带标题栏）不注入。
+      additionalArguments: [`--a-da-ui-mode=${uiMode}`],
     },
   })
 

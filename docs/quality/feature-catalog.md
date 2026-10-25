@@ -162,7 +162,7 @@
 ## 十一、桌面端界面（默认 SSR；`desktop-ui/` 回退）
 
 - **Electron 默认加载 SSR**：等网关就绪后 `loadURL(http://127.0.0.1:<port>/)`，带 token 时用
-  `?token=` 自动登录；窗口用系统原生边框保留最小化/最大化/关闭。`--ui=desktop`
+  `?token=` 自动登录；窗口保持无边框，preload 在 SSR 顶栏注入最小化/最大化/关闭。`--ui=desktop`
   （`bun run electron:dev:desktop`）回退到下面的 React 界面。
 - **React 回退布局**：标题栏（连接态 / 模式徽标 / 窗口控制，`z-[100]`）+ 侧栏（工作区与会话）+ 主区
   （`TabStrip` + `Transcript` + `Composer`）+ 右侧面板（`AgentContextPanel`）。

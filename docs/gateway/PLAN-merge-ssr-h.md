@@ -33,7 +33,8 @@ ssr-h 的页面与处理器基本不改，`AgentClient` 的方法签名也不改
 1. **同源单端口**：`/`、`/threads/*`、`/static/*`、`/ext/*`、SSE、`/api/*`、`/rpc` 全在一个 axum Router 上；
 2. **不再自反代**：一元调用走网关内部函数，事件订阅直连本工作区的 agent；网关 token 永不出现在浏览器；
 3. **桌面端也可直接用**：Electron 等网关就绪后加载 `http://127.0.0.1:<port>/`（默认 SSR，
-   系统原生窗口边框）；`--ui=desktop` 回退本地 React/Vite。网关仍只被当作一个 HTTP/WS 服务。
+   窗口保持无边框，由 preload 在 SSR 顶栏注入窗口控制）；`--ui=desktop` 回退本地 React/Vite。
+   网关仍只被当作一个 HTTP/WS 服务。
 
 ## 1. 目标与非目标
 
@@ -347,7 +348,7 @@ M4 删除）。
 **T09 Electron 与浏览器入口**
 
 - Electron 默认 `--ui=ssr`：等网关就绪后加载 `http://127.0.0.1:<port>/`，带 token 时用
-  `?token=` 自动登录；窗口改用系统原生边框保留最小化/最大化/关闭。
+  `?token=` 自动登录；窗口保持无边框，由 preload 在 SSR 顶栏注入最小化/最大化/关闭。
 - `--ui=desktop`（`A_DA_ELECTRON_UI=desktop` / `bun run electron:dev:desktop`）保留原 React/Vite
   界面与自绘标题栏；`desktop-ui` 的「浏览器打开」链接仍指向 `/`。
 
@@ -522,7 +523,7 @@ cargo xtask verify --fast
 | 凭据 | `/__auth` 接受网关 token / 配对码，换发 HttpOnly 会话 cookie；`--web-token` 保留兼容 |
 | 插件 | 自省端点 `/web-ui/frontend-plugins`；停用状态 `~/.a-da/web-ui-state.json` |
 | 默认值 | 网关 `--web-ui` 默认 `ssr`；Electron `--ui` 默认 `ssr`，`desktop` 保留回退 |
-| Electron | 等网关就绪后加载 `http://127.0.0.1:<port>/`，带 token 时 `?token=` 自动登录；SSR 用系统原生边框，`--ui=desktop` 回退无边框 React |
+| Electron | 等网关就绪后加载 `http://127.0.0.1:<port>/`，带 token 时 `?token=` 自动登录；窗口保持无边框，preload 在 SSR 顶栏注入窗口控制；`--ui=desktop` 回退 React |
 | 验收 | `cargo test -p agent-web`、`cargo test -p agent-gateway`、`node tools/verify-gateway-web.mjs`、`node tools/verify-ssr-streaming.mjs`、`node tools/verify-ssr-approval-abort.mjs`、`node tools/verify-ssr-workspaces.mjs`、`node tools/verify-electron-ssr.mjs`、`pwsh -NoProfile -File tools/verify-desktop-shell.ps1`（`--ui=desktop`；锁屏时走 `verify-desktop-shell-headless.mjs`）、`cargo xtask verify-docs` |
 
 ## 附录 A：文件落点对照

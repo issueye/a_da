@@ -3,7 +3,7 @@
 // 与 `verify-desktop-shell-headless.mjs` 的分工：
 //   · 那个脚本验证 `--ui=desktop` 的 React 自绘标题栏；
 //   · 本脚本验证默认 `--ui=ssr`：Electron 等网关就绪后加载 `http://127.0.0.1:<port>/`，
-//     用系统原生边框做窗口控制，消息走 SSR 表单 → 网关 → agent。
+//     preload 在 SSR 顶栏注入无边框窗口控制，消息走 SSR 表单 → 网关 → agent。
 //
 // 不碰用户 `~/.a-da`：临时 A_DA_HOME + 临时 workspace + 临时 Electron user-data-dir。
 
@@ -216,6 +216,40 @@ async function evaluate(cdp, expression, awaitPromise = false) {
   return result.result?.value
 }
 
+async function rectOf(cdp, label) {
+  return evaluate(
+    cdp,
+    `(() => {
+      const b = [...document.querySelectorAll('button[aria-label]')].find(
+        (x) => x.getAttribute('aria-label') === ${JSON.stringify(label)}
+      );
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2, disabled: Boolean(b.disabled) };
+    })()`,
+  )
+}
+
+async function clickLabel(cdp, label) {
+  const rect = await rectOf(cdp, label)
+  if (!rect) throw new Error(`找不到按钮：${label}`)
+  await cdp.send('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: rect.x,
+    y: rect.y,
+    button: 'left',
+    clickCount: 1,
+  })
+  await cdp.send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: rect.x,
+    y: rect.y,
+    button: 'left',
+    clickCount: 1,
+  })
+  await sleep(350)
+}
+
 async function waitUntil(fn, timeoutMs, label) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
@@ -262,19 +296,46 @@ try {
   check(/^http:\/\/127\.0\.0\.1:\d+\/$/.test(pageUrl), '页面来源是网关根路径（不是 file://）', pageUrl)
   check((await evaluate(cdp, 'document.title')).includes('a_da'), 'SSR 页面标题包含 a_da')
   check(
-    (await evaluate(cdp, `Boolean(document.querySelector('button[aria-label="最大化"]'))`)) === false,
-    'SSR 模式使用系统原生窗口边框（无自绘标题栏按钮）',
+    await evaluate(cdp, `Boolean(document.querySelector('button[aria-label="最大化"]'))`),
+    'SSR 顶栏注入了无边框窗口控制（最小化/最大化/关闭）',
   )
 
-  // 原生窗口控制
+  // 无边框窗口控制：按钮走 preload IPC，原生状态用 IsIconic/IsZoomed 复核。
   const initial = windowState()
-  check(initial.found === true && initial.zoomed === false, '找到原生窗口且未最大化', JSON.stringify(initial))
-  const maxed = windowState('maximize')
-  check(maxed.zoomed === true, '原生最大化生效', JSON.stringify(maxed))
-  const restored = windowState('restore')
-  check(restored.zoomed === false, '原生还原生效', JSON.stringify(restored))
-  const minimized = windowState('minimize')
-  check(minimized.iconic === true, '原生最小化生效', JSON.stringify(minimized))
+  check(initial.found === true && initial.zoomed === false, '找到窗口且未最大化', JSON.stringify(initial))
+
+  await clickLabel(cdp, '最大化')
+  await waitUntil(
+    () => evaluate(cdp, 'window.electronAPI.isWindowMaximized()', true),
+    5_000,
+    '窗口最大化',
+  )
+  check(windowState().zoomed === true, '点「最大化」→ 窗口已最大化')
+  await waitUntil(
+    () => evaluate(cdp, `Boolean(document.querySelector('button[aria-label="向下还原"]'))`),
+    5_000,
+    '按钮切到「向下还原」',
+  )
+  check(true, '最大化后按钮状态同步为「向下还原」')
+
+  await clickLabel(cdp, '向下还原')
+  await waitUntil(
+    () => evaluate(cdp, 'window.electronAPI.isWindowMaximized()', true).then((v) => v === false),
+    5_000,
+    '窗口还原',
+  )
+  check(windowState().zoomed === false, '点「向下还原」→ 窗口已还原')
+
+  await clickLabel(cdp, '最小化')
+  let minimized = false
+  for (let i = 0; i < 25; i += 1) {
+    if (windowState().iconic === true) {
+      minimized = true
+      break
+    }
+    await sleep(200)
+  }
+  check(minimized, '点「最小化」→ 窗口已最小化')
   const shown = windowState('restore')
   check(shown.iconic === false, '窗口恢复可见', JSON.stringify(shown))
 
@@ -350,19 +411,20 @@ try {
   )
   check(true, 'SSR 表单发送 → 助手回复上屏')
   check(modelRequests.length >= 1, '假模型收到请求', `实际 ${modelRequests.length} 次`)
+  check(
+    await evaluate(cdp, `Boolean(document.querySelector('button[aria-label="关闭窗口"]'))`),
+    '整页跳转后窗口控制仍被重新注入',
+  )
 
-  // 关闭：走 preload 的 IPC（原生边框关闭按钮无法在锁屏下点击）
   const report = await evaluate(cdp, 'window.electronAPI.getProcessReport()', true)
   const gatewayPid = report?.processes?.find((p) => p.name.startsWith('ada-gateway'))?.pid || null
   check(Boolean(gatewayPid), '关闭前报告了网关 pid', String(gatewayPid))
-  // 关闭会立刻销毁页面，CDP 的响应不会回来；发出去后只等进程退出。
-  cdp
-    .send('Runtime.evaluate', {
-      expression: 'window.electronAPI.windowClose()',
-      awaitPromise: true,
-      returnByValue: true,
-    })
-    .catch(() => {})
+  // 关闭会立刻销毁页面，CDP 的响应不会回来；点击后只等进程退出。
+  try {
+    await clickLabel(cdp, '关闭窗口')
+  } catch {
+    // 页面已销毁 / WebSocket 已断开都算正常
+  }
   let appGone = false
   for (let i = 0; i < 60; i += 1) {
     if (child.exitCode !== null) {

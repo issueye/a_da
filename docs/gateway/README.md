@@ -92,7 +92,7 @@ sequenceDiagram
 
 | 模块 | 所属组件 | 职责范围 | 绝对禁止事项 |
 |---|---|---|---|
-| **桌面瘦宿主** | `electron` | • 窗口控制（SSR 模式用系统原生边框；desktop 模式无边框自绘）<br>• 默认载入网关 SSR 页面（`--ui=desktop` 回退本地 React/Vite）<br>• 本地守护伴侣（单机时静默起网关） | ❌ 禁止调用 OS 文件对话框<br>❌ 禁止直接读写会话/工作区文件<br>❌ 禁止直接管理 Coding 多进程 |
+| **桌面瘦宿主** | `electron` | • 无边框窗口控制（SSR 顶栏由 preload 注入按钮；desktop 由 React 自绘）<br>• 默认载入网关 SSR 页面（`--ui=desktop` 回退本地 React/Vite）<br>• 本地守护伴侣（单机时静默起网关） | ❌ 禁止调用 OS 文件对话框<br>❌ 禁止直接读写会话/工作区文件<br>❌ 禁止直接管理 Coding 多进程 |
 | **网关平台** | `ada-gateway` | • 提供 `gateway.fs.*` 目录遍历与磁盘探测<br>• 提供 `gateway.workspaces.*` 历史记录管理<br>• 路径沙箱安全判定（防 `../` 穿透）<br>• Agent 实例生命周期管理（Supervisor）与透传（Relay） | ❌ 严禁内嵌多轮 Agent 执行循环（INV-1）<br>❌ 严禁缓存会话消息或工具状态（INV-8） |
 | **Agent 实例** | `ada-coding`（PM 是它的**模式预设**，不是第二个产品） | • 工作区沙箱内的多轮执行（`run_turn`）<br>• 编写代码、执行终端命令、检查点管理<br>• 工作区内文件 Base64 预览（`fs.read_base64`） | ❌ 禁止暴露全局磁盘根目录选择接口<br>❌ 禁止自行跨工作区穿透读盘 |
 | **Web 前端（默认）** | `agent-web`（SSR） | • 页面 / SSE / 表单动作<br>• 前端插件与 TSX 插槽<br>• 浏览器与 Electron 共用同一份页面 | ❌ 禁止持有会话状态第二份真相<br>❌ 禁止内嵌多轮引擎 |
@@ -216,8 +216,8 @@ Electron 再通过 `--ui-dir` 显式传给网关（见 `electron/main.ts` 的 `f
 `--web-ui desktop` 回退到原来的 `desktop-ui/dist` 静态托管（`--ui-dir` 仍有效）。
 
 **Electron 也默认加载这份 SSR 页面**：`electron/main.ts` 等网关就绪后
-`loadURL(http://127.0.0.1:<port>/)`，带 token 时用 `?token=` 自动登录；窗口用系统原生边框
-保留最小化/最大化/关闭。`--ui=desktop`（或 `A_DA_ELECTRON_UI=desktop`）回退到本地
+`loadURL(http://127.0.0.1:<port>/)`，带 token 时用 `?token=` 自动登录；窗口保持无边框，
+`preload.ts` 在 SSR 顶栏注入最小化/最大化/关闭（复用同一套 IPC）。`--ui=desktop`（或 `A_DA_ELECTRON_UI=desktop`）回退到本地
 React/Vite 界面（无边框 + 自绘标题栏），`bun run electron:dev:desktop` 即此模式。
 
 浏览器凭据：`/__auth` 接受网关 `--token` 或启动日志里的一次性配对码，校验通过后换发

@@ -20,7 +20,7 @@
 #
 # 注意：会真的动鼠标（点窗口按钮），跑的时候别抢鼠标。
 #
-# Electron 默认界面已切到 SSR（系统原生边框）；本脚本显式用 `--ui=desktop` 验收
+# Electron 默认界面已切到 SSR（无边框 + preload 注入顶栏控制）；本脚本显式用 `--ui=desktop` 验收
 # **自绘标题栏**那套 React 界面。SSR 模式的验收见 `tools/verify-electron-ssr.mjs`。
 #
 # 锁屏环境（LogonUI 在运行）：真实鼠标点击无法到达窗口，脚本会自动改用

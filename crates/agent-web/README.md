@@ -3,7 +3,8 @@
 > **已并入网关**：`crates/agent-web` 是根 workspace 成员，`ada-gateway` 默认挂载它的
 > `router`。一个 `ada-gateway` 进程 + 一个端口 = 整站；页面、`/static/*`、SSE、`/api/*`、
 > `/rpc` 都在同一个 axum Router 上。**Electron 桌面壳默认也加载这份 SSR 页面**
-> （`http://127.0.0.1:<port>/`，系统原生窗口边框），`--ui=desktop` 回退本地 React/Vite。
+> （`http://127.0.0.1:<port>/`，无边框窗口；preload 在 SSR 顶栏注入窗口控制），
+> `--ui=desktop` 回退本地 React/Vite。
 > 独立运行的 `ssr-h` 二进制只用于开发与实机验收。
 
 UED 设计基线、组件规范与 desktop-ui 对齐差距见 [docs/UED.md](docs/UED.md)。
