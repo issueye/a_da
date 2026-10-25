@@ -537,6 +537,25 @@ impl PluginRegistry {
         self.plugins.read().map(|guard| guard.len()).unwrap_or(0)
     }
 
+    /// 是否有**已启用**的插件声明了某个能力。
+    ///
+    /// 宿主据此决定要不要为插件抓取额外数据（例如 `processes.read` 才会去查网关
+    /// 进程列表）；停用/加载失败的插件不算，避免白跑一轮并绕过"停用即消失"。
+    pub fn has_capability(&self, capability: &str) -> bool {
+        self.plugins
+            .read()
+            .map(|guard| {
+                guard.iter().any(|record| {
+                    record.is_active()
+                        && record
+                            .capabilities
+                            .iter()
+                            .any(|declared| declared == capability)
+                })
+            })
+            .unwrap_or(false)
+    }
+
     pub fn find(&self, id: &str) -> Option<PluginRecord> {
         self.plugins
             .read()
@@ -1286,6 +1305,54 @@ mod tests {
         assert!(widgets
             .iter()
             .any(|widget| widget.html.contains("TSX 运行时卡片")));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 进程管理插件：合成一份 `processes` 数据，守住 TSX 能编译、槽位能渲染、
+    /// 且不会把 token 带进页面。
+    #[test]
+    fn process_manager_example_renders_injected_processes() {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
+        let root = temp_root("process-manager-copy");
+        copy_tree(&source, &root);
+        let registry = registry_at(&root);
+        let plugin = registry
+            .find("process-manager")
+            .expect("process-manager exists");
+        assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
+
+        let cx = RenderContext::default().with_data(serde_json::json!({
+            "plugin_count": 6,
+            "render": { "at": 1_761_000_000_000u64 },
+            "processes": {
+                "status": {
+                    "pid": 4321,
+                    "product": "ada-coding",
+                    "defaultWorkspace": "E:/codes/demo",
+                    "agentCount": 1,
+                    "routableCount": 1
+                },
+                "agents": [{
+                    "id": "ada-coding::abc",
+                    "product": "ada-coding",
+                    "workspace": "E:/codes/demo",
+                    "endpoint": "ws://127.0.0.1:5555/rpc",
+                    "status": "ready",
+                    "pid": 777,
+                    "lastActiveMs": 1_760_999_999_000u64
+                }],
+                "count": 1,
+                "error": null
+            }
+        }));
+        let slot = registry.render_slot_with(Slot::TopbarRight, &cx);
+        assert_eq!(slot.failed, Vec::<String>::new(), "{slot:?}");
+        assert!(slot.html.contains("process-manager"), "{}", slot.html);
+        assert!(slot.html.contains("ada-gateway"), "{}", slot.html);
+        assert!(slot.html.contains("AGENT 实例"), "{}", slot.html);
+        assert!(slot.html.contains("demo"), "{}", slot.html);
+        assert!(slot.html.contains("PID 777"), "{}", slot.html);
+        assert!(!slot.html.contains("token="), "{}", slot.html);
         let _ = fs::remove_dir_all(&root);
     }
 

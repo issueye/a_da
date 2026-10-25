@@ -39,7 +39,10 @@ UED 设计基线、组件规范与 desktop-ui 对齐差距见 [docs/UED.md](docs
 - 对话流：工具与思考采用 desktop-ui 的单行日志式——单行显示图标、中文标签、目标对象与真实耗时，展开后是左侧导轨线里的参数/输出面板；工具输出按 Markdown 渲染（JSON 走等宽原文）。
 - 侧栏支持按标题搜索会话**和工作区名**（工作区名命中时整组展开）；插件 / 供应商 / 概览 / 插件页也共用同一套侧栏外壳，不再切回旧布局。
 - 图标统一为 14–16px 线性 SVG（替代早期字符符号）；工具/思考用单行日志式展示；输入框为桌面端形态（大圆角输入卡 + 底部工具行：工作区/审批档位/模型 + 近黑圆形发送键）；窄窗口（≤760px）侧栏收为抽屉，顶栏出汉堡按钮；**宽屏下同一个按钮是"收起/展开侧栏"**（状态存 `localStorage`，跨刷新保持）；中止等危险操作用共享确认对话框（原生 `<dialog>`）。
-- 进程管理：顶栏「进程管理」按钮打开浮窗，展示网关 PID / 实例数 / 可路由数 / 默认工作区，以及每个 agent 实例的工作区、状态、PID 与最近活跃时间；内容由 htmx 从 `/partials/processes` 读取，可手动刷新。只读视图，不提供“重启自己/终止”。
+- 进程管理：由 **`frontend-plugins/process-manager/`** 插件提供（`topbar.right` 插槽，
+  声明 `processes.read` 能力）。顶栏服务器图标点开浮窗，展示网关 PID / 实例数 / 可路由数 /
+  默认工作区，以及每个 agent 实例的工作区、状态、PID 与最近活跃时间；「刷新」是整页重载。
+  只读视图，不提供“重启自己/终止”。数据契约见 [docs/PLUGIN-DATA.md](docs/PLUGIN-DATA.md) §2.11。
 - 审批：`waiting_approval` 工具在输入框上方托盘展示命令/参数与等待时长，可批准/拒绝；托盘随事件流出现/消失（断流时由兜底轮询接管），不需要手工刷新。
 - 提问（`ask_user`）：待答复的提问在输入框上方展示题目、选项（单选/多选/文本补充），可提交回答；
   提问卡**浮动覆盖在对话流之上、不占布局空间**（desktop-ui 提问浮窗同款，审批/排队托盘仍是 in-flow）；
@@ -329,7 +332,8 @@ export function Page(props: any) {
   **不需要 Bun/Node**（只支持插件目录内的相对模块，npm 依赖不支持）；
 - 每次渲染新建 Boa Context（模块状态不跨请求）；release 单文件页约 5ms、
   含内置组件库的模块页约 3.4ms（组件库每次 Context 都要初始化，后续可做池化/预编译）；
-- **示例插件**：`frontend-plugins/hello-tsx/`（最小页面 / 仪表盘 / JSON API）、
+- **示例插件**：`frontend-plugins/process-manager/`（顶栏进程管理浮窗，`processes.read`）、
+  `frontend-plugins/hello-tsx/`（最小页面 / 仪表盘 / JSON API）、
   `frontend-plugins/token-weather/`（按上下文用量显示天气：完整页面 + 输入框上方胶囊/浮层 +
   概览卡片，演示相对 import、`details` 浮层与 SSE `parts` 刷新；说明见插件目录内的 README）、
   `frontend-plugins/task-plan/`（任务规划卡片：`chat.corner` 右上角 / `composer.above` 两处可挂，

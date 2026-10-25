@@ -158,8 +158,9 @@
   托管页面 / SSE / `/static/*` / `/ext/*` / `/api/*` / `/rpc`；页面通过 `GatewayBackend` 进程内调用
   agent（不再 HTTP 反代），事件订阅持有 `ConnectionGuard` 防回收；`/__auth` 接受网关 token / 配对码并
   换发 HttpOnly 会话 cookie。`--web-ui desktop` 回退到 `desktop-ui/dist` 静态托管。
-  **进程管理浮窗**：顶栏入口 + htmx 拉取 `/partials/processes`，展示网关 PID/实例数与 agent 实例
-  （工作区 / 状态 / PID / 最近活跃）；只读，面板与窗口控制分层正确（模态层之上仍可点标题栏按钮）。
+  **进程管理浮窗**：由 `frontend-plugins/process-manager/` 插件（`topbar.right` 插槽 +
+  `processes.read` 能力）渲染，展示网关 PID/实例数与 agent 实例（工作区 / 状态 / PID / 最近活跃）；
+  只读，面板与窗口控制分层正确（浮窗打开时仍可点标题栏按钮）。
 
 ## 十一、桌面端界面（默认 SSR；`desktop-ui/` 回退）
 

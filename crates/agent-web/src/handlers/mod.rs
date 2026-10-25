@@ -306,10 +306,18 @@ async fn base_with_snapshot(
     snapshot: Option<&Value>,
     thread_id: Option<&str>,
 ) -> PageBase {
-    let context = match snapshot {
+    let mut context = match snapshot {
         Some(snapshot) => render_context_with_tokens(state, active, snapshot, thread_id),
         None => render_context(state, active),
     };
+    // 进程管理是**插件**（`process-manager`，声明 `processes.read`）：
+    // 只有真有启用插件要这份数据时才去问网关，停用插件后不再白跑。
+    if state.frontend.has_capability("processes.read") {
+        let processes = load_processes(state).await;
+        if let Some(data) = context.data.as_object_mut() {
+            data.insert("processes".to_string(), processes);
+        }
+    }
     let slots = slot_content(&state.frontend, context).await;
     // 侧栏"新会话"要落在当前激活工作区。快照里的 `workspace.project` 是 agent 的真实
     // 当前项目（与 desktop-ui 的 `activeWorkspace` 同源）；没有快照时退回启动参数。
@@ -404,6 +412,38 @@ fn plugin_data(snapshot: &Value, thread_id: Option<&str>, plugin_count: usize) -
         // 表单字段约定见 [docs/PLAN-question-panel.md](../docs/PLAN-question-panel.md) §4。
         "questions": questions_view(snapshot, thread_id),
     })
+}
+
+/// 给 `processes.read` 插件的进程投影。
+///
+/// 只给网关自己产生的管理事实（pid / 状态 / 工作区 / 已剥 token 的端点）；
+/// 拿不到时返回 `null` 字段 + 错误文案，插件据此显示"读取失败"而不是空白面板。
+async fn load_processes(state: &AppState) -> Value {
+    let (status, agents) = tokio::join!(
+        state.agent.gateway_status(),
+        state.agent.gateway_agents()
+    );
+    match (status, agents) {
+        (Ok(status), Ok(agents)) => serde_json::json!({
+            "status": status,
+            "agents": agents.get("agents").cloned().unwrap_or_else(|| Value::Array(Vec::new())),
+            "count": agents.get("count").and_then(Value::as_u64).unwrap_or(0),
+            "error": Value::Null,
+        }),
+        (status, agents) => {
+            let error = status
+                .err()
+                .or_else(|| agents.err())
+                .map(|error| error.to_string())
+                .unwrap_or_default();
+            serde_json::json!({
+                "status": null,
+                "agents": [],
+                "count": 0,
+                "error": error,
+            })
+        }
+    }
 }
 
 /// 当前会话**待答复的提问**（归一化后的投影，camelCase 线上形状）。
@@ -1451,13 +1491,11 @@ mod tests {
 mod chat;
 mod dashboard;
 mod extensions;
-mod processes;
 mod providers;
 mod workspaces;
 
 pub use chat::*;
 pub use dashboard::*;
 pub use extensions::*;
-pub use processes::*;
 pub use providers::*;
 pub use workspaces::*;

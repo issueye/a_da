@@ -21,7 +21,6 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(handlers::chat))
         .route("/overview", get(handlers::dashboard))
         .route("/partials/dashboard", get(handlers::dashboard_partial))
-        .route("/partials/processes", get(handlers::processes_partial))
         .route("/__auth", get(guard::auth_form).post(guard::auth_submit))
         .route(
             "/threads",

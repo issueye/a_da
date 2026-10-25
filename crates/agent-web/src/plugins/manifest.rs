@@ -296,7 +296,7 @@ impl Manifest {
             validate_asset_path(style, ".css", "样式")?;
         }
         for capability in &self.capabilities {
-            if !matches!(capability.as_str(), "providers.read") {
+            if !matches!(capability.as_str(), "providers.read" | "processes.read") {
                 bail!("不支持的插件能力: {capability}");
             }
         }

@@ -220,7 +220,7 @@ async function rectOf(cdp, label) {
   return evaluate(
     cdp,
     `(() => {
-      const b = [...document.querySelectorAll('button[aria-label]')].find(
+      const b = [...document.querySelectorAll('button[aria-label], summary[aria-label]')].find(
         (x) => x.getAttribute('aria-label') === ${JSON.stringify(label)}
       );
       if (!b) return null;
@@ -400,18 +400,17 @@ try {
   await cdp.send('Emulation.clearDeviceMetricsOverride')
   await sleep(300)
 
-  // 3. 进程管理浮窗：顶栏入口 → 网关/实例列表 → 弹窗打开时窗口按钮仍可用。
+  // 3. 进程管理浮窗（frontend-plugins/process-manager 的 topbar.right 插槽）。
   check(
-    await evaluate(cdp, `Boolean(document.querySelector('[data-modal-open="processes"]'))`),
-    '顶栏提供进程管理入口',
+    await evaluate(
+      cdp,
+      `Boolean(document.querySelector('[data-plugin-scope="process-manager"] #process-manager'))`,
+    ),
+    '顶栏由插件提供进程管理入口',
   )
   await clickLabel(cdp, '进程管理')
   await waitUntil(
-    () =>
-      evaluate(
-        cdp,
-        `Boolean(document.querySelector('ada-modal[data-modal="processes"]:not([hidden])'))`,
-      ),
+    () => evaluate(cdp, `document.querySelector("#process-manager")?.open === true`),
     5_000,
     '进程管理浮窗打开',
   )
@@ -419,16 +418,16 @@ try {
     async () => {
       const text = await evaluate(
         cdp,
-        'document.querySelector("#process-panel")?.innerText || ""',
+        'document.querySelector("#process-manager")?.innerText || ""',
       )
       return text.includes('ada-gateway') && text.includes('ada-coding')
     },
     15_000,
-    '进程列表加载',
+    '进程列表渲染',
   )
   const processText = await evaluate(
     cdp,
-    'document.querySelector("#process-panel")?.innerText || ""',
+    'document.querySelector("#process-manager")?.innerText || ""',
   )
   check(
     processText.includes('AGENT 实例') && processText.includes('PID'),
@@ -464,12 +463,9 @@ try {
     code: 'Escape',
     windowsVirtualKeyCode: 27,
   })
+  await clickLabel(cdp, '进程管理')
   await waitUntil(
-    () =>
-      evaluate(
-        cdp,
-        `Boolean(document.querySelector('ada-modal[data-modal="processes"][hidden]'))`,
-      ),
+    () => evaluate(cdp, `document.querySelector("#process-manager")?.open === false`),
     5_000,
     '进程浮窗关闭',
   )

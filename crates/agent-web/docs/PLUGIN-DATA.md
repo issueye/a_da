@@ -41,6 +41,7 @@
 | `todo` | object \| null | `todo` 工具的当前计划（§2.8） |
 | `questions` | array | 当前会话**待答复**的提问（§2.10；`thread.tray` 插件用） |
 | `providerAdmin` | object | 供应商只读投影（§2.9；仅声明 `providers.read` 的插件） |
+| `processes` | object \| null | 网关与 agent 实例的只读投影（§2.11；仅声明 `processes.read` 的插件） |
 
 ### 2.2 `tokens`（上下文 / 缓存用量）
 
@@ -207,6 +208,42 @@
   端点立即消失（404 JSON）；
 - 插件浏览器 JS 可以 fetch 这些同源端点（CSP `connect-src 'self'`），
   完整示例见 `frontend-plugins/hello-tsx/`（`api/info.tsx` + `static/hello.js`）。
+
+### 2.11 `processes`（网关与 agent 实例）
+
+仅当插件 manifest 声明 `capabilities: ["processes.read"]` 时注入。数据来自网关自己的
+管理面 `gateway.status` + `gateway.listAgents`；**端点已经剥掉 token**，不含任何凭据。
+
+```jsonc
+{
+  "status": {                       // 网关状态；读取失败时为 null
+    "pid": 1234,
+    "product": "ada-coding",
+    "defaultWorkspace": "E:/proj",
+    "agentCount": 2,
+    "routableCount": 2,
+    "methodPrefix": "gateway."
+  },
+  "agents": [{                      // 网关管理的 agent 实例（已 redacted）
+    "id": "ada-coding::…",
+    "product": "ada-coding",
+    "workspace": "E:/proj",
+    "endpoint": "ws://127.0.0.1:5555/rpc",
+    "status": "ready",              // ready / starting / unhealthy / stopped
+    "pid": 777,
+    "startedAt": 1761000000000,
+    "lastActiveMs": 1761000000000,
+    "products": ["ada-coding"]
+  }],
+  "count": 1,
+  "error": null                     // 读取失败时的原因（status 为 null、agents 为空数组）
+}
+```
+
+- 进程数据在**页面渲染时**抓取；插件里的「刷新」用整页重载重新取（插件没有网络能力，
+  不需要自己发请求）；
+- 只读：不提供终止/重启入口——SSR 页面就跑在网关进程里；
+- 相对时间用 `data.render.at`，不要信浏览器时钟。
 
 ## 3. 点位与刷新时机
 

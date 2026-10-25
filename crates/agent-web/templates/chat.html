@@ -132,24 +132,6 @@
 {# 空会话页的「选择工作区」弹窗：目录片段由 htmx 在打开时懒加载 #}
 {% if !workspace_picker.is_empty() %}{{ workspace_picker|safe }}{% endif %}
 
-{# 进程管理浮窗：内容由 htmx 从 `/partials/processes` 懒加载，刷新按钮同源重取。
-   进程只读展示——SSR 就跑在网关进程里，不提供“重启自己/终止”这类入口。 #}
-<ada-modal class="ada-modal" data-modal="processes" hidden>
-  <div class="ada-modal__backdrop" data-modal-close></div>
-  <div class="ada-modal__panel ada-modal__panel--wide" role="dialog" aria-modal="true" aria-labelledby="ada-process-title">
-    <h2 class="ada-modal__title" id="ada-process-title">进程管理</h2>
-    <div class="ada-modal__body">
-      <div id="process-panel" hx-get="/partials/processes" hx-trigger="load" hx-swap="innerHTML">
-        <p class="ada-process__empty">正在读取进程…</p>
-      </div>
-    </div>
-    <div class="ada-modal__actions">
-      <button class="ada-btn ada-btn--secondary" type="button" data-modal-close>关闭</button>
-      <button class="ada-btn ada-btn--primary" type="button" hx-get="/partials/processes" hx-target="#process-panel" hx-swap="innerHTML">刷新</button>
-    </div>
-  </div>
-</ada-modal>
-
 {# 共享确认弹窗：组件库渲染，与二级页同一份实现 #}
 {{ base.confirm_dialog|safe }}
 </body>
