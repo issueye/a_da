@@ -158,6 +158,7 @@ ada-gateway --host 0.0.0.0 --allow-plaintext \
 
 ```bash
 node tools/verify-ssr-streaming.mjs
+node tools/verify-ssr-approval-abort.mjs   # 审批托盘 → 批准执行 → 流式中止
 ```
 
 假模型（每 120ms 吐一段）+ 真网关 + 真 `ssr-h`，走真实的 `/threads/{id}/send` 与

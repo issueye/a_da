@@ -33,6 +33,7 @@ cargo xtask verify-spec                       # 声明门：产品/预设 spec �
 cargo xtask verify-docs                       # 文档门：归档布局字样只在白名单文档里 + 协议文档与事件主题同步
 node tools/verify-gateway-web.mjs             # 网关内置 SSR：单进程 / 单端口 / API 隔离 / 登录 cookie
 node tools/verify-ssr-streaming.mjs           # SSR 流式与图片输入（单进程，假模型）
+node tools/verify-ssr-approval-abort.mjs      # SSR 审批批准 → 工具执行 → 流式中止（单进程，假模型）
 node tools/verify-ssr-workspaces.mjs          # SSR 工作区树与目录选择（单进程）
 cargo xtask verify --fast                     # 上面四道静态门一次跑完（跳过全量单测）
 bun run electron:dev                          # Electron 桌面端开发（前端热重载 + 网关监督）

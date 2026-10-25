@@ -455,6 +455,7 @@ cargo xtask verify --fast
 ### 7.3 实机验收
 
 - `node tools/verify-ssr-streaming.mjs`（T10 改造后单进程）
+- `node tools/verify-ssr-approval-abort.mjs`（审批批准 → 工具真正执行 → 流式中止）
 - `node tools/verify-ssr-workspaces.mjs`（同上）
 - `node tools/verify-gateway-web.mjs`（新增）
 - `pwsh -NoProfile -File tools/verify-desktop-shell.ps1`（桌面壳行为不变）
@@ -516,7 +517,7 @@ cargo xtask verify --fast
 | 凭据 | `/__auth` 接受网关 token / 配对码，换发 HttpOnly 会话 cookie；`--web-token` 保留兼容 |
 | 插件 | 自省端点 `/web-ui/frontend-plugins`；停用状态 `~/.a-da/web-ui-state.json` |
 | 默认值 | `--web-ui` 默认 `ssr`；`desktop` 保留回退 |
-| 验收 | `cargo test -p agent-web`、`cargo test -p agent-gateway`、`node tools/verify-gateway-web.mjs`、`node tools/verify-ssr-streaming.mjs`、`node tools/verify-ssr-workspaces.mjs`、`cargo xtask verify-docs` |
+| 验收 | `cargo test -p agent-web`、`cargo test -p agent-gateway`、`node tools/verify-gateway-web.mjs`、`node tools/verify-ssr-streaming.mjs`、`node tools/verify-ssr-approval-abort.mjs`、`node tools/verify-ssr-workspaces.mjs`、`cargo xtask verify-docs` |
 
 ## 附录 A：文件落点对照
 

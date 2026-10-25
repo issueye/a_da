@@ -200,7 +200,7 @@ unary 方法映射为 `/api/*`（18 条查询 + 42 条写），另有 11 条网�
 静态门：`cargo xtask verify-spec` / `verify-wiring` / `compat` / `verify-docs`（`verify --fast` 一次跑完）；
 测试门：`cargo test --workspace -- --test-threads=1`（**必须串行**）与 `bun run typecheck`。
 实机脚本：桌面壳、重试与断线、卡片顺序、插件平台、网关进程模型、网关内置 SSR
-（`tools/verify-gateway-web.mjs`）、SSR 流式与工作区（`tools/verify-ssr-*.mjs`，均为单进程），
+（`tools/verify-gateway-web.mjs`）、SSR 流式 / 审批中止 / 工作区（`tools/verify-ssr-*.mjs`，均为单进程），
 见 [README.md](../../README.md#门禁与测试)。
 
 ---
