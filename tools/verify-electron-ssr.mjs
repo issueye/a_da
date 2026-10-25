@@ -400,6 +400,80 @@ try {
   await cdp.send('Emulation.clearDeviceMetricsOverride')
   await sleep(300)
 
+  // 3. 进程管理浮窗：顶栏入口 → 网关/实例列表 → 弹窗打开时窗口按钮仍可用。
+  check(
+    await evaluate(cdp, `Boolean(document.querySelector('[data-modal-open="processes"]'))`),
+    '顶栏提供进程管理入口',
+  )
+  await clickLabel(cdp, '进程管理')
+  await waitUntil(
+    () =>
+      evaluate(
+        cdp,
+        `Boolean(document.querySelector('ada-modal[data-modal="processes"]:not([hidden])'))`,
+      ),
+    5_000,
+    '进程管理浮窗打开',
+  )
+  await waitUntil(
+    async () => {
+      const text = await evaluate(
+        cdp,
+        'document.querySelector("#process-panel")?.innerText || ""',
+      )
+      return text.includes('ada-gateway') && text.includes('ada-coding')
+    },
+    15_000,
+    '进程列表加载',
+  )
+  const processText = await evaluate(
+    cdp,
+    'document.querySelector("#process-panel")?.innerText || ""',
+  )
+  check(
+    processText.includes('AGENT 实例') && processText.includes('PID'),
+    '浮窗显示网关与 AGENT 实例',
+    processText.slice(0, 200),
+  )
+  check(!processText.includes('token='), '进程面板不泄漏 token')
+
+  // 弹窗是页面内的 z-index:90 层；标题栏窗口按钮必须仍可点（z-index:100）。
+  await clickLabel(cdp, '最大化')
+  await waitUntil(
+    () => evaluate(cdp, 'window.electronAPI.isWindowMaximized()', true),
+    5_000,
+    '弹窗打开时最大化',
+  )
+  check(true, '进程浮窗打开时「最大化」仍生效（标题栏未被模态层盖住）')
+  await clickLabel(cdp, '向下还原')
+  await waitUntil(
+    () => evaluate(cdp, 'window.electronAPI.isWindowMaximized()', true).then((v) => v === false),
+    5_000,
+    '弹窗打开时还原',
+  )
+
+  await cdp.send('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 'Escape',
+    code: 'Escape',
+    windowsVirtualKeyCode: 27,
+  })
+  await cdp.send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'Escape',
+    code: 'Escape',
+    windowsVirtualKeyCode: 27,
+  })
+  await waitUntil(
+    () =>
+      evaluate(
+        cdp,
+        `Boolean(document.querySelector('ada-modal[data-modal="processes"][hidden]'))`,
+      ),
+    5_000,
+    '进程浮窗关闭',
+  )
+
   await evaluate(cdp, 'document.querySelector("textarea").focus()')
   await cdp.send('Input.insertText', { text: 'Electron SSR 请回复一句话。' })
   await waitUntil(

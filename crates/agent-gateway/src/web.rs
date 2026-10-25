@@ -115,6 +115,10 @@ impl WebBackend for GatewayBackend {
             "/api/config" => self.call_rpc("config.get", json!({})).await,
             "/api/providers" => self.call_rpc("provider.list", json!({})).await,
             "/api/plugins" => self.call_rpc("plugin.list", json!({})).await,
+            // 进程管理浮窗（SSR）：网关自己的管理面，不经过 agent。
+            "/api/gateway/info" => Ok(self.gateway.info_result()),
+            "/api/gateway/status" => Ok(self.gateway.status_result()),
+            "/api/gateway/agents" => Ok(self.gateway.list_agents_result()),
             "/api/fs/roots" => Ok(self.gateway.fs_roots_result()),
             "/api/fs/list" => {
                 let mut params = json!({});

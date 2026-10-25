@@ -40,7 +40,9 @@ const ICON_CLOSE =
   '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>'
 
 const CONTROLS_CSS = `
-  .ada-topbar { -webkit-app-region: drag; app-region: drag; }
+  /* 标题栏是窗口 chrome：必须压在所有应用模态层（ada-modal z-index: 90）之上，
+     否则弹窗打开时最小化/最大化/关闭点不动。 */
+  .ada-topbar { position: relative; z-index: 100; -webkit-app-region: drag; app-region: drag; }
   .ada-topbar button, .ada-topbar a, .ada-topbar input, .ada-topbar select,
   .ada-topbar textarea, .ada-topbar [role="button"], .ada-electron-controls {
     -webkit-app-region: no-drag; app-region: no-drag;

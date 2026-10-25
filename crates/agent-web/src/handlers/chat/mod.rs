@@ -322,9 +322,14 @@ fn model_chip_html(model: &str, effort: &str) -> String {
 
 /// 顶栏右侧的刷新 / 停止（插件插槽在模板里单独保留）。
 fn topbar_actions_html(thread_id: &str, running: bool) -> String {
-    let mut out = IconButton::new("i-refresh", "刷新")
-        .href(format!("/threads/{thread_id}"))
+    let mut out = IconButton::new("i-server", "进程管理")
+        .attrs(r#"data-modal-open="processes""#)
         .render();
+    out.push_str(
+        &IconButton::new("i-refresh", "刷新")
+            .href(format!("/threads/{thread_id}"))
+            .render(),
+    );
     if running {
         out.push_str(
             &Button::new("停止")

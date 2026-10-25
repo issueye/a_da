@@ -1451,11 +1451,13 @@ mod tests {
 mod chat;
 mod dashboard;
 mod extensions;
+mod processes;
 mod providers;
 mod workspaces;
 
 pub use chat::*;
 pub use dashboard::*;
 pub use extensions::*;
+pub use processes::*;
 pub use providers::*;
 pub use workspaces::*;

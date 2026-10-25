@@ -76,6 +76,16 @@ impl AgentClient {
         self.get("/api/providers").await
     }
 
+    /// 网关自身状态（`gateway.status`）。
+    pub async fn gateway_status(&self) -> Result<Value> {
+        self.get("/api/gateway/status").await
+    }
+
+    /// 网关管理的 agent 实例（`gateway.listAgents`，端点已剥 token）。
+    pub async fn gateway_agents(&self) -> Result<Value> {
+        self.get("/api/gateway/agents").await
+    }
+
     /// 整条保存一个供应商（`provider.save`）。
     ///
     /// 必须发**整条**实体：后端是"存在就替换"的语义，少带的字段会被当成空值落盘
