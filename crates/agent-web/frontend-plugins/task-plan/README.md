@@ -49,7 +49,7 @@
 ```
 
 - 没有规划过（或当前会话拿不到 items）时是 `null` → 卡片不渲染，而不是画 `0/0`；
-- `set` / `update` / `get` 的语义只在 `src/ui/todo.rs::derive_todo_plan` 实现一份，
+- `set` / `update` / `get` 的语义只在 `ui/todo.rs::derive_todo_plan` 实现一份，
   插件不要、也拿不到原始卡片去自行重演——那正是"面板停在旧计划上（7/12 vs 13/13）"的来源。
 
 ## 文件

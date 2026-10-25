@@ -208,7 +208,7 @@
   function loadSlotRegistry() {
     if (!window.fetch) return;
     window
-      .fetch('/api/plugins', { headers: { Accept: 'application/json' } })
+      .fetch('/web-ui/frontend-plugins', { headers: { Accept: 'application/json' } })
       .then(function (response) {
         return response.ok ? response.json() : null;
       })

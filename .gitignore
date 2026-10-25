@@ -13,7 +13,7 @@ target/
 agent_core/target/
 cargo_target_ada/
 
-# ssr-h 前端插件的停用状态（跟随 --plugins-dir，属运行时产物）
+# SSR 前端插件的历史停用状态文件（现行状态在 ~/.a-da/web-ui-state.json）
 .ssr-h-state.json
 
 # 工具/编辑器的本地状态目录（不是项目内容）

@@ -953,8 +953,9 @@ mod tests {
         let gateway = fake_gateway().await;
         let state = AppState {
             agent: Arc::new(crate::agent::AgentClient::new(gateway, "", "E:/fake_ws")),
-            frontend: Arc::new(crate::plugins::PluginRegistry::new(
+            frontend: Arc::new(crate::plugins::PluginRegistry::with_state_path(
                 std::env::temp_dir().join("ssr_h_stream_test_plugins"),
+                std::env::temp_dir().join("ssr_h_stream_test_state.json"),
             )),
             access: Arc::new(crate::guard::Access::for_host(
                 "127.0.0.1".parse().unwrap(),

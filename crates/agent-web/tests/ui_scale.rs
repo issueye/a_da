@@ -23,7 +23,12 @@ fn crate_dir() -> PathBuf {
 }
 
 fn repo_dir() -> PathBuf {
-    crate_dir().parent().expect("ssr-h 应有上级目录").to_path_buf()
+    // crate 位于 `<repo>/crates/agent-web`：上两级才是仓库根。
+    crate_dir()
+        .parent()
+        .and_then(Path::parent)
+        .expect("agent-web 应位于 <repo>/crates/ 下")
+        .to_path_buf()
 }
 
 fn read(path: &Path) -> String {

@@ -56,13 +56,13 @@
 - 验收：重命名 / 删除会话、提交回答，横幅均为中文；删掉一条映射测试即红。
 
 **T02 审批等待时长统一 startedAt（0.5d，建议 05）**
-- `src/handlers/chat/rows.rs:851-854`：`waited_label` 改读 `startedAt`（复用同文件 `started_ms`）；`src/ui/components/trays.rs:173-192` 的 `waited_from_at` 保留，但只喂真实时间戳。
+- `src/handlers/chat/rows.rs:851-854`：`waited_label` 改读 `startedAt`（复用同文件 `started_ms`）；`ui/components/trays.rs:173-192` 的 `waited_from_at` 保留，但只喂真实时间戳。
 - 单测（trays.rs 已有 `#[cfg(test)]` 模块可挂）：`at=1`（序号特征值）不再产出「已等待 …」；`startedAt = now-3s` 产出「已等待 3s」。
 - 验收：同一张等待批准卡，行内「待批 X」与托盘「已等待 X」一致。
 - 风险：老盘历史会话可能缺 `startedAt`——缺失时**不显示**等待时长（宁缺毋错），不做 `at` 兜底。
 
 **T03 排队操作文本指纹校验（0.5d，建议 06）**
-- 渲染侧 `src/ui/components/trays.rs:195-240`：提升 / 删除表单各加 `<input type="hidden" name="expect" value="{text 截断 200 字符}">`（`QueueItem.text` 已在渲染现场）。
+- 渲染侧 `ui/components/trays.rs:195-240`：提升 / 删除表单各加 `<input type="hidden" name="expect" value="{text 截断 200 字符}">`（`QueueItem.text` 已在渲染现场）。
 - 服务端 `src/handlers/chat/mod.rs:1207-1229`：promote / remove 先 `state.agent.snapshot()`（agent.rs:107），按与渲染同一投影函数取当前 `queue[index].text`，与 `expect` 不一致 → 回 flash「排队已变化（可能已被其它客户端改动），请确认后再操作」，**不执行 RPC**。投影函数从 rows.rs 的队列构建处提取共用，避免两份口径。
 - 验收：双开两个页签，A 删队首后 B 点「删除第 2 条」→ flash 提示而非误伤；正常路径不受影响。
 - 风险：同文本相邻排队项区分不了——可接受（内容相同则语义等价）；根治等后端稳定 id。

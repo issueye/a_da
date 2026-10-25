@@ -82,7 +82,7 @@
 
 ### 阶段 2 — 核心提问托盘（默认操作面）
 
-4. **`src/ui/components/trays.rs`**：`QuestionTray`——题干、选项（radio/checkbox）、
+4. **`ui/components/trays.rs`**：`QuestionTray`——题干、选项（radio/checkbox）、
    `allow_text` 文本域、「提交回答」；无选项题出「继续」按钮；多题逐题分组。
 5. **`src/handlers/chat/rows.rs`**：`question_trays_html(raw_items, thread_id)`，
    并入 `trays_html`（审批 → 提问 → 排队顺序）与计数。

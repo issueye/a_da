@@ -76,6 +76,8 @@ pub struct SlotOutput {
 
 pub struct PluginRegistry {
     dir: PathBuf,
+    /// 停用状态文件。与插件目录分开，安装目录只读时也能记住用户选择。
+    state_path: PathBuf,
     plugins: RwLock<Vec<PluginRecord>>,
 }
 
@@ -100,6 +102,23 @@ pub struct PluginSnapshot {
     pub errors: Vec<String>,
     pub capabilities: Vec<String>,
     pub tsx_compiled: usize,
+}
+
+/// 默认状态文件：`A_DA_HOME/web-ui-state.json` 或 `~/.a-da/web-ui-state.json`。
+fn default_state_path() -> PathBuf {
+    if let Ok(home) = std::env::var("A_DA_HOME") {
+        if !home.trim().is_empty() {
+            return PathBuf::from(home.trim()).join("web-ui-state.json");
+        }
+    }
+    let user = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    if user.is_empty() {
+        PathBuf::from("web-ui-state.json")
+    } else {
+        PathBuf::from(user).join(".a-da").join("web-ui-state.json")
+    }
 }
 
 fn dir_plugin_id(root: &Path) -> String {
@@ -149,9 +168,17 @@ fn failed_record(root: &Path, id: &str, message: &str) -> PluginRecord {
 }
 
 impl PluginRegistry {
+    /// 生产默认：插件状态写用户目录（`~/.a-da/web-ui-state.json`），
+    /// 插件目录本身可以随包只读分发。
     pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self::with_state_path(dir, default_state_path())
+    }
+
+    /// 指定状态文件（测试必须用临时目录，绝不能写用户真实的 `~/.a-da`）。
+    pub fn with_state_path(dir: impl Into<PathBuf>, state_path: impl Into<PathBuf>) -> Self {
         let registry = Self {
             dir: dir.into(),
+            state_path: state_path.into(),
             plugins: RwLock::new(Vec::new()),
         };
         if let Err(error) = registry.reload() {
@@ -162,6 +189,10 @@ impl PluginRegistry {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    pub fn state_path(&self) -> &Path {
+        &self.state_path
     }
 
     pub fn reload(&self) -> Result<ReloadReport> {
@@ -338,13 +369,12 @@ impl PluginRegistry {
         Ok(Some(record))
     }
 
-    /// 停用状态文件：`<插件目录>/.ssr-h-state.json`。
+    /// 停用状态文件（默认 `<应用目录>/web-ui-state.json`）。
     ///
-    /// 放在插件目录**层**而不是任何插件目录内——指纹按插件根目录收集文件，
-    /// 这份文件不会搅动指纹；扫描器跳过非目录项，也不会把它当插件。
+    /// 放在用户目录而不是插件目录：安装目录可能只读，且插件目录可能随包分发。
     /// 格式刻意最小：`{ "disabled": ["id", …] }`，缺省即启用。
-    fn state_file(&self) -> PathBuf {
-        self.dir.join(".ssr-h-state.json")
+    fn state_file(&self) -> &Path {
+        &self.state_path
     }
 
     fn load_disabled_state(&self) -> Vec<String> {
@@ -375,13 +405,18 @@ impl PluginRegistry {
 
     fn persist_disabled_state(&self, disabled: &[String]) -> Result<()> {
         let body = serde_json::json!({ "disabled": disabled }).to_string();
-        let tmp = self.dir.join(".ssr-h-state.json.tmp");
+        let target = self.state_file();
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("创建插件状态目录失败: {}", parent.display()))?;
+        }
+        let tmp = target.with_extension("json.tmp");
         fs::write(&tmp, body)
             .with_context(|| format!("写入插件停用状态失败: {}", tmp.display()))?;
         // Windows 的 rename 不覆盖已存在目标，先删再换
-        let _ = fs::remove_file(self.state_file());
-        fs::rename(&tmp, self.state_file())
-            .with_context(|| format!("落盘插件停用状态失败: {}", self.state_file().display()))
+        let _ = fs::remove_file(target);
+        fs::rename(&tmp, target)
+            .with_context(|| format!("落盘插件停用状态失败: {}", target.display()))
     }
 
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<()> {
@@ -1019,6 +1054,13 @@ fn fnv1a_init(bytes: &[u8]) -> u64 {
 mod tests {
     use super::*;
 
+    /// 测试注册表：状态文件放临时目录（**绝不能**落到用户真实的 `~/.a-da`）。
+    fn registry_at(dir: impl Into<PathBuf>) -> PluginRegistry {
+        let dir = dir.into();
+        let state = dir.join(".ssr-h-state.json");
+        PluginRegistry::with_state_path(dir, state)
+    }
+
     fn temp_root(tag: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
             "ssr_h_registry_{}_{}_{}",
@@ -1073,7 +1115,7 @@ mod tests {
         let plugin_root = root.join("bad");
         fs::create_dir_all(&plugin_root).unwrap();
         fs::write(plugin_root.join("plugin.json"), "{not json").unwrap();
-        let registry = PluginRegistry::new(&root);
+        let registry = registry_at(&root);
         let plugin = registry.find("bad").expect("failed record exists");
         assert!(matches!(plugin.status, PluginStatus::Failed(_)));
         assert!(!plugin.errors.is_empty());
@@ -1086,7 +1128,7 @@ mod tests {
         let plugin_root = write_tsx_plugin(&root);
         fs::create_dir_all(plugin_root.join("static")).unwrap();
         fs::write(plugin_root.join("static/app.js"), "console.log(1)").unwrap();
-        let registry = PluginRegistry::new(&root);
+        let registry = registry_at(&root);
         registry.set_enabled("tsx-demo", false).unwrap();
         let plugin = registry.find("tsx-demo").unwrap();
         let error = registry
@@ -1103,7 +1145,7 @@ mod tests {
         let plugin_root = write_tsx_plugin(&root);
         fs::create_dir_all(plugin_root.join("static")).unwrap();
         fs::write(plugin_root.join("static/app.js"), "console.log(1)").unwrap();
-        let registry = PluginRegistry::new(&root);
+        let registry = registry_at(&root);
         assert!(registry.asset_path("tsx-demo", "app.js").is_ok());
         assert!(registry.asset_path("tsx-demo", "../plugin.json").is_err());
         assert!(registry
@@ -1116,7 +1158,7 @@ mod tests {
     fn directory_without_manifest_is_ignored() {
         let root = temp_root("empty");
         fs::create_dir_all(root.join("empty")).unwrap();
-        let registry = PluginRegistry::new(&root);
+        let registry = registry_at(&root);
         assert!(registry.find("empty").is_none());
         let _ = fs::remove_dir_all(&root);
     }
@@ -1125,7 +1167,7 @@ mod tests {
     fn tsx_plugin_renders_page_slot_and_dashboard() {
         let root = temp_root("render");
         let _ = write_tsx_plugin(&root);
-        let registry = PluginRegistry::new(&root);
+        let registry = registry_at(&root);
         let plugin = registry.find("tsx-demo").expect("plugin loads");
         assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
         let cx = RenderContext::default().with_data(serde_json::json!({"plugin_count": 1}));
@@ -1175,7 +1217,7 @@ mod tests {
             ".styled { color: red; }",
         )
         .unwrap();
-        let registry = PluginRegistry::new(&root);
+        let registry = registry_at(&root);
         let plugin = registry.find("styled").expect("plugin loads");
         assert_eq!(plugin.styles, vec!["plugin.css"]);
         let styles = registry.styles();
@@ -1188,7 +1230,7 @@ mod tests {
     fn tsx_plugin_reloads_when_template_changes() {
         let root = temp_root("reload");
         let plugin_root = write_tsx_plugin(&root);
-        let registry = PluginRegistry::new(&root);
+        let registry = registry_at(&root);
         let cx = RenderContext::default();
         let plugin = registry.find("tsx-demo").unwrap();
         let (_, before) = registry.read_page_with(&plugin, "p", &cx).unwrap();
@@ -1219,7 +1261,7 @@ mod tests {
         let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
         let root = temp_root("example-copy");
         copy_tree(&source, &root);
-        let registry = PluginRegistry::new(&root);
+        let registry = registry_at(&root);
         let plugin = registry.find("hello-tsx").expect("hello-tsx exists");
         assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
         assert!(
@@ -1253,7 +1295,7 @@ mod tests {
         let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
         let root = temp_root("example-provider");
         copy_tree(&source, &root);
-        let registry = PluginRegistry::new(&root);
+        let registry = registry_at(&root);
         let plugin = registry.find("provider-admin").expect("provider-admin exists");
         assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
         let cx = RenderContext::default().with_data(serde_json::json!({
@@ -1355,7 +1397,7 @@ export function Page() {
         )
         .unwrap();
 
-        let registry = PluginRegistry::new(&root);
+        let registry = registry_at(&root);
         let plugin = registry.find("tsx-modules").expect("plugin loads");
         assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
         let cx = RenderContext::default();
@@ -1387,7 +1429,7 @@ export function Page() {
     #[test]
     fn token_weather_plugin_maps_percent_to_weather() {
         let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
-        let registry = PluginRegistry::new(&plugins_dir);
+        let registry = registry_at(&plugins_dir);
         let plugin = registry
             .find("token-weather")
             .expect("token-weather 插件应当被发现");
@@ -1477,7 +1519,7 @@ export function Page() {
     #[test]
     fn token_weather_plugin_formats_tokens_and_cache() {
         let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
-        let registry = PluginRegistry::new(&plugins_dir);
+        let registry = registry_at(&plugins_dir);
         let plugin = registry
             .find("token-weather")
             .expect("token-weather exists");
@@ -1518,7 +1560,7 @@ export function Page() {
     #[test]
     fn task_plan_plugin_renders_the_derived_plan() {
         let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
-        let registry = PluginRegistry::new(&plugins_dir);
+        let registry = registry_at(&plugins_dir);
         let plugin = registry
             .find("task-plan")
             .expect("task-plan 插件应当被发现");
@@ -1581,18 +1623,18 @@ export function Page() {
     fn disabled_state_survives_a_registry_restart() {
         let root = temp_root("persist-disabled");
         let _ = write_tsx_plugin(&root);
-        let registry = PluginRegistry::new(&root);
+        let registry = registry_at(&root);
         registry.set_enabled("tsx-demo", false).unwrap();
         assert!(!registry.find("tsx-demo").unwrap().is_active());
 
-        let restarted = PluginRegistry::new(&root);
+        let restarted = registry_at(&root);
         let plugin = restarted.find("tsx-demo").unwrap();
         assert!(!plugin.is_active(), "重启后停用状态必须保留");
         assert!(matches!(plugin.status, PluginStatus::Disabled));
 
         // 重新启用后重启，同样保持启用
         restarted.set_enabled("tsx-demo", true).unwrap();
-        let again = PluginRegistry::new(&root);
+        let again = registry_at(&root);
         assert!(again.find("tsx-demo").unwrap().is_active());
         let _ = fs::remove_dir_all(&root);
     }
@@ -1603,10 +1645,10 @@ export function Page() {
         let root = temp_root("corrupt-state");
         let _ = write_tsx_plugin(&root);
         fs::write(root.join(".ssr-h-state.json"), "{not json").unwrap();
-        let registry = PluginRegistry::new(&root);
+        let registry = registry_at(&root);
         assert!(registry.find("tsx-demo").unwrap().is_active());
         registry.set_enabled("tsx-demo", false).unwrap();
-        let restarted = PluginRegistry::new(&root);
+        let restarted = registry_at(&root);
         assert!(!restarted.find("tsx-demo").unwrap().is_active());
         let _ = fs::remove_dir_all(&root);
     }
@@ -1617,7 +1659,7 @@ export function Page() {
     fn hot_reload_keeps_disabled_state() {
         let root = temp_root("reload-disabled");
         let _ = write_tsx_plugin(&root);
-        let registry = PluginRegistry::new(&root);
+        let registry = registry_at(&root);
         registry.set_enabled("tsx-demo", false).unwrap();
         registry.reload().unwrap();
         assert!(!registry.find("tsx-demo").unwrap().is_active());

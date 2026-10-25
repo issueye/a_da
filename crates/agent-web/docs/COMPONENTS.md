@@ -1,6 +1,6 @@
 # ssr-h 前端组件库与插件扩展点设计（v0.6）
 
-> 组件库（`src/ui/` + `static/components.css` + `static/components.js`）与插件插槽体系（`src/plugins/`）。
+> 组件库（`ui/` + `static/components.css` + `static/components.js`）与插件插槽体系（`src/plugins/`）。
 > 目标：**界面契约只有一处**、**插件异常不拖垮主应用**、**SSR 与客户端看到同一份事实**。
 >
 > 插件能拿到的数据字段与各点位可用性见 [PLUGIN-DATA.md](PLUGIN-DATA.md)。
@@ -85,10 +85,10 @@ ssr-h/
 领域数据（agent 快照 / 插件清单）
         │  归一化
         ▼
-   RowView / 视图参数            ← src/ui/rows.rs
+   RowView / 视图参数            ← ui/rows.rs
         │  渲染
         ▼
-   组件（Button / Chip / …）      ← src/ui/components.rs
+   组件（Button / Chip / …）      ← ui/components.rs
         │  输出 HTML
         ▼
    模板 {{ x|safe }}              ← templates/*.html（应用壳）
@@ -362,7 +362,7 @@ register → load → mount → render → unmount → destroy
 
 ### 10.1 计划状态推演（唯一真源）
 
-`src/ui/todo.rs` 的 `derive_todo_plan`，与 desktop-ui 的 `utils/todo-plan.ts` 同一套语义：
+`ui/todo.rs` 的 `derive_todo_plan`，与 desktop-ui 的 `utils/todo-plan.ts` 同一套语义：
 
 | `action` | 含义 |
 |---|---|
@@ -373,7 +373,7 @@ register → load → mount → render → unmount → destroy
 
 > 为什么不"倒序找最后一张能解析出 items 的卡片"：`update` 只带改动项（子集）、`get` 回的是旧快照，
 > 那样面板会停在旧计划上（desktop-ui 实测 7/12，正文却写着 13/13）。
-> 这一点由 `src/ui/todo.rs` 里的 7 个单元测试锁住。
+> 这一点由 `ui/todo.rs` 里的 7 个单元测试锁住。
 
 推演结果由 `src/handlers/mod.rs::todo_view` 投影成 `props.data.todo`：
 
@@ -402,11 +402,11 @@ register → load → mount → render → unmount → destroy
 
 ## 8. 新增一个组件的做法
 
-1. 在 `src/ui/components.rs` 加结构体 + `impl Render`（输出 `ada-*` class 与 `data-*` 状态）；
-2. 在 `src/ui/theme.rs` 选语义色（`Tone`）与尺寸（`Size`），**不要写死颜色**；
+1. 在 `ui/components.rs` 加结构体 + `impl Render`（输出 `ada-*` class 与 `data-*` 状态）；
+2. 在 `ui/theme.rs` 选语义色（`Tone`）与尺寸（`Size`），**不要写死颜色**；
 3. 在 `static/components.css` 加对应 class（复用 `--ph-*` 变量与 `--ada-focus-ring`）；
 4. 需要交互就在 `static/components.js` 加一段**渐进增强**（无 JS 时仍可读）；
-5. 在 `src/ui/mod.rs` 导出。
+5. 在 `ui/mod.rs` 导出。
 
 ## 9. 新增一个插槽的做法
 

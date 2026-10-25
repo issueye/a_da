@@ -16,8 +16,10 @@
 //! 令牌走 `SameSite=Strict` 的 cookie；首次可以用 `?token=…` 换取 cookie，
 //! 随后 303 重定向把 URL 里的 token 去掉（避免留在历史记录/Referer 里）。
 
+use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::extract::{Form, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
@@ -27,15 +29,29 @@ use serde::Deserialize;
 
 use crate::handlers::AppState;
 
-/// 访问令牌 cookie 名。
+/// 访问令牌 cookie 名（静态 `--web-token`）。
 const COOKIE: &str = "ssr_h_token";
+/// 会话 cookie 名（网关 token / 配对码登录后换发的随机 id）。
+const SESSION_COOKIE: &str = "ssr_h_session";
 /// 令牌有效期（秒）：本地面板，一周。
 const COOKIE_MAX_AGE: u64 = 7 * 24 * 3600;
 
+/// 浏览器凭据校验端口。
+///
+/// 网关挂载本 crate 时注入一个实现：接受网关 `--token` 或一次性配对码；
+/// 校验通过后由 guard 换发随机 session id（**不把网关 token 写进 cookie**）。
+pub trait CredentialVerifier: Send + Sync {
+    fn verify(&self, credential: &str) -> Result<(), String>;
+}
+
 /// 入口防护配置。
 pub struct Access {
-    /// `None` = 不做令牌校验（仅回环且用户没主动设置时）。
+    /// 静态 `--web-token`；`None` = 不做静态令牌校验。
     pub token: Option<String>,
+    /// 网关凭据校验器；与 `token` 可同时存在（任一通过即可）。
+    verifier: Option<Arc<dyn CredentialVerifier>>,
+    /// 已登录会话：session id → 过期时间（内存态，重启即失效）。
+    sessions: Arc<Mutex<HashMap<String, Instant>>>,
     /// 允许的 Host 主机名（不含端口，已去方括号/小写）。
     pub hosts: Vec<String>,
     /// 绑定到 `0.0.0.0` / `::` 时无法枚举本机地址，只能放行任意 Host；
@@ -58,10 +74,22 @@ impl Access {
         let allow_any_host = host.is_unspecified();
         Self {
             token,
+            verifier: None,
+            sessions: Arc::new(Mutex::new(HashMap::new())),
             hosts,
             allow_any_host,
             port,
         }
+    }
+
+    /// 挂上网关凭据校验器（`--token` / 配对码）。
+    pub fn with_verifier(mut self, verifier: Arc<dyn CredentialVerifier>) -> Self {
+        self.verifier = Some(verifier);
+        self
+    }
+
+    fn has_login(&self) -> bool {
+        self.token.is_some() || self.verifier.is_some()
     }
 }
 
@@ -159,19 +187,33 @@ fn is_unsafe(method: &Method) -> bool {
     )
 }
 
-fn cookie_token(headers: &HeaderMap, expected: &str) -> bool {
-    let Some(raw) = headers
+fn cookie_value<'a>(headers: &'a HeaderMap, wanted: &str) -> Option<&'a str> {
+    let raw = headers
         .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-    else {
+        .and_then(|value| value.to_str().ok())?;
+    raw.split(';').find_map(|pair| {
+        let (name, value) = pair.trim().split_once('=')?;
+        (name == wanted).then_some(value.trim())
+    })
+}
+
+fn cookie_token(headers: &HeaderMap, expected: &str) -> bool {
+    cookie_value(headers, COOKIE)
+        .map(|value| token_eq(value, expected))
+        .unwrap_or(false)
+}
+
+/// 会话 cookie 是否有效；顺手清掉过期条目。
+fn session_cookie_valid(headers: &HeaderMap, access: &Access) -> bool {
+    let Some(id) = cookie_value(headers, SESSION_COOKIE) else {
         return false;
     };
-    raw.split(';').any(|pair| {
-        let Some((name, value)) = pair.trim().split_once('=') else {
-            return false;
-        };
-        name == COOKIE && token_eq(value.trim(), expected)
-    })
+    let Ok(mut sessions) = access.sessions.lock() else {
+        return false;
+    };
+    let now = Instant::now();
+    sessions.retain(|_, expires| *expires > now);
+    sessions.contains_key(id)
 }
 
 fn query_token(query: Option<&str>) -> Option<&str> {
@@ -200,10 +242,29 @@ fn strip_token(uri: &axum::http::Uri) -> String {
 fn with_cookie(location: &str, token: &str) -> Response {
     let cookie =
         format!("{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={COOKIE_MAX_AGE}");
+    cookie_redirect(location, &cookie)
+}
+
+/// 登录成功后换发随机 session id（网关 token 不进浏览器 cookie）。
+fn with_session_cookie(location: &str, access: &Access) -> Response {
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    if let Ok(mut sessions) = access.sessions.lock() {
+        sessions.insert(
+            id.clone(),
+            Instant::now() + Duration::from_secs(COOKIE_MAX_AGE),
+        );
+    }
+    let cookie = format!(
+        "{SESSION_COOKIE}={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age={COOKIE_MAX_AGE}"
+    );
+    cookie_redirect(location, &cookie)
+}
+
+fn cookie_redirect(location: &str, cookie: &str) -> Response {
     let headers = [
         (
             header::SET_COOKIE,
-            HeaderValue::from_str(&cookie)
+            HeaderValue::from_str(cookie)
                 .unwrap_or_else(|_| HeaderValue::from_static("ssr_h_token=; Max-Age=0")),
         ),
         (
@@ -348,19 +409,51 @@ pub async fn guard(
         }
     }
 
-    if let Some(expected) = access.token.as_deref() {
-        let needs_token = path != "/__auth" && !path.starts_with("/static/");
-        if needs_token && !cookie_token(request.headers(), expected) {
+    let needs_auth = path != "/__auth" && !path.starts_with("/static/");
+
+    if needs_auth && access.has_login() {
+        let static_ok = access
+            .token
+            .as_deref()
+            .map(|expected| cookie_token(request.headers(), expected))
+            .unwrap_or(false);
+        if !static_ok && !session_cookie_valid(request.headers(), &access) {
             if method == Method::GET {
                 if let Some(given) = query_token(request.uri().query()) {
-                    if token_eq(given, expected) {
-                        let location = strip_token(request.uri());
-                        return with_cookie(&location, expected);
+                    if let Some(expected) = access.token.as_deref() {
+                        if token_eq(given, expected) {
+                            return with_cookie(&strip_token(request.uri()), expected);
+                        }
+                    }
+                    if let Some(verifier) = access.verifier.as_deref() {
+                        if verifier.verify(given).is_ok() {
+                            return with_session_cookie(&strip_token(request.uri()), &access);
+                        }
                     }
                 }
             }
             return unauthorized(None);
         }
+    } else if needs_auth
+        && method == Method::GET
+        && access.token.is_none()
+        && query_token(request.uri().query()).is_some()
+    {
+        // 没有配置任何凭据时，仍把 URL 上的 `?token=` 摘掉：
+        // 桌面端的「浏览器打开」拼的是网关 token（SSR 不需要它），
+        // 让它留在地址栏/历史记录里是纯粹的泄漏面。
+        let location = strip_token(request.uri());
+        return finish(
+            (
+                StatusCode::SEE_OTHER,
+                [(
+                    header::LOCATION,
+                    HeaderValue::from_str(&location).unwrap_or(HeaderValue::from_static("/")),
+                )],
+                (),
+            )
+                .into_response(),
+        );
     }
 
     finish(next.run(request).await)
@@ -368,16 +461,17 @@ pub async fn guard(
 
 /// `GET /__auth`：手动输入令牌的入口（没有 cookie 时）。
 pub async fn auth_form(State(state): State<AppState>) -> Response {
-    match state.access.token.as_deref() {
-        Some(_) => finish((StatusCode::OK, auth_page(None)).into_response()),
-        None => finish(
+    if state.access.has_login() {
+        finish((StatusCode::OK, auth_page(None)).into_response())
+    } else {
+        finish(
             (
                 StatusCode::SEE_OTHER,
                 [(header::LOCATION, HeaderValue::from_static("/"))],
                 (),
             )
                 .into_response(),
-        ),
+        )
     }
 }
 
@@ -388,18 +482,29 @@ pub struct AuthForm {
 
 /// `POST /__auth`：校验令牌并下发 cookie。
 pub async fn auth_submit(State(state): State<AppState>, Form(form): Form<AuthForm>) -> Response {
-    match state.access.token.as_deref() {
-        Some(expected) if token_eq(form.token.trim(), expected) => with_cookie("/", expected),
-        Some(_) => unauthorized(Some("令牌不正确，请重试。")),
-        None => finish(
-            (
-                StatusCode::SEE_OTHER,
-                [(header::LOCATION, HeaderValue::from_static("/"))],
-                (),
-            )
-                .into_response(),
-        ),
+    let credential = form.token.trim();
+    if let Some(expected) = state.access.token.as_deref() {
+        if token_eq(credential, expected) {
+            return with_cookie("/", expected);
+        }
     }
+    if let Some(verifier) = state.access.verifier.as_deref() {
+        return match verifier.verify(credential) {
+            Ok(()) => with_session_cookie("/", &state.access),
+            Err(message) => unauthorized(Some(&message)),
+        };
+    }
+    if state.access.token.is_some() {
+        return unauthorized(Some("令牌不正确，请重试。"));
+    }
+    finish(
+        (
+            StatusCode::SEE_OTHER,
+            [(header::LOCATION, HeaderValue::from_static("/"))],
+            (),
+        )
+            .into_response(),
+    )
 }
 
 /// 令牌字符集：只允许 URL / cookie 都安全的字符，避免编码歧义。
@@ -420,6 +525,8 @@ pub fn validate_token(token: &str) -> Result<(), String> {
 pub fn access_summary(access: &Access) -> String {
     let auth = if access.token.is_some() {
         "访问令牌已开启"
+    } else if access.verifier.is_some() {
+        "网关凭据登录已开启（token / 配对码）"
     } else {
         "未开启访问令牌（仅限回环）"
     };

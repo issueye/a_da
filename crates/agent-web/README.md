@@ -1,16 +1,21 @@
-# ssr-h — a_da 的 SSR Agent 前端实验版
+# agent-web — a_da 的 SSR 网页界面（产品代号 ssr-h）
 
-> 独立目录、独立 crate、独立端口；**不加入根 workspace**，不影响现有 Electron / desktop-ui / gateway。
+> **已并入网关**：`crates/agent-web` 是根 workspace 成员，`ada-gateway` 默认挂载它的
+> `router`。一个 `ada-gateway` 进程 + 一个端口 = 整站；页面、`/static/*`、SSE、`/api/*`、
+> `/rpc` 都在同一个 axum Router 上。独立运行的 `ssr-h` 二进制只用于开发与实机验收。
 
 UED 设计基线、组件规范与 desktop-ui 对齐差距见 [docs/UED.md](docs/UED.md)。
 组件库与插件插槽体系的架构说明见 [docs/COMPONENTS.md](docs/COMPONENTS.md)；
 插槽/页面注入的数据契约（字段、类型、刷新时机）见 [docs/PLUGIN-DATA.md](docs/PLUGIN-DATA.md)。
+合并方案与批次记录见 [docs/gateway/PLAN-merge-ssr-h.md](../../docs/gateway/PLAN-merge-ssr-h.md)。
 
 ## 目标
 
 - 参考 `crates/plugin-hub` 的前端框架：Axum MVC + Askama SSR + HTMX/Alpine + 本地 Tailwind CSS。
-- 以 **动态前端插件** 为核心：`frontend-plugins/<id>/plugin.json` 可在运行时扫描、重载，新增导航、仪表盘卡片、独立页面与静态资源，不需要重新编译或重启 `ssr-h`。
-- Agent 数据通过现有网关的 `/api/*`（HTTP）与 `/rpc`（WebSocket JSON-RPC）获取；本程序不修改任何现有后端协议。
+- 以 **动态前端插件** 为核心：`frontend-plugins/<id>/plugin.json` 可在运行时扫描、重载，新增导航、仪表盘卡片、独立页面与静态资源，不需要重新编译或重启。
+- Agent 数据通过 `WebBackend` 端口获取：网关挂载时走**进程内调用**（`GatewayBackend`），
+  独立运行时走 HTTP `/api/*` + WebSocket `/rpc`（`HttpBackend`）；两种实现共用同一套处理器。
+- 本 crate 是**投影层**：不持有线程/消息/工具状态的第二份真相，不跑多轮引擎。
 
 ## 主界面
 
@@ -83,47 +88,57 @@ UED 设计基线、组件规范与 desktop-ui 对齐差距见 [docs/UED.md](docs
 
 ## 运行
 
-先启动现有网关/桌面端（默认 `127.0.0.1:52353`），然后：
+**生产/日常：直接跑网关**（默认 `--web-ui ssr`）：
 
 ```bash
-cargo run --manifest-path ssr-h/Cargo.toml
-# 打开 http://127.0.0.1:8788
+cargo run -p agent-gateway -- --port 52353 --workspace E:/codes/your-project
+# 浏览器打开 http://127.0.0.1:52353/
 ```
 
-可选参数：
+相关参数：
+
+| 参数 | 作用 |
+|---|---|
+| `--web-ui ssr` | 内置 SSR 界面（默认） |
+| `--web-ui desktop` | 回退到 `desktop-ui/dist` 静态产物 |
+| `--web-token <t>` | 浏览器访问令牌；非回环监听时可与 `--token` 二选一 |
+| `--web-plugins-dir <p>` | 前端插件目录（默认 `~/.a-da/web-plugins` → exe 旁 → 源码目录） |
+| `A_DA_WEB_UI` / `A_DA_WEB_TOKEN` / `A_DA_WEB_PLUGINS_DIR` | 上述三项的环境变量形式 |
+
+**开发/验收：单独跑界面层**（仍需要一个已启动的网关）：
 
 ```bash
-cargo run --manifest-path ssr-h/Cargo.toml -- \
+cargo run -p agent-web --bin ssr-h -- \
   --host 127.0.0.1 --port 8788 \
   --gateway http://127.0.0.1:52353 \
   --token <gateway token> \
   --workspace E:/codes/your-project \
-  --plugins-dir ssr-h/frontend-plugins
+  --plugins-dir crates/agent-web/frontend-plugins
 ```
 
 未显式给 `--gateway/--token/--workspace` 时会尝试读取 `~/.a-da/gateway_endpoint.json`。
 发现文件里的 `workspace` 只在"目录真实存在且不是 `~/.a-da`"时采用，否则回退到当前目录
 （避免把凭据目录当成会话工作区）。
 
-🔴 **插件目录按“exe 旁 → 当前目录 → 源码目录”查找**：直接跑 `dist/ssr-h.exe` 时读的是
-`dist/frontend-plugins/`，不是 `ssr-h/frontend-plugins/`。改了源码插件后要同步
-`dist/frontend-plugins/`，或启动时显式加 `--plugins-dir ssr-h/frontend-plugins`；
-否则点「重载前端插件」也只会重载**旧的那份**。
+🔴 **插件目录与状态分开**：停用状态写在 `<A_DA_HOME>/web-ui-state.json`，不再写插件目录旁。
+插件目录按“用户目录 → exe 旁 → 当前目录 → 源码目录”查找；打包后随 `resources/bin/frontend-plugins`
+分发，源码开发时用 `crates/agent-web/frontend-plugins`。改了源码插件后，重载读的是**当前插件目录**；
+必要时用 `--web-plugins-dir` 显式指过去。
 
 ### 局域网访问与访问令牌
 
-默认只允许绑定回环地址。要开放给局域网，必须**同时**显式确认并设置访问令牌：
+网关默认只允许绑定回环地址。要开放给局域网，必须**同时**显式确认明文并配置凭据：
 
 ```bash
-cargo run --manifest-path ssr-h/Cargo.toml -- \
-  --host 0.0.0.0 --port 8788 --allow-remote \
-  --ui-token <至少 12 位的 ASCII 令牌> \
-  --gateway http://127.0.0.1:52353
+ada-gateway --host 0.0.0.0 --allow-plaintext \
+  --token <网关 token> \
+  --workspace E:/codes/your-project
 ```
 
-进入方式：浏览器打开 `http://<host>:8788/?token=<ui-token>`，服务端会换发
-`SameSite=Strict` 的 HttpOnly cookie 并 303 去掉 URL 里的 token；之后也可以手动在
-`/__auth` 页面输入。只开明文 HTTP，令牌会以明文传输，请只在可信网络使用。
+浏览器打开 `http://<host>:52353/`，在 `/__auth` 输入网关 token 或启动日志里的配对码；
+服务端校验后换发 `SameSite=Strict` 的 HttpOnly **会话 cookie**（随机 id，网关 token 不进 cookie），
+并 303 去掉 URL 里的 `?token=`。`--web-token` 是等价的静态令牌兼容项。
+只开明文 HTTP，令牌会以明文传输，请只在可信网络使用。
 
 入口防护（`src/guard.rs`）做了三件事：
 
@@ -136,7 +151,8 @@ cargo run --manifest-path ssr-h/Cargo.toml -- \
   `Sec-Fetch-Site: same-origin`（浏览器禁改头）时按同源导航放行，其余照旧拒绝。
 
 🔴 **工作区选择器会浏览网关所在机器的文件系统**（`/workspaces` 走 `gateway.fs.*`）。
-非回环监听时必须开 `--ui-token`，并且只发给可信用户——拿到令牌的人可以浏览宿主目录。
+非回环监听时必须配置浏览器凭据（网关 `--token`、配对码或 `--web-token`），
+并且只发给可信用户——拿到凭据的人可以浏览宿主目录。
 
 ### 流式验收
 
@@ -190,7 +206,7 @@ node tools/verify-ssr-workspaces.mjs
 **插件只接受 TSX**：`.slang` / `.html` 模板已移除。目录结构：
 
 ```text
-ssr-h/frontend-plugins/hello-tsx/
+frontend-plugins/hello-tsx/
   plugin.json             # 清单：导航 / 页面 / 仪表盘 / 插槽
   page.tsx                # 独立页面
   dashboard.tsx           # 仪表盘卡片（可选）
@@ -245,7 +261,7 @@ ssr-h/frontend-plugins/hello-tsx/
 - `chat.corner` 的插件（如任务卡片）随 `parts` 的 `corner` 字段刷新：`props.data.todo` 是核心推演好的当前计划
   （`done` / `total` / `active` / `notes` / `markdown` / `steps[].status`），没有计划时是 `null`。
   同一张卡片改挂 `composer.above` 也可用（见 `frontend-plugins/task-plan/README.md`），但不要两个都声明。
-- 可在扩展页逐个**停用/启用**插件（`POST /extensions/{id}/disable|enable`），停用后贡献立即消失、界面回到默认实现；`GET /api/plugins` 暴露插件与插槽状态。
+- 可在扩展页逐个**停用/启用**插件（`POST /extensions/{id}/disable|enable`），停用后贡献立即消失、界面回到默认实现；`GET /web-ui/frontend-plugins` 暴露插件与插槽状态（与网关的 `/api/plugins` 不是一回事）。
   停用状态**落盘在插件目录旁的 `.ssr-h-state.json`**（只记停用的 id），重启后仍然生效；
   文件坏了按全启用处理并在下次停用时重写，不会把插件锁死在停用态。
 - **插件自带 JSON API**（`api` 声明）：端点在 `/ext/{id}/api/{path}`，TSX 入口函数
@@ -323,16 +339,17 @@ export function Page(props: any) {
 
 ## 组件库
 
-- **应用壳**仍用 Rust 组件（`src/ui/`）渲染；聊天页模板只摆放。
+- **应用壳**仍用 Rust 组件（`ui/`）渲染；聊天页模板只摆放。
 - **插件 TSX** 的组件库在 `src/tsx/components.tsx`：组件就是 TSX 函数，输出 `ada-*` class；
   Rust 侧只保留 `Icon` SVG 原语与 HTML 白名单，不再实现插件业务组件。
 - 样式按层拆在 `static/{components,layout,widgets,shell,pages}.css`（引用顺序固定）；
-  焦点态统一为品牌描边 + 3px 光环；图标唯一来源仍是 `src/ui/icons.rs`。
+  焦点态统一为品牌描边 + 3px 光环；图标唯一来源仍是 `ui/icons.rs`。
 - 详见 [docs/COMPONENTS.md](docs/COMPONENTS.md)。
 
 ## 当前实现边界
 
-- 这是 SSR/HTMX 原型，不是现有 desktop-ui 的替代：聊天发送通过服务端 WS RPC，页面正文由 SSE 增量更新（断流时退回 2 秒轮询），动作完成后整体跳转；
+- 这是**浏览器访问面**（网关默认挂载），不是 Electron 桌面壳的替代：桌面端仍加载本地 `desktop-ui/dist`；
+  浏览器页面由 SSE 增量更新（断流时退回 2 秒轮询），动作完成后整体跳转；
 - 已实现：只读概览、会话列表/详情、发送、中止、重试、审批、提问作答（核心托盘 + `thread.tray` 插件可接管）、
   排队（提升/删除/清空）、任务规划（task-plan 插件）、
   **供应商管理**（新建 / 编辑连接 / 删除 / 设为当前 / 测试连接 / 获取远程模型 / 模型增删改，对齐 desktop-ui）、
@@ -343,9 +360,10 @@ export function Page(props: any) {
   （data URI；PNG / JPEG / WebP / GIF，单张 ≤8 MB、最多 4 张，服务端再校验一次）；对话流里渲染缩略图，
   **点开在当前页面浮层查看**（Esc / 点遮罩关闭，不开新标签）。纯图片消息可以不写文字。
   模式/审批档位仍只读（推理等级在模型菜单里切）；
-- TSX 的相对 import 由 OXC + Boa 原生加载，不需要 Bun/Node；npm 依赖仍不支持，
-  且没有 wall-clock 超时（只有循环/递归/输出预算）；
-- 不做登录鉴权；非回环监听必须显式 `--allow-remote` + `--ui-token`，且只提供明文 HTTP。
+- TSX 的相对 import 由 OXC + Boa 原生加载，不需要 Bun/Node；npm 依赖仍不支持；
+  渲染有 wall-clock 预算（默认 500ms）与循环/递归/输出预算，但没有内存上限；
+- 浏览器鉴权：网关挂载时接受网关 token / 配对码并换发 HttpOnly 会话 cookie；
+  独立运行时用 `--ui-token`。两种形态都只提供明文 HTTP，远程部署请交给反向代理终止 TLS。
 
 
 

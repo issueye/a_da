@@ -115,7 +115,7 @@ function Page(props: any) {
 做"几秒前"这类相对时间用它，别信浏览器时钟。
 
 `data.todo` 是**当前会话的任务规划**（`todo` 工具）推演后的结果：`set` 替换 /
-`update` 按 id 增量合并 / `get` 只读，由 `src/ui/todo.rs::derive_todo_plan` 算好再投影。
+`update` 按 id 增量合并 / `get` 只读，由 `ui/todo.rs::derive_todo_plan` 算好再投影。
 没有规划过时是 `null`——插件据此不渲染卡片（不要画 `0/0` 的空面板）。
 
 ## 3. 内置 TSX 组件库

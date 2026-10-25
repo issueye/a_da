@@ -57,7 +57,7 @@
 建议：`openKeys` 落 sessionStorage（按 threadId 命名空间），容量顾虑时只存最近 N 条。
 
 **03 🔴 草稿三处全丢**
-输入框 `<textarea>` 服务端渲染恒为空（src/ui/components/composer.rs:129，无 value 回填）；切模型/档位等任何 POST（01 清单）后草稿清空；**发送失败**只带 `?error=` 回跳（src/handlers/chat/mod.rs:975-988），长文一次全丢——这是全清单里用户损失最大的单点。
+输入框 `<textarea>` 服务端渲染恒为空（ui/components/composer.rs:129，无 value 回填）；切模型/档位等任何 POST（01 清单）后草稿清空；**发送失败**只带 `?error=` 回跳（src/handlers/chat/mod.rs:975-988），长文一次全丢——这是全清单里用户损失最大的单点。
 建议：① 发送失败时把原文带回回跳页回填 composer（query 或一次性 sessionStorage）；② composer 加通用草稿保存（input 防抖写 `a_da_draft:{threadId}`，submit 成功清除，首载回填）。①优先，②跟随 21 一起做收益最大。
 
 ### B. 反馈体系
@@ -67,17 +67,17 @@
 建议：补三条中文文案（`已重命名会话` / `已删除会话` / `已提交回答`）；顺手给「新增 notice 必须登记文案」加一条守门（测试枚举 `redirect(...notice=…)` 的字面量比对，或至少写进 PR checklist）。
 
 **05 🔴 审批等待时长两套口径**
-行内 `elapsed_label` 明确拒绝用 `at` 算耗时——注释写着「它是排序用的序号，不是时间戳」（src/handlers/chat/rows.rs:348-364，改用 `startedAt`）；而审批托盘 `waited_label` 恰恰拿 `at` 当毫秒时间戳（src/handlers/chat/rows.rs:851-854 → src/ui/components/trays.rs:173-192）。同一张等待批准的卡，行内显示「待批 3s」、托盘可能显示离谱的「已等待 …」。
+行内 `elapsed_label` 明确拒绝用 `at` 算耗时——注释写着「它是排序用的序号，不是时间戳」（src/handlers/chat/rows.rs:348-364，改用 `startedAt`）；而审批托盘 `waited_label` 恰恰拿 `at` 当毫秒时间戳（src/handlers/chat/rows.rs:851-854 → ui/components/trays.rs:173-192）。同一张等待批准的卡，行内显示「待批 3s」、托盘可能显示离谱的「已等待 …」。
 建议：托盘改用 `startedAt`，与行内同源；`waited_from_at` 保留但只喂真实时间戳。
 
 **06 🔴 排队提升/删除按下标寻址，无服务端校验**
-`POST /threads/{id}/queue/{index}/promote|remove` 直接用渲染帧里的快照下标（src/handlers/chat/mod.rs:1207-1229；按钮在 src/ui/components/trays.rs:209-243）。SSE 换帧间隙里另一个客户端删了一条，陈旧帧上点「删除第 2 条」就误伤现在的第 2 条。对比：供应商模型编辑用下标但有越界防护与专门提示「可能已被其他客户端改动，请刷新」（src/handlers/providers.rs:724-730），两边口径不一致。
+`POST /threads/{id}/queue/{index}/promote|remove` 直接用渲染帧里的快照下标（src/handlers/chat/mod.rs:1207-1229；按钮在 ui/components/trays.rs:209-243）。SSE 换帧间隙里另一个客户端删了一条，陈旧帧上点「删除第 2 条」就误伤现在的第 2 条。对比：供应商模型编辑用下标但有越界防护与专门提示「可能已被其他客户端改动，请刷新」（src/handlers/providers.rs:724-730），两边口径不一致。
 建议：表单里带消息文本指纹（hidden `expect`），服务端不匹配时回 flash「排队已变化，请确认后再操作」；根治是排队项暴露稳定 id（依赖后端，列为跟进项）。
 
 ### C. 边缘环境（无 JS / 触屏 / 读屏）
 
 **07 🔴 无 JS 时危险动作零确认**
-`data-confirm` 完全由 JS 捕获 submit 实现（static/app.js:88-105）；`<noscript>` 下删会话（连带删盘上文件，src/ui/sidebar.rs:283）、清空队列、删供应商/删模型的表单一按即发、不可恢复。
+`data-confirm` 完全由 JS 捕获 submit 实现（static/app.js:88-105）；`<noscript>` 下删会话（连带删盘上文件，ui/sidebar.rs:283）、清空队列、删供应商/删模型的表单一按即发、不可恢复。
 建议：高危 POST 服务端要求 `confirm=1` 参数；无 JS 渐进增强路径下首次提交渲染一个带确认按钮的中间页（复用 ErrorPage 外壳）。JS 在场时照旧走共享确认弹窗，多带一个 hidden 字段即可。
 同口径问题：「中止当前轮次」带 data-confirm（src/handlers/chat/mod.rs:189、310），同为打断性的「重试上一轮」在＋菜单里裸提交（src/handlers/chat/mod.rs:88）——重试会丢弃当前轮已产出的内容重来，值得同款确认。
 

@@ -123,7 +123,9 @@ name = "agent-gateway"
 version = "0.1.0"
 dependencies = [
  "agent-proto",
+ "agent-web",
  "anyhow",
+ "async-trait",
  "axum",
  "futures-util",
  "serde",
@@ -234,6 +236,38 @@ dependencies = [
  "serde_json",
  "similar",
  "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "agent-web"
+version = "0.1.0"
+dependencies = [
+ "agent-proto",
+ "ammonia",
+ "anyhow",
+ "askama",
+ "async-trait",
+ "axum",
+ "boa_engine",
+ "clap",
+ "futures-util",
+ "oxc_allocator",
+ "oxc_ast",
+ "oxc_codegen",
+ "oxc_parser",
+ "oxc_semantic",
+ "oxc_span",
+ "oxc_transformer",
+ "pulldown-cmark",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -431,6 +465,17 @@ dependencies = [
  "compression-core",
  "pin-project-lite",
  "tokio",
+]
+
+[[package]]
+name = "async-trait"
+version = "0.1.92"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
 ]
 
 [[package]]
