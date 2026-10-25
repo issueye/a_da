@@ -11,7 +11,7 @@
 与 `crates/agent-rpc/`（桥接面：JSON-RPC 分发 + WS 宿主 + UI 投影）
 + **网关**（S5/S6）：`crates/agent-gateway/`（`ada-gateway`：AGENT 管理平台 + 交互平台 + 桥接平台）
 + **网页界面**：`crates/agent-web/`（SSR 投影层，产品代号 `ssr-h`；网关默认挂载，一个进程一个端口）
-+ **桌面客户端宿主**：**Electron 桌面壳**（`electron/`：彻底根除 Windows WebView2 权限污染与目录锁死问题，支持 `bun run electron:dev` 与 `bun run electron:pack`）+ **React 前端**（`desktop-ui/`：通过 `src/client/desktop-bridge.ts` 与 Electron 宿主通信）；
++ **桌面客户端宿主**：**Electron 桌面壳**（`electron/`：彻底根除 Windows WebView2 权限污染与目录锁死问题；**默认加载网关内置 SSR 页面**，`--ui=desktop` 回退本地 React/Vite）+ **React 前端**（`desktop-ui/`：通过 `src/client/desktop-bridge.ts` 与 Electron 宿主通信）；
 `crates/ts-engine/` 是独立的 TS 执行引擎，只作插件运行时。
 **TypeScript 时代的实现（Bun + GPUIX 客户端 + TS 侧 agent/宿主）已于 2026-10-17 整体删除**
 （原 `archive/ts-legacy/`，可从 git 历史取回）：它不再是参考设计、不参与构建与测试。
@@ -36,11 +36,13 @@ node tools/verify-ssr-streaming.mjs           # SSR 流式与图片输入（单�
 node tools/verify-ssr-approval-abort.mjs      # SSR 审批批准 → 工具执行 → 流式中止（单进程，假模型）
 node tools/verify-ssr-workspaces.mjs          # SSR 工作区树与目录选择（单进程）
 cargo xtask verify --fast                     # 上面四道静态门一次跑完（跳过全量单测）
-bun run electron:dev                          # Electron 桌面端开发（前端热重载 + 网关监督）
+bun run electron:dev                          # Electron 桌面端开发（默认加载网关 SSR）
+bun run electron:dev:desktop                  # 需要 React/Vite 界面热重载时使用（--ui=desktop）
 bun run electron:pack                         # 打包 Electron 免安装版 (dist/electron/win-unpacked)
 cargo run -p agent-gateway -- --port 52353    # 网页访问：页面与 /rpc 同端口（浏览器开 http://127.0.0.1:52353/）
 pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面壳验收（Electron 交付形态；锁屏时自动走无头 CDP 回退）
-node tools/verify-desktop-shell-headless.mjs                             # 无头版：锁屏/CI 下用 CDP 真实命中渲染层
+node tools/verify-desktop-shell-headless.mjs                             # --ui=desktop 的无头版：CDP 真实命中 React 标题栏
+node tools/verify-electron-ssr.mjs                                       # Electron 默认 SSR：加载 / 原生窗口 / 发消息 / 关闭清理
 ```
 
 - **`typecheck` 与 `cargo test` 是两个独立的门，两个都要过**，别只跑一个。
@@ -236,8 +238,8 @@ node tools/verify-desktop-shell-headless.mjs                             # 无�
   `agentId=ada-pm`/`pm-assistant` 的会话在**读盘时自动归一并写回**（幂等）。
   模式预设同样受 `verify-spec` 门禁约束（`products/<产品>/modes/*.agent.spec.json` 也在扫描范围内）。
 - 所有内部调用点直连基座（`agent-proto` / `agent-toolkit` / `agent-base` / `agent-adapter`），历史 shim 与 facade 已全量下线
-- `electron/` **Electron 桌面宿主**：主进程监督 `ada-gateway` 生命周期、单实例锁、无边框原生控制与 IPC 桥接；`dist-electron/` 为构建中间产物
-- `desktop-ui/` **React 桌面前端**：通过 `src/client/desktop-bridge.ts` 与 Electron 宿主通信（`ws-client.ts` 是唯一协议客户端）
+- `electron/` **Electron 桌面宿主**：主进程监督 `ada-gateway` 生命周期、单实例锁、原生窗口控制与 IPC 桥接。**界面默认 `--ui=ssr`**：等网关就绪后加载 `http://127.0.0.1:<port>/`（带 token 时用 `?token=` 自动登录），用系统原生边框保留窗口按钮；`--ui=desktop` 回退 Vite/本地 `desktop-ui/dist`（无边框 + React 自绘标题栏）。`dist-electron/` 为构建中间产物
+- `desktop-ui/` **React 桌面前端（回退界面）**：通过 `src/client/desktop-bridge.ts` 与 Electron 宿主通信（`ws-client.ts` 是唯一协议客户端）；默认 SSR 模式下不加载
 - `dist/` **发布交付套件**：包含 `ada-gateway.exe`、`ada-coding.exe` 以及 `dist/electron/win-unpacked/`（Electron 完整绿色便携包，内置 Chromium 运行时与 `resources/bin/` 关联二进制，彻底规避 WebView2 权限污染）
 
 ## 核心红线与防踩坑规矩

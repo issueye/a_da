@@ -1,0 +1,399 @@
+// Electron **默认 SSR 界面**的端到端冒烟（锁屏/CI 可用）。
+//
+// 与 `verify-desktop-shell-headless.mjs` 的分工：
+//   · 那个脚本验证 `--ui=desktop` 的 React 自绘标题栏；
+//   · 本脚本验证默认 `--ui=ssr`：Electron 等网关就绪后加载 `http://127.0.0.1:<port>/`，
+//     用系统原生边框做窗口控制，消息走 SSR 表单 → 网关 → agent。
+//
+// 不碰用户 `~/.a-da`：临时 A_DA_HOME + 临时 workspace + 临时 Electron user-data-dir。
+
+import { createServer } from 'node:http'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { spawn, spawnSync } from 'node:child_process'
+import { createServer as createNetServer } from 'node:net'
+
+const REPO = 'E:\\codes\\rust_projects\\a_da'
+const APP =
+  process.env.A_DA_ELECTRON_EXE ||
+  join(REPO, 'dist', 'electron', 'win-unpacked', 'ada.exe')
+
+const failures = []
+const check = (ok, what, extra = '') => {
+  console.log(`  ${ok ? '[PASS]' : '[FAIL]'} ${what}${ok || !extra ? '' : ` — ${extra}`}`)
+  if (!ok) failures.push(what)
+}
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+async function freePort() {
+  const server = createNetServer()
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address()
+  await new Promise((resolve) => server.close(resolve))
+  return port
+}
+
+const root = join(REPO, 'target', 'electron-ssr-verify')
+mkdirSync(root, { recursive: true })
+const home = mkdtempSync(join(root, 'home-'))
+const workspace = mkdtempSync(join(root, 'ws-'))
+const profile = mkdtempSync(join(root, 'profile-'))
+
+const modelRequests = []
+const model = createServer((req, res) => {
+  let body = ''
+  req.on('data', (chunk) => (body += chunk))
+  req.on('end', () => {
+    modelRequests.push(body)
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    })
+    const send = (delta, finish) =>
+      res.write(
+        `data: ${JSON.stringify({
+          id: 'stub',
+          object: 'chat.completion.chunk',
+          choices: [{ index: 0, delta, ...(finish ? { finish_reason: finish } : {}) }],
+        })}\n\n`,
+      )
+    send({ role: 'assistant', content: '' })
+    send({ content: 'Electron SSR 回复：页面与消息链路正常。' })
+    send({}, 'stop')
+    res.write('data: [DONE]\n\n')
+    res.end()
+  })
+})
+await new Promise((resolve) => model.listen(0, '127.0.0.1', resolve))
+const modelPort = model.address().port
+
+writeFileSync(
+  join(home, 'config.json'),
+  JSON.stringify(
+    {
+      activeProviderId: 'prov_stub',
+      apiKey: 'stub-key',
+      baseUrl: `http://127.0.0.1:${modelPort}/v1`,
+      contextWindow: 32768,
+      maxOutputTokens: 1024,
+      model: 'stub-model',
+      protocol: 'openai_chat',
+      approval: 'auto',
+      retryCount: 1,
+      disabledPlugins: [],
+      providers: [
+        {
+          id: 'prov_stub',
+          name: 'stub',
+          baseUrl: `http://127.0.0.1:${modelPort}/v1`,
+          apiKey: 'stub-key',
+          protocol: 'openai_chat',
+          models: [{ id: 'stub-model', name: 'Stub', contextWindow: 32768, maxOutputTokens: 1024 }],
+        },
+      ],
+    },
+    null,
+    2,
+  ),
+)
+
+const cdpPort = await freePort()
+const child = spawn(
+  APP,
+  [
+    `--remote-debugging-port=${cdpPort}`,
+    '--workspace',
+    workspace,
+    '--user-data-dir',
+    profile,
+  ],
+  {
+    cwd: workspace,
+    env: { ...process.env, A_DA_HOME: home },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  },
+)
+let appOutput = ''
+child.stdout.on('data', (chunk) => (appOutput += chunk.toString()))
+child.stderr.on('data', (chunk) => (appOutput += chunk.toString()))
+
+function killTree(pid) {
+  try {
+    spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' })
+  } catch {}
+}
+
+function cleanup() {
+  if (process.env.VERIFY_DEBUG) {
+    console.log('  --- app 输出末尾 ---')
+    console.log(appOutput.slice(-3000))
+  }
+  if (child.exitCode === null) killTree(child.pid)
+  try {
+    model.close()
+  } catch {}
+  if (!process.env.KEEP_VERIFY_TEMP) {
+    for (const dir of [home, workspace, profile]) {
+      try {
+        rmSync(dir, { recursive: true, force: true })
+      } catch {}
+    }
+  } else {
+    console.log('  保留临时目录：', home, workspace, profile)
+  }
+}
+
+function windowState(action = 'state') {
+  const out = spawnSync(
+    'pwsh',
+    [
+      '-NoProfile',
+      '-File',
+      join(REPO, 'tools', 'window-state.ps1'),
+      '-ProcessId',
+      String(child.pid),
+      '-Action',
+      action,
+    ],
+    { encoding: 'utf8' },
+  )
+  const line =
+    (out.stdout || '')
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .at(-1) || '{}'
+  try {
+    return JSON.parse(line)
+  } catch {
+    return { found: false, raw: line }
+  }
+}
+
+let wsClient = null
+let nextId = 1
+async function cdpConnect(url) {
+  const ws = new WebSocket(url)
+  await new Promise((resolve, reject) => {
+    ws.addEventListener('open', resolve, { once: true })
+    ws.addEventListener('error', reject, { once: true })
+  })
+  const pending = new Map()
+  ws.addEventListener('message', (event) => {
+    const msg = JSON.parse(event.data)
+    if (msg.id && pending.has(msg.id)) {
+      pending.get(msg.id)(msg)
+      pending.delete(msg.id)
+    }
+  })
+  wsClient = ws
+  return {
+    send(method, params = {}) {
+      const id = nextId++
+      ws.send(JSON.stringify({ id, method, params }))
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`CDP 超时：${method}`)), 10_000)
+        pending.set(id, (msg) => {
+          clearTimeout(timer)
+          if (msg.error) reject(new Error(`${method}: ${msg.error.message}`))
+          else resolve(msg.result)
+        })
+      })
+    },
+  }
+}
+
+async function evaluate(cdp, expression, awaitPromise = false) {
+  const result = await cdp.send('Runtime.evaluate', {
+    expression,
+    returnByValue: true,
+    awaitPromise,
+  })
+  if (result.exceptionDetails) {
+    throw new Error(`页面求值失败：${result.exceptionDetails.text}`)
+  }
+  return result.result?.value
+}
+
+async function waitUntil(fn, timeoutMs, label) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    try {
+      if (await fn()) return true
+    } catch {}
+    await sleep(200)
+  }
+  throw new Error(`等待 ${label} 超时`)
+}
+
+try {
+  check(existsSync(APP), `Electron 打包产物存在：${APP}`)
+  if (failures.length) throw new Error('缺少打包产物')
+
+  let target = null
+  await waitUntil(
+    async () => {
+      try {
+        const list = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json()
+        target =
+          list.find((t) => t.type === 'page' && /^http:\/\/127\.0\.0\.1:/.test(t.url)) ||
+          list.find((t) => t.type === 'page')
+        return Boolean(target && /^http:\/\/127\.0\.0\.1:/.test(target.url))
+      } catch {
+        return false
+      }
+    },
+    30_000,
+    'Electron 加载 SSR 页面',
+  )
+  console.log(`  Electron 页面：${target.url}`)
+  const cdp = await cdpConnect(target.webSocketDebuggerUrl)
+  await cdp.send('Runtime.enable')
+  await cdp.send('Page.enable')
+
+  await waitUntil(
+    () => evaluate(cdp, 'Boolean(document.querySelector("#transcript")) && Boolean(document.querySelector("textarea"))'),
+    20_000,
+    'SSR 对话区与输入框',
+  )
+  check(true, 'Electron 加载的是 SSR 页面（对话区 + 输入框）')
+  const pageUrl = await evaluate(cdp, 'location.href')
+  check(/^http:\/\/127\.0\.0\.1:\d+\/$/.test(pageUrl), '页面来源是网关根路径（不是 file://）', pageUrl)
+  check((await evaluate(cdp, 'document.title')).includes('a_da'), 'SSR 页面标题包含 a_da')
+  check(
+    (await evaluate(cdp, `Boolean(document.querySelector('button[aria-label="最大化"]'))`)) === false,
+    'SSR 模式使用系统原生窗口边框（无自绘标题栏按钮）',
+  )
+
+  // 原生窗口控制
+  const initial = windowState()
+  check(initial.found === true && initial.zoomed === false, '找到原生窗口且未最大化', JSON.stringify(initial))
+  const maxed = windowState('maximize')
+  check(maxed.zoomed === true, '原生最大化生效', JSON.stringify(maxed))
+  const restored = windowState('restore')
+  check(restored.zoomed === false, '原生还原生效', JSON.stringify(restored))
+  const minimized = windowState('minimize')
+  check(minimized.iconic === true, '原生最小化生效', JSON.stringify(minimized))
+  const shown = windowState('restore')
+  check(shown.iconic === false, '窗口恢复可见', JSON.stringify(shown))
+
+  // 建一条会话，直接导航到 SSR 会话页（避免依赖侧栏点击的时序）
+  const gatewayPort = Number(new URL(pageUrl).port)
+  const created = await fetch(
+    `http://127.0.0.1:${gatewayPort}/api/threads?workspace=${encodeURIComponent(workspace)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Electron SSR 验收', workspace }),
+    },
+  )
+  const createdBody = await created.json().catch(() => ({}))
+  const threadId = createdBody.threadId || createdBody.id
+  check(Boolean(threadId), '通过网关创建会话', JSON.stringify(createdBody).slice(0, 200))
+  if (!threadId) throw new Error('没有 threadId')
+
+  await cdp.send('Page.navigate', {
+    url: `http://127.0.0.1:${gatewayPort}/threads/${threadId}`,
+  })
+  await waitUntil(
+    () =>
+      evaluate(
+        cdp,
+        'Boolean(document.querySelector("textarea")) && Boolean(document.querySelector(\'button[aria-label="发送"]\'))',
+      ),
+    20_000,
+    'SSR 会话页输入框与发送键',
+  )
+
+  await evaluate(cdp, 'document.querySelector("textarea").focus()')
+  await cdp.send('Input.insertText', { text: 'Electron SSR 请回复一句话。' })
+  await waitUntil(
+    () => evaluate(cdp, 'document.querySelector("textarea").value.includes("Electron SSR")'),
+    5_000,
+    '输入框收到文本',
+  )
+  const rect = await evaluate(
+    cdp,
+    `(() => {
+      const b = document.querySelector('button[aria-label="发送"]');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2, disabled: Boolean(b.disabled) };
+    })()`,
+  )
+  check(rect && !rect.disabled, 'SSR 发送键可用')
+  await cdp.send('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: rect.x,
+    y: rect.y,
+    button: 'left',
+    clickCount: 1,
+  })
+  await cdp.send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: rect.x,
+    y: rect.y,
+    button: 'left',
+    clickCount: 1,
+  })
+  await waitUntil(
+    async () => {
+      try {
+        return (await evaluate(cdp, 'document.body.innerText')).includes('Electron SSR 回复')
+      } catch {
+        return false
+      }
+    },
+    30_000,
+    'SSR 助手回复上屏',
+  )
+  check(true, 'SSR 表单发送 → 助手回复上屏')
+  check(modelRequests.length >= 1, '假模型收到请求', `实际 ${modelRequests.length} 次`)
+
+  // 关闭：走 preload 的 IPC（原生边框关闭按钮无法在锁屏下点击）
+  const report = await evaluate(cdp, 'window.electronAPI.getProcessReport()', true)
+  const gatewayPid = report?.processes?.find((p) => p.name.startsWith('ada-gateway'))?.pid || null
+  check(Boolean(gatewayPid), '关闭前报告了网关 pid', String(gatewayPid))
+  // 关闭会立刻销毁页面，CDP 的响应不会回来；发出去后只等进程退出。
+  cdp
+    .send('Runtime.evaluate', {
+      expression: 'window.electronAPI.windowClose()',
+      awaitPromise: true,
+      returnByValue: true,
+    })
+    .catch(() => {})
+  let appGone = false
+  for (let i = 0; i < 60; i += 1) {
+    if (child.exitCode !== null) {
+      appGone = true
+      break
+    }
+    await sleep(250)
+  }
+  check(appGone, '关闭窗口 → 桌面端主进程已退出')
+  if (gatewayPid) {
+    let gatewayGone = false
+    for (let i = 0; i < 40; i += 1) {
+      try {
+        process.kill(gatewayPid, 0)
+      } catch {
+        gatewayGone = true
+        break
+      }
+      await sleep(250)
+    }
+    check(gatewayGone, '关窗后没有遗留 ada-gateway 孤儿进程')
+  }
+} finally {
+  try {
+    wsClient?.close()
+  } catch {}
+  cleanup()
+}
+
+if (failures.length) {
+  console.error(`\n[FAIL] Electron SSR 验收未通过（${failures.length} 项）`)
+  process.exit(1)
+}
+console.log('\n[PASS] Electron 默认 SSR：加载 / 原生窗口控制 / 发消息 / 关闭清理全部通过')

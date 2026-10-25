@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory = $true)][int]$ProcessId,
-  [ValidateSet('state', 'restore', 'minimize')][string]$Action = 'state',
+  [ValidateSet('state', 'restore', 'minimize', 'maximize')][string]$Action = 'state',
   [string]$TitlePrefix = 'a_da'
 )
 
@@ -20,15 +20,18 @@ public class HeadlessWin {
 
   public static IntPtr Find(uint pid, string prefix) {
     IntPtr found = IntPtr.Zero;
+    IntPtr fallback = IntPtr.Zero;
     EnumWindows((h, l) => {
       uint p; GetWindowThreadProcessId(h, out p);
       if (p != pid || !IsWindowVisible(h)) return true;
       var sb = new StringBuilder(256); GetWindowTextW(h, sb, 256);
       var title = sb.ToString();
       if (title.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) { found = h; return false; }
+      // SSR 页面标题是「新会话 · a_da」，不再以 a_da 开头：留一个同进程可见窗口兜底。
+      if (fallback == IntPtr.Zero && title.Length > 0) fallback = h;
       return true;
     }, IntPtr.Zero);
-    return found;
+    return found != IntPtr.Zero ? found : fallback;
   }
 
   public static string Title(IntPtr h) {
@@ -46,6 +49,7 @@ if ($hwnd -eq [IntPtr]::Zero) {
 
 switch ($Action) {
   'minimize' { [void][HeadlessWin]::ShowWindow($hwnd, 6); Start-Sleep -Milliseconds 500 }
+  'maximize' { [void][HeadlessWin]::ShowWindow($hwnd, 3); Start-Sleep -Milliseconds 500 }
   'restore'  { [void][HeadlessWin]::ShowWindow($hwnd, 9); Start-Sleep -Milliseconds 600 }
 }
 

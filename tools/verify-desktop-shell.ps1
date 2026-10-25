@@ -20,6 +20,9 @@
 #
 # 注意：会真的动鼠标（点窗口按钮），跑的时候别抢鼠标。
 #
+# Electron 默认界面已切到 SSR（系统原生边框）；本脚本显式用 `--ui=desktop` 验收
+# **自绘标题栏**那套 React 界面。SSR 模式的验收见 `tools/verify-electron-ssr.mjs`。
+#
 # 锁屏环境（LogonUI 在运行）：真实鼠标点击无法到达窗口，脚本会自动改用
 # `verify-desktop-shell-headless.mjs`（Electron CDP 注入渲染层输入）执行同一组
 # 行为断言；输出会明确标注"改用无头验收"，不会假装像素级检查跑过。
@@ -205,7 +208,7 @@ function PressEscape {
 # 在窗口里找 emerald-600（#059669）按钮的中心：进程管理里的「重新唤醒网关」。
 # 🔴 不能取"所有匹配像素的外接框中心"：界面上还有 emerald 的小点（核心链路在线、运行中徽章），
 # 外接框会被它们拉大，算出来的中心落在弹窗中间、点了个空。这里改成取**最密的那一格**。
-function FindEmeraldCenter($h) {
+function FindRestartGatewayButton($h) {
   $r = Rect $h
   $w = [int]($r.Right - $r.Left); $ht = [int]($r.Bottom - $r.Top)
   $bmp = New-Object System.Drawing.Bitmap $w, $ht
@@ -220,8 +223,9 @@ function FindEmeraldCenter($h) {
   for ($x = 0; $x -lt $w; $x += 2) {
     for ($y = 0; $y -lt $ht; $y += 2) {
       $px = $bmp.GetPixel($x, $y)
-      # emerald-600 及其 hover/active 变体
-      if ($px.G -ge 110 -and $px.G -le 185 -and $px.R -le 70 -and $px.B -ge 70 -and $px.B -le 145) {
+      # 定位「重启所有服务」的 amber-600 实心按钮（hover 变亮到 amber-500）。
+      # 「重新唤醒网关」已改成中性按钮，没法再按 emerald 找；它是 amber 按钮左侧的相邻项。
+      if ($px.R -ge 170 -and $px.R -le 255 -and $px.G -ge 80 -and $px.G -le 190 -and $px.B -le 60) {
         $grid[[int]($x / $cell), [int]($y / $cell)]++
       }
     }
@@ -243,8 +247,14 @@ function FindEmeraldCenter($h) {
     }
   }
   if ($best -lt 30) { return $null }
+
+  # amber 按钮所在行的最左边缘 → 再往左 10px 就是「重新唤醒网关」的右半截。
+  $leftCx = $bestCx
+  for ($cx = 0; $cx -le $bestCx; $cx++) {
+    if ($grid[$cx, $bestCy] -gt 2) { $leftCx = $cx; break }
+  }
   return [pscustomobject]@{
-    X = [int]$r.Left + $bestCx * $cell + [int]($cell / 2)
+    X = [int]$r.Left + $leftCx * $cell - 10
     Y = [int]$r.Top + $bestCy * $cell + [int]($cell / 2)
     Pixels = $best
   }
@@ -369,10 +379,12 @@ $preexistingHostPids = @(Get-Process -Name $appProcessNames -ErrorAction Silentl
 
 $env:A_DA_SILENT_FATAL = '1'   # 宿主的原生错误框静音，避免挡住无人值守流程
 $proc = if ($Exe) {
-  Start-Process -FilePath $Exe -WorkingDirectory $WorkDir -PassThru
+  # 本脚本验收的是**自绘标题栏**（React 窗口按钮）；Electron 默认界面已是 SSR，
+  # 所以显式用 --ui=desktop 走本地 desktop-ui。SSR 模式见 verify-gateway-web.mjs。
+  Start-Process -FilePath $Exe -ArgumentList '--ui=desktop' -WorkingDirectory $WorkDir -PassThru
 } else {
   # Electron 壳的 dev 形态：npx electron .（源码 + 热重载）
-  Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'npx electron .' -WorkingDirectory $WorkDir -PassThru -WindowStyle Hidden
+  Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'npx electron . --ui=desktop' -WorkingDirectory $WorkDir -PassThru -WindowStyle Hidden
 }
 Write-Host "已启动 $(if ($Exe) { $Exe } else { 'npx electron . (dev)' }) (宿主 pid=$($proc.Id))"
 
@@ -500,7 +512,7 @@ $logBeforeRestart = NewLogChunk
 $r = Rect $h
 ClickAt ([int](($r.Left + $r.Right) / 2)) ([int]$r.Top + $ButtonY)
 Start-Sleep -Milliseconds 1500
-$btn = FindEmeraldCenter $h
+$btn = FindRestartGatewayButton $h
 Check ($null -ne $btn) '进程管理里找到「重新唤醒网关」按钮'
 if ($btn) {
   ClickAt $btn.X $btn.Y

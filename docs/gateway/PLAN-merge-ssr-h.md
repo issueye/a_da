@@ -6,7 +6,7 @@
 | 输入 | [ssr-h/README.md](../../ssr-h/README.md)、`ssr-h/docs/{STATUS,UED,COMPONENTS,TSX}.md`、[gateway/README.md](README.md)、[protocol/README.md](../protocol/README.md)、本轮代码核查 |
 | 性质 | **已落地（2026-10-25）**：M0–M4 全部完成；批次与任务卡保留为实施记录 |
 | 目标 | 一个 `ada-gateway` 进程 + 一个端口 = 整站；SSR 成为网关的浏览器界面；删除 ssr-h 对网关的自反代 |
-| 约束 | 不改多轮引擎与现有 JSON-RPC 方法；网关仍不跑引擎（INV-1）、不缓存会话状态（INV-8）；Electron 桌面端行为不变 |
+| 约束 | 不改多轮引擎与现有 JSON-RPC 方法；网关仍不跑引擎（INV-1）、不缓存会话状态（INV-8）；Electron 默认加载 SSR，`--ui=desktop` 保留 React/Vite 回退 |
 | 节奏 | 一任务一 commit（`refactor(web)` / `feat(gateway)` / `docs(gateway)`），一批一出场，每批可独立回退 |
 | 实施进度 | **已完成**：`crates/agent-web` 已并入 workspace；网关默认 `--web-ui ssr`；单进程验收脚本全绿；`verify-docs` 基线清零 |
 
@@ -32,8 +32,8 @@ ssr-h 的页面与处理器基本不改，`AgentClient` 的方法签名也不改
 
 1. **同源单端口**：`/`、`/threads/*`、`/static/*`、`/ext/*`、SSE、`/api/*`、`/rpc` 全在一个 axum Router 上；
 2. **不再自反代**：一元调用走网关内部函数，事件订阅直连本工作区的 agent；网关 token 永不出现在浏览器；
-3. **桌面端零影响**：Electron 从本地 `desktop-ui/dist` 加载界面（`electron/main.ts:640-670`），
-   网关 `/` 归谁不影响桌面壳。
+3. **桌面端也可直接用**：Electron 等网关就绪后加载 `http://127.0.0.1:<port>/`（默认 SSR，
+   系统原生窗口边框）；`--ui=desktop` 回退本地 React/Vite。网关仍只被当作一个 HTTP/WS 服务。
 
 ## 1. 目标与非目标
 
@@ -48,11 +48,11 @@ ssr-h 的页面与处理器基本不改，`AgentClient` 的方法签名也不改
 
 ### 1.2 非目标
 
-- **不替换 Electron 的 desktop-ui**：React 界面仍是桌面壳的主界面；SSR 是浏览器访问面。
+- **不删除 Electron 的 desktop-ui**：SSR 是默认界面，React 界面作为 `--ui=desktop` 回退保留。
 - **不把 plugin-hub 拉进来**：插件库平台是独立 Axum 服务，合并没有收益。
 - **不重写 SSR 为 React/SPA**，也不把 Askama 模板改成运行时文件。
 - **不新增 JSON-RPC 方法**：合并只动宿主与路由；若最终不得不加，按 §6.1 的四处同步执行。
-- **不改桌面端的加载路径**（Vite dev server / 本地 `dist`），也不改 Electron 的网关监督逻辑。
+- **不改 Electron 的网关监督逻辑**；界面加载路径只增加 `--ui=ssr|desktop` 选择（默认 SSR）。
 - **不在本计划里统一 provider/plugin 的领域模型**：ssr-h 仍通过既有方法与 agent 交互。
 
 ## 2. 现状
@@ -102,7 +102,7 @@ ssr-h 的页面与处理器基本不改，`AgentClient` 的方法签名也不改
 ### 3.1 拓扑
 
 ```text
-Electron ── 本地 file://desktop-ui/dist ──┐
+Electron ── http://127.0.0.1:<port>/ ─────┐
                                           ├──▶ ada-gateway（一个进程、一个端口）
 浏览器 ──────────── 同源 HTML/SSE ────────┘        │
                                                    ├─ SSR 页面处理器（agent-web）
@@ -208,7 +208,7 @@ pub trait WebBackend: Send + Sync {
 | # | 决策 | 选择（推荐） | 备选 | 理由 / 影响 |
 |---|---|---|---|---|
 | D1 | 代码归属 | 新增 `crates/agent-web` | 并入网关；保留独立 crate | 见 §3.5 |
-| D2 | 根路径归属 | `--web-ui` 取 `ssr` 或 `desktop`，默认过渡期为 `desktop` | SSR 挂 `/ssr`；两者同时挂 | SSR 页面里全是根绝对 URL；挂子路径要改模板/表单/SSE/JS，成本远高于开关。desktop-ui 的 Vite 产物又写死 `/assets/*`，同样不适合挂子路径 |
+| D2 | 根路径归属 | `--web-ui` 取 `ssr` 或 `desktop`，**最终默认 `ssr`**（Electron 也默认加载 SSR） | SSR 挂 `/ssr`；两者同时挂 | SSR 页面里全是根绝对 URL；挂子路径要改模板/表单/SSE/JS，成本远高于开关。desktop-ui 的 Vite 产物又写死 `/assets/*`，同样不适合挂子路径 |
 | D3 | 浏览器凭据 | 过渡期沿用独立 `--web-token`；M3 起接受网关 token/配对码并换发 HttpOnly 会话 cookie | 立即统一；不做鉴权 | 进程内调用不需要 token，浏览器只需要"能不能看这个 UI"；分阶段可先合并结构再收口凭据 |
 | D4 | standalone 二进制 | M0–M2 保留为开发/验收入口，不作为发布产物；M4 再决定删或加 feature | 立即删除 | 保留一条"不依赖网关进程"的回归路径，便于对比两个后端的行为 |
 | D5 | 网关依赖声明 | `agent-gateway` 增加 `agent-web`；文档改为"依赖线协议 + UI 投影层" | 把 UI 代码塞进网关 | 需要同步改 `lib.rs` 边界说明与 check J 的扫描范围，不能只改代码 |
@@ -346,9 +346,10 @@ M4 删除）。
 
 **T09 Electron 与浏览器入口**
 
-- Electron 不改加载路径；确认网关以 `--web-ui ssr` 启动时桌面壳仍正常（它只连 `/rpc`）。
-- `desktop-ui` 的「进程管理 → 浏览器打开」链接改指向 `/`（SSR）；
-  若仍需要 React 网页版，另给一个 `--web-ui desktop` 的说明，不加第二套 URL 逻辑。
+- Electron 默认 `--ui=ssr`：等网关就绪后加载 `http://127.0.0.1:<port>/`，带 token 时用
+  `?token=` 自动登录；窗口改用系统原生边框保留最小化/最大化/关闭。
+- `--ui=desktop`（`A_DA_ELECTRON_UI=desktop` / `bun run electron:dev:desktop`）保留原 React/Vite
+  界面与自绘标题栏；`desktop-ui` 的「浏览器打开」链接仍指向 `/`。
 
 **T10 验收脚本改单进程**
 
@@ -470,7 +471,9 @@ cargo xtask verify --fast
 3. `bun run typecheck` 全绿；
 4. 四个实机脚本全过；
 5. 浏览器打开 `http://127.0.0.1:52353/` 能完成"新建会话 → 发消息 → 看到流式回答 → 审批 → 中止"；
-6. Electron 桌面端启动、发消息、关闭窗口、退出清理均正常。
+6. Electron 桌面端启动、发消息、关闭窗口、退出清理均正常；默认加载 SSR 页面
+   （`node tools/verify-electron-ssr.mjs`；`--ui=desktop` 的 React 壳仍由
+   `verify-desktop-shell.ps1` / `verify-desktop-shell-headless.mjs` 覆盖）。
 
 ## 8. 风险与回退
 
@@ -518,8 +521,9 @@ cargo xtask verify --fast
 | 连接守卫 | `AgentRegistry::open_connection` / `ConnectionGuard`（`relay` 与 SSR 事件订阅共用） |
 | 凭据 | `/__auth` 接受网关 token / 配对码，换发 HttpOnly 会话 cookie；`--web-token` 保留兼容 |
 | 插件 | 自省端点 `/web-ui/frontend-plugins`；停用状态 `~/.a-da/web-ui-state.json` |
-| 默认值 | `--web-ui` 默认 `ssr`；`desktop` 保留回退 |
-| 验收 | `cargo test -p agent-web`、`cargo test -p agent-gateway`、`node tools/verify-gateway-web.mjs`、`node tools/verify-ssr-streaming.mjs`、`node tools/verify-ssr-approval-abort.mjs`、`node tools/verify-ssr-workspaces.mjs`、`pwsh -NoProfile -File tools/verify-desktop-shell.ps1`（锁屏时走 `verify-desktop-shell-headless.mjs`）、`cargo xtask verify-docs` |
+| 默认值 | 网关 `--web-ui` 默认 `ssr`；Electron `--ui` 默认 `ssr`，`desktop` 保留回退 |
+| Electron | 等网关就绪后加载 `http://127.0.0.1:<port>/`，带 token 时 `?token=` 自动登录；SSR 用系统原生边框，`--ui=desktop` 回退无边框 React |
+| 验收 | `cargo test -p agent-web`、`cargo test -p agent-gateway`、`node tools/verify-gateway-web.mjs`、`node tools/verify-ssr-streaming.mjs`、`node tools/verify-ssr-approval-abort.mjs`、`node tools/verify-ssr-workspaces.mjs`、`node tools/verify-electron-ssr.mjs`、`pwsh -NoProfile -File tools/verify-desktop-shell.ps1`（`--ui=desktop`；锁屏时走 `verify-desktop-shell-headless.mjs`）、`cargo xtask verify-docs` |
 
 ## 附录 A：文件落点对照
 

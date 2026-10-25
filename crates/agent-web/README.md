@@ -2,7 +2,9 @@
 
 > **已并入网关**：`crates/agent-web` 是根 workspace 成员，`ada-gateway` 默认挂载它的
 > `router`。一个 `ada-gateway` 进程 + 一个端口 = 整站；页面、`/static/*`、SSE、`/api/*`、
-> `/rpc` 都在同一个 axum Router 上。独立运行的 `ssr-h` 二进制只用于开发与实机验收。
+> `/rpc` 都在同一个 axum Router 上。**Electron 桌面壳默认也加载这份 SSR 页面**
+> （`http://127.0.0.1:<port>/`，系统原生窗口边框），`--ui=desktop` 回退本地 React/Vite。
+> 独立运行的 `ssr-h` 二进制只用于开发与实机验收。
 
 UED 设计基线、组件规范与 desktop-ui 对齐差距见 [docs/UED.md](docs/UED.md)。
 组件库与插件插槽体系的架构说明见 [docs/COMPONENTS.md](docs/COMPONENTS.md)；
@@ -161,10 +163,10 @@ node tools/verify-ssr-streaming.mjs
 node tools/verify-ssr-approval-abort.mjs   # 审批托盘 → 批准执行 → 流式中止
 ```
 
-假模型（每 120ms 吐一段）+ 真网关 + 真 `ssr-h`，走真实的 `/threads/{id}/send` 与
-`/threads/{id}/stream`，断言助手正文被拆成多次增量推送、相邻间隔远小于旧的 2 秒整段刷新、
-正文单调变长、最后一段不丢。需要 `dist/ada-gateway.exe`、`dist/ada-coding.exe`
-与已构建的 `ssr-h`（默认取 `../cargo_target_ada/debug/ssr-h.exe`，可用 `SSR_H_EXE` 覆盖）。
+假模型（每 120ms 吐一段）+ 真网关（**单进程内置 SSR**）+ 真 `ada-coding`，走真实的
+`/threads/{id}/send` 与 `/threads/{id}/stream`，断言助手正文被拆成多次增量推送、
+相邻间隔远小于旧的 2 秒整段刷新、正文单调变长、最后一段不丢。默认取 debug 网关，
+可用 `A_DA_GATEWAY_EXE` 指向 `dist/ada-gateway.exe`。
 脚本的临时目录都在 `target/ssr-verify/` 下（某些沙箱环境不允许子进程写系统 TEMP）。
 
 ### 工作区验收
@@ -173,7 +175,7 @@ node tools/verify-ssr-approval-abort.mjs   # 审批托盘 → 批准执行 → �
 node tools/verify-ssr-workspaces.mjs
 ```
 
-真网关 + 真 `ada-coding` + 真 `ssr-h`：建两个工作区的会话，断言侧栏树分组/当前标记/跨工作区可见，
+真网关（单进程内置 SSR）+ 真 `ada-coding`：建两个工作区的会话，断言侧栏树分组/当前标记/跨工作区可见，
 再走 `/workspaces` 浏览目录、`workspaces/select` 选新目录（无会话则建一条）、选已有工作区（打开已有会话），
 最后用 `workspaces/mkdir` 新建目录。临时目录在 `target/ssr-verify-workspaces/`。
 

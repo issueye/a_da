@@ -159,9 +159,12 @@
   agent（不再 HTTP 反代），事件订阅持有 `ConnectionGuard` 防回收；`/__auth` 接受网关 token / 配对码并
   换发 HttpOnly 会话 cookie。`--web-ui desktop` 回退到 `desktop-ui/dist` 静态托管。
 
-## 十一、桌面端界面（`desktop-ui/`）
+## 十一、桌面端界面（默认 SSR；`desktop-ui/` 回退）
 
-- **布局**：标题栏（连接态 / 模式徽标 / 窗口控制，`z-[100]`）+ 侧栏（工作区与会话）+ 主区
+- **Electron 默认加载 SSR**：等网关就绪后 `loadURL(http://127.0.0.1:<port>/)`，带 token 时用
+  `?token=` 自动登录；窗口用系统原生边框保留最小化/最大化/关闭。`--ui=desktop`
+  （`bun run electron:dev:desktop`）回退到下面的 React 界面。
+- **React 回退布局**：标题栏（连接态 / 模式徽标 / 窗口控制，`z-[100]`）+ 侧栏（工作区与会话）+ 主区
   （`TabStrip` + `Transcript` + `Composer`）+ 右侧面板（`AgentContextPanel`）。
 - **浮层**：审批（`ApprovalFloatingPanel`）、提问（`AskUserFloatingPanel`）、待办（`TodoFloatingPanel`）、
   排队消息（`QueuedMessagesFloatingPanel`）、命令面板、斜杠命令、`@` 引用菜单、
@@ -199,7 +202,7 @@ unary 方法映射为 `/api/*`（18 条查询 + 42 条写），另有 11 条网�
 
 静态门：`cargo xtask verify-spec` / `verify-wiring` / `compat` / `verify-docs`（`verify --fast` 一次跑完）；
 测试门：`cargo test --workspace -- --test-threads=1`（**必须串行**）与 `bun run typecheck`。
-实机脚本：桌面壳（锁屏时自动走 CDP 无头版）、重试与断线、卡片顺序、插件平台、网关进程模型、网关内置 SSR
+实机脚本：Electron 默认 SSR（`verify-electron-ssr.mjs`）、React 桌面壳（`--ui=desktop`；锁屏时自动走 CDP 无头版）、重试与断线、卡片顺序、插件平台、网关进程模型、网关内置 SSR
 （`tools/verify-gateway-web.mjs`）、SSR 流式 / 审批中止 / 工作区（`tools/verify-ssr-*.mjs`，均为单进程），
 见 [README.md](../../README.md#门禁与测试)。
 

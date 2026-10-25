@@ -1,4 +1,7 @@
-// Electron 桌面壳的**无头验收**（锁屏 / CI 环境可用）。
+// Electron 桌面壳（`--ui=desktop` 的 React 自绘标题栏）**无头验收**（锁屏 / CI 可用）。
+//
+// Electron 默认界面已切到 SSR；本脚本显式传 `--ui=desktop`，验证的是回退界面的
+// 窗口按钮/状态同步。SSR 模式的端到端验收见 `verify-electron-ssr.mjs`。
 //
 // 官方脚本 `verify-desktop-shell.ps1` 用真实鼠标点击标题栏像素；工作站锁屏时
 // 无法把窗口顶到前台，那一步会直接失败。本脚本改用 Electron 的远程调试协议：
@@ -114,6 +117,9 @@ const child = spawn(
     workspace,
     '--user-data-dir',
     profile,
+    // 这个脚本点的是 React 自绘标题栏；Electron 默认已切到 SSR，
+    // 显式回到 desktop 界面才能验证那组窗口按钮。
+    '--ui=desktop',
   ],
   {
     cwd: workspace,

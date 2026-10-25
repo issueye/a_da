@@ -54,6 +54,8 @@ interface CliArgs {
   token?: string
   workspace: string
   gatewayBin?: string
+  /// 界面来源：`ssr`（网关内置页面，默认）或 `desktop`（本地 React / Vite）。
+  ui?: string
 }
 
 function parseCliArgs(): CliArgs {
@@ -78,10 +80,27 @@ function parseCliArgs(): CliArgs {
       result.gatewayBin = args[++i]
     } else if (arg.startsWith('--gateway-bin=')) {
       result.gatewayBin = arg.slice('--gateway-bin='.length)
+    } else if (arg === '--ui' && i + 1 < args.length) {
+      result.ui = args[++i]
+    } else if (arg.startsWith('--ui=')) {
+      result.ui = arg.slice('--ui='.length)
     }
   }
 
   return result
+}
+
+type UiMode = 'ssr' | 'desktop'
+
+/// 界面来源。默认 SSR（网关内置页面）；`--ui=desktop` 或
+/// `A_DA_ELECTRON_UI=desktop` 回退到本地 React / Vite。
+function resolveUiMode(cli: CliArgs): UiMode {
+  const raw = (cli.ui || process.env.A_DA_ELECTRON_UI || 'ssr').trim().toLowerCase()
+  if (raw === 'desktop') return 'desktop'
+  if (raw !== 'ssr') {
+    appendLauncherLog(`[警告] 未知界面模式「${raw}」，按 ssr 处理`)
+  }
+  return 'ssr'
 }
 
 // 3. 应用根目录与持久化配置
@@ -552,6 +571,84 @@ function resolveInitialWindowSize(): { width: number; height: number } {
   }
 }
 
+/**
+ * SSR 模式：等网关就绪后加载网关根路径。
+ *
+ * 若网关带 token，用 `?token=` 自动登录：SSR guard 会校验后换发 HttpOnly 会话 cookie，
+ * 再 303 去掉 URL 上的 query（不会把网关 token 留在地址栏/历史记录里）。
+ */
+async function loadSsrUi(win: BrowserWindow): Promise<void> {
+  const ready = await Promise.race([
+    readySignalPromise.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 16_000)),
+  ])
+  if (!ready || !coreState.alive || !coreState.port) {
+    appendLauncherLog(
+      `[警告] 网关未就绪（${coreState.error || '超时'}），SSR 页面不可用，回退本地界面`
+    )
+    await loadDesktopUi(win)
+    return
+  }
+
+  let base = coreState.url || `http://127.0.0.1:${coreState.port}`
+  base = base.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:')
+  let url: URL
+  try {
+    url = new URL(base)
+  } catch {
+    url = new URL(`http://127.0.0.1:${coreState.port}`)
+  }
+  url.pathname = '/'
+  url.hash = ''
+  url.search = ''
+  if (coreState.token) url.searchParams.set('token', coreState.token)
+
+  appendLauncherLog(`加载 SSR 页面: ${url.origin}${url.pathname}`)
+  try {
+    await win.loadURL(url.toString())
+  } catch (err: any) {
+    appendLauncherLog(`[警告] SSR 页面加载失败: ${err?.message || String(err)}，回退本地界面`)
+    await loadDesktopUi(win)
+  }
+}
+
+/// desktop 模式：开发服务器热重载优先，否则加载本地 `desktop-ui/dist`。
+async function loadDesktopUi(win: BrowserWindow): Promise<void> {
+  // 优先尝试开发服务器热重载 (http://127.0.0.1:1420)
+  const devUrl = 'http://127.0.0.1:1420'
+  const isDevRunning = !app.isPackaged && (await checkDevServer(devUrl))
+
+  if (isDevRunning) {
+    appendLauncherLog(`加载开发服务器地址: ${devUrl}`)
+    await win.loadURL(devUrl)
+    return
+  }
+
+  // 生产模式加载静态 dist 文件。
+  // 🔴 `app.getAppPath()` 优先：dev 时它是仓库根、打包后是 `resources/app.asar`，两边都指向
+  // **本该使用**的那份前端产物；`__dirname` 在 bun 的产物里被硬编码成构建机源码目录，
+  // 放在前面会让"打包后运行"悄悄去读构建机上的源码树（换台机器就是另一份界面）。
+  const candidatePaths = [
+    resolveAppPath('desktop-ui', 'dist', 'index.html'),
+    path.join(app.getAppPath(), 'desktop-ui/dist/index.html'),
+    path.resolve(app.getAppPath(), '../desktop-ui/dist/index.html'),
+    path.resolve(__dirname, '../desktop-ui/dist/index.html'),
+  ].filter(Boolean) as string[]
+  let loaded = false
+  for (const p of candidatePaths) {
+    if (fs.existsSync(p)) {
+      appendLauncherLog(`加载本地静态打包文件: ${p}`)
+      await win.loadFile(p)
+      loaded = true
+      break
+    }
+  }
+  if (!loaded) {
+    appendLauncherLog(`[警告] 未探测到静态文件，尝试默认路径: ${candidatePaths[0]}`)
+    await win.loadFile(candidatePaths[0])
+  }
+}
+
 async function createMainWindow(): Promise<BrowserWindow> {
   // preload 是**宿主能力的唯一入口**（网关发现 / 窗口控制 / 配置 / 进程管理全靠它注入的
   // `window.electronAPI`）。路径解析失败 = 整个壳子哑掉，必须当场喊出来，不能静默降级。
@@ -566,6 +663,10 @@ async function createMainWindow(): Promise<BrowserWindow> {
     appendLauncherLog(`preload 路径: ${preloadPath}`)
   }
 
+  const cli = parseCliArgs()
+  const uiMode = resolveUiMode(cli)
+  appendLauncherLog(`界面来源: ${uiMode}`)
+
   const initial = resolveInitialWindowSize()
   appendLauncherLog(
     `初始窗口: ${initial.width}x${initial.height}（工作区 ${screen.getPrimaryDisplay().workAreaSize.width}x${screen.getPrimaryDisplay().workAreaSize.height}）`
@@ -578,7 +679,9 @@ async function createMainWindow(): Promise<BrowserWindow> {
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
     center: true,
-    frame: false,
+    // SSR 页面没有自绘标题栏，用系统原生边框保留最小化/最大化/关闭；
+    // desktop 模式仍是原来的无边框 + React 标题栏。
+    frame: uiMode === 'desktop' ? false : true,
     backgroundColor: '#18181b',
     icon: getAppIcon(),
     webPreferences: {
@@ -637,37 +740,10 @@ async function createMainWindow(): Promise<BrowserWindow> {
     }
   })
 
-  // 优先尝试开发服务器热重载 (http://127.0.0.1:1420)
-  const devUrl = 'http://127.0.0.1:1420'
-  const isDevRunning = !app.isPackaged && (await checkDevServer(devUrl))
-
-  if (isDevRunning) {
-    appendLauncherLog(`加载开发服务器地址: ${devUrl}`)
-    await mainWindow.loadURL(devUrl)
+  if (uiMode === 'ssr') {
+    await loadSsrUi(mainWindow)
   } else {
-    // 生产模式加载静态 dist 文件。
-    // 🔴 `app.getAppPath()` 优先：dev 时它是仓库根、打包后是 `resources/app.asar`，两边都指向
-    // **本该使用**的那份前端产物；`__dirname` 在 bun 的产物里被硬编码成构建机源码目录，
-    // 放在前面会让"打包后运行"悄悄去读构建机上的源码树（换台机器就是另一份界面）。
-    const candidatePaths = [
-      resolveAppPath('desktop-ui', 'dist', 'index.html'),
-      path.join(app.getAppPath(), 'desktop-ui/dist/index.html'),
-      path.resolve(app.getAppPath(), '../desktop-ui/dist/index.html'),
-      path.resolve(__dirname, '../desktop-ui/dist/index.html'),
-    ].filter(Boolean) as string[]
-    let loaded = false
-    for (const p of candidatePaths) {
-      if (fs.existsSync(p)) {
-        appendLauncherLog(`加载本地静态打包文件: ${p}`)
-        await mainWindow.loadFile(p)
-        loaded = true
-        break
-      }
-    }
-    if (!loaded) {
-      appendLauncherLog(`[警告] 未探测到静态文件，尝试默认路径: ${candidatePaths[0]}`)
-      await mainWindow.loadFile(candidatePaths[0])
-    }
+    await loadDesktopUi(mainWindow)
   }
 
   mainWindow.on('closed', () => {

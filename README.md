@@ -12,7 +12,7 @@
 
 <img src="./assets/logo.png" width="88" align="right" alt="a_da logo" />
 
-一个**本地** AI 编码 Agent 的桌面程序：纯 Rust 内核 + Electron 桌面壳 + React 前端。
+一个**本地** AI 编码 Agent 的桌面程序：纯 Rust 内核 + Electron 桌面壳（默认加载网关内置 SSR 界面）。
 标志是一条 shell 提示符 `>_`——Agent 就是在工作区里跑命令的那个东西，
 方块的落点正好是名字里那条下划线。
 
@@ -64,7 +64,7 @@ agent-base ─► agent-proto / agent-adapter / agent-toolkit ─► agent-runti
 | 合规套件 | `crates/agent-conformance` | 端口契约 + 跨端口不变量 + golden 回放夹具 |
 | 插件运行时 | `crates/ts-engine` | Boa + oxc 的 TS 沙箱（插件代码在自己的进程内或子进程里跑） |
 | 产品 | `products/ada-coding`（含 `modes/pm.agent.spec.json` 预设）、`products/ada-skeleton` | 声明式产品（`agent.spec.json` + 极小 `main`） |
-| 桌面宿主 | `electron/` + `desktop-ui/` | Electron 壳（网关监督、窗口控制、IPC 桥接）+ React 界面（`ws-client.ts` 是唯一协议客户端） |
+| 桌面宿主 | `electron/` + `desktop-ui/` | Electron 壳（网关监督、原生窗口控制、IPC 桥接）；默认加载网关 SSR 页面，`--ui=desktop` 回退 React 界面 |
 
 **产品声明式装配**：`products/*/agent.spec.json` 声明 `toolkits` / `capabilities` /
 `identity` / `policies`，`agent-host` 按声明装配。声明的每个字段都有**真实消费者**
@@ -250,15 +250,18 @@ IPC 桥接、`launcher.log` 记录（打包后的 exe 没有控制台，**应用
 `ada-gateway` 一个进程、一个端口同时托管页面、`/threads/{id}/stream`（SSE）、
 `/static/*`、`/api/*` 与 `/rpc`。SSR 通过进程内调用直接驱动 agent，不再二次反代；
 `/__auth` 接受网关 token 或配对码并换发 HttpOnly 会话 cookie。
-`--web-ui desktop` 可回退到 `desktop-ui/dist` 静态托管，Electron 桌面端不受影响。
+Electron 桌面壳默认也加载这份 SSR 页面（`http://127.0.0.1:<port>/`，系统原生窗口边框）；
+`--ui=desktop` 回退到本地 React/Vite 界面，网关侧 `--web-ui desktop` 则回退到静态产物托管。
 
 ---
 
 ## 运行
 
 ```bash
-# 桌面客户端（Electron 壳：前端热重载 + 网关监督）
+# 桌面客户端（Electron 壳：默认加载网关 SSR + 网关监督）
 bun run electron:dev
+# 需要开发 React/Vite 界面时（热重载）
+bun run electron:dev:desktop
 
 # 网关 + 浏览器 SSR（默认；一个进程一个端口）
 cargo run -p agent-gateway -- --port 52353 --workspace E:/your-project
@@ -335,8 +338,8 @@ crates/
 products/
   ada-coding/          产品声明 + modes/pm.agent.spec.json（PM 模式预设）+ 极小 main
   ada-skeleton/        极简骨架（用于验证"产品只是一份声明"）
-electron/              Electron 桌面宿主主进程（网关监督 + 窗口控制 + IPC 桥接）
-desktop-ui/            React 界面（client/ws-client.ts 是唯一协议客户端）
+electron/              Electron 桌面宿主主进程（网关监督 + 窗口控制 + IPC 桥接；默认加载 SSR）
+desktop-ui/            React 界面（--ui=desktop 回退；client/ws-client.ts 是唯一协议客户端）
 spec/proto/            协议登记表（唯一手写源）
 tools/xtask/           门禁与打包
 tools/*.ps1|*.mjs      实机验收脚本（桌面壳 / 重试断线 / 卡片顺序 / 插件平台 / 网关进程模型）
