@@ -1302,6 +1302,15 @@ fn check_layer_direction(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
 /// 网关 crate（S5）。
 const GATEWAY_CRATE: &str = "crates/agent-gateway";
 
+/// SSR 网页界面 crate（UI 投影层，2026-10-25 由独立 ssr-h 合并）。
+const WEB_CRATE: &str = "crates/agent-web";
+
+/// 必须遵守"不含引擎、不缓存会话状态"边界的 crate。
+///
+/// 网页界面是**投影层**：它读协议形状，不链接节点/引擎。把这两个 crate
+/// 放在同一张检查表里，避免"网关守住了、UI 悄悄把节点拉进来"。
+const BOUNDARY_CRATES: &[&str] = &[GATEWAY_CRATE, WEB_CRATE];
+
 /// 网关**不得直接依赖**的工作区 crate。
 ///
 /// 网关是**管理/路由平面**，不是 agent：它不含引擎（INV-1：单一引擎）、
@@ -1337,78 +1346,84 @@ const GATEWAY_FORBIDDEN_SYMBOLS: &[&str] = &[
 /// J. 网关边界（S5 新增）：网关是管理/路由平面，不含引擎、不缓存会话状态。
 ///
 /// 两条判据：
-/// 1. **依赖**：`crates/agent-gateway/Cargo.toml` 不得出现 [`GATEWAY_FORBIDDEN_DEPS`]；
-/// 2. **代码**：`crates/agent-gateway/src/**` 的生产段不得出现 [`GATEWAY_FORBIDDEN_SYMBOLS`]。
+/// 1. **依赖**：网关与网页界面 crate 的 `Cargo.toml` 不得出现 [`GATEWAY_FORBIDDEN_DEPS`]；
+/// 2. **代码**：两者的 `src/**` 生产段不得出现 [`GATEWAY_FORBIDDEN_SYMBOLS`]。
 ///
 /// 为什么必须机器守门：这条边界"看起来"很自然，但它**没有任何编译期约束**——
 /// `agent-node` 是同一个 workspace 里的合法依赖，加一行 Cargo.toml + 一条 `use`
 /// 就能让网关拿到节点的一切。等到有人图省事"顺手在网关缓存一份线程列表"时，
 /// 就已经晚了。这条门的价值在于**把"顺手"变成红灯**。
 fn check_gateway_boundary(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
-    // 1. 依赖级
-    let manifest = read(root, &format!("{GATEWAY_CRATE}/Cargo.toml"))?;
-    for line in manifest.lines() {
-        let t = line.trim_start();
-        if t.starts_with('#') {
-            continue;
-        }
-        for dep in GATEWAY_FORBIDDEN_DEPS {
-            // 三种依赖写法都要抓：
-            //   1. 内联：`agent-node = { workspace = true }`
-            //   2. 无空格：`agent-node= { … }`
-            //   3. 段写法：`[dependencies.agent-node]` / `[dev-dependencies.agent-node]`
-            // 只匹配依赖位置（而不是"任何提及"），所以注释与 metadata 里的提及不算——
-            // 那些是在**说明边界**，不是破坏边界。
-            let inline = t.starts_with(&format!("{dep} ")) || t.starts_with(&format!("{dep}="));
-            let section = t
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .split('.')
-                .last()
-                .is_some_and(|last| last.trim() == *dep)
-                && t.starts_with('[');
-            if inline || section {
-                rep.violations.push(format!(
-                    "`{GATEWAY_CRATE}/Cargo.toml` 依赖了 `{dep}`——网关是**管理/路由平面**，\
-                     不含引擎、不缓存会话状态。网关只该依赖 `agent-proto`（线协议）；\
-                     要读节点的事实请走协议，不要走链接"
-                ));
-            }
-        }
-    }
-
-    // 2. 代码级
-    let src = root.join(GATEWAY_CRATE).join("src");
-    let mut files: Vec<PathBuf> = Vec::new();
-    collect_rs(&src, &mut files);
-    let mut scanned = 0usize;
-    for p in &files {
-        let Ok(s) = fs::read_to_string(p) else { continue };
-        let prod = production_prefix(&s).unwrap_or(&s);
-        scanned += 1;
-        for (i, line) in prod.lines().enumerate() {
-            if line.trim_start().starts_with("//") {
+    let mut total_scanned = 0usize;
+    for crate_dir in BOUNDARY_CRATES {
+        // 1. 依赖级
+        let manifest = read(root, &format!("{crate_dir}/Cargo.toml"))?;
+        for line in manifest.lines() {
+            let t = line.trim_start();
+            if t.starts_with('#') {
                 continue;
             }
-            for sym in GATEWAY_FORBIDDEN_SYMBOLS {
-                if line.contains(sym) {
-                    let rel = p.strip_prefix(root).unwrap_or(p).display().to_string();
+            for dep in GATEWAY_FORBIDDEN_DEPS {
+                // 三种依赖写法都要抓：
+                //   1. 内联：`agent-node = { workspace = true }`
+                //   2. 无空格：`agent-node= { … }`
+                //   3. 段写法：`[dependencies.agent-node]` / `[dev-dependencies.agent-node]`
+                // 只匹配依赖位置（而不是"任何提及"），所以注释与 metadata 里的提及不算——
+                // 那些是在**说明边界**，不是破坏边界。
+                let inline =
+                    t.starts_with(&format!("{dep} ")) || t.starts_with(&format!("{dep}="));
+                let section = t
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .split('.')
+                    .last()
+                    .is_some_and(|last| last.trim() == *dep)
+                    && t.starts_with('[');
+                if inline || section {
                     rep.violations.push(format!(
-                        "`{rel}:{}` 引用了 `{sym}`——**网关边界被打破**。\
-                         网关不得链接节点/引擎（INV-1）也不得持有会话状态（INV-8）",
-                        i + 1
+                        "`{crate_dir}/Cargo.toml` 依赖了 `{dep}`——网关/UI 都是**投影层**，\
+                         不含引擎、不缓存会话状态。只该依赖 `agent-proto`（线协议）；\
+                         要读节点的事实请走协议，不要走链接"
                     ));
                 }
             }
         }
-    }
 
-    if scanned == 0 {
-        rep.violations.push(format!("`{GATEWAY_CRATE}/src` 一个文件都没扫到——审计失效"));
+        // 2. 代码级
+        let src = root.join(crate_dir).join("src");
+        let mut files: Vec<PathBuf> = Vec::new();
+        collect_rs(&src, &mut files);
+        let mut scanned = 0usize;
+        for p in &files {
+            let Ok(s) = fs::read_to_string(p) else { continue };
+            let prod = production_prefix(&s).unwrap_or(&s);
+            scanned += 1;
+            for (i, line) in prod.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                for sym in GATEWAY_FORBIDDEN_SYMBOLS {
+                    if line.contains(sym) {
+                        let rel = p.strip_prefix(root).unwrap_or(p).display().to_string();
+                        rep.violations.push(format!(
+                            "`{rel}:{}` 引用了 `{sym}`——**网关/UI 边界被打破**。\
+                             不得链接节点/引擎（INV-1）也不得持有会话状态（INV-8）",
+                            i + 1
+                        ));
+                    }
+                }
+            }
+        }
+
+        if scanned == 0 {
+            rep.violations
+                .push(format!("`{crate_dir}/src` 一个文件都没扫到——审计失效"));
+        }
+        total_scanned += scanned;
     }
 
     rep.notes.push(format!(
-        "网关边界：`{GATEWAY_CRATE}`（{scanned} 个文件）只依赖线协议；\
+        "网关/UI 边界：{BOUNDARY_CRATES:?}（{total_scanned} 个文件）只依赖线协议；\
          不含引擎/工具目录/会话存储（禁止依赖 {} 项）",
         GATEWAY_FORBIDDEN_DEPS.len()
     ));

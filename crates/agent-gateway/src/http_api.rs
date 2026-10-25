@@ -1346,7 +1346,7 @@ async fn call_gateway(gateway: &Gateway, op: GatewayOp, params: &Value) -> Resul
     }
 }
 
-async fn call_agent(
+pub(crate) async fn call_agent(
     instance: &AgentInstance,
     method: &str,
     params: Value,
@@ -1492,7 +1492,7 @@ fn percent_decode(s: &str) -> String {
 }
 
 #[derive(Debug)]
-struct ApiError {
+pub(crate) struct ApiError {
     status: StatusCode,
     code: i64,
     message: String,
@@ -1577,6 +1577,14 @@ impl ApiError {
         err
     }
 }
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for ApiError {}
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {

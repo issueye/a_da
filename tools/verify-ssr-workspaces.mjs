@@ -16,16 +16,17 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createServer as createNetServer } from 'node:net'
 
 const REPO = 'E:\\codes\\rust_projects\\a_da'
-const GATEWAY = join(REPO, 'dist', 'ada-gateway.exe')
-// ssr-h 的构建目录是 <repo>/cargo_target_ada（ssr-h/ 用 CARGO_TARGET_DIR=../ 编译）；
-// 旧路径在仓库外一级，是历史上留下的陈旧二进制——只作兜底，别让它盖住新构建。
-const SSR =
-  process.env.SSR_H_EXE ||
+// 网关与 SSR 现在是**同一个进程**：不再有第二个 ssr-h 二进制。
+const GATEWAY =
+  process.env.A_DA_GATEWAY_EXE ||
   [
-    join(REPO, 'cargo_target_ada', 'debug', 'ssr-h.exe'),
-    join(REPO, '..', 'cargo_target_ada', 'debug', 'ssr-h.exe'),
+    join(REPO, '..', 'cargo_target_ada', 'debug', 'ada-gateway.exe'),
+    join(REPO, 'cargo_target_ada', 'debug', 'ada-gateway.exe'),
+    join(REPO, 'target', 'debug', 'ada-gateway.exe'),
+    join(REPO, 'dist', 'ada-gateway.exe'),
   ].find((candidate) => existsSync(candidate)) ||
-  join(REPO, 'cargo_target_ada', 'debug', 'ssr-h.exe')
+  join(REPO, 'dist', 'ada-gateway.exe')
+const WEB_PLUGINS = join(REPO, 'crates', 'agent-web', 'frontend-plugins')
 
 const failures = []
 const check = (ok, what, extra = '') => {
@@ -116,13 +117,24 @@ const postForm = (url, fields) =>
 
 try {
   check(existsSync(GATEWAY), `网关二进制存在：${GATEWAY}`)
-  check(existsSync(SSR), `ssr-h 二进制存在：${SSR}`)
   if (failures.length) throw new Error('缺少二进制')
 
   const gatewayPort = await freePort()
-  const gateway = start('gateway', GATEWAY, ['--port', String(gatewayPort), '--workspace', wsBase], {
-    A_DA_HOME: appHome,
-  })
+  const gateway = start(
+    'gateway',
+    GATEWAY,
+    [
+      '--port',
+      String(gatewayPort),
+      '--workspace',
+      wsBase,
+      '--web-ui',
+      'ssr',
+      '--web-plugins-dir',
+      WEB_PLUGINS,
+    ],
+    { A_DA_HOME: appHome },
+  )
   const readyLine = await waitFor(
     gateway,
     (output) => output.includes('A_DA_GATEWAY_READY'),
@@ -130,22 +142,8 @@ try {
     '网关就绪',
   )
   const gatewayUrl = `http://127.0.0.1:${JSON.parse(readyLine.split('A_DA_GATEWAY_READY')[1].trim().split('\n')[0]).port}`
-  console.log(`  网关就绪：${gatewayUrl}`)
-
-  const uiPort = await freePort()
-  const ssr = start('ssr-h', SSR, [
-    '--port',
-    String(uiPort),
-    '--gateway',
-    gatewayUrl,
-    '--workspace',
-    wsAlpha,
-    '--plugins-dir',
-    join(REPO, 'ssr-h', 'frontend-plugins'),
-  ])
-  await waitFor(ssr, (output) => output.includes('ssr-h listening on'), 20_000, 'ssr-h 就绪')
-  const ui = `http://127.0.0.1:${uiPort}`
-  console.log(`  ssr-h 就绪：${ui}`)
+  const ui = gatewayUrl
+  console.log(`  网关 + SSR 就绪：${ui}`)
 
   const createThread = async (workspace, title) => {
     const response = await fetch(

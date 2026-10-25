@@ -34,6 +34,7 @@ pub mod relay;
 pub mod router;
 pub mod static_ui;
 pub mod supervisor;
+pub mod web;
 pub mod workspaces;
 
 pub use auth::{AuthConfig, AuthError, AuthOutcome, TokenScope};

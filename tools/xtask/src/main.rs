@@ -276,6 +276,16 @@ fn ship_product(product: &str, gui: bool, out_dir: &str) -> anyhow::Result<()> {
     let size_mb = (file_size as f64) / 1024.0 / 1024.0;
     println!("  ✔ 单文件产物就绪: {} ({:.2} MB)", target_path.display(), size_mb);
 
+    // 网关内置 SSR 界面时，示例前端插件随产物分发（模板与静态资源已编译进二进制）。
+    if product == "ada-gateway" {
+        let plugins_src = Path::new("crates/agent-web/frontend-plugins");
+        if plugins_src.is_dir() {
+            let plugins_dst = Path::new(out_dir).join("frontend-plugins");
+            copy_dir_all(plugins_src, &plugins_dst)?;
+            println!("  ✔ 前端插件目录: {}", plugins_dst.display());
+        }
+    }
+
     // 3. 可选应用 Windows PE GUI 子系统补丁（消除控制台黑框）
     if cfg!(windows) && gui {
         println!("\x1b[33m[步骤 3/3]\x1b[0m 正在配置 Windows GUI 子系统补丁 (WINDOWS_GUI 2)...");
@@ -291,6 +301,21 @@ fn ship_product(product: &str, gui: bool, out_dir: &str) -> anyhow::Result<()> {
     println!("• 交付体积: {:.2} MB", size_mb);
     println!("• 运行说明: 命令行直接运行可查看标准就绪行，带参数启动宿主服务。\n");
 
+    Ok(())
+}
+
+/// 递归复制目录（出包时携带示例插件）。目标已存在时覆盖同名文件。
+fn copy_dir_all(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let target = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target)?;
+        }
+    }
     Ok(())
 }
 

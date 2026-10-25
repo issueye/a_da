@@ -35,6 +35,19 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// 组装网关 + SSR 网页界面。
+///
+/// SSR 路由作为一个完整的子 service 挂在 fallback 上：`/rpc` 与 `/api/*` 先匹配，
+/// 其余请求（页面、表单动作、SSE、`/static/*`、插件路由）交给 `agent-web`。
+/// 它自己的 guard/CSP 只包住这一个子 service，不会污染 API 面。
+pub fn router_with_web(state: AppState, web: Router) -> Router {
+    Router::new()
+        .route("/rpc", get(ws_handler))
+        .nest("/api", http_api::router(state.clone()))
+        .fallback_service(web)
+        .with_state(state)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use crate::supervisor::now_ms;
 
@@ -226,6 +226,19 @@ impl AgentRegistry {
             if *n == 0 {
                 guard.remove(id);
             }
+        }
+    }
+
+    /// 打开一条"长连接"计数守卫：drop 时自动减一。
+    ///
+    /// 回收器只认这个计数（`connections > 0` 的实例永不回收），所以**任何长期订阅
+    /// agent 事件的路径都必须持有它**——包括网关进程内的 Web UI 事件桥（`web.rs`）。
+    pub fn open_connection(self: &Arc<Self>, id: impl Into<String>) -> ConnectionGuard {
+        let id = id.into();
+        self.conn_inc(&id);
+        ConnectionGuard {
+            registry: self.clone(),
+            id,
         }
     }
 
@@ -460,6 +473,21 @@ pub fn normalize_workspace(raw: &str) -> PathBuf {
     let s = p.to_string_lossy().replace('\\', "/");
     let s = s.trim_end_matches('/').to_string();
     PathBuf::from(if s.is_empty() { "/".to_string() } else { s })
+}
+
+/// 长连接计数守卫：持有期间该实例不会被回收器判定为空闲。
+///
+/// 由 [`AgentRegistry::open_connection`] 创建；drop 时自动 `conn_dec`，
+/// 所以异常路径也不会把计数漏高。
+pub struct ConnectionGuard {
+    registry: Arc<AgentRegistry>,
+    id: String,
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.registry.conn_dec(&self.id);
+    }
 }
 
 #[cfg(test)]

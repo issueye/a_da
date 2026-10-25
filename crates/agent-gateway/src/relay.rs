@@ -122,6 +122,12 @@ impl Gateway {
         self
     }
 
+    /// 已经是共享引用时直接装上（Web UI 登录校验与网关 API 共用同一份凭据表）。
+    pub fn with_auth_arc(mut self, auth: Arc<crate::auth::AuthConfig>) -> Self {
+        self.auth = auth;
+        self
+    }
+
     /// 换成指定的工作区存储（**测试必须传**，否则会写用户真实的
     /// `~/.a-da/gateway_workspaces.json`——历史上 e2e 测试就是这么把一堆
     /// 临时目录记进用户工作区列表的）。
@@ -795,19 +801,9 @@ async fn relay(
     // （用户可能正对着一条长回答发呆，掐掉会莫名其妙掉线）。
     // 用 guard 保证**任何**返回路径（含 `?` 提前返回与 panic 展开）都会减回来。
     gateway.registry.conn_inc(&instance.id);
-    struct ConnGuard {
-        registry: Arc<AgentRegistry>,
-        id: String,
-    }
-    impl Drop for ConnGuard {
-        fn drop(&mut self) {
-            self.registry.conn_dec(&self.id);
-        }
-    }
-    let _conn_guard = ConnGuard {
-        registry: gateway.registry.clone(),
-        id: instance.id.clone(),
-    };
+    // 长连接计数是回收器的唯一依据：有客户端连着就不回收。
+    // 同一个守卫也被进程内 Web UI 的事件订阅复用（见 `web.rs`）。
+    let _conn_guard = gateway.registry.open_connection(instance.id.clone());
 
     // 本连接通过 `gateway.register` 注册的实例：断开时标记离线（与控制面同一语义）
     let mut registered = RegisteredAgentGuard {
