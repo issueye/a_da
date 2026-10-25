@@ -43,7 +43,7 @@ const modelRequests = []
 const model = createServer((req, res) => {
   let body = ''
   req.on('data', (chunk) => (body += chunk))
-  req.on('end', () => {
+  req.on('end', async () => {
     modelRequests.push(body)
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -60,6 +60,21 @@ const model = createServer((req, res) => {
       )
     send({ role: 'assistant', content: '' })
     send({ content: 'Electron SSR 回复：页面与消息链路正常。' })
+    // 让本轮有真实耗时 → 底部遥测能算出 tok/s；usage 里带缓存字段。
+    await sleep(350)
+    res.write(
+      `data: ${JSON.stringify({
+        id: 'stub',
+        object: 'chat.completion.chunk',
+        choices: [],
+        usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 50,
+          total_tokens: 1050,
+          prompt_tokens_details: { cached_tokens: 900 },
+        },
+      })}\n\n`,
+    )
     send({}, 'stop')
     res.write('data: [DONE]\n\n')
     res.end()
@@ -687,6 +702,43 @@ try {
   )
   check(true, 'SSR 表单发送 → 助手回复上屏')
   check(modelRequests.length >= 1, '假模型收到请求', `实际 ${modelRequests.length} 次`)
+
+  // 底部辅助区：没有键盘提示、没有"运行中"文字；遥测只显示图标 + 数字，
+  // 完整口径（tok/s、缓存命中、上下文占用）放在 title 里。
+  await waitUntil(
+    () =>
+      evaluate(
+        cdp,
+        `[...document.querySelectorAll('#composer-aux .ada-aux__item')].some((e) => (e.getAttribute('title') || '').includes('上下文占用'))`,
+      ),
+    10_000,
+    '底部遥测出现',
+  )
+  const auxItems = await evaluate(
+    cdp,
+    `[...document.querySelectorAll('#composer-aux .ada-aux__item')].map((e) => ({
+      text: e.innerText.trim(),
+      title: e.getAttribute('title') || '',
+    }))`,
+  )
+  check(
+    !auxItems.some((item) => /缓存命中|上下文|tok\/s/.test(item.text)),
+    '遥测只显示图标 + 数字',
+    JSON.stringify(auxItems),
+  )
+  check(
+    auxItems.some((item) => item.title.includes('tok/s') && /^\d+$/.test(item.text)),
+    '速度显示为图标 + 数字（口径在 title）',
+    JSON.stringify(auxItems),
+  )
+  check(
+    auxItems.some((item) => item.title.includes('上下文占用') && /^\d+%$/.test(item.text)),
+    '上下文显示为图标 + 百分比（口径在 title）',
+    JSON.stringify(auxItems),
+  )
+  const pageText = await evaluate(cdp, 'document.body.innerText')
+  check(!pageText.includes('Enter 发送'), '不再显示 Enter 发送提示')
+  check(!pageText.includes('运行中'), '不再显示「运行中」文字')
   check(
     await evaluate(cdp, `Boolean(document.querySelector('button[aria-label="关闭窗口"]'))`),
     '整页跳转后窗口控制仍被重新注入',

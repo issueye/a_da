@@ -149,9 +149,6 @@ fn composer_aux(slots: &SlotContent, args: &ComposerArgs<'_>) -> ComposerAux {
     if !args.connected {
         status.push(AuxItem::new("网关未连接", Tone::Danger).icon("i-alert"));
     }
-    if args.running {
-        status.push(AuxItem::new("运行中", Tone::Warn).icon("i-clock"));
-    }
     if args.approval_count > 0 {
         status.push(
             AuxItem::new(format!("等待批准 {} 项", args.approval_count), Tone::Warn)
@@ -167,10 +164,18 @@ fn composer_aux(slots: &SlotContent, args: &ComposerArgs<'_>) -> ComposerAux {
     // 遥测：模型自己报回的 usage 与耗时算出来的，不估算。
     let mut context = Vec::new();
     if let Some(speed) = args.stats.tokens_per_sec {
-        context.push(AuxItem::new(format!("{speed} tok/s"), Tone::Neutral).icon("i-wave"));
+        context.push(
+            AuxItem::new(format!("{speed}"), Tone::Neutral)
+                .icon("i-wave")
+                .title(format!("{speed} tok/s")),
+        );
     }
     if let Some(hit) = args.stats.cache_hit {
-        context.push(AuxItem::new(format!("缓存命中 {hit}%"), Tone::Neutral).icon("i-layers"));
+        context.push(
+            AuxItem::new(format!("{hit}%"), Tone::Neutral)
+                .icon("i-layers")
+                .title(format!("缓存命中 {hit}%")),
+        );
     }
     if let Some(percent) = args.stats.context {
         // 接近窗口上限才变色：常态下它只是一个参考数。
@@ -179,7 +184,11 @@ fn composer_aux(slots: &SlotContent, args: &ComposerArgs<'_>) -> ComposerAux {
         } else {
             Tone::Neutral
         };
-        context.push(AuxItem::new(format!("上下文 {percent}%"), tone).icon("i-chart"));
+        context.push(
+            AuxItem::new(format!("{percent}%"), tone)
+                .icon("i-chart")
+                .title(format!("上下文占用 {percent}%")),
+        );
     }
 
     let mut actions = Vec::new();
@@ -213,7 +222,7 @@ fn composer_aux(slots: &SlotContent, args: &ComposerArgs<'_>) -> ComposerAux {
         status,
         context,
         actions,
-        hint: Some("Enter 发送 · Shift+Enter 换行".to_string()),
+        hint: None,
         plugins: slots.composer_footer.clone(),
     }
 }
@@ -224,27 +233,23 @@ fn composer_aux_html(slots: &SlotContent, args: &ComposerArgs<'_>) -> String {
 
 /// 输入框左上方（与 `composer.above` 插件同一带）的运行状态指示。
 ///
-/// 只有一个**带旋转弧的 SVG**：顶部状态栏已经有"运行中"文字，这里不重复信息，
-/// 只补一个"它还在动"的动效（用户往上翻历史时最容易失去这个感知）。
+/// 只有一个**带旋转弧的 SVG**（文字通过 `aria-label` 提供给读屏）。
+/// 顶栏与辅助区不再重复"运行中"文字——同一个状态摆三处只会抢注意力。
 /// 空闲时返回空串——容器 `:empty` 不占位。
 fn run_status_html(running: bool) -> String {
     if !running {
         return String::new();
     }
-    r#"<span class="ada-run-status" role="status" aria-live="polite"><svg class="ada-run-status__spin" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-opacity=".25" stroke-width="2"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>运行中</span></span>"#
+    r#"<span class="ada-run-status" role="status" aria-live="polite" aria-label="运行中" title="运行中"><svg class="ada-run-status__spin" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-opacity=".25" stroke-width="2"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span>"#
         .to_string()
 }
 
-/// 顶栏状态：只放**全局且异常**的信号（运行中 / 未连接）。
+/// 顶栏状态：只放**全局且异常**的信号（未连接）。
 ///
-/// 审批档位不在这里——它在输入框工具栏里，离"发送"更近，才是它该出现的位置。
-fn topbar_status_html(running: bool, connected: bool) -> String {
+/// 运行中不再用文字药丸：输入框上方的旋转弧与侧栏运行点已经表达；
+/// 审批档位也不在这里——它在输入框工具栏里，离"发送"更近。
+fn topbar_status_html(_running: bool, connected: bool) -> String {
     let mut out = String::new();
-    if running {
-        out.push_str(
-            r#"<span class="ada-chip ada-chip--warn"><span class="ada-dot ada-dot--warn"></span>运行中</span>"#,
-        );
-    }
     if !connected {
         out.push_str(
             &Chip::new("未连接", Tone::Danger)

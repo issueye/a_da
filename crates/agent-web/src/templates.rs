@@ -222,7 +222,7 @@ pub struct ChatPage {
     pub trays_html: String,
     /// 组件库渲染好的输入框（含插件插槽）。
     pub composer_html: String,
-    /// 顶栏状态药丸（运行中 / 审批档位 / 未连接）。
+    /// 顶栏状态药丸（只放未连接这类全局异常；运行中用旋转弧表达）。
     pub topbar_status: String,
     /// 顶栏刷新 / 停止按钮。
     pub topbar_actions: String,

@@ -16,6 +16,8 @@ use super::Render;
 pub struct AuxItem {
     pub icon: Option<String>,
     pub text: String,
+    /// 悬停说明：视觉上只放"图标 + 数字"时，完整含义（单位/口径）在这里。
+    pub title: Option<String>,
     pub tone: Tone,
 }
 
@@ -24,12 +26,18 @@ impl AuxItem {
         Self {
             icon: None,
             text: text.into(),
+            title: None,
             tone,
         }
     }
 
     pub fn icon(mut self, key: impl Into<String>) -> Self {
         self.icon = Some(key.into());
+        self
+    }
+
+    pub fn title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
         self
     }
 }
@@ -60,8 +68,13 @@ impl Render for ComposerAux {
                         .as_deref()
                         .map(|key| icon(key, 12))
                         .unwrap_or_default();
+                    let title = item
+                        .title
+                        .as_deref()
+                        .map(|text| format!(r#" title="{}""#, escape(text)))
+                        .unwrap_or_default();
                     format!(
-                        r#"<span class="ada-aux__item ada-aux__item--{}">{glyph}<span>{}</span></span>"#,
+                        r#"<span class="ada-aux__item ada-aux__item--{}"{title}>{glyph}<span>{}</span></span>"#,
                         item.tone.class(),
                         escape(&item.text)
                     )
@@ -69,8 +82,8 @@ impl Render for ComposerAux {
                 .collect::<Vec<_>>()
                 .join("")
         };
-        // 状态、上下文、快捷操作、提示、插件插槽——**一整行连续排列**（居中），
-        // 不做左右分栏：分栏会把"Enter 发送"这类提示推走，读起来像两段话。
+        // 状态、上下文、快捷操作、插件插槽——**一整行连续排列**（居中），
+        // 不做左右分栏：分栏会把状态与遥测推成两段话。
         let status = render_items(&self.status);
         let context = render_items(&self.context);
         let actions = self
