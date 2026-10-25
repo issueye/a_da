@@ -382,3 +382,69 @@ async fn event_subscription_holds_a_connection_guard() {
         "订阅结束后应重新可被回收"
     );
 }
+
+#[tokio::test]
+async fn public_url_allows_reverse_proxy_host_and_origin() {
+    use agent_web::guard::Access;
+
+    let (gateway, workspace) = gateway_with_stub_agent().await;
+    let access = Access::for_host("127.0.0.1".parse().unwrap(), 8788, None)
+        .with_public_url("https://example.com")
+        .expect("公网地址合法");
+    let web = web_state_with_access(gateway.clone(), &workspace, access);
+    let state = AppState {
+        gateway,
+        default_workspace: workspace.clone(),
+        site: None,
+    };
+    let app = router_with_web(state, agent_web::router(web));
+
+    // 代理把 Host 改成域名（无端口）时，根页面仍可访问。
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header("host", "example.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // 端口不匹配的公网 Host 仍拒绝。
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header("host", "example.com:8443")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    // 浏览器 Origin 是 https://example.com，Host 是代理改写后的域名：写请求放行。
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/threads")
+                .header("host", "example.com")
+                .header("origin", "https://example.com")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("title=x&workspace=E:/a_da_web_e2e"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "配置了公网来源后，代理后的同源写请求不应被 403"
+    );
+}

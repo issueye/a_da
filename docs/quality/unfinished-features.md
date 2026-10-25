@@ -318,11 +318,10 @@
 
 ### 15. SSR 合并后的已知边界（2026-10-25）　`未排期`
 
-- **反向代理的 Host 白名单**：SSR guard 要求 `Host` 的**端口与监听端口完全一致**
-  （挡 DNS rebinding）。反向代理把外部 `https://example.com` 转到内部端口时，Host 不带内部端口，
-  页面会 403。目前只能让代理改写 Host，或把网关直接暴露在可信内网。
-  **最小实现路径**：增加 `--web-public-url` / `--web-allow-host`，在校验里显式接受外部 Host
-  （仍要求 Origin 与之一致），并在文档里写明"代理必须终止 TLS"。
+- **反向代理的 Host 白名单**　`✅ 已支持（2026-10-25）`：新增 `--web-public-url`
+  （或 `A_DA_WEB_PUBLIC_URL`），例如 `--web-public-url https://example.com`。
+  guard 会放行该公网 Host（有无端口均可）与对应 Origin，https 时登录 cookie 自动加 `Secure`；
+  未配置时仍严格只认绑定主机 + 监听端口。**不信任 `X-Forwarded-*`**，必须显式配置。
 - **受限 token 的工作区作用域未下传浏览器**：`/__auth` 接受网关 token 后只记录"已认证"，
   没有把该 token 的 workspace scope 带进 SSR 会话；页面仍绑定网关默认工作区。
   API 面（`/api/*`、`/rpc`）仍按 token 作用域拒绝越权，**UI 面不构成越权读取**，

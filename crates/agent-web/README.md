@@ -110,7 +110,8 @@ cargo run -p agent-gateway -- --port 52353 --workspace E:/codes/your-project
 | `--web-ui desktop` | 回退到 `desktop-ui/dist` 静态产物 |
 | `--web-token <t>` | 浏览器访问令牌；非回环监听时可与 `--token` 二选一 |
 | `--web-plugins-dir <p>` | 前端插件目录（默认 `~/.a-da/web-plugins` → exe 旁 → 源码目录） |
-| `A_DA_WEB_UI` / `A_DA_WEB_TOKEN` / `A_DA_WEB_PLUGINS_DIR` | 上述三项的环境变量形式 |
+| `--web-public-url <u>` | 反向代理对外地址（如 `https://example.com`）；放行该 Host/Origin |
+| `A_DA_WEB_UI` / `A_DA_WEB_TOKEN` / `A_DA_WEB_PLUGINS_DIR` / `A_DA_WEB_PUBLIC_URL` | 上述参数的环境变量形式 |
 
 **开发/验收：单独跑界面层**（仍需要一个已启动的网关）：
 
@@ -147,9 +148,15 @@ ada-gateway --host 0.0.0.0 --allow-plaintext \
 并 303 去掉 URL 里的 `?token=`。`--web-token` 是等价的静态令牌兼容项。
 只开明文 HTTP，令牌会以明文传输，请只在可信网络使用。
 
+**反向代理**：由代理终止 TLS 时，加
+`--web-public-url https://example.com`（或 `A_DA_WEB_PUBLIC_URL`）。
+Host 校验会额外接受该域名（端口可省略）、写请求接受
+`Origin: https://example.com`，且登录 cookie 自动带 `Secure`。
+**不信任 `X-Forwarded-*`**：外部来源必须显式写出，否则仍按内部端口校验。
+
 入口防护（`src/guard.rs`）做了三件事：
 
-- **Host 白名单**：只接受绑定的主机名 + 回环别名，挡 DNS rebinding；
+- **Host 白名单**：只接受绑定的主机名 + 回环别名（以及 `--web-public-url` 声明的公网主机），挡 DNS rebinding；
 - **Origin / Sec-Fetch-Site**：跨站写请求直接 403，挡 CSRF；
 - **安全响应头**：`CSP`（`frame-ancestors 'none'`）、`X-Frame-Options: DENY`、`nosniff`、`Referrer-Policy: same-origin`。
   🔴 **不能用 `no-referrer`**：Chromium 在它下面会给**表单 POST**（导航请求）发 `Origin: null`，

@@ -44,6 +44,14 @@ pub trait CredentialVerifier: Send + Sync {
     fn verify(&self, credential: &str) -> Result<(), String>;
 }
 
+/// 反向代理暴露给浏览器的公网来源。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PublicOrigin {
+    scheme: String,
+    host: String,
+    port: u16,
+}
+
 /// 入口防护配置。
 pub struct Access {
     /// 静态 `--web-token`；`None` = 不做静态令牌校验。
@@ -58,6 +66,10 @@ pub struct Access {
     /// 此时访问令牌是真正的闸门（远程绑定强制要求）。
     pub allow_any_host: bool,
     pub port: u16,
+    /// 反向代理对外暴露的 `scheme://host[:port]`（Host/Origin 校验用）。
+    public_origins: Vec<PublicOrigin>,
+    /// 公网是 https 时，登录 cookie 必须带 `Secure`。
+    secure_cookie: bool,
 }
 
 impl Access {
@@ -79,7 +91,25 @@ impl Access {
             hosts,
             allow_any_host,
             port,
+            public_origins: Vec::new(),
+            secure_cookie: false,
         }
+    }
+
+    /// 声明反向代理对外的公网来源（`--web-public-url https://example.com`）。
+    ///
+    /// 代理通常会把 `Host` 改成 `example.com`（不带内部端口），浏览器发的
+    /// `Origin` 则是 `https://example.com`。两种形态都在这里显式放行，
+    /// 但**只放行这个配置过的来源**，不是"随便什么 Host 都收"。
+    pub fn with_public_url(mut self, raw: &str) -> Result<Self, String> {
+        let origin = parse_public_origin(raw)?;
+        if origin.scheme == "https" {
+            self.secure_cookie = true;
+        }
+        if !self.public_origins.iter().any(|existing| existing == &origin) {
+            self.public_origins.push(origin);
+        }
+        Ok(self)
     }
 
     /// 挂上网关凭据校验器（`--token` / 配对码）。
@@ -101,24 +131,69 @@ fn normalize_host(raw: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// 拆分 `Host: host:port`（IPv6 带方括号）。缺端口按 80 处理。
-fn split_hostport(raw: &str) -> Option<(String, u16)> {
+/// 拆分 `Host: host:port`（IPv6 带方括号）。
+///
+/// 第三个返回值表示"端口是否显式出现"：反向代理常把 `Host` 写成不带端口的
+/// `example.com`，此时不能用默认 80 去和公网 https 的 443 比较。
+fn split_hostport_parts(raw: &str) -> Option<(String, u16, bool)> {
     let raw = raw.trim();
     if raw.is_empty() {
         return None;
     }
     if let Some(rest) = raw.strip_prefix('[') {
         let (host, tail) = rest.split_once(']')?;
-        let port = tail.strip_prefix(':').map(str::trim).unwrap_or("80");
-        return Some((normalize_host(host), port.parse().ok()?));
+        let Some(port) = tail.strip_prefix(':') else {
+            return Some((normalize_host(host), 80, false));
+        };
+        return Some((normalize_host(host), port.trim().parse().ok()?, true));
     }
     match raw.rsplit_once(':') {
-        Some((host, port)) if !host.is_empty() => {
-            Some((normalize_host(host), port.trim().parse().ok()?))
-        }
+        Some((host, port)) if !host.is_empty() => Some((
+            normalize_host(host),
+            port.trim().parse().ok()?,
+            true,
+        )),
         Some(_) => None,
-        None => Some((normalize_host(raw), 80)),
+        None => Some((normalize_host(raw), 80, false)),
     }
+}
+
+/// 拆分 `Host`（缺端口按 80 处理；保留给既有调用与测试）。
+fn split_hostport(raw: &str) -> Option<(String, u16)> {
+    split_hostport_parts(raw).map(|(host, port, _)| (host, port))
+}
+
+/// 解析 `--web-public-url`：只接受 `http(s)://host[:port]`，路径/查询忽略。
+fn parse_public_origin(raw: &str) -> Result<PublicOrigin, String> {
+    let raw = raw.trim();
+    let (scheme, rest) = raw
+        .split_once("://")
+        .ok_or_else(|| format!("公网地址必须以 http:// 或 https:// 开头：{raw}"))?;
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return Err(format!("公网地址只支持 http/https：{raw}"));
+    }
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim();
+    if authority.is_empty() || authority.contains('@') {
+        return Err(format!("公网地址缺少合法主机名：{raw}"));
+    }
+    let (host, parsed_port, explicit) = split_hostport_parts(authority)
+        .ok_or_else(|| format!("公网地址端口非法：{raw}"))?;
+    if host.is_empty() {
+        return Err(format!("公网地址缺少主机名：{raw}"));
+    }
+    let port = if explicit {
+        parsed_port
+    } else if scheme == "https" {
+        443
+    } else {
+        80
+    };
+    Ok(PublicOrigin { scheme, host, port })
 }
 
 fn header_str(headers: &HeaderMap, name: header::HeaderName) -> Option<String> {
@@ -128,11 +203,19 @@ fn header_str(headers: &HeaderMap, name: header::HeaderName) -> Option<String> {
         .map(|value| value.trim().to_string())
 }
 
-/// Host 白名单：主机名必须在白名单里，端口必须与监听端口一致。
+/// Host 白名单：本机监听端口，或显式配置的反向代理公网来源。
 pub fn host_allowed(host_header: &str, access: &Access) -> bool {
-    let Some((host, port)) = split_hostport(host_header) else {
+    let Some((host, port, explicit)) = split_hostport_parts(host_header) else {
         return false;
     };
+    // 反向代理：Host 可能是 `example.com`（无端口）或 `example.com:443`。
+    if access
+        .public_origins
+        .iter()
+        .any(|origin| origin.host == host && (origin.port == port || !explicit))
+    {
+        return true;
+    }
     if port != access.port {
         return false;
     }
@@ -154,6 +237,49 @@ pub fn origin_allowed(origin: &str, host_header: &str) -> bool {
         return false;
     }
     authority.eq_ignore_ascii_case(host_header.trim())
+}
+
+/// Origin 是否等于显式配置的反向代理公网来源。
+fn origin_matches_public(origin: &str, access: &Access) -> bool {
+    let Some((scheme, authority)) = origin.split_once("://") else {
+        return false;
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return false;
+    }
+    if authority.contains('@') || authority.contains('/') {
+        return false;
+    }
+    let Some((host, port, explicit)) = split_hostport_parts(authority) else {
+        return false;
+    };
+    let port = if explicit {
+        port
+    } else if scheme == "https" {
+        443
+    } else {
+        80
+    };
+    access
+        .public_origins
+        .iter()
+        .any(|configured| {
+            configured.scheme == scheme && configured.host == host && configured.port == port
+        })
+}
+
+/// 写请求的来源判定：同源 Host，或显式配置的反向代理公网来源。
+pub fn write_origin_allowed_for(
+    origin: &str,
+    host: &str,
+    sec_fetch_site: Option<&str>,
+    access: &Access,
+) -> bool {
+    if origin_matches_public(origin, access) {
+        return true;
+    }
+    write_origin_allowed(origin, host, sec_fetch_site)
 }
 
 /// 写请求的来源判定：Origin 必须与 Host 一致；`Origin: null` 只在浏览器声明同源导航时放行。
@@ -239,9 +365,11 @@ fn strip_token(uri: &axum::http::Uri) -> String {
     path
 }
 
-fn with_cookie(location: &str, token: &str) -> Response {
-    let cookie =
-        format!("{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={COOKIE_MAX_AGE}");
+fn with_cookie(location: &str, token: &str, secure: bool) -> Response {
+    let cookie = format!(
+        "{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={COOKIE_MAX_AGE}{}",
+        if secure { "; Secure" } else { "" }
+    );
     cookie_redirect(location, &cookie)
 }
 
@@ -255,7 +383,8 @@ fn with_session_cookie(location: &str, access: &Access) -> Response {
         );
     }
     let cookie = format!(
-        "{SESSION_COOKIE}={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age={COOKIE_MAX_AGE}"
+        "{SESSION_COOKIE}={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age={COOKIE_MAX_AGE}{}",
+        if access.secure_cookie { "; Secure" } else { "" }
     );
     cookie_redirect(location, &cookie)
 }
@@ -389,7 +518,7 @@ pub async fn guard(
     if is_unsafe(&method) {
         let site = header_str(request.headers(), HeaderName::from_static("sec-fetch-site"));
         if let Some(origin) = header_str(request.headers(), header::ORIGIN) {
-            if !write_origin_allowed(&origin, &host, site.as_deref()) {
+            if !write_origin_allowed_for(&origin, &host, site.as_deref(), &access) {
                 // 两端都打出来：只报"不一致"时，线上根本猜不到是哪一侧有问题。
                 tracing::warn!(
                     method = %method,
@@ -422,7 +551,11 @@ pub async fn guard(
                 if let Some(given) = query_token(request.uri().query()) {
                     if let Some(expected) = access.token.as_deref() {
                         if token_eq(given, expected) {
-                            return with_cookie(&strip_token(request.uri()), expected);
+                            return with_cookie(
+                                &strip_token(request.uri()),
+                                expected,
+                                access.secure_cookie,
+                            );
                         }
                     }
                     if let Some(verifier) = access.verifier.as_deref() {
@@ -485,7 +618,7 @@ pub async fn auth_submit(State(state): State<AppState>, Form(form): Form<AuthFor
     let credential = form.token.trim();
     if let Some(expected) = state.access.token.as_deref() {
         if token_eq(credential, expected) {
-            return with_cookie("/", expected);
+            return with_cookie("/", expected, state.access.secure_cookie);
         }
     }
     if let Some(verifier) = state.access.verifier.as_deref() {
@@ -643,5 +776,63 @@ mod tests {
         assert_eq!(strip_token(&uri), "/threads/t1?notice=sent&x=1");
         let uri: axum::http::Uri = "/?token=abc".parse().unwrap();
         assert_eq!(strip_token(&uri), "/");
+    }
+
+    #[test]
+    fn public_url_allows_proxy_host_and_origin_only() {
+        let access = access().with_public_url("https://example.com").unwrap();
+        // 代理常见形态：Host 无端口 / 带 443；本机回环仍可用。
+        assert!(host_allowed("example.com", &access));
+        assert!(host_allowed("example.com:443", &access));
+        assert!(host_allowed("127.0.0.1:8788", &access));
+        assert!(!host_allowed("example.com:8443", &access));
+        assert!(!host_allowed("evil.example", &access));
+
+        assert!(origin_matches_public("https://example.com", &access));
+        assert!(origin_matches_public("https://example.com:443", &access));
+        assert!(!origin_matches_public("http://example.com", &access));
+        assert!(!origin_matches_public("https://evil.example", &access));
+        assert!(write_origin_allowed_for(
+            "https://example.com",
+            "127.0.0.1:8788",
+            None,
+            &access
+        ));
+        assert!(!write_origin_allowed_for(
+            "https://evil.example",
+            "127.0.0.1:8788",
+            None,
+            &access
+        ));
+    }
+
+    #[test]
+    fn public_url_https_marks_cookies_secure() {
+        let https = access().with_public_url("https://example.com").unwrap();
+        let response = with_session_cookie("/", &https);
+        let cookie = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(cookie.contains("; Secure"), "{cookie}");
+
+        let http = access().with_public_url("http://example.com").unwrap();
+        let response = with_session_cookie("/", &http);
+        let cookie = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(!cookie.contains("; Secure"), "{cookie}");
+    }
+
+    #[test]
+    fn public_url_rejects_malformed_values() {
+        assert!(access().with_public_url("example.com").is_err());
+        assert!(access().with_public_url("ftp://example.com").is_err());
+        assert!(access().with_public_url("https://").is_err());
+        assert!(access().with_public_url("https://example.com:abc").is_err());
+        assert!(access().with_public_url("https://user@example.com").is_err());
     }
 }

@@ -228,6 +228,11 @@ React/Vite 界面（无边框 + 自绘标题栏），`bun run electron:dev:deskt
 exe 旁 `frontend-plugins` → 源码目录；停用状态写在 `~/.a-da/web-ui-state.json`，
 插件目录可以随包只读分发。
 
+**反向代理**：`--web-public-url https://example.com`（`A_DA_WEB_PUBLIC_URL`）显式声明对外来源。
+guard 会接受代理改写后的 `Host: example.com`（端口可省略）与浏览器 `Origin: https://example.com`，
+https 时登录 cookie 自动加 `Secure`。不配置时仍只认绑定主机与监听端口；**不信任
+`X-Forwarded-*`**，外部来源必须显式写出来。
+
 ### 2.6 网关 ↔ agent 的本体链路：TCP 还是本地管道
 
 网关拉起 agent 之后要**再连回它**。这条链路有两种形态，由环境变量选择：

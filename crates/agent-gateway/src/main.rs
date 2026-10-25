@@ -226,6 +226,12 @@ async fn main() -> anyhow::Result<()> {
             anyhow::anyhow!("--web-ui ssr 要求 --host 是 IP 地址（当前 {}）：{error}", args.host)
         })?;
         let mut access = agent_web::guard::Access::for_host(host, port, args.web_token.clone());
+        // 反向代理：显式声明对外来源，guard 才会放行代理改写后的 Host 与浏览器 Origin。
+        if let Some(public_url) = args.web_public_url.as_deref() {
+            access = access.with_public_url(public_url).map_err(|error| {
+                anyhow::anyhow!("--web-public-url 非法（{public_url}）：{error}")
+            })?;
+        }
         // 配置了网关 token 时，浏览器也可以用它（或启动时打印的配对码）登录；
         // guard 只记住随机 session id，网关 token 不会写进 cookie。
         if args.auth.requires_token() {
@@ -392,6 +398,8 @@ struct Args {
     web_token: Option<String>,
     /// SSR 前端插件目录（不传则按用户目录 → exe 旁 → 源码目录探测）
     web_plugins_dir: Option<String>,
+    /// 反向代理对外的公网来源（`https://example.com`），用于 Host/Origin 校验
+    web_public_url: Option<String>,
 }
 
 fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
@@ -407,6 +415,7 @@ fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
     let mut web_ui = std::env::var("A_DA_WEB_UI").unwrap_or_else(|_| "ssr".to_string());
     let mut web_token = std::env::var("A_DA_WEB_TOKEN").ok();
     let mut web_plugins_dir: Option<String> = None;
+    let mut web_public_url = std::env::var("A_DA_WEB_PUBLIC_URL").ok();
     let mut it = argv.into_iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -462,6 +471,12 @@ fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
                         .ok_or_else(|| anyhow::anyhow!("--web-plugins-dir 需要一个值"))?,
                 );
             }
+            "--web-public-url" => {
+                web_public_url = Some(
+                    it.next()
+                        .ok_or_else(|| anyhow::anyhow!("--web-public-url 需要一个值"))?,
+                );
+            }
             "--help" | "-h" => {
                 println!(
                     "ada-gateway —— AGENT 管理平台 / 交互平台 / 桥接平台\n\n\
@@ -475,7 +490,8 @@ fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
                      --ui-dir <p>      前端产物目录（默认自动探测 desktop-ui/dist；给了就用它托管网页）\n\
                      --web-ui <s>      网页界面：ssr（内置 SSR，默认）或 desktop（静态产物回退）\n\
                      --web-token <t>   SSR 界面的浏览器访问令牌（非回环监听必填；也可用 A_DA_WEB_TOKEN）\n\
-                     --web-plugins-dir <p>  SSR 前端插件目录（默认 ~/.a-da/web-plugins）\n"
+                     --web-plugins-dir <p>  SSR 前端插件目录（默认 ~/.a-da/web-plugins）\n\
+                     --web-public-url <u>  反向代理对外地址（如 https://example.com；放行该 Host/Origin，https 时 cookie 带 Secure）\n"
                 );
                 std::process::exit(0);
             }
@@ -497,5 +513,6 @@ fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
         web_ui,
         web_token,
         web_plugins_dir,
+        web_public_url,
     })
 }

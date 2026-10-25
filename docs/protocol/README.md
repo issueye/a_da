@@ -119,8 +119,9 @@
 |---|---|
 | 浏览器凭据 | `/__auth` 接受网关 `--token` 或一次性配对码；校验后换发随机 session id 的 `HttpOnly; SameSite=Strict` cookie（网关 token 不进 cookie） |
 | 兼容项 | `--web-token` 是静态浏览器令牌；与网关 token 任一通过即可 |
-| Host | 只接受绑定主机 + 回环别名，且端口必须与监听端口完全一致（挡 DNS rebinding） |
-| Origin | 写请求的 `Origin` 必须与 `Host` 一致；`Origin: null` 仅在 `Sec-Fetch-Site: same-origin` 时放行 |
+| Host | 只接受绑定主机 + 回环别名，且端口必须与监听端口完全一致（挡 DNS rebinding）；配置 `--web-public-url` 后额外接受该公网主机 |
+| Origin | 写请求的 `Origin` 必须与 `Host` 一致，或等于 `--web-public-url` 的公网来源；`Origin: null` 仅在 `Sec-Fetch-Site: same-origin` 时放行 |
+| 反向代理 | `--web-public-url https://example.com`（`A_DA_WEB_PUBLIC_URL`）显式放行代理后的 Host/Origin；https 时 session cookie 带 `Secure`。不信任 `X-Forwarded-*` |
 | 静态资源 | `/static/*` 免 token（只含 JS/CSS） |
 | 作用域 | SSR 内部调用不经过网关 token；页面绑定网关默认工作区 |
 
