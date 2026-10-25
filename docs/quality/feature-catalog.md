@@ -1,12 +1,12 @@
 # a_da 已实现功能清单
 
-> **更新**：2026-10-18（按代码逐项核对；本次整理时把 TS 时代的内容整体替换为现行实现）。
+> **更新**：2026-10-25（按代码逐项核对；新增网关内置 SSR 网页界面）。
 > **定位**：本文写"**现在真能做什么**"，每条都给出代码落点，便于复核。
 > **配对阅读**：[unfinished-features.md](unfinished-features.md)（还缺什么）、
 > [../plans/wiring.md](../plans/wiring.md)（"装上了没接线"的处置记录）、
 > [../README.md](../README.md)（按功能域找文档）。
 
-系统形态：**Electron 桌面壳 → 网关（`ada-gateway`）→ 按工作区拉起产品实例（`ada-coding`）**；
+系统形态：**Electron 桌面壳 / 浏览器（网关内置 SSR）→ 网关（`ada-gateway`）→ 按工作区拉起产品实例（`ada-coding`）**；
 界面与宿主之间是 **JSON-RPC 2.0 over WebSocket**，另有一层 HTTP unary API（`/api/*`）承载一问一答——
 两者的端点、鉴权、帧与错误码统一在[接口文档](../protocol/README.md)；事件仍走 WS。
 
@@ -154,6 +154,10 @@
 - **网关 ↔ agent 的链路**：回环 TCP（默认，`ws://127.0.0.1:<port>/rpc`）或本地管道
   （`A_DA_GATEWAY_AGENT_LINK=pipe`：Windows 命名管道 / Unix socket，**端口 0、不监听 TCP**）；
   两种形态同一套帧与 token 握手，端点解析单点在 `agent-gateway/src/link.rs`。
+- **内置 SSR 网页界面**（2026-10-25，`crates/agent-web`）：网关默认 `--web-ui ssr`，一个进程一个端口
+  托管页面 / SSE / `/static/*` / `/ext/*` / `/api/*` / `/rpc`；页面通过 `GatewayBackend` 进程内调用
+  agent（不再 HTTP 反代），事件订阅持有 `ConnectionGuard` 防回收；`/__auth` 接受网关 token / 配对码并
+  换发 HttpOnly 会话 cookie。`--web-ui desktop` 回退到 `desktop-ui/dist` 静态托管。
 
 ## 十一、桌面端界面（`desktop-ui/`）
 
@@ -195,7 +199,9 @@ unary 方法映射为 `/api/*`（18 条查询 + 42 条写），另有 11 条网�
 
 静态门：`cargo xtask verify-spec` / `verify-wiring` / `compat` / `verify-docs`（`verify --fast` 一次跑完）；
 测试门：`cargo test --workspace -- --test-threads=1`（**必须串行**）与 `bun run typecheck`。
-实机脚本：桌面壳、重试与断线、卡片顺序、插件平台、网关进程模型（见 [README.md](../../README.md#门禁与测试)）。
+实机脚本：桌面壳、重试与断线、卡片顺序、插件平台、网关进程模型、网关内置 SSR
+（`tools/verify-gateway-web.mjs`）、SSR 流式与工作区（`tools/verify-ssr-*.mjs`，均为单进程），
+见 [README.md](../../README.md#门禁与测试)。
 
 ---
 

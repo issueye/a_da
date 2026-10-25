@@ -4,11 +4,13 @@
 |---|---|
 | 日期 | 2026-10-25 |
 | 输入 | [ssr-h/README.md](../../ssr-h/README.md)、`ssr-h/docs/{STATUS,UED,COMPONENTS,TSX}.md`、[gateway/README.md](README.md)、[protocol/README.md](../protocol/README.md)、本轮代码核查 |
-| 性质 | **开发计划（未开工）**：批次 M0–M4、任务卡 T01–T14、验收标准与出场门 |
+| 性质 | **已落地（2026-10-25）**：M0–M4 全部完成；批次与任务卡保留为实施记录 |
 | 目标 | 一个 `ada-gateway` 进程 + 一个端口 = 整站；SSR 成为网关的浏览器界面；删除 ssr-h 对网关的自反代 |
 | 约束 | 不改多轮引擎与现有 JSON-RPC 方法；网关仍不跑引擎（INV-1）、不缓存会话状态（INV-8）；Electron 桌面端行为不变 |
 | 节奏 | 一任务一 commit（`refactor(web)` / `feat(gateway)` / `docs(gateway)`），一批一出场，每批可独立回退 |
-| 实施进度 | **未开工**（2026-10-25 立项） |
+| 实施进度 | **已完成**：`crates/agent-web` 已并入 workspace；网关默认 `--web-ui ssr`；单进程验收脚本全绿；`verify-docs` 基线清零 |
+
+> 注：§2 里的 `ssr-h/...` 是**合并前**的路径；当前落点见 §11 与 `crates/agent-web`。
 
 ## 0. 一页结论
 
@@ -503,6 +505,19 @@ cargo xtask verify --fast
 4. **插件目录位置**（D7）：`~/.a-da/web-plugins`，还是随包分发只读目录 + 用户目录叠加。
 5. **反向代理支持**：是否本期就做 `--web-public-url` / `--web-allow-host`，还是留给部署文档。
 6. **`/web-ui/frontend-plugins` 的协议地位**：仅内部页面使用，还是登记为稳定的 Web 端点。
+
+## 11. 实施记录（2026-10-25）
+
+| 项 | 落点 |
+|---|---|
+| SSR crate | `crates/agent-web`（`AgentClient` + `WebBackend` / `HttpBackend`；`router()` 可挂载） |
+| 网关进程内后端 | `crates/agent-gateway/src/web.rs`（`GatewayBackend` + `GatewayLogin` + `build_web_state`） |
+| 路由 | `router_with_web` 用 `fallback_service` 挂 SSR；`/rpc`、`/api/*` 保持网关自己的鉴权与路由 |
+| 连接守卫 | `AgentRegistry::open_connection` / `ConnectionGuard`（`relay` 与 SSR 事件订阅共用） |
+| 凭据 | `/__auth` 接受网关 token / 配对码，换发 HttpOnly 会话 cookie；`--web-token` 保留兼容 |
+| 插件 | 自省端点 `/web-ui/frontend-plugins`；停用状态 `~/.a-da/web-ui-state.json` |
+| 默认值 | `--web-ui` 默认 `ssr`；`desktop` 保留回退 |
+| 验收 | `cargo test -p agent-web`、`cargo test -p agent-gateway`、`node tools/verify-gateway-web.mjs`、`node tools/verify-ssr-streaming.mjs`、`node tools/verify-ssr-workspaces.mjs`、`cargo xtask verify-docs` |
 
 ## 附录 A：文件落点对照
 

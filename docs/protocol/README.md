@@ -60,8 +60,12 @@
 | `GET /rpc` + `Upgrade: websocket` | `relay::ws_handler`：**先鉴权再升级**（Origin / token） |
 | `GET /rpc`（无升级头） | `426 Upgrade Required` |
 | `GET /api/*` | `http_api`：unary 调用（§3） |
-| `GET /`、`GET /assets/*` | 前端静态产物（目录 → `index.html`） |
-| `POST` 等非 GET/HEAD（除 `/api/*`） | `405 Method Not Allowed` |
+| `GET /`、`/threads/*`、`/overview`、`/providers*`、`/workspaces*`、`/extensions` | **SSR 页面**（`crates/agent-web`，默认 `--web-ui ssr`） |
+| `GET /threads/{id}/stream` | SSR 的 SSE 实时更新 |
+| `GET /static/*`、`/ext/{id}/assets/*` | SSR 内嵌静态资源 / 插件资源 |
+| `GET /web-ui/frontend-plugins` | SSR 前端插件自省（**不是** `/api/plugins`） |
+| `GET /`、`GET /assets/*`（`--web-ui desktop`） | desktop-ui 静态产物（目录 → `index.html`） |
+| `POST` 等非 GET/HEAD（除 `/api/*`） | SSR 表单动作；`--web-ui desktop` 时 `405 Method Not Allowed` |
 
 静态资源**不需要 token**（页面只是 JS/CSS，不含用户数据）；要 token 才能打开"输入 token 的页面"是死锁。
 `/rpc` 在升级之前鉴权：Origin 不合法 → `403`，token 不对 → `401`，都是普通 HTTP 状态码。
@@ -109,7 +113,18 @@
 | Origin | 带 `Origin` 就必须在 `--allow-origin` 白名单（或回环 `localhost`/`127.0.0.1`），否则 `403` |
 | CORS | 放行的 Origin 回 `Access-Control-Allow-*`；`OPTIONS` 预检返回 `204` |
 
-### 2.3 工作区（多实例路由）
+### 2.3 SSR 页面面（`--web-ui ssr`）
+
+| 项 | 规则 |
+|---|---|
+| 浏览器凭据 | `/__auth` 接受网关 `--token` 或一次性配对码；校验后换发随机 session id 的 `HttpOnly; SameSite=Strict` cookie（网关 token 不进 cookie） |
+| 兼容项 | `--web-token` 是静态浏览器令牌；与网关 token 任一通过即可 |
+| Host | 只接受绑定主机 + 回环别名，且端口必须与监听端口完全一致（挡 DNS rebinding） |
+| Origin | 写请求的 `Origin` 必须与 `Host` 一致；`Origin: null` 仅在 `Sec-Fetch-Site: same-origin` 时放行 |
+| 静态资源 | `/static/*` 免 token（只含 JS/CSS） |
+| 作用域 | SSR 内部调用不经过网关 token；页面绑定网关默认工作区 |
+
+### 2.4 工作区（多实例路由）
 
 | 项 | 规则 |
 |---|---|
@@ -118,7 +133,7 @@
 | 作用域约束 | 受限 token 的 workspace 白名单**同时约束** query/body 里的 workspace |
 | 🔴 踩坑 | **受限 token 请把工作区放 query/header**：body 里的 workspace 在 token 鉴权**之后**才检查，只写 body 会先按默认工作区被拒 |
 
-### 2.4 对外部署的硬规则
+### 2.5 对外部署的硬规则
 
 网关只提供明文 `ws://`：
 

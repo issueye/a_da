@@ -196,6 +196,32 @@ Electron 再通过 `--ui-dir` 显式传给网关（见 `electron/main.ts` 的 `f
 否则 `/assets/missing.js` 会拿到一份 HTML，报出来的是 MIME 错误而不是真正的原因。
 错误页里的路径会先解码再 **HTML 转义**（`/<img src=x>.js` 不能变成标签）。
 
+### 2.5.6 网页界面：SSR（默认）与 desktop-ui 回退
+
+从 2026-10-25 起，网关默认托管 `crates/agent-web` 的 SSR 界面（产品代号 `ssr-h`）。
+一个 `ada-gateway` 进程、一个端口就是整站：
+
+| 路径 | 去向 | 鉴权 |
+|---|---|---|
+| `GET /`、`/threads/*`、`/overview`、`/providers*`、`/workspaces*`、`/extensions` | SSR 页面 | SSR guard（Host / Origin / 会话 cookie） |
+| `GET /threads/{id}/stream` | SSE | 同上 |
+| `GET /static/*` | 编译期内嵌静态资源 | 免 token（只含 JS/CSS） |
+| `GET/POST /ext/{id}/...` | TSX 插件页 / 资源 / API | 同上 |
+| `GET /web-ui/frontend-plugins` | 前端插件自省（**不是** `/api/plugins`） | 同上 |
+| `GET /rpc`、`/api/*` | 网关原有路由 | 网关 token / Origin / 作用域 |
+
+组装点在 `router_with_web`：SSR 路由作为一个完整的 fallback service 挂在
+`/rpc` 与 `/api/*` 之后，所以它自己的 CSP / `X-Frame-Options` **不会**污染 API 面。
+`--web-ui desktop` 回退到原来的 `desktop-ui/dist` 静态托管（`--ui-dir` 仍有效）。
+
+浏览器凭据：`/__auth` 接受网关 `--token` 或启动日志里的一次性配对码，校验通过后换发
+随机 session id 的 HttpOnly cookie（网关 token 不写进浏览器）；`--web-token` 是等价的
+静态令牌兼容项。SSR 进程内调用 agent 不需要 token，也不再走 HTTP 回环。
+
+前端插件目录：`--web-plugins-dir` → `A_DA_WEB_PLUGINS_DIR` → `~/.a-da/web-plugins` →
+exe 旁 `frontend-plugins` → 源码目录；停用状态写在 `~/.a-da/web-ui-state.json`，
+插件目录可以随包只读分发。
+
 ### 2.6 网关 ↔ agent 的本体链路：TCP 还是本地管道
 
 网关拉起 agent 之后要**再连回它**。这条链路有两种形态，由环境变量选择：

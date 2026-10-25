@@ -1,6 +1,7 @@
 # a_da
 
-> **状态（2026-10-18）**：纯 Rust 微内核 + 节点/桥接/网关三层 + Electron 桌面壳。
+> **状态（2026-10-25）**：纯 Rust 微内核 + 节点/桥接/网关三层 + Electron 桌面壳；
+> 网关内置 SSR 网页界面（一个进程、一个端口 = 整站）。
 > 本文描述**当前**实现；**文档按功能域整理过**，入口是 [docs/README.md](docs/README.md)。
 >
 > 历史 TypeScript 实现（Bun 宿主 + GPUIX 客户端 + TS 侧 agent）已于 2026-10-17 整体删除，
@@ -45,7 +46,7 @@
 ```
 agent-base ─► agent-proto / agent-adapter / agent-toolkit ─► agent-runtime
                                                             ─► agent-node ─► agent-rpc ─► agent-host ─► 产品
-                                                                                    └─► agent-gateway（只依赖 agent-proto）
+                                                                                    └─► agent-gateway（依赖 agent-proto + agent-web）
 ```
 
 | 层 | 位置 | 职责 |
@@ -58,7 +59,8 @@ agent-base ─► agent-proto / agent-adapter / agent-toolkit ─► agent-runti
 | 宿主装配 | `crates/agent-host` | 按产品声明装配引擎 + 会话 + 审批 + 贡献（`ContributionPolicy`） |
 | **节点** | `crates/agent-node` | 会话 / 审批 / 检查点 / 子智能体 / 插件 / 技能 / 脚本 / **钩子运行时**（不含协议管道与 UI 投影） |
 | **桥接面** | `crates/agent-rpc` | JSON-RPC 分发（77 方法）、WS 宿主、快照合帧、`AgentStore`（给界面看的投影）、引擎调用 |
-| **网关** | `crates/agent-gateway` | `ada-gateway`：实例注册与监督、跨进程委派与续跑、路由透传、鉴权（token / 作用域 / Origin / 配对码） |
+| **网关** | `crates/agent-gateway` | `ada-gateway`：实例注册与监督、跨进程委派与续跑、路由透传、鉴权（token / 作用域 / Origin / 配对码）、托管 SSR 网页界面 |
+| **网页界面** | `crates/agent-web` | SSR 投影层（Askama + HTMX + TSX 插件）：页面 / SSE / 表单动作；由网关挂载，也可独立运行 |
 | 合规套件 | `crates/agent-conformance` | 端口契约 + 跨端口不变量 + golden 回放夹具 |
 | 插件运行时 | `crates/ts-engine` | Boa + oxc 的 TS 沙箱（插件代码在自己的进程内或子进程里跑） |
 | 产品 | `products/ada-coding`（含 `modes/pm.agent.spec.json` 预设）、`products/ada-skeleton` | 声明式产品（`agent.spec.json` + 极小 `main`） |
@@ -241,8 +243,14 @@ export default function (ada) {
 
 桌面壳（`electron/`）监督 `ada-gateway` 生命周期：单实例锁、无边框原生窗口控制、
 IPC 桥接、`launcher.log` 记录（打包后的 exe 没有控制台，**应用日志是唯一证据**）。
-界面（`desktop-ui/`）是三栏布局 + 覆盖层，审批走**输入框上方浮窗**
+桌面界面（`desktop-ui/`）是三栏布局 + 覆盖层，审批走**输入框上方浮窗**
 （不随对话流滚动），失败提示走 `Notice` 卡片（只给人看、永不进模型上下文）。
+
+浏览器访问默认由网关内置的 **SSR 界面**（`crates/agent-web`）提供：
+`ada-gateway` 一个进程、一个端口同时托管页面、`/threads/{id}/stream`（SSE）、
+`/static/*`、`/api/*` 与 `/rpc`。SSR 通过进程内调用直接驱动 agent，不再二次反代；
+`/__auth` 接受网关 token 或配对码并换发 HttpOnly 会话 cookie。
+`--web-ui desktop` 可回退到 `desktop-ui/dist` 静态托管，Electron 桌面端不受影响。
 
 ---
 
@@ -252,13 +260,22 @@ IPC 桥接、`launcher.log` 记录（打包后的 exe 没有控制台，**应用
 # 桌面客户端（Electron 壳：前端热重载 + 网关监督）
 bun run electron:dev
 
+# 网关 + 浏览器 SSR（默认；一个进程一个端口）
+cargo run -p agent-gateway -- --port 52353 --workspace E:/your-project
+# 浏览器打开 http://127.0.0.1:52353/
+
 # 构建
 cargo build --workspace
 
 # 打包独立二进制 / Electron 免安装包
 cargo xtask ship --product ada-coding
+cargo xtask ship --product ada-gateway   # 同时带上 frontend-plugins/
 bun run electron:pack            # → dist/electron/win-unpacked
 ```
+
+网关相关开关：`--web-ui ssr|desktop`（默认 `ssr`）、`--web-token`、`--web-plugins-dir`；
+环境变量 `A_DA_WEB_UI` / `A_DA_WEB_TOKEN` / `A_DA_WEB_PLUGINS_DIR` 等价。
+非回环监听时浏览器凭据可直接用网关 `--token` 或启动日志里的配对码。
 
 `ada-coding` 接受 `--host/--port/--token/--parent-pid/--workspace`，另可选
 `--script-sandbox inprocess|subprocess`（插件脚本的执行档位）；通常由网关或 Electron 宿主注入，
@@ -310,7 +327,8 @@ crates/
   agent-host/          按产品声明装配引擎（组合根）
   agent-node/          节点：会话 / 审批 / 检查点 / 子智能体 / 插件 / 技能 / 脚本 / 钩子
   agent-rpc/           桥接面：JSON-RPC 分发、WS 宿主、快照合帧、UI 投影
-  agent-gateway/       网关：注册表 / 监督 / 委派 / 路由 / 鉴权 / 工作区门户
+  agent-gateway/       网关：注册表 / 监督 / 委派 / 路由 / 鉴权 / 工作区门户 / SSR 挂载
+  agent-web/           SSR 网页界面（Askama + HTMX + TSX 插件；网关默认挂载）
   agent-conformance/   端口契约 + 不变量 + golden 夹具
   ts-engine/           插件运行时（Boa + oxc）
   plugin-hub/          插件库平台：Axum + SQLx(SQLite) + Askama SSR + 本地 HTMX/Alpine/Tailwind

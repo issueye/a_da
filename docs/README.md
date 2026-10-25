@@ -3,7 +3,8 @@
 本目录按**功能域**组织，描述仓库的**当前**实现：
 
 > 纯 Rust 微内核（`crates/agent-base`）+ 节点/桥接/网关三层（`agent-node` / `agent-rpc` / `agent-gateway`）
-> + Electron 桌面壳（`electron/` + `desktop-ui/`）+ TS 插件运行时（`crates/ts-engine`）。
+> + 内置 SSR 网页界面（`agent-web`）+ Electron 桌面壳（`electron/` + `desktop-ui/`）
+> + TS 插件运行时（`crates/ts-engine`）。
 
 **历史文档已清理**（2026-10-18）：TS/Bun 时代的实现（Bun 宿主 + GPUIX 客户端 + TS 侧 agent）、
 已被取代的设计、以及未落地的提案都已从 `docs/` 移除。需要考古请从 git 历史取回
@@ -44,7 +45,8 @@
 | [plugins/README.md](plugins/README.md) | 插件平台现状：发现规则、贡献模型、钩子点位与分级、能力开关、管理面、排错 | 插件现状总览 |
 | [plugins/extension-factory.md](plugins/extension-factory.md) | Extension Factory 契约：包形态、`metadata`、注册 API、动作分级 | **插件契约唯一口径** |
 | [plugins/extension-api.d.ts](plugins/extension-api.d.ts) | 插件作者用的 TypeScript 类型声明 | 类型契约 |
-| [gateway/README.md](gateway/README.md) | 网关的三合一职责、工作区门户、极限瘦客户端 | 设计（含更正记录） |
+| [gateway/README.md](gateway/README.md) | 网关的三合一职责、工作区门户、极限瘦客户端、SSR 托管 | 设计（含更正记录） |
+| [../crates/agent-web/README.md](../crates/agent-web/README.md) | SSR 网页界面：页面 / SSE / 前端插件 / 入口防护 | 界面现状总览 |
 | [gateway/PLAN-merge-ssr-h.md](gateway/PLAN-merge-ssr-h.md) | ssr-h 合并进网关的批次、任务卡、验收与回退 | **执行计划（未开工）** |
 | `app.png` | 界面截图（README 引用） | 示意 |
 

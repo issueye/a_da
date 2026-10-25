@@ -10,6 +10,7 @@
 + **两层拆包**（S4）：`crates/agent-node/`（节点：会话 / 审批 / 检查点 / 委派 / 插件 / 技能）
 与 `crates/agent-rpc/`（桥接面：JSON-RPC 分发 + WS 宿主 + UI 投影）
 + **网关**（S5/S6）：`crates/agent-gateway/`（`ada-gateway`：AGENT 管理平台 + 交互平台 + 桥接平台）
++ **网页界面**：`crates/agent-web/`（SSR 投影层，产品代号 `ssr-h`；网关默认挂载，一个进程一个端口）
 + **桌面客户端宿主**：**Electron 桌面壳**（`electron/`：彻底根除 Windows WebView2 权限污染与目录锁死问题，支持 `bun run electron:dev` 与 `bun run electron:pack`）+ **React 前端**（`desktop-ui/`：通过 `src/client/desktop-bridge.ts` 与 Electron 宿主通信）；
 `crates/ts-engine/` 是独立的 TS 执行引擎，只作插件运行时。
 **TypeScript 时代的实现（Bun + GPUIX 客户端 + TS 侧 agent/宿主）已于 2026-10-17 整体删除**
@@ -30,6 +31,9 @@ bun run typecheck                             # 门一：desktop-ui 的 tsc --no
 cargo xtask verify-wiring                     # 接线门：方法覆盖 / 描述符单源 / 端口实现 / 依赖方向
 cargo xtask verify-spec                       # 声明门：产品/预设 spec 校验
 cargo xtask verify-docs                       # 文档门：归档布局字样只在白名单文档里 + 协议文档与事件主题同步
+node tools/verify-gateway-web.mjs             # 网关内置 SSR：单进程 / 单端口 / API 隔离 / 登录 cookie
+node tools/verify-ssr-streaming.mjs           # SSR 流式与图片输入（单进程，假模型）
+node tools/verify-ssr-workspaces.mjs          # SSR 工作区树与目录选择（单进程）
 cargo xtask verify --fast                     # 上面四道静态门一次跑完（跳过全量单测）
 bun run electron:dev                          # Electron 桌面端开发（前端热重载 + 网关监督）
 bun run electron:pack                         # 打包 Electron 免安装版 (dist/electron/win-unpacked)
@@ -214,7 +218,8 @@ pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面
 - `crates/agent-conformance` 合规套件：端口契约、跨端口不变量与 golden 夹具（`dev-dependencies` 使用，不参与产品运行时）
 - **`crates/agent-node`（S4 拆出，src 46 文件 / 约 1.46 万行）** —— 节点：`session` / `approval` / `checkpoint` / `subagents`（含 `agent_bus.rs` 委派总线端口与 `local_bus.rs` 本地实现；端口支持**多轮续跑** `thread_id`，本地总线对它是**如实拒绝**——一次性子智能体没有可续线程）/ `plugins` / `skills` / `node_config.rs`（节点配置端口）/ `delegation_depth.rs`（委派深度端口：被派活的节点靠它知道自己「在第几层」）。**不含协议管道**（不依赖 `tokio-tungstenite`）、**不含 UI 投影**（不依赖 `AgentStore`）。`AgentBus` 的网关实现（`GatewayAgentBus`）在 **`agent-rpc`**——跨进程委派需要 WS 客户端，那属于桥接面，节点只保留端口
 - **`crates/agent-rpc`（S4 拆出，src 20 文件 / 约 9.5k 行）** —— 桥接面：`server/`（`dispatch/` 77 个方法的 JSON-RPC 分发、`ws.rs` 宿主、`emitter.rs` 快照合帧、`fs_service.rs`）、`state/`（`AgentStore`，**给界面看的投影**）、`runner/`（引擎调用 + 基座一等事件 `AgentEventBody` 直连投影至 UI store）。**依赖方向单向：`agent-rpc → agent-node`**
-- **`crates/agent-gateway`（S5 新建）** —— a-da 网关，三合一：**AGENT 管理平台**（`registry.rs` 实例注册表 / `supervisor.rs` 生命周期）+ **交互平台**（S6：`delegate.rs` 派活/**多轮续跑**/取消跨网关）+ **桥接平台**（`relay.rs` 路由与透传）+ **WEB 接入面**（S7：`auth.rs` token/作用域/Origin/**配对码**）。二进制 `ada-gateway`（打印 `A_DA_GATEWAY_READY {port}`）。**只依赖线协议 `agent-proto`**——不含引擎（INV-1）、不缓存会话状态（INV-8），由 `verify-wiring` check J 守着。🔴 **非回环 `--host` 必须配 `--token`，且必须显式 `--allow-plaintext`**（网关只提供明文 `ws://`，明文上的 token 可嗅探；反代终止 TLS 时由人确认）。两条都**拒绝启动**而不是警告——失败安全
+- **`crates/agent-gateway`（S5 新建）** —— a-da 网关，三合一：**AGENT 管理平台**（`registry.rs` 实例注册表 / `supervisor.rs` 生命周期）+ **交互平台**（S6：`delegate.rs` 派活/**多轮续跑**/取消跨网关）+ **桥接平台**（`relay.rs` 路由与透传）+ **WEB 接入面**（S7：`auth.rs` token/作用域/Origin/**配对码**）+ **SSR 挂载面**（`web.rs`：`GatewayBackend` / `GatewayLogin`）。二进制 `ada-gateway`（打印 `A_DA_GATEWAY_READY {port}`）。**只依赖线协议 `agent-proto` 与 UI 投影层 `agent-web`**——不含引擎（INV-1）、不缓存会话状态（INV-8），由 `verify-wiring` check J 守着。🔴 **非回环 `--host` 必须配 `--token`，且必须显式 `--allow-plaintext`**（网关只提供明文 `ws://`，明文上的 token 可嗅探；反代终止 TLS 时由人确认）。两条都**拒绝启动**而不是警告——失败安全。🔴 **SSR 的事件订阅必须持有 `AgentRegistry::open_connection` 守卫**：它不经过 `relay`，不计数的话回收器会把正在被浏览的 agent 当空闲杀掉（连开 15 分钟的页面会“突然不动”）
+- **`crates/agent-web`（2026-10-25 由独立 `ssr-h` 合并）** —— SSR 网页界面：`agent.rs`（`AgentClient`）、`backend.rs`（`WebBackend` 四原语 + `HttpBackend`）、`router.rs`（可挂载 Router + 内嵌静态资源）、`handlers/`（页面/表单/SSE）、`plugins/` + `tsx/`（前端插件与 Boa/OXC 运行时）、`guard.rs`（Host/Origin/CSP/登录 cookie）。`agent-gateway` 依赖它并默认以 `--web-ui ssr` 挂载；独立 `ssr-h` 二进制仅供开发/验收。**不得依赖 `agent-node` / `agent-base` / `agent-runtime` 等节点/引擎 crate**（check J 扩展为同时扫描本 crate）
 - `crates/ts-engine` 插件运行时（Boa + oxc）；插件契约与平台说明见 [docs/plugins/README.md](docs/plugins/README.md)
 - `crates/plugin-hub` **插件库平台**（独立于 agent）：Axum MVC + SQLx(SQLite) + Askama SSR + HTMX/Alpine/Tailwind；入口见 [crates/plugin-hub/README.md](crates/plugin-hub/README.md)
 - `products/ada-coding` 产品二进制（`--host/--port/--token/--parent-pid/--workspace`）
