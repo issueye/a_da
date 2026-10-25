@@ -1160,6 +1160,13 @@
   flex-shrink: 0;
   padding: 0 14px 0 20px;
   border-bottom: 1px solid var(--ph-line);
+  /* 窄屏侧栏是 z-index:60 的全高抽屉（从 y=0 开始）。顶栏必须：
+     ① 有不透明底色，别让抽屉品牌区透上来和标题重叠；
+     ② 高于抽屉/遮罩，菜单按钮与进程管理入口始终可点。
+     Electron 的 preload 会把 z-index 提到 100（还要压过应用弹窗）。 */
+  position: relative;
+  z-index: 80;
+  background: var(--ph-surface);
 }
 .ada-topbar__title {
   display: flex;

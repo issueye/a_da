@@ -250,6 +250,34 @@ async function clickLabel(cdp, label) {
   await sleep(350)
 }
 
+async function clickSelector(cdp, selector) {
+  const rect = await evaluate(
+    cdp,
+    `(() => {
+      const e = document.querySelector(${JSON.stringify(selector)});
+      if (!e) return null;
+      const r = e.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    })()`,
+  )
+  if (!rect) throw new Error(`找不到元素：${selector}`)
+  await cdp.send('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: rect.x,
+    y: rect.y,
+    button: 'left',
+    clickCount: 1,
+  })
+  await cdp.send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: rect.x,
+    y: rect.y,
+    button: 'left',
+    clickCount: 1,
+  })
+  await sleep(350)
+}
+
 async function waitUntil(fn, timeoutMs, label) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
@@ -397,6 +425,40 @@ try {
   check(narrow.inner === 450, '450px 视口生效', JSON.stringify(narrow))
   check(narrow.scroll <= narrow.inner + 1, '450px 下无横向溢出', JSON.stringify(narrow))
   check(narrow.menu === true, '450px 下侧栏折叠为抽屉按钮', JSON.stringify(narrow))
+
+  // 抽屉是 z-index:60 的全高浮层：顶栏必须不透明且层级更高，
+  // 否则抽屉品牌会透上来和标题重叠，菜单按钮也会被盖住点不到。
+  await clickSelector(cdp, '.ada-menu-toggle')
+  await waitUntil(
+    () => evaluate(cdp, `document.querySelector('.ada-sidebar')?.classList.contains('is-open')`),
+    5_000,
+    '侧栏抽屉打开',
+  )
+  const layers = await evaluate(
+    cdp,
+    `(() => {
+      const top = getComputedStyle(document.querySelector('.ada-topbar'));
+      const side = getComputedStyle(document.querySelector('.ada-sidebar'));
+      const b = document.querySelector('.ada-menu-toggle').getBoundingClientRect();
+      const hit = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2);
+      return {
+        topZ: Number(top.zIndex),
+        sideZ: Number(side.zIndex),
+        bg: top.backgroundColor,
+        menuHit: Boolean(hit && hit.closest('.ada-menu-toggle')),
+      };
+    })()`,
+  )
+  check(layers.topZ > layers.sideZ, '顶栏层级高于侧栏抽屉', JSON.stringify(layers))
+  check(layers.bg !== 'rgba(0, 0, 0, 0)', '顶栏不透明，抽屉品牌不会透上来', layers.bg)
+  check(layers.menuHit === true, '抽屉打开时菜单按钮仍可点击', JSON.stringify(layers))
+  await clickSelector(cdp, '.ada-menu-toggle')
+  await waitUntil(
+    () => evaluate(cdp, `!document.querySelector('.ada-sidebar')?.classList.contains('is-open')`),
+    5_000,
+    '侧栏抽屉关闭',
+  )
+
   await cdp.send('Emulation.clearDeviceMetricsOverride')
   await sleep(300)
 
