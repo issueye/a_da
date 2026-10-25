@@ -229,7 +229,7 @@ impl Render for ModelPicker {
     fn render(&self) -> String {
         format!(
             r#"<details class="ada-model-picker" data-model-picker>
-  <summary class="ada-tool ada-tool--model ada-model-picker__summary" title="切换模型与推理等级">
+  <summary class="ada-tool ada-tool--model ada-model-picker__summary" title="当前模型：{model} · 推理等级：{effort}（点击切换）" aria-label="切换模型与推理等级">
     <span class="ada-model-picker__chip" id="composer-model">{chip}</span>
   </summary>
   <div class="ada-model-picker__panel">

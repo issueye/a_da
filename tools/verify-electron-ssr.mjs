@@ -453,6 +453,37 @@ try {
   check(narrow.scroll <= narrow.inner + 1, '450px 下无横向溢出', JSON.stringify(narrow))
   check(narrow.menu === true, '450px 下侧栏折叠为抽屉按钮', JSON.stringify(narrow))
 
+  // 模型药丸只留图标：长模型名会挤占审批档位，两个药丸在窄卡片里重叠。
+  const modelTool = await evaluate(
+    cdp,
+    `(() => {
+      const model = document.querySelector('.ada-model-picker__summary');
+      const label = document.querySelector('.ada-model-picker__summary .ada-tool__label');
+      const effort = document.querySelector('.ada-model-picker__summary .ada-model-picker__effort');
+      const approval = document.querySelector('#composer-approval .ada-tool');
+      const mr = model ? model.getBoundingClientRect() : null;
+      const ar = approval ? approval.getBoundingClientRect() : null;
+      return {
+        modelW: mr ? Math.round(mr.width) : null,
+        label: label ? getComputedStyle(label).display : null,
+        effort: effort ? getComputedStyle(effort).display : null,
+        overlap: Boolean(mr && ar && mr.left < ar.right && mr.right > ar.left),
+        approvalText: approval ? approval.innerText : null,
+      };
+    })()`,
+  )
+  check(
+    modelTool.modelW !== null && modelTool.modelW <= 40,
+    '450px 下模型选择只显示图标',
+    JSON.stringify(modelTool),
+  )
+  check(
+    modelTool.label === 'none' && modelTool.effort === 'none',
+    '模型名/推理等级在窄卡片隐藏',
+    JSON.stringify(modelTool),
+  )
+  check(modelTool.overlap === false, '模型药丸与审批档位不重叠', JSON.stringify(modelTool))
+
   // 抽屉是 z-index:60 的全高浮层：顶栏必须不透明且层级更高，
   // 否则抽屉品牌会透上来和标题重叠，菜单按钮也会被盖住点不到。
   await clickSelector(cdp, '.ada-menu-toggle')

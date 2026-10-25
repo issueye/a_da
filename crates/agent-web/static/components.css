@@ -1235,8 +1235,12 @@
   .ada-tool--workspace {
     display: none;
   }
-  .ada-tool--model .ada-tool__label {
-    max-width: 160px;
+  /* 窄卡片里模型选择只留星标：长模型名 + 推理等级会把审批档位挤成省略号并重叠。
+     模型与等级仍在 title 里（悬停可见），点开面板也能看到完整值。 */
+  .ada-tool--model .ada-tool__label,
+  .ada-tool--model .ada-model-picker__effort,
+  .ada-tool--model .ada-model-picker__chip > .ada-icon:last-child {
+    display: none;
   }
 }
 
