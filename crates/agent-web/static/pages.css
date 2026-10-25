@@ -232,9 +232,11 @@
   .ada-side {
     width: 264px;
   }
+  /* 从顶栏下方开始：顶栏高 54px 且是不透明 chrome，抽屉若从 y=0 开始，
+     品牌位（二级页是「返回会话」）会被整条盖住，用户找不到返回入口。 */
   .ada-sidebar {
     position: fixed;
-    inset: 0 auto 0 0;
+    inset: 54px auto 0 0;
     z-index: 60;
     transform: translateX(-100%);
     transition: transform 0.2s ease;

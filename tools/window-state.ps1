@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory = $true)][int]$ProcessId,
-  [ValidateSet('state', 'restore', 'minimize', 'maximize', 'click')][string]$Action = 'state',
+  [ValidateSet('state', 'restore', 'minimize', 'maximize', 'focus', 'click')][string]$Action = 'state',
   [string]$TitlePrefix = 'a_da',
   # 仅 click：相对窗口左上角的物理像素坐标（调用方按 devicePixelRatio 换算）。
   [int]$RelX = 0,
@@ -60,6 +60,13 @@ switch ($Action) {
   'minimize' { [void][HeadlessWin]::ShowWindow($hwnd, 6); Start-Sleep -Milliseconds 500 }
   'maximize' { [void][HeadlessWin]::ShowWindow($hwnd, 3); Start-Sleep -Milliseconds 500 }
   'restore'  { [void][HeadlessWin]::ShowWindow($hwnd, 9); Start-Sleep -Milliseconds 600 }
+  'focus' {
+    [void][HeadlessWin]::ShowWindow($hwnd, 9)
+    [HeadlessWin]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
+    [HeadlessWin]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
+    [void][HeadlessWin]::SetForegroundWindow($hwnd)
+    Start-Sleep -Milliseconds 600
+  }
   'click' {
     $rect = New-Object HeadlessWin+RECT
     [void][HeadlessWin]::GetWindowRect($hwnd, [ref]$rect)

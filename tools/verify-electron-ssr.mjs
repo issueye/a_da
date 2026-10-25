@@ -345,8 +345,15 @@ try {
   // 无边框窗口控制：按钮走 preload IPC，原生状态用 IsIconic/IsZoomed 复核。
   const initial = windowState()
   check(initial.found === true && initial.zoomed === false, '找到窗口且未最大化', JSON.stringify(initial))
+  // 自动化在后台运行：先把窗口顶到前台，避免第一次点击被"激活窗口"吃掉。
+  windowState('focus')
 
-  await clickLabel(cdp, '最大化')
+  // 自动化在后台运行时，第一次点击偶尔被"激活窗口"吃掉；点一次没反应就再点一次。
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await clickLabel(cdp, '最大化')
+    await sleep(300)
+    if (await evaluate(cdp, 'window.electronAPI.isWindowMaximized()', true)) break
+  }
   await waitUntil(
     () => evaluate(cdp, 'window.electronAPI.isWindowMaximized()', true),
     5_000,
@@ -360,7 +367,11 @@ try {
   )
   check(true, '最大化后按钮状态同步为「向下还原」')
 
-  await clickLabel(cdp, '向下还原')
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await clickLabel(cdp, '向下还原')
+    await sleep(300)
+    if ((await evaluate(cdp, 'window.electronAPI.isWindowMaximized()', true)) === false) break
+  }
   await waitUntil(
     () => evaluate(cdp, 'window.electronAPI.isWindowMaximized()', true).then((v) => v === false),
     5_000,
@@ -368,14 +379,16 @@ try {
   )
   check(windowState().zoomed === false, '点「向下还原」→ 窗口已还原')
 
-  await clickLabel(cdp, '最小化')
   let minimized = false
-  for (let i = 0; i < 25; i += 1) {
-    if (windowState().iconic === true) {
-      minimized = true
-      break
+  for (let attempt = 0; attempt < 2 && !minimized; attempt += 1) {
+    await clickLabel(cdp, '最小化')
+    for (let i = 0; i < 10; i += 1) {
+      if (windowState().iconic === true) {
+        minimized = true
+        break
+      }
+      await sleep(150)
     }
-    await sleep(200)
   }
   check(minimized, '点「最小化」→ 窗口已最小化')
   const shown = windowState('restore')
@@ -466,6 +479,20 @@ try {
   check(layers.topZ > layers.sideZ, '顶栏层级高于侧栏抽屉', JSON.stringify(layers))
   check(layers.bg !== 'rgba(0, 0, 0, 0)', '顶栏不透明，抽屉品牌不会透上来', layers.bg)
   check(layers.menuHit === true, '抽屉打开时菜单按钮仍可点击', JSON.stringify(layers))
+  const brand = await evaluate(
+    cdp,
+    `(() => {
+      const b = document.querySelector('.ada-brand');
+      const r = b.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      return { top: Math.round(r.top), hit: Boolean(hit && hit.closest('.ada-brand')) };
+    })()`,
+  )
+  check(
+    brand.top >= 54 && brand.hit === true,
+    '抽屉品牌/返回区在顶栏下方且可点击',
+    JSON.stringify(brand),
+  )
   await clickSelector(cdp, '.ada-menu-toggle')
   await waitUntil(
     () => evaluate(cdp, `!document.querySelector('.ada-sidebar')?.classList.contains('is-open')`),
