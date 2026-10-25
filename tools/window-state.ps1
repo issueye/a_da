@@ -61,7 +61,10 @@ switch ($Action) {
   'maximize' { [void][HeadlessWin]::ShowWindow($hwnd, 3); Start-Sleep -Milliseconds 500 }
   'restore'  { [void][HeadlessWin]::ShowWindow($hwnd, 9); Start-Sleep -Milliseconds 600 }
   'focus' {
-    [void][HeadlessWin]::ShowWindow($hwnd, 9)
+    # 只把最小化的窗口恢复；最大化窗口不要 SW_RESTORE，否则会把"向下还原"状态弄丢。
+    if ([HeadlessWin]::IsIconic($hwnd)) {
+      [void][HeadlessWin]::ShowWindow($hwnd, 9)
+    }
     [HeadlessWin]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
     [HeadlessWin]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
     [void][HeadlessWin]::SetForegroundWindow($hwnd)

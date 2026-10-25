@@ -350,6 +350,7 @@ try {
 
   // 自动化在后台运行时，第一次点击偶尔被"激活窗口"吃掉；点一次没反应就再点一次。
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    windowState('focus')
     await clickLabel(cdp, '最大化')
     await sleep(300)
     if (await evaluate(cdp, 'window.electronAPI.isWindowMaximized()', true)) break
@@ -368,6 +369,7 @@ try {
   check(true, '最大化后按钮状态同步为「向下还原」')
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    windowState('focus')
     await clickLabel(cdp, '向下还原')
     await sleep(300)
     if ((await evaluate(cdp, 'window.electronAPI.isWindowMaximized()', true)) === false) break
@@ -381,6 +383,7 @@ try {
 
   let minimized = false
   for (let attempt = 0; attempt < 2 && !minimized; attempt += 1) {
+    windowState('focus')
     await clickLabel(cdp, '最小化')
     for (let i = 0; i < 10; i += 1) {
       if (windowState().iconic === true) {
@@ -483,6 +486,33 @@ try {
     JSON.stringify(modelTool),
   )
   check(modelTool.overlap === false, '模型药丸与审批档位不重叠', JSON.stringify(modelTool))
+
+  // 进程管理浮窗在窄窗口里也必须完整落在视口内（不能向左溢出被裁）。
+  await clickLabel(cdp, '进程管理')
+  await waitUntil(
+    () => evaluate(cdp, `document.querySelector("#process-manager")?.open === true`),
+    5_000,
+    '窄屏进程浮窗打开',
+  )
+  const processPanel = await evaluate(
+    cdp,
+    `(() => {
+      const p = document.querySelector('#process-manager .pm-panel');
+      const r = p.getBoundingClientRect();
+      return { left: Math.round(r.left), right: Math.round(r.right), width: Math.round(r.width), vw: innerWidth };
+    })()`,
+  )
+  check(
+    processPanel.left >= 0 && processPanel.right <= processPanel.vw,
+    '窄屏进程浮窗完整落在视口内',
+    JSON.stringify(processPanel),
+  )
+  await clickLabel(cdp, '进程管理')
+  await waitUntil(
+    () => evaluate(cdp, `document.querySelector("#process-manager")?.open === false`),
+    5_000,
+    '窄屏进程浮窗关闭',
+  )
 
   // 抽屉是 z-index:60 的全高浮层：顶栏必须不透明且层级更高，
   // 否则抽屉品牌会透上来和标题重叠，菜单按钮也会被盖住点不到。
