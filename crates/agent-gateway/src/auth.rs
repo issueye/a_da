@@ -322,7 +322,7 @@ impl AuthConfig {
 
 /// 从 URL query 里取值（含最小百分号解码）。
 ///
-/// 为什么不引 `url` crate：网关的依赖面刻意很小（只依赖线协议），
+/// 为什么不引 `url` crate：网关的协议依赖面刻意很小（只依赖线协议 `agent-proto`），
 /// 而这里需要的只是"取一个 query 参数"。浏览器会把 Windows 路径里的
 /// `:` 和 `\` 编码（`E%3A%5Cproj`），所以必须解码。
 pub fn query_param(uri: &str, key: &str) -> Option<String> {

@@ -21,8 +21,9 @@
 //! | **网关不含引擎** | INV-1：单一引擎。网关是管理/路由平面，不跑 agent |
 //! | **网关不缓存会话状态** | INV-8：线程/消息/工具回执归节点 |
 //!
-//! 所以本 crate 只依赖 **`agent-proto`（线协议）**——不依赖 `agent-node`、
-//! `agent-base::engine`、`agent-toolkit`。这条边界由 check J 守着。
+//! 所以本 crate 只依赖 **`agent-proto`（线协议）** 与 **`agent-web`（UI 投影层）**——
+//! 不依赖 `agent-node`、`agent-base::engine`、`agent-toolkit`。
+//! 这条边界由 check J 同时扫描 `agent-gateway` 与 `agent-web` 守着。
 
 pub mod auth;
 pub mod delegate;
