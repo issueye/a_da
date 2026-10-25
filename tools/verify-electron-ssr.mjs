@@ -8,7 +8,7 @@
 // 不碰用户 `~/.a-da`：临时 A_DA_HOME + 临时 workspace + 临时 Electron user-data-dir。
 
 import { createServer } from 'node:http'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { createServer as createNetServer } from 'node:net'
@@ -310,6 +310,20 @@ try {
     'Electron 加载 SSR 页面',
   )
   console.log(`  Electron 页面：${target.url}`)
+
+  // 系统托盘：图标在 assets 里，创建时写一行日志；没有 UI 可直接断言。
+  let trayCreated = false
+  for (let i = 0; i < 30; i += 1) {
+    try {
+      if (readFileSync(join(home, 'launcher.log'), 'utf8').includes('[托盘] 已创建系统托盘图标')) {
+        trayCreated = true
+        break
+      }
+    } catch {}
+    await sleep(200)
+  }
+  check(trayCreated, '系统托盘图标已创建')
+
   const cdp = await cdpConnect(target.webSocketDebuggerUrl)
   await cdp.send('Runtime.enable')
   await cdp.send('Page.enable')

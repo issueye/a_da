@@ -251,7 +251,8 @@ IPC 桥接、`launcher.log` 记录（打包后的 exe 没有控制台，**应用
 `/static/*`、`/api/*` 与 `/rpc`。SSR 通过进程内调用直接驱动 agent，不再二次反代；
 `/__auth` 接受网关 token 或配对码并换发 HttpOnly 会话 cookie。
 Electron 桌面壳默认也加载这份 SSR 页面（`http://127.0.0.1:<port>/`），窗口保持无边框，
-由 preload 在 SSR 顶栏注入最小化/最大化/关闭；
+由 preload 在 SSR 顶栏注入最小化/最大化/关闭；系统托盘提供显示/隐藏窗口、打开网页界面、
+重新唤醒网关与退出；
 `--ui=desktop` 回退到本地 React/Vite 界面，网关侧 `--web-ui desktop` 则回退到静态产物托管。
 
 ---

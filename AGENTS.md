@@ -238,7 +238,7 @@ node tools/verify-electron-ssr.mjs                                       # Elect
   `agentId=ada-pm`/`pm-assistant` 的会话在**读盘时自动归一并写回**（幂等）。
   模式预设同样受 `verify-spec` 门禁约束（`products/<产品>/modes/*.agent.spec.json` 也在扫描范围内）。
 - 所有内部调用点直连基座（`agent-proto` / `agent-toolkit` / `agent-base` / `agent-adapter`），历史 shim 与 facade 已全量下线
-- `electron/` **Electron 桌面宿主**：主进程监督 `ada-gateway` 生命周期、单实例锁、原生窗口控制与 IPC 桥接。**界面默认 `--ui=ssr`**：等网关就绪后加载 `http://127.0.0.1:<port>/`（带 token 时用 `?token=` 自动登录）；窗口保持**无边框**，由 `preload.ts` 在 SSR 顶栏注入最小化/最大化/关闭（走同一套 IPC）。`--ui=desktop` 回退 Vite/本地 `desktop-ui/dist`（React 自绘标题栏）。`dist-electron/` 为构建中间产物
+- `electron/` **Electron 桌面宿主**：主进程监督 `ada-gateway` 生命周期、单实例锁、原生窗口控制、**系统托盘**（显示/隐藏、打开网页、重新唤醒网关、退出）与 IPC 桥接。**界面默认 `--ui=ssr`**：等网关就绪后加载 `http://127.0.0.1:<port>/`（带 token 时用 `?token=` 自动登录）；窗口保持**无边框**，由 `preload.ts` 在 SSR 顶栏注入最小化/最大化/关闭（走同一套 IPC）。`--ui=desktop` 回退 Vite/本地 `desktop-ui/dist`（React 自绘标题栏）。`dist-electron/` 为构建中间产物
 - `desktop-ui/` **React 桌面前端（回退界面）**：通过 `src/client/desktop-bridge.ts` 与 Electron 宿主通信（`ws-client.ts` 是唯一协议客户端）；默认 SSR 模式下不加载
 - `dist/` **发布交付套件**：包含 `ada-gateway.exe`、`ada-coding.exe` 以及 `dist/electron/win-unpacked/`（Electron 完整绿色便携包，内置 Chromium 运行时与 `resources/bin/` 关联二进制，彻底规避 WebView2 权限污染）
 

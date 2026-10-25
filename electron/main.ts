@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, screen } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, screen, Tray, Menu, nativeImage, shell } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
 import { spawn, execSync, type ChildProcess } from 'child_process'
@@ -47,6 +47,7 @@ if (!gotTheLock) {
 }
 
 let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
 
 // 2. 命令行参数解析
 interface CliArgs {
@@ -574,6 +575,133 @@ function resolveInitialWindowSize(minWidth = WINDOW_MIN_WIDTH): { width: number;
 }
 
 /**
+ * 系统托盘：一个常驻入口，窗口隐藏后仍能显示/打开网页/重启网关/退出。
+ *
+ * 图标优先用 `assets/logo.ico`（Windows 通知区最清晰），失败再退 PNG；
+ * 找不到/读不出来只记日志，不影响桌面端启动。
+ */
+function createTray(): void {
+  if (tray) return
+  let image: Electron.NativeImage | null = null
+  for (const candidate of [
+    resolveAppPath('assets', 'logo.ico'),
+    resolveAppPath('assets', 'logo.png'),
+  ]) {
+    if (!candidate) continue
+    const candidateImage = nativeImage.createFromPath(candidate)
+    if (!candidateImage.isEmpty()) {
+      image = candidateImage
+      break
+    }
+  }
+  if (!image) {
+    appendLauncherLog('[托盘] 未找到可用的托盘图标（assets/logo.ico / logo.png），跳过创建')
+    return
+  }
+  if (process.platform === 'win32') {
+    image = image.resize({ width: 16, height: 16 })
+  }
+
+  try {
+    tray = new Tray(image)
+  } catch (error: any) {
+    appendLauncherLog(`[托盘] 创建失败: ${error?.message || String(error)}`)
+    return
+  }
+  tray.setToolTip('a_da')
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: '显示 / 隐藏主窗口', click: () => toggleMainWindow() },
+      { label: '打开网页界面', click: () => void openWebUi() },
+      { type: 'separator' },
+      { label: '重新唤醒网关…', click: () => void restartGatewayFromTray() },
+      { type: 'separator' },
+      { label: '退出 a_da', click: () => app.quit() },
+    ])
+  )
+  // 单击托盘图标：显示并聚焦窗口（不隐藏，避免用户只是想把它叫出来时反而消失）。
+  tray.on('click', () => showMainWindow())
+  appendLauncherLog('[托盘] 已创建系统托盘图标')
+}
+
+function showMainWindow(): void {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function toggleMainWindow(): void {
+  if (!mainWindow) return
+  if (mainWindow.isVisible() && !mainWindow.isMinimized()) {
+    mainWindow.hide()
+  } else {
+    showMainWindow()
+  }
+}
+
+/// 浏览器可打开的 URL（HTTP + 可选 token；预加载/SSR 会自动换 cookie）。
+function webUiUrl(): string | null {
+  if (!coreState.alive || !coreState.port) return null
+  let base = coreState.url || `http://127.0.0.1:${coreState.port}`
+  base = base.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:')
+  try {
+    const url = new URL(base)
+    url.pathname = '/'
+    url.hash = ''
+    url.search = ''
+    if (coreState.token) url.searchParams.set('token', coreState.token)
+    return url.toString()
+  } catch {
+    return null
+  }
+}
+
+async function openWebUi(): Promise<void> {
+  const url = webUiUrl()
+  if (!url) {
+    await dialog.showMessageBox({
+      type: 'info',
+      message: '网关尚未就绪',
+      detail: '请稍候再试，或在主窗口的「进程管理」里查看网关状态。',
+    })
+    return
+  }
+  appendLauncherLog(`[托盘] 在浏览器打开: ${url.split('?')[0]}`)
+  await shell.openExternal(url)
+}
+
+async function restartGatewayFromTray(): Promise<void> {
+  const answer = await dialog.showMessageBox({
+    type: 'question',
+    buttons: ['取消', '重新唤醒'],
+    defaultId: 1,
+    cancelId: 0,
+    message: '重新唤醒网关？',
+    detail: '正在执行的会话会中断；桌面端会重新加载当前界面。',
+  })
+  if (answer.response !== 1) return
+
+  try {
+    appendLauncherLog('[托盘] 收到「重新唤醒网关」请求')
+    const report = await restartGatewaySupervisor()
+    appendLauncherLog(
+      `[托盘] 重新唤醒网关结束: alive=${report.alive} port=${report.port}`
+    )
+    if (!mainWindow) return
+    if (resolveUiMode(parseCliArgs()) === 'ssr') {
+      await loadSsrUi(mainWindow)
+    } else {
+      mainWindow.reload()
+    }
+  } catch (error: any) {
+    const message = error?.message || String(error)
+    appendLauncherLog(`[托盘] 重新唤醒网关失败: ${message}`)
+    await dialog.showMessageBox({ type: 'error', message: '重新唤醒网关失败', detail: message })
+  }
+}
+
+/**
  * SSR 模式：等网关就绪后加载网关根路径。
  *
  * 若网关带 token，用 `?token=` 自动登录：SSR guard 会校验后换发 HttpOnly 会话 cookie，
@@ -840,6 +968,8 @@ app.on('second-instance', () => {
 
 app.on('before-quit', () => {
   cleanupChildProcess()
+  tray?.destroy()
+  tray = null
 })
 
 app.on('window-all-closed', () => {
@@ -853,6 +983,7 @@ app.whenReady().then(async () => {
   registerIpcHandlers()
   startGatewaySupervisor()
   await createMainWindow()
+  createTray()
 
   app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {

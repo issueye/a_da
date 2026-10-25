@@ -167,6 +167,8 @@
 - **Electron 默认加载 SSR**：等网关就绪后 `loadURL(http://127.0.0.1:<port>/)`，带 token 时用
   `?token=` 自动登录；窗口保持无边框，preload 在 SSR 顶栏注入最小化/最大化/关闭。`--ui=desktop`
   （`bun run electron:dev:desktop`）回退到下面的 React 界面。
+- **系统托盘**：显示/隐藏主窗口、打开网页界面、重新唤醒网关（带确认）、退出；单击托盘图标
+  显示并聚焦窗口。关闭窗口仍是退出应用，不隐藏到托盘。
 - **React 回退布局**：标题栏（连接态 / 模式徽标 / 窗口控制，`z-[100]`）+ 侧栏（工作区与会话）+ 主区
   （`TabStrip` + `Transcript` + `Composer`）+ 右侧面板（`AgentContextPanel`）。
 - **浮层**：审批（`ApprovalFloatingPanel`）、提问（`AskUserFloatingPanel`）、待办（`TodoFloatingPanel`）、
