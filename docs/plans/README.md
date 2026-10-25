@@ -7,6 +7,9 @@
 | [wiring.md](wiring.md) | W0–W6 接线收口记录（已精简为归档说明） | [../quality/unfinished-features.md](../quality/unfinished-features.md) |
 | [milestones.md](milestones.md) | MVP 分期与执行基线（已精简为归档说明） | [../quality/feature-catalog.md](../quality/feature-catalog.md) |
 
+**现行计划不放在本目录**：`ssr-h` 合并进网关的执行计划在
+[../gateway/PLAN-merge-ssr-h.md](../gateway/PLAN-merge-ssr-h.md)（按功能域归档，便于和网关设计放在一起）。
+
 完整正文从 git 历史取回：
 
 ```bash

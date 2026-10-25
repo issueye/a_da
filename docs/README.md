@@ -22,6 +22,7 @@
 | **插件怎么写**、有哪些钩子点位 | [plugins/README.md](plugins/README.md) |
 | 插件契约的精确形状（工厂 API / 类型） | [plugins/extension-factory.md](plugins/extension-factory.md)、[plugins/extension-api.d.ts](plugins/extension-api.d.ts) |
 | **网关**、工作区模型与瘦客户端 | [gateway/README.md](gateway/README.md) |
+| **ssr-h 合并进网关**的执行计划（未开工） | [gateway/PLAN-merge-ssr-h.md](gateway/PLAN-merge-ssr-h.md) |
 | **插件库平台**（发布/下载插件 ZIP） | [../crates/plugin-hub/README.md](../crates/plugin-hub/README.md) |
 | **还没做什么**（功能缺口，带证据） | [quality/unfinished-features.md](quality/unfinished-features.md) |
 | 历史计划与决策入口（正文已精简） | [plans/README.md](plans/README.md) |
@@ -44,6 +45,7 @@
 | [plugins/extension-factory.md](plugins/extension-factory.md) | Extension Factory 契约：包形态、`metadata`、注册 API、动作分级 | **插件契约唯一口径** |
 | [plugins/extension-api.d.ts](plugins/extension-api.d.ts) | 插件作者用的 TypeScript 类型声明 | 类型契约 |
 | [gateway/README.md](gateway/README.md) | 网关的三合一职责、工作区门户、极限瘦客户端 | 设计（含更正记录） |
+| [gateway/PLAN-merge-ssr-h.md](gateway/PLAN-merge-ssr-h.md) | ssr-h 合并进网关的批次、任务卡、验收与回退 | **执行计划（未开工）** |
 | `app.png` | 界面截图（README 引用） | 示意 |
 
 **机器可读的真源不在本目录**：
