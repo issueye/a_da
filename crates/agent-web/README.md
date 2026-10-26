@@ -288,6 +288,9 @@ frontend-plugins/hello-tsx/
   CSP 是 `connect-src 'self'`：插件浏览器 JS 正好可以 fetch 自己的这些同源端点
   （见 `hello-tsx` 的 `static/hello.js` 演示）。示例：`/ext/hello-tsx/api/info`。
 - 插件只接受 `.tsx` 模板；插件代码是**本地受信任内容**，不要在不受信任的目录里放插件。
+- **前端插件调用后端插件**（设计提案，尚未实现）：后端插件用 `ada.registerAction` 声明动作，
+  前端 `plugin.json` 用 `backend` 绑定，浏览器经同源桥接路由调用。完整契约见
+  [docs/plugins/PLAN-frontend-backend-bridge.md](../../docs/plugins/PLAN-frontend-backend-bridge.md)。
 
 ### 插件实现「置底/回到最新」按钮
 

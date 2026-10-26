@@ -223,5 +223,6 @@ description: 发布流程：先跑测试再打标签。Use when the user asks to
 |---|---|
 | [extension-factory.md](extension-factory.md) | 工厂契约与 API 精确形状 |
 | [extension-api.d.ts](extension-api.d.ts) | 插件作者的类型声明 |
+| [PLAN-frontend-backend-bridge.md](PLAN-frontend-backend-bridge.md) | 前端插件调用后端插件：动作契约、`plugin.invoke`、SSR 桥接（**设计提案，未实现**） |
 | [../quality/unfinished-features.md](../quality/unfinished-features.md) | 插件相关的缺口与尾巴 |
 | [../architecture/conventions.md](../architecture/conventions.md) | §12（钩子成对、工具集只能收窄）、§14（审批策略与执行分离）、§15（别断言钩子被调用，断言副作用） |
