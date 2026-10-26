@@ -56,10 +56,10 @@ html.light {
   --ph-inline-code-ink: #3b3a36;
   --ph-shadow: 0 1px 2px rgba(22, 23, 26, 0.05),
     0 12px 32px -24px rgba(22, 23, 26, 0.22);
-  /* 滚动条：宽度进标尺（10px，2 的倍数），颜色三态逐级加深。
+  /* 滚动条：宽度进标尺（6px，2 的倍数），颜色三态逐级加深。
      常规态必须「看得见」——之前用 line-strong 在白底上几乎不可见，
-     占着 10px 却像没画，反而不如不占位。 */
-  --ph-scrollbar-size: 10px;
+     占着槽位却像没画，反而不如不占位。 */
+  --ph-scrollbar-size: 6px;
   /* 用 ink 按比例调透明度：在 canvas(#fafafa) 与 surface(#fff) 上都自然，
      不用为两种底色各调一个色值。 */
   --ph-scrollbar: color-mix(in srgb, var(--ph-ink) 22%, transparent);
@@ -99,7 +99,7 @@ html.dark {
   --ph-inline-code-ink: #e6dfd2;
   --ph-shadow: 0 1px 2px rgba(0, 0, 0, 0.4),
     0 16px 40px -32px rgba(0, 0, 0, 0.9);
-  --ph-scrollbar-size: 10px;
+  --ph-scrollbar-size: 6px;
   --ph-scrollbar: color-mix(in srgb, var(--ph-ink) 26%, transparent);
   --ph-scrollbar-hover: color-mix(in srgb, var(--ph-ink) 40%, transparent);
   --ph-scrollbar-active: color-mix(in srgb, var(--ph-ink) 54%, transparent);

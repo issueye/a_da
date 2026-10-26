@@ -12,9 +12,16 @@
 @layer base {
   html {
     -webkit-text-size-adjust: 100%;
-    /* Firefox：标准属性。颜色取同一套令牌，跟 WebKit 保持一致。 */
-    scrollbar-width: thin;
-    scrollbar-color: var(--ph-scrollbar) transparent;
+  }
+
+  /* Firefox：标准属性。🔴 不能无条件写在 html 上——Chromium 一旦看到
+     scrollbar-width/scrollbar-color，就会改用原生滚动条并忽略下面的
+     ::-webkit-scrollbar 规则（表现是不圆、也压不细）。 */
+  @supports not selector(::-webkit-scrollbar) {
+    html {
+      scrollbar-width: thin;
+      scrollbar-color: var(--ph-scrollbar) transparent;
+    }
   }
 
   body {
@@ -25,21 +32,26 @@
   }
 
   /* ── 滚动条 ───────────────────────────────────────────────────────────
-     10px 占位、3px 透明描边 → 可见 4px 的圆条（尺寸取偶数，2 的倍数）。
+     6px 占位、1px 透明描边 → 可见 4px 的圆条（尺寸取偶数，2 的倍数）。
      三态逐级加深：常规可见但不抢戏，悬停确认「这能拖」，按下最深。
 
      用 `background-color` 而不是 `background` 简写——简写会把
-     `background-clip` 重置成 border-box，细条会瞬间涨满 10px
+     `background-clip` 重置成 border-box，细条会瞬间涨满整个槽位
      （原代码在 hover 里重复声明 clip，就是在补这个坑）。 */
   ::-webkit-scrollbar {
-    width: var(--ph-scrollbar-size, 10px);
-    height: var(--ph-scrollbar-size, 10px);
+    width: var(--ph-scrollbar-size, 6px);
+    height: var(--ph-scrollbar-size, 6px);
   }
   ::-webkit-scrollbar-track {
     background: transparent;
   }
+  ::-webkit-scrollbar-button {
+    display: none;
+    width: 0;
+    height: 0;
+  }
   ::-webkit-scrollbar-thumb {
-    border: 3px solid transparent;
+    border: 1px solid transparent;
     border-radius: 999px;
     background-color: var(--ph-scrollbar);
     background-clip: content-box;

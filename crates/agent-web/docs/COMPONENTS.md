@@ -190,7 +190,7 @@ ssr-h/
   这条由 `tests/ui_scale.rs` 守住（12 个测试）：参数值是奇数 → 失败；
   CSS 里出现 `border-radius: 9px` / `font-size: 11.5px` → 失败；模板写
   `text-[11px]` 或内联 `style="font-size:..."` → 失败。报错会给出文件名与行号；
-- **滚动条**：槽位 10px、3px 透明描边 → 可见 4px 圆条；三态色走
+- **滚动条**：槽位 6px、1px 透明描边 → 可见 4px 圆条；三态色走
   `--ph-scrollbar / -hover / -active`（半透明混合，明暗自动适配）。
   所有滚动容器加 `overscroll-behavior: contain`（滚到底不把整页带走）；
   对话流与会话列表额外加 `scrollbar-gutter: stable`（长度跨过滚动阈值时不横移）。
