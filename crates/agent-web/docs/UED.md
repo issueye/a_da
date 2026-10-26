@@ -4,11 +4,15 @@
 |---|---|
 | 文档版本 | v0.8 |
 | 日期 | 2026-10-20 |
-| 适用实现 | `ssr-h/`（独立 SSR Agent 前端实验版） |
-| 参考基线 | `desktop-ui/`（Electron 桌面端） |
+| 适用实现 | `crates/agent-web`（SSR Agent 界面，2026-10 起是唯一的界面） |
+| 参考基线 | **本文自身**（原 `desktop-ui/` 已于 2026-10 移除；历史基线用 git 历史取回） |
 | 状态 | 当前实现 + 目标规范；表中标出差距 |
 
-> 本文不是从零发明一套视觉，而是把 `desktop-ui` 已经验证过的布局、密度、状态语义和交互约束，翻译成 `ssr-h` 可执行的 SSR/HTMX 版本。**desktop-ui 是 UED 的单一参考源**；当两边冲突时，以本文的“目标规范”为准，并在后续迭代中收敛。
+> 2026-10 说明：本文原是把 `desktop-ui`（Electron 桌面端）验证过的布局、密度、状态语义与
+> 交互约束翻译成 SSR/HTMX 版本，**那时 desktop-ui 是 UED 的单一参考源**。
+> 那份实现已整体删除，现在 **SSR 就是唯一界面**：文中“与 desktop-ui 对齐”的描述
+> 读作“历史设计溯源”，实际行为以 `crates/agent-web` 的模板 / `static/` 与本文的
+> “目标规范”为准。
 
 ![ssr-h 当前界面](preview.png)
 
@@ -55,9 +59,12 @@
 
 ## 2. 参考基线与设计边界
 
-### 2.1 desktop-ui 事实基线
+### 2.1 历史事实基线（原 React 桌面端）
 
-| 维度 | 事实 | 来源 |
+> 2026-10：`desktop-ui/` 已整体移除，下表**保留为设计溯源与数值基线**；
+> “来源”列的链接会失效，需要核对时用 git 历史取回对应文件。
+
+| 维度 | 事实 | 来源（已移除） |
 |---|---|---|
 | 窗口最小宽度 | `860px` | [layout.ts](../../desktop-ui/src/utils/layout.ts#L22-L28) |
 | 侧边栏 | 默认 `270px`，范围 `180–560px`，可拖动 | [layout.ts](../../desktop-ui/src/utils/layout.ts#L55-L58) |
@@ -686,21 +693,16 @@ v0.5 起对齐桌面端输入框：大圆角输入卡 + 底部工具行（左右
 
 ## 14. 参考文件
 
-**desktop-ui**
+**SSR 界面（唯一实现）**
 
-- [index.css](../../desktop-ui/src/index.css)
-- [tailwind.config.js](../../desktop-ui/tailwind.config.js)
-- [layout.ts](../../desktop-ui/src/utils/layout.ts)
-- [TitleBar.tsx](../../desktop-ui/src/components/TitleBar.tsx)
-- [Sidebar.tsx](../../desktop-ui/src/components/Sidebar.tsx)
-- [Composer.tsx](../../desktop-ui/src/components/Composer.tsx)
-- [Transcript.tsx](../../desktop-ui/src/components/Transcript.tsx)
-- [TranscriptToolCard.tsx](../../desktop-ui/src/components/TranscriptToolCard.tsx)
-- [ApprovalFloatingPanel.tsx](../../desktop-ui/src/components/ApprovalFloatingPanel.tsx)
-- [ModeSlider.tsx](../../desktop-ui/src/components/ModeSlider.tsx)
-- [EmptyConversationView.tsx](../../desktop-ui/src/components/EmptyConversationView.tsx)
-- [ToastHost.tsx](../../desktop-ui/src/components/ToastHost.tsx)
-- [ConfirmModal.tsx](../../desktop-ui/src/components/ConfirmModal.tsx)
+- [shell.css](../static/shell.css)
+- [components.css](../static/components.css)
+- [chat.js](../static/chat.js)
+- `ui/` 模板与组件（相对 `crates/agent-web`）：`ui/sidebar.rs`、`ui/components/messages.rs`、`ui/components/trays.rs`
+- [handlers/chat/rows.rs](rows.rs)（工具行 / 审批 / 通知的渲染语义）
+
+> 原 `desktop-ui/` 参考文件（`index.css` / `TitleBar.tsx` / `Composer.tsx` 等）已随后者于 2026-10 删除，
+> 需要对照时用 git 历史取回。
 
 **ssr-h**
 

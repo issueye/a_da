@@ -1,6 +1,6 @@
 //! 供应商与模型管理：Master-Detail 页面 + 全部动作端点。
 //!
-//! 与 desktop-ui 的差异只有一处、且是刻意的：**API Key 不回显**。桌面端把整串密钥
+//! 与 原桌面端 的差异只有一处、且是刻意的：**API Key 不回显**。桌面端把整串密钥
 //! 灌进输入框（`type=password` 只是遮住显示），这里只回 `已配置 + sk-…7f3a`，
 //! 保存时留空表示"保持原值"、勾选"清空密钥"才真的清空。
 
@@ -29,9 +29,9 @@ fn normalize_tab(tab: Option<&str>) -> &'static str {
     }
 }
 
-// ── 供应商管理（对齐 desktop-ui 的 Master-Detail）────────────────────────────
+// ── 供应商管理（对齐 原桌面端 的 Master-Detail）────────────────────────────
 //
-// 与 desktop-ui 的差异只有一处、且是刻意的：**API Key 不回显**。桌面端把整串密钥
+// 与 原桌面端 的差异只有一处、且是刻意的：**API Key 不回显**。桌面端把整串密钥
 // 灌进输入框（`type=password` 只是遮住显示），这里只回 `已配置 + sk-…7f3a`，
 // 保存时留空表示"保持原值"、勾选"清空密钥"才真的清空。
 
@@ -68,7 +68,7 @@ fn mask_api_key(key: &str) -> String {
     format!("{head}…{tail}")
 }
 
-/// `customHeaders` → `k: v; k2: v2`（与 desktop-ui 的编辑框格式一致）。
+/// `customHeaders` → `k: v; k2: v2`（与 原桌面端 的编辑框格式一致）。
 fn headers_text(value: &Value) -> String {
     value
         .get("customHeaders")

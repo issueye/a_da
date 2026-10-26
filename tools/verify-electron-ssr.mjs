@@ -1,9 +1,10 @@
-// Electron **默认 SSR 界面**的端到端冒烟（锁屏/CI 可用）。
+// Electron 桌面壳的端到端冒烟（锁屏/CI 可用）。
 //
-// 与 `verify-desktop-shell-headless.mjs` 的分工：
-//   · 那个脚本验证 `--ui=desktop` 的 React 自绘标题栏；
-//   · 本脚本验证默认 `--ui=ssr`：Electron 等网关就绪后加载 `http://127.0.0.1:<port>/`，
-//     preload 在 SSR 顶栏注入无边框窗口控制，消息走 SSR 表单 → 网关 → agent。
+// 2026-10：React 桌面前端（`desktop-ui/`）已移除，界面只剩 SSR。
+// Electron 等网关就绪后加载 `http://127.0.0.1:<port>/`，preload 在 SSR 顶栏注入
+// 无边框窗口控制，消息走 SSR 表单 → 网关 → agent。
+//
+// 本脚本也是 `verify-desktop-shell.ps1` 在**锁屏**时的回退路径（像素级鼠标点击不可用）。
 //
 // 不碰用户 `~/.a-da`：临时 A_DA_HOME + 临时 workspace + 临时 Electron user-data-dir。
 

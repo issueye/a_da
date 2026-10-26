@@ -99,7 +99,6 @@ async fn gateway_with(auth: AuthConfig) -> (Arc<Gateway>, u16) {
     let state = agent_gateway::relay::AppState {
         gateway: gateway.clone(),
         default_workspace: ws.to_string_lossy().to_string(),
-        site: None,
     };
     let app = agent_gateway::router::router(state);
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("绑定");

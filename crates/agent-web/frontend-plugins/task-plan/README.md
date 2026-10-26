@@ -12,7 +12,7 @@
 - 步骤状态：完成=绿勾 + 删除线；进行中=蓝箭头 + 脉冲 + 品牌浅底；待办=灰色空心圆；
 - 「复制」输出 Markdown 清单（`- [x] 标题`）；
 - 展开/收起用 `<details>/<summary>`：**没有 JS 也能开合**；JS 只记住偏好
-  （`localStorage` 键 `a_da_todo_panel_collapsed`，与 desktop-ui 同口径）。
+  （`localStorage` 键 `a_da_todo_panel_collapsed`，与 原桌面端 同口径）。
 
 ## 挂载点：右上角 / 输入框上方
 

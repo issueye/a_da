@@ -58,16 +58,9 @@ pub fn next_item_at(prev: &[Item]) -> u64 {
     }
 }
 
-/// 取一张卡片的 `at`（`Item` 的六个变体都带 `at`，但没有公共字段）。
+/// 取一张卡片的 `at`（唯一实现见 `agent_proto::Item::at`）。
 fn item_at(item: &Item) -> u64 {
-    match item {
-        Item::User { at, .. }
-        | Item::Thinking { at, .. }
-        | Item::Assistant { at, .. }
-        | Item::Tool { at, .. }
-        | Item::Notice { at, .. }
-        | Item::Compact { at, .. } => *at,
-    }
+    item.at()
 }
 
 #[derive(Debug, Clone)]
@@ -364,10 +357,11 @@ impl AgentStore {
             };
 
             let initial_thread_id = next_id("thread");
+            let created = now_millis();
             let initial_thread = Thread {
                 id: initial_thread_id.clone(),
                 title: "新会话".to_string(),
-                created_at: now_millis(),
+                created_at: created,
                 workspace: ws.clone(),
                 items: Vec::new(),
                 messages: Vec::new(),
@@ -377,6 +371,8 @@ impl AgentStore {
                 subagent_id: None,
                 is_subagent: Some(false),
                 plugin_data: None,
+                item_count: 0,
+                updated_at: created,
             };
 
             (vec![initial_thread], initial_thread_id, ws)
@@ -522,10 +518,11 @@ impl AgentStore {
         // 反复出问题的就是这笔账。现在只认 `mode`。
         let actual_agent_id = agent_id.or_else(|| Some("ada-coding".to_string()));
         let is_sub = is_subagent.unwrap_or(false);
+        let created = now_millis();
         let thread = Thread {
             id: id.clone(),
             title: title.unwrap_or_else(|| "新会话".to_string()),
-            created_at: now_millis(),
+            created_at: created,
             workspace: ws,
             items: Vec::new(),
             messages: Vec::new(),
@@ -535,6 +532,8 @@ impl AgentStore {
             subagent_id,
             is_subagent: Some(is_sub),
             plugin_data: None,
+            item_count: 0,
+            updated_at: created,
         };
         self.threads.insert(0, thread);
         if !is_sub {
@@ -1069,7 +1068,7 @@ impl AgentStore {
     /// 标记工具调用**正在等待用户批准**（W3-T3）。
     ///
     /// 界面按 `status == "waiting_approval"` 渲染"批准/拒绝"按钮
-    /// （`desktop-ui/src/components/Transcript.tsx:683` 的 `isAwaiting`），
+    /// （原桌面端同名实现的 `isAwaiting`），
     /// 点按钮发 `approval.decide` → `Dispatcher.approval_mgr.resolve_approval(...)`
     /// → 唤醒引擎的审批闸门。**前端无需任何改动**（R7）。
     ///
@@ -1368,7 +1367,7 @@ mod tests {
     /// W3-T3 守门：审批请求必须把工具卡片置为界面认得的 **`waiting_approval`**。
     ///
     /// 前端按这个字符串决定是否渲染"批准/拒绝"按钮
-    /// （`desktop-ui/src/components/Transcript.tsx:683` 的 `isAwaiting`）。
+    /// （原桌面端同名实现的 `isAwaiting`）。
     /// 改了状态字符串而没同步前端，审批按钮就会**静默消失**——所以这里钉死它。
     #[test]
     fn test_waiting_approval_status_is_the_ui_contract() {

@@ -7,7 +7,7 @@
 > `--ui=desktop` 回退本地 React/Vite。
 > 独立运行的 `ssr-h` 二进制只用于开发与实机验收。
 
-UED 设计基线、组件规范与 desktop-ui 对齐差距见 [docs/UED.md](docs/UED.md)。
+UED 设计基线、组件规范与 原桌面端 对齐差距见 [docs/UED.md](docs/UED.md)。
 组件库与插件插槽体系的架构说明见 [docs/COMPONENTS.md](docs/COMPONENTS.md)；
 插槽/页面注入的数据契约（字段、类型、刷新时机）见 [docs/PLUGIN-DATA.md](docs/PLUGIN-DATA.md)。
 合并方案与批次记录见 [docs/gateway/PLAN-merge-ssr-h.md](../../docs/gateway/PLAN-merge-ssr-h.md)。
@@ -36,7 +36,7 @@ UED 设计基线、组件规范与 desktop-ui 对齐差距见 [docs/UED.md](docs
   收成胶囊药丸（进度 + 当前步骤）/ 展开是步骤清单卡片；改 `plugin.json` 的 `slot` 可换到输入框上方
   （`composer.above`）。计划仍按 `set`/`update`/`get` 的动作在核心推演（不是倒序取最后一张卡片），
   插件只消费 `props.data.todo` 的投影。
-- 对话流：工具与思考采用 desktop-ui 的单行日志式——单行显示图标、中文标签、目标对象与真实耗时，展开后是左侧导轨线里的参数/输出面板；工具输出按 Markdown 渲染（JSON 走等宽原文）。
+- 对话流：工具与思考采用 原桌面端 的单行日志式——单行显示图标、中文标签、目标对象与真实耗时，展开后是左侧导轨线里的参数/输出面板；工具输出按 Markdown 渲染（JSON 走等宽原文）。
 - 侧栏支持按标题搜索会话**和工作区名**（工作区名命中时整组展开）；插件 / 供应商 / 概览 / 插件页也共用同一套侧栏外壳，不再切回旧布局。
 - 图标统一为 14–16px 线性 SVG（替代早期字符符号）；工具/思考用单行日志式展示；输入框为桌面端形态（大圆角输入卡 + 底部工具行：工作区/审批档位/模型 + 近黑圆形发送键）；窄窗口（≤760px）侧栏收为抽屉，顶栏出汉堡按钮；**宽屏下同一个按钮是"收起/展开侧栏"**（状态存 `localStorage`，跨刷新保持）；中止等危险操作用共享确认对话框（原生 `<dialog>`）。
 - 进程管理：由 **`frontend-plugins/process-manager/`** 插件提供（`topbar.right` 插槽，
@@ -45,7 +45,7 @@ UED 设计基线、组件规范与 desktop-ui 对齐差距见 [docs/UED.md](docs
   只读视图，不提供“重启自己/终止”。数据契约见 [docs/PLUGIN-DATA.md](docs/PLUGIN-DATA.md) §2.11。
 - 审批：`waiting_approval` 工具在输入框上方托盘展示命令/参数与等待时长，可批准/拒绝；托盘随事件流出现/消失（断流时由兜底轮询接管），不需要手工刷新。
 - 提问（`ask_user`）：待答复的提问在输入框上方展示题目、选项（单选/多选/文本补充），可提交回答；
-  提问卡**浮动覆盖在对话流之上、不占布局空间**（desktop-ui 提问浮窗同款，审批/排队托盘仍是 in-flow）；
+  提问卡**浮动覆盖在对话流之上、不占布局空间**（原桌面端 提问浮窗同款，审批/排队托盘仍是 in-flow）；
   **多题一次只显示一题 + 上一题/下一题**（`chat.js` 的 `data-question-pager`
   契约实现）；**已勾选的选项、已输入的文本与当前页码在换帧与整页刷新后都保留**
   （sessionStorage 按 callId 记忆，提交后清除；无 JS 时全部题目平铺）。对话流里的提问卡只留记录。
@@ -59,7 +59,7 @@ UED 设计基线、组件规范与 desktop-ui 对齐差距见 [docs/UED.md](docs
 
 ## 工作区
 
-侧栏是**工作区树**，与 desktop-ui 的分组口径一致（同一个 agent 进程能看到所有工作区的会话）：
+侧栏是**工作区树**，与 原桌面端 的分组口径一致（同一个 agent 进程能看到所有工作区的会话）：
 
 - 会话按 `workspace` 分组；组头显示目录名、会话数、运行中标记，**当前工作区**默认展开并标「当前」；
 - 组内只有空占位会话的工作区（例如刚添加、还没说话）也会出现——每个空工作区保留最新的一条空会话，有真实内容后自动收掉占位；
@@ -69,7 +69,7 @@ UED 设计基线、组件规范与 desktop-ui 对齐差距见 [docs/UED.md](docs
   其它客户端的新会话、改名、运行状态点不再要手动刷新；组折叠状态按 `data-ws-key` 记忆（`localStorage`）；
 - 组内只有空占位会话的工作区（例如刚添加、还没说话）也会出现——每个空工作区保留最新的一条空会话，有真实内容后自动收掉占位；
 - 顶部「新会话」**直接建一条空会话**（落到当前工作区），不再先弹窗；**模式与工作区
-  在空会话页里选**（对齐 desktop-ui 的 EmptyConversationView）：四档模式分段
+  在空会话页里选**（对齐 原桌面端 的 EmptyConversationView）：四档模式分段
   （编码/规划/创造/PM，`POST /threads/{id}/mode` → `thread.setMode`，开始后不可切）、
   工作区药丸下拉（`POST /threads/{id}/workspace` → `thread.setWorkspace`，只绑定这条
   会话、不切换项目）+「选择工作区」打开**弹窗目录选择器**（htmx 片段
@@ -106,12 +106,13 @@ cargo run -p agent-gateway -- --port 52353 --workspace E:/codes/your-project
 
 | 参数 | 作用 |
 |---|---|
-| `--web-ui ssr` | 内置 SSR 界面（默认） |
-| `--web-ui desktop` | 回退到 `desktop-ui/dist` 静态产物 |
 | `--web-token <t>` | 浏览器访问令牌；非回环监听时可与 `--token` 二选一 |
 | `--web-plugins-dir <p>` | 前端插件目录（默认 `~/.a-da/web-plugins` → exe 旁 → 源码目录） |
 | `--web-public-url <u>` | 反向代理对外地址（如 `https://example.com`）；放行该 Host/Origin |
-| `A_DA_WEB_UI` / `A_DA_WEB_TOKEN` / `A_DA_WEB_PLUGINS_DIR` / `A_DA_WEB_PUBLIC_URL` | 上述参数的环境变量形式 |
+| `A_DA_WEB_TOKEN` / `A_DA_WEB_PLUGINS_DIR` / `A_DA_WEB_PUBLIC_URL` | 上述参数的环境变量形式 |
+
+> 2026-10：`--web-ui ssr|desktop` 与 `A_DA_WEB_UI` 已删除——界面只有 SSR 一套
+> （React 前端 `desktop-ui/` 已移除，`--ui-dir` / `A_DA_UI_DIR` 同样不存在）。
 
 **开发/验收：单独跑界面层**（仍需要一个已启动的网关）：
 
@@ -196,7 +197,7 @@ node tools/verify-ssr-workspaces.mjs
 供应商管理由前端插件 **`provider-admin`** 提供，页面在 `/ext/provider-admin/providers`；
 原核心入口 `/providers` 只做 303 跳到插件页，不再渲染旧管理页。插件页是 Master-Detail：
 左列选供应商，右列用两个页签分别改**供应商信息**（连接参数）与**模型列表**。页签是真实链接
-（`?provider=…&tab=models`），保存/新增/删除模型后回到插件页。能力与 desktop-ui 对齐：
+（`?provider=…&tab=models`），保存/新增/删除模型后回到插件页。能力与 原桌面端 对齐：
 
 | 能力 | 路由 | 说明 |
 |---|---|---|
@@ -214,7 +215,7 @@ node tools/verify-ssr-workspaces.mjs
 - **每次动作都"读整条 → 改字段 → 整条写回"**：`provider.save` 是"存在即替换"，只发改动字段会把模型列表写成空；
 - **API Key 不回显**：插件页只有 `已配置 + sk-…7f3a`，输入框留空＝不修改，勾“清空密钥”才真的清空；
   API Key 输入框直接提交核心，不进入 Boa。
-  这是与 desktop-ui 唯一的有意差异。
+  这是与 原桌面端 唯一的有意差异。
 
 ## 动态前端插件
 
@@ -364,11 +365,11 @@ export function Page(props: any) {
 
 ## 当前实现边界
 
-- 这是**浏览器访问面**（网关默认挂载），不是 Electron 桌面壳的替代：桌面端仍加载本地 `desktop-ui/dist`；
+- 这就是**唯一的界面**：Electron 桌面壳加载的也是这份页面（`http://127.0.0.1:<port>/`），
   浏览器页面由 SSE 增量更新（断流时退回 2 秒轮询），动作完成后整体跳转；
 - 已实现：只读概览、会话列表/详情、发送、中止、重试、审批、提问作答（核心托盘 + `thread.tray` 插件可接管）、
   排队（提升/删除/清空）、任务规划（task-plan 插件）、
-  **供应商管理**（新建 / 编辑连接 / 删除 / 设为当前 / 测试连接 / 获取远程模型 / 模型增删改，对齐 desktop-ui）、
+  **供应商管理**（新建 / 编辑连接 / 删除 / 设为当前 / 测试连接 / 获取远程模型 / 模型增删改，对齐 原桌面端）、
   插件重载与启停、**TSX 服务端插件**（`.tsx` 页面/插槽/仪表盘，OXC + Boa + 内置 TSX 组件库）；
 - 核心页面壳仍是 Askama 编译期模板；TSX 只覆盖插件扩展面，不替代整页布局与数据获取；
 - 侧栏会话树随 SSE `parts` / 兜底轮询增量刷新；工作区切换器与系统导航仍是整页加载快照；

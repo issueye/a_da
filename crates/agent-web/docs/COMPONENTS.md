@@ -361,7 +361,7 @@ register → load → mount → render → unmount → destroy
 
 ### 10.1 计划状态推演（唯一真源）
 
-`ui/todo.rs` 的 `derive_todo_plan`，与 desktop-ui 的 `utils/todo-plan.ts` 同一套语义：
+`ui/todo.rs` 的 `derive_todo_plan`，与 原桌面端 的 `utils/todo-plan.ts` 同一套语义：
 
 | `action` | 含义 |
 |---|---|
@@ -371,7 +371,7 @@ register → load → mount → render → unmount → destroy
 | 缺省 | 当作 `set` |
 
 > 为什么不"倒序找最后一张能解析出 items 的卡片"：`update` 只带改动项（子集）、`get` 回的是旧快照，
-> 那样面板会停在旧计划上（desktop-ui 实测 7/12，正文却写着 13/13）。
+> 那样面板会停在旧计划上（原桌面端 实测 7/12，正文却写着 13/13）。
 > 这一点由 `ui/todo.rs` 里的 7 个单元测试锁住。
 
 推演结果由 `src/handlers/mod.rs::todo_view` 投影成 `props.data.todo`：
@@ -394,7 +394,7 @@ register → load → mount → render → unmount → destroy
 - 步骤状态：完成=绿勾 + 删除线；进行中=蓝箭头 + 脉冲 + 品牌浅底；待办=灰色空心圆；
 - 一键复制 Markdown 清单（`- [x] 标题` 形式；走组件库的 `[data-copy]` 委托）；
 - 展开/收起用 `<details>/<summary>`：**没有 JS 也能开合**；插件 JS 只负责把偏好记进
-  `localStorage`（与 desktop-ui 同键 `a_da_todo_panel_collapsed`），并在 `parts` 替换后重新套用；
+  `localStorage`（与 原桌面端 同键 `a_da_todo_panel_collapsed`），并在 `parts` 替换后重新套用；
 - 插件 CSS/JS 分别由清单的 `styles` / `scripts` 注入（CSS 包进 `@scope`，JS `defer`）；
 - 工具行里展开 `todo` 工具时，同一份清单也会排版显示（核心 `TodoList`，与插件共用
   `.ada-todo__list*` 样式）。

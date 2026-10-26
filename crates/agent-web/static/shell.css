@@ -293,7 +293,7 @@
   flex-shrink: 0;
   /* min-height 而不是固定高度：内联重命名表单展开时行要能长高 */
   min-height: 32px;
-  padding: 0 4px 0 8px;
+  padding: 0 6px 0 8px;
   border-radius: var(--ada-radius-sm);
   color: var(--ph-ink);
   font-size: var(--ada-text-base);
@@ -329,6 +329,30 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 行右侧：运行点 + 「N 分钟前」。列表按最后活动排序，时间是它的口径说明；
+   不占位时也别硬撑宽度——这一列用 nowrap + 10px，长标题仍有 ~10 个字。 */
+.ada-thread__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: 0;
+  transition: opacity var(--ada-transition);
+}
+.ada-thread__time {
+  flex: 0 0 auto;
+  color: var(--ph-faint);
+  font-family: inherit;
+  font-size: var(--ada-text-xs);
+  font-weight: 400;
+  line-height: 1;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.ada-thread.is-active .ada-thread__time {
+  color: var(--ph-brand-ink);
+  opacity: 0.72;
+}
 /* 运行中只剩一个点：文案「运行中」不再挤占标题宽度，语义留在 title/aria 里。 */
 .ada-thread__dot {
   width: 6px;
@@ -337,23 +361,46 @@
   border-radius: 50%;
   background: var(--ph-warn-ink);
 }
-/* 行内操作（重命名 / 删除）：悬浮或键盘聚焦时出现，不抢平时的一屏十五行 */
+/* 行内操作（重命名 / 删除）：悬浮或键盘聚焦时出现，不抢平时的一屏十五行。
+   绝对定位而不是留在流里——留在流里时那 48px 白占着，长标题会被白白截短。 */
 .ada-thread__actions {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  bottom: 2px;
   display: flex;
   align-items: center;
   gap: 2px;
-  flex: 0 0 auto;
+  padding-left: 6px;
+  border-radius: var(--ada-radius-sm);
+  background: inherit;
   opacity: 0;
+  pointer-events: none;
   transition: opacity var(--ada-transition);
 }
 .ada-thread:hover .ada-thread__actions,
 .ada-thread:focus-within .ada-thread__actions {
   opacity: 1;
+  pointer-events: auto;
+}
+/* 操作按钮盖住右侧时间列：悬停时把时间淡出，避免两层文字叠在一起。
+   （组头同口径：`.ada-ws__count` 悬停让位给 +/切换按钮。） */
+.ada-thread:hover .ada-thread__meta,
+.ada-thread:focus-within .ada-thread__meta {
+  opacity: 0;
 }
 @media (hover: none) {
-  /* 触屏没有 hover：重命名/删除常驻（与工作区组头 `.ada-ws__actions` 同口径） */
+  /* 触屏没有 hover：重命名/删除常驻（与工作区组头 `.ada-ws__actions` 同口径）。
+     常驻就必然压右端，所以把时间列收起来、给链接让出操作位。 */
   .ada-thread__actions {
     opacity: 1;
+    pointer-events: auto;
+  }
+  .ada-thread__meta {
+    display: none;
+  }
+  .ada-thread__link {
+    padding-right: 52px;
   }
 }
 .ada-thread__rename summary,
@@ -391,6 +438,27 @@
   flex: 1 0 100%;
   padding: 4px 2px 6px;
 }
+/* 重命名展开时，按钮层回到**行内**：表单有 38px 高，绝对定位的 28px 容器装不下，
+   会溢出去盖住下一行。回到流里之后行会自然长高（min-height 就是为它留的）。
+   `:has()` 在 Electron/Chrome/Edge/Firefox 的现代版本都支持；万一不支持，
+   只是退回"表单盖住下一行"的旧形态，功能不受影响。 */
+.ada-thread:has(.ada-thread__rename[open]) .ada-thread__actions {
+  position: static;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-left: 4px;
+  background: transparent;
+  opacity: 1;
+  pointer-events: auto;
+}
+.ada-thread:has(.ada-thread__rename[open]) .ada-thread__link,
+.ada-thread:has(.ada-thread__rename[open]) .ada-thread__rename summary {
+  display: none;
+}
+.ada-thread:has(.ada-thread__rename[open]) .ada-thread__rename {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .ada-thread__rename-form .ada-input {
   flex: 1 1 auto;
   min-width: 0;
@@ -399,7 +467,7 @@
   font-size: var(--ada-text-sm);
 }
 
-/* 新会话的工作区选择弹窗（desktop-ui WorkspaceSelector 同形：列表 + 当前项打勾）。
+/* 新会话的工作区选择弹窗（原桌面端 WorkspaceSelector 同形：列表 + 当前项打勾）。
    选中态由原生 radio 的 :checked 驱动——无 JS 也能选；行就是 label，整行可点。 */
 .ada-wspick {
   display: flex;
@@ -464,7 +532,7 @@
   outline-offset: 1px;
 }
 
-/* 空会话页：模式 + 工作区（对齐 desktop-ui 的 EmptyConversationView 排布） */
+/* 空会话页：模式 + 工作区（对齐 原桌面端 的 EmptyConversationView 排布） */
 .ada-empty--newconv {
   min-height: 52vh;
 }
@@ -474,7 +542,7 @@
   gap: 12px;
   margin-top: 18px;
 }
-/* 模式分段收窄居中（参考 desktop-ui 的空状态排布） */
+/* 模式分段收窄居中（参考 原桌面端 的空状态排布） */
 .ada-newconv__controls .ada-wspick__modes {
   width: min(344px, 100%);
   justify-self: center;
@@ -486,7 +554,7 @@
   gap: 8px;
 }
 /* 工作区这一排是**一个**胶囊控件：左边当前工作区下拉 + 右边「选择工作区」，
-   中间一条细分隔线（对齐 desktop-ui EmptyConversationView 的分组形态）。 */
+   中间一条细分隔线（对齐 原桌面端 EmptyConversationView 的分组形态）。 */
 .ada-newconv__ws-group {
   display: inline-flex;
   align-items: center;
@@ -1453,7 +1521,7 @@
 }
 
 /* 提问托盘：待答复用品牌色表达（UED 状态表），选项是无 JS 可用的原生表单。
-   浮动形态（desktop-ui 提问浮窗同款）：不占布局空间，贴着输入框上方浮在
+   浮动形态（原桌面端 提问浮窗同款）：不占布局空间，贴着输入框上方浮在
    对话流之上——锚是 .ada-trays（position:relative，紧贴 composer 顶部），
    `bottom: 100%` 让卡片向上生长盖住对话流底部；高度上限内自带滚动。 */
 .ada-tray--question {
@@ -1591,8 +1659,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 24px;
-  padding: 2px 56px 2px 8px;
+  min-height: 26px;
+  padding: 2px 8px;
   border-radius: var(--ada-radius-sm);
   color: var(--ph-muted);
   font-size: var(--ada-text-sm);
@@ -1630,7 +1698,7 @@
 }
 .ada-ws__count {
   flex-shrink: 0;
-  min-width: 16px;
+  min-width: 18px;
   padding: 0 6px;
   border-radius: var(--ada-radius-pill);
   background: var(--ph-line);
@@ -1640,10 +1708,44 @@
   font-weight: 400;
   line-height: 14px;
   text-align: center;
+  transition: opacity var(--ada-transition);
 }
 .ada-ws__running {
   display: inline-flex;
   flex-shrink: 0;
+}
+/* 「其它工作区」分区行：一条细线 + 一行小字，把当前工作区的会话和别的项目分开。
+   没有它，两种行在视觉上是同一个平面，用户读不出"这是我现在的会话，那是别的项目"。 */
+.ada-ws__section {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin: 10px 8px 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ph-line);
+  color: var(--ph-faint);
+  font-size: var(--ada-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 1;
+}
+.ada-ws__section[hidden] {
+  display: none;
+}
+.ada-ws__section-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ada-ws__section-count {
+  flex: 0 0 auto;
+  font-family: var(--mono-font, Consolas, monospace);
+  font-weight: 400;
+  letter-spacing: 0;
+  opacity: 0.8;
 }
 .ada-ws__threads {
   display: flex;
@@ -1660,23 +1762,40 @@
   font-size: var(--ada-text-sm);
   font-style: italic;
 }
+/* 组头操作（在此新建 / 切换过去）：悬停时盖住计数徽标——两者抢同一块 22px 的位置。 */
 .ada-ws__actions {
   position: absolute;
+  /* 只覆盖**组头那一行**。`.ada-ws` 的高度包含展开后的会话列表：用 `top: 0 / bottom: 0`
+     撑满会让按钮层在整组里垂直居中，展开时正好落在会话行右侧（实测：「+」「切换」
+     两个按钮串到了「新会话」那一行上，还盖住它、抢走点击）。
+     26px 与下面 `.ada-ws__summary` 的 `min-height` 同步，改一处必须改另一处。 */
   top: 0;
   right: 2px;
+  height: 26px;
   display: flex;
+  align-items: center;
   gap: 2px;
   opacity: 0;
+  pointer-events: none;
   transition: opacity var(--ada-transition);
 }
 .ada-ws:hover .ada-ws__actions,
 .ada-ws:focus-within .ada-ws__actions {
   opacity: 1;
+  pointer-events: auto;
+}
+.ada-ws:hover .ada-ws__count,
+.ada-ws:focus-within .ada-ws__count {
+  opacity: 0;
 }
 @media (hover: none) {
   /* 触摸设备没有 hover：操作按钮常驻，否则"切换工作区"根本点不到 */
   .ada-ws__actions {
     opacity: 1;
+    pointer-events: auto;
+  }
+  .ada-ws__count {
+    display: none;
   }
 }
 .ada-ws__actions form {

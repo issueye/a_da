@@ -104,7 +104,7 @@ flash 不分级一律 `role="status"`（templates/chat.html:57、templates/layou
 建议：① modal open 时记 opener，close 时归还；② 动作回跳页若带 `?focus=composer` 之类的标记则聚焦输入框（与 01 的锚点方案共用机制）。
 
 **13 Ctrl+K 已被侧栏搜索占用**
-static/chat.js:291-297 把 Ctrl/⌘+K 绑到「展开侧栏并聚焦会话搜索」。STATUS P2 的命令面板若沿用 desktop-ui 的 Ctrl+K，落地即冲突。
+static/chat.js:291-297 把 Ctrl/⌘+K 绑到「展开侧栏并聚焦会话搜索」。STATUS P2 的命令面板若沿用 原桌面端 的 Ctrl+K，落地即冲突。
 建议：现在就在 UED §8.5 记一笔——命令面板接管 Ctrl+K 后，侧栏搜索降级为 `/`（聚焦输入框类快捷键惯例）或保留在命令面板内；避免届时悄悄双绑。
 
 **14 Esc 一刀切关所有浮层**
@@ -119,7 +119,7 @@ Esc 同时关闭全部 `details.ada-popover`（static/chat.js:165-170）与全�
 
 **16 新建会话不能选模式（coding / pm）**
 模式在顶栏/工具行只读展示；「新会话」弹窗只选工作区（static/app.js:135-154 的 `data-new-thread` 拦截）。STATUS P1 已列。
-建议（交互形态）：模式选择并进现有新会话弹窗——工作区 radio 列表上方加一排模式 segmented control（默认 coding，pm 用 UED §6.1 的 amber 语义色），`thread.create` 带 mode 参数一次提交；开始后保持只读（desktop-ui 口径）。
+建议（交互形态）：模式选择并进现有新会话弹窗——工作区 radio 列表上方加一排模式 segmented control（默认 coding，pm 用 UED §6.1 的 amber 语义色），`thread.create` 带 mode 参数一次提交；开始后保持只读（原桌面端 口径）。
 
 ### F. 插件页
 

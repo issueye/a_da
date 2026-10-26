@@ -691,7 +691,7 @@ async fn test_dispatcher_provider_management() {
 ///
 /// 用户报过的真实症状：重启后「可用模型列表 (0)」、切换供应商时模型列表不变。
 /// 直接原因是前端加载表单时漏掉了 `setEditModels`（见
-/// `desktop-ui/src/components/SettingsModal.tsx` 的 `loadProviderIntoForm`）；
+/// `原桌面端同名实现` 的 `loadProviderIntoForm`）；
 /// 但落盘这一层也必须同时守住：`providers` 是手工写进 `config.json` 的，
 /// 序列化/反序列化漏掉 `models` 同样会让模型「重启即丢」。
 /// 这里用同一份 home 重建 store（等价于重启进程）。

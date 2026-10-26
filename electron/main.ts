@@ -3,7 +3,6 @@ import * as path from 'path'
 import * as fs from 'fs'
 import { spawn, execSync, type ChildProcess } from 'child_process'
 import * as readline from 'readline'
-import * as http from 'http'
 import type { DesktopConfig, CoreInfo, ProcessReport, ManagedProcessInfo } from './types.js'
 
 /**
@@ -55,8 +54,6 @@ interface CliArgs {
   token?: string
   workspace: string
   gatewayBin?: string
-  /// 界面来源：`ssr`（网关内置页面，默认）或 `desktop`（本地 React / Vite）。
-  ui?: string
 }
 
 function parseCliArgs(): CliArgs {
@@ -81,28 +78,12 @@ function parseCliArgs(): CliArgs {
       result.gatewayBin = args[++i]
     } else if (arg.startsWith('--gateway-bin=')) {
       result.gatewayBin = arg.slice('--gateway-bin='.length)
-    } else if (arg === '--ui' && i + 1 < args.length) {
-      result.ui = args[++i]
-    } else if (arg.startsWith('--ui=')) {
-      result.ui = arg.slice('--ui='.length)
     }
   }
 
   return result
 }
 
-type UiMode = 'ssr' | 'desktop'
-
-/// 界面来源。默认 SSR（网关内置页面）；`--ui=desktop` 或
-/// `A_DA_ELECTRON_UI=desktop` 回退到本地 React / Vite。
-function resolveUiMode(cli: CliArgs): UiMode {
-  const raw = (cli.ui || process.env.A_DA_ELECTRON_UI || 'ssr').trim().toLowerCase()
-  if (raw === 'desktop') return 'desktop'
-  if (raw !== 'ssr') {
-    appendLauncherLog(`[警告] 未知界面模式「${raw}」，按 ssr 处理`)
-  }
-  return 'ssr'
-}
 
 // 3. 应用根目录与持久化配置
 function getAppHome(): string {
@@ -198,29 +179,6 @@ function findBinary(baseName: string, customBin?: string | null): string | null 
   return null
 }
 
-/**
- * 前端产物目录（供网关 `--ui-dir` 使用）。
- *
- * 打包后网关读不到 asar 里的资源，所以 electron-builder 把 `desktop-ui/dist`
- * 额外复制到了 `resources/bin/ui`；开发时直接用仓库里的 dist。
- * 只认**含 index.html** 的目录，与网关侧 `StaticSite::resolve` 的判据保持一致。
- */
-function findUiDir(): string | null {
-  const candidates = [
-    process.resourcesPath ? path.join(process.resourcesPath, 'bin', 'ui') : '',
-    resolveAppPath('desktop-ui', 'dist') ?? '',
-    path.resolve(app.getAppPath(), '../desktop-ui/dist'),
-  ].filter(Boolean) as string[]
-
-  for (const dir of candidates) {
-    try {
-      if (fs.existsSync(path.join(dir, 'index.html'))) return dir
-    } catch {
-      /* 路径不可读就试下一个 */
-    }
-  }
-  return null
-}
 
 // 6. 进程状态与看门狗
 interface CoreState {
@@ -351,15 +309,6 @@ async function startGatewaySupervisor(): Promise<void> {
   const args = ['--port', '52353', '--allow-origin', '*']
   const effectiveWorkspace = cli.workspace.trim()
 
-  // 前端产物目录：网关是独立的 Rust 进程，**读不到 asar 里的文件**。
-  // 打包时它被复制到 `resources/bin/ui`（electron-builder.json 的 extraResources），
-  // 开发时指向仓库里的 desktop-ui/dist。
-  const uiDir = findUiDir()
-  if (uiDir) {
-    args.push('--ui-dir', uiDir)
-  } else {
-    appendLauncherLog('[警告] 未找到前端产物（desktop-ui/dist），网页访问只会看到一页提示')
-  }
 
   if (effectiveWorkspace) {
     args.push('--workspace', effectiveWorkspace)
@@ -521,28 +470,8 @@ function getAppIcon(): string | undefined {
   return undefined
 }
 
-// 检测前端本地 Vite 开发服务器是否处于活动状态 (1420 端口)
-function checkDevServer(url: string, timeoutMs = 800): Promise<boolean> {
-  return new Promise((resolve) => {
-    const req = http.get(url, (res) => {
-      resolve(Boolean(res.statusCode && res.statusCode < 400))
-    })
-    req.on('error', () => resolve(false))
-    req.setTimeout(timeoutMs, () => {
-      req.destroy()
-      resolve(false)
-    })
-  })
-}
 
-/**
- * 窗口尺寸的**下限**（与桌面端 `utils/layout.ts` 的 `WINDOW_MIN_WIDTH` 同值）。
- *
- * 这三列布局在 860 宽时已经是最紧的合法状态：侧边栏 392 + 主区 420 + 右栏图标栏 48。
- * 再窄就只能靠右栏变抽屉 + 侧栏折叠来撑，不值得。
- */
-const WINDOW_MIN_WIDTH = 860
-/// SSR 页面在 450px 仍有抽屉侧栏 + 单列对话，允许比 React 三栏界面更窄。
+/// SSR 页面在 450px 仍有抽屉侧栏 + 单列对话：这是现在**唯一**的界面下限。
 const SSR_WINDOW_MIN_WIDTH = 450
 const WINDOW_MIN_HEIGHT = 620
 
@@ -561,7 +490,7 @@ const WINDOW_MIN_HEIGHT = 620
  * 注意：这里只决定**首次**大小。用户拖过窗口之后不记忆（Electron 不会自动保存），
  * 想要"记得上次大小"需要额外持久化，属另一件事。
  */
-function resolveInitialWindowSize(minWidth = WINDOW_MIN_WIDTH): { width: number; height: number } {
+function resolveInitialWindowSize(minWidth = SSR_WINDOW_MIN_WIDTH): { width: number; height: number } {
   const clamp = (value: number, lo: number, hi: number) => Math.min(Math.max(value, lo), hi)
   const { width: areaWidth, height: areaHeight } = screen.getPrimaryDisplay().workAreaSize
 
@@ -689,11 +618,7 @@ async function restartGatewayFromTray(): Promise<void> {
       `[托盘] 重新唤醒网关结束: alive=${report.alive} port=${report.port}`
     )
     if (!mainWindow) return
-    if (resolveUiMode(parseCliArgs()) === 'ssr') {
-      await loadSsrUi(mainWindow)
-    } else {
-      mainWindow.reload()
-    }
+    await loadSsrUi(mainWindow)
   } catch (error: any) {
     const message = error?.message || String(error)
     appendLauncherLog(`[托盘] 重新唤醒网关失败: ${message}`)
@@ -707,16 +632,24 @@ async function restartGatewayFromTray(): Promise<void> {
  * 若网关带 token，用 `?token=` 自动登录：SSR guard 会校验后换发 HttpOnly 会话 cookie，
  * 再 303 去掉 URL 上的 query（不会把网关 token 留在地址栏/历史记录里）。
  */
+/**
+ * SSR 界面：等网关就绪后加载网关根路径。
+ *
+ * 若网关带 token，用 `?token=` 自动登录：SSR guard 会校验后换发 HttpOnly 会话 cookie，
+ * 再 303 去掉 URL 上的 query（不会把网关 token 留在地址栏/历史记录里）。
+ *
+ * 2026-10：React 桌面前端（`desktop-ui/`）已移除，**没有"回退到本地界面"这条路**——
+ * 网关起不来就给一张说清楚的提示页，而不是让用户在一个连不上任何数据的旧界面上操作。
+ */
 async function loadSsrUi(win: BrowserWindow): Promise<void> {
   const ready = await Promise.race([
     readySignalPromise.then(() => true),
     new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 16_000)),
   ])
   if (!ready || !coreState.alive || !coreState.port) {
-    appendLauncherLog(
-      `[警告] 网关未就绪（${coreState.error || '超时'}），SSR 页面不可用，回退本地界面`
-    )
-    await loadDesktopUi(win)
+    const reason = coreState.error || '等待网关超时（16s）'
+    appendLauncherLog(`[警告] 网关未就绪（${reason}），显示提示页`)
+    await loadGatewayErrorPage(win, reason)
     return
   }
 
@@ -737,47 +670,41 @@ async function loadSsrUi(win: BrowserWindow): Promise<void> {
   try {
     await win.loadURL(url.toString())
   } catch (err: any) {
-    appendLauncherLog(`[警告] SSR 页面加载失败: ${err?.message || String(err)}，回退本地界面`)
-    await loadDesktopUi(win)
+    const reason = err?.message || String(err)
+    appendLauncherLog(`[警告] SSR 页面加载失败: ${reason}`)
+    await loadGatewayErrorPage(win, reason)
   }
 }
 
-/// desktop 模式：开发服务器热重载优先，否则加载本地 `desktop-ui/dist`。
-async function loadDesktopUi(win: BrowserWindow): Promise<void> {
-  // 优先尝试开发服务器热重载 (http://127.0.0.1:1420)
-  const devUrl = 'http://127.0.0.1:1420'
-  const isDevRunning = !app.isPackaged && (await checkDevServer(devUrl))
-
-  if (isDevRunning) {
-    appendLauncherLog(`加载开发服务器地址: ${devUrl}`)
-    await win.loadURL(devUrl)
-    return
-  }
-
-  // 生产模式加载静态 dist 文件。
-  // 🔴 `app.getAppPath()` 优先：dev 时它是仓库根、打包后是 `resources/app.asar`，两边都指向
-  // **本该使用**的那份前端产物；`__dirname` 在 bun 的产物里被硬编码成构建机源码目录，
-  // 放在前面会让"打包后运行"悄悄去读构建机上的源码树（换台机器就是另一份界面）。
-  const candidatePaths = [
-    resolveAppPath('desktop-ui', 'dist', 'index.html'),
-    path.join(app.getAppPath(), 'desktop-ui/dist/index.html'),
-    path.resolve(app.getAppPath(), '../desktop-ui/dist/index.html'),
-    path.resolve(__dirname, '../desktop-ui/dist/index.html'),
-  ].filter(Boolean) as string[]
-  let loaded = false
-  for (const p of candidatePaths) {
-    if (fs.existsSync(p)) {
-      appendLauncherLog(`加载本地静态打包文件: ${p}`)
-      await win.loadFile(p)
-      loaded = true
-      break
-    }
-  }
-  if (!loaded) {
-    appendLauncherLog(`[警告] 未探测到静态文件，尝试默认路径: ${candidatePaths[0]}`)
-    await win.loadFile(candidatePaths[0])
-  }
+/**
+ * 网关不可用时的**提示页**（纯内联 data URL，不依赖任何本地文件）。
+ *
+ * 为什么不做"自动重试"：网关由本进程监督（托盘可重新唤醒），静默重试只会让
+ * 用户盯着一张空页面等；说清楚原因 + 指一个明确动作（托盘「重新唤醒网关…」）更有用。
+ */
+async function loadGatewayErrorPage(win: BrowserWindow, reason: string): Promise<void> {
+  const safe = reason.replace(/[&<>"]/g, (c) =>
+    c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&quot;'
+  )
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+  <title>a_da · 网关未就绪</title>
+  <style>
+    :root { color-scheme: dark }
+    body { margin:0; height:100vh; display:grid; place-items:center; background:#18181b;
+      color:#e4e4e7; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif }
+    .box { max-width: 30rem; padding: 2rem; text-align: center }
+    h1 { font-size: 15px; font-weight: 600; margin: 0 0 .75rem }
+    p { margin: 0 0 .5rem; font-size: 13px; line-height: 1.6; color:#a1a1aa }
+    code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color:#d4d4d8; word-break: break-all }
+  </style></head><body><div class="box">
+    <h1>网关尚未就绪</h1>
+    <p>a_da 的界面由本地网关提供，现在还没连上。</p>
+    <p><code>${safe}</code></p>
+    <p>可以等几秒，或从系统托盘选择「重新唤醒网关…」。</p>
+  </div></body></html>`
+  await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
 }
+
 
 async function createMainWindow(): Promise<BrowserWindow> {
   // preload 是**宿主能力的唯一入口**（网关发现 / 窗口控制 / 配置 / 进程管理全靠它注入的
@@ -793,10 +720,8 @@ async function createMainWindow(): Promise<BrowserWindow> {
     appendLauncherLog(`preload 路径: ${preloadPath}`)
   }
 
-  const cli = parseCliArgs()
-  const uiMode = resolveUiMode(cli)
-  const minWidth = uiMode === 'ssr' ? SSR_WINDOW_MIN_WIDTH : WINDOW_MIN_WIDTH
-  appendLauncherLog(`界面来源: ${uiMode}（最小宽度 ${minWidth}px）`)
+  const minWidth = SSR_WINDOW_MIN_WIDTH
+  appendLauncherLog(`界面：SSR（最小宽度 ${minWidth}px）`)
 
   const initial = resolveInitialWindowSize(minWidth)
   appendLauncherLog(
@@ -821,9 +746,6 @@ async function createMainWindow(): Promise<BrowserWindow> {
       sandbox: false,
       webSecurity: false,
       allowRunningInsecureContent: true,
-      // preload 靠这个参数决定是否给 SSR 顶栏注入窗口控制；
-      // desktop 模式（React 自带标题栏）不注入。
-      additionalArguments: [`--a-da-ui-mode=${uiMode}`],
     },
   })
 
@@ -873,11 +795,7 @@ async function createMainWindow(): Promise<BrowserWindow> {
     }
   })
 
-  if (uiMode === 'ssr') {
-    await loadSsrUi(mainWindow)
-  } else {
-    await loadDesktopUi(mainWindow)
-  }
+  await loadSsrUi(mainWindow)
 
   mainWindow.on('closed', () => {
     mainWindow = null

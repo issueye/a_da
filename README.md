@@ -64,7 +64,7 @@ agent-base ─► agent-proto / agent-adapter / agent-toolkit ─► agent-runti
 | 合规套件 | `crates/agent-conformance` | 端口契约 + 跨端口不变量 + golden 回放夹具 |
 | 插件运行时 | `crates/ts-engine` | Boa + oxc 的 TS 沙箱（插件代码在自己的进程内或子进程里跑） |
 | 产品 | `products/ada-coding`（含 `modes/pm.agent.spec.json` 预设）、`products/ada-skeleton` | 声明式产品（`agent.spec.json` + 极小 `main`） |
-| 桌面宿主 | `electron/` + `desktop-ui/` | Electron 壳（网关监督、原生窗口控制、IPC 桥接）；默认加载网关 SSR 页面，`--ui=desktop` 回退 React 界面 |
+| 桌面宿主 | `electron/` | Electron 壳（网关监督、原生窗口控制、IPC 桥接）；**只加载网关的 SSR 页面**（React 桌面端 `desktop-ui/` 已于 2026-10 移除） |
 
 **产品声明式装配**：`products/*/agent.spec.json` 声明 `toolkits` / `capabilities` /
 `identity` / `policies`，`agent-host` 按声明装配。声明的每个字段都有**真实消费者**
@@ -243,7 +243,7 @@ export default function (ada) {
 
 桌面壳（`electron/`）监督 `ada-gateway` 生命周期：单实例锁、无边框原生窗口控制、
 IPC 桥接、`launcher.log` 记录（打包后的 exe 没有控制台，**应用日志是唯一证据**）。
-桌面界面（`desktop-ui/`）是三栏布局 + 覆盖层，审批走**输入框上方浮窗**
+桌面界面就是上面这份 **SSR 页面**（与浏览器里看到的是同一套）：审批走**输入框上方托盘**
 （不随对话流滚动），失败提示走 `Notice` 卡片（只给人看、永不进模型上下文）。
 
 浏览器访问默认由网关内置的 **SSR 界面**（`crates/agent-web`）提供：
@@ -252,18 +252,17 @@ IPC 桥接、`launcher.log` 记录（打包后的 exe 没有控制台，**应用
 `/__auth` 接受网关 token 或配对码并换发 HttpOnly 会话 cookie。
 Electron 桌面壳默认也加载这份 SSR 页面（`http://127.0.0.1:<port>/`），窗口保持无边框，
 由 preload 在 SSR 顶栏注入最小化/最大化/关闭；系统托盘提供显示/隐藏窗口、打开网页界面、
-重新唤醒网关与退出；
-`--ui=desktop` 回退到本地 React/Vite 界面，网关侧 `--web-ui desktop` 则回退到静态产物托管。
+重新唤醒网关与退出。
+**界面只有 SSR 一套**：`--ui` / `--web-ui` 这两个“回退到 React 界面”的开关已于 2026-10 随
+`desktop-ui/` 一起删除（网关起不来时桌面壳显示一张说清原因的提示页）。
 
 ---
 
 ## 运行
 
 ```bash
-# 桌面客户端（Electron 壳：默认加载网关 SSR + 网关监督）
+# 桌面客户端（Electron 壳：加载网关 SSR + 网关监督）
 bun run electron:dev
-# 需要开发 React/Vite 界面时（热重载）
-bun run electron:dev:desktop
 
 # 网关 + 浏览器 SSR（默认；一个进程一个端口）
 cargo run -p agent-gateway -- --port 52353 --workspace E:/your-project
@@ -278,8 +277,8 @@ cargo xtask ship --product ada-gateway   # 同时带上 frontend-plugins/
 bun run electron:pack            # → dist/electron/win-unpacked
 ```
 
-网关相关开关：`--web-ui ssr|desktop`（默认 `ssr`）、`--web-token`、`--web-plugins-dir`；
-环境变量 `A_DA_WEB_UI` / `A_DA_WEB_TOKEN` / `A_DA_WEB_PLUGINS_DIR` 等价。
+网关相关开关：`--web-token`、`--web-plugins-dir`；
+环境变量 `A_DA_WEB_TOKEN` / `A_DA_WEB_PLUGINS_DIR` 等价。
 非回环监听时浏览器凭据可直接用网关 `--token` 或启动日志里的配对码。
 
 `ada-coding` 接受 `--host/--port/--token/--parent-pid/--workspace`，另可选
@@ -340,8 +339,8 @@ crates/
 products/
   ada-coding/          产品声明 + modes/pm.agent.spec.json（PM 模式预设）+ 极小 main
   ada-skeleton/        极简骨架（用于验证"产品只是一份声明"）
-electron/              Electron 桌面宿主主进程（网关监督 + 窗口控制 + IPC 桥接；默认加载 SSR）
-desktop-ui/            React 界面（--ui=desktop 回退；client/ws-client.ts 是唯一协议客户端）
+electron/              Electron 桌面宿主主进程（网关监督 + 窗口控制 + IPC 桥接；加载网关 SSR）
+# desktop-ui/          已于 2026-10 移除（React 前端；需要时从 git 历史取回）
 spec/proto/            协议登记表（唯一手写源）
 tools/xtask/           门禁与打包
 tools/*.ps1|*.mjs      实机验收脚本（桌面壳 / 重试断线 / 卡片顺序 / 插件平台 / 网关进程模型）
@@ -374,7 +373,7 @@ cargo xtask verify-wiring    # 接线审计：方法覆盖 / 描述符单源 / �
 cargo xtask compat           # 跨产品 base 协议一致
 cargo xtask verify-docs      # 文档时效：归档布局字样只在白名单文档里出现 + 协议文档与事件主题同步
 cargo test --workspace -- --test-threads=1   # 门二：全量测试（必须串行）
-bun run typecheck            # 门一：前端 tsc --noEmit
+bun run typecheck            # 门一：Electron 主进程/预加载的 bun 构建（TS 前端已移除）
 ```
 
 **为什么测试必须串行**：个别用例共享进程级状态（`AppHome` 单例、全局问题管理器），
@@ -384,8 +383,8 @@ bun run typecheck            # 门一：前端 tsc --noEmit
 
 | 脚本 | 验什么 |
 |---|---|
-| `pwsh -NoProfile -File tools/verify-desktop-shell.ps1` | 桌面壳：拉起网关 → 界面接入 → 窗口控制 → 状态同步 → 退出清理（弹窗开着时点最大化仍须生效）；锁屏时自动改用 CDP 无头验收 |
-| `node tools/verify-desktop-shell-headless.mjs` | 无头版桌面壳验收：CDP 真实命中渲染层 + 原生窗口状态，锁屏/CI 可用 |
+| `pwsh -NoProfile -File tools/verify-desktop-shell.ps1` | 桌面壳：拉起网关 → 界面接入 → 窗口控制 → 状态同步 → 退出清理（弹窗开着时点最大化仍须生效）；锁屏时自动改用 SSR 无头验收 |
+| `node tools/verify-electron-ssr.mjs` | 无头版桌面壳验收：CDP 真实命中 SSR 渲染层 + 原生窗口状态，锁屏/CI 可用 |
 | `pwsh -NoProfile -File tools/verify-retry-and-disconnect.ps1` | 重试与断线：真产品走真 JSON-RPC（改用户配置前先备份后还原） |
 | `bun tools/verify-card-order-e2e.mjs [--with-tool]` | 卡片顺序：比较**收尾前后界面上**的顺序 |
 | `bun tools/verify-full-access-paths.mjs` | 权限档位：`full` 能读工作区外与插件/技能目录、凭据仍拒、`ask` 仍守边界 |

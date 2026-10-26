@@ -62,7 +62,7 @@ cargo build --release -p plugin-hub
 
 ```bash
 # 1. 构建产物
-bun desktop-ui/node_modules/tailwindcss/lib/cli.js \
+bunx tailwindcss@3.4.19 \
   -c crates/plugin-hub/tailwind.config.cjs \
   -i crates/plugin-hub/static/input.css \
   -o crates/plugin-hub/static/app.css --minify
@@ -84,7 +84,7 @@ cp crates/plugin-hub/static/app.css ssr-h/static/app.css
 
 ## 界面与组件（设计系统）
 
-视觉语言与桌面端 `desktop-ui/` 对齐：**zinc 中性色 + 蓝色主色**、1px 细边框、
+视觉语言与桌面端 `原桌面端/` 对齐：**zinc 中性色 + 蓝色主色**、1px 细边框、
 `rounded-lg/xl/2xl` 圆角、极轻投影、紧凑字号（正文 12–14px、元信息 10–11px），
 并支持**亮 / 暗双主题**。主题只切 `html.dark`，颜色通过 CSS 变量整体翻转，
 模板里不要到处写 `dark:`。
@@ -123,7 +123,7 @@ Tailwind 里直接用语义类：`bg-surface`、`text-muted`、`border-line`、`
 
 | 宏 | 说明 |
 |---|---|
-| `ui::icon(name, class)` | 24px 线性图标（与 desktop-ui 的 lucide 风格一致） |
+| `ui::icon(name, class)` | 24px 线性图标（与 原桌面端 的 lucide 风格一致） |
 | `ui::badge(text, tone)` | 状态徽章，tone：`neutral` / `brand` / `success` / `warn` / `danger` / `mono` |
 | `ui::avatar(name, class)` | 首字母头像 |
 | `ui::tag(tag)` | `#标签` 胶囊（链到搜索页） |

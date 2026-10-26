@@ -6,11 +6,17 @@
 | 输入 | [ssr-h/README.md](../../ssr-h/README.md)、`ssr-h/docs/{STATUS,UED,COMPONENTS,TSX}.md`、[gateway/README.md](README.md)、[protocol/README.md](../protocol/README.md)、本轮代码核查 |
 | 性质 | **已落地（2026-10-25）**：M0–M4 全部完成；批次与任务卡保留为实施记录 |
 | 目标 | 一个 `ada-gateway` 进程 + 一个端口 = 整站；SSR 成为网关的浏览器界面；删除 ssr-h 对网关的自反代 |
-| 约束 | 不改多轮引擎与现有 JSON-RPC 方法；网关仍不跑引擎（INV-1）、不缓存会话状态（INV-8）；Electron 默认加载 SSR，`--ui=desktop` 保留 React/Vite 回退 |
+| 约束 | 不改多轮引擎与现有 JSON-RPC 方法；网关仍不跑引擎（INV-1）、不缓存会话状态（INV-8）；Electron 加载 SSR（**2026-10 起已无回退界面**） |
 | 节奏 | 一任务一 commit（`refactor(web)` / `feat(gateway)` / `docs(gateway)`），一批一出场，每批可独立回退 |
 | 实施进度 | **已完成**：`crates/agent-web` 已并入 workspace；网关默认 `--web-ui ssr`；单进程验收脚本全绿；`verify-docs` 基线清零 |
 
 > 注：§2 里的 `ssr-h/...` 是**合并前**的路径；当前落点见 §11 与 `crates/agent-web`。
+>
+> 🔴 **2026-10 后续变更（推翻本计划的两条非目标）**：React 桌面前端 `desktop-ui/` 已**整体删除**，
+> 连带 `--ui=desktop` / `--web-ui desktop` / `--ui-dir` / `A_DA_UI_DIR` / `A_DA_WEB_UI`、
+> 网关的 `static_ui.rs`（托管任意前端产物）与打包时复制 `desktop-ui/dist` 全部移除。
+> 现在**界面只有 SSR 一套**，Electron 壳只加载网关 SSR 页面（加载失败时显示提示页，不再回退）。
+> 下文提到 desktop-ui / `--ui=desktop` 的地方均保留为**历史实施记录**，不代表现状。
 
 ## 0. 一页结论
 
@@ -49,7 +55,7 @@ ssr-h 的页面与处理器基本不改，`AgentClient` 的方法签名也不改
 
 ### 1.2 非目标
 
-- **不删除 Electron 的 desktop-ui**：SSR 是默认界面，React 界面作为 `--ui=desktop` 回退保留。
+- ~~**不删除 Electron 的 desktop-ui**~~（**已于 2026-10 推翻**）：当时的口径是 SSR 作默认、React 界面作为 `--ui=desktop` 回退保留；后来回退界面整体删除，界面只剩 SSR。
 - **不把 plugin-hub 拉进来**：插件库平台是独立 Axum 服务，合并没有收益。
 - **不重写 SSR 为 React/SPA**，也不把 Askama 模板改成运行时文件。
 - **不新增 JSON-RPC 方法**：合并只动宿主与路由；若最终不得不加，按 §6.1 的四处同步执行。

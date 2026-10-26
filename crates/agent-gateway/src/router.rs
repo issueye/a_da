@@ -1,6 +1,6 @@
 //! 网关 HTTP 路由的**唯一组装点**。
 //!
-//! 生产（`main.rs`）与集成测试都调 [`router`]，所以"测试里跑的路由"和"线上跑的路由"
+//! 生产（`main.rs`）与集成测试都调这里，所以“测试里跑的路由”和“线上跑的路由”
 //! 是同一份。早先测试自己复制过一段分流逻辑，结果只有测试覆盖到的那条路是对的——
 //! 这种坑不该有第二次。
 //!
@@ -10,28 +10,37 @@
 //! |---|---|
 //! | `/rpc` | [`crate::relay::ws_handler`]：鉴权后升级为 WebSocket |
 //! | `/api/*` | [`crate::http_api`]：unary 命令/查询的 HTTP 面 |
-//! | 其他 | [`crate::static_ui::static_handler`]：前端产物 / 404 / 503 |
+//! | 其他 | SSR 子 service（[`router_with_web`]）/ 404（[`router`]） |
 //!
-//! 三条路在**同一个端口**上，所以浏览器里"页面"与"数据通道"天然同源。
+//! 三条路在**同一个端口**上，所以浏览器里“页面”与“数据通道”天然同源。
 
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 
 use crate::http_api;
 use crate::relay::{ws_handler, AppState};
-use crate::static_ui::static_handler;
 
-/// 组装网关的 HTTP service。
+/// 没有 SSR 子 service 时的扑空响应。
+///
+/// 生产不会走这里（`main.rs` 总是挂 SSR）；留着是给集成测试与将来的“纯 API”
+/// 形态一个确定答案：**404，而不是一页说明或一个静态产物**。
+async fn not_found() -> impl IntoResponse {
+    (StatusCode::NOT_FOUND, "404 Not Found")
+}
+
+/// 组装**纯 API** 的 HTTP service（无页面）。
 ///
 /// 三条路由：
 /// - `/rpc`：原有 JSON-RPC over WebSocket（事件与交互不变）；
 /// - `/api/*`：HTTP API（unary 命令/查询；事件仍走 `/rpc` 的推送）；
-/// - 其他：前端静态产物。
+/// - 其他：404。
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/rpc", get(ws_handler))
         .nest("/api", http_api::router(state.clone()))
-        .fallback(static_handler)
+        .fallback(not_found)
         .with_state(state)
 }
 
@@ -70,7 +79,6 @@ mod tests {
         AppState {
             gateway: Arc::new(gateway),
             default_workspace: "E:/test".to_string(),
-            site: None,
         }
     }
 
@@ -136,7 +144,6 @@ mod tests {
         let app = router(AppState {
             gateway: Arc::new(gateway),
             default_workspace: "E:/test".to_string(),
-            site: None,
         });
 
         // 全局管理面不受工作区作用域限制
@@ -262,7 +269,6 @@ mod tests {
         let state = AppState {
             gateway: Arc::new(gateway),
             default_workspace: "E:/test".to_string(),
-            site: None,
         };
         let app = router(state);
 

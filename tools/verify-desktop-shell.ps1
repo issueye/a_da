@@ -20,8 +20,8 @@
 #
 # 注意：会真的动鼠标（点窗口按钮），跑的时候别抢鼠标。
 #
-# Electron 默认界面已切到 SSR（无边框 + preload 注入顶栏控制）；本脚本显式用 `--ui=desktop` 验收
-# **自绘标题栏**那套 React 界面。SSR 模式的验收见 `tools/verify-electron-ssr.mjs`。
+# 2026-10：React 桌面前端（`desktop-ui/`）已移除，界面只有 SSR 一种。壳仍是 `frame: false`，
+# 窗口按钮由 preload 注入到 SSR 顶栏（`.ada-topbar`，高 54px）——本脚本点的就是那三个按钮。
 #
 # 锁屏环境（LogonUI 在运行）：真实鼠标点击无法到达窗口，脚本会自动改用
 # `verify-desktop-shell-headless.mjs`（Electron CDP 注入渲染层输入）执行同一组
@@ -46,15 +46,15 @@ if ($env:ELECTRON_RUN_AS_NODE) {
   Write-Host "注：检测到 ELECTRON_RUN_AS_NODE=$($env:ELECTRON_RUN_AS_NODE)，已为本次验收清除"
   Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 }
-$useVite = [bool]$Dev
 if ($Exe) { $Exe = (Resolve-Path -LiteralPath $Exe).Path }
 
 # 锁屏时无法把窗口顶到前台，真实鼠标点击会落在锁屏界面上。
-# 这时改用 CDP 无头验收：同样是渲染层真实命中 + 原生窗口状态 + 进程清理，
-# 只是输入通道从 OS 鼠标换成调试协议（像素级图标/按钮簇检查无法执行，输出会写明）。
+# 这时改用 SSR 壳的 CDP 无头验收（`verify-electron-ssr.mjs`）：同样是渲染层真实命中
+# + 原生窗口状态 + 进程清理，只是输入通道从 OS 鼠标换成调试协议
+# （像素级图标/按钮簇检查无法执行，输出会写明）。
 if (-not $Dev -and (Get-Process LogonUI -ErrorAction SilentlyContinue)) {
-  Write-Host '检测到工作站锁屏（LogonUI 在运行）：真实鼠标点击不可用，改用无头 CDP 验收。'
-  $headless = Join-Path $PSScriptRoot 'verify-desktop-shell-headless.mjs'
+  Write-Host '检测到工作站锁屏（LogonUI 在运行）：真实鼠标点击不可用，改用 SSR 无头验收。'
+  $headless = Join-Path $PSScriptRoot 'verify-electron-ssr.mjs'
   if (-not (Test-Path -LiteralPath $headless)) {
     Write-Host "FAIL: 缺少无头验收脚本 $headless"
     exit 1
@@ -113,7 +113,7 @@ public class ShellWin {
 "@
 
 $StripW = 260     # 从右边缘往里截多宽来定位三个窗口按钮
-$ButtonY = 19     # 标题栏高 40px，取中线附近
+$ButtonY = 27     # SSR 顶栏高 54px（`.ada-topbar`），取中线
 $failures = New-Object 'System.Collections.Generic.List[System.String]'
 function Check([bool]$ok, [string]$what) {
   if ($ok) { Write-Host "  [PASS] $what" } else { Write-Host "  [FAIL] $what"; $failures.Add($what) }
@@ -355,23 +355,6 @@ function Stop-OurAppProcesses {
 Stop-OurAppProcesses
 Start-Sleep -Seconds 2
 
-# Vite 开发服务器：Electron -Dev 时若它没起来就会退回静态产物
-$vite = $null
-if ($useVite) {
-  $vite = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'npm --prefix desktop-ui run dev' -WorkingDirectory $RepoRoot -PassThru -WindowStyle Hidden
-  $up = $false
-  for ($i = 0; $i -lt 60; $i++) {
-    Start-Sleep -Milliseconds 500
-    try {
-      $client = New-Object System.Net.Sockets.TcpClient
-      # Vite 默认只监听 localhost（本机解析优先 ::1），探 127.0.0.1 会误判为没起来
-      $client.Connect('localhost', 1420); $client.Close(); $up = $true; break
-    } catch { }
-  }
-  if (-not $up) { Write-Host 'FAIL: Vite 开发服务器（1420）没起来'; if ($vite) { taskkill /pid $vite.Id /T /F 2>&1 | Out-Null }; exit 1 }
-  Write-Host 'Vite 开发服务器已就绪 (http://localhost:1420)'
-}
-
 $logBefore = (Get-Item $logPath).Length
 # 记录启动前就已存在的同名进程：关窗后只要求"我们起的那些"消失，
 # 别把用户环境里别的 Electron 应用算进来
@@ -379,12 +362,12 @@ $preexistingHostPids = @(Get-Process -Name $appProcessNames -ErrorAction Silentl
 
 $env:A_DA_SILENT_FATAL = '1'   # 宿主的原生错误框静音，避免挡住无人值守流程
 $proc = if ($Exe) {
-  # 本脚本验收的是**自绘标题栏**（React 窗口按钮）；Electron 默认界面已是 SSR，
-  # 所以显式用 --ui=desktop 走本地 desktop-ui。SSR 模式见 verify-gateway-web.mjs。
-  Start-Process -FilePath $Exe -ArgumentList '--ui=desktop' -WorkingDirectory $WorkDir -PassThru
+  # 2026-10：React 桌面前端已移除，界面只有 SSR（无边框 + preload 把窗口控制注入顶栏）。
+  # 所以启动时不再传 --ui，被点的就是 preload 注入的那三个按钮。
+  Start-Process -FilePath $Exe -WorkingDirectory $WorkDir -PassThru
 } else {
-  # Electron 壳的 dev 形态：npx electron .（源码 + 热重载）
-  Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'npx electron . --ui=desktop' -WorkingDirectory $WorkDir -PassThru -WindowStyle Hidden
+  # Electron 壳的 dev 形态：npx electron .（源码直跑）
+  Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'npx electron .' -WorkingDirectory $WorkDir -PassThru -WindowStyle Hidden
 }
 Write-Host "已启动 $(if ($Exe) { $Exe } else { 'npx electron . (dev)' }) (宿主 pid=$($proc.Id))"
 
@@ -559,7 +542,6 @@ Start-Sleep -Seconds 2
 Check ($null -eq (Get-Process -Name 'ada-gateway' -ErrorAction SilentlyContinue)) '关窗后没有遗留 ada-gateway 孤儿进程'
 
 Stop-OurAppProcesses
-if ($vite) { taskkill /pid $vite.Id /T /F 2>&1 | Out-Null }
 
 Write-Host ''
 if ($failures.Count -eq 0) {

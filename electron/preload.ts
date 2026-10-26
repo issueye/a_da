@@ -22,13 +22,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 })
 
-// ── SSR 模式：给页面顶栏注入无边框窗口控制 ──────────────────────────────────
+// ── 无边框窗口控制：给 SSR 页面顶栏注入最小化/最大化/关闭按钮 ─────────────
 //
-// SSR 页面是给浏览器用的，没有 Electron 的自绘标题栏。主窗口仍保持 `frame: false`，
-// 这里把 `.ada-topbar` 变成拖拽区，并在右侧动作区追加最小化/最大化/关闭三个按钮；
-// 按钮走和 desktop-ui 完全相同的 IPC。`--ui=desktop` 不会走到这里（React 自己有标题栏）。
-const uiModeArg = process.argv.find((arg) => arg.startsWith('--a-da-ui-mode='))
-const uiMode = uiModeArg ? uiModeArg.slice('--a-da-ui-mode='.length) : 'desktop'
+// SSR 页面是给浏览器用的，没有 Electron 的自绘标题栏。主窗口保持 `frame: false`，
+// 这里把 `.ada-topbar` 变成拖拽区，并在右侧动作区追加三个按钮；按钮走宿主 IPC。
+// 2026-10：React 桌面前端（`desktop-ui/`）已移除，界面只有 SSR 一种。
 
 const ICON_MINIMIZE =
   '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"/></svg>'
@@ -67,7 +65,6 @@ const CONTROLS_CSS = `
 `
 
 function installSsrWindowControls(): void {
-  if (uiMode !== 'ssr') return
   if (document.getElementById('ada-electron-window-controls')) return
   const topbar = document.querySelector('.ada-topbar')
   if (!topbar) return
@@ -128,12 +125,10 @@ function installSsrWindowControls(): void {
   refreshMaximized()
 }
 
-if (uiMode === 'ssr') {
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', installSsrWindowControls, { once: true })
-  } else {
-    installSsrWindowControls()
-  }
-  // 整页表单提交后会换文档；preload 会重新执行，再兜一次 pageshow。
-  window.addEventListener('pageshow', installSsrWindowControls)
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', installSsrWindowControls, { once: true })
+} else {
+  installSsrWindowControls()
 }
+// 整页表单提交后会换文档；preload 会重新执行，再兜一次 pageshow。
+window.addEventListener('pageshow', installSsrWindowControls)

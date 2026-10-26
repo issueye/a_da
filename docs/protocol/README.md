@@ -60,12 +60,11 @@
 | `GET /rpc` + `Upgrade: websocket` | `relay::ws_handler`：**先鉴权再升级**（Origin / token） |
 | `GET /rpc`（无升级头） | `426 Upgrade Required` |
 | `GET /api/*` | `http_api`：unary 调用（§3） |
-| `GET /`、`/threads/*`、`/overview`、`/providers*`、`/workspaces*`、`/extensions` | **SSR 页面**（`crates/agent-web`，默认 `--web-ui ssr`） |
+| `GET /`、`/threads/*`、`/overview`、`/providers*`、`/workspaces*`、`/extensions` | **SSR 页面**（`crates/agent-web`；2026-10 起是唯一的界面） |
 | `GET /threads/{id}/stream` | SSR 的 SSE 实时更新 |
 | `GET /static/*`、`/ext/{id}/assets/*` | SSR 内嵌静态资源 / 插件资源 |
 | `GET /web-ui/frontend-plugins` | SSR 前端插件自省（**不是** `/api/plugins`） |
-| `GET /`、`GET /assets/*`（`--web-ui desktop`） | desktop-ui 静态产物（目录 → `index.html`） |
-| `POST` 等非 GET/HEAD（除 `/api/*`） | SSR 表单动作；`--web-ui desktop` 时 `405 Method Not Allowed` |
+| `POST` 等非 GET/HEAD（除 `/api/*`） | SSR 表单动作 |
 
 静态资源**不需要 token**（页面只是 JS/CSS，不含用户数据）；要 token 才能打开"输入 token 的页面"是死锁。
 `/rpc` 在升级之前鉴权：Origin 不合法 → `403`，token 不对 → `401`，都是普通 HTTP 状态码。
@@ -311,12 +310,19 @@ curl -i -H 'Authorization: Bearer secret' -H 'If-None-Match: "snap-42"' \
   "seq": 42, "baseSeq": 41,      // 客户端发现不连续 → 主动请求一次全量快照自愈
   "meta": { /* queue / running / runningThreadIds / waitingThreadIds / log /
                config / ui / workspace / activeThreadId / providers / appearance */ },
-  "threads": [{ "id": "…", "title": "…", "workspace": "…", "agentId": "…", "isSubagent": false }],
+  "threads": [{ "id": "…", "title": "…", "workspace": "…", "agentId": "…", "isSubagent": false,
+                "itemCount": 12, "updatedAt": 1761000000000 }],
   "upserted": [{ "threadId": "…", "item": { /* 完整 item */ } }],
   "removed":  [{ "threadId": "…", "itemId": "…" }],
   "itemsWindow": { "from": 740, "to": 822, "total": 822 }
 }
 ```
+
+> 🔴 **`items` 会被裁剪，`itemCount` / `updatedAt` 不会**：快照与增量帧只给
+> "激活会话 / 打开的 Tab / 运行中 / 子智能体"这几种线程带 `items`，其余线程的 `items`
+> 是空数组（压帧体积）。所以判断"这条会话有没有内容""最近活动是什么时候"必须读
+> `itemCount` / `updatedAt`，拿 `items.length` 当判据会把整屏历史会话误判成空会话
+> （实测侧栏只剩一条"新会话"）。
 
 四个环节：
 
@@ -325,9 +331,10 @@ curl -i -H 'Authorization: Bearer secret' -H 'If-None-Match: "snap-42"' \
 2. **宿主侧版本指纹**：`crates/agent-rpc/src/state/store.rs::item_visible_key()`
    （id + 文本长度 + 状态 + 完成时刻 …）；`StateBroadcaster` 按连接记住 `{itemId → 指纹}`，
    只推**指纹变了**的 item；连接首帧 / `baseSeq` 失配 / 有 item 被删 → 走全量或显式 `removed`。
-3. **客户端合并**：`desktop-ui/src/client/snapshot-merge.ts` 维护
-   `Map<threadId, Map<itemId, Item>>`；patch 只 upsert/remove；`meta` 覆盖小字段；
+3. **客户端合并**：SSR 页面在 `crates/agent-web/static/chat.js` 里维护
+   同样的 `Map<threadId, Map<itemId, Item>>`；patch 只 upsert/remove；`meta` 覆盖小字段；
    `seq` 不连续 → 发一次 `session.snapshot` 并全量应用（自愈）。
+   （原 React 客户端的 `desktop-ui/src/client/snapshot-merge.ts` 已随 `desktop-ui/` 移除。）
 4. **分页**：`thread.items.page(threadId, from, count)`（HTTP 侧是
    `GET /api/threads/{threadId}/items?from=&count=`）让"显示更早的 60 条"按需拉取，
    内存里只留窗口。
@@ -335,8 +342,8 @@ curl -i -H 'Authorization: Bearer secret' -H 'If-None-Match: "snap-42"' \
 ### 4.3 🔴 顺序：`upserted` 按 **id** 排序，所以定位只能按 `at`
 
 `upserted` 要保证帧内容可复现，因此按 `(threadId, itemId)` 排序——**到达顺序没有意义**。
-客户端给"本地还没有的卡片"定位就只能按 `at`（`snapshot-merge.ts::insertByItemTime`：
-按时间插入，**等时间戳保持已有相对顺序**）。
+客户端给"本地还没有的卡片"定位就只能按 `at`（`crates/agent-web/static/chat.js` 的
+`insertByItemTime`：按时间插入，**等时间戳保持已有相对顺序**）。
 
 于是有一条必须**两处都守**的不变量：**同一个会话里卡片的 `at` 严格递增**，且与显示顺序一致。
 
@@ -445,9 +452,15 @@ const res = await client.request(THREAD_SEND, { threadId: 't1', prompt: '你好'
 client.on('evt.state.snapshot', (params) => { /* seq 对账 */ })
 ```
 
-`desktop-ui/src/client/ws-client.ts` 是生产客户端实现（**唯一协议客户端**），
-可直接参考它的请求封装、事件订阅、增量帧合并与重连逻辑
-（退避策略在 `desktop-ui/src/client/reconnect-policy.ts`，`verify-wiring` 有结构断言）。
+客户端实现有两条现成参考，都在仓库里（**没有**第三套）：
+
+- **SSR 页面**（`crates/agent-web`）：走 SSE + 表单动作，实时通道的契约见
+  `crates/agent-web/static/chat.js`（EventSource 建流 + `/live` 轮询兜底，
+  `verify-wiring` 有结构断言）；
+- **宿主内的程序化客户端**：`crates/agent-rpc` 的桥接层（`agent-web` 的 `AgentClient` 就是这条）。
+
+原 React 桌面端的 `ws-client.ts` / `reconnect-policy.ts` 已随 `desktop-ui/` 于 2026-10 移除；
+要从历史看那套 WS 客户端，用 git 历史取回。
 
 ---
 

@@ -9,7 +9,6 @@
   },
   "files": [
     "dist-electron/**/*",
-    "desktop-ui/dist/**/*",
     "assets/**/*",
     "!assets/logo_.jpg",
     "package.json"
@@ -23,10 +22,6 @@
         "ada-coding.exe",
         "runner.exe"
       ]
-    },
-    {
-      "from": "desktop-ui/dist",
-      "to": "bin/ui"
     },
     {
       "from": "crates/agent-web/frontend-plugins",

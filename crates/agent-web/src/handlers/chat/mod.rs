@@ -307,7 +307,7 @@ fn approval_picker_html(mode: &str, label: &str, tone: &str, thread_id: &str) ->
             value = value,
             confirm = confirm,
             disabled = if is_current { " disabled" } else { "" },
-            glyph = ui::icon(icon, 13),
+            glyph = ui::icon(icon, 14),
             check = check,
         ));
     }
@@ -934,7 +934,7 @@ pub async fn create_thread(
         .as_deref()
         .map(str::trim)
         .filter(|workspace| !workspace.is_empty());
-    // 模式只在**新建时**可选（开始后不可切，与 desktop-ui 的 ModeSlider 一致）；
+    // 模式只在**新建时**可选（开始后不可切，与 原桌面端 的 ModeSlider 一致）；
     // 未知值按缺省处理，不因为一个畸形参数让建会话失败。
     let mode = form
         .mode
@@ -1055,7 +1055,7 @@ pub async fn select_model(
     }
 }
 
-/// 推理等级：`config.setEffort`（与 desktop-ui 设置项同源，网关落盘并广播快照）。
+/// 推理等级：`config.setEffort`（与 原桌面端 设置项同源，网关落盘并广播快照）。
 pub async fn select_effort(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1153,7 +1153,7 @@ pub async fn send_message(
             )))
         }
     };
-    // 纯图片消息允许发送（文本可以为空）——与 desktop-ui 一致。
+    // 纯图片消息允许发送（文本可以为空）——与 原桌面端 一致。
     if text.is_empty() && images.is_empty() {
         return Ok(redirect(&format!("/threads/{thread_id}")));
     }
@@ -1363,7 +1363,7 @@ pub struct ThreadModeForm {
     mode: String,
 }
 
-/// `POST /threads/{id}/mode`：空会话里选模式（对齐 desktop-ui 的 ModeSlider）。
+/// `POST /threads/{id}/mode`：空会话里选模式（对齐 原桌面端 的 ModeSlider）。
 ///
 /// 只允许空会话——网关对已开始的会话会拒绝（`thread.setMode`），这里把它的
 /// 原因如实回给用户；成功后回跳会话页，顶栏模式徽标与空状态的选中态一起刷新。

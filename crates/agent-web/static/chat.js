@@ -276,8 +276,11 @@
     let listScroll = 0;
     const apply = () => {
       const query = input.value.trim().toLowerCase();
+      // 只匹配会话标题：行里还挂着"3 分钟前""保存"这类装饰文本，整行 textContent
+      // 去比会让"天""前""保存"这种查询命中所有行，等于搜索失效。
       document.querySelectorAll('.ada-thread').forEach((item) => {
-        item.hidden = Boolean(query) && !item.textContent.toLowerCase().includes(query);
+        const title = (item.querySelector('.ada-thread__title')?.textContent || '').toLowerCase();
+        item.hidden = Boolean(query) && !title.includes(query);
       });
       // 工作区树：会话全被过滤掉时把整组藏起来；工作区名或**完整路径**命中
       // 则整组展开、会话全显示——同名目录（E:/a/app 与 D:/b/app）靠路径区分。
@@ -293,6 +296,12 @@
         const hasVisible = Array.from(rows).some((row) => !row.hidden);
         group.hidden = Boolean(query) && !nameHit && !hasVisible;
         if (query && (nameHit || hasVisible) && details) details.open = true;
+      });
+
+      // 「其它工作区」分区标题只在完整列表里成立：搜索一旦收窄，剩下的行已经
+      // 不是"当前工作区 + 别的工作区"了，留着这行只会误导。
+      document.querySelectorAll('[data-ws-section]').forEach((section) => {
+        section.hidden = Boolean(query);
       });
 
       const rows = document.querySelectorAll('.ada-thread');
@@ -446,7 +455,7 @@
   };
 
   /* ── 提问托盘：翻页 + 已填内容保留（data-question-pager 契约）──────────
-   * 多题时一次只显示一题 + 上一题/下一题（desktop-ui 同款交互）。服务端把全部
+   * 多题时一次只显示一题 + 上一题/下一题（原桌面端 同款交互）。服务端把全部
    * 题目都渲染出来、翻页条置 `hidden`；这里按契约激活：题目 >= 2 才显示翻页条
    * 并逐页隐藏。没有这段脚本也能用：翻页条保持隐藏，全部题目平铺（阅读基线）。
    *

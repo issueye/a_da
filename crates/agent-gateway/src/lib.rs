@@ -33,7 +33,6 @@ pub mod link;
 pub mod registry;
 pub mod relay;
 pub mod router;
-pub mod static_ui;
 pub mod supervisor;
 pub mod web;
 pub mod workspaces;

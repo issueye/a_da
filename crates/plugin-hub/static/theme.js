@@ -1,7 +1,7 @@
 /*
  * 主题引导（阻塞式加载，必须早于样式表求值）
  *
- * 规则与 desktop-ui 一致：
+ * 规则与 原桌面端 一致：
  *  - localStorage 里有 a_da_theme 就以它为准；
  *  - 没有记录则跟随系统 prefers-color-scheme；
  *  - 类名只切 html.dark / html.light，颜色通过 CSS 变量整体翻转。

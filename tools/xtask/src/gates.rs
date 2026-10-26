@@ -880,99 +880,69 @@ fn check_fail_direction_is_consumed(root: &Path, rep: &mut Report) -> anyhow::Re
     Ok(())
 }
 
-/// F. 前端重连必须具备四项能力（W6-T6）。
+/// F. SSR 实时通道必须具备五项能力（2026-10 由 W6-T6 的 WS 客户端契约迁移而来）。
 ///
-/// 为什么用**源码断言**而不是前端单测：本仓没有前端测试运行器
-/// （TS 测试已随旧实现整体冻结，`bun test` 会得到 "No tests found"）。
-/// 而这四项是**结构性**要求，源码断言足够精确、毫秒级、且不会误报。
+/// 为什么还要守着：这条通道决定"界面上看到的东西会不会过时"，而它已经踩过两次坑——
+/// 在 `open` 里就认为流可用（SSE 的 200 头在网关连上之前就发出来了，于是"假在线"
+/// 把兜底轮询关掉，断网时就是白屏）、以及没有兜底时断流就停在旧画面。
 ///
-/// 断言的四项：
-/// 1. 退避策略是**独立纯模块**（可独立加载验证，不被客户端模块的副作用拖住）；
-/// 2. 客户端**真的用它**（不许退回固定间隔）；
-/// 3. 有**代次保护**（旧连接的回调不得覆盖新连接状态）；
-/// 4. 断线时**立刻失败在途请求**（不许让调用方干等超时）。
+/// 断言五项（全部落在 `crates/agent-web/static/chat.js`）：
+/// 1. 用浏览器的 `EventSource` 建流——**重连由标准负责**，不自己写退避；
+/// 2. "流可用"只由**收到事件**决定（`markLive` 里停掉兜底轮询）；
+/// 3. 断流（`error`）时标记离线并排下一轮兜底轮询；
+/// 4. 兜底轮询真的打 `/live`；
+/// 5. 回归抗体：`open` 回调里不得调用 `markLive`（"假在线"那个形态）。
 fn check_frontend_reconnect(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
-    let policy_path = "desktop-ui/src/client/reconnect-policy.ts";
-    let client_path = "desktop-ui/src/client/ws-client.ts";
-
-    let Ok(policy) = read(root, policy_path) else {
+    let chat_path = "crates/agent-web/static/chat.js";
+    let Ok(chat) = read(root, chat_path) else {
         rep.violations
-            .push(format!("前端重连退避策略模块 `{policy_path}` 缺失（W6-T6）"));
-        return Ok(());
-    };
-    let Ok(client) = read(root, client_path) else {
-        rep.violations
-            .push(format!("前端客户端 `{client_path}` 缺失"));
+            .push(format!("SSR 实时通道脚本 `{chat_path}` 缺失"));
         return Ok(());
     };
 
-    // 1. 策略模块：必须有导出函数 + 上限常量
-    if !policy.contains("export function reconnectDelayMs") {
-        rep.violations
-            .push(format!("`{policy_path}` 必须导出 `reconnectDelayMs`"));
-    }
-    if !policy.contains("RECONNECT_MAX_MS") {
-        rep.violations
-            .push(format!("`{policy_path}` 必须有退避**上限**常量（纯指数会退化成「几小时后再连」）"));
-    }
-    if !policy.contains("JITTER") {
+    if !chat.contains("new EventSource(") {
         rep.violations.push(format!(
-            "`{policy_path}` 必须带**抖动**（否则多客户端同时重连会惊群）"
+            "`{chat_path}` 必须用 `EventSource` 建实时流（重连交给浏览器标准，别自己写退避）"
         ));
     }
 
-    // 2. 客户端真的用了它
-    if !client.contains("from './reconnect-policy'") || !client.contains("reconnectDelayMs(") {
+    if !chat.contains("const markLive = () =>") || !chat.contains("stopPolling()") {
         rep.violations.push(format!(
-            "`{client_path}` 必须使用 `reconnect-policy` 的 `reconnectDelayMs`（不许自写固定间隔）"
+            "`{chat_path}` 的 `markLive` 必须停掉兜底轮询（否则流活了还在每 2 秒打一次 `/live`）"
         ));
     }
 
-    // 3. 代次保护：必须有代次计数 + 回调里的比对
-    if !client.contains("connectionGeneration") {
+    let err_ok = match_region(&chat, "source.addEventListener('error'")
+        .is_some_and(|region| region.contains("__adaStream = false") && region.contains("schedulePoll"));
+    if !err_ok {
         rep.violations.push(format!(
-            "`{client_path}` 缺少**代次保护**（`connectionGeneration`）：\
-             旧连接的异步回调会覆盖新连接的 url/token，导致多条 socket 并存"
-        ));
-    }
-    let guard_checks = client.matches("gen !== this.connectionGeneration").count();
-    if guard_checks < 3 {
-        rep.violations.push(format!(
-            "`{client_path}` 的代次比对只出现在 {guard_checks} 处（onopen/onmessage/onclose 至少各一处）"
+            "`{chat_path}` 的 `error` 处理里必须标记离线并排下一轮兜底轮询\
+             （`__adaStream = false` + `schedulePoll()`）"
         ));
     }
 
-    // 4. 断线立刻失败在途请求
-    if !client.contains("failAllPending") || !client.contains("pendingRequests.clear()") {
+    if !chat.contains("/live") {
         rep.violations.push(format!(
-            "`{client_path}` 断线时必须**立刻失败在途请求**（`failAllPending` + `pendingRequests.clear()`），\
-             否则调用方要干等 15s 超时"
-        ));
-    }
-    // `onclose` 里必须调它（取 `onclose` 的花括号体）
-    let onclose_ok = match_region(&client, "socket.onclose = () =>").is_some_and(|region| {
-        region.contains("failAllPending")
-    });
-    if !onclose_ok {
-        rep.violations.push(format!(
-            "`{client_path}` 的 `onclose` 里没有调用 `failAllPending`"
+            "`{chat_path}` 必须有 `/live` 轮询兜底（SSE 断开期间界面不能停在旧画面）"
         ));
     }
 
-    // 5. 回归抗体：固定间隔重连不许回来
-    if client.contains("}, 2000)") {
-        rep.violations.push(format!(
-            "`{client_path}` 又出现了固定 2000ms 重连（W6-T6 修掉的形态）"
-        ));
+    if let Some(region) = match_region(&chat, "source.addEventListener('open'") {
+        if region.contains("markLive") {
+            rep.violations.push(format!(
+                "`{chat_path}` 不许在 `open` 里调 `markLive`：SSE 的 200 头在网关连上之前就发出去了，\
+                 那会提前关掉兜底轮询（断网时实测是白屏）"
+            ));
+        }
     }
 
     if rep
         .violations
         .iter()
-        .all(|v| !v.contains("desktop-ui/src/client"))
+        .all(|v| !v.contains("crates/agent-web/static/chat.js"))
     {
         rep.notes.push(
-            "前端重连：退避（指数+封顶+抖动）、代次保护、断线清空在途请求 均就位".to_string(),
+            "SSR 实时通道：EventSource 建流 + 事件才算在线 + error 排兜底 + /live 轮询 均就位".to_string(),
         );
     }
     Ok(())

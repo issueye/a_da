@@ -21,13 +21,10 @@ cargo_target_ada/
 .workbuddy/
 .zcode/
 
-desktop-ui/bun.lock
-
 # 根目录的包管理器锁文件：本地生成物，不入库。
-# 仓库**真正跟踪**的锁文件只有两个：`Cargo.lock` 与 `desktop-ui/package-lock.json`
-# （前端依赖锁在 desktop-ui 里）。
-# 下面两条**锚定根目录**，不要写成不带 `/` 的 `package-lock.json`——那会把
-# desktop-ui 那份一起忽略掉。
+# 仓库**真正跟踪**的锁文件只有 `Cargo.lock`（2026-10：`desktop-ui/` 移除后，
+# 前端依赖锁也一并消失）。
+# 下面三条**锚定根目录**，不要写成不带 `/` 的 `package-lock.json`。
 /bun.lock
 /bun.lockb
 /package-lock.json

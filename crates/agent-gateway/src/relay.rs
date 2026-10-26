@@ -392,12 +392,12 @@ impl Gateway {
 
 /// axum 路由的共享状态。
 ///
-/// `site` 是网页访问用的前端产物；`None` 时 `/` 返回一页说明，`/rpc` 完全不受影响。
+/// 只装网关自己的东西：页面由 `agent-web` 的 SSR 子 service 提供（2026-10：
+/// React 桌面前端 `desktop-ui/` 已移除，不再有“静态前端产物托管”这个字段）。
 #[derive(Clone)]
 pub struct AppState {
     pub gateway: Arc<Gateway>,
     pub default_workspace: String,
-    pub site: Option<Arc<crate::static_ui::StaticSite>>,
 }
 
 /// 已升级连接的**适配层**：对外保持 `tungstenite::Message` 语义。

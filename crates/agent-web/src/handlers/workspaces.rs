@@ -1,10 +1,10 @@
 //! 工作区：侧栏树的分组、添加/选择工作区。
 //!
-//! 与 desktop-ui 的口径保持一致：
+//! 与 原桌面端 的口径保持一致：
 //!
 //! - **工作区 = 会话属性**：同一个 agent 进程能看到所有工作区的会话，所以侧栏树是
 //!   "快照里的会话按 `workspace` 分组"，切换工作区不需要重连、也不换 agent；
-//! - **选择工作区 = 设当前项目 + 打开/新建一条该工作区的会话**（desktop-ui 的
+//! - **选择工作区 = 设当前项目 + 打开/新建一条该工作区的会话**（原桌面端 的
 //!   `setActiveProject()` + `createThread(ws)` 是同一套动作）；
 //! - **添加工作区 = 选目录**：目录里没有会话时选它就是"加进来"，
 //!   选完建一条会话，它就会出现在侧栏树里。
@@ -59,7 +59,7 @@ fn safe_thread_id(value: Option<&str>) -> Option<&str> {
     })
 }
 
-/// 路径归一化：与 desktop-ui `normalizePathKey` 同一口径
+/// 路径归一化：与 原桌面端 `normalizePathKey` 同一口径
 /// （斜杠统一、去尾斜杠、大小写折叠）。
 pub(super) fn workspace_path_key(path: &str) -> String {
     path.trim()
@@ -70,10 +70,13 @@ pub(super) fn workspace_path_key(path: &str) -> String {
 
 /// 把侧栏会话按工作区归纳成树。
 ///
-/// 规则（逐条对应 desktop-ui 的 `workspaceGroups`）：
+/// 规则（逐条对应 原桌面端 的 `workspaceGroups`）：
 /// - 空 `workspace` 的会话归到当前工作区（再空就归"默认工作区"）；
 /// - **当前工作区即使没有任何会话也要出现**（否则用户选完目录看不到它）；
-/// - 组内按会话时间倒序；组间"当前工作区优先"，其余按最近会话倒序。
+/// - 组内按**最近活动**倒序；组间"当前工作区优先"，其余按最近活动倒序。
+///
+/// 排序键是 `updated_at`（最后一张卡片的 `at`）而不是创建时刻：只按创建时间排
+/// 会让聊了一整天的老会话沉到刚建的空会话下面。
 pub(super) fn workspace_groups(
     threads: &[ThreadRow],
     active_workspace: &str,
@@ -96,8 +99,9 @@ pub(super) fn workspace_groups(
         .map(|mut group| {
             group.threads.sort_by(|left, right| {
                 right
-                    .created_at
-                    .cmp(&left.created_at)
+                    .updated_at
+                    .cmp(&left.updated_at)
+                    .then_with(|| right.created_at.cmp(&left.created_at))
                     .then_with(|| left.id.cmp(&right.id))
             });
             group.count = group.threads.len();
@@ -149,7 +153,7 @@ fn ensure_group(
 fn newest(threads: &[ThreadRow]) -> u64 {
     threads
         .iter()
-        .map(|thread| thread.created_at)
+        .map(|thread| thread.updated_at)
         .max()
         .unwrap_or(0)
 }
@@ -772,6 +776,7 @@ mod tests {
             running: false,
             item_count: 0,
             created_at: at,
+            updated_at: at,
         }
     }
 

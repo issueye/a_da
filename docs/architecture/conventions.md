@@ -108,7 +108,7 @@
 - `session/types.rs` 用 serde `alias` 同时接受 `duration_ms` 与 `durationMs`（老会话落盘的是 snake_case）；
 - `session/manager.rs` 重建 `Item::Tool`（读历史 / 做快照）时，字段为 `None` 会从 content JSON 里回捞
   （两种命名都试），再交给 `state/store.rs` 的 `finish_tool_call` 落到工具条目上；
-- 界面 `desktop-ui/src/components/Transcript.tsx` 同理：
+- 界面（SSR 的 `crates/agent-web/src/handlers/chat/rows.rs`）同理：
   `item.durationMs ?? structuredData?.duration_ms ?? structuredData?.durationMs`，状态徽章读 `structuredData.status`。
 
 **坑的形状**：任何"不走执行器"的 `ToolResult`（拦下、超时、兜底、子智能体里的短路分支）如果直接把业务文本
@@ -158,7 +158,7 @@
 ```bash
 cargo build --workspace                       # 基座 + 节点 + 桥接 + 产品
 cargo test --workspace -- --test-threads=1     # 门二（必须串行：有共享全局态的用例）
-bun run typecheck                             # 门一：desktop-ui 的 tsc --noEmit
+bun run typecheck                             # 门一：Electron 主进程/预加载的 bun 构建（TS 前端已移除）
 cargo xtask verify-wiring                     # 接线门：方法覆盖 / 描述符单源 / 端口实现 / 依赖方向
 cargo xtask verify-spec                       # 声明门：产品/预设 spec 校验
 cargo xtask verify-docs                       # 文档门：归档字样白名单 + 协议文档事件主题同步

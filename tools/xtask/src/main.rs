@@ -170,22 +170,9 @@ fn ship_product(product: &str, gui: bool, out_dir: &str) -> anyhow::Result<()> {
         println!("\x1b[1;36m           a_da 生产出包流水线 (Ship: ada-electron)              \x1b[0m");
         println!("\x1b[1;36m=================================================================\x1b[0m\n");
 
-        println!("\x1b[33m[步骤 1/2]\x1b[0m 检查并构建前端静态产物...");
-        let frontend_dist = Path::new("desktop-ui").join("dist");
-        if !frontend_dist.exists() || !frontend_dist.join("index.html").exists() {
-            let npm_cmd = if cfg!(windows) {
-                let mut c = Command::new("cmd");
-                c.args(["/C", "npm", "--prefix", "desktop-ui", "run", "build"]);
-                c
-            } else {
-                let mut c = Command::new("npm");
-                c.args(["--prefix", "desktop-ui", "run", "build"]);
-                c
-            };
-            run_command_supervised(npm_cmd, "npm run build (desktop-ui)", Duration::from_secs(180))?;
-        }
-
-        println!("\x1b[33m[步骤 2/2]\x1b[0m 执行 Electron 构建并打包目录 (electron:pack)...");
+        // 2026-10：前端产物（desktop-ui）已移除，界面由网关内置的 SSR 提供，
+        // 所以出包只剩一步：Electron 主进程构建 + electron-builder 打包。
+        println!("\x1b[33m[步骤 1/1]\x1b[0m 执行 Electron 构建并打包目录 (electron:pack)...");
         let pack_cmd = if cfg!(windows) {
             let mut c = Command::new("cmd");
             c.args(["/C", "bun", "run", "electron:pack"]);

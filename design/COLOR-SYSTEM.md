@@ -4,7 +4,7 @@
 |---|---|
 | 日期 | 2026-10-24 |
 | 输入 | `assets/logo.png`（512×512，黑天鹅 + 暖米白圆角底） |
-| 性质 | **主题设计 + Phase 1 已落地**（ssr-h / plugin-hub，2026-10-24）；desktop-ui 为 Phase 2（见 §7） |
+| 性质 | **主题设计 + 已落地**（ssr-h / plugin-hub，2026-10-24）；原计划的“原桌面端 Phase 2”**已取消**（React 桌面端 2026-10 整体移除） |
 | 依据 | LOGO 实际取色、WCAG 对比度计算、现有 `design/tokens.css` 令牌结构 |
 
 ---
@@ -175,16 +175,15 @@
 - 验收：`cargo test` 184 + 13（含深浅令牌覆盖与产物一致性门）、
   浅/深 × 空会话/有内容截图（`target/repro/theme-{light,dark}-{empty,thread}.png`），对比度见 §5。
 
-**Phase 2 待做**（desktop-ui）：见下方 `desktop-ui` 行。它有自己的 `tailwind.config.js`
-与 29 个文件里的 `blue-*` / 大量 `zinc-*` 工具类，不能用同一份 `--ph-*` 直接替换，
-需要按语义收敛（建议先主操作/选中态，再装饰性细节），每批单独截图验收。
+**原计划的“原桌面端 Phase 2”已取消**：那份 React 前端（`desktop-ui/`）已于 2026-10 整体移除，
+现在**没有第二套颜色体系需要收敛**——`design/tokens.css` 是唯一真源，
+消费方只剩 `plugin-hub` 与 `agent-web`（两者共用同一份构建产物）。
 
 ### 消费方现状
 
 | 消费方 | 颜色来源 | 改动点 |
 |---|---|---|
-| `plugin-hub` / `ssr-h` | `design/tokens.css`（唯一真源）→ Tailwind 构建 `app.css` | 改令牌 + 重新构建并同步产物 |
-| `desktop-ui` | 自己的 `tailwind.config.js`（`primary: #3b82f6`）+ 29 个文件里的 `blue-*` 工具类 | 改 `primary` 配置 + 批量替换 `blue-*`（或用 `primary` 语义类） |
+| `plugin-hub` / `agent-web`（SSR） | `design/tokens.css`（唯一真源）→ Tailwind 构建 `app.css` | 改令牌 + 重新构建并同步产物 |
 | 二进制/图标 | `assets/logo.png` / `.ico` | 不改 |
 
 ### 步骤
@@ -196,9 +195,7 @@
    plugin-hub 同类处一并检查。
 3. **重建产物**：按 `design/tokens.css` 头部命令重建 Tailwind 输出，并同步到
    `ssr-h/static/app.css`（`cargo test` 会校验两份一致）。
-4. **desktop-ui 跟随**：`tailwind.config.js` 的 `primary.DEFAULT/hover` 改为墨色/纯黑，
-   把 29 个文件里的 `blue-*` 收敛到 `primary` 语义色（建议一次只改主操作与选中态，
-   再改装饰性用法）。
+4. ~~**原桌面端跟随**~~（**已取消**）：那份 React 前端已整体移除，无需再收敛它的 `blue-*`。
 5. **验收**：
    - `cargo test --workspace -- --test-threads=1`（含 `ui_scale` 的令牌/标尺门）
    - 深浅主题逐页截图（聊天页 / 空会话 / 审批 / 供应商插件页 / 工作区弹窗）
@@ -212,8 +209,7 @@
 - **暗色反转需要新令牌**：`--ph-on-brand` 是必须项，否则主按钮在暗色下白字压白底。
 - **语义色不可被主色吞掉**：主按钮变黑后，危险按钮必须是砖红实底或红描边，
   不能也做成黑色（否则"删除"和"保存"长得一样）。
-- **迁移面积**：desktop-ui 的 `blue-*` 有 29 个文件，建议分两批（主操作/选中态 → 装饰性细节），
-  每批单独截图验收。
+- ~~**迁移面积**~~：原计划要改桌面端 29 个文件的 `blue-*`；该前端已移除，**迁移面积归零**。
 
 ---
 

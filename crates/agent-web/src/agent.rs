@@ -120,7 +120,7 @@ impl AgentClient {
 
     /// 推理等级（`config.setEffort`：`low | medium | high | max`）。
     ///
-    /// 与 desktop-ui 的设置项同源：网关落在 `config.json` 的 `effort` 并广播快照，
+    /// 与 原桌面端 的设置项同源：网关落在 `config.json` 的 `effort` 并广播快照，
     /// 不在本进程里留第二份状态。
     pub async fn set_effort(&self, effort: &str) -> Result<Value> {
         self.rpc("config.setEffort", json!({ "effort": effort }))
@@ -192,7 +192,7 @@ impl AgentClient {
 
     /// 把某个目录设为当前工作区（`workspace.add`：设 active project + 记入会话目录索引）。
     ///
-    /// 与 desktop-ui 的 `setActiveProject` 同源：它也是"先记工作区、再新建会话"。
+    /// 与 原桌面端 的 `setActiveProject` 同源：它也是"先记工作区、再新建会话"。
     pub async fn add_workspace(&self, path: &str) -> Result<Value> {
         self.rpc("workspace.add", json!({ "path": path })).await
     }

@@ -1,6 +1,6 @@
 //! 提问（`ask_user`）的归一化、提取与作答表单解析。
 //!
-//! 三件事，各有一个入口，语义都对齐 desktop-ui 的 `question-data.ts`（不要在
+//! 三件事，各有一个入口，语义都对齐 原桌面端 的 `question-data.ts`（不要在
 //! 托盘/插件里再各自推演一遍）：
 //!
 //! 1. [`normalize_question`]：把 `details.question` 摊成统一的 [`PendingQuestion`]。
@@ -159,7 +159,7 @@ pub fn normalize_question(question_val: &Value, call_id: &str) -> Option<Pending
 /// 从当前会话 items 里提取待答提问（时间正序）。
 ///
 /// 逆序扫 `ask_user` + `awaiting` 的工具卡（`details.question` 优先，回落 `args`）；
-/// 遇到**非排队**的 user 消息就停——提问已翻篇（desktop-ui 同款判据），但排队中的
+/// 遇到**非排队**的 user 消息就停——提问已翻篇（原桌面端 同款判据），但排队中的
 /// 消息不算翻篇（它还在等当前回答结束）。
 pub fn pending_questions_from_items(raw_items: &[Value]) -> Vec<PendingQuestion> {
     let mut found = Vec::new();

@@ -31,11 +31,15 @@
 
 ### 1. MCP client　`待拍板`
 
-- **现状**：全仓 `grep mcp` **零命中**（`crates/` 与 `desktop-ui/` 都没有），设计文档也从未提及。
+- **现状**：无 MCP 实现（`grep mcp` 只命中文档与代码注释）。**底座第一块已就位**：
+  `Access::External` 已能表达"作用域不可静态描述的外部工具"（外部进程 / 远端 / 第三方脚本），
+  审批的读写性改从**描述符**取（不再按工具名回查注册表——那里只有内置工具）；
+  插件自定义工具也已改用 `External`（原先是谎称 `Mutates { Batch("paths") }` + 回滚承诺）。
 - **已评估的最小路径**：stdio 传输 + `tools/list` / `tools/call` 桥接进 `ToolCatalog`
   （`mcp__<server>__<tool>` 前缀），配置放 `~/.a-da/mcp.json`；resource / prompt 后置。
 - **需要决定**：是否接受"外部进程可以注册工具"，以及它的工具按什么分类——
-  按 `is_readonly` 的失败安全语义（AGENTS.md §2），**未登记的一律按写操作处理**（该审批就审批）。
+  按失败安全语义（AGENTS.md §2），**外部工具一律按写操作处理**（该审批就审批）；
+  想让它进只读档，得先有"用户逐工具授权"这条路（`auto_approve` 现在是幽灵开关，见 §一.2）。
 
 ### 2. 审批的持久化 allowlist（"以后都允许"）　`未排期`
 
@@ -79,8 +83,8 @@
 ### 7. `stats.promptChars` 缺前端消费者　`未排期`
 
 - **现状**：W6-T2 把它从硬编码 `{1200, 800}` 改成了**实测值**（系统提示词长度 +
-  工具 schema 字符数之和），但前端 `desktop-ui/src/utils/context-breakdown.ts`
-  **从未被调用**，`systemChars` 输入也没人提供——界面仍在客户端估算。
+  工具 schema 字符数之和），但 SSR 界面**仍未消费它**，上下文用量仍在客户端估算
+  （原 React 版的 `utils/context-breakdown.ts` 已随 `desktop-ui/` 移除）。
 - **最小实现路径**：在上下文用量 Popover 打开时调 `stats.promptChars`，
   把它作为 `buildContextBreakdown` 的输入。
 
@@ -280,16 +284,20 @@
 - **Rust 测试必须串行**：`cargo test --workspace -- --test-threads=1`。
   根因是共享全局态（`AppHome` 单例、若干测试读 `~/.a-da`）；
   测试默认 home 已指向临时目录，但仍有个别用例共享进程级状态。
-- **两个独立的门**：`bun run typecheck` 与 `cargo test` **都要过**，别只跑一个。
+- **两个独立的门**：`bun run typecheck`（Electron 主进程/预加载的 bun 构建）与 `cargo test` **都要过**，
+  别只跑一个。
 - **TS 测试已整体冻结**：`bunfig.toml` 已把旧实现排除在测试发现之外，
   跑 TS 测试只会得到 "No tests found"。**门就是 `cargo test` 与 `bun run typecheck`。**
+  （2026-10：`desktop-ui/` 移除后，仓库里**已没有前端 TS 源文件**；`typecheck` 现在跑的是
+  `electron/` 的 bun 构建）
 - **打包产物检查**：产物是 GUI 子系统（无控制台），自动化通道到不了管道，
   所以二进制检查只能用应用自己的启动日志当证据（详见 `docs/architecture/conventions.md` §17）。
 - **冷启动退化未测量**：打包形态多了"spawn 主机 + 握手 + 首帧快照"三步，
   只验过"能画出首帧"，没有与进程内形态对比过数字。
-- **前端重连**：W6-T6 已改为指数退避（500ms 起 / 30s 封顶 / ±20% 抖动）+ 代次保护 +
-  断线立刻失败在途请求；策略在 `desktop-ui/src/client/reconnect-policy.ts`，
-  由 `cargo xtask verify-wiring` 的结构性断言守住。
+- **实时通道**：SSR 页面用 `EventSource` 建流（重连由浏览器标准负责），事件到达才算在线，
+  断流期间用 2 秒一轮的 `/live` 轮询兜底；实现在 `crates/agent-web/static/chat.js`，
+  由 `cargo xtask verify-wiring` 的结构性断言守住。（原 React 客户端那套自写指数退避 +
+  代次保护已于 2026-10 随 `desktop-ui/` 移除。）
 - **CLI `run`**：W6-T3 已从"只建会话就退出"改为真执行（装配 → 跑一轮 → 落盘），
   退出码 0/1/2 分明；`--dry-run` 可离线验证装配。
 - **网关不回收自己拉起的子进程（进程内优雅关闭会被拖住）**　`未排期`
@@ -337,8 +345,11 @@
 ## 五、契约字段的界面消费者审计（2026-10-11）
 
 方法：把 `crates/agent-proto/client-ts/dto.ts`（界面契约）里 171 个字段逐个在
-`desktop-ui/src/**` 里查标识符。**28 个字段界面从不读**，逐个定性如下——
+界面源码里查标识符。**28 个字段界面从不读**，逐个定性如下——
 **不是都该修**，但每一条都要有归属（接线 / 明确留给别的客户端 / 删声明）。
+
+> 2026-10 注：那次审计的检索对象是已移除的 `desktop-ui/`。下面这份逐条定性仍有价值
+> （它记的是**契约字段该不该存在**），但“界面读不读”需要按 SSR 重新核一遍。
 
 ### 已接线（本轮修掉）
 

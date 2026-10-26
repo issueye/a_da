@@ -3,7 +3,7 @@
 本目录按**功能域**组织，描述仓库的**当前**实现：
 
 > 纯 Rust 微内核（`crates/agent-base`）+ 节点/桥接/网关三层（`agent-node` / `agent-rpc` / `agent-gateway`）
-> + 内置 SSR 网页界面（`agent-web`）+ Electron 桌面壳（`electron/` + `desktop-ui/`）
+> + 内置 SSR 网页界面（`agent-web`）+ Electron 桌面壳（`electron/`，只加载 SSR 页面）
 > + TS 插件运行时（`crates/ts-engine`）。
 
 **历史文档已清理**（2026-10-18）：TS/Bun 时代的实现（Bun 宿主 + GPUIX 客户端 + TS 侧 agent）、

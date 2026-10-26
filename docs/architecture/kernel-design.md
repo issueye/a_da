@@ -15,8 +15,9 @@
 > **通用 AI 助手 / 生活类助手 / CODING 助手**（以及后续任何同类）。
 > 依据：本仓当前实现的实测（证据见附录 A）。**没有实测依据的结论不写。**
 >
-> 归档的含义要说清楚：TS 的**客户端类型**（`desktop-ui` 需要的 `ClientSnapshot`/`Item` 类型）仍由生成器产出——
-> 归档的是 **agent 实现**，不是"UI 不写 TS"。TS 也仍可作为**插件代码的运行时**（`ada-ts-engine` 沙箱），
+> 归档的含义要说清楚：TS 时代的**客户端类型生成**（`crates/agent-proto/client-ts/`）仍保留——
+> 归档的是 **agent 实现**，不是"UI 不写 TS"。它现在的消费者是**协议契约与外部客户端**
+> （原 React 桌面端已于 2026-10 移除）。TS 也仍可作为**插件代码的运行时**（`ada-ts-engine` 沙箱），
 > 那是一个可选适配器，不是设计基准。
 
 ---
@@ -375,10 +376,10 @@ impl ProductBuilder {
 | 关注点 | 设计 |
 |---|---|
 | 传输 | `agent-host` 提供 `inproc`（同进程库调用）、`ws`（现协议文档 §1.1 的唯一远程传输，含 token 握手）、`cli`（headless，验证"零 UI"）三种宿主，产品在 `transport` 里声明 |
-| 进程角色 | 保留"单 exe 双角色"（`--host`）形态：`desktop-ui` 与 GPUIX 客户端既可直接 lib 调用，也可 spawn 自己当主机 |
+| 进程角色 | 保留"单 exe 双角色"（`--host`）形态：客户端既可直接 lib 调用，也可 spawn 自己当主机 |
 | 启动期自检 | `validate()` + `conformance` 的快速子集在启动时跑；能力位与声明不一致 → 直接失败（不许"静默降级"） |
 | 交付 | 每个产品一个单文件 exe；`cargo xtask ship --product <id>` 统一产出（沿用现 `scripts/build.ts` 的 PE 补丁等步骤） |
-| 客户端类型 | `crates/agent-proto/client-ts/` 生成物；`desktop-ui` 与 GPUIX 客户端 import 它，不再各写一份 DTO |
+| 客户端类型 | `crates/agent-proto/client-ts/` 生成物；任何客户端 import 它，不再各写一份 DTO（2026-10：仓库内的 React 桌面端已移除，生成物作为协议契约继续供给外部客户端） |
 
 ---
 

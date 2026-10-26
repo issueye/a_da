@@ -146,7 +146,6 @@ fn app_with_web(gateway: Arc<Gateway>, workspace: &str) -> Router {
     let state = AppState {
         gateway: gateway.clone(),
         default_workspace: workspace.to_string(),
-        site: None,
     };
     let web = agent_web::router(web_state(gateway, workspace));
     router_with_web(state, web)
@@ -273,7 +272,6 @@ async fn browser_login_with_gateway_token_or_pairing_code_gets_a_session_cookie(
     let state = AppState {
         gateway,
         default_workspace: workspace.clone(),
-        site: None,
     };
     let app = router_with_web(state, agent_web::router(web));
 
@@ -395,7 +393,6 @@ async fn public_url_allows_reverse_proxy_host_and_origin() {
     let state = AppState {
         gateway,
         default_workspace: workspace.clone(),
-        site: None,
     };
     let app = router_with_web(state, agent_web::router(web));
 

@@ -3,7 +3,7 @@
 //! 悬浮卡片（收起药丸 + 展开面板）由前端插件 `frontend-plugins/task-plan/` 渲染，
 //! 这里只保留**推演语义**（唯一真源）与工具行展开区共用的 [`TodoList`]。
 //!
-//! 与 desktop-ui 的 `utils/todo-plan.ts` 保持同一套语义：
+//! 与 原桌面端 的 `utils/todo-plan.ts` 保持同一套语义：
 //!
 //! - `set`：**替换**整份计划（基线）；
 //! - `update`：**增量合并**（按 id 命中就改，没命中就追加）；

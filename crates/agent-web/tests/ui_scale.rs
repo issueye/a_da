@@ -169,7 +169,7 @@ fn app_css_is_the_same_build_on_both_sides() {
     assert!(
         hub == ssr,
         "两份 app.css 内容不同：ssr-h 的样式与 plugin-hub 已经分叉。\n\
-         重新构建：bun desktop-ui/node_modules/tailwindcss/lib/cli.js \
+         重新构建：bunx tailwindcss@3.4.19 \
          -c crates/plugin-hub/tailwind.config.cjs \
          -i crates/plugin-hub/static/input.css \
          -o crates/plugin-hub/static/app.css --minify\n\

@@ -2,7 +2,7 @@
    必须排在 @tailwind 之前——@import 出现在其它规则之后会被 CSS 规范忽略。 */
 @import "../../../design/tokens.css";
 
-/* 视觉语言与 desktop-ui 对齐：zinc 中性色 + 蓝色主色、1px 细边框、极轻投影。
+/* 视觉语言与 原桌面端 对齐：zinc 中性色 + 蓝色主色、1px 细边框、极轻投影。
    颜色全部走 CSS 变量，亮/暗主题只切换 `html.dark`。 */
 @tailwind base;
 @tailwind components;

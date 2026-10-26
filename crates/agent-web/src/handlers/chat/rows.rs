@@ -39,7 +39,7 @@ pub(super) fn tool_status_tone(raw: &str) -> String {
 
 /// 工具名 → 界面中文标签。
 ///
-/// 与 desktop-ui 的 `TOOL_LABEL`（`desktop-ui/src/utils/tool-labels.ts`）保持同一套文案：
+/// 与 原桌面端 的 `TOOL_LABEL` 保持同一套文案：
 /// 工具名真源在 agent 的注册表里，这里只做"能查到就翻译，查不到就显示原名"。
 pub(super) fn tool_label(name: &str) -> String {
     match name {
@@ -166,7 +166,7 @@ pub(super) const PATH_TOOLS: [&str; 5] = [
 
 /// 工具目标对象（文件名 / 命令 / 查询词）与它的目录部分。
 ///
-/// 对齐 desktop-ui `toolTarget` 的思路：`git` 用 action 翻译成人话，
+/// 对齐 原桌面端 `toolTarget` 的思路：`git` 用 action 翻译成人话，
 /// 路径类工具拆成"文件名 + 目录"，其余直接取参数里的主字段。
 pub(super) fn tool_target(name: &str, args: &Value) -> (String, String) {
     if name == "git" {
@@ -293,7 +293,7 @@ pub(super) fn pick<'a>(value: &'a str, fallback: &'a str) -> &'a str {
     }
 }
 
-/// 工具图标 key：与 desktop-ui `renderToolIcon` 的同一套语义。
+/// 工具图标 key：与 原桌面端 `renderToolIcon` 的同一套语义。
 pub(super) fn tool_icon(name: &str) -> String {
     // 🔴 这里必须返回**注册过的**图标键（`icons.rs` 里以 `i-` 开头）。
     // 早先返回的是 "folder" / "terminal" 这类裸名，查表永远落空，
@@ -342,7 +342,7 @@ pub(super) fn last_line_preview(text: &str) -> String {
 
 /// 持续时长文案。
 ///
-/// - 工具：`durationMs` 是真实耗时，按 desktop-ui 的做法显示毫秒值；
+/// - 工具：`durationMs` 是真实耗时，按 原桌面端 的做法显示毫秒值；
 /// - 思考：只有起止时间差 ≥1 秒才显示——恢复出来的历史会话里 `at` 与
 ///   `endedAt` 往往是同一个时间戳，显示"0 秒"只是噪声，不如不显示。
 pub(super) fn elapsed_label(value: &Value, status: &str) -> String {
@@ -813,7 +813,7 @@ pub(super) fn approval_mode(snapshot: &Value, config: &Value) -> String {
         .to_string()
 }
 
-/// 审批档位的中文标签（与 desktop-ui `APPROVAL_OPTIONS` 同一套文案）。
+/// 审批档位的中文标签（与 原桌面端 `APPROVAL_OPTIONS` 同一套文案）。
 pub(super) fn approval_label(mode: &str) -> String {
     match mode {
         "full" | "yolo" => "完全访问",
@@ -825,7 +825,7 @@ pub(super) fn approval_label(mode: &str) -> String {
     .to_string()
 }
 
-/// 推理等级的真值：`low | medium | high | max`（与 desktop-ui 设置项同源）。
+/// 推理等级的真值：`low | medium | high | max`（与 原桌面端 设置项同源）。
 ///
 /// 快照优先（运行时值），其次是 `/api/config` 的 `saved` / 顶层（旧网关）。
 /// 缺省 `max` = 自动（与 [`crate::ui::model_picker::normalize_effort`] 口径一致）。
@@ -974,6 +974,10 @@ pub(super) fn empty_conversation_html(snapshot: &Value, thread_id: &str) -> Opti
 /// - **没有真实会话的工作区**补一条最新的空会话作为占位。agent 启动时会先落一个空的
 ///   "新会话"，全列出来会淹没真实会话；但把空会话一律丢掉又会让
 ///   "刚添加、还没说话的 beta 工作区"在树里消失——所以只给空工作区留一条。
+///
+/// 🔴 "有内容"读的是 `ThreadRow.item_count`，它来自网关的 `itemCount` 字段。
+/// **不能自己数 `items.len()`**：快照与增量帧为压体积会裁剪非激活会话的 `items`
+/// （见 `agent_rpc::state::snapshot`），自己数会把历史会话全判成空会话。
 pub(crate) fn thread_rows(snapshot: &Value, active_thread_id: &str) -> Vec<ThreadRow> {
     let running = running_ids(snapshot);
     let rows: Vec<ThreadRow> = array_at(snapshot, "threads")
@@ -1335,5 +1339,95 @@ mod tests {
              "usage": {"promptTokens": 100, "completionTokens": 10}}
         ]});
         assert_eq!(turn_stats(&snapshot, &no_cache).cache_hit, None);
+    }
+
+    fn snap(threads: Value) -> Value {
+        serde_json::json!({ "activeThreadId": "t-new", "threads": threads })
+    }
+
+    /// 🔴 快照裁剪过 `items` 的历史会话，**不许**被当成空会话清出侧栏。
+    ///
+    /// 网关为了压帧体积，只给"激活 / 打开的 Tab / 运行中 / 子智能体"这几种会话带
+    /// `items`，其余会话的 `items` 是空数组（`agent_rpc::state::snapshot`）。
+    /// 早先这里拿 `items.len()` 判空 → 用户看到的是"当前工作区只剩一条新会话"，
+    /// 历史会话全消失（实际都还在盘上）。判据必须是网关给的 `itemCount`。
+    #[test]
+    fn trimmed_threads_stay_in_the_sidebar() {
+        let rows = thread_rows(
+            &snap(serde_json::json!([
+                {
+                    "id": "t-old-1", "title": "会话 A", "workspace": "E:/proj",
+                    "createdAt": 1_000, "updatedAt": 9_000,
+                    "itemCount": 12, "items": []
+                },
+                {
+                    "id": "t-old-2", "title": "会话 B", "workspace": "E:/proj",
+                    "createdAt": 2_000, "updatedAt": 5_000,
+                    "itemCount": 3, "items": []
+                },
+                {
+                    "id": "t-new", "title": "新会话", "workspace": "E:/proj",
+                    "createdAt": 20_000, "itemCount": 0, "items": []
+                }
+            ])),
+            "t-new",
+        );
+
+        assert_eq!(rows.len(), 3, "被裁剪的历史会话必须留在列表里：{rows:?}");
+        let old = rows.iter().find(|t| t.id == "t-old-1").expect("会话 A 应在列表里");
+        assert_eq!(old.item_count, 12, "条目数取网关的 itemCount，不是 items.len()");
+        assert_eq!(
+            old.updated_at, 9_000,
+            "最近活动取网关的 updatedAt，不能退化成创建时刻"
+        );
+    }
+
+    /// 没有 `itemCount` 的老网关：回退到 `items.len()`，行为与改动前一致。
+    #[test]
+    fn legacy_snapshot_without_item_count_falls_back_to_items() {
+        let rows = thread_rows(
+            &snap(serde_json::json!([
+                {
+                    "id": "t-old", "title": "会话", "workspace": "E:/proj",
+                    "createdAt": 1_000,
+                    "items": [{ "kind": "user", "at": 2_000, "text": "你好" }]
+                },
+                { "id": "t-new", "title": "新会话", "workspace": "E:/proj", "createdAt": 20_000, "items": [] }
+            ])),
+            "t-new",
+        );
+
+        assert_eq!(rows.len(), 2, "有 items 的会话照旧保留：{rows:?}");
+        let old = rows.iter().find(|t| t.id == "t-old").expect("会话应在列表里");
+        assert_eq!(old.item_count, 1);
+        assert_eq!(old.updated_at, 2_000);
+    }
+
+    /// 真空会话仍然只留一条占位（过滤规则本身没变）：agent 启动会落一条空的"新会话"，
+    /// 全列出来会淹没真实会话。
+    #[test]
+    fn empty_threads_keep_one_placeholder_per_workspace() {
+        let rows = thread_rows(
+            &snap(serde_json::json!([
+                {
+                    "id": "t-empty-1", "title": "新会话", "workspace": "E:/proj",
+                    "createdAt": 1_000, "itemCount": 0, "items": []
+                },
+                {
+                    "id": "t-empty-2", "title": "新会话", "workspace": "E:/proj",
+                    "createdAt": 9_000, "itemCount": 0, "items": []
+                },
+                {
+                    "id": "t-new", "title": "新会话", "workspace": "E:/other",
+                    "createdAt": 20_000, "itemCount": 0, "items": []
+                }
+            ])),
+            "t-new",
+        );
+
+        let ids: Vec<&str> = rows.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids.len(), 2, "每个工作区只留最新的一条空会话：{ids:?}");
+        assert!(ids.contains(&"t-empty-2"), "留最新那条：{ids:?}");
+        assert!(ids.contains(&"t-new"), "当前会话永远保留：{ids:?}");
     }
 }

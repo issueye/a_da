@@ -43,7 +43,7 @@ impl Render for ApprovalTray {
 }
 
 /// 提问托盘：显示题目、选项（单选 radio / 多选 checkbox / 可选文本补充），
-/// 作答只在这里——对话流里的 ask_user 卡只留记录（desktop-ui「操作面唯一」）。
+/// 作答只在这里——对话流里的 ask_user 卡只留记录（原桌面端「操作面唯一」）。
 ///
 /// 表单字段约定见 [`crate::questions::answer_params_from_form`]：单题
 /// `choice`/`choices`/`text`，多题 `q_{id}__*` 前缀；动作是核心路由
@@ -67,7 +67,7 @@ impl Render for QuestionTray {
     fn render(&self) -> String {
         let q = &self.question;
         let waited = waited_from_ms(q.asked_at);
-        // 多题 = 一次一题翻页（desktop-ui 同款交互）：每题一个 `data-page-item`，
+        // 多题 = 一次一题翻页（原桌面端 同款交互）：每题一个 `data-page-item`，
         // 翻页条服务端渲染成 `hidden`，由 `chat.js` 的 `data-question-pager` 契约激活；
         // 无 JS 时翻页条保持隐藏、全部题目平铺（阅读基线不丢）。
         let multi = q.items.len() > 1;
@@ -78,7 +78,7 @@ impl Render for QuestionTray {
             .collect::<Vec<_>>()
             .join("");
         let pager = if multi { pager_bar(q.items.len()) } else { String::new() };
-        // 无选项题（纯文本/确认）：给「继续」兜底按钮——desktop-ui 同款语义，
+        // 无选项题（纯文本/确认）：给「继续」兜底按钮——原桌面端 同款语义，
         // 等于 text="用户确认继续"，让不输入的用户也能一键放行。
         let continue_button = if q.items.len() == 1 && q.items[0].options.is_empty() {
             let name = question_field(q, &q.items[0].id, "text");

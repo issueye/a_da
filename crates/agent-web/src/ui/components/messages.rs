@@ -23,7 +23,7 @@ pub struct UserMessage {
 
 impl Render for UserMessage {
     fn render(&self) -> String {
-        // 图片在上、文字在下：和 desktop-ui 的用户消息一致。
+        // 图片在上、文字在下：和 原桌面端 的用户消息一致。
         let images = if !self.image_srcs.is_empty() {
             format!(
                 r#"<div class="ada-msg__image-grid">{}</div>"#,

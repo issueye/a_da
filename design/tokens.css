@@ -3,11 +3,13 @@
 
    🔴 这个文件是 a_da 全部颜色令牌的**唯一**定义处。
    改颜色只改这里，然后重新构建 Tailwind（见下）：
-     bun desktop-ui/node_modules/tailwindcss/lib/cli.js \
+     bunx tailwindcss@3.4.19 \
        -c crates/plugin-hub/tailwind.config.cjs \
        -i crates/plugin-hub/static/input.css \
        -o crates/plugin-hub/static/app.css --minify
    产物再同步到 ssr-h/static/app.css（`cargo test` 会校验两份一致）。
+   （2026-10：原先借的是已移除的 React 前端目录里的 tailwind；该目录已移除，改用 bunx。
+   版本号跟产物头里的一行对齐：`/*! tailwindcss v3.4.19 */`。）
 
    消费方：
    - crates/plugin-hub  通过 `static/input.css` 的 @import 引入

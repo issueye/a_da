@@ -35,7 +35,6 @@ use std::sync::Arc;
 
 use agent_gateway::auth::{is_loopback, AuthConfig};
 use agent_gateway::relay::AppState;
-use agent_gateway::static_ui::StaticSite;
 use agent_gateway::supervisor::ReapPolicy;
 use agent_gateway::Gateway;
 use tokio::net::TcpListener;
@@ -92,17 +91,15 @@ async fn main() -> anyhow::Result<()> {
 
     // SSR 界面的浏览器令牌：回环可选，非回环必填。它只保护页面/表单/SSE，
     // 与 `/rpc`、`/api/*` 的网关 token 是两套凭据（M3 再统一）。
-    if args.web_ui == "ssr" {
-        if let Some(token) = args.web_token.as_deref() {
-            agent_web::guard::validate_token(token)
-                .map_err(|message| anyhow::anyhow!("{message}（--web-token 太弱或被拒绝）"))?;
-        } else if !is_loopback(&args.host) && !args.auth.requires_token() {
-            anyhow::bail!(
-                "拒绝启动：`--web-ui ssr` + 非回环地址需要浏览器凭据。\n\
-                 用 `--token`（浏览器在登录页输入）或 `--web-token`；\n\
-                 SSR 页面会读取会话内容，没有凭据等于把它公开出去。"
-            );
-        }
+    if let Some(token) = args.web_token.as_deref() {
+        agent_web::guard::validate_token(token)
+            .map_err(|message| anyhow::anyhow!("{message}（--web-token 太弱或被拒绝）"))?;
+    } else if !is_loopback(&args.host) && !args.auth.requires_token() {
+        anyhow::bail!(
+            "拒绝启动：非回环监听需要浏览器凭据（SSR 页面会读取会话内容）。\n\
+             用 `--token`（浏览器在登录页输入）或 `--web-token`；\n\
+             没有凭据等于把整个界面公开出去。"
+        );
     }
 
     let auth_required = args.auth.requires_token();
@@ -145,7 +142,9 @@ async fn main() -> anyhow::Result<()> {
             "host": args.host,
             // 客户端据此知道要不要带 token（**不是**把 token 放进来）
             "authRequired": auth_required,
-            "webUi": args.web_ui,
+            // 界面形态：自 2026-10 起**恒为 ssr**（React 桌面前端已移除）。
+            // 保留这个字段是为了 READY 行的向后兼容：验收脚本与客户端按它判形态。
+            "webUi": "ssr",
         })
     );
     use std::io::Write;
@@ -154,24 +153,6 @@ async fn main() -> anyhow::Result<()> {
         "a-da 网关就绪，监听 {}:{}（pid {}；{}）",
         args.host, port, pid, auth_summary
     );
-
-    // 前端产物的托管目录（S8 · 网页访问）。
-    //
-    // 没找到不算错：桌面端走 file://，`/rpc` 也照常可用，只是浏览器打开根路径会拿到
-    // 一页说明。所以这里是 warn 而不是退出——**别把一个可选能力做成启动前置条件**。
-    let site = StaticSite::resolve(args.ui_dir.as_deref());
-    match site.as_ref() {
-        Some(site) => info!(
-            "网页访问：http://{}:{}/（前端产物 {}）",
-            if is_loopback(&args.host) { "127.0.0.1" } else { args.host.as_str() },
-            port,
-            site.display_root()
-        ),
-        None => warn!(
-            "未找到前端产物（desktop-ui/dist），浏览器访问根路径只会得到一页说明；\
-             可先 `npm --prefix desktop-ui run build`，或用 --ui-dir 指定目录"
-        ),
-    }
 
     // 实例回收：没有它，访问过 N 个工作区就常驻 N 个 ada-coding 进程。
     // 策略可用环境变量微调（默认：空闲 15 分钟回收、最多 6 个实例、每分钟扫一次）
@@ -221,55 +202,49 @@ async fn main() -> anyhow::Result<()> {
 
     // SSR 界面：guard 需要**绑定后的真实端口**（--port 0 与顺延都靠它），
     // 所以必须在 `bind_listener` 之后构造。
-    let web = if args.web_ui == "ssr" {
-        let host: std::net::IpAddr = args.host.parse().map_err(|error| {
-            anyhow::anyhow!("--web-ui ssr 要求 --host 是 IP 地址（当前 {}）：{error}", args.host)
+    //
+    // 2026-10：React 桌面界面（`desktop-ui/`）已移除——`/` 只有 SSR 这一种归属，
+    // 不再有 `--web-ui` 开关，也没有"托管任意前端产物"的备用路径。
+    let host: std::net::IpAddr = args.host.parse().map_err(|error| {
+        anyhow::anyhow!("--host 必须是 IP 地址（当前 {}）：{error}", args.host)
+    })?;
+    let mut access = agent_web::guard::Access::for_host(host, port, args.web_token.clone());
+    // 反向代理：显式声明对外来源，guard 才会放行代理改写后的 Host 与浏览器 Origin。
+    if let Some(public_url) = args.web_public_url.as_deref() {
+        access = access.with_public_url(public_url).map_err(|error| {
+            anyhow::anyhow!("--web-public-url 非法（{public_url}）：{error}")
         })?;
-        let mut access = agent_web::guard::Access::for_host(host, port, args.web_token.clone());
-        // 反向代理：显式声明对外来源，guard 才会放行代理改写后的 Host 与浏览器 Origin。
-        if let Some(public_url) = args.web_public_url.as_deref() {
-            access = access.with_public_url(public_url).map_err(|error| {
-                anyhow::anyhow!("--web-public-url 非法（{public_url}）：{error}")
-            })?;
-        }
-        // 配置了网关 token 时，浏览器也可以用它（或启动时打印的配对码）登录；
-        // guard 只记住随机 session id，网关 token 不会写进 cookie。
-        if args.auth.requires_token() {
-            access = agent_gateway::web::with_gateway_login(access, gateway.auth.clone());
-        }
-        let access = Arc::new(access);
-        let plugins_dir = args
-            .web_plugins_dir
-            .clone()
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(default_web_plugins_dir);
-        let web_state = agent_gateway::web::build_web_state(
-            gateway.clone(),
-            workspace.clone(),
-            args.product.clone(),
-            plugins_dir.clone(),
-            access.clone(),
-        );
-        info!(
-            "网页界面：ssr（插件目录 {}；{}）",
-            plugins_dir.display(),
-            agent_web::guard::access_summary(&access)
-        );
-        Some(agent_web::router(web_state))
-    } else {
-        info!("网页界面：desktop（desktop-ui 静态产物）");
-        None
-    };
+    }
+    // 配置了网关 token 时，浏览器也可以用它（或启动时打印的配对码）登录；
+    // guard 只记住随机 session id，网关 token 不会写进 cookie。
+    if args.auth.requires_token() {
+        access = agent_gateway::web::with_gateway_login(access, gateway.auth.clone());
+    }
+    let access = Arc::new(access);
+    let plugins_dir = args
+        .web_plugins_dir
+        .clone()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(default_web_plugins_dir);
+    let web_state = agent_gateway::web::build_web_state(
+        gateway.clone(),
+        workspace.clone(),
+        args.product.clone(),
+        plugins_dir.clone(),
+        access.clone(),
+    );
+    info!(
+        "网页界面：ssr（插件目录 {}；{}）",
+        plugins_dir.display(),
+        agent_web::guard::access_summary(&access)
+    );
+    let web = agent_web::router(web_state);
 
     let state = AppState {
         gateway: gateway.clone(),
         default_workspace: workspace.clone(),
-        site: site.map(Arc::new),
     };
-    let app = match web {
-        Some(web) => agent_gateway::router::router_with_web(state, web),
-        None => agent_gateway::router::router(state),
-    };
+    let app = agent_gateway::router::router_with_web(state, web);
 
     info!("HTTP 已就绪（axum）：页面 / 与 WebSocket /rpc 共用端口 {port}");
     axum::serve(listener, app).await?;
@@ -390,10 +365,6 @@ struct Args {
     token_count: usize,
     /// 显式承认"非回环 + 明文"（典型：反向代理终止 TLS）
     allow_plaintext: bool,
-    /// 前端产物目录（`--ui-dir`；不传则自动探测）
-    ui_dir: Option<String>,
-    /// 网页界面形态：`ssr`（内置 SSR 界面）或 `desktop`（desktop-ui 静态产物）
-    web_ui: String,
     /// SSR 界面的浏览器访问令牌（`--web-token` / `A_DA_WEB_TOKEN`）
     web_token: Option<String>,
     /// SSR 前端插件目录（不传则按用户目录 → exe 旁 → 源码目录探测）
@@ -410,9 +381,6 @@ fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
     let mut tokens: Vec<String> = Vec::new();
     let mut origins: Vec<String> = Vec::new();
     let mut allow_plaintext = false;
-    let mut ui_dir: Option<String> = None;
-    // 默认已切到 SSR（见 docs/gateway/PLAN-merge-ssr-h.md）；`desktop` 保留为回退口。
-    let mut web_ui = std::env::var("A_DA_WEB_UI").unwrap_or_else(|_| "ssr".to_string());
     let mut web_token = std::env::var("A_DA_WEB_TOKEN").ok();
     let mut web_plugins_dir: Option<String> = None;
     let mut web_public_url = std::env::var("A_DA_WEB_PUBLIC_URL").ok();
@@ -438,26 +406,11 @@ fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
             "--allow-plaintext" => {
                 allow_plaintext = true;
             }
-            "--ui-dir" => {
-                ui_dir = Some(
-                    it.next()
-                        .ok_or_else(|| anyhow::anyhow!("--ui-dir 需要一个值"))?,
-                );
-            }
             "--allow-origin" => {
                 origins.push(
                     it.next()
                         .ok_or_else(|| anyhow::anyhow!("--allow-origin 需要一个值"))?,
                 );
-            }
-            "--web-ui" => {
-                let value = it
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--web-ui 需要一个值（ssr / desktop）"))?;
-                if value != "ssr" && value != "desktop" {
-                    anyhow::bail!("--web-ui 只接受 ssr 或 desktop：{value}");
-                }
-                web_ui = value;
             }
             "--web-token" => {
                 web_token = Some(
@@ -487,8 +440,6 @@ fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
                      --token <t>       接入令牌；`<t>` 或不限制工作区，`<t>=<ws1>|<ws2>` 限定；可重复\n\
                      --allow-origin <o>  放行的浏览器来源（可重复；默认**拒绝**任何带 Origin 的请求）\n\
                      --allow-plaintext   显式承认「非回环 + 明文 ws」（典型：反向代理终止 TLS）\n\
-                     --ui-dir <p>      前端产物目录（默认自动探测 desktop-ui/dist；给了就用它托管网页）\n\
-                     --web-ui <s>      网页界面：ssr（内置 SSR，默认）或 desktop（静态产物回退）\n\
                      --web-token <t>   SSR 界面的浏览器访问令牌（非回环监听必填；也可用 A_DA_WEB_TOKEN）\n\
                      --web-plugins-dir <p>  SSR 前端插件目录（默认 ~/.a-da/web-plugins）\n\
                      --web-public-url <u>  反向代理对外地址（如 https://example.com；放行该 Host/Origin，https 时 cookie 带 Secure）\n"
@@ -509,8 +460,6 @@ fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
         auth,
         token_count,
         allow_plaintext,
-        ui_dir,
-        web_ui,
         web_token,
         web_plugins_dir,
         web_public_url,

@@ -5,9 +5,9 @@
 | 日期 | 2026-10-24 |
 | 输入 | [INTERACTION-REDESIGN.md](INTERACTION-REDESIGN.md)（问题 01–18 + 方案 21） |
 | 性质 | **开发计划（未开工）**：任务卡 T00–T15、批次 M0–M2、验收标准与出场门 |
-| 约束 | 不改网关 / agent-rpc 协议（全程只动 `ssr-h/`；T15 已核实无需后端改动）；不动 desktop-ui / plugin-hub |
+| 约束 | 不改网关 / agent-rpc 协议（全程只动 `ssr-h/`；T15 已核实无需后端改动）；不动 原桌面端 / plugin-hub |
 | 节奏 | 一任务一 commit（沿用 `fix(ssr-h)` / `feat(ssr-h)` 前缀），一批一出场 |
-| 实施进度 | **2026-10-24：M0 全部完成；M1 的 T06/T07/T08/T11 完成；M2 的 T13/T14/T15 完成**（T13/T15 由并行提交落地）。剩余：T09 无 JS 服务端确认、T10 AppError 统一、T12 provider-admin 脏检查。**T15 的交互形态已改**：新建弹窗整体移除，模式/工作区选择挪到空会话页（对齐 desktop-ui 的 EmptyConversationView） |
+| 实施进度 | **2026-10-24：M0 全部完成；M1 的 T06/T07/T08/T11 完成；M2 的 T13/T14/T15 完成**（T13/T15 由并行提交落地）。剩余：T09 无 JS 服务端确认、T10 AppError 统一、T12 provider-admin 脏检查。**T15 的交互形态已改**：新建弹窗整体移除，模式/工作区选择挪到空会话页（对齐 原桌面端 的 EmptyConversationView） |
 
 ---
 
@@ -132,7 +132,7 @@
 **T15 新建会话选模式（1d，建议 16；已核实无后端改动）**
 - 链路事实：网关 `POST /threads` 为 `BodyMode::MergeOptional`（agent-gateway/src/http_api.rs:473），`thread.create` 收 `mode` 参数（agent-rpc dispatch mod.rs:362-367）——`agent.rs` 的 `create_thread_in`（179-185）在 body 里加 `mode` 即可。
 - UI：新会话弹窗（`data-modal="new-thread"`）工作区 radio 列表上方加模式 segmented control（默认 coding；pm 用 UED §6.1 amber 语义色）；`POST /threads` 表单加 `mode` 字段。开始后顶栏只读展示（现状已渲染）。
-- 验收：以 pm 模式新建会话，发一条消息后顶栏显示 PM 徽标（与 desktop-ui 同口径）。
+- 验收：以 pm 模式新建会话，发一条消息后顶栏显示 PM 徽标（与 原桌面端 同口径）。
 
 ---
 

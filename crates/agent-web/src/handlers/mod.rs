@@ -100,7 +100,7 @@ pub struct CreateThreadForm {
     title: String,
     /// 目标工作区；缺省时由侧栏/后端决定（通常是当前激活工作区）。
     workspace: Option<String>,
-    /// 会话模式（code / plan / create / pm）；缺省 code。开始后不再可切（与 desktop-ui 一致）。
+    /// 会话模式（code / plan / create / pm）；缺省 code。开始后不再可切（与 原桌面端 一致）。
     mode: Option<String>,
 }
 
@@ -320,7 +320,7 @@ async fn base_with_snapshot(
     }
     let slots = slot_content(&state.frontend, context).await;
     // 侧栏"新会话"要落在当前激活工作区。快照里的 `workspace.project` 是 agent 的真实
-    // 当前项目（与 desktop-ui 的 `activeWorkspace` 同源）；没有快照时退回启动参数。
+    // 当前项目（与 原桌面端 的 `activeWorkspace` 同源）；没有快照时退回启动参数。
     let active_workspace = snapshot
         .and_then(|snapshot| snapshot.get("workspace"))
         .and_then(|workspace| workspace.get("project"))
@@ -482,10 +482,7 @@ fn questions_view(snapshot: &Value, thread_id: Option<&str>) -> Value {
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as u64)
-        .unwrap_or(0)
+    crate::ui::now_ms()
 }
 
 fn percent_of(part: u64, whole: u64) -> Option<u64> {
@@ -831,7 +828,7 @@ fn thread_view<'a>(snapshot: &'a Value, thread_id: Option<&str>) -> Option<&'a V
 ///
 /// 只投影**推演后**的结果：`set` 替换 / `update` 按 id 增量合并 / `get` 只读，
 /// 都由 [`ui::derive_todo_plan`] 负责（唯一的语义实现）。插件不该、也不需要
-/// 把一张张 todo 卡片自己重演一遍——那正是 desktop-ui 曾经停在旧计划上的原因。
+/// 把一张张 todo 卡片自己重演一遍——那正是 原桌面端 曾经停在旧计划上的原因。
 ///
 /// 没有规划过、当前会话不在快照里、或快照没带 items 时给 `null`：
 /// 插件据此不渲染卡片，而不是画一张 `0/0` 的空面板。
@@ -1000,6 +997,32 @@ fn thread_row(value: &Value, running: &[String]) -> ThreadRow {
     let id = str_at(value, "id").to_string();
     let items = value.get("items").and_then(Value::as_array);
     let item_slice = items.map(Vec::as_slice).unwrap_or(&[]);
+    let created_at = value.get("createdAt").and_then(Value::as_u64).unwrap_or(0);
+    // 条目数与"最近活动"优先取网关给的 `itemCount` / `updatedAt`。
+    //
+    // 🔴 不能只看 `items.len()`：快照与增量帧为了压体积，只给"激活 / 打开的 Tab /
+    // 运行中 / 子智能体"这几种会话带 items，其余会话的 items 是空数组
+    // （`agent_rpc::state::snapshot` 的瘦身规则）。老实现拿 items 判空，于是侧栏把
+    // 一整屏历史会话当成空会话丢掉——用户看到的就是"当前工作区只剩一条新会话"。
+    // 老网关（没有这两个字段）仍回退到 items 计算，行为不变。
+    let item_count = value
+        .get("itemCount")
+        .and_then(Value::as_u64)
+        .map(|count| count as usize)
+        .unwrap_or(item_slice.len());
+    let updated_at = value
+        .get("updatedAt")
+        .and_then(Value::as_u64)
+        .filter(|at| *at > 0)
+        .unwrap_or_else(|| {
+            item_slice
+                .iter()
+                .filter_map(|item| item.get("at").and_then(Value::as_u64))
+                .max()
+                .unwrap_or(0)
+        })
+        // 空会话没有卡片：回退创建时刻，否则它会在侧栏显示成 1970 年、"9 分钟前"也排到最后。
+        .max(created_at);
     let raw_title = str_at(value, "title").trim();
     let title = if raw_title.is_empty() || raw_title == "新会话" {
         item_slice
@@ -1024,8 +1047,9 @@ fn thread_row(value: &Value, running: &[String]) -> ThreadRow {
                 mode.to_string()
             }
         },
-        item_count: items.map(Vec::len).unwrap_or(0),
-        created_at: value.get("createdAt").and_then(Value::as_u64).unwrap_or(0),
+        item_count,
+        created_at,
+        updated_at,
     }
 }
 

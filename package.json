@@ -6,19 +6,18 @@
   "packageManager": "bun@1.4.3",
   "type": "module",
   "main": "dist-electron/main.cjs",
-  "description": "A local AI coding agent: pure Rust core + Electron desktop host + React UI",
+  "description": "A local AI coding agent: pure Rust core + Electron desktop host + SSR web UI",
   "scripts": {
-    "typecheck": "bun run --cwd desktop-ui typecheck",
+    "typecheck": "bun run electron:build:main",
     "test": "cargo test --workspace -- --test-threads=1",
     "test:core": "cargo test -p agent-rpc -p agent-node -- --test-threads=1",
     "verify": "cargo run -p xtask -- verify",
     "ship": "cargo run -p xtask -- ship",
     "electron:build:main": "bun build ./electron/main.ts --target node --format cjs --outfile dist-electron/main.cjs --external=electron && bun build ./electron/preload.ts --target node --format cjs --outfile dist-electron/preload.cjs --external=electron",
     "electron:dev": "bun run electron:build:main && electron .",
-    "electron:dev:desktop": "bun run electron:build:main && electron . --ui=desktop",
-    "electron:build": "npm --prefix desktop-ui run build && bun run electron:build:main && node --experimental-require-module ./node_modules/electron-builder/cli.js --win dir && bun tools/heal-electron-perms.ts",
-    "electron:dist": "npm --prefix desktop-ui run build && bun run electron:build:main && node --experimental-require-module ./node_modules/electron-builder/cli.js --win nsis",
-    "electron:pack": "npm --prefix desktop-ui run build && bun run electron:build:main && node --experimental-require-module ./node_modules/electron-builder/cli.js --win dir && bun tools/heal-electron-perms.ts"
+    "electron:build": "bun run electron:build:main && node --experimental-require-module ./node_modules/electron-builder/cli.js --win dir && bun tools/heal-electron-perms.ts",
+    "electron:dist": "bun run electron:build:main && node --experimental-require-module ./node_modules/electron-builder/cli.js --win nsis",
+    "electron:pack": "bun run electron:build:main && node --experimental-require-module ./node_modules/electron-builder/cli.js --win dir && bun tools/heal-electron-perms.ts"
   },
   "devDependencies": {
     "electron": "^33.2.1",

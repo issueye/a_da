@@ -11,7 +11,9 @@
 与 `crates/agent-rpc/`（桥接面：JSON-RPC 分发 + WS 宿主 + UI 投影）
 + **网关**（S5/S6）：`crates/agent-gateway/`（`ada-gateway`：AGENT 管理平台 + 交互平台 + 桥接平台）
 + **网页界面**：`crates/agent-web/`（SSR 投影层，产品代号 `ssr-h`；网关默认挂载，一个进程一个端口）
-+ **桌面客户端宿主**：**Electron 桌面壳**（`electron/`：彻底根除 Windows WebView2 权限污染与目录锁死问题；**默认加载网关内置 SSR 页面**，`--ui=desktop` 回退本地 React/Vite）+ **React 前端**（`desktop-ui/`：通过 `src/client/desktop-bridge.ts` 与 Electron 宿主通信）；
++ **桌面客户端宿主**：**Electron 桌面壳**（`electron/`：彻底根除 Windows WebView2 权限污染与目录锁死问题；
+  **只加载网关内置的 SSR 页面**——无边框窗口由 `preload.ts` 把最小化/最大化/关闭按钮注入 SSR 顶栏）；
+  **React 前端 `desktop-ui/` 已于 2026-10 整体移除**（git 历史可取回），界面只有 SSR 一套；
 `crates/ts-engine/` 是独立的 TS 执行引擎，只作插件运行时。
 **TypeScript 时代的实现（Bun + GPUIX 客户端 + TS 侧 agent/宿主）已于 2026-10-17 整体删除**
 （原 `archive/ts-legacy/`，可从 git 历史取回）：它不再是参考设计、不参与构建与测试。
@@ -27,7 +29,7 @@
 ```bash
 cargo build --workspace                       # 基座四 crate + agent-node + agent-rpc + 产品
 cargo test --workspace -- --test-threads=1     # 门二（必须串行：有共享全局态的用例）
-bun run typecheck                             # 门一：desktop-ui 的 tsc --noEmit
+bun run typecheck                             # 门一：Electron 主进程/预加载的 bun 构建（TS 前端已随 desktop-ui 移除）
 cargo xtask verify-wiring                     # 接线门：方法覆盖 / 描述符单源 / 端口实现 / 依赖方向
 cargo xtask verify-spec                       # 声明门：产品/预设 spec 校验
 cargo xtask verify-docs                       # 文档门：归档布局字样只在白名单文档里 + 协议文档与事件主题同步
@@ -36,13 +38,11 @@ node tools/verify-ssr-streaming.mjs           # SSR 流式与图片输入（单�
 node tools/verify-ssr-approval-abort.mjs      # SSR 审批批准 → 工具执行 → 流式中止（单进程，假模型）
 node tools/verify-ssr-workspaces.mjs          # SSR 工作区树与目录选择（单进程）
 cargo xtask verify --fast                     # 上面四道静态门一次跑完（跳过全量单测）
-bun run electron:dev                          # Electron 桌面端开发（默认加载网关 SSR）
-bun run electron:dev:desktop                  # 需要 React/Vite 界面热重载时使用（--ui=desktop）
+bun run electron:dev                          # Electron 桌面端开发（加载网关 SSR）
 bun run electron:pack                         # 打包 Electron 免安装版 (dist/electron/win-unpacked)
 cargo run -p agent-gateway -- --port 52353    # 网页访问：页面与 /rpc 同端口（浏览器开 http://127.0.0.1:52353/）
-pwsh -NoProfile -File tools/verify-desktop-shell.ps1                    # 桌面壳验收（Electron 交付形态；锁屏时自动走无头 CDP 回退）
-node tools/verify-desktop-shell-headless.mjs                             # --ui=desktop 的无头版：CDP 真实命中 React 标题栏
-node tools/verify-electron-ssr.mjs                                       # Electron 默认 SSR：加载 / 原生窗口 / 发消息 / 关闭清理
+pwsh -NoProfile -File tools/verify-desktop-shell.ps1   # 桌面壳验收（像素级点击；锁屏时自动改用 SSR 无头验收）
+node tools/verify-electron-ssr.mjs                    # Electron + SSR：加载 / 原生窗口 / 发消息 / 关闭清理
 ```
 
 - **`typecheck` 与 `cargo test` 是两个独立的门，两个都要过**，别只跑一个。
@@ -130,12 +130,13 @@ node tools/verify-electron-ssr.mjs                                       # Elect
   所以审批卡**拿不到** `ToolCallStarted` 的 args，只能自己带；`store.set_tool_waiting_approval`
   会把参数落进卡片（`args`/`raw_args`/`details.approval.args`），界面据此渲染待批准内容。
   只给工具名 = 让用户闭眼点"批准"，那道二次确认闸门形同虚设。
-- **审批的操作面只有一处：输入框上方的浮动审批窗口**
-  （`desktop-ui/src/components/ApprovalFloatingPanel.tsx`，挂在 `Composer` 的列里，因此**不随对话流滚动**；
+- **审批的操作面只有一处：输入框上方的审批/排队托盘**
+  （SSR：`agent-web` 的 `ui/components/trays.rs` 模板，挂在托盘区 `#ada-trays` 里，因此**不随对话流滚动**；
   数据源是会话 items 里 `status == "waiting_approval"` 的卡片，回执走 `approval.decide`）。
-  对话流里那张卡只留**记录**：待批准内容的预览 + "去浮窗处理"。
-  同一件事摆两套按钮，用户会怀疑"点哪个才算数"——按钮只在浮窗一处；
-  预览文案两处共用 `desktop-ui/src/utils/pending-approvals.ts` 的 `approvalPreviewOf`，别各写一份。
+  对话流里那张卡只留**记录**：待批准内容的预览 + “去托盘处理”。
+  同一件事摆两套按钮，用户会怀疑“点哪个才算数”——按钮只在托盘一处；
+  预览文案两处共用 `crates/agent-web/src/handlers/chat/rows.rs` 的审批预览函数，别各写一份。
+  （2026-10：React 桌面端的 `ApprovalFloatingPanel.tsx` 已随 `desktop-ui/` 移除，这里是唯一的操作面。）
 - **模型请求重试次数**（设置项，默认 5，范围 `0..=20`）这条链要一起改才生效：
   `ConfigSnapshot.retryCount`（wire/`client-ts`）↔ `~/.a-da/config.json` 的 `retryCount` ↔
   `config.setRetryCount`（`spec/proto/ada-coding.ext.json` 也要登记）↔ 每轮
@@ -147,7 +148,8 @@ node tools/verify-electron-ssr.mjs                                       # Elect
   于是既把一段连贯回答从中间劈开，又会被当成"模型说过的话"回传给它。
   Notice 的落盘记录在 `fold_messages` 里被明确跳过，所以它**只给人看、永不进模型上下文**；
   重试时的清理必须**磁盘与内存一起清**（`clear_notice_entries` + `clear_notices`），
-  只清内存会被磁盘同步把卡片拽回来。界面侧由 `NoticeRow` 渲染（`Transcript.tsx`），
+  只清内存会被磁盘同步把卡片拽回来。界面侧由 SSR 的 notice 行渲染
+  （`crates/agent-web/src/handlers/chat/rows.rs`），
   「请求重试」按钮随之从助手错误卡搬到了这里——那是重试的唯一入口，别只删不搬。
   实机回归：`pwsh -NoProfile -File tools/verify-retry-and-disconnect.ps1`
   （起真产品、走真 JSON-RPC、改用户配置前先备份后还原）。
@@ -194,16 +196,16 @@ node tools/verify-electron-ssr.mjs                                       # Elect
   （`app.getAppPath()` 优先 + 候选清单 + 真实存在性检查），并且失败要**大声报**
   （`dialog.showErrorBox` + launcher.log），不要静默降级。
 - 🔴 **无边框窗口的标题栏必须压在所有应用模态层之上**：应用内弹窗统一是 `fixed inset-0 z-50`，
-  标题栏若没有更高层级（现为 `relative z-[100]`），任何弹窗打开时最小化/最大化/关闭**点不动**、
-  窗口也拖不动——第二个"无法最小化/关闭窗口"的形态。`tools/verify-desktop-shell.ps1`
-  专门守着这条（弹窗开着时点最大化仍须生效）。
+  顶栏若没有更高层级（`preload.ts` 把 SSR 的 `.ada-topbar` 提到 `z-index: 100`），任何弹窗打开时
+  最小化/最大化/关闭**点不动**、窗口也拖不动——第二个"无法最小化/关闭窗口"的形态。
+  `tools/verify-desktop-shell.ps1` 专门守着这条（弹窗开着时点最大化仍须生效）。
 - **渲染进程日志要能进 launcher.log**：Electron ≥32 的 `console-message` 签名是
   `(event, details)`（旧的是 `(event, level, message, line, sourceId)`）。按旧签名写就只剩
   undefined，界面里的错再也查不到；`preload-error` / `render-process-gone` / `did-fail-load`
   一并转发。打包后的 exe 没有控制台，**应用日志是唯一证据**（§17）。
 - **桌面壳的行为要按"点一下"验收**：`pwsh -NoProfile -File tools/verify-desktop-shell.ps1`
   （Electron 交付形态）。**锁屏时**（`LogonUI` 在运行）真实鼠标到不了窗口，脚本会明确提示并
-  改用 `tools/verify-desktop-shell-headless.mjs`：用 Electron CDP 的 `Input.dispatchMouseEvent`
+  改用 `tools/verify-electron-ssr.mjs`：用 Electron CDP 的 `Input.dispatchMouseEvent`
   真实命中渲染层、用 `tools/window-state.ps1` 读原生窗口状态，覆盖同一组行为断言
   （像素级按钮簇/图标截图检查无法执行，输出会写明）。真鼠标点窗口按钮 + 读 `launcher.log`
   断言"拉起网关 → 界面接入 → 窗口控制 → 状态同步 → 退出清理"。脚本注释里记了必踩的坑：
@@ -238,8 +240,8 @@ node tools/verify-electron-ssr.mjs                                       # Elect
   `agentId=ada-pm`/`pm-assistant` 的会话在**读盘时自动归一并写回**（幂等）。
   模式预设同样受 `verify-spec` 门禁约束（`products/<产品>/modes/*.agent.spec.json` 也在扫描范围内）。
 - 所有内部调用点直连基座（`agent-proto` / `agent-toolkit` / `agent-base` / `agent-adapter`），历史 shim 与 facade 已全量下线
-- `electron/` **Electron 桌面宿主**：主进程监督 `ada-gateway` 生命周期、单实例锁、原生窗口控制、**系统托盘**（显示/隐藏、打开网页、重新唤醒网关、退出）与 IPC 桥接。**界面默认 `--ui=ssr`**：等网关就绪后加载 `http://127.0.0.1:<port>/`（带 token 时用 `?token=` 自动登录）；窗口保持**无边框**，由 `preload.ts` 在 SSR 顶栏注入最小化/最大化/关闭（走同一套 IPC）。`--ui=desktop` 回退 Vite/本地 `desktop-ui/dist`（React 自绘标题栏）。`dist-electron/` 为构建中间产物
-- `desktop-ui/` **React 桌面前端（回退界面）**：通过 `src/client/desktop-bridge.ts` 与 Electron 宿主通信（`ws-client.ts` 是唯一协议客户端）；默认 SSR 模式下不加载
+- `electron/` **Electron 桌面宿主**：主进程监督 `ada-gateway` 生命周期、单实例锁、原生窗口控制、**系统托盘**（显示/隐藏、打开网页、重新唤醒网关、退出）与 IPC 桥接。**界面只有 SSR**：等网关就绪后加载 `http://127.0.0.1:<port>/`（带 token 时用 `?token=` 自动登录）；网关起不来时显示一张说清原因的提示页（**没有"回退到本地界面"这条路**）。窗口保持**无边框**，由 `preload.ts` 在 SSR 顶栏注入最小化/最大化/关闭（走同一套 IPC）。`dist-electron/` 为构建中间产物
+- `desktop-ui/` **已于 2026-10 整体移除**（React 桌面前端 + `ws-client.ts` 协议客户端 + Vite/Tailwind 构建链）。界面只保留 SSR（`crates/agent-web`），实时通道是 SSE + `/live` 轮询兜底（`crates/agent-web/static/chat.js`）。要从历史看那套实现，用 git 历史取回；**不要**在仓库里再引入第二种客户端
 - `dist/` **发布交付套件**：包含 `ada-gateway.exe`、`ada-coding.exe` 以及 `dist/electron/win-unpacked/`（Electron 完整绿色便携包，内置 Chromium 运行时与 `resources/bin/` 关联二进制，彻底规避 WebView2 权限污染）
 
 ## 核心红线与防踩坑规矩

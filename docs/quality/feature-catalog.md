@@ -65,7 +65,7 @@
 | 流式增量 `evt.message.delta`、单卡更新 `evt.card.updated` | 同上 |
 | **卡片顺序**由 `at` 表达且严格递增（内存侧与磁盘回填侧两处都守） | `agent_rpc::state::store::next_item_at` + `SessionManager::CardStamps` |
 | item 分页 | `thread.items.page` |
-| 客户端重连退避（500ms 起 / 30s 封顶 / 抖动 + 代次保护） | `desktop-ui/src/client/reconnect-policy.ts`（`verify-wiring` 有结构断言） |
+| SSR 实时通道（EventSource 建流 + 事件才算在线 + `/live` 轮询兜底） | `crates/agent-web/static/chat.js`（`verify-wiring` 有结构断言） |
 
 ---
 
@@ -154,31 +154,30 @@
 - **网关 ↔ agent 的链路**：回环 TCP（默认，`ws://127.0.0.1:<port>/rpc`）或本地管道
   （`A_DA_GATEWAY_AGENT_LINK=pipe`：Windows 命名管道 / Unix socket，**端口 0、不监听 TCP**）；
   两种形态同一套帧与 token 握手，端点解析单点在 `agent-gateway/src/link.rs`。
-- **内置 SSR 网页界面**（2026-10-25，`crates/agent-web`）：网关默认 `--web-ui ssr`，一个进程一个端口
+- **内置 SSR 网页界面**（2026-10-25，`crates/agent-web`）：网关**只托管这一套界面**，一个进程一个端口
   托管页面 / SSE / `/static/*` / `/ext/*` / `/api/*` / `/rpc`；页面通过 `GatewayBackend` 进程内调用
   agent（不再 HTTP 反代），事件订阅持有 `ConnectionGuard` 防回收；`/__auth` 接受网关 token / 配对码并
-  换发 HttpOnly 会话 cookie。`--web-ui desktop` 回退到 `desktop-ui/dist` 静态托管。
+  换发 HttpOnly 会话 cookie。
   **进程管理浮窗**：由 `frontend-plugins/process-manager/` 插件（`topbar.right` 插槽 +
   `processes.read` 能力）渲染，展示网关 PID/实例数与 agent 实例（工作区 / 状态 / PID / 最近活跃）；
   只读，面板与窗口控制分层正确（浮窗打开时仍可点标题栏按钮）。
 
-## 十一、桌面端界面（默认 SSR；`desktop-ui/` 回退）
+## 十一、桌面端界面（只有 SSR）
 
-- **Electron 默认加载 SSR**：等网关就绪后 `loadURL(http://127.0.0.1:<port>/)`，带 token 时用
-  `?token=` 自动登录；窗口保持无边框，preload 在 SSR 顶栏注入最小化/最大化/关闭。`--ui=desktop`
-  （`bun run electron:dev:desktop`）回退到下面的 React 界面。
+- **Electron 加载 SSR**：等网关就绪后 `loadURL(http://127.0.0.1:<port>/)`，带 token 时用
+  `?token=` 自动登录；窗口保持无边框，preload 在 SSR 顶栏注入最小化/最大化/关闭。
+  网关起不来时显示一张提示页（**没有回退到本地界面这条路**）。
 - **系统托盘**：显示/隐藏主窗口、打开网页界面、重新唤醒网关（带确认）、退出；单击托盘图标
   显示并聚焦窗口。关闭窗口仍是退出应用，不隐藏到托盘。
-- **React 回退布局**：标题栏（连接态 / 模式徽标 / 窗口控制，`z-[100]`）+ 侧栏（工作区与会话）+ 主区
-  （`TabStrip` + `Transcript` + `Composer`）+ 右侧面板（`AgentContextPanel`）。
-- **浮层**：审批（`ApprovalFloatingPanel`）、提问（`AskUserFloatingPanel`）、待办（`TodoFloatingPanel`）、
-  排队消息（`QueuedMessagesFloatingPanel`）、命令面板、斜杠命令、`@` 引用菜单、
-  流程查看（`ProcessModal`）、设置（`SettingsModal`，供应商 / 模型 / 审批档位 / 重试次数）、
-  插件管理（`PluginsModal` + `PluginDiagnostics`）、调试面板。
-- **工作区与文件**：Web 原生目录选择（`FilePicker.tsx`）走 `fs.roots` / `fs.list` / `fs.mkdir`，
+- **SSR 布局**：顶栏（连接态 / 模式徽标 / 窗口控制）+ 侧栏（工作区树与会话）+ 主区
+  （对话流 + 输入卡）+ 右侧栏/抽屉（上下文面板）。
+- **浮层**：审批与排队（托盘区 `#ada-trays`）、提问（浮动覆盖、一次一题）、待办（右上角胶囊 →
+  320px 卡片）、命令面板、斜杠命令、`@` 引用菜单、进程查看、设置（供应商 / 模型 / 审批档位 /
+  重试次数）、插件管理与诊断。
+- **工作区与文件**：Web 原生目录选择走 `fs.roots` / `fs.list` / `fs.mkdir`，
   **不使用操作系统原生弹窗**；截断会如实提示（"已省略 N 项"）。
-- **渲染**：Markdown（`MarkdownRenderer.tsx`）、改动 diff、工具卡片（状态 / 耗时徽章）、
-  上下文用量（`ContextUsagePopover` + `utils/context-breakdown.ts`）。
+- **渲染**：Markdown（GFM 自动链接 / 删除线）、改动 diff、工具单行日志行（状态 / 耗时徽章）、
+  上下文用量。
 - **模式**：coding / pm 由 `mode` 表达（`agent_id` 恒为 `ada-coding`），PM 是**模式预设**不是第二个产品。
 
 ## 十二、协议面（77 个方法）

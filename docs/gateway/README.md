@@ -12,7 +12,7 @@
 
 ## 0. 一页结论
 
-1. **废弃 Native Dialog**：系统不保留任何操作系统原生文件/文件夹选择弹窗（如 Electron Dialog、Win32/Cocoa/GTK 原生选择器）。所有目录树与文件选择统一通过前端内置的 Web 原生模态框 [`FilePicker.tsx`](../../desktop-ui/src/components/FilePicker.tsx) 实现。
+1. **废弃 Native Dialog**：系统不保留任何操作系统原生文件/文件夹选择弹窗（如 Electron Dialog、Win32/Cocoa/GTK 原生选择器）。所有目录树与文件选择统一通过前端内置的 Web 原生模态框（SSR：`crates/agent-web` 的目录选择弹窗；原 React 版 `FilePicker.tsx` 已随 `desktop-ui/` 移除）实现。
 2. **网关作为文件系统与工作区门户**：工作区根目录选择、目录树遍历、历史工作区记录统一由网关管理面（`gateway.fs.*` 与 `gateway.workspaces.*`）提供。无工作区、冷启动、多实例切换及远程访问场景下，客户端均直面网关获取统一视图。
 3. **桌面端蜕化为极限瘦壳**：桌面宿主（[`electron`](../../electron)）彻底移除业务逻辑、文件操作以及复杂的多子进程管理，仅保留最基础的原生窗口外壳（Frame、无边框缩放、拖拽）和 WebView 宿主，以及针对本地单机部署的网关守护自启能力。
 4. **全平台 100% 同构体验**：无论运行于 Electron 桌面壳、普通 Chrome/Safari 浏览器、平板设备还是远程云端开发环境，UI 交互、工作区管理和文件浏览行为逐像素一致，没有任何平台特化分支。
@@ -92,11 +92,10 @@ sequenceDiagram
 
 | 模块 | 所属组件 | 职责范围 | 绝对禁止事项 |
 |---|---|---|---|
-| **桌面瘦宿主** | `electron` | • 无边框窗口控制（SSR 顶栏由 preload 注入按钮；desktop 由 React 自绘）<br>• 默认载入网关 SSR 页面（`--ui=desktop` 回退本地 React/Vite）<br>• 本地守护伴侣（单机时静默起网关） | ❌ 禁止调用 OS 文件对话框<br>❌ 禁止直接读写会话/工作区文件<br>❌ 禁止直接管理 Coding 多进程 |
+| **桌面瘦宿主** | `electron` | • 无边框窗口控制（preload 把按钮注入 SSR 顶栏）<br>• 只加载网关 SSR 页面<br>• 本地守护伴侣（单机时静默起网关） | ❌ 禁止调用 OS 文件对话框<br>❌ 禁止直接读写会话/工作区文件<br>❌ 禁止直接管理 Coding 多进程 |
 | **网关平台** | `ada-gateway` | • 提供 `gateway.fs.*` 目录遍历与磁盘探测<br>• 提供 `gateway.workspaces.*` 历史记录管理<br>• 路径沙箱安全判定（防 `../` 穿透）<br>• Agent 实例生命周期管理（Supervisor）与透传（Relay） | ❌ 严禁内嵌多轮 Agent 执行循环（INV-1）<br>❌ 严禁缓存会话消息或工具状态（INV-8） |
 | **Agent 实例** | `ada-coding`（PM 是它的**模式预设**，不是第二个产品） | • 工作区沙箱内的多轮执行（`run_turn`）<br>• 编写代码、执行终端命令、检查点管理<br>• 工作区内文件 Base64 预览（`fs.read_base64`） | ❌ 禁止暴露全局磁盘根目录选择接口<br>❌ 禁止自行跨工作区穿透读盘 |
-| **Web 前端（默认）** | `agent-web`（SSR） | • 页面 / SSE / 表单动作<br>• 前端插件与 TSX 插槽<br>• 浏览器与 Electron 共用同一份页面 | ❌ 禁止持有会话状态第二份真相<br>❌ 禁止内嵌多轮引擎 |
-| **Web 前端（回退）** | `desktop-ui` | • 沉浸式内置 `FilePicker` 交互渲染<br>• 全局会话状态机管理<br>• 主题、命令面板、工作区树展示 | ❌ 禁止使用任何宿主原生文件对话框接口 |
+| **Web 前端（唯一）** | `agent-web`（SSR） | • 页面 / SSE / 表单动作<br>• 前端插件与 TSX 插槽<br>• 浏览器与 Electron 共用同一份页面<br>• 目录/文件选择用内置 `FilePicker` 模态框 | ❌ 禁止持有会话状态第二份真相<br>❌ 禁止内嵌多轮引擎<br>❌ 禁止使用任何宿主原生文件对话框接口 |
 
 ---
 
@@ -125,16 +124,19 @@ sequenceDiagram
 
 ---
 
-## 2.5 网页访问：网关直接托管前端产物（S8）
+## 2.5 网页访问：网关内置 SSR（S8 + 2026-10 合并）
 
 目标是一句话：**一个 `ada-gateway` 二进制 + 一个端口 = 整站**，浏览器打开就能用，
 不再需要另起 `vite preview`/`http.server` 之类的静态服务器。
 
 ```bash
-npm --prefix desktop-ui run build          # 产出 desktop-ui/dist
 ada-gateway --port 52353 --workspace E:/proj
 # 浏览器打开 http://127.0.0.1:52353/
 ```
+
+> 2026-10：React 桌面前端（`desktop-ui/`）与“托管任意前端产物”那条路径已整体删除。
+> `--ui-dir` / `--web-ui desktop` / `A_DA_UI_DIR` / `A_DA_WEB_UI` 都不再存在；
+> 界面只有网关内置的 SSR 一套，静态资源**编译期内嵌**在 `agent-web` 里。
 
 ### 2.5.1 路由：axum 统一
 
@@ -159,11 +161,10 @@ ada-gateway --port 52353 --workspace E:/proj
 对外部署仍然遵守第 4 节的硬规则：非回环必须 `--token` + `--allow-origin`，
 且明文 `ws://` 要 `--allow-plaintext` 显式承认。
 
-### 2.5.3 产物目录怎么找
+### 2.5.3 静态资源从哪来
 
-`--ui-dir <p>` → `A_DA_UI_DIR` → 可执行文件旁 `ui/` → 可执行文件旁 `../desktop-ui/dist` →
-当前目录 `desktop-ui/dist`。**只认含 `index.html` 的目录**；一个都找不到时网关照常启动，
-根路径返回 `503` 并说明怎么修——网页访问是可选能力，不做成启动前置条件。
+**编译期内嵌**（`agent-web` 的 `static/` 目录），不再从磁盘探测产物目录：
+所以扔一个 `desktop-ui/dist` 到 exe 旁也不会改变界面，`index.html` 也不用先构建。
 
 ### 2.5.4 桌面端拉起的网关同样可访问
 
@@ -185,21 +186,17 @@ ada-gateway --port 52353 --workspace E:/proj
 **不写 token**：凭据只从启动参数或 `gateway.pair` 配对码来，不落到磁盘上等人捡。
 界面「进程管理 → 浏览器打开」会拼出带 token 的地址（token 从 `core_url` 原样取，不二次编码）。
 
-打包形态还有一个前提：网关是普通 Rust 进程，**读不到 asar 里的文件**——所以
-`electron-builder.json` 把 `desktop-ui/dist` 额外复制到 `resources/bin/ui`，
-Electron 再通过 `--ui-dir` 显式传给网关（见 `electron/main.ts` 的 `findUiDir`）。
+打包形态不需要再复制任何前端产物：界面就在网关二进制里（`agent-web` 内嵌静态资源）。
 
-### 2.5.5 路径安全
+### 2.5.5 静态路由的安全边界
 
-三道闸，任一不过一律 403：段级黑名单（`..`、反斜杠、冒号、NUL，含百分号编码后的形态）、
-`canonicalize` 后必须仍在站点根内（拦符号链接穿透）、必须指向普通文件。
-不存在的路径按"有扩展名 = 404 / 无扩展名 = 回 index.html（客户端路由兜底）"区分——
-否则 `/assets/missing.js` 会拿到一份 HTML，报出来的是 MIME 错误而不是真正的原因。
-错误页里的路径会先解码再 **HTML 转义**（`/<img src=x>.js` 不能变成标签）。
+静态资源来自**编译期内嵌**，不从磁盘读，所以原先“产物目录”那类路径穿越面在结构上不存在了。
+但 `/static/*` 与插件资源仍是**外部可见**的：错误页里的路径会先解码再 **HTML 转义**
+（`/<img src=x>.js` 不能变成标签），插件目录也只看声明过的 id。
 
-### 2.5.6 网页界面：SSR（默认）与 desktop-ui 回退
+### 2.5.6 网页界面：只有 SSR
 
-从 2026-10-25 起，网关默认托管 `crates/agent-web` 的 SSR 界面（产品代号 `ssr-h`）。
+从 2026-10-25 起，网关托管 `crates/agent-web` 的 SSR 界面（产品代号 `ssr-h`）。
 一个 `ada-gateway` 进程、一个端口就是整站：
 
 | 路径 | 去向 | 鉴权 |
@@ -213,12 +210,12 @@ Electron 再通过 `--ui-dir` 显式传给网关（见 `electron/main.ts` 的 `f
 
 组装点在 `router_with_web`：SSR 路由作为一个完整的 fallback service 挂在
 `/rpc` 与 `/api/*` 之后，所以它自己的 CSP / `X-Frame-Options` **不会**污染 API 面。
-`--web-ui desktop` 回退到原来的 `desktop-ui/dist` 静态托管（`--ui-dir` 仍有效）。
+（`--web-ui desktop` 回退已于 2026-10 删除；没有 SSR 的 `router()` 只留给集成测试。）
 
-**Electron 也默认加载这份 SSR 页面**：`electron/main.ts` 等网关就绪后
+**Electron 加载的就是这份页面**：`electron/main.ts` 等网关就绪后
 `loadURL(http://127.0.0.1:<port>/)`，带 token 时用 `?token=` 自动登录；窗口保持无边框，
-`preload.ts` 在 SSR 顶栏注入最小化/最大化/关闭（复用同一套 IPC）。`--ui=desktop`（或 `A_DA_ELECTRON_UI=desktop`）回退到本地
-React/Vite 界面（无边框 + 自绘标题栏），`bun run electron:dev:desktop` 即此模式。
+`preload.ts` 在 SSR 顶栏注入最小化/最大化/关闭（复用同一套 IPC）。
+网关起不来时显示一张说清原因的提示页（**没有回退到本地界面这条路**）。
 
 浏览器凭据：`/__auth` 接受网关 `--token` 或启动日志里的一次性配对码，校验通过后换发
 随机 session id 的 HttpOnly cookie（网关 token 不写进浏览器）；`--web-token` 是等价的
