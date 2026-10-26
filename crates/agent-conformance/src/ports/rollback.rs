@@ -31,6 +31,16 @@ pub fn verify_rollback_policy_contract(desc: &ToolDescriptor) -> Result<(), Stri
             }
         }
         Access::Executes { .. } => {}
+        // 外部工具（MCP server / 远端 / 第三方脚本）：本地没有可回滚的路径记录。
+        // 声明了回滚策略就是"能撤销"的假承诺——挡住它，而不是让回滚记录去找不存在字段。
+        Access::External => {
+            if desc.rollback != RollbackPolicy::None {
+                return Err(format!(
+                    "外部工具 {} 无法在本地回滚，回滚策略必须为 None",
+                    desc.name
+                ));
+            }
+        }
     }
 
     Ok(())

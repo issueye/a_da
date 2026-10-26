@@ -133,9 +133,12 @@ fn type_name(v: &Value) -> &'static str {
 /// `Executes { command_arg }` 没有路径字段：命令本身**不是路径**，它的安全性由
 /// 审批端口的危险模式判定负责（改写要过风险单调性，见引擎里的那一段）——
 /// 拿路径沙箱去判命令字符串只会得到"不是合法路径"这种没用的结论。
+///
+/// `External` 也没有：外部工具的参数不是工作区路径（它的副作用在别的进程/别的机器上），
+/// 拿工作区沙箱去判它只会误伤——那只证明了"这个字符串不是工作区里的路径"。
 pub fn path_fields_of(access: &Access) -> Vec<(&'static str, bool)> {
     match access {
-        Access::ReadOnly | Access::Executes { .. } => Vec::new(),
+        Access::ReadOnly | Access::Executes { .. } | Access::External => Vec::new(),
         Access::Mutates {
             paths: PathSelector::Single(field),
         } => vec![(*field, false)],

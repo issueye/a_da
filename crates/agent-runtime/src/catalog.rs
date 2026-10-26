@@ -139,6 +139,10 @@ impl ToolCatalog for CompositeToolCatalog {
                                     });
                                 }
                             }
+                            // 外部工具（MCP server / 远端 / 第三方脚本）：参数里没有工作区路径
+                            // 可校验——它的副作用不在这个坐标系里。只读性由 `is_readonly()`
+                            // 保守判为“写”（见 `Access::External` 的文档）。
+                            agent_base::domain::Access::External => {}
                         }
                     }
                     Consumer::ApprovalPolicy => {
@@ -169,6 +173,18 @@ impl ToolCatalog for CompositeToolCatalog {
                                 consumer: *c,
                                 tool: d.name.clone(),
                                 detail: "只读工具不应声明写回滚策略".to_string(),
+                            });
+                        }
+                        // 外部工具**不得**声称可回滚：本地没有它的路径记录，声称了就是
+                        // “能撤销”的假承诺（早先插件工具谎称 `Mutates { Batch("paths") }`
+                        // 正是为了绕过上面那条校验，见 `Access::External`）。
+                        if d.access == agent_base::domain::Access::External
+                            && d.rollback != agent_base::domain::RollbackPolicy::None
+                        {
+                            violations.push(ContractViolation {
+                                consumer: *c,
+                                tool: d.name.clone(),
+                                detail: "外部工具无法在本地回滚，回滚策略必须为 None".to_string(),
                             });
                         }
                     }
@@ -249,6 +265,52 @@ mod tests {
         assert!(
             violations.is_empty(),
             "注册表里有工具违反消费者契约（装配期才会炸，界面表现是「发消息没反应」）：\n{violations:#?}"
+        );
+    }
+
+    /// `External` 刻画的是"作用域不可描述"：它既不该被路径校验误伤，也不许声称可回滚。
+    ///
+    /// 这条正是插件工具改建 `Access::External` 的动机：早先它谎称
+    /// `Mutates { Batch("paths") }` + `PerTargetInBatch` —— 只为通过校验，
+    /// 而它的 schema 里根本没有 `paths` 字段，回滚记录会去找一个不存在的东西。
+    fn external_descriptor(rollback: agent_base::domain::RollbackPolicy) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "mcp__demo__do".to_string(),
+            summary: "外部工具".to_string(),
+            schema: serde_json::json!({ "type": "object" }),
+            access: agent_base::domain::Access::External,
+            approval: agent_base::domain::ApprovalPolicy::Always,
+            rollback,
+            execution: agent_base::domain::Execution::Sequential,
+            termination: agent_base::domain::Termination::ContinueTurn,
+        }
+    }
+
+    #[test]
+    fn test_external_tool_must_not_claim_rollback() {
+        let ok = CompositeToolCatalog::new(
+            vec![Arc::new(DescriptorOnly(external_descriptor(
+                agent_base::domain::RollbackPolicy::None,
+            ))) as Arc<dyn Tool>],
+            None,
+        );
+        assert!(
+            ok.validate(&Consumer::ALL).is_empty(),
+            "External + None 应当合规（没有路径可校验、没有回滚可承诺）"
+        );
+
+        let bad = CompositeToolCatalog::new(
+            vec![Arc::new(DescriptorOnly(external_descriptor(
+                agent_base::domain::RollbackPolicy::PerTargetInBatch,
+            ))) as Arc<dyn Tool>],
+            None,
+        );
+        let violations = bad.validate(&Consumer::ALL);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.detail.contains("外部工具无法在本地回滚")),
+            "External 声称可回滚必须被拒（这是「能撤销」的假承诺）：{violations:#?}"
         );
     }
 }

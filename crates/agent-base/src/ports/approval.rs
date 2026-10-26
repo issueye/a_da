@@ -9,7 +9,7 @@
 //! 免问白名单、`ApprovalPolicy::Named` 命名的策略**全在适配器**。引擎自己判
 //! `Named(_) => true` 就是把"名字"当成了"永远要问"，既不准确也把策略劈成了两处。
 
-use crate::domain::{ApprovalPolicy, DenialKind, FailDirection};
+use crate::domain::{Access, ApprovalPolicy, DenialKind, FailDirection};
 use crate::ports::tools::BoxFuture;
 use crate::ports::CancelToken;
 
@@ -66,12 +66,18 @@ pub trait ApprovalGate: Send + Sync {
     ///
     /// 实现要解释的东西：当前档位（`auto`/`ask`/`readonly`）、危险命令二次确认、
     /// 免问白名单，以及 [`ApprovalPolicy::Named`] 命名的策略。
-    /// 引擎只把工具名、声明与参数递过来——它**不解释策略**（否则策略会被劈成两处）。
+    /// 引擎只把工具名、**访问方式**、声明与参数递过来——它**不解释策略**（否则策略会被劈成两处）。
+    ///
+    /// 🔴 `access` 必须从**描述符**来（INV-3），不许实现方再按工具名回查注册表：
+    /// 注册表里只有内置工具，而插件工具、外部工具（MCP server / 远端）的名字永远不在里面。
+    /// 按名字猜的后果是双向的——把外部工具隐式判成“写”（读类也要逐次审批），
+    /// 也会让将来“用户授权某个外部工具只读”这条路无处落地。
     ///
     /// 返回 `true` 时引擎必须接着调 [`Self::decide`]。
     fn needs_approval<'a>(
         &'a self,
         tool: &'a str,
+        access: &'a Access,
         policy: &'a ApprovalPolicy,
         args: &'a serde_json::Value,
     ) -> BoxFuture<'a, bool>;

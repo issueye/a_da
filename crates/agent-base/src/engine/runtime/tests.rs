@@ -676,6 +676,7 @@ impl ApprovalGate for DangerScanGate {
     fn needs_approval<'a>(
         &'a self,
         _tool: &'a str,
+        _access: &'a crate::domain::Access,
         _policy: &'a ApprovalPolicy,
         args: &'a serde_json::Value,
     ) -> BoxFuture<'a, bool> {

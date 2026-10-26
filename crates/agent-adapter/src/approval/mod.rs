@@ -5,6 +5,7 @@
 pub mod policy;
 
 pub use policy::{
-    extract_command, is_command_tool, is_destructive_command, should_ask_approval,
+    extract_command, is_command_tool, is_destructive_command, is_write_by_access,
+    should_ask_approval, should_ask_approval_for, should_ask_approval_with_write,
     ApprovalGuardConfig,
 };

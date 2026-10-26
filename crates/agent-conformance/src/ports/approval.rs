@@ -6,7 +6,7 @@
 //! 3. answered_by 字段如实记录决策来源（User/Policy/Timeout/Aborted）
 //! 4. 无决策依据时遵循 FailDirection::Closed（默认拒绝）
 
-use agent_base::domain::ApprovalPolicy;
+use agent_base::domain::{Access, ApprovalPolicy};
 use agent_base::ports::{AnsweredBy, ApprovalGate, ApprovalRequest};
 use agent_base::testing::NeverCancel;
 
@@ -19,9 +19,10 @@ use agent_base::testing::NeverCancel;
 pub async fn verify_approval_gate_contract<G: ApprovalGate>(gate: &G) -> Result<(), String> {
     // 1. 策略询问必须幂等（不允许"每次问都换答案"）
     let policy = ApprovalPolicy::Always;
+    let access = Access::Executes { command_arg: "cmd" };
     let args = serde_json::json!({ "cmd": "rm -rf /" });
-    let first = gate.needs_approval("dangerous_exec", &policy, &args).await;
-    let second = gate.needs_approval("dangerous_exec", &policy, &args).await;
+    let first = gate.needs_approval("dangerous_exec", &access, &policy, &args).await;
+    let second = gate.needs_approval("dangerous_exec", &access, &policy, &args).await;
     if first != second {
         return Err(format!(
             "needs_approval() 必须幂等：同一输入给出不同答案（{first} → {second}）"
@@ -93,6 +94,7 @@ mod tests {
         fn needs_approval<'a>(
             &'a self,
             tool: &'a str,
+            access: &'a agent_base::domain::Access,
             policy: &'a ApprovalPolicy,
             args: &'a serde_json::Value,
         ) -> agent_base::ports::BoxFuture<'a, bool> {
@@ -104,9 +106,10 @@ mod tests {
                         let s = args.to_string();
                         patterns.iter().any(|p| s.contains(p))
                     }
-                    ApprovalPolicy::Named(_) => agent_adapter::approval::should_ask_approval(
+                    ApprovalPolicy::Named(_) => agent_adapter::approval::should_ask_approval_for(
                         self.0,
                         tool,
+                        Some(access),
                         args,
                         &agent_adapter::approval::ApprovalGuardConfig::default(),
                     ),
@@ -141,6 +144,9 @@ mod tests {
         let benign = auto
             .needs_approval(
                 "write_file",
+                &agent_base::domain::Access::Mutates {
+                    paths: agent_base::domain::PathSelector::Single("path"),
+                },
                 &ApprovalPolicy::Named("approval-guard"),
                 &serde_json::json!({ "path": "a.rs" }),
             )
@@ -153,6 +159,9 @@ mod tests {
         let dangerous_in_auto = auto
             .needs_approval(
                 "run_command",
+                &agent_base::domain::Access::Executes {
+                    command_arg: "command",
+                },
                 &ApprovalPolicy::Named("approval-guard"),
                 &serde_json::json!({ "command": "rm -rf /" }),
             )
@@ -166,6 +175,9 @@ mod tests {
         let dangerous_in_ask = ask
             .needs_approval(
                 "run_command",
+                &agent_base::domain::Access::Executes {
+                    command_arg: "command",
+                },
                 &ApprovalPolicy::Named("approval-guard"),
                 &serde_json::json!({ "command": "rm -rf /" }),
             )

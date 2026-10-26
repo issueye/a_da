@@ -545,7 +545,15 @@ pub fn find_tool_descriptor(name: &str) -> Option<&'static ToolDescriptor> {
     map.get(name).copied()
 }
 
-/// 基于 ToolDescriptor 的权威只读性检查（INV-3：单一真源）
+/// 🔴 **遗留口径**：按**工具名**回查内置注册表判断只读性。
+///
+/// 权威判据是**描述符**（`ToolDescriptor::access` / `is_readonly()`；审批侧用
+/// `agent_adapter::approval::is_write_by_access(Some(&desc.access))`）。按名字回查有个
+/// 结构性缺陷：注册表里只有内置工具，插件工具与外部工具（MCP server / 远端）的名字永远查不到，
+/// 于是它们被无条件判成“写”——读类工具在只读档里会被逐次审批，而“用户授权某个外部工具只读”
+/// 也无处落地（见 `Access::External`）。
+///
+/// 保留它是为了兼容既有调用方；**新代码不要再调它**。
 pub fn is_readonly_tool(tool_name: &str) -> bool {
     if let Some(desc) = find_tool_descriptor(tool_name) {
         desc.is_readonly()
@@ -556,6 +564,9 @@ pub fn is_readonly_tool(tool_name: &str) -> bool {
 }
 
 /// 基于 ToolDescriptor 的权威写操作检查（INV-3：单一真源）
+///
+/// 同样是**按名字**的遗留口径，只是把 [`is_readonly_tool`] 取反：未知名字一律当写。
+/// 新代码请用描述符的 `access`（见 [`is_readonly_tool`] 的说明）。
 pub fn is_write_tool(tool_name: &str) -> bool {
     !is_readonly_tool(tool_name)
 }

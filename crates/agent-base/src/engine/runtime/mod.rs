@@ -12,11 +12,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::domain::{
-    AgentError, AgentEvent, AgentEventBody, AgentMessage, ApprovalPolicy, DiagFamily, DiagOutcome,
-    DiagnosticEvent, FailDirection, Origin, POINT_APPROVAL_SKIPPED, POINT_APPROVAL_WAITED,
-    POINT_HOOK_REPLACE_APPLIED, POINT_HOOK_REPLACE_REJECTED, POINT_PROMPT_COMPOSED,
-    POINT_TURN_ABORTED, Termination, ToolCall, ToolCallBlock, ToolReceipt, ToolStatus, TraceCtx,
-    TurnStopReason, make_turn_id,
+    Access, AgentError, AgentEvent, AgentEventBody, AgentMessage, ApprovalPolicy, DiagFamily,
+    DiagOutcome, DiagnosticEvent, FailDirection, Origin, POINT_APPROVAL_SKIPPED,
+    POINT_APPROVAL_WAITED, POINT_HOOK_REPLACE_APPLIED, POINT_HOOK_REPLACE_REJECTED,
+    POINT_PROMPT_COMPOSED, POINT_TURN_ABORTED, Termination, ToolCall, ToolCallBlock, ToolReceipt,
+    ToolStatus, TraceCtx, TurnStopReason, make_turn_id,
 };
 use crate::engine::policy::RunPolicy;
 use crate::engine::prompt_format::format_messages_for_model;
@@ -269,12 +269,13 @@ impl AgentRuntime {
     async fn needs_approval_for(
         &self,
         tool: &str,
+        access: &Access,
         policy: &ApprovalPolicy,
         args: &serde_json::Value,
     ) -> bool {
         match policy {
             ApprovalPolicy::Never => false,
-            policy => self.approval.needs_approval(tool, policy, args).await,
+            policy => self.approval.needs_approval(tool, access, policy, args).await,
         }
     }
 
@@ -1200,6 +1201,7 @@ impl AgentRuntime {
                                         let before_risk = self
                                             .needs_approval_for(
                                                 &raw_call.name,
+                                                &desc.access,
                                                 &desc.approval,
                                                 &parsed_args,
                                             )
@@ -1207,6 +1209,7 @@ impl AgentRuntime {
                                         let after_risk = self
                                             .needs_approval_for(
                                                 &raw_call.name,
+                                                &desc.access,
                                                 &desc.approval,
                                                 &new_args,
                                             )
@@ -1260,6 +1263,7 @@ impl AgentRuntime {
                             None => {
                                 self.needs_approval_for(
                                     &raw_call.name,
+                                    &desc.access,
                                     &desc.approval,
                                     &parsed_args,
                                 )

@@ -23,8 +23,8 @@
 use std::sync::Arc;
 
 use agent_base::domain::{
-    Access, ApprovalPolicy, Execution, PathSelector, RollbackPolicy, Termination, ToolCall,
-    ToolDescriptor, ToolReceipt,
+    Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
+    ToolReceipt,
 };
 use agent_base::ports::{
     BoxFuture, InvokeRequest, ModuleHandle, ScriptBudget, ScriptCtx, ScriptError, ScriptHost,
@@ -136,10 +136,14 @@ impl PluginTool {
         self
     }
 
-    /// Create a plugin-defined tool. Since third-party declarations cannot
-    /// claim read-only status, custom tools are conservatively write-classified
-    /// and require approval. Filesystem access is still constrained by script
-    /// needs and the runtime workspace sandbox.
+    /// Create a plugin-defined tool.
+    ///
+    /// Since third-party declarations cannot claim read-only status, custom tools are
+    /// conservatively classified as write-classified and require approval.
+    ///
+    /// 描述符用 [`Access::External`]，**不是** `Mutates { Batch("paths") }`：
+    /// 后者是一句谎话——插件工具的 schema 里没有 `paths` 字段，而声明了批量路径
+    /// 就等于向回滚/检查点承诺“我能按路径撤销”。外部工具的作用域根本不在工作区坐标系里。
     pub fn from_declaration(
         declaration: &ScriptToolDeclaration,
         host: Arc<dyn ScriptHost>,
@@ -161,9 +165,9 @@ impl PluginTool {
                 declaration.description.clone()
             },
             schema: declaration.parameters.clone(),
-            access: Access::Mutates { paths: PathSelector::Batch("paths") },
+            access: Access::External,
             approval: ApprovalPolicy::Always,
-            rollback: RollbackPolicy::PerTargetInBatch,
+            rollback: RollbackPolicy::None,
             execution: Execution::Sequential,
             termination: Termination::ContinueTurn,
         });
@@ -300,6 +304,16 @@ mod tests {
             .expect("valid custom declaration is dynamically registered");
         assert!(!custom.descriptor().is_readonly(), "custom tool registration must fail safe as write");
         assert_eq!(custom.descriptor().approval, ApprovalPolicy::Always);
+        assert_eq!(
+            custom.descriptor().access,
+            Access::External,
+            "未知作用域的工具用 External：不能谎称知道它改哪些路径"
+        );
+        assert_eq!(
+            custom.descriptor().rollback,
+            RollbackPolicy::None,
+            "外部工具无法在本地回滚，不许声称能撤销"
+        );
 
         // Builtin names retain their canonical descriptors.
         let tool = PluginTool::new("read_file", host, handle, "p").expect("已注册名字应当可以构造");

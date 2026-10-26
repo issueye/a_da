@@ -23,6 +23,24 @@ pub enum Access {
     Mutates { paths: PathSelector },
     /// 会执行外部命令；`command_arg` 是参数里的命令字段名
     Executes { command_arg: &'static str },
+    /// **作用域不可由基座静态描述**：外部进程（MCP server）、远端服务、第三方脚本。
+    ///
+    /// 为什么需要这个变体：前三种变体都在回答"它会碰工作区里的哪个字段"，
+    /// 而外部工具根本不在这个坐标系里——它的副作用发生在另一个进程/另一台机器上，
+    /// 基座既看不到路径，也看不到命令行。
+    ///
+    /// 三条**刻意**的语义（失败安全，AGENTS.md §2）：
+    ///
+    /// 1. **永不只读**：[`ToolDescriptor::is_readonly`] 只对 [`Access::ReadOnly`] 为真，
+    ///    因此只读档、只读子智能体、plan 模式对 `External` 一律按写处理。
+    ///    想要"这个外部工具是只读的"，得先有**用户授权**这一条路（尚不存在），
+    ///    而不是让外部自己声明。
+    /// 2. **不进路径沙箱**：参数里没有工作区路径可校验（`path_fields_of` 为空）。
+    /// 3. **不得声明回滚策略**：本地没有可回滚的路径，`RollbackPolicy` 必须是 `None`。
+    ///    早先插件自定义工具谎称 `Mutates { Batch("paths") }` + `PerTargetInBatch`，
+    ///    于是回滚/检查点会去找一个根本不存在的 `paths` 字段——这个变体就是为了
+    ///    让那句谎话**不可表达**。
+    External,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,5 +196,31 @@ mod tests {
         // 同一个名字，只要描述符说是写——它就是写（这正是不看名字的好处）
         d.access = Access::Mutates { paths: PathSelector::Single("path") };
         assert!(!d.is_readonly());
+    }
+
+    /// `External`（外部进程 / 远端 / 第三方脚本）在所有只读判定上**按写处理**。
+    ///
+    /// 这条是失败安全的锚点：外部工具的参数里没有工作区路径、没有命令行，
+    /// 基座无从判断它做了什么，于是"最保守的那一档"必须是它的默认。
+    #[test]
+    fn external_access_is_never_readonly() {
+        let mut d = ToolDescriptor {
+            name: "mcp__fs__read".into(),
+            summary: String::new(),
+            schema: serde_json::json!({ "type": "object" }),
+            access: Access::External,
+            approval: ApprovalPolicy::Always,
+            rollback: RollbackPolicy::None,
+            execution: Execution::Sequential,
+            termination: Termination::ContinueTurn,
+        };
+        assert!(
+            !d.is_readonly(),
+            "外部工具即使名字叫 read 也不能被当只读——它不在工作区坐标系里"
+        );
+
+        // 换成显式只读才是只读（那是基座自己的声明，不是外部自述）
+        d.access = Access::ReadOnly;
+        assert!(d.is_readonly());
     }
 }

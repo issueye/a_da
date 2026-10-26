@@ -189,7 +189,7 @@ impl CancelToken for ManualCancel {
 }
 
 use std::sync::Arc;
-use crate::domain::{AgentError, AgentMessage, ApprovalPolicy, DenialKind, FailDirection, ToolCall, ToolDescriptor, ToolReceipt};
+use crate::domain::{Access, AgentError, AgentMessage, ApprovalPolicy, DenialKind, FailDirection, ToolCall, ToolDescriptor, ToolReceipt};
 use crate::model::StreamDelta;
 use crate::ports::{
     AnsweredBy, ApprovalGate, ApprovalOutcome, ApprovalRequest,
@@ -363,6 +363,7 @@ impl ApprovalGate for RecordingApprovalGate {
     fn needs_approval<'a>(
         &'a self,
         tool: &'a str,
+        _access: &'a Access,
         policy: &'a ApprovalPolicy,
         _args: &'a serde_json::Value,
     ) -> BoxFuture<'a, bool> {

@@ -14,7 +14,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_base::domain::{ApprovalPolicy, FailDirection};
+use agent_base::domain::{Access, ApprovalPolicy, FailDirection};
 use agent_base::ports::{
     AnsweredBy, ApprovalGate, ApprovalOutcome, ApprovalRequest, BoxFuture, CancelToken,
 };
@@ -104,6 +104,7 @@ impl ApprovalGate for HostApprovalGate {
     fn needs_approval<'a>(
         &'a self,
         tool: &'a str,
+        access: &'a Access,
         policy: &'a ApprovalPolicy,
         args: &'a serde_json::Value,
     ) -> BoxFuture<'a, bool> {
@@ -120,7 +121,15 @@ impl ApprovalGate for HostApprovalGate {
                 // （档位 + 危险命令二次确认 + 免问白名单）。**不再把名字当成"永远要问"**。
                 ApprovalPolicy::Named(_) => {
                     let mode = self.mode().await;
-                    agent_adapter::approval::should_ask_approval(mode, tool, args, &self.config)
+                    // 读写性用**递进来的 `access`**（描述符真源），不再按工具名回查注册表：
+                    // 注册表里没有插件工具与外部工具（MCP server / 远端）的名字。
+                    agent_adapter::approval::policy::should_ask_approval_for(
+                        mode,
+                        tool,
+                        Some(access),
+                        args,
+                        &self.config,
+                    )
                 }
             }
         })
@@ -135,8 +144,15 @@ impl ApprovalGate for HostApprovalGate {
             // 档位可能在上游询问之后被用户改过，这里按**当前**档位复核一次：
             // 若策略说不用问了，就直接放行（AnsweredBy::Policy，如实标明不是用户答的）
             let mode = self.mode().await;
-            if !agent_adapter::approval::should_ask_approval(mode, &req.tool, &req.args, &self.config)
-            {
+            // 复核用的是**描述符给的**读写性（`req.is_write`），不是按名字回查注册表：
+            // 复核与 `needs_approval` 必须同源，否则"先问后不问"会随工具名漂移。
+            if !agent_adapter::approval::should_ask_approval_with_write(
+                mode,
+                &req.tool,
+                req.is_write,
+                &req.args,
+                &self.config,
+            ) {
                 return ApprovalOutcome::allowed(AnsweredBy::Policy);
             }
 
@@ -210,7 +226,12 @@ mod tests {
         let (gate, _) = gate_with_mode(ApprovalMode::Auto);
         assert!(
             !gate
-                .needs_approval("write_file", &ApprovalPolicy::Named("approval-guard"), &json!({"path": "a.rs"}))
+                .needs_approval(
+                    "write_file",
+                    &Access::Mutates { paths: agent_base::domain::PathSelector::Single("path") },
+                    &ApprovalPolicy::Named("approval-guard"),
+                    &json!({"path": "a.rs"}),
+                )
                 .await,
             "Auto 档位下普通写工具不该被 Named 策略一律要求审批"
         );
@@ -218,6 +239,7 @@ mod tests {
         assert!(
             !gate.needs_approval(
                 "run_command",
+                &Access::Executes { command_arg: "command" },
                 &ApprovalPolicy::Named("approval-guard"),
                 &json!({"command": "rm -rf /"})
             )
@@ -230,6 +252,7 @@ mod tests {
             ask_gate
                 .needs_approval(
                     "run_command",
+                    &Access::Executes { command_arg: "command" },
                     &ApprovalPolicy::Named("approval-guard"),
                     &json!({"command": "rm -rf /"})
                 )
@@ -238,7 +261,12 @@ mod tests {
         );
         assert!(
             ask_gate
-                .needs_approval("read_file", &ApprovalPolicy::Named("approval-guard"), &json!({}))
+                .needs_approval(
+                    "read_file",
+                    &Access::ReadOnly,
+                    &ApprovalPolicy::Named("approval-guard"),
+                    &json!({}),
+                )
                 .await
         );
     }
@@ -246,11 +274,12 @@ mod tests {
     #[tokio::test]
     async fn test_explicit_policies() {
         let (gate, _) = gate_with_mode(ApprovalMode::Auto);
-        assert!(!gate.needs_approval("x", &ApprovalPolicy::Never, &json!({})).await);
-        assert!(gate.needs_approval("x", &ApprovalPolicy::Always, &json!({})).await);
+        assert!(!gate.needs_approval("x", &Access::External, &ApprovalPolicy::Never, &json!({})).await);
+        assert!(gate.needs_approval("x", &Access::External, &ApprovalPolicy::Always, &json!({})).await);
         assert!(
             gate.needs_approval(
                 "x",
+                &Access::External,
                 &ApprovalPolicy::DangerScan { patterns: vec!["rm -rf".into()] },
                 &json!({"cmd": "rm -rf /"})
             )
@@ -259,6 +288,7 @@ mod tests {
         assert!(
             !gate.needs_approval(
                 "x",
+                &Access::External,
                 &ApprovalPolicy::DangerScan { patterns: vec!["rm -rf".into()] },
                 &json!({"cmd": "ls"})
             )
@@ -349,13 +379,23 @@ mod tests {
     async fn test_readonly_mode_asks_for_write_tool_and_policy_allows_read() {
         let (gate, _) = gate_with_mode(ApprovalMode::Readonly);
         assert!(
-            gate.needs_approval("write_file", &ApprovalPolicy::Named("approval-guard"), &json!({}))
+            gate.needs_approval(
+                "write_file",
+                &Access::Mutates { paths: agent_base::domain::PathSelector::Single("path") },
+                &ApprovalPolicy::Named("approval-guard"),
+                &json!({}),
+            )
                 .await,
             "严格只读档位下写工具必须问"
         );
         assert!(
             !gate
-                .needs_approval("read_file", &ApprovalPolicy::Named("approval-guard"), &json!({}))
+                .needs_approval(
+                    "read_file",
+                    &Access::ReadOnly,
+                    &ApprovalPolicy::Named("approval-guard"),
+                    &json!({}),
+                )
                 .await,
             "严格只读档位下只读工具不必问"
         );

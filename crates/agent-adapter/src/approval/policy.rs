@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use agent_base::domain::Access;
 use agent_proto::ApprovalMode;
 
 /// 审批策略的可配置项。
@@ -66,6 +67,39 @@ pub fn is_command_tool(tool_name: &str, config: &ApprovalGuardConfig) -> bool {
     } else {
         false
     }
+}
+
+/// 这次调用算不算“写”（只读档、只读子智能体、plan 模式共用这一个判据）。
+///
+/// 🔴 **真源是描述符的 `access`，不是工具名**（INV-3）。历史实现按名字回查注册表，
+/// 而注册表里只有内置工具：插件工具、外部工具（MCP server / 远端）全都被当成“写”。
+/// 那是一个双向的错：读类外部工具在只读档里被逐次审批（不可用），
+/// 而将来“用户授权某个外部工具只读”也没有落地的地方。
+///
+/// `None` = 拿不到声明（未知工具）→ **按写处理**，失败安全（AGENTS.md §2）。
+pub fn is_write_by_access(access: Option<&Access>) -> bool {
+    match access {
+        // 唯一能被当只读的情形：基座**自己**声明了 ReadOnly。
+        Some(Access::ReadOnly) => false,
+        // Mutates / Executes / External：都会造成副作用，或者压根无法描述其作用域。
+        Some(_) => true,
+        None => true,
+    }
+}
+
+/// 兼容入口：调用方拿不到描述符时，按注册表回查内置工具的声明。
+///
+/// 非内置工具（插件 / 外部）在这里一律得到 `None` → 按写处理。
+/// **权威路径（审批闸门）不走这里**：它把 `ToolDescriptor::access` 直接递给
+/// [`should_ask_approval_for`]，不需要回查。
+pub fn should_ask_approval(
+    mode: ApprovalMode,
+    tool_name: &str,
+    args: &Value,
+    config: &ApprovalGuardConfig,
+) -> bool {
+    let access = agent_toolkit::find_tool_descriptor(tool_name).map(|d| &d.access);
+    should_ask_approval_for(mode, tool_name, access, args, config)
 }
 
 /// 把命令行切成"词"：按空白与常见 shell 分隔符切。
@@ -138,9 +172,10 @@ pub fn is_destructive_command(cmd: &str, confirm_list: &[String]) -> bool {
 /// **档位优先级最高**：`Auto`（自动批准）是 YOLO 档——无条件放行，连危险命令的二次确认
 /// 也一并免掉。这与界面文案一致（"读写文件和执行命令都不再询问"），也是用户显式选择
 /// 这一档的语义。需要危险命令二次确认的场景请用 `Ask` / `Readonly`。
-pub fn should_ask_approval(
+pub fn should_ask_approval_with_write(
     mode: ApprovalMode,
     tool_name: &str,
+    is_write: bool,
     args: &Value,
     config: &ApprovalGuardConfig,
 ) -> bool {
@@ -169,7 +204,7 @@ pub fn should_ask_approval(
     // 规则 2：只读档位的硬约束。
     // ApprovalMode::Readonly 时写操作一律问用户，绝对不能自动放行。
     if mode == ApprovalMode::Readonly {
-        return agent_toolkit::is_write_tool(tool_name);
+        return is_write;
     }
 
     // 规则 3：免问白名单。
@@ -182,8 +217,22 @@ pub fn should_ask_approval(
         ApprovalMode::Ask => true,
         // 规则 0 已短路，这里只为 match 穷尽；语义上"自动批准/完全访问不询问"
         ApprovalMode::Auto | ApprovalMode::Full => false,
-        ApprovalMode::Readonly => agent_toolkit::is_write_tool(tool_name),
+        ApprovalMode::Readonly => is_write,
     }
+}
+
+/// 这次调用要不要问人（读写性取自**描述符的访问方式**，INV-3）。
+///
+/// 权威入口：调用方手里有 `ToolDescriptor::access` 时用它。
+/// `access` 为 `None` = 拿不到声明 → 按写处理（失败安全）。
+pub fn should_ask_approval_for(
+    mode: ApprovalMode,
+    tool_name: &str,
+    access: Option<&Access>,
+    args: &Value,
+    config: &ApprovalGuardConfig,
+) -> bool {
+    should_ask_approval_with_write(mode, tool_name, is_write_by_access(access), args, config)
 }
 
 /// 权限档位（P1b 的第二层）：回答"能碰什么"，而不是"问不问"。
@@ -346,6 +395,75 @@ mod tests {
             &json!({ "command": "rm -rf /" }),
             &config()
         ));
+    }
+
+    /// 只读档位 + **外部工具**（MCP server / 远端）：必须问。
+    ///
+    /// 这是 MCP 集成的关键一格：外部工具不在工作区坐标系里，`Access::External`
+    /// 永远不是只读，于是只读档不会把它当“查询类”放过去。
+    #[test]
+    fn test_readonly_mode_asks_for_external_tools() {
+        assert!(should_ask_approval_for(
+            ApprovalMode::Readonly,
+            "mcp__fs__read",
+            Some(&Access::External),
+            &json!({ "path": "a.rs" }),
+            &config()
+        ));
+        // 每次询问档更不用说
+        assert!(should_ask_approval_for(
+            ApprovalMode::Ask,
+            "mcp__fs__read",
+            Some(&Access::External),
+            &json!({}),
+            &config()
+        ));
+        // 自动批准档是 YOLO：不问（既有语义，不为外部工具开例外）
+        assert!(!should_ask_approval_for(
+            ApprovalMode::Auto,
+            "mcp__fs__read",
+            Some(&Access::External),
+            &json!({}),
+            &config()
+        ));
+    }
+
+    /// 读写性**来自描述符**，不来自名字。
+    ///
+    /// 旧实现按名字回查注册表：未注册的（插件 / 外部）一律判“写”。
+    /// 这让“用户将来授权某个外部工具只读”无处落地——所以判据必须是 `access`。
+    #[test]
+    fn test_access_overrides_name_lookup() {
+        // 未注册的名字 + ReadOnly 声明 → 只读档不问
+        assert!(!should_ask_approval_for(
+            ApprovalMode::Readonly,
+            "not_in_registry_readonly",
+            Some(&Access::ReadOnly),
+            &json!({}),
+            &config()
+        ));
+        // 同一个名字 + 没有声明 → 失败安全按写处理
+        assert!(should_ask_approval_for(
+            ApprovalMode::Readonly,
+            "not_in_registry_readonly",
+            None,
+            &json!({}),
+            &config()
+        ));
+    }
+
+    /// 三种访问方式在“算不算写”上的统一口径（只读档、只读子智能体共用）。
+    #[test]
+    fn test_is_write_by_access_matrix() {
+        assert!(!is_write_by_access(Some(&Access::ReadOnly)));
+        assert!(is_write_by_access(Some(&Access::Mutates {
+            paths: agent_base::domain::PathSelector::Single("path"),
+        })));
+        assert!(is_write_by_access(Some(&Access::Executes {
+            command_arg: "command",
+        })));
+        assert!(is_write_by_access(Some(&Access::External)));
+        assert!(is_write_by_access(None), "拿不到声明时失败安全：按写处理");
     }
 
     #[test]

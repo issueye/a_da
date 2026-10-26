@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use agent_base::domain::{AgentError, AgentMessage, ApprovalPolicy, DenialKind, FailDirection};
+use agent_base::domain::{Access, AgentError, AgentMessage, ApprovalPolicy, DenialKind, FailDirection};
 use agent_base::ports::{
     ApprovalGate, ApprovalOutcome, ApprovalRequest, AnsweredBy, BoxFuture, CancelToken,
     PromptSource, SessionStore,
@@ -139,13 +139,19 @@ impl ApprovalGate for ReadonlyEnforcingGate {
 
     fn needs_approval<'a>(
         &'a self,
-        tool: &'a str,
+        _tool: &'a str,
+        access: &'a Access,
         _policy: &'a ApprovalPolicy,
         _args: &'a serde_json::Value,
     ) -> BoxFuture<'a, bool> {
         Box::pin(async move {
-            // 只读子智能体 + 非只读工具 → 需要"门禁裁决"（下面 decide 会直接拒绝）
-            self.readonly && !agent_toolkit::is_readonly_tool(tool)
+            // 只读子智能体 + 非只读工具 → 需要"门禁裁决"（下面 decide 会直接拒绝）。
+            //
+            // 判据是**描述符的访问方式**（INV-3），不是工具名：子智能体里也会出现
+            // 插件工具与外部工具（MCP server / 远端），它们的名字不在内置注册表里——
+            // 按名字回查会把“只读”错判成“写”（多拦一次是安全方向），却也把外部工具
+            // 的真实声明整个丢掉了。
+            self.readonly && !matches!(access, Access::ReadOnly)
         })
     }
 
@@ -208,11 +214,23 @@ mod tests {
 
         // 只读工具不问
         assert!(!gate
-            .needs_approval("read_file", &ApprovalPolicy::Never, &serde_json::json!({}))
+            .needs_approval(
+                "read_file",
+                &Access::ReadOnly,
+                &ApprovalPolicy::Never,
+                &serde_json::json!({})
+            )
             .await);
         // 写工具要问 → 而 decide 直接按策略拒绝
         assert!(gate
-            .needs_approval("write_file", &ApprovalPolicy::Never, &serde_json::json!({}))
+            .needs_approval(
+                "write_file",
+                &Access::Mutates {
+                    paths: agent_base::domain::PathSelector::Single("path"),
+                },
+                &ApprovalPolicy::Never,
+                &serde_json::json!({})
+            )
             .await);
 
         let outcome = gate
@@ -238,10 +256,22 @@ mod tests {
     async fn test_rw_gate_never_asks() {
         let gate = ReadonlyEnforcingGate::new(false);
         assert!(!gate
-            .needs_approval("write_file", &ApprovalPolicy::Never, &serde_json::json!({}))
+            .needs_approval(
+                "write_file",
+                &Access::Mutates {
+                    paths: agent_base::domain::PathSelector::Single("path"),
+                },
+                &ApprovalPolicy::Never,
+                &serde_json::json!({})
+            )
             .await);
         assert!(!gate
-            .needs_approval("run_command", &ApprovalPolicy::Never, &serde_json::json!({}))
+            .needs_approval(
+                "run_command",
+                &Access::Executes { command_arg: "command" },
+                &ApprovalPolicy::Never,
+                &serde_json::json!({})
+            )
             .await);
     }
 }
