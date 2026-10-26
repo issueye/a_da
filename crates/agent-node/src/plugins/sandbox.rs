@@ -6,9 +6,217 @@ use ada_ts_engine::{compiler::transpile_ts_module_cached, PureTsRuntime};
 
 use super::types::{
     PluginActionDeclaration, PluginHookDeclaration, PluginPromptDeclaration,
-    PluginSkillDeclaration, PluginToolDeclaration,
+    PluginRouteDeclaration, PluginSkillDeclaration, PluginToolDeclaration,
 };
 use agent_toolkit::ToolResult;
+
+/// TS 侧动态路由运行时：注册归一化 + 匹配 + HTTP 响应归一化。
+///
+/// 这段 JS 在**检查期与调用期各注入一次**（两处必须同一套匹配规则，否则
+/// “检查时说有、调用时说没有”这种错最难查）。宿主只做请求转发与响应落盘，
+/// 新增一条接口不需要再改 Rust。
+const ROUTE_RUNTIME_JS: &str = r#"
+globalThis.__ada_route_runtime = (function () {
+  var METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
+
+  function normalize(route, order) {
+    if (!route || typeof route !== 'object') throw new Error('route 需要对象');
+    var method = typeof route.method === 'string' ? route.method.trim().toUpperCase() : 'GET';
+    if (method !== '*' && METHODS.indexOf(method) < 0) throw new Error('不支持的路由方法: ' + method);
+    var path = typeof route.path === 'string' ? route.path.trim() : '';
+    if (!path) path = '/';
+    if (path.length > 1024) throw new Error('路由路径过长（上限 1024）');
+    if (path.indexOf('?') >= 0 || path.indexOf('#') >= 0) throw new Error('路由路径不能包含查询串或片段');
+    if (path.charAt(0) !== '/') path = '/' + path;
+    while (path.length > 1 && path.charAt(path.length - 1) === '/') path = path.slice(0, -1);
+    var parts = path.split('/').filter(function (part) { return part.length > 0; });
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i] === '.' || parts[i] === '..') throw new Error('路由路径不能包含 . 或 .. 段');
+    }
+    if (typeof route.handler !== 'function') throw new Error('路由 ' + method + ' ' + path + ' 缺少 handler 函数');
+    var name = typeof route.name === 'string' && route.name.trim() ? route.name.trim() : (method + ' ' + path);
+    return { name: name, method: method, path: path, handler: route.handler, order: order };
+  }
+
+  function compile(route) {
+    var segments = [];
+    var score = 0;
+    var parts = route.path.split('/').filter(function (part) { return part.length > 0; });
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i];
+      if (part.charAt(0) === ':') {
+        if (part.length < 2) throw new Error('路由参数段缺少名字: ' + route.path);
+        segments.push({ kind: 'param', name: part.slice(1) });
+        score += 1;
+      } else if (part.charAt(0) === '*') {
+        if (part.length < 2) throw new Error('路由通配段缺少名字: ' + route.path);
+        if (i !== parts.length - 1) throw new Error('路由通配段必须是最后一段: ' + route.path);
+        segments.push({ kind: 'wild', name: part.slice(1) });
+      } else {
+        var value = part;
+        try { value = decodeURIComponent(part); } catch (_) {}
+        segments.push({ kind: 'static', value: value });
+        score += 3;
+      }
+    }
+    route.segments = segments;
+    route.score = score;
+    return route;
+  }
+
+  function compileAll(raw) {
+    var routes = [];
+    var seen = {};
+    for (var i = 0; i < raw.length; i++) {
+      var route = compile(normalize(raw[i], i));
+      var key = route.method + ' ' + route.path;
+      if (seen[key]) throw new Error('重复的路由: ' + key);
+      seen[key] = true;
+      routes.push(route);
+    }
+    routes.sort(function (a, b) {
+      if (b.score !== a.score) return b.score - a.score;
+      if (b.segments.length !== a.segments.length) return b.segments.length - a.segments.length;
+      return a.order - b.order;
+    });
+    return routes;
+  }
+
+  function matchOne(route, method, path) {
+    if (route.method !== '*' && route.method !== method) return null;
+    var parts = path.split('/').filter(function (part) { return part.length > 0; });
+    var params = {};
+    var index = 0;
+    for (var i = 0; i < route.segments.length; i++) {
+      var segment = route.segments[i];
+      if (segment.kind === 'wild') {
+        params[segment.name] = parts.slice(index).join('/');
+        index = parts.length;
+        break;
+      }
+      if (index >= parts.length) return null;
+      if (segment.kind === 'static') {
+        if (parts[index] !== segment.value) return null;
+      } else {
+        params[segment.name] = parts[index];
+      }
+      index += 1;
+    }
+    if (index !== parts.length) return null;
+    return { route: route, params: params };
+  }
+
+  function match(routes, method, path) {
+    method = String(method || 'GET').toUpperCase();
+    path = String(path || '/');
+    if (path.charAt(0) !== '/') path = '/' + path;
+    var matched = null;
+    for (var i = 0; i < routes.length && !matched; i++) {
+      matched = matchOne(routes[i], method, path);
+    }
+    // HEAD 没单独声明时按 GET 处理（HTTP 语义），响应体由宿主截掉。
+    if (!matched && method === 'HEAD') {
+      for (var j = 0; j < routes.length && !matched; j++) {
+        matched = matchOne(routes[j], 'GET', path);
+      }
+    }
+    return matched;
+  }
+
+  function response(options) {
+    if (!options || typeof options !== 'object') throw new Error('response 需要对象');
+    return {
+      __ada_http: true,
+      status: options.status,
+      headers: options.headers,
+      body: options.body,
+      bodyKind: options.bodyKind,
+      contentType: options.contentType,
+    };
+  }
+
+  function finalize(value) {
+    if (value && value.__ada_http === true) {
+      var status = Number.isInteger(value.status) ? value.status : 200;
+      if (status < 200 || status > 599) throw new Error('HTTP 状态码超出范围: ' + status);
+      var headers = value.headers && typeof value.headers === 'object' ? value.headers : {};
+      var kind = value.bodyKind === 'base64' ? 'base64' : 'text';
+      var body = value.body === undefined || value.body === null ? '' : value.body;
+      if (kind === 'base64') {
+        if (typeof body !== 'string') throw new Error('base64 响应体必须是字符串');
+      } else if (typeof body !== 'string') {
+        body = JSON.stringify(body);
+      }
+      return {
+        status: status,
+        headers: headers,
+        body: body,
+        bodyKind: kind,
+        contentType: typeof value.contentType === 'string' ? value.contentType : undefined,
+      };
+    }
+    return {
+      status: 200,
+      headers: {},
+      body: JSON.stringify(value === undefined ? null : value),
+      bodyKind: 'text',
+      contentType: 'application/json; charset=utf-8',
+    };
+  }
+
+  function json(data, status, headers) {
+    return response({
+      status: status === undefined ? 200 : status,
+      headers: headers || {},
+      body: JSON.stringify(data === undefined ? null : data),
+      bodyKind: 'text',
+      contentType: 'application/json; charset=utf-8',
+    });
+  }
+
+  function text(body, status, headers) {
+    return response({
+      status: status === undefined ? 200 : status,
+      headers: headers || {},
+      body: body === undefined || body === null ? '' : String(body),
+      bodyKind: 'text',
+      contentType: 'text/plain; charset=utf-8',
+    });
+  }
+
+  function html(body, status, headers) {
+    return response({
+      status: status === undefined ? 200 : status,
+      headers: headers || {},
+      body: body === undefined || body === null ? '' : String(body),
+      bodyKind: 'text',
+      contentType: 'text/html; charset=utf-8',
+    });
+  }
+
+  function redirect(location, status) {
+    return response({
+      status: status === undefined ? 303 : status,
+      headers: { Location: String(location === undefined ? '/' : location) },
+      body: '',
+      bodyKind: 'text',
+      contentType: 'text/plain; charset=utf-8',
+    });
+  }
+
+  return {
+    normalize: normalize,
+    compileAll: compileAll,
+    match: match,
+    response: response,
+    finalize: finalize,
+    json: json,
+    text: text,
+    html: html,
+    redirect: redirect,
+  };
+})();
+"#;
 
 /// 一次插件检查的完整结果（工具 + 提示词片段 + 技能 + 钩子声明）。
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -29,6 +237,8 @@ pub struct PluginInspection {
     pub hooks: Vec<PluginHookDeclaration>,
     /// 面向界面的确定性动作（`ada.registerAction`）。空数组 = 没声明。
     pub actions: Vec<PluginActionDeclaration>,
+    /// 动态 HTTP 路由（`ada.route`）。空数组 = 没声明。
+    pub routes: Vec<PluginRouteDeclaration>,
 }
 
 pub struct PluginSandbox;
@@ -102,6 +312,10 @@ impl PluginSandbox {
             runtime.terminate();
             anyhow::bail!("插件语法或装载错误: {e}");
         }
+        if let Err(e) = runtime.eval_ts(ROUTE_RUNTIME_JS, Some("ada_route_runtime.js")).await {
+            runtime.terminate();
+            anyhow::bail!("初始化动态路由运行时失败: {e}");
+        }
 
         // 2. 挂载检查函数
         let inspect_script = format!(
@@ -120,6 +334,7 @@ impl PluginSandbox {
                     let ignoredSkills = [];
                     let hooksRaw = [];
                     let actionsRaw = [];
+                    let routesRaw = [];
                     if (typeof desc === 'function') {{
                         const api = {{
                             trace: (msg) => console.log(msg),
@@ -128,6 +343,14 @@ impl PluginSandbox {
                             registerTool: (tool) => {{ toolsRaw.push(tool); }},
                             // 面向界面的确定性动作：与工具分开收集，避免把界面动作装进模型工具目录。
                             registerAction: (action) => {{ actionsRaw.push(action); }},
+                            // 动态 HTTP 路由：只在 TS 侧收集，宿主不登记静态路由表。
+                            route: (route) => {{ routesRaw.push(route); }},
+                            registerRoute: (route) => {{ routesRaw.push(route); }},
+                            response: globalThis.__ada_route_runtime.response,
+                            json: globalThis.__ada_route_runtime.json,
+                            text: globalThis.__ada_route_runtime.text,
+                            html: globalThis.__ada_route_runtime.html,
+                            redirect: globalThis.__ada_route_runtime.redirect,
                             registerSystemPrompt: (prompt) => {{ promptsRaw.push(prompt); }},
                             registerPrompt: (prompt) => {{ promptsRaw.push(prompt); }},
                             // 🔴 技能不再"由脚本注册"：Skill 是**目录 + SKILL.md**
@@ -258,10 +481,25 @@ impl PluginSandbox {
                             parameters: inst.parameters || {{ type: 'object', properties: {{}} }},
                         }});
                     }}
-                    return JSON.stringify({{ ok: true, metadata: metadata || null, tools: tools, prompts: prompts, skills: skills, ignoredSkills: ignoredSkills, hooks: hooks, actions: actions }});
+                    const compiledRoutes = globalThis.__ada_route_runtime.compileAll(routesRaw);
+                    // 检查结果的顺序按**声明顺序**（metadata.routes 的 names 也是这个口径）；
+                    // 匹配顺序由运行时自己按静态/参数/通配排序，不受这里影响。
+                    const declaredRoutes = compiledRoutes.slice().sort((a, b) => a.order - b.order);
+                    const routes = [];
+                    for (let i = 0; i < declaredRoutes.length; i++) {{
+                        routes.push({{
+                            name: declaredRoutes[i].name,
+                            method: declaredRoutes[i].method,
+                            path: declaredRoutes[i].path,
+                        }});
+                    }}
+                    return JSON.stringify({{ ok: true, metadata: metadata || null, tools: tools, prompts: prompts, skills: skills, ignoredSkills: ignoredSkills, hooks: hooks, actions: actions, routes: routes }});
                 }} catch (err) {{
                     // 🔴 带上 `stack`（P4·SP-73）：只拿 `err.message` 的话，报错不带文件与行号。
-                    const detail = err && err.stack ? String(err.stack) : String(err);
+                    // 反过来只取 `stack` 又会丢掉 Boa 的消息行（只剩帧），所以两者都留。
+                    const detail = err && err.message
+                        ? String(err.message) + (err.stack ? "\n" + String(err.stack) : "")
+                        : (err && err.stack ? String(err.stack) : String(err));
                     return JSON.stringify({{ ok: false, error: detail }});
                 }}
             }};
@@ -323,6 +561,11 @@ impl PluginSandbox {
                 resp.get("actions").cloned().unwrap_or(serde_json::json!([])),
             )
             .unwrap_or_default();
+            // 动态 HTTP 路由声明（空数组 = 没声明）
+            let routes: Vec<PluginRouteDeclaration> = serde_json::from_value(
+                resp.get("routes").cloned().unwrap_or(serde_json::json!([])),
+            )
+            .unwrap_or_default();
             let metadata = resp.get("metadata").cloned().filter(|value| !value.is_null());
             if plugin_path
                 .file_name()
@@ -332,7 +575,15 @@ impl PluginSandbox {
                 let metadata = metadata
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("插件包入口缺少 metadata 对象"))?;
-                Self::validate_package_metadata(metadata, &tools, &prompts, &skills, &hooks, &actions)?;
+                Self::validate_package_metadata(
+                    metadata,
+                    &tools,
+                    &prompts,
+                    &skills,
+                    &hooks,
+                    &actions,
+                    &routes,
+                )?;
             }
             Ok(PluginInspection {
                 metadata,
@@ -342,6 +593,7 @@ impl PluginSandbox {
                 ignored_skills,
                 hooks,
                 actions,
+                routes,
             })
         } else {
             let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("检查插件失败");
@@ -362,6 +614,7 @@ impl PluginSandbox {
         _skills: &[PluginSkillDeclaration],
         hooks: &[PluginHookDeclaration],
         actions: &[PluginActionDeclaration],
+        routes: &[PluginRouteDeclaration],
     ) -> Result<()> {
         let object = metadata
             .as_object()
@@ -403,6 +656,23 @@ impl PluginSandbox {
                 anyhow::bail!("插件 metadata `actions` 必须是对象（可省略）");
             }
             Self::validate_metadata_group(metadata, "actions", 0, std::iter::empty())?;
+        }
+        // 路由组同样是可选的：动态路由本来就可以只写在 `ada.route(...)` 里。
+        // 一旦 metadata 写了 `routes`，count / names 仍要逐项对账。
+        if routes.is_empty() {
+            if let Some(group) = metadata.get("routes") {
+                if !group.is_object() {
+                    anyhow::bail!("插件 metadata `routes` 必须是对象（可省略）");
+                }
+                Self::validate_metadata_group(metadata, "routes", 0, std::iter::empty())?;
+            }
+        } else if metadata.get("routes").is_some() {
+            Self::validate_metadata_group(
+                metadata,
+                "routes",
+                routes.len(),
+                routes.iter().map(|v| v.name.as_str()),
+            )?;
         }
         Ok(())
     }
@@ -814,6 +1084,157 @@ impl PluginSandbox {
 
         serde_json::from_str(&resp_str)
             .map_err(|e| anyhow::anyhow!("动作返回值不是合法 JSON: {e}; {resp_str}"))
+    }
+
+    /// 调用插件声明的**动态 HTTP 路由**。
+    ///
+    /// 与 [`Self::call_action_budgeted`] 同构：每次新建沙箱、重新执行工厂、收集
+    /// `ada.route(...)`，再按 method/path 匹配。路由表不落 Rust，所以插件加一条
+    /// 接口只需要改自己的 `index.ts`。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn call_route_budgeted(
+        plugin_path: &Path,
+        method: &str,
+        path: &str,
+        request: serde_json::Value,
+        workspace: &Path,
+        timeout_s: u64,
+        needs: ada_ts_engine::Needs,
+        limits: ada_ts_engine::Limits,
+    ) -> Result<serde_json::Value> {
+        let js_code = Self::load_and_transpile(plugin_path).await?;
+        let runtime = PureTsRuntime::with_environment_and_console(
+            Some(workspace.to_path_buf()),
+            limits,
+            needs,
+            ada_ts_engine::ConsoleMode::Capture,
+        );
+
+        let plugin_file_json = serde_json::to_string(&plugin_path.to_string_lossy())?;
+        let ws_json = serde_json::to_string(&workspace.to_string_lossy())?;
+        let require_factory = plugin_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| matches!(name, "index.ts" | "index.js"));
+
+        let init_script = format!(
+            "(function() {{ const module = {{ exports: {{}} }}; const exports = module.exports; \
+             const __filename = {plugin_file}; const __dirname = path.dirname(__filename);{js_code}\n\
+             globalThis.__ada_current_plugin = module.exports.default || module.exports;}})();",
+            plugin_file = plugin_file_json,
+            js_code = js_code.trim_start_matches(['\n', '\r'])
+        );
+        if let Err(e) = runtime.eval_ts(init_script, plugin_path.to_str()).await {
+            runtime.terminate();
+            anyhow::bail!("插件装载失败: {e}");
+        }
+        if let Err(e) = runtime.eval_ts(ROUTE_RUNTIME_JS, Some("ada_route_runtime.js")).await {
+            runtime.terminate();
+            anyhow::bail!("初始化动态路由运行时失败: {e}");
+        }
+
+        let call_setup = format!(
+            r#"
+            globalThis.__ada_call_route = async function(payload) {{
+                try {{
+                    const desc = globalThis.__ada_current_plugin;
+                    if (!desc) {{
+                        return JSON.stringify({{ ok: false, error: "插件未导出有效对象或函数", kind: "failed" }});
+                    }}
+                    const rt = globalThis.__ada_route_runtime;
+                    const ws = {ws_json};
+                    const requireFactory = {require_factory};
+                    let routesRaw = [];
+                    if (typeof desc === 'function') {{
+                        const api = {{
+                            trace: (msg) => console.log(msg),
+                            workspace: ws,
+                            metadata: undefined,
+                            registerTool: () => {{}},
+                            registerAction: () => {{}},
+                            route: (route) => {{ routesRaw.push(route); }},
+                            registerRoute: (route) => {{ routesRaw.push(route); }},
+                            response: rt.response,
+                            json: rt.json,
+                            text: rt.text,
+                            html: rt.html,
+                            redirect: rt.redirect,
+                            registerSystemPrompt: () => {{}},
+                            registerPrompt: () => {{}},
+                            registerSkill: () => {{}},
+                            on: () => {{}},
+                        }};
+                        try {{
+                            await desc(api);
+                        }} catch (e) {{
+                            return JSON.stringify({{ ok: false, error: "插件初始化执行异常: " + (e && e.stack ? String(e.stack) : String(e)), kind: "failed" }});
+                        }}
+                    }} else {{
+                        return JSON.stringify({{ ok: false, error: "Extension Factory must be a default-exported function", kind: "failed" }});
+                    }}
+
+                    const routes = rt.compileAll(routesRaw);
+                    const matched = rt.match(routes, payload.method, payload.path);
+                    if (!matched) {{
+                        return JSON.stringify({{
+                            ok: false,
+                            kind: "not_found",
+                            error: "路由不存在: " + String(payload.method || 'GET') + " " + String(payload.path || '/'),
+                        }});
+                    }}
+                    const request = Object.assign({{}}, payload.request || {{}}, {{
+                        method: payload.method,
+                        path: payload.path,
+                        params: matched.params,
+                    }});
+                    const ctx = {{
+                        workspace: ws,
+                        now: request.now,
+                        threadId: request.threadId === undefined ? null : request.threadId,
+                    }};
+                    let result;
+                    try {{
+                        result = await matched.route.handler(request, ctx);
+                    }} catch (e) {{
+                        return JSON.stringify({{ ok: false, error: e && e.stack ? String(e.stack) : String(e), kind: "failed" }});
+                    }}
+                    return JSON.stringify({{ ok: true, response: rt.finalize(result) }});
+                }} catch (err) {{
+                    const detail = err && err.stack ? String(err.stack) : String(err);
+                    return JSON.stringify({{ ok: false, error: detail, kind: "failed" }});
+                }}
+            }};
+            "#,
+            ws_json = ws_json,
+            require_factory = require_factory
+        );
+        if let Err(e) = runtime.eval_ts(call_setup, Some("ada_route_caller.js")).await {
+            runtime.terminate();
+            anyhow::bail!("初始化路由调度器失败: {e}");
+        }
+
+        let payload = serde_json::json!({
+            "method": method,
+            "path": path,
+            "request": request,
+        });
+        let call_fut = runtime.call_async_fn(
+            "__ada_call_route",
+            serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string()),
+        );
+        let resp_str = match tokio::time::timeout(Duration::from_secs(timeout_s), call_fut).await {
+            Ok(res) => {
+                runtime.terminate();
+                res.map_err(|e| anyhow::anyhow!("路由执行失败: {e}"))?
+            }
+            Err(_) => {
+                runtime.terminate();
+                anyhow::bail!("路由执行超时（{} 秒）", timeout_s);
+            }
+        };
+
+        serde_json::from_str(&resp_str)
+            .map_err(|e| anyhow::anyhow!("路由返回值不是合法 JSON: {e}; {resp_str}"))
     }
 
     /// 在纯 Rust 进程内微内核沙箱中执行插件工具
@@ -2040,6 +2461,239 @@ mod tests {
         assert!(pending["data"]["items"].as_array().unwrap().is_empty());
         assert_eq!(pending["data"]["approved"], 1);
         assert_eq!(pending["data"]["rejected"], 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_routes_match_params_and_return_http_shapes() {
+        let dir = std::env::temp_dir().join(format!("a_da_route_rt_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("routes.ts");
+        std::fs::write(
+            &path,
+            r#"
+            export default function (ada: any) {
+              ada.route({
+                method: "GET",
+                path: "/hello/:name",
+                async handler(req: any) {
+                  return { hello: req.params.name, q: req.query.q, thread: req.threadId };
+                },
+              });
+              ada.route({
+                method: "POST",
+                path: "/echo",
+                async handler(req: any, ctx: any) {
+                  return { body: req.body, kind: req.bodyKind, ws: ctx.workspace };
+                },
+              });
+              ada.route({
+                method: "GET",
+                path: "/text",
+                async handler() { return ada.text("plain", 201, { "x-note": "ok" }); },
+              });
+              ada.route({
+                method: "GET",
+                path: "/bin",
+                async handler() {
+                  return ada.response({
+                    status: 200,
+                    body: "aGk=",
+                    bodyKind: "base64",
+                    contentType: "application/octet-stream",
+                  });
+                },
+              });
+              ada.route({
+                method: "GET",
+                path: "/files/*rest",
+                async handler(req: any) { return { rest: req.params.rest }; },
+              });
+            }
+            "#,
+        )
+        .unwrap();
+
+        let inspected = PluginSandbox::inspect_plugin_full(
+            &path,
+            &dir,
+            ada_ts_engine::Needs::everything(),
+        )
+        .await
+        .expect("route plugin should inspect");
+        assert_eq!(inspected.routes.len(), 5, "{:?}", inspected.routes);
+        assert!(inspected
+            .routes
+            .iter()
+            .any(|route| route.method == "GET" && route.path == "/hello/:name"));
+
+        let request = |extra: serde_json::Value| {
+            let mut base = serde_json::json!({
+                "method": "GET",
+                "path": "/hello/ada",
+                "query": {},
+                "headers": {},
+                "body": null,
+                "bodyKind": "empty",
+                "workspace": dir.to_string_lossy(),
+                "threadId": "thread-1",
+                "now": 1_700_000_000_000u64,
+            });
+            if let (Some(base), Some(extra)) = (base.as_object_mut(), extra.as_object()) {
+                for (key, value) in extra {
+                    base.insert(key.clone(), value.clone());
+                }
+            }
+            base
+        };
+
+        let hello = PluginSandbox::call_route_budgeted(
+            &path,
+            "GET",
+            "/hello/ada",
+            request(serde_json::json!({ "query": { "q": "1" } })),
+            &dir,
+            5,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("route should run");
+        assert_eq!(hello["ok"], true, "{hello:?}");
+        let response = &hello["response"];
+        assert_eq!(response["status"], 200);
+        let payload: serde_json::Value =
+            serde_json::from_str(response["body"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["hello"], "ada");
+        assert_eq!(payload["q"], "1");
+        assert_eq!(payload["thread"], "thread-1");
+
+        let echo = PluginSandbox::call_route_budgeted(
+            &path,
+            "POST",
+            "/echo",
+            request(serde_json::json!({
+                "method": "POST",
+                "path": "/echo",
+                "body": { "a": 1 },
+                "bodyKind": "json",
+            })),
+            &dir,
+            5,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("POST route should run");
+        let payload: serde_json::Value =
+            serde_json::from_str(echo["response"]["body"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["body"]["a"], 1);
+        assert_eq!(payload["kind"], "json");
+        assert_eq!(
+            payload["ws"].as_str().unwrap(),
+            dir.to_string_lossy().to_string()
+        );
+
+        let text = PluginSandbox::call_route_budgeted(
+            &path,
+            "GET",
+            "/text",
+            request(serde_json::json!({ "path": "/text" })),
+            &dir,
+            5,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("text helper should run");
+        assert_eq!(text["response"]["status"], 201);
+        assert_eq!(text["response"]["body"], "plain");
+        assert_eq!(
+            text["response"]["headers"]["x-note"],
+            "ok",
+            "{text:?}"
+        );
+
+        let bin = PluginSandbox::call_route_budgeted(
+            &path,
+            "GET",
+            "/bin",
+            request(serde_json::json!({ "path": "/bin" })),
+            &dir,
+            5,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("binary helper should run");
+        assert_eq!(bin["response"]["bodyKind"], "base64");
+        assert_eq!(bin["response"]["body"], "aGk=");
+
+        let wild = PluginSandbox::call_route_budgeted(
+            &path,
+            "GET",
+            "/files/a/b.txt",
+            request(serde_json::json!({ "path": "/files/a/b.txt" })),
+            &dir,
+            5,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("wildcard route should run");
+        let payload: serde_json::Value =
+            serde_json::from_str(wild["response"]["body"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["rest"], "a/b.txt");
+
+        let head = PluginSandbox::call_route_budgeted(
+            &path,
+            "HEAD",
+            "/hello/ada",
+            request(serde_json::json!({ "method": "HEAD", "path": "/hello/ada" })),
+            &dir,
+            5,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("HEAD should fall back to GET");
+        assert_eq!(head["response"]["status"], 200);
+
+        let missing = PluginSandbox::call_route_budgeted(
+            &path,
+            "GET",
+            "/nope",
+            request(serde_json::json!({ "path": "/nope" })),
+            &dir,
+            5,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("missing route should return a structured miss");
+        assert_eq!(missing["ok"], false);
+        assert_eq!(missing["kind"], "not_found");
+
+        let bad = dir.join("duplicate.ts");
+        std::fs::write(
+            &bad,
+            r#"
+            export default function (ada: any) {
+              ada.route({ method: "GET", path: "/x", handler: () => 1 });
+              ada.route({ method: "GET", path: "/x", handler: () => 2 });
+            }
+            "#,
+        )
+        .unwrap();
+        let error = PluginSandbox::inspect_plugin_full(
+            &bad,
+            &dir,
+            ada_ts_engine::Needs::everything(),
+        )
+        .await
+        .expect_err("duplicate route should fail inspection");
+        assert!(error.to_string().contains("重复的路由"), "{error}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

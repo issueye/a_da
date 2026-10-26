@@ -56,6 +56,57 @@ export interface ActionDefinition {
 	) => unknown | Promise<unknown>;
 }
 
+/** Dynamic HTTP route method; `*` matches every method. */
+export type RouteMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS" | "*";
+
+export interface RouteRequest {
+	readonly method: string;
+	/** Path under `/ext/{pluginId}/route`, always starts with `/`. */
+	readonly path: string;
+	/** Matched `:param` / `*rest` segments. */
+	readonly params: Record<string, string>;
+	/** Repeated query keys become string arrays. */
+	readonly query: Record<string, string | string[]>;
+	/** Sanitized headers; `cookie` / `authorization` are never forwarded. */
+	readonly headers: Record<string, string>;
+	readonly body: unknown;
+	readonly bodyKind: "empty" | "json" | "form" | "text" | "base64";
+	readonly workspace: string;
+	readonly threadId: string | null;
+	readonly now: number;
+}
+
+export interface RouteContext {
+	readonly workspace: string;
+	readonly now: number;
+	readonly threadId: string | null;
+}
+
+export interface RouteDefinition {
+	name?: string;
+	method?: RouteMethod;
+	/** Static / `:param` / `*rest` path; `*rest` must be the last segment. */
+	path: string;
+	handler: (req: RouteRequest, ctx: RouteContext) => unknown | Promise<unknown>;
+}
+
+/** Tagged HTTP response; prefer the helpers on `ada` over building this by hand. */
+export interface HttpResponse {
+	status?: number;
+	headers?: Record<string, string | string[]>;
+	body?: unknown;
+	bodyKind?: "text" | "base64";
+	contentType?: string;
+}
+
+export interface RouteResponseHelpers {
+	response(options: HttpResponse): HttpResponse;
+	json(data: unknown, status?: number, headers?: Record<string, string | string[]>): HttpResponse;
+	text(body: string, status?: number, headers?: Record<string, string | string[]>): HttpResponse;
+	html(body: string, status?: number, headers?: Record<string, string | string[]>): HttpResponse;
+	redirect(location: string, status?: number): HttpResponse;
+}
+
 /** Object-form hook declaration (`export default { hooks: [...] }`). */
 export interface HookDefinition {
 	point: string;
@@ -79,9 +130,11 @@ export interface ExtensionMetadata {
 	hooks: ExtensionMetadataGroup;
 	/** Optional; required when the factory registers actions. */
 	actions?: ExtensionMetadataGroup;
+	/** Optional; when present, validated against the routes registered by `ada.route`. */
+	routes?: ExtensionMetadataGroup;
 }
 
-export interface ExtensionAPI {
+export interface ExtensionAPI extends RouteResponseHelpers {
 	readonly workspace: string;
 	/** Required package metadata; inspect validates it against actual registrations. */
 	metadata?: ExtensionMetadata;
@@ -89,6 +142,10 @@ export interface ExtensionAPI {
 	registerTool(tool: ToolDefinition): void;
 	/** UI-only action; never enters the model tool catalog or approval gate. */
 	registerAction(action: ActionDefinition): void;
+	/** Dynamic HTTP route; adding one needs no host change. */
+	route(route: RouteDefinition): void;
+	/** Alias for `route`. */
+	registerRoute(route: RouteDefinition): void;
 	registerSystemPrompt(prompt: SystemPromptDefinition): void;
 	/** Compatibility alias for registerSystemPrompt. */
 	registerPrompt(prompt: SystemPromptDefinition): void;

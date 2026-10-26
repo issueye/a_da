@@ -891,3 +891,117 @@ async fn test_task_list_and_kill_use_the_injected_background_store() {
 
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[tokio::test]
+async fn test_plugin_route_dispatches_to_the_ts_router_and_keeps_http_status() {
+    let home = std::env::temp_dir().join(format!(
+        "a_da_route_dispatch_{}",
+        uuid::Uuid::new_v4()
+    ));
+    let workspace = home.join("ws");
+    let unified = home.join("plugins");
+    let package = unified.join("route-demo");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("plugin.json"),
+        r#"{
+            "id": "route-demo",
+            "name": "Route Demo",
+            "version": "0.1.0",
+            "frontend": { "slots": [] },
+            "backend": {}
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        package.join("index.ts"),
+        r#"
+        const metadata = {
+          name: 'route-demo',
+          description: 'dispatch route test',
+          tools: { count: 0, names: [] },
+          systemPrompt: { count: 0, names: [] },
+          hooks: { count: 0, names: [] },
+        };
+        export default function (ada) {
+          ada.metadata = metadata;
+          ada.route({
+            method: 'GET',
+            path: '/ping/:name',
+            async handler(req) { return { pong: req.params.name }; },
+          });
+        }
+        "#,
+    )
+    .unwrap();
+
+    let dispatcher = Dispatcher::new(
+        Arc::new(RwLock::new(AgentStore::new(
+            workspace.to_string_lossy().to_string(),
+        ))),
+        Arc::new(SessionManager::new(Some(home.clone()))),
+        Arc::new(CheckpointManager::new(Some(home.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(
+            PluginManager::with_home(home.clone()).with_unified_dir(unified.clone()),
+        ),
+        Arc::new(SkillManager::with_home(home.clone())),
+        None,
+    );
+
+    let hit = dispatcher
+        .dispatch(
+            PLUGIN_ROUTE,
+            serde_json::json!({
+                "pluginId": "global:route-demo",
+                "method": "GET",
+                "path": "/ping/ada",
+                "query": {},
+                "headers": {},
+                "body": null,
+                "bodyKind": "empty"
+            }),
+        )
+        .await
+        .expect("plugin.route 应可分发");
+    assert_eq!(hit["ok"], true, "{hit}");
+    assert_eq!(hit["response"]["status"], 200);
+    let body: serde_json::Value =
+        serde_json::from_str(hit["response"]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(body["pong"], "ada");
+
+    let miss = dispatcher
+        .dispatch(
+            PLUGIN_ROUTE,
+            serde_json::json!({
+                "pluginId": "global:route-demo",
+                "method": "GET",
+                "path": "/nope",
+                "query": {},
+                "headers": {},
+                "body": null,
+                "bodyKind": "empty"
+            }),
+        )
+        .await
+        .expect("miss 应返回结构化结果而不是 JSON-RPC 错误");
+    assert_eq!(miss["ok"], false, "{miss}");
+    assert_eq!(miss["status"], 404);
+
+    let invalid = dispatcher
+        .dispatch(
+            PLUGIN_ROUTE,
+            serde_json::json!({
+                "pluginId": "global:route-demo",
+                "method": "TRACE",
+                "path": "/ping/ada"
+            }),
+        )
+        .await
+        .expect("非法方法应返回 HTTP 语义错误");
+    assert_eq!(invalid["ok"], false);
+    assert_eq!(invalid["status"], 400);
+
+    let _ = std::fs::remove_dir_all(&home);
+}

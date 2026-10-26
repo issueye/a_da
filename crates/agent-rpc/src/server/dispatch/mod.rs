@@ -2475,6 +2475,121 @@ impl Dispatcher {
                     })
             }
 
+            PLUGIN_ROUTE => {
+                let plugin_id = params
+                    .get("pluginId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let method = params
+                    .get("method")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let path = params
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if plugin_id.is_empty() || method.is_empty() || path.is_empty() {
+                    return Err(ProtocolError::invalid_params(
+                        "plugin.route 需要非空的 pluginId / method / path",
+                    ));
+                }
+                let query = params
+                    .get("query")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let headers = params
+                    .get("headers")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let body = params
+                    .get("body")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                let body_kind = params
+                    .get("bodyKind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("empty");
+                let thread_id = params
+                    .get("threadId")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+                let workspace = match params
+                    .get("workspace")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    Some(workspace) => workspace.to_string(),
+                    None => {
+                        let store = self.store.read().await;
+                        store.workspace.project.clone()
+                    }
+                };
+                if workspace.trim().is_empty() {
+                    return Err(ProtocolError::invalid_params(
+                        "plugin.route 缺少工作区（会话尚未绑定目录）",
+                    ));
+                }
+
+                match self
+                    .plugin_mgr
+                    .invoke_route(
+                        &plugin_id,
+                        &method,
+                        &path,
+                        query,
+                        headers,
+                        body,
+                        body_kind,
+                        thread_id.as_deref(),
+                        &workspace,
+                    )
+                    .await
+                {
+                    Ok(response) => Ok(serde_json::json!({
+                        "ok": true,
+                        "response": response,
+                    })),
+                    Err(error) => {
+                        // 路由层的失败是 **HTTP 语义**（404/504/...），不是 JSON-RPC 故障：
+                        // 宿主据此直接构造响应，不会把“插件没这条路由”渲染成 500。
+                        let (status, kind) = match &error {
+                            agent_node::plugins::PluginActionError::NotFound(_) => {
+                                (404, "not_found")
+                            }
+                            agent_node::plugins::PluginActionError::NotReady(_) => {
+                                (503, "not_ready")
+                            }
+                            agent_node::plugins::PluginActionError::Denied(_) => (403, "denied"),
+                            agent_node::plugins::PluginActionError::Invalid(_) => {
+                                (400, "invalid")
+                            }
+                            agent_node::plugins::PluginActionError::Timeout => (504, "timeout"),
+                            agent_node::plugins::PluginActionError::TooLarge => {
+                                (413, "too_large")
+                            }
+                            agent_node::plugins::PluginActionError::Failed(_) => {
+                                (500, "failed")
+                            }
+                        };
+                        Ok(serde_json::json!({
+                            "ok": false,
+                            "status": status,
+                            "kind": kind,
+                            "error": error.to_string(),
+                        }))
+                    }
+                }
+            }
+
             PLUGIN_LIST => {
                 let ws = params.get("workspace").and_then(|v| v.as_str());
                 let mut plugins = self.plugin_mgr.load_plugins(ws);

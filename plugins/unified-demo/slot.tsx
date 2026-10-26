@@ -29,6 +29,11 @@ export function Page(props: any) {
         <form method="post" action="/ext/unified-demo/backend/refresh">
           <button class="ud-panel__button" type="submit">刷新后端</button>
         </form>
+        <p class="ud-panel__text">
+          <a href="/ext/unified-demo/route/hello/ada?q=demo" target="_blank" rel="noreferrer">
+            动态路由示例
+          </a>
+        </p>
       </div>
     </details>
   );

@@ -227,6 +227,26 @@ agent RPC：
 
 任务表不落盘、不跨进程；插件停用或读取失败时面板隐藏/显示错误，不影响工具本身。
 
+### 5.7 `ada.route`：后端接口由 TS 自己长出来
+
+动作是“固定 binding 的按钮”，动态路由是“插件自己的 URL”：
+
+```text
+浏览器 GET /ext/unified-demo/route/hello/ada?q=1
+  → agent-web 查启用插件 + backend id
+  → plugin.route(method/path/query/headers/body)
+  → TS 沙箱重新执行工厂，收集 ada.route 注册表
+  → 匹配 /hello/:name → handler
+  → 归一化 status/headers/body → HTTP 响应
+```
+
+- 路由表完全在 TS 侧；宿主只保留一条兜底路由，**加接口不改 Rust**；
+- 请求体 ≤1MB、响应 ≤2MB、15 秒超时；`cookie` / `authorization` 不转发；
+- 响应可用 `ada.json/text/html/redirect/response`，头只放行常见内容头与 `x-*`；
+- 这条路不进模型工具目录、不产生工具卡、不经过审批闸门；它是同源后端数据面。
+
+契约见 [unified-package.md](unified-package.md) 与 [extension-factory.md](extension-factory.md)。
+
 ---
 
 ## 6. 今天能做什么、不能做什么

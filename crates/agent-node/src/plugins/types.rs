@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -174,6 +174,40 @@ impl PluginActionDeclaration {
     pub fn is_read(&self) -> bool {
         self.mode.trim().eq_ignore_ascii_case("read")
     }
+}
+
+/// 后端插件在工厂期声明的**一条动态 HTTP 路由**。
+///
+/// 路由由 TS 侧自己匹配（支持 `:param` 与 `*rest`），宿主只把整个请求转进来。
+/// 因此加接口不需要改 Rust：`ada.route({ method, path, handler })` 就够。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginRouteDeclaration {
+    /// 人类可读的稳定名字，默认 `METHOD path`。
+    pub name: String,
+    /// `GET` / `POST` / ... / `*`。
+    pub method: String,
+    pub path: String,
+}
+
+/// 动态路由的归一化 HTTP 响应。
+///
+/// `body_kind` 只有 `text` 与 `base64` 两种：前者按 UTF-8 直出，后者由宿主解码。
+/// 头名统一小写；同名多值（典型是 `set-cookie`）保留为数组。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginRouteResponse {
+    pub status: u16,
+    #[serde(default)]
+    pub headers: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default = "default_body_kind")]
+    pub body_kind: String,
+}
+
+fn default_body_kind() -> String {
+    "text".to_string()
 }
 
 /// `plugin.invoke` 的失败分类。RPC 层据此映射错误码，前端桥接据此选 HTTP 状态。

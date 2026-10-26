@@ -1,15 +1,16 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
+use base64::Engine as _;
 
 use super::builtins::get_builtin_plugin_items;
 use super::types::{
     LoadedPlugin, LoadedPluginContributions, PluginActionError, PluginActionIntent,
-    PluginCapabilities, PluginDiagnostic, PluginItem, PluginManifest, PluginScope,
-    ResolvedPluginCapabilitiesDto,
+    PluginCapabilities, PluginDiagnostic, PluginItem, PluginManifest, PluginRouteResponse,
+    PluginScope, ResolvedPluginCapabilitiesDto,
 };
 use crate::session::{get_app_home, get_config_path};
 
@@ -194,32 +195,7 @@ impl PluginManager {
             return Err(PluginActionError::TooLarge);
         }
 
-        let item = self
-            .scan_plugins(Some(workspace))
-            .into_iter()
-            .find(|item| item.id == plugin_id)
-            .ok_or_else(|| {
-                PluginActionError::NotFound(format!("插件不存在: {plugin_id}"))
-            })?;
-        if !item.enabled || item.status != "ready" {
-            return Err(PluginActionError::NotReady(format!(
-                "插件未启用或未就绪: {plugin_id}"
-            )));
-        }
-        if item.file_path.trim().is_empty() {
-            return Err(PluginActionError::NotReady(format!(
-                "插件没有可装载的入口: {plugin_id}"
-            )));
-        }
-
-        let path = PathBuf::from(&item.file_path);
-        let source = tokio::fs::read_to_string(&path)
-            .await
-            .map_err(|error| {
-                PluginActionError::Failed(format!("读取插件失败（{}）：{error}", path.display()))
-            })?;
-        let declared = crate::scripts::needs::parse_needs(&source);
-        let needs = crate::scripts::to_engine_needs(declared.needs);
+        let (path, needs) = self.ready_plugin_entry(plugin_id, workspace).await?;
         let context = serde_json::json!({
             "workspace": workspace,
             "caller": "web",
@@ -283,6 +259,226 @@ impl PluginManager {
                 "动作返回缺少 ok 字段".to_string(),
             )),
         }
+    }
+
+    /// 调用插件声明的**动态 HTTP 路由**（`plugin.route` 的实现）。
+    ///
+    /// 路由表在 TS 侧（`ada.route`），所以这里只负责：找到插件入口、按声明的能力
+    /// 建沙箱、把请求原样递进去、把归一化后的 HTTP 响应带回来。加一条后端接口
+    /// 不需要改这一层。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn invoke_route(
+        &self,
+        plugin_id: &str,
+        method: &str,
+        path: &str,
+        query: serde_json::Value,
+        headers: serde_json::Value,
+        body: serde_json::Value,
+        body_kind: &str,
+        thread_id: Option<&str>,
+        workspace: &str,
+    ) -> Result<PluginRouteResponse, PluginActionError> {
+        const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
+        const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
+        const ROUTE_TIMEOUT_SECS: u64 = 15;
+
+        let plugin_id = plugin_id.trim();
+        let method = method.trim().to_ascii_uppercase();
+        let path = path.trim();
+        let workspace = workspace.trim();
+        let body_kind = body_kind.trim().to_ascii_lowercase();
+        if plugin_id.is_empty() || method.is_empty() || path.is_empty() {
+            return Err(PluginActionError::Invalid(
+                "plugin.route 需要非空的 pluginId / method / path".to_string(),
+            ));
+        }
+        if workspace.is_empty() {
+            return Err(PluginActionError::Invalid(
+                "plugin.route 需要非空的工作区".to_string(),
+            ));
+        }
+        if !matches!(
+            method.as_str(),
+            "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+        ) {
+            return Err(PluginActionError::Invalid(format!(
+                "不支持的 HTTP 方法: {method}"
+            )));
+        }
+        if path.len() > 2048
+            || !path.starts_with('/')
+            || path.contains('\0')
+            || path.split('/').any(|part| part == "." || part == "..")
+        {
+            return Err(PluginActionError::Invalid(format!(
+                "路由路径不合法: {path}"
+            )));
+        }
+        if !matches!(
+            body_kind.as_str(),
+            "" | "empty" | "json" | "form" | "text" | "base64"
+        ) {
+            return Err(PluginActionError::Invalid(format!(
+                "不支持的请求体类型: {body_kind}"
+            )));
+        }
+
+        let now = agent_toolkit::now_ms();
+        let request = serde_json::json!({
+            "method": method,
+            "path": path,
+            "query": query,
+            "headers": headers,
+            "body": body,
+            "bodyKind": body_kind,
+            "workspace": workspace,
+            "threadId": thread_id,
+            "now": now,
+        });
+        let input_bytes = serde_json::to_vec(&request)
+            .map_err(|error| PluginActionError::Invalid(format!("路由入参不是合法 JSON: {error}")))?
+            .len();
+        if input_bytes > MAX_INPUT_BYTES {
+            return Err(PluginActionError::TooLarge);
+        }
+
+        let (plugin_path, needs) = self.ready_plugin_entry(plugin_id, workspace).await?;
+        let call = super::PluginSandbox::call_route_budgeted(
+            &plugin_path,
+            &method,
+            path,
+            request,
+            Path::new(workspace),
+            ROUTE_TIMEOUT_SECS,
+            needs,
+            ada_ts_engine::Limits::default(),
+        );
+        let result = match tokio::time::timeout(
+            Duration::from_secs(ROUTE_TIMEOUT_SECS + 1),
+            call,
+        )
+        .await
+        {
+            Ok(Ok(value)) => value,
+            Ok(Err(error)) => {
+                let message = error.to_string();
+                if message.contains("超时") {
+                    return Err(PluginActionError::Timeout);
+                }
+                return Err(PluginActionError::Failed(message));
+            }
+            Err(_) => return Err(PluginActionError::Timeout),
+        };
+
+        match result.get("ok").and_then(|value| value.as_bool()) {
+            Some(true) => {
+                let response = result
+                    .get("response")
+                    .and_then(|value| value.as_object())
+                    .ok_or_else(|| {
+                        PluginActionError::Failed("路由返回缺少 response 对象".to_string())
+                    })?;
+                let status = response
+                    .get("status")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(200);
+                if !(200..=599).contains(&status) {
+                    return Err(PluginActionError::Invalid(format!(
+                        "路由返回了非法 HTTP 状态码: {status}"
+                    )));
+                }
+                let body = response
+                    .get("body")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if body.len() > MAX_OUTPUT_BYTES {
+                    return Err(PluginActionError::TooLarge);
+                }
+                let body_kind = match response.get("bodyKind").and_then(|value| value.as_str()) {
+                    Some("base64") => "base64",
+                    _ => "text",
+                };
+                if body_kind == "base64"
+                    && base64::engine::general_purpose::STANDARD
+                        .decode(body.as_bytes())
+                        .is_err()
+                {
+                    return Err(PluginActionError::Failed(
+                        "路由返回的 base64 响应体不合法".to_string(),
+                    ));
+                }
+                let content_type = response
+                    .get("contentType")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let headers = normalize_route_headers(
+                    response.get("headers"),
+                    content_type,
+                    body_kind,
+                )?;
+                Ok(PluginRouteResponse {
+                    status: status as u16,
+                    headers,
+                    body,
+                    body_kind: body_kind.to_string(),
+                })
+            }
+            Some(false) => {
+                let message = result
+                    .get("error")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("路由执行失败")
+                    .to_string();
+                match result.get("kind").and_then(|value| value.as_str()) {
+                    Some("not_found") => Err(PluginActionError::NotFound(message)),
+                    Some("denied") => Err(PluginActionError::Denied(message)),
+                    Some("invalid") => Err(PluginActionError::Invalid(message)),
+                    Some("too_large") => Err(PluginActionError::TooLarge),
+                    _ => Err(PluginActionError::Failed(message)),
+                }
+            }
+            None => Err(PluginActionError::Failed(
+                "路由返回缺少 ok 字段".to_string(),
+            )),
+        }
+    }
+
+    /// 找到插件入口并读出它声明的沙箱能力（动作与动态路由共用）。
+    async fn ready_plugin_entry(
+        &self,
+        plugin_id: &str,
+        workspace: &str,
+    ) -> Result<(PathBuf, ada_ts_engine::Needs), PluginActionError> {
+        let item = self
+            .scan_plugins(Some(workspace))
+            .into_iter()
+            .find(|item| item.id == plugin_id)
+            .ok_or_else(|| {
+                PluginActionError::NotFound(format!("插件不存在: {plugin_id}"))
+            })?;
+        if !item.enabled || item.status != "ready" {
+            return Err(PluginActionError::NotReady(format!(
+                "插件未启用或未就绪: {plugin_id}"
+            )));
+        }
+        if item.file_path.trim().is_empty() {
+            return Err(PluginActionError::NotReady(format!(
+                "插件没有可装载的入口: {plugin_id}"
+            )));
+        }
+
+        let path = PathBuf::from(&item.file_path);
+        let source = tokio::fs::read_to_string(&path)
+            .await
+            .map_err(|error| {
+                PluginActionError::Failed(format!("读取插件失败（{}）：{error}", path.display()))
+            })?;
+        let declared = crate::scripts::needs::parse_needs(&source);
+        let needs = crate::scripts::to_engine_needs(declared.needs);
+        Ok((path, needs))
     }
 
     /// 获取配置中已禁用的插件集合
@@ -798,6 +994,102 @@ export default function (ada) {{
     }
 }
 
+/// 归一化动态路由返回的响应头。
+///
+/// 这里是**最后一道**头校验：头名小写、拒绝 CR/LF、丢弃逐跳头、限制数量与体积。
+/// 浏览器侧还会再按 axum 的 `HeaderName/HeaderValue` 解析一次；两层都过才落到响应上。
+fn normalize_route_headers(
+    raw: Option<&serde_json::Value>,
+    content_type: Option<&str>,
+    body_kind: &str,
+) -> Result<BTreeMap<String, Vec<String>>, PluginActionError> {
+    const MAX_HEADERS: usize = 64;
+    const MAX_HEADER_BYTES: usize = 32 * 1024;
+    const HOP_BY_HOP: &[&str] = &[
+        "content-length",
+        "transfer-encoding",
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "upgrade",
+        "host",
+    ];
+
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut total = 0usize;
+    if let Some(object) = raw.and_then(|value| value.as_object()) {
+        for (name, value) in object {
+            let name = name.trim().to_ascii_lowercase();
+            if name.is_empty()
+                || name.len() > 100
+                || !name
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+            {
+                return Err(PluginActionError::Invalid(format!(
+                    "响应头名不合法: {name}"
+                )));
+            }
+            if HOP_BY_HOP.contains(&name.as_str()) {
+                continue;
+            }
+            if out.len() >= MAX_HEADERS {
+                return Err(PluginActionError::TooLarge);
+            }
+            let mut values = Vec::new();
+            match value {
+                serde_json::Value::String(text) => values.push(text.clone()),
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        let Some(text) = item.as_str() else {
+                            return Err(PluginActionError::Invalid(format!(
+                                "响应头 {name} 的值必须是字符串或字符串数组"
+                            )));
+                        };
+                        values.push(text.to_string());
+                    }
+                }
+                _ => {
+                    return Err(PluginActionError::Invalid(format!(
+                        "响应头 {name} 的值必须是字符串或字符串数组"
+                    )))
+                }
+            }
+            for text in &values {
+                if text.bytes().any(|byte| byte == b'\r' || byte == b'\n') {
+                    return Err(PluginActionError::Invalid(format!(
+                        "响应头 {name} 含有换行"
+                    )));
+                }
+                total += name.len() + text.len();
+            }
+            if total > MAX_HEADER_BYTES {
+                return Err(PluginActionError::TooLarge);
+            }
+            out.insert(name, values);
+        }
+    }
+
+    if !out.contains_key("content-type") {
+        let fallback = if body_kind == "base64" {
+            "application/octet-stream"
+        } else {
+            "text/plain; charset=utf-8"
+        };
+        let text = content_type.unwrap_or(fallback).trim();
+        if text.bytes().any(|byte| byte == b'\r' || byte == b'\n') {
+            return Err(PluginActionError::Invalid(
+                "响应 Content-Type 含有换行".to_string(),
+            ));
+        }
+        out.insert("content-type".to_string(), vec![text.to_string()]);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -943,6 +1235,168 @@ mod tests {
             .await
             .expect("write 动作应成功");
         assert_eq!(written["data"]["value"], 2);
+
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(home);
+        let _ = fs::remove_dir_all(unified);
+    }
+
+    #[test]
+    fn route_headers_are_normalized_and_crlf_rejected() {
+        let raw = serde_json::json!({
+            "Set-Cookie": ["a=1", "b=2"],
+            "x-ok": "1",
+            "content-length": "10",
+        });
+        let headers = normalize_route_headers(Some(&raw), None, "text").unwrap();
+        assert_eq!(
+            headers.get("set-cookie").map(Vec::as_slice),
+            Some(&["a=1".to_string(), "b=2".to_string()][..])
+        );
+        assert!(headers.get("content-length").is_none(), "逐跳头必须丢弃");
+        assert_eq!(
+            headers.get("content-type").map(Vec::as_slice),
+            Some(&["text/plain; charset=utf-8".to_string()][..])
+        );
+
+        let bad = serde_json::json!({ "x-bad": "a\r\nb" });
+        assert!(normalize_route_headers(Some(&bad), None, "text").is_err());
+    }
+
+    #[tokio::test]
+    async fn unified_package_dynamic_routes_go_through_the_ts_engine() {        let workspace = temp_dir("routes_ws");
+        let home = temp_dir("routes_home");
+        let unified = temp_dir("routes_root");
+        let package = unified.join("route-demo");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("plugin.json"),
+            r#"{
+                "id": "route-demo",
+                "name": "Route Demo",
+                "version": "0.1.0",
+                "frontend": { "slots": [] },
+                "backend": {}
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            package.join("index.ts"),
+            r#"
+            const metadata = {
+              name: 'route-demo',
+              description: '动态路由测试',
+              tools: { count: 0, names: [] },
+              systemPrompt: { count: 0, names: [] },
+              hooks: { count: 0, names: [] },
+              routes: { count: 2, names: ['GET /hello/:name', 'POST /echo'] },
+            };
+            export default function (ada) {
+              ada.metadata = metadata;
+              ada.route({
+                method: 'GET',
+                path: '/hello/:name',
+                async handler(req) {
+                  return { hello: req.params.name, q: req.query.q, saw: req.headers['x-test'] || null };
+                },
+              });
+              ada.route({
+                method: 'POST',
+                path: '/echo',
+                async handler(req) {
+                  return ada.response({
+                    status: 202,
+                    headers: { 'x-route': 'demo' },
+                    body: JSON.stringify({ body: req.body, kind: req.bodyKind }),
+                    contentType: 'application/json; charset=utf-8',
+                  });
+                },
+              });
+            }
+            "#,
+        )
+        .unwrap();
+
+        let manager = PluginManager::with_home(&home).with_unified_dir(&unified);
+        let workspace_text = workspace.to_string_lossy().to_string();
+        let hello = manager
+            .invoke_route(
+                "global:route-demo",
+                "GET",
+                "/hello/ada",
+                serde_json::json!({ "q": "1" }),
+                serde_json::json!({ "x-test": "yes" }),
+                serde_json::Value::Null,
+                "empty",
+                Some("thread-1"),
+                &workspace_text,
+            )
+            .await
+            .expect("GET route should run");
+        assert_eq!(hello.status, 200, "{hello:?}");
+        let body: serde_json::Value = serde_json::from_str(&hello.body).unwrap();
+        assert_eq!(body["hello"], "ada");
+        assert_eq!(body["q"], "1");
+        assert_eq!(body["saw"], "yes");
+        assert_eq!(
+            hello.headers.get("content-type").map(Vec::as_slice),
+            Some(&["application/json; charset=utf-8".to_string()][..])
+        );
+
+        let echo = manager
+            .invoke_route(
+                "global:route-demo",
+                "POST",
+                "/echo",
+                serde_json::json!({}),
+                serde_json::json!({}),
+                serde_json::json!({ "a": 1 }),
+                "json",
+                None,
+                &workspace_text,
+            )
+            .await
+            .expect("POST route should run");
+        assert_eq!(echo.status, 202);
+        assert_eq!(
+            echo.headers.get("x-route").map(Vec::as_slice),
+            Some(&["demo".to_string()][..])
+        );
+        let body: serde_json::Value = serde_json::from_str(&echo.body).unwrap();
+        assert_eq!(body["body"]["a"], 1);
+        assert_eq!(body["kind"], "json");
+
+        let missing = manager
+            .invoke_route(
+                "global:route-demo",
+                "GET",
+                "/nope",
+                serde_json::json!({}),
+                serde_json::json!({}),
+                serde_json::Value::Null,
+                "empty",
+                None,
+                &workspace_text,
+            )
+            .await
+            .expect_err("unknown route must be reported as not found");
+        assert!(matches!(missing, PluginActionError::NotFound(_)));
+
+        let invalid = manager
+            .invoke_route(
+                "global:route-demo",
+                "TRACE",
+                "/hello/ada",
+                serde_json::json!({}),
+                serde_json::json!({}),
+                serde_json::Value::Null,
+                "empty",
+                None,
+                &workspace_text,
+            )
+            .await
+            .expect_err("unsupported method must be rejected");
+        assert!(matches!(invalid, PluginActionError::Invalid(_)));
 
         let _ = fs::remove_dir_all(workspace);
         let _ = fs::remove_dir_all(home);

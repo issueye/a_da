@@ -303,6 +303,10 @@ frontend-plugins/hello-tsx/
   后端用 `ada.registerAction` 提供界面动作，前端用 `frontend.actions` 绑定。
   支持首屏只读预取与 `GET/POST /ext/{id}/backend/{binding}` 桥接；旧版扁平前端清单仍兼容。
   见 [docs/plugins/unified-package.md](../../docs/plugins/unified-package.md)。
+- **动态后端路由**：同一个 `backend` 包还可以在 `index.ts` 里用
+  `ada.route({ method, path, handler })` 声明自己的接口；浏览器入口是
+  `/ext/{id}/route/*`，宿主经 `plugin.route` 交给 TS 沙箱匹配。请求体 ≤1MB、响应 ≤2MB，
+  `cookie` / `authorization` 不转发，响应头只放行常见内容头与 `x-*`。加接口只改 TS。
 - **前端插件调用后端插件**（完整设计提案）：`registerAction` / `plugin.invoke` / SSR 桥接
   的完整契约见 [docs/plugins/PLAN-frontend-backend-bridge.md](../../docs/plugins/PLAN-frontend-backend-bridge.md)。
   今天能用的间接对接方式（`props.data` 投影 + 核心路由）见

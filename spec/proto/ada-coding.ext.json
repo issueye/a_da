@@ -35,6 +35,7 @@
     { "name": "change.revertAll", "alias": "x.coding.change.revertAll", "kind": "command", "since": "1.0", "description": "全量放弃并回滚所有改动" },
     { "name": "plugin.list", "alias": "x.coding.plugin.list", "kind": "command", "since": "1.0", "description": "列出已安装插件及诊断" },
     { "name": "plugin.invoke", "alias": "x.coding.plugin.invoke", "kind": "command", "since": "1.0", "description": "调用后端插件声明的界面动作（请求-响应；不是模型工具）" },
+    { "name": "plugin.route", "alias": "x.coding.plugin.route", "kind": "command", "since": "1.0", "description": "把一次 HTTP 请求交给后端 TS 插件自己声明的动态路由" },
     { "name": "plugin.capabilities.set", "alias": "x.coding.plugin.capabilities.set", "kind": "command", "since": "1.0", "description": "修改插件权限与能力位" },
     { "name": "plugin.config.set", "alias": "x.coding.plugin.config.set", "kind": "command", "since": "1.0", "description": "更新插件配置" },
     { "name": "plugin.secret.set", "alias": "x.coding.plugin.secret.set", "kind": "command", "since": "1.0", "description": "配置插件安全密钥" },

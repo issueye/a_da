@@ -87,6 +87,38 @@ impl AgentClient {
         .await
     }
 
+    /// 把一次 HTTP 请求交给插件自己声明的动态路由（`plugin.route`）。
+    ///
+    /// 路由表在 TS 侧；这里只负责带上请求上下文。`bodyKind` 决定插件拿到的
+    /// `body` 是 JSON / 表单 / 文本还是 base64。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn plugin_route(
+        &self,
+        plugin_id: &str,
+        method: &str,
+        path: &str,
+        query: Value,
+        headers: Value,
+        body: Value,
+        body_kind: &str,
+        thread_id: Option<&str>,
+    ) -> Result<Value> {
+        let mut params = json!({
+            "pluginId": plugin_id,
+            "method": method,
+            "path": path,
+            "query": query,
+            "headers": headers,
+            "body": body,
+            "bodyKind": body_kind,
+            "workspace": self.workspace,
+        });
+        if let Some(thread_id) = thread_id.map(str::trim).filter(|value| !value.is_empty()) {
+            params["threadId"] = json!(thread_id);
+        }
+        self.rpc("plugin.route", params).await
+    }
+
     pub async fn snapshot(&self) -> Result<Value> {
         self.get("/api/snapshot").await
     }

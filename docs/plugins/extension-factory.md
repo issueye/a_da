@@ -93,6 +93,66 @@ ada.registerAction({
 See [unified-package.md](unified-package.md) for the one-package `frontend` /
 `backend` layout, the SSR bridge route, and the current v1 limits.
 
+## Dynamic HTTP routes: `ada.route`
+
+A factory can declare its own HTTP routes. The route table lives in TypeScript and is
+matched inside the sandbox on every request, so **adding a backend endpoint does not
+require a Rust change**:
+
+```js
+ada.route({
+  method: "GET",                 // default GET; "*" matches every method
+  path: "/status/:name",         // :param and *rest (last segment only)
+  async handler(req, ctx) {
+    return { name: req.params.name, q: req.query.q, at: ctx.now };
+  },
+});
+```
+
+Browser entrypoint (only for an enabled unified package with a `backend` section):
+
+```text
+GET  /ext/<frontend-id>/route/status/ada?q=1
+POST /ext/<frontend-id>/route/echo
+```
+
+Request shape:
+
+| field | meaning |
+|---|---|
+| `method` / `path` | the HTTP request as received |
+| `params` | matched `:param` / `*rest` segments |
+| `query` | query object; repeated keys become string arrays |
+| `headers` | sanitized request headers; `cookie` / `authorization` are **not** forwarded |
+| `body` / `bodyKind` | `json` / `form` / `text` / `base64` / `empty` |
+| `workspace` / `threadId` / `now` | host context (`threadId` comes from `?threadId=...`) |
+
+Response helpers on `ada`:
+
+```js
+return { ok: true };                      // JSON 200
+return ada.json({ ok: true }, 201);       // explicit status
+return ada.text("plain", 200, { "x-note": "1" });
+return ada.html("<h1>hi</h1>");
+return ada.redirect("/threads/abc");      // 303 by default
+return ada.response({ status: 204, headers: { "cache-control": "no-store" } });
+```
+
+- Route paths are normalized at registration; duplicate `method + path` is an
+  inspection error.
+- Matching prefers static segments over `:param`, and `:param` over `*rest`.
+  `HEAD` falls back to a `GET` route when no `HEAD` route exists.
+- Request bodies are capped at 1 MB; responses at 2 MB. A request must finish within
+  15 seconds of sandbox time.
+- Response headers are allowlisted (`content-*`, `cache-control`, `etag`,
+  `location`, `set-cookie`, `x-*`, …); hop-by-hop headers are dropped.
+- Every request creates a fresh sandbox, so module state does not persist. Use
+  workspace files for state.
+- `ada.route` is only reachable through an enabled unified package (frontend id in the
+  URL, backend id in the package). Backend-only packages have no browser entrypoint.
+- `metadata.routes` is optional; if present, `count` / `names` are validated against
+  the registered routes.
+
 **Skills are directories, not declarations.** Put `skills/<name>/SKILL.md` next to
 `index.ts`; the host scans it during assembly and reads the YAML frontmatter
 (`name` must equal the directory name, `description` 1-1024 chars — see

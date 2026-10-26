@@ -197,6 +197,44 @@ POST /ext/{frontend_id}/backend/{binding}   → 读/写；JSON 或 303
   回跳只接受同源相对路径，挡开放重定向；
 - 浏览器不接触网关 token，也不直接连 `/rpc`。
 
+### 动态路由（`ada.route`）
+
+动作适合“固定 binding 的按钮”，但后端能力经常需要**自己的 URL**。这类接口
+不需要改宿主：在 `index.ts` 里声明即可，宿主只提供一条兜底通道。
+
+```ts
+ada.route({
+  method: "GET",
+  path: "/hello/:name",
+  async handler(req, ctx) {
+    return { hello: req.params.name, q: req.query.q, at: ctx.now };
+  },
+});
+```
+
+```text
+GET /ext/{frontend_id}/route/hello/ada?q=1
+  → agent-web 查插件 + backend id
+  → plugin.route（method/path/query/headers/body）
+  → TS 沙箱按 ada.route 注册表匹配
+  → handler 返回 JSON / ada.text / ada.html / ada.redirect / ada.response
+```
+
+- 路径支持静态段、`:param` 与末段 `*rest`；静态优先于参数，参数优先于通配；
+- 请求体 ≤1MB（JSON / 表单 / 文本 / base64），响应 ≤2MB，15 秒沙箱超时
+  （`multipart/form-data` 暂未支持，按文本/base64 处理）；
+- `cookie` / `authorization` 不转发给插件；响应头只放行常见内容头与 `x-*`；
+- 一个包同时有 frontend/backend 才有浏览器入口，`backend` 段仍然是开关；
+- `route` 是保留的页面 slug（`/ext/{id}/route` 归动态路由使用），插件页面不要再占它；
+- 路由不是模型工具，也不进审批闸门；它只是**后端 HTTP 能力**的同源入口；
+- v1 是请求-响应，**不支持 SSE / WebSocket 流式**；需要长流时再补 `ada.stream` 一类的入口；
+- `GET` 是否只读由插件自己守：宿主不检查 handler 的副作用；需要写操作请用
+  `POST/PUT/PATCH/DELETE`（入口 guard 会校验跨站写请求）；
+- 每次请求重新执行工厂、重新收集 `ada.route`，模块状态不跨请求（要状态请写文件）。
+
+完整 API 与响应助手见 [extension-factory.md](extension-factory.md) 的
+“Dynamic HTTP routes”。
+
 ---
 
 ## 5. 一次完整链路
@@ -255,7 +293,9 @@ POST /ext/{frontend_id}/backend/{binding}   → 读/写；JSON 或 303
 | SSR 桥接路由 | `crates/agent-web/src/handlers/bridge.rs` |
 | 统一包后端扫描 | `crates/agent-node/src/plugins/manager.rs` |
 | 动作沙箱 | `crates/agent-node/src/plugins/sandbox.rs` 的 `call_action_budgeted` |
+| 路由沙箱 | 同文件的 `call_route_budgeted`（`ROUTE_RUNTIME_JS` 负责匹配） |
 | `plugin.invoke` 分发 | `crates/agent-rpc/src/server/dispatch/mod.rs` |
+| `plugin.route` 分发 | 同文件；SSR 入口在 `crates/agent-web/src/handlers/plugin_route.rs` |
 | 协议登记 | `spec/proto/ada-coding.ext.json`、`crates/agent-proto/src/methods.rs` |
 | 示例 | `plugins/unified-demo/` |
 
@@ -265,6 +305,11 @@ POST /ext/{frontend_id}/backend/{binding}   → 读/写；JSON 或 303
 
 - `cargo test -p agent-node actions_are_inspected_and_read_intent_cannot_run_write`
 - `cargo test -p agent-node unified_package_is_scanned_and_actions_enforce_intent`
+- `cargo test -p agent-node dynamic_routes_match_params_and_return_http_shapes`
+- `cargo test -p agent-node unified_package_dynamic_routes_go_through_the_ts_engine`
+- `cargo test -p agent-rpc plugin_route_dispatches`
 - `cargo test -p agent-web --lib`（含统一清单与仓库示例加载测试）
 - 实机：起网关时设 `A_DA_UNIFIED_PLUGINS_DIR=plugins`，访问
-  `/ext/unified-demo/backend/status`，再 `POST .../refresh` 看计数递增。
+  `/ext/unified-demo/backend/status`，再 `POST .../refresh` 看计数递增；
+  动态路由用 `bun tools/verify-dynamic-routes-e2e.mjs` 一次跑完
+  （路径参数 / JSON / 表单 / 敏感头 / text / 404 / 停用）。

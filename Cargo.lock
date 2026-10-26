@@ -249,6 +249,7 @@ dependencies = [
  "askama",
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "boa_engine",
  "clap",
  "futures-util",

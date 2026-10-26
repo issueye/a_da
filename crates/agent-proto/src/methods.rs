@@ -77,6 +77,8 @@ pub const PLUGIN_LIST: &str = "plugin.list";
 pub const PLUGIN_LOAD: &str = "plugin.load";
 /// 调用后端插件声明的界面动作（`registerAction`）：请求-响应，不是模型工具。
 pub const PLUGIN_INVOKE: &str = "plugin.invoke";
+/// 动态 HTTP 路由：把一次请求交给 TS 插件自己匹配与处理（`ada.route`）。
+pub const PLUGIN_ROUTE: &str = "plugin.route";
 pub const PLUGIN_RELOAD: &str = "plugin.reload";
 pub const PLUGIN_CAPABILITIES_SET: &str = "plugin.capabilities.set";
 pub const PLUGIN_CONFIG_SET: &str = "plugin.config.set";
@@ -193,6 +195,7 @@ pub const ALL_METHODS: &[&str] = &[
     PLUGIN_LIST,
     PLUGIN_LOAD,
     PLUGIN_INVOKE,
+    PLUGIN_ROUTE,
     PLUGIN_RELOAD,
     PLUGIN_CAPABILITIES_SET,
     PLUGIN_CONFIG_SET,
@@ -248,7 +251,8 @@ mod tests {
         // 插件市场：新增 market.getConfig/setConfig/search/install/publish 后 77 → 82
         // 统一插件：新增 `plugin.invoke`（界面动作调用）后 82 → 83
         // 任务管理：新增 `task.list` / `task.kill` 后 83 → 85
-        assert_eq!(ALL_METHODS.len(), 85);
+        // 动态路由：新增 `plugin.route` 后 85 → 86
+        assert_eq!(ALL_METHODS.len(), 86);
 
         let mut event_set = HashSet::new();
         for &e in ALL_EVENTS {

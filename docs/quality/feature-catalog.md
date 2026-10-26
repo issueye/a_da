@@ -165,6 +165,9 @@
   **任务管理浮窗**：由 `plugins/task-manager/` 插件（`sidebar.bottom` 插槽 +
   `tasks.read` 能力）渲染当前会话的后台命令任务（命令 / PID / 状态 / 输出预览），
   可经 `POST /tasks/{id}/kill` → `task.kill` 终止整棵进程树。
+  **动态后端路由**：统一包在 `index.ts` 里用 `ada.route({ method, path, handler })`
+  声明接口，浏览器走 `/ext/{id}/route/*` → `plugin.route` → TS 沙箱匹配执行。
+  宿主只做兜底转发与同源/大小/头校验，**后续新增后端接口不再改 Rust**。
 
 ## 十一、桌面端界面（只有 SSR）
 

@@ -67,7 +67,8 @@
 `provider-admin` / `task-manager` 已迁到统一根 `plugins/`，`hello-tsx` 与
 `token-weather` 仍在原目录。`task-plan` 与 `approval` 也带后端
 （`afterTodoUpdate` / `beforeApproval+afterApproval`），审批策略与闸门仍在核心，
-插件不能改变。
+插件不能改变。后端需要自己的 HTTP 接口时用 `ada.route({ method, path, handler })`，
+浏览器入口是 `/ext/{id}/route/*`，**新增接口只改 TS，不需要改 Rust**。
 完整契约、限制与示例见 [unified-package.md](unified-package.md)。
 
 ---

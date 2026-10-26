@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use axum::extract::DefaultBodyLimit;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::Router;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
@@ -123,6 +123,10 @@ pub fn router(state: AppState) -> Router {
             "/ext/{id}/backend/{binding}",
             get(handlers::backend_action).post(handlers::backend_action),
         )
+        // 动态后端路由：TS 插件自己声明 method/path，宿主只做兜底转发。
+        // `route` 是保留段：插件页面不要再占这个 slug。
+        .route("/ext/{id}/route", any(handlers::plugin_route_root))
+        .route("/ext/{id}/route/{*path}", any(handlers::plugin_route))
         .route("/ext/{id}/{slug}", get(handlers::plugin_page))
         .route("/static/app.css", get(static_css))
         // 产品 LOGO：源码树 `assets/logo.png` 是唯一真源，编译期内嵌。
