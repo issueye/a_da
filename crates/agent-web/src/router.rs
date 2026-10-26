@@ -106,6 +106,7 @@ pub fn router(state: AppState) -> Router {
         .route("/extensions/{id}/enable", post(handlers::enable_plugin))
         .route("/extensions/{id}/disable", post(handlers::disable_plugin))
         .route("/agent-plugins/reload", post(handlers::reload_agent))
+        .route("/tasks/{id}/kill", post(handlers::kill_task))
         // 前端插件自省：**刻意不放在 `/api` 下**，避免与网关的 `/api/plugins`
         // （agent 插件列表）撞名；浏览器脚本见 `static/components.js`。
         .route(

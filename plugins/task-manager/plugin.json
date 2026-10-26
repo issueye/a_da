@@ -1,0 +1,22 @@
+{
+  "id": "task-manager",
+  "name": "任务管理",
+  "version": "0.1.0",
+  "description": "当前会话的后台命令任务：命令、PID、状态、输出预览，可终止仍在运行的任务。",
+  "frontend": {
+    "capabilities": [
+      "tasks.read"
+    ],
+    "assets": "static",
+    "styles": [
+      "task-manager.css"
+    ],
+    "slots": [
+      {
+        "slot": "sidebar.bottom",
+        "template": "slot.tsx",
+        "order": 30
+      }
+    ]
+  }
+}

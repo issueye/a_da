@@ -63,9 +63,11 @@
 
 默认统一包根是 `~/.a-da/plugins`，开发时用 `A_DA_UNIFIED_PLUGINS_DIR` 指向仓库的
 `plugins/`。旧版扁平前端清单与独立后端插件仍兼容；它们之间没有直连通道。
-仓库自带的 5 个纯前端插件已改用 `frontend` 段并留在原目录；`task-plan` 与
-`approval` 已迁到统一根，分别带 `afterTodoUpdate` / `beforeApproval+afterApproval`
-后端与只读 action。审批策略与闸门仍在核心，插件不能改变。
+仓库自带的 6 个纯前端插件已改用 `frontend` 段；`ask-user` / `process-manager` /
+`provider-admin` / `task-manager` 已迁到统一根 `plugins/`，`hello-tsx` 与
+`token-weather` 仍在原目录。`task-plan` 与 `approval` 也带后端
+（`afterTodoUpdate` / `beforeApproval+afterApproval`），审批策略与闸门仍在核心，
+插件不能改变。
 完整契约、限制与示例见 [unified-package.md](unified-package.md)。
 
 ---

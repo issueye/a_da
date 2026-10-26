@@ -1429,7 +1429,7 @@ mod tests {
     /// 且不会把 token 带进页面。
     #[test]
     fn process_manager_example_renders_injected_processes() {
-        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
         let root = temp_root("process-manager-copy");
         copy_tree(&source, &root);
         let registry = registry_at(&root);
@@ -1477,7 +1477,7 @@ mod tests {
     /// 也守住页头「当前模型」药丸的新结构（旧的两张 stat 大卡已废）。
     #[test]
     fn provider_admin_example_renders_with_current_model_chip() {
-        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
         let root = temp_root("example-provider");
         copy_tree(&source, &root);
         let registry = registry_at(&root);
@@ -1738,6 +1738,71 @@ export function Page() {
             slot.html.contains("569"),
             "输出 token 数没渲染: {}",
             slot.html
+        );
+    }
+
+    #[test]
+    fn task_manager_plugin_lists_and_offers_kill() {
+        let primary = temp_root("task-manager-primary");
+        let unified = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
+        let registry = registry_at(&primary).with_unified_dir(unified);
+        let plugin = registry.find("task-manager").expect("task-manager 插件应当被发现");
+        assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
+        assert!(!plugin.slots.is_empty(), "slots: {:?}", plugin.slots);
+        assert!(plugin.tsx_templates.contains_key("slot.tsx"), "templates: {:?}", plugin.tsx_templates.keys());
+        assert!(plugin.capabilities.iter().any(|cap| cap == "tasks.read"));
+
+        let context = RenderContext::default().with_data(serde_json::json!({
+            "render": { "at": 1_761_000_000_000u64 },
+            "thread": { "id": "thread-1" },
+            "tasks": {
+                "tasks": [
+                    {
+                        "id": "task_1",
+                        "command": "cargo run",
+                        "pid": 777,
+                        "startedAt": 1_760_999_999_000u64,
+                        "threadId": "thread-1",
+                        "running": true,
+                        "exitCode": null,
+                        "outputPreview": "server ready"
+                    },
+                    {
+                        "id": "task_2",
+                        "command": "npm test",
+                        "pid": 778,
+                        "startedAt": 1_760_999_998_000u64,
+                        "threadId": "thread-1",
+                        "running": false,
+                        "exitCode": 0,
+                        "outputPreview": ""
+                    }
+                ],
+                "count": 2,
+                "error": null
+            }
+        }));
+        let slot = registry.render_slot_with(Slot::SidebarBottom, &context);
+        assert!(
+            slot.failed.is_empty(),
+            "failed={:?}; html={}",
+            slot.failed,
+            slot.html
+        );
+        assert!(slot.contributors >= 1, "slot: {slot:?}");
+        assert!(slot.html.contains(r#"data-plugin-scope="task-manager""#), "{}", slot.html);
+        assert!(slot.html.contains("cargo run"), "{}", slot.html);
+        assert!(slot.html.contains("PID 777"), "{}", slot.html);
+        assert!(slot.html.contains("/tasks/task_1/kill"), "{}", slot.html);
+        assert!(slot.html.contains("终止"), "{}", slot.html);
+        assert!(slot.html.contains("1/2"), "{}", slot.html);
+        assert!(!slot.html.contains("/tasks/task_2/kill"), "已结束的任务不该有终止按钮: {}", slot.html);
+
+        let empty = registry.render_slot_with(Slot::SidebarBottom, &RenderContext::default());
+        assert!(
+            !empty.html.contains(r#"data-plugin-scope="task-manager""#),
+            "{:?}",
+            empty.html
         );
     }
 

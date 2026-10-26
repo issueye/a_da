@@ -60,9 +60,10 @@
 
 `frontend` 与顶层扁平字段**不能同时写**；加载期会拒绝，避免“哪份生效”说不清。
 仓库自带的纯前端插件（`ask-user` / `hello-tsx` / `process-manager` /
-`provider-admin` / `token-weather`）已经统一到 `frontend` 段，它们没有后端入口，
-因此不写 `backend`。`task-plan` 与 `approval` 是完整的前后端一体例子：
-同包 `index.ts` 订阅钩子维护状态，前端通过只读 action 读取；审批策略/闸门仍在核心。
+`provider-admin` / `task-manager` / `token-weather`）已经统一到 `frontend` 段，
+它们没有后端入口，因此不写 `backend`。`task-plan` 与 `approval` 是完整的前后端
+一体例子：同包 `index.ts` 订阅钩子维护状态，前端通过只读 action 读取；
+审批策略/闸门仍在核心。
 
 ---
 

@@ -96,7 +96,7 @@
    （归一化后的当前会话待答提问，含 `callId`/`askedAt`/`questions[]`）。
 10. **`live_parts` + `load_chat`**：先渲染 `thread.tray` 插槽；输出非空替换核心提问段，
     否则用核心实现（D5 降级规则）。
-11. **示例插件 `frontend-plugins/ask-user/`**：`slot.tsx` + CSS，
+11. **示例插件 `plugins/ask-user/`**：`slot.tsx` + CSS，
     演示 `data.questions` 消费与表单提交核心路由（文档标注：删除/停用即回核心托盘）。
 12. **文档**：PLUGIN-DATA.md（`data.questions` 契约 + `thread.tray` 点位）、
     README.md 主界面一节、UED.md §7.6「提问」行、STATUS.md 划 TODO。

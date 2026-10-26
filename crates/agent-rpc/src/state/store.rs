@@ -1262,9 +1262,13 @@ mod tests {
             future + 1,
             "比上一张卡还早的时刻必须顺延，否则两张卡会共用同一个 at"
         );
+        let at = next_item_at(&[]);
+        let now = now_millis();
+        // 允许 50ms 的墙钟抖动：Windows/VM 的时钟可能被 NTP 轻微回拨，
+        // 但 `next_item_at` 仍必须落在“当前时刻”附近，不能是 0 或旧卡时间。
         assert!(
-            next_item_at(&[]) >= now_millis(),
-            "没有上一张卡时就用当前时刻"
+            at + 50 >= now && at <= now + 50,
+            "没有上一张卡时就用当前时刻（at={at}, now={now}）"
         );
     }
 

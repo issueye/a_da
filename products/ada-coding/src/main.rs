@@ -188,7 +188,7 @@ async fn build_injection(
     match agent_host::run_from_spec(spec, options) {
         Ok(hosted) => {
             let tool_count = hosted.tool_names().len();
-            let agent_host::HostedProduct { runtime, approval, spec, live, .. } = hosted;
+            let agent_host::HostedProduct { runtime, approval, spec, live, background_tasks, .. } = hosted;
             // 启动时装配的这份引擎**带着插件贡献**（工具 / 提示词 / 技能 / 钩子）。
             // 下面按工作区动态装配的那条路收不到异步装载结果，所以同一工作区必须复用它。
             let runtime = Arc::new(runtime);
@@ -212,6 +212,7 @@ async fn build_injection(
                     }
                     // P4：启停后刷新界面读的**贡献视图**（否则"关掉了插件、卡片还列着它的工具"）
                     r = r.with_contribution_views(plugin_contribution_views.clone());
+                    r = r.with_background_tasks(background_tasks.clone());
                     Some(Arc::new(r))
                 } else {
                     None
@@ -227,6 +228,7 @@ async fn build_injection(
             // 同一工作区直接复用启动时那份：它带着插件贡献，且不必再装一遍。
             let primary_ws = ws.to_string_lossy().to_string();
             let runtime_for_factory = runtime.clone();
+            let background_tasks_for_factory = background_tasks.clone();
             let factory: agent_rpc::server::dispatch::EngineFactory =
                 Arc::new(move |ws_path: std::path::PathBuf| {
                     let store = store_for_factory.clone();
@@ -236,6 +238,7 @@ async fn build_injection(
                     let mgr = plugin_mgr_for_factory.clone();
                     let primary = primary_ws.clone();
                     let primary_engine = runtime_for_factory.clone();
+                    let background_tasks = background_tasks_for_factory.clone();
                     Box::pin(async move {
                         if same_workspace(&ws_path, &primary) {
                             return Some(primary_engine);
@@ -271,7 +274,9 @@ async fn build_injection(
                             .with_plugin_capabilities(collected.caps)
                             // 动态装配同样要能创建全局插件（同一条组合根口径）
                             .with_app_home(agent_node::session::get_app_home())
-                            .with_prompt_extensions(collected.prompt_extensions);
+                            .with_prompt_extensions(collected.prompt_extensions)
+                            // 共用同一张任务表：否则这个工作区起的任务在 `task.list` 里查不到
+                            .with_background_tasks(background_tasks.clone());
                         match agent_host::run_from_spec(spec_dyn, opts) {
                             Ok(h) => {
                                 info!(
@@ -309,6 +314,7 @@ async fn build_injection(
                 // P3a·SP-55：管理面点位（插件启停 / 会话创建）靠它在轮外跑钩子
                 hook_runner: hook_runtime_for_dispatch
                     .map(|r| r as Arc<dyn agent_base::ports::HookRunner>),
+                background_tasks: Some(background_tasks),
             })
         }
         Err(e) => {

@@ -28,6 +28,10 @@ pub const THREAD_ITEMS_PAGE: &str = "thread.items.page";
 pub const THREAD_ABORT: &str = "thread.abort";
 pub const THREAD_UPDATE: &str = "thread.update";
 
+// 后台任务（run_background / check_task / kill_task 的管理面）
+pub const TASK_LIST: &str = "task.list";
+pub const TASK_KILL: &str = "task.kill";
+
 // 审批与问答
 pub const APPROVAL_DECIDE: &str = "approval.decide";
 pub const QUESTION_ANSWER: &str = "question.answer";
@@ -149,6 +153,8 @@ pub const ALL_METHODS: &[&str] = &[
     THREAD_SEND,
     THREAD_ABORT,
     THREAD_UPDATE,
+    TASK_LIST,
+    TASK_KILL,
     THREAD_ITEMS_PAGE,
     THREAD_COMPACT,
     THREAD_SET_MODE,
@@ -241,7 +247,8 @@ mod tests {
         // P1·SP-18：新增 `plugin.validate`（插件只读自检）后 74 → 75
         // 插件市场：新增 market.getConfig/setConfig/search/install/publish 后 77 → 82
         // 统一插件：新增 `plugin.invoke`（界面动作调用）后 82 → 83
-        assert_eq!(ALL_METHODS.len(), 83);
+        // 任务管理：新增 `task.list` / `task.kill` 后 83 → 85
+        assert_eq!(ALL_METHODS.len(), 85);
 
         let mut event_set = HashSet::new();
         for &e in ALL_EVENTS {

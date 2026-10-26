@@ -87,6 +87,8 @@ pub struct Dispatcher {
     /// 区别是这里装了四类（工具 / 片段 / 技能 / 钩子点位），界面据此显示贡献计数、
     /// 钩子点位清单与"被插件重实现"的交叉引用。
     plugin_contribution_views: Option<agent_node::plugins::PluginContributionStore>,
+    /// 后台任务表（`task.list` / `task.kill` 与工具共用同一份）。
+    background_tasks: Option<Arc<agent_toolkit::background::BackgroundTasks>>,
 }
 
 impl Dispatcher {
@@ -119,6 +121,50 @@ impl Dispatcher {
             started: std::time::Instant::now(),
         };
         match method {
+            TASK_LIST => {
+                let Some(tasks) = &self.background_tasks else {
+                    return Err(ProtocolError::new(
+                        AppErrorCode::NotReady.code(),
+                        "当前宿主未接入后台任务表",
+                        None,
+                    ));
+                };
+                let thread_id = params
+                    .get("threadId")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let snapshot = tasks.snapshot(thread_id);
+                let count = snapshot.len();
+                Ok(serde_json::json!({
+                    "tasks": serde_json::to_value(snapshot)
+                        .map_err(|e| ProtocolError::internal_error(e.to_string()))?,
+                    "count": count,
+                }))
+            }
+            TASK_KILL => {
+                let Some(tasks) = &self.background_tasks else {
+                    return Err(ProtocolError::new(
+                        AppErrorCode::NotReady.code(),
+                        "当前宿主未接入后台任务表",
+                        None,
+                    ));
+                };
+                let task_id = params
+                    .get("taskId")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| ProtocolError::invalid_params("task.kill 需要 taskId"))?;
+                match tasks.kill(task_id) {
+                    Ok(message) => Ok(serde_json::json!({ "ok": true, "message": message })),
+                    Err(message) => Err(ProtocolError::new(
+                        AppErrorCode::NotFound.code(),
+                        message,
+                        None,
+                    )),
+                }
+            }
             SESSION_INITIALIZE => {
                 let p = params.as_object().ok_or_else(|| {
                     ProtocolError::invalid_params("session.initialize 需要一个参数对象")

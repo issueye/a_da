@@ -41,7 +41,7 @@ UED 设计基线、组件规范与 原桌面端 对齐差距见 [docs/UED.md](do
 - 对话流：工具与思考采用 原桌面端 的单行日志式——单行显示图标、中文标签、目标对象与真实耗时，展开后是左侧导轨线里的参数/输出面板；工具输出按 Markdown 渲染（JSON 走等宽原文）。
 - 侧栏支持按标题搜索会话**和工作区名**（工作区名命中时整组展开）；插件 / 供应商 / 概览 / 插件页也共用同一套侧栏外壳，不再切回旧布局。
 - 图标统一为 14–16px 线性 SVG（替代早期字符符号）；工具/思考用单行日志式展示；输入框为桌面端形态（大圆角输入卡 + 底部工具行：工作区/审批档位/模型 + 近黑圆形发送键）；窄窗口（≤760px）侧栏收为抽屉，顶栏出汉堡按钮；**宽屏下同一个按钮是"收起/展开侧栏"**（状态存 `localStorage`，跨刷新保持）；中止等危险操作用共享确认对话框（原生 `<dialog>`）。
-- 进程管理：由 **`frontend-plugins/process-manager/`** 插件提供（`topbar.right` 插槽，
+- 进程管理：由 **`plugins/process-manager/`** 插件提供（`topbar.right` 插槽，
   声明 `processes.read` 能力）。顶栏服务器图标点开浮窗，展示网关 PID / 实例数 / 可路由数 /
   默认工作区，以及每个 agent 实例的工作区、状态、PID 与最近活跃时间；「刷新」是整页重载。
   只读视图，不提供“重启自己/终止”。数据契约见 [docs/PLUGIN-DATA.md](docs/PLUGIN-DATA.md) §2.11。
@@ -53,7 +53,7 @@ UED 设计基线、组件规范与 原桌面端 对齐差距见 [docs/UED.md](do
   （sessionStorage 按 callId 记忆，提交后清除；无 JS 时全部题目平铺）。对话流里的提问卡只留记录。
   作答表单提交到核心路由 `POST /questions/{call_id}/answer`
   （字段约定见 [docs/PLAN-question-panel.md](docs/PLAN-question-panel.md) §4）；
-  渲染默认是核心托盘，`frontend-plugins/ask-user/` 示例插件可接管（`thread.tray` 插槽），
+  渲染默认是核心托盘，`plugins/ask-user/` 示例插件可接管（`thread.tray` 插槽），
   停用或失败自动回退核心实现。提问被回答/超时后托盘随事件流消失。
 - 排队：当前会话的排队消息可见，可提升、删除、清空（提升会中断当前回答，已加确认）。
 - 失败：`notice.level=error` 的卡片带「重试这一轮」；动作失败会回到会话页用 flash 说明原因，不再把整页换成裸错误页。
@@ -359,7 +359,8 @@ export function Page(props: any) {
   **不需要 Bun/Node**（只支持插件目录内的相对模块，npm 依赖不支持）；
 - 每次渲染新建 Boa Context（模块状态不跨请求）；release 单文件页约 5ms、
   含内置组件库的模块页约 3.4ms（组件库每次 Context 都要初始化，后续可做池化/预编译）；
-- **示例插件**：`frontend-plugins/process-manager/`（顶栏进程管理浮窗，`processes.read`）、
+- **示例插件**：`plugins/process-manager/`（顶栏进程管理浮窗，`processes.read`）、
+  `plugins/task-manager/`（侧栏后台任务面板，`tasks.read`；命令 / PID / 输出预览 / 终止）、
   `frontend-plugins/hello-tsx/`（最小页面 / 仪表盘 / JSON API）、
   `frontend-plugins/token-weather/`（按上下文用量显示天气：完整页面 + 输入框上方胶囊/浮层 +
   概览卡片，演示相对 import、`details` 浮层与 SSE `parts` 刷新；说明见插件目录内的 README）、
@@ -367,7 +368,7 @@ export function Page(props: any) {
   `afterTodoUpdate` → `plan` action，演示 `props.data.todo` 降级、插件 CSS 与 `scripts` 注入的浏览器增强）、
   `plugins/approval/`（审批面板：`thread.approval` 插槽 + `beforeApproval/afterApproval` 后端状态，
   批准/拒绝仍走核心）、
-  `frontend-plugins/ask-user/`（提问卡片：`thread.tray` 插槽渲染待答复提问与作答表单，
+  `plugins/ask-user/`（提问卡片：`thread.tray` 插槽渲染待答复提问与作答表单，
   演示 `props.data.questions` 数据契约与"插件替换核心托盘、停用回退"的降级规则）；
   完整 TSX 说明见 [docs/TSX.md](docs/TSX.md)。
 - **调试用 `console.log`**：TSX 在服务端跑，输出进 **ssr-h 进程日志**（`INFO ssr_h::plugin:

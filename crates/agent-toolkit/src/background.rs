@@ -38,10 +38,27 @@ struct BackgroundTask {
     command: String,
     pid: Option<u32>,
     started_at: i64,
+    /// 发起这次后台任务的会话（空 = 旧调用点/测试未提供）。
+    thread_id: String,
     /// 输出滑动窗口（头尾保留）
     output: Mutex<String>,
     finished: AtomicBool,
     exit_code: Mutex<Option<i32>>,
+}
+
+/// 后台任务的只读快照（给界面/诊断用；不把可变句柄交出去）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundTaskSnapshot {
+    pub id: String,
+    pub command: String,
+    pub pid: Option<u32>,
+    pub started_at: i64,
+    pub thread_id: String,
+    pub running: bool,
+    pub exit_code: Option<i32>,
+    /// 输出原文（截断到 4000 字符；完整内容仍可用 `check_task` 查）。
+    pub output_preview: String,
 }
 
 impl BackgroundTask {
@@ -84,16 +101,45 @@ impl BackgroundTasks {
         }
     }
 
+    /// 创建任务表时的工作区（供工具在共用任务表的场景下默认取用）。
+    pub fn workspace(&self) -> &Path {
+        &self.workspace
+    }
+
     /// 启动一个后台命令，立即返回任务 id。
     ///
     /// **必须在 Tokio 运行时内调用**：它要 spawn 两个后台任务（输出泵 + 收尾记录退出码），
     /// 没有 reactor 时会 panic。
     pub fn start(&self, command: &str, cwd: Option<&str>) -> Result<String, String> {
+        self.start_in_thread(command, cwd, "")
+    }
+
+    /// 同 [`Self::start`]，但记录发起会话；`task.list` 可按 threadId 过滤。
+    pub fn start_in_thread(
+        &self,
+        command: &str,
+        cwd: Option<&str>,
+        thread_id: &str,
+    ) -> Result<String, String> {
+        self.start_in_workspace(&self.workspace, command, cwd, thread_id)
+    }
+
+    /// 同 [`Self::start_in_thread`]，但显式指定工作区。
+    ///
+    /// 多工作区引擎共用一张任务表时必须走这个入口：`cwd` 沙箱与缺省目录要按
+    /// **发起任务的引擎工作区**判定，不能按任务表创建时的那一个。
+    pub fn start_in_workspace(
+        &self,
+        workspace: &Path,
+        command: &str,
+        cwd: Option<&str>,
+        thread_id: &str,
+    ) -> Result<String, String> {
         let run_cwd = match cwd {
             Some(p) if !p.trim().is_empty() => {
-                check_workspace_sandbox(&self.workspace, p.trim()).map_err(|e| e.to_string())?
+                check_workspace_sandbox(workspace, p.trim()).map_err(|e| e.to_string())?
             }
-            _ => self.workspace.clone(),
+            _ => workspace.to_path_buf(),
         };
 
         let (shell, shell_args) = if cfg!(windows) {
@@ -128,6 +174,7 @@ impl BackgroundTasks {
             command: command.to_string(),
             pid,
             started_at: crate::now_ms(),
+            thread_id: thread_id.trim().to_string(),
             output: Mutex::new(String::new()),
             finished: AtomicBool::new(false),
             exit_code: Mutex::new(None),
@@ -190,6 +237,42 @@ impl BackgroundTasks {
     pub fn count(&self) -> usize {
         self.tasks.lock().expect("任务表锁中毒").len()
     }
+
+    /// 当前任务快照；`thread_id` 非空时只返回该会话发起的任务。
+    ///
+    /// 任务表是**实例态**（不落盘）；宿主重启后自然为空。输出只给前 4000 字符，
+    /// 完整内容仍由 `check_task` 提供。
+    pub fn snapshot(&self, thread_id: Option<&str>) -> Vec<BackgroundTaskSnapshot> {
+        let tasks = self.tasks.lock().expect("任务表锁中毒");
+        let filter = thread_id.map(str::trim).filter(|value| !value.is_empty());
+        let mut out = Vec::new();
+        for task in tasks.values() {
+            if let Some(thread_id) = filter {
+                if task.thread_id != thread_id {
+                    continue;
+                }
+            }
+            let running = !task.finished.load(Ordering::Relaxed);
+            let exit_code = *task.exit_code.lock().expect("退出码锁中毒");
+            let output = task.output.lock().expect("输出锁中毒").clone();
+            let mut preview: String = output.chars().take(4000).collect();
+            if preview.len() < output.len() {
+                preview.push_str("\n…（输出已截断，完整内容用 check_task 查看）");
+            }
+            out.push(BackgroundTaskSnapshot {
+                id: task.id.clone(),
+                command: task.command.clone(),
+                pid: task.pid,
+                started_at: task.started_at,
+                thread_id: task.thread_id.clone(),
+                running,
+                exit_code,
+                output_preview: preview,
+            });
+        }
+        out.sort_by(|a, b| a.started_at.cmp(&b.started_at).then_with(|| a.id.cmp(&b.id)));
+        out
+    }
 }
 
 /// 把一个子进程输出流泵进任务的滑动窗口。
@@ -217,15 +300,26 @@ where
 
 pub struct RunBackgroundTool {
     tasks: Arc<BackgroundTasks>,
+    /// 发起任务的引擎工作区：共用任务表时 `cwd` 沙箱与缺省目录按它判定。
+    workspace: PathBuf,
     descriptor: ToolDescriptor,
 }
 
 impl RunBackgroundTool {
     pub fn new(tasks: Arc<BackgroundTasks>) -> Self {
+        let workspace = tasks.workspace().to_path_buf();
+        Self::new_in(workspace, tasks)
+    }
+
+    pub fn new_in(workspace: impl Into<PathBuf>, tasks: Arc<BackgroundTasks>) -> Self {
         let descriptor = crate::registry::find_tool_descriptor("run_background")
             .expect("run_background descriptor must be registered in agent-toolkit registry")
             .clone();
-        Self { tasks, descriptor }
+        Self {
+            tasks,
+            workspace: workspace.into(),
+            descriptor,
+        }
     }
 }
 
@@ -234,7 +328,7 @@ impl Tool for RunBackgroundTool {
         &self.descriptor
     }
 
-    fn execute<'a>(&'a self, call: &'a ToolCall, _ctx: &'a ToolContext<'a>) -> BoxFuture<'a, ToolReceipt> {
+    fn execute<'a>(&'a self, call: &'a ToolCall, ctx: &'a ToolContext<'a>) -> BoxFuture<'a, ToolReceipt> {
         Box::pin(async move {
             let t0 = crate::now_ms();
             let command = call.args.get("command").and_then(|v| v.as_str()).unwrap_or("");
@@ -243,7 +337,10 @@ impl Tool for RunBackgroundTool {
             }
             let cwd = call.args.get("cwd").and_then(|v| v.as_str());
 
-            match self.tasks.start(command, cwd) {
+            match self
+                .tasks
+                .start_in_workspace(&self.workspace, command, cwd, ctx.thread_id)
+            {
                 Ok(id) => ToolReceipt::success(
                     format!("后台任务已启动：{id}（用 check_task 查看输出，kill_task 终止）"),
                     t0,
@@ -329,9 +426,19 @@ impl Tool for KillTaskTool {
 
 /// 创建后台任务工具族的三个工具实例（**共享同一张任务表**）。
 pub fn background_tools(workspace: &Path) -> Vec<Arc<dyn Tool>> {
-    let tasks = Arc::new(BackgroundTasks::new(workspace));
+    background_tools_with_store(workspace, Arc::new(BackgroundTasks::new(workspace)))
+}
+
+/// 同 [`background_tools`]，但复用宿主注入的任务表。
+///
+/// 管理面（`task.list` / `task.kill`）与三个工具必须看到**同一张表**；
+/// 各建一份就会出现"工具起了任务、列表里没有"。
+pub fn background_tools_with_store(
+    workspace: &Path,
+    tasks: Arc<BackgroundTasks>,
+) -> Vec<Arc<dyn Tool>> {
     vec![
-        Arc::new(RunBackgroundTool::new(tasks.clone())),
+        Arc::new(RunBackgroundTool::new_in(workspace, tasks.clone())),
         Arc::new(CheckTaskTool::new(tasks.clone())),
         Arc::new(KillTaskTool::new(tasks)),
     ]
@@ -515,6 +622,51 @@ mod tests {
         assert_eq!(r.status, ToolStatus::Error, "越界 cwd 必须被拒：{}", r.output);
     }
 
+    #[tokio::test]
+    async fn test_shared_store_still_validates_cwd_against_the_engine_workspace() {
+        // 多工作区引擎共用一张任务表时，缺省目录与 cwd 沙箱必须跟着**发起任务的引擎**
+        // 走，而不是任务表创建时的工作区。
+        let root = std::env::temp_dir().join(format!("a_da_bg_shared_{}", uuid::Uuid::new_v4()));
+        let primary = root.join("primary");
+        let other = root.join("other");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+
+        let tasks = Arc::new(BackgroundTasks::new(&primary));
+        let run = RunBackgroundTool::new_in(&other, tasks.clone());
+        let (scope, cancel, sink) = ctx_parts(&other);
+        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1", hooks: None };
+
+        let ok = run
+            .execute(
+                &call("run_background", json!({
+                    "command": echo_cmd("ALT_WS"),
+                    "cwd": other.to_string_lossy(),
+                })),
+                &ctx,
+            )
+            .await;
+        assert_eq!(ok.status, ToolStatus::Success, "本工作区 cwd 应被接受：{}", ok.output);
+
+        let denied = run
+            .execute(
+                &call("run_background", json!({
+                    "command": echo_cmd("x"),
+                    "cwd": primary.to_string_lossy(),
+                })),
+                &ctx,
+            )
+            .await;
+        assert_eq!(
+            denied.status,
+            ToolStatus::Error,
+            "另一个工作区不在本引擎沙箱内：{}",
+            denied.output
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn test_background_tools_share_one_registry_and_have_expected_descriptors() {
         let ws = std::env::current_dir().unwrap();
@@ -539,5 +691,23 @@ mod tests {
         let _ = a.start(&echo_cmd("x"), None);
         assert_eq!(a.count(), 1);
         assert_eq!(b.count(), 0, "另一个实例不该看到任务");
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_filters_by_thread_and_keeps_task_metadata() {
+        let ws = std::env::current_dir().unwrap();
+        let tasks = BackgroundTasks::new(&ws);
+        let first = tasks.start_in_thread(&echo_cmd("first"), None, "thread-a").unwrap();
+        let second = tasks.start_in_thread(&echo_cmd("second"), None, "thread-b").unwrap();
+
+        let all = tasks.snapshot(None);
+        assert_eq!(all.len(), 2, "{all:?}");
+        assert!(all.iter().all(|task| !task.command.is_empty()));
+
+        let only_a = tasks.snapshot(Some("thread-a"));
+        assert_eq!(only_a.len(), 1, "{only_a:?}");
+        assert_eq!(only_a[0].id, first);
+        assert_eq!(only_a[0].thread_id, "thread-a");
+        assert_ne!(only_a[0].id, second);
     }
 }

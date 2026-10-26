@@ -116,7 +116,7 @@
 - 验收：10 条排队时 composer 仍在视口内；审批 + 提问同屏时两个托盘有清晰分组头。
 
 **T12 provider-admin：脏检查 + 文案纠偏（1d，建议 17）**
-- 新增 `frontend-plugins/provider-admin/static/provider-admin.js`（manifest `scripts` 注入，机制已有）：表单 `input/change` 记 dirty；拦截站内链接（点击时若 dirty → 复用核心 `data-confirm` 委托弹确认「未保存的修改将丢弃」）+ `beforeunload` 兜底。
+- 新增 `plugins/provider-admin/static/provider-admin.js`（manifest `scripts` 注入，机制已有）：表单 `input/change` 记 dirty；拦截站内链接（点击时若 dirty → 复用核心 `data-confirm` 委托弹确认「未保存的修改将丢弃」）+ `beforeunload` 兜底。
 - 文案纠偏：`page.tsx:117` 按钮与结果片段「测试连接」→「校验参数」，结果文案明确「仅检查参数完整性，未访问端点；验可达性请用『获取远程模型』」（与 UED §9「不用已完成描述未确认状态」对齐）。
 - 注意：改源码插件后同步 `dist/frontend-plugins/`（README 🔴 已记），或验收时用 `--plugins-dir ssr-h/frontend-plugins`。
 

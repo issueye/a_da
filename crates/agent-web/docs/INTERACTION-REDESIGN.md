@@ -124,7 +124,7 @@ Esc 同时关闭全部 `details.ada-popover`（static/chat.js:165-170）与全�
 ### F. 插件页
 
 **17 provider-admin 表单丢失风险与误导按钮**
-连接参数表单（frontend-plugins/provider-admin/page.tsx:96-121）没有任何脏检查：切页签/切左列供应商/刷新（都是纯链接导航，page.tsx:7-13）即丢已填内容——而 Base URL/代理/请求头往往是一长串。「测试连接」按钮名义是测试，实际 `config.checkProvider` 只做参数校验、不发真实请求（README 注记 + src/handlers/providers.rs 测试端点）。
+连接参数表单（plugins/provider-admin/page.tsx:96-121）没有任何脏检查：切页签/切左列供应商/刷新（都是纯链接导航，page.tsx:7-13）即丢已填内容——而 Base URL/代理/请求头往往是一长串。「测试连接」按钮名义是测试，实际 `config.checkProvider` 只做参数校验、不发真实请求（README 注记 + src/handlers/providers.rs 测试端点）。
 建议：① 表单脏时拦截导航（beforeunload + 站内链接点击确认，可复用共享确认弹窗）；② 在后端能力补齐前，按钮文案与结果文案改为「校验参数」级别的事实表述，避免「测试通过」误导用户以为端点可达（这与 UED §9「不用已完成描述未确认的状态」直接冲突）。
 
 **18 弹窗内表单回跳链路依赖 `?dialog=`，无失败回填**

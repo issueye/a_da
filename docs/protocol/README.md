@@ -279,8 +279,8 @@ curl -i -H 'Authorization: Bearer secret' -H 'If-None-Match: "snap-42"' \
 
 **仅 WS 的方法**：`thread.send` / `thread.retry` / `thread.editAndResend` / `thread.abort` /
 `thread.compact`、`plugin.load` / `plugin.reload` / `plugin.invoke` / `plugin.validate`、
-`provider.fetchModels` / `config.checkProvider`、`session.initialize`、`ui.*`、
-`gateway.delegate`。原因见 §8。`plugin.invoke` 只由 SSR 宿主在服务端调用，
+`provider.fetchModels` / `config.checkProvider`、`task.list` / `task.kill`、
+`session.initialize`、`ui.*`、`gateway.delegate`。原因见 §8。`plugin.invoke` 只由 SSR 宿主在服务端调用，
 浏览器经 `/ext/{id}/backend/{binding}` 中转，不直接接触该方法。
 
 ---

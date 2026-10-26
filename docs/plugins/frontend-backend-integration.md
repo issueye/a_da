@@ -144,7 +144,7 @@ agent RPC：
   └─ ask_user 工具挂起
        └─ 事件 / 快照里的 waiting question
             └─ props.data.questions
-                 └─ frontend-plugins/ask-user 的 thread.tray 插槽
+                 └─ plugins/ask-user 的 thread.tray 插槽
                       └─ 表单提交到 POST /questions/{callId}/answer
                            └─ question.answer → ask_user 工具返回
 ```
@@ -181,7 +181,7 @@ agent RPC：
 ### 5.1 `ask-user`：同主题，但不是插件互调
 
 - 后端：内置插件 `ask-user` 提供 `ask_user` 工具；
-- 前端：`frontend-plugins/ask-user` 用 `thread.tray` 渲染 `data.questions`；
+- 前端：`plugins/ask-user` 用 `thread.tray` 渲染 `data.questions`；
 - 中间：`question.answer` 核心路由与提问事件。
 
 前端插件停用后，核心提问托盘自动接管。这是“共享核心契约”的正面例子，不是两个插件
@@ -218,6 +218,15 @@ agent RPC：
 
 这条边界是刻意的：审批是安全闸门，不能交给沙箱插件；插件化的是状态镜像与界面。
 
+### 5.6 `task-manager`：后台任务表的核心投影
+
+- `run_background` 族在 agent 进程里持有一张实例态 `BackgroundTasks` 表；
+- `AgentClient` 经 `task.list` 按 `threadId` 取当前会话任务，注入 `props.data.tasks`；
+- `plugins/task-manager` 用 `sidebar.bottom` 渲染命令、PID、状态与输出预览；
+- 终止走核心 `POST /tasks/{id}/kill` → `task.kill`，插件不直接操作进程。
+
+任务表不落盘、不跨进程；插件停用或读取失败时面板隐藏/显示错误，不影响工具本身。
+
 ---
 
 ## 6. 今天能做什么、不能做什么
@@ -245,7 +254,7 @@ agent RPC：
 
 1. 在 agent 侧产生数据（工具结果、事件、快照字段）；
 2. 在 `agent-web` 的 `plugin_data` 或专用投影里增加字段；
-3. 如果数据敏感，增加一个 manifest capability（像 `providers.read` / `processes.read`）；
+3. 如果数据敏感，增加一个 manifest capability（像 `providers.read` / `processes.read` / `tasks.read`）；
 4. 在 `frontend-plugins/<id>/` 里消费 `props.data.<field>`；
 5. 补 `PLUGIN-DATA.md` 与测试。
 
@@ -278,7 +287,7 @@ agent RPC：
 | 前端 TSX → 宿主 | 无 fs/net/process；HTML 白名单；500ms 渲染预算；无内存上限 |
 | 前端浏览器脚本 | 与页面同源，能调核心路由；**能力声明不约束脚本** |
 | 后端插件 → 宿主 | `@ada-needs` 沙箱；工作区 fs 边界；net 默认关；工具审批；钩子分级 |
-| 前端能力 | `providers.read` / `processes.read` 是**数据最小化**，不是授权系统 |
+| 前端能力 | `providers.read` / `processes.read` / `tasks.read` 是**数据最小化**，不是授权系统 |
 
 两个需要特别记住的事实：
 

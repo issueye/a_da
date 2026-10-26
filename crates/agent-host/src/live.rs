@@ -147,6 +147,8 @@ pub struct LivePluginReassembler {
     hook_runtime: Option<Arc<agent_node::hooks::HookRuntime>>,
     /// 界面读的贡献视图活体（P4）：启停后原地替换，否则"关掉了插件、卡片还列着它的工具"。
     contribution_views: Option<agent_node::plugins::PluginContributionStore>,
+    /// 后台任务表：重装配必须复用同一份，否则启停插件会把正在跑的任务"弄丢"。
+    background_tasks: Arc<agent_toolkit::background::BackgroundTasks>,
 }
 
 impl LivePluginReassembler {
@@ -157,16 +159,30 @@ impl LivePluginReassembler {
         script_host: Arc<dyn agent_base::ports::ScriptHost>,
         live: Arc<LivePluginContributions>,
     ) -> Self {
+        let workspace = workspace.into();
+        let background_tasks = Arc::new(agent_toolkit::background::BackgroundTasks::new(
+            workspace.clone(),
+        ));
         Self {
             spec,
-            workspace: workspace.into(),
+            workspace,
             plugin_mgr,
             script_host,
             live,
             budget: agent_base::ports::ScriptBudget::default(),
             hook_runtime: None,
             contribution_views: None,
+            background_tasks,
         }
+    }
+
+    /// 复用组合根的后台任务表（启停插件不能换表）。
+    pub fn with_background_tasks(
+        mut self,
+        tasks: Arc<agent_toolkit::background::BackgroundTasks>,
+    ) -> Self {
+        self.background_tasks = tasks;
+        self
     }
 
     /// 接上贡献视图活体（P4）：启停后刷新界面读的那份"这个插件带来了什么"。
@@ -239,6 +255,7 @@ impl LivePluginReassembler {
                 &self.spec,
                 &self.workspace,
                 Some(app_home.as_path()),
+                Some(&self.background_tasks),
                 contribution_policy.allow_builtin_shadow(),
                 &collected.tools,
             ) {

@@ -74,7 +74,17 @@ impl Dispatcher {
             plugin_reassembler: None,
             hook_runner: None,
             plugin_contribution_views: None,
+            background_tasks: None,
         }
+    }
+
+    /// 注入后台任务表（`task.list` / `task.kill` 要读工具正在用的那一份）。
+    pub fn with_background_tasks(
+        mut self,
+        tasks: Arc<agent_toolkit::background::BackgroundTasks>,
+    ) -> Self {
+        self.background_tasks = Some(tasks);
+        self
     }
 
     /// P3a·SP-55：注入钩子运行时（管理面点位用）。没注入 = 这些点位不跑（如实）。
@@ -153,6 +163,7 @@ impl Dispatcher {
             // W3-T6：声明一起带进来，握手才能如实回报能力位
             self.product_spec = Some(i.spec);
             self.engine_factory = i.factory;
+            self.background_tasks = i.background_tasks;
         }
         self
     }

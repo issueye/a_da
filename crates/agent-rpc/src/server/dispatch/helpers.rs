@@ -395,6 +395,8 @@ pub struct EngineInjection {
     /// 于是每个磁盘插件的贡献计数恒为 0、核心工具页的"被插件重实现"永远不亮。
     /// 执行过插件的只有组合根，所以结论由它写进这个活体。
     pub plugin_contribution_views: Option<agent_node::plugins::PluginContributionStore>,
+    /// 后台任务表（`run_background` 族与 `task.list` / `task.kill` 共用）。
+    pub background_tasks: Option<Arc<agent_toolkit::background::BackgroundTasks>>,
 }
 
 impl EngineInjection {
@@ -412,7 +414,17 @@ impl EngineInjection {
             reassembler: None,
             hook_runner: None,
             plugin_contribution_views: None,
+            background_tasks: None,
         }
+    }
+
+    /// 带上后台任务表（`task.list` / `task.kill` 需要与工具共用同一份）。
+    pub fn with_background_tasks(
+        mut self,
+        tasks: Arc<agent_toolkit::background::BackgroundTasks>,
+    ) -> Self {
+        self.background_tasks = Some(tasks);
+        self
     }
 
     /// 带上插件贡献视图（P4）：`plugin.list` 才能列出"实际装上了什么"。

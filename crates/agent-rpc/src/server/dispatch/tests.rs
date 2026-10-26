@@ -844,3 +844,50 @@ async fn test_plugin_reload_invalidates_workspace_engine_caches() {
         "重载后动态 PM 引擎缓存必须清空"
     );
 }
+
+#[tokio::test]
+async fn test_task_list_and_kill_use_the_injected_background_store() {
+    let home = std::env::temp_dir().join(format!(
+        "a_da_task_dispatch_{}",
+        uuid::Uuid::new_v4()
+    ));
+    let _ = std::fs::create_dir_all(&home);
+    let workspace = home.join("ws");
+    let _ = std::fs::create_dir_all(&workspace);
+
+    let tasks = Arc::new(agent_toolkit::background::BackgroundTasks::new(
+        workspace.clone(),
+    ));
+    let task_id = tasks
+        .start_in_thread("echo task-dispatch", None, "thread-1")
+        .expect("后台任务应能启动");
+    let dispatcher = Dispatcher::new(
+        Arc::new(RwLock::new(AgentStore::new(
+            workspace.to_string_lossy().to_string(),
+        ))),
+        Arc::new(SessionManager::new(Some(home.clone()))),
+        Arc::new(CheckpointManager::new(Some(home.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::with_home(home.clone())),
+        Arc::new(SkillManager::with_home(home.clone())),
+        None,
+    )
+    .with_background_tasks(tasks.clone());
+
+    let listed = dispatcher
+        .dispatch(TASK_LIST, serde_json::json!({ "threadId": "thread-1" }))
+        .await
+        .expect("task.list 应可分发");
+    assert_eq!(listed["count"], 1, "{listed}");
+    assert_eq!(listed["tasks"][0]["id"], task_id);
+    assert_eq!(listed["tasks"][0]["threadId"], "thread-1");
+
+    let killed = dispatcher
+        .dispatch(TASK_KILL, serde_json::json!({ "taskId": task_id }))
+        .await
+        .expect("task.kill 应可分发");
+    assert_eq!(killed["ok"], true, "{killed}");
+
+    let _ = std::fs::remove_dir_all(&home);
+}

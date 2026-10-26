@@ -170,7 +170,7 @@
 - `design/tokens.css`：深浅两套值全部替换，新增 `--ph-on-brand`（暗色主按钮的前提）；
 - `ssr-h/static/components.css`：主按钮与发送键的 `color: #fff` 改为 `var(--ph-on-brand)`，
   发送键阴影从蓝色 `rgba(37,99,235,.24)` 改为 `color-mix(var(--ph-brand))`；
-- `frontend-plugins/provider-admin`、`ask-user`：`--pa-accent` 与按钮文字改走令牌；
+- `plugins/provider-admin`、`ask-user`：`--pa-accent` 与按钮文字改走令牌；
 - Tailwind 产物已重建并同步（`crates/plugin-hub/static/app.css` = `ssr-h/static/app.css`）；
 - 验收：`cargo test` 184 + 13（含深浅令牌覆盖与产物一致性门）、
   浅/深 × 空会话/有内容截图（`target/repro/theme-{light,dark}-{empty,thread}.png`），对比度见 §5。

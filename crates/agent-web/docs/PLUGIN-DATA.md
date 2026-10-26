@@ -44,6 +44,7 @@
 | `processes` | object \| null | 网关与 agent 实例的只读投影（§2.11；仅声明 `processes.read` 的插件） |
 | `backend` | object | 统一插件只读动作的预取结果（§2.12；`data.backend.<pluginId>.<binding>`） |
 | `approvals` | array | 当前会话待批准的工具调用（§2.13；`thread.approval` 插件用） |
+| `tasks` | object | 当前会话的后台命令任务（§2.14；仅声明 `tasks.read` 的插件） |
 
 ### 2.2 `tokens`（上下文 / 缓存用量）
 
@@ -292,6 +293,33 @@
   **不能**改变 `needs_approval` / `decide` 的策略；
 - 后端插件 `beforeApproval` / `afterApproval` 的审计状态在
   `.ada/approval-state.json`，与 `props.data.backend["approval"].pending` 对应。
+
+### 2.14 `tasks`（当前会话的后台命令任务）
+
+仅当插件 manifest 声明 `capabilities: ["tasks.read"]` 时注入。数据来自 agent 进程里
+`run_background` 族共享的 `BackgroundTasks` 实例（`task.list`，按当前 `threadId` 过滤）：
+
+```jsonc
+{
+  "tasks": [{
+    "id": "task_1",
+    "command": "npm run dev",
+    "pid": 4321,
+    "startedAt": 1761000000000,
+    "threadId": "thread_…",
+    "running": true,
+    "exitCode": null,
+    "outputPreview": "VITE ready in 300ms"
+  }],
+  "count": 1,
+  "error": null
+}
+```
+
+- 任务表是**实例态**（进程重启后为空），不落盘；
+- `outputPreview` 截断到 4000 字符；完整输出用 `check_task`；
+- 终止走核心路由 `POST /tasks/{id}/kill`（内部 `task.kill`），插件只渲染按钮；
+- 没有 `tasks.read` 的插件拿不到这份数据。
 
 ## 3. 点位与刷新时机
 

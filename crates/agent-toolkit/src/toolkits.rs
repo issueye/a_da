@@ -32,18 +32,24 @@ pub fn is_known_toolkit(name: &str) -> bool {
 /// 为什么不是"再传一个参数"：工具工厂（`forge`）要用应用目录决定插件落到工作区还是全局，
 /// 而工作区之外的一切都必须由**组合根注入**——工具层自己读 `USERPROFILE` 或
 /// `A_DA_HOME` 就会在测试里写到用户真实目录（本项目为这类污染出过事故）。
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct ToolkitEnv<'a> {
     pub workspace: &'a Path,
     /// 应用目录（`~/.a-da`）。`None` = 这个装配面没有应用目录概念
     /// （测试 / 子体 / 合规套件）——需要它的能力会**如实报错**，而不是猜一个路径。
     pub app_home: Option<&'a Path>,
+    /// 宿主注入的后台任务表；`command` 工具包与管理面必须共用同一份。
+    pub background_tasks: Option<&'a Arc<crate::background::BackgroundTasks>>,
 }
 
 impl<'a> ToolkitEnv<'a> {
     /// 只给工作区（不需要应用目录的装配面用这个）。
     pub fn workspace_only(workspace: &'a Path) -> Self {
-        Self { workspace, app_home: None }
+        Self {
+            workspace,
+            app_home: None,
+            background_tasks: None,
+        }
     }
 }
 
@@ -58,7 +64,10 @@ pub fn tools_for_toolkit_in(name: &str, env: ToolkitEnv<'_>) -> Option<Vec<Arc<d
     match name {
         "core" => Some(crate::core::core_tools()),
         "fs" => Some(crate::fs::fs_tools(workspace)),
-        "command" => Some(crate::command::command_tools(workspace)),
+        "command" => Some(crate::command::command_tools_with_store(
+            workspace,
+            env.background_tasks.cloned(),
+        )),
         // 插件包脚手架：生成可加载的最小插件包（`create_plugin`）。
         // 它需要应用目录：用户没指定工作区还是全局时，工具要**先问**；
         // 指定全局时得知道 `~/.a-da/agent-coding/extensions` 在哪。

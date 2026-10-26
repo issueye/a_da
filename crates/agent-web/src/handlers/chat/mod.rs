@@ -413,6 +413,7 @@ async fn live_parts(
     // 三个插槽共用同一份（带 `data.tokens` / `data.todo`）的上下文，首屏与轮询看到的数据才一致。
     let mut chat_context = super::render_context_with_tokens(state, "chat", snapshot, Some(thread_id));
     super::attach_backend_actions(state, &mut chat_context).await;
+    super::attach_tasks(state, &mut chat_context).await;
     let footer = crate::plugins::render_slot_off_thread(
         std::sync::Arc::clone(&state.frontend),
         Slot::ComposerFooter,

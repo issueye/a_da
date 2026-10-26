@@ -126,6 +126,10 @@ pub struct HostOptions {
     /// `None` = 这个宿主没有应用目录概念（离线/测试），`create_plugin` 遇到
     /// `scope="global"` 会**如实拒绝**并说明原因。
     pub app_home: Option<PathBuf>,
+    /// 后台任务表（`run_background` 族与 `task.*` 管理面共用）。
+    ///
+    /// 不传 = 装配时新建一份；组合根若要在 RPC 里读同一份，必须显式注入。
+    pub background_tasks: Option<Arc<agent_toolkit::background::BackgroundTasks>>,
 }
 
 /// 装配面的能力开关判定（P4）：**初装与重装配共用的唯一一处**。
@@ -201,7 +205,17 @@ impl HostOptions {
             plugin_contributions: PluginContributions::default(),
             plugin_capabilities: agent_node::plugins::PluginCapabilities::default(),
             app_home: None,
+            background_tasks: None,
         }
+    }
+
+    /// 注入后台任务表（RPC 的 `task.list` / `task.kill` 要读同一份）。
+    pub fn with_background_tasks(
+        mut self,
+        tasks: Arc<agent_toolkit::background::BackgroundTasks>,
+    ) -> Self {
+        self.background_tasks = Some(tasks);
+        self
     }
 
     /// 注入应用目录（组合根：`agent_node::session::get_app_home()`）。
@@ -281,6 +295,8 @@ pub struct HostedProduct {
     pub events: Arc<WsEventSink>,
     /// 轮次取消句柄（每次轮次取 `child()`）。
     pub cancel: CancelHandle,
+    /// 后台任务表（`run_background` 族与管理面 `task.*` 共用）。
+    pub background_tasks: Arc<agent_toolkit::background::BackgroundTasks>,
     /// 装配期工具描述符快照（真源投影，供界面/自检读取）。
     ///
     /// ⚠️ 它是**快照**：插件启停的重装配（SP-46）改的是活体注册表（
@@ -360,6 +376,7 @@ fn assemble(
     spec: &AgentSpec,
     workspace: &std::path::Path,
     app_home: Option<&std::path::Path>,
+    background_tasks: Option<&Arc<agent_toolkit::background::BackgroundTasks>>,
     allow_builtin_shadow: bool,
     plugin_tools: &[(String, Arc<dyn Tool>)],
 ) -> Result<AssemblyPlan, SpecError> {
@@ -370,7 +387,7 @@ fn assemble(
     // 没注入时 `create_plugin` 会如实拒绝，而不是猜一个路径。
     for tool in agent_toolkit::tools_for_toolkits_in(
         &spec.toolkits,
-        agent_toolkit::toolkits::ToolkitEnv { workspace, app_home },
+        agent_toolkit::toolkits::ToolkitEnv { workspace, app_home, background_tasks },
     )
     .map_err(SpecError::Violation)?
     {
@@ -397,6 +414,11 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
     agent_node::approval::init_question_registrar();
 
     let workspace = options.workspace.clone();
+    let background_tasks = options.background_tasks.clone().unwrap_or_else(|| {
+        Arc::new(agent_toolkit::background::BackgroundTasks::new(
+            workspace.clone(),
+        ))
+    });
     let sessions_root = options
         .sessions_root
         .clone()
@@ -556,6 +578,7 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
         &spec,
         &workspace,
         options.app_home.as_deref(),
+        Some(&background_tasks),
         contribution_policy.allow_builtin_shadow(),
         &plugin_tools,
     )?;
@@ -801,6 +824,7 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
         approval,
         events,
         cancel: CancelHandle::new(),
+        background_tasks,
         tool_descriptors,
         subagent_mgr,
         accepts_images,
@@ -840,7 +864,7 @@ pub fn build_engine_injection(
         .with_store(store.clone())
         .with_sessions_root(sessions_root_buf.clone());
 
-    let HostedProduct { runtime, approval, spec, .. } = run_from_spec(spec, options)?;
+    let HostedProduct { runtime, approval, spec, background_tasks, .. } = run_from_spec(spec, options)?;
 
     let spec_json_string = spec_json.to_string();
     let store_for_factory = store.clone();
@@ -878,6 +902,8 @@ pub fn build_engine_injection(
         hook_runner: None,
         // 贡献视图同理：没有组合根那次装载就没有"实际装上了什么"可报（`plugin.list` 如实为空）
         plugin_contribution_views: None,
+        // 后台任务表：这条便捷路径的装配也建了一张，交给 `task.list` / `task.kill`。
+        background_tasks: Some(background_tasks),
     })
 }
 

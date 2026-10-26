@@ -580,7 +580,7 @@ try {
   await cdp.send('Emulation.clearDeviceMetricsOverride')
   await sleep(300)
 
-  // 3. 进程管理浮窗（frontend-plugins/process-manager 的 topbar.right 插槽）。
+  // 3. 进程管理浮窗（plugins/process-manager 的 topbar.right 插槽）。
   check(
     await evaluate(
       cdp,

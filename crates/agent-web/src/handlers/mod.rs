@@ -165,6 +165,7 @@ const NOTICE_TEXTS: &[(&str, &str)] = &[
     ("frontend_reloaded", "前端插件已重新扫描"),
     ("agent_reloaded", "已请求 agent 重载插件；新增工具将在下一条消息生效"),
     ("backend_action_ok", "后端动作已执行"),
+    ("task_killed", "后台任务已终止"),
     ("created", "会话已创建"),
     ("sent", "消息已发送"),
     ("aborted", "已请求中止当前轮次"),
@@ -322,6 +323,7 @@ async fn base_with_snapshot(
         }
     }
     attach_backend_actions(state, &mut context).await;
+    attach_tasks(state, &mut context).await;
     let slots = slot_content(&state.frontend, context).await;
     // 侧栏"新会话"要落在当前激活工作区。快照里的 `workspace.project` 是 agent 的真实
     // 当前项目（与 原桌面端 的 `activeWorkspace` 同源）；没有快照时退回启动参数。
@@ -501,6 +503,53 @@ async fn attach_backend_actions(state: &AppState, context: &mut RenderContext) {
     }
     if let Some(data) = context.data.as_object_mut() {
         data.insert("backend".to_string(), Value::Object(backend));
+    }
+}
+
+/// 给声明 `tasks.read` 的插件抓取后台任务。
+///
+/// 任务表在 agent 进程的 `command` 工具包里（`BackgroundTasks`）；这里只做投影，
+/// 不缓存第二份状态。拿不到时给空列表 + 错误文案，插件自己显示“读取失败”。
+async fn attach_tasks(state: &AppState, context: &mut RenderContext) {
+    if !state.frontend.has_capability("tasks.read") {
+        return;
+    }
+    if !context.data.is_object() {
+        context.data = serde_json::json!({});
+    }
+    // 任务管理是**当前会话**的视图：没有会话（插件页/仪表盘）就只给空列表，
+    // 不能把整个工作区乃至整个 agent 进程的后台任务摊到别的页面上。
+    let thread_id = context
+        .data
+        .get("thread")
+        .and_then(|thread| thread.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let value = match thread_id.as_deref() {
+        Some(thread_id) => {
+            match tokio::time::timeout(
+                Duration::from_secs(3),
+                state.agent.tasks(Some(thread_id)),
+            )
+            .await
+            {
+                Ok(Ok(value)) => value,
+                Ok(Err(error)) => serde_json::json!({
+                    "tasks": [],
+                    "count": 0,
+                    "error": public_reason(&error),
+                }),
+                Err(_) => serde_json::json!({
+                    "tasks": [],
+                    "count": 0,
+                    "error": "后台任务读取超时",
+                }),
+            }
+        }
+        None => serde_json::json!({ "tasks": [], "count": 0 }),
+    };
+    if let Some(data) = context.data.as_object_mut() {
+        data.insert("tasks".to_string(), value);
     }
 }
 
@@ -1608,6 +1657,7 @@ mod chat;
 mod dashboard;
 mod extensions;
 mod providers;
+mod tasks;
 mod workspaces;
 
 pub use bridge::*;
@@ -1615,4 +1665,5 @@ pub use chat::*;
 pub use dashboard::*;
 pub use extensions::*;
 pub use providers::*;
+pub use tasks::*;
 pub use workspaces::*;

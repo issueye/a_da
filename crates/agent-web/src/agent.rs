@@ -279,6 +279,20 @@ impl AgentClient {
         .await
     }
 
+    /// 当前会话的后台任务（`task.list`）；`thread_id` 为空时返回工作区全部任务。
+    pub async fn tasks(&self, thread_id: Option<&str>) -> Result<Value> {
+        let params = match thread_id.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(thread_id) => json!({ "threadId": thread_id }),
+            None => json!({}),
+        };
+        self.rpc("task.list", params).await
+    }
+
+    /// 终止后台任务（`task.kill`）。
+    pub async fn kill_task(&self, task_id: &str) -> Result<Value> {
+        self.rpc("task.kill", json!({ "taskId": task_id })).await
+    }
+
     /// 回答智能体的提问（`ask_user`）。
     ///
     /// `params` 由 [`crate::questions::answer_params_from_form`] 产出（choice /

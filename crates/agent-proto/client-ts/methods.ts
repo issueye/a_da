@@ -30,6 +30,10 @@ export const THREAD_SEND = 'thread.send'
 export const THREAD_ITEMS_PAGE = 'thread.items.page'
 export const THREAD_ABORT = 'thread.abort'
 export const THREAD_UPDATE = 'thread.update'
+
+// 后台任务 (Task)
+export const TASK_LIST = 'task.list'
+export const TASK_KILL = 'task.kill'
 export const THREAD_COMPACT = 'thread.compact'
 export const THREAD_SET_MODE = 'thread.setMode'
 export const THREAD_SET_WORKSPACE = 'thread.setWorkspace'
