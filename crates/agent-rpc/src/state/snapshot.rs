@@ -58,6 +58,10 @@ pub fn generate_snapshot_with_seq(store: &AgentStore, seq: u64) -> ClientSnapsho
     // 1. messages 恒置空（UI 渲染层不消费模型底层的 messages 历史）
     // 2. 只有激活会话、打开的 Tab、运行中的会话或子智能体会话才带完整 items
     //    侧边栏折叠的历史会话仅保留元数据，避免海量历史卡片序列化垃圾
+    //
+    // 🔴 **被裁剪的两个替代字段必须照实填**：`itemCount` / `updatedAt`。
+    //    界面（agent-web 侧栏）拿它们判断"这个会话有没有内容"和"最近活动"——
+    //    一旦这两个字段也跟着缺省成 0，历史会话就会被当成空会话清出列表。
     let threads = store
         .threads
         .iter()
@@ -84,6 +88,15 @@ pub fn generate_snapshot_with_seq(store: &AgentStore, seq: u64) -> ClientSnapsho
                 subagent_id: t.subagent_id.clone(),
                 is_subagent: t.is_subagent,
                 plugin_data: t.plugin_data.clone(),
+                // 计数与时刻都来自**内存里的完整 items**（裁剪只发生在序列化这一步）
+                item_count: t.items.len(),
+                updated_at: t
+                    .items
+                    .iter()
+                    .map(|item| item.at())
+                    .max()
+                    .unwrap_or(0)
+                    .max(t.created_at),
             }
         })
         .collect();
@@ -195,5 +208,75 @@ mod tests {
             })
             .unwrap();
         assert_eq!(out, "ok", "没超限就不许改内容");
+    }
+
+    /// 🔴 裁剪 `items` 时，`itemCount` / `updatedAt` 必须照实给。
+    ///
+    /// 侧栏靠这两个字段判断"这条会话有没有内容"和"最近活动"：一旦它们跟着缺省成 0，
+    /// 全部历史会话都会被当成空会话清出列表——实测用户看到的就是
+    /// "当前工作区只剩一条新会话"，以为历史丢了。
+    #[test]
+    fn test_snapshot_keeps_counts_and_activity_for_trimmed_threads() {
+        let mut store = AgentStore::new("E:/snap_trim_ws".to_string());
+        let old = store.create_thread(Some("历史会话".to_string()), None);
+        let last_at = {
+            let thread = store
+                .threads
+                .iter_mut()
+                .find(|t| t.id == old)
+                .expect("刚建的会话应在 store 里");
+            // 卡片时刻取"创建之后"，否则会被空会话的 `created_at` 兜底盖住
+            // （那正是本用例要防的退化）。
+            let created = thread.created_at;
+            let last_at = created + 2_000;
+            thread.items.push(Item::User {
+                id: "u1".to_string(),
+                at: created + 1_000,
+                text: "你好".to_string(),
+                images: None,
+                queued: None,
+            });
+            thread.items.push(Item::Assistant {
+                id: "a1".to_string(),
+                at: last_at,
+                text: "收到".to_string(),
+                streaming: None,
+                duration_ms: None,
+                turn_duration_ms: None,
+                usage: None,
+            });
+            last_at
+        };
+        // 再建一条 → 它成为激活会话；把上一条从"打开的 Tab"里摘掉，
+        // 它才会落进"非激活会话"那一档（items 被裁剪，只剩元数据）。
+        let active = store.create_thread(Some("当前会话".to_string()), None);
+        store.close_tab(&old);
+        let snap = generate_snapshot(&store);
+
+        let trimmed = snap
+            .threads
+            .iter()
+            .find(|t| t.id == old)
+            .expect("历史会话仍在快照里");
+        assert!(trimmed.items.is_empty(), "非激活会话的 items 应被裁剪（体积）");
+        assert_eq!(
+            trimmed.item_count, 2,
+            "条目数必须照实给：裁剪只作用于 items，计数不能跟着变 0"
+        );
+        assert_eq!(
+            trimmed.updated_at, last_at,
+            "最近活动取最后一条 item 的 at（不能退化成创建时刻）"
+        );
+
+        let current = snap
+            .threads
+            .iter()
+            .find(|t| t.id == active)
+            .expect("激活会话在快照里");
+        assert_eq!(current.item_count, 0);
+        assert!(
+            current.updated_at >= current.created_at,
+            "空会话的最近活动回退到创建时刻"
+        );
     }
 }

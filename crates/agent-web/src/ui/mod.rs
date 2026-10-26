@@ -32,3 +32,14 @@ pub use rows::{
 };
 pub use theme::{ButtonKind, ButtonVariant, Size, Tone};
 pub use todo::{derive_todo_plan, read_todo_items, TodoList, TodoPlan, TodoStatus, TodoStep};
+
+/// 渲染期取当前时刻（毫秒）。
+///
+/// 只服务于"最后活动 2 天前"这类**纯展示**计算：agent-web 是投影层，不持有
+/// 引擎的时钟端口（`Clock` 在 `agent-base`），也不该为了显示相对时间引一个。
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}

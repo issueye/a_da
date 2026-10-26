@@ -369,6 +369,38 @@ pub struct Thread {
     pub is_subagent: Option<bool>,
     #[serde(rename = "pluginData", skip_serializing_if = "Option::is_none")]
     pub plugin_data: Option<HashMap<String, serde_json::Value>>,
+    /// 会话的条目总数（**不受快照裁剪影响**）。
+    ///
+    /// 为什么单独给一份：`/api/snapshot` 与 `evt.state.patch` 为了压帧体积，只给
+    /// "激活会话 / 打开的 Tab / 运行中 / 子智能体"这几种线程带 `items`，其余线程的
+    /// `items` 是空数组（见 `agent_rpc::state::snapshot`）。界面若拿 `items.len()`
+    /// 当"这个会话有没有内容"的判据，整屏历史会话都会被误判成空会话——
+    /// 实测侧栏只剩当前会话，用户以为历史丢了。
+    #[serde(rename = "itemCount", default)]
+    pub item_count: usize,
+    /// 最近活动时刻（毫秒）：最后一条 item 的 `at`，空会话回退 `createdAt`。
+    ///
+    /// 与 `itemCount` 同一个原因：`items` 被裁剪时，界面仍要能按"最近活动"排序、
+    /// 显示"3 分钟前"，否则时间会全部退化成创建时刻（列表看起来像随机序）。
+    #[serde(rename = "updatedAt", default)]
+    pub updated_at: u64,
+}
+
+impl Item {
+    /// 卡片的时刻戳（六个变体都带 `at`，但没有公共字段）。
+    ///
+    /// 全仓唯一实现：会话"最近活动"、条目的单调顺延（`next_item_at`）都用它，
+    /// 免得每个变体各写一份 `match`。
+    pub fn at(&self) -> u64 {
+        match self {
+            Item::User { at, .. }
+            | Item::Thinking { at, .. }
+            | Item::Assistant { at, .. }
+            | Item::Tool { at, .. }
+            | Item::Notice { at, .. }
+            | Item::Compact { at, .. } => *at,
+        }
+    }
 }
 
 /// 调试条目

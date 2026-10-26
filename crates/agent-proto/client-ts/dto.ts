@@ -169,7 +169,20 @@ export interface Thread {
   messages?: unknown[]
   stats?: ThreadStats
   createdAt: number
+  /**
+   * 最近活动时刻（毫秒）：最后一条 item 的 `at`，空会话回退 `createdAt`。
+   *
+   * 快照为了压体积会裁剪非激活会话的 `items`，但**这个时刻照实给**——
+   * 侧栏的"3 分钟前"与排序都靠它，别自己拿 `items` 推算。
+   */
   updatedAt: number
+  /**
+   * 会话条目总数（**不受快照裁剪影响**）。
+   *
+   * 判断"这条会话有没有内容"要用它，不要用 `items.length`：
+   * 快照只给激活 / 打开的 Tab / 运行中 / 子智能体会话带 `items`，其余是空数组。
+   */
+  itemCount?: number
   parentId?: string
   subagentId?: string
   isSubagent?: boolean

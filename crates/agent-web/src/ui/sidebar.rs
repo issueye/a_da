@@ -212,6 +212,9 @@ impl Sidebar {
 
     /// 会话树：当前工作区的会话直接铺开（切换器就是它的表头），
     /// 其它工作区收成可折叠分组。只有 1 个工作区时不会出现任何组头。
+    ///
+    /// 两组之间插一行「其它工作区 · N」小标题：没有它，当前工作区的会话行和别的
+    /// 工作区组头在视觉上是同一个平面，用户分不清"这是会话"还是"这是另一个项目"。
     fn render_tree(groups: &[WorkspaceGroup], active_thread_id: &str) -> String {
         if groups.is_empty() {
             return r#"<p class="ada-list-empty">还没有会话</p>"#.to_string();
@@ -228,7 +231,14 @@ impl Sidebar {
                 }
             }
         }
-        for group in groups.iter().filter(|group| !group.active) {
+        let others: Vec<&WorkspaceGroup> = groups.iter().filter(|group| !group.active).collect();
+        if !others.is_empty() {
+            out.push_str(&format!(
+                r#"<p class="ada-ws__section" data-ws-section><span class="ada-ws__section-label">其它工作区</span><span class="ada-ws__section-count">{count}</span></p>"#,
+                count = others.len(),
+            ));
+        }
+        for group in others {
             out.push_str(&Self::render_other_group(group, active_thread_id));
         }
         out
@@ -245,9 +255,20 @@ impl Sidebar {
         } else {
             String::new()
         };
+        // 可见行右侧只留「最后活动」：列表本来就按它排序，不显示出来就会被读成
+        // 随机顺序（旧实现连排序键都是创建时刻）。悬停时让位给重命名/删除。
+        let elapsed = relative_time(thread.updated_at);
+        let time_html = if elapsed.is_empty() {
+            String::new()
+        } else {
+            format!(
+                r#"<span class="ada-thread__time"{title}>{elapsed}</span>"#,
+                title = attr("title", &format!("最后活动：{elapsed}")),
+            )
+        };
         // 回跳目标 = 提交时所在的会话（删的就是它时由服务端回首页）。
         format!(
-            r#"<div class="{classes}"><a class="ada-thread__link" href="/threads/{id}"{hint}><span class="ada-thread__title">{title}</span>{dot}</a><span class="ada-thread__actions"><details class="ada-thread__rename"><summary title="重命名会话" aria-label="重命名会话">{edit}</summary><form class="ada-thread__rename-form" method="post" action="/threads/{id}/rename"><input type="hidden" name="back" value="{back}"><input class="ada-input ada-focusable" name="title" value="{title}" maxlength="200" aria-label="会话标题" placeholder="会话标题"><button class="ada-btn ada-btn--sm ada-btn--primary" type="submit">保存</button></form></details><form method="post" action="/threads/{id}/delete" data-confirm="删除会话「{title}」？会话历史将一并删除，不可恢复。"><input type="hidden" name="back" value="{back}"><button class="ada-thread__action" type="submit" title="删除会话" aria-label="删除会话">{trash}</button></form></span></div>"#,
+            r#"<div class="{classes}"><a class="ada-thread__link" href="/threads/{id}"{hint}><span class="ada-thread__title">{title}</span><span class="ada-thread__meta">{dot}{time_html}</span></a><span class="ada-thread__actions"><details class="ada-thread__rename"><summary title="重命名会话" aria-label="重命名会话">{edit}</summary><form class="ada-thread__rename-form" method="post" action="/threads/{id}/rename"><input type="hidden" name="back" value="{back}"><input class="ada-input ada-focusable" name="title" value="{title}" maxlength="200" aria-label="会话标题" placeholder="会话标题"><button class="ada-btn ada-btn--sm ada-btn--primary" type="submit">保存</button></form></details><form method="post" action="/threads/{id}/delete" data-confirm="删除会话「{title}」？会话历史将一并删除，不可恢复。"><input type="hidden" name="back" value="{back}"><button class="ada-thread__action" type="submit" title="删除会话" aria-label="删除会话">{trash}</button></form></span></div>"#,
             id = escape(&thread.id),
             hint = attr("title", &hint),
             title = escape(&thread.title),
@@ -479,6 +500,32 @@ impl Sidebar {
     }
 }
 
+/// 「最后活动」的相对时间文案（侧栏右侧那一列）。
+///
+/// 只做相对时间、不做绝对日期：`agent-web` 不读系统时区，硬算"10-24"这种本地日期
+/// 会在跨时区/夏令时上错一天；"2 天前 / 3 周前"没有这个歧义，也不需要协议里多一个字段。
+/// `0`（没有卡片也没有创建时刻）返回空串，行里就只剩运行点。
+fn relative_time(at_ms: u64) -> String {
+    if at_ms == 0 {
+        return String::new();
+    }
+    let now = crate::ui::now_ms();
+    // 客户端/服务端时钟漂移时不显示"负 3 分钟前"这种话。
+    if at_ms >= now {
+        return "刚刚".to_string();
+    }
+    let secs = (now - at_ms) / 1000;
+    match secs {
+        0..=59 => "刚刚".to_string(),
+        60..=3_599 => format!("{} 分钟前", secs / 60),
+        3_600..=86_399 => format!("{} 小时前", secs / 3_600),
+        86_400..=604_799 => format!("{} 天前", secs / 86_400),
+        604_800..=2_591_999 => format!("{} 周前", secs / 604_800),
+        2_592_000..=31_535_999 => format!("{} 个月前", secs / 2_592_000),
+        _ => format!("{} 年前", secs / 31_536_000),
+    }
+}
+
 /// `http://127.0.0.1:52353` → `127.0.0.1:52353`：窄栏里的等宽地址不该把协议头
 /// 也算成"信息"，它只会把有用的端口挤出可视区。
 fn display_address(gateway: &str) -> String {
@@ -510,6 +557,8 @@ mod tests {
     }
 
     fn thread(id: &str, title: &str) -> ThreadRow {
+        // 5 分钟前活动过：相对时间文案稳定，断言不用跟时钟赛跑。
+        let at = crate::ui::now_ms().saturating_sub(5 * 60 * 1000);
         ThreadRow {
             id: id.to_string(),
             title: title.to_string(),
@@ -517,7 +566,8 @@ mod tests {
             mode: "craft".to_string(),
             running: false,
             item_count: 12,
-            created_at: 1,
+            created_at: at,
+            updated_at: at,
         }
     }
 
@@ -603,6 +653,47 @@ mod tests {
             "条目数只留在 title 里，不进可见行"
         );
         assert!(!html.contains(">12 项<"), "可见行里不该再出现条目数");
+    }
+
+    /// 行右侧的「最后活动」：既给出相对时间，也说明列表不是随机序。
+    #[test]
+    fn thread_rows_show_how_long_ago_they_were_active() {
+        let html = sample().render();
+        assert!(html.contains(r#"class="ada-thread__meta""#), "{html}");
+        assert!(html.contains("5 分钟前"), "{html}");
+        assert!(
+            html.contains(r#"title="最后活动：5 分钟前""#),
+            "相对时间要有可悬停的口径: {html}"
+        );
+    }
+
+    /// 「其它工作区」小标题 + 计数：把当前工作区的会话和别的工作区分开。
+    #[test]
+    fn other_workspaces_get_a_labelled_section() {
+        let html = sample().render();
+        assert!(html.contains("data-ws-section"), "{html}");
+        assert!(html.contains("其它工作区"), "{html}");
+        assert!(
+            html.contains(r#"<span class="ada-ws__section-count">1</span>"#),
+            "其它工作区数量要如实显示（sample 里只有 1 个）: {html}"
+        );
+        // 只有一个工作区时不该出现这一行。
+        let mut single = sample();
+        single.groups.truncate(1);
+        assert!(!single.render().contains("data-ws-section"));
+    }
+
+    #[test]
+    fn relative_time_uses_whole_buckets_and_never_goes_negative() {
+        let now = crate::ui::now_ms();
+        assert_eq!(relative_time(0), "", "没有时间就不显示占位文案");
+        assert_eq!(relative_time(now + 5_000), "刚刚", "时钟漂移不出负数");
+        assert_eq!(relative_time(now - 10_000), "刚刚");
+        assert_eq!(relative_time(now - 5 * 60_000), "5 分钟前");
+        assert_eq!(relative_time(now - 3 * 3_600_000), "3 小时前");
+        assert_eq!(relative_time(now - 2 * 86_400_000), "2 天前");
+        assert_eq!(relative_time(now - 10 * 86_400_000), "1 周前");
+        assert_eq!(relative_time(now - 70 * 86_400_000), "2 个月前");
     }
 
     #[test]

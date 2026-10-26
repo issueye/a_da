@@ -1107,6 +1107,13 @@ impl SessionManager {
                 title,
                 created_at: header.created_at as u64,
                 workspace: final_workspace,
+                item_count: items.len(),
+                updated_at: items
+                    .iter()
+                    .map(|item| item.at())
+                    .max()
+                    .unwrap_or(0)
+                    .max(header.updated_at.max(0) as u64),
                 items,
                 messages,
                 mode: restored_mode,
