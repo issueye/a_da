@@ -42,6 +42,8 @@
 | `questions` | array | 当前会话**待答复**的提问（§2.10；`thread.tray` 插件用） |
 | `providerAdmin` | object | 供应商只读投影（§2.9；仅声明 `providers.read` 的插件） |
 | `processes` | object \| null | 网关与 agent 实例的只读投影（§2.11；仅声明 `processes.read` 的插件） |
+| `backend` | object | 统一插件只读动作的预取结果（§2.12；`data.backend.<pluginId>.<binding>`） |
+| `approvals` | array | 当前会话待批准的工具调用（§2.13；`thread.approval` 插件用） |
 
 ### 2.2 `tokens`（上下文 / 缓存用量）
 
@@ -245,6 +247,52 @@
 - 只读：不提供终止/重启入口——SSR 页面就跑在网关进程里；
 - 相对时间用 `data.render.at`，不要信浏览器时钟。
 
+### 2.12 `backend`（统一插件动作预取）
+
+仅统一插件包（`plugin.json` 同时有 `frontend` / `backend`）会出现。宿主只预取
+`frontend.actions` 中 `read: true` 的绑定：
+
+```jsonc
+{
+  "backend": {
+    "unified-demo": {
+      "status": {
+        "ok": true,
+        "data": { "count": 0, "lastRefresh": null },
+        "error": null,
+        "fetchedAt": 1761000000000
+      }
+    }
+  }
+}
+```
+
+- 键是**前端插件 id** 与 **binding 名**；`data` 是后端动作返回的 `data`；
+- 失败时 `ok:false`、`data:null`、`error` 是可读原因；页面不要因此 500；
+- 写入动作（`read:false`）不会出现在这里，必须由表单/脚本 `POST`；
+- 预取每个 binding 独立超时 6 秒，最多 16 个；不要在 `data.backend` 里期待写入结果。
+
+### 2.13 `approvals`（待批准工具调用）
+
+`thread.approval` 插槽的降级数据：当前会话里 `status == "waiting_approval"` 的工具卡。
+统一 `plugins/approval/` 会优先用后端 action `pending` 的结果；后端停用/未就绪时用这份核心投影。
+
+```jsonc
+[{
+  "callId": "call_…",
+  "tool": "执行命令",
+  "args": "{\n  \"command\": \"cargo test\"\n}",
+  "waited": "已等待 12s"
+}]
+```
+
+- 没有待批准项时是空数组；
+- 批准/拒绝表单必须提交核心路由 `POST /approvals/{call_id}/decision`
+  （字段 `thread_id` + `approved=true|false`）；插件只负责呈现，
+  **不能**改变 `needs_approval` / `decide` 的策略；
+- 后端插件 `beforeApproval` / `afterApproval` 的审计状态在
+  `.ada/approval-state.json`，与 `props.data.backend["approval"].pending` 对应。
+
 ## 3. 点位与刷新时机
 
 | 插槽 | 出现在 | 内容刷新 |
@@ -256,6 +304,7 @@
 | `composer.footer` | 聊天页输入框下方辅助区 | 首屏 + `parts.aux` / 2s live 轮询 |
 | `composer.above` | 聊天页右下角悬浮区 | 首屏 + `parts.above` / 2s live 轮询 |
 | `thread.tray` | 聊天页托盘区（输入框上方 in-flow）的**提问段** | 首屏 + `parts.trays` / 2s live 轮询；输出非空时**替换核心提问托盘**，为空/停用/失败自动回退核心实现 |
+| `thread.approval` | 聊天页托盘区（输入框上方 in-flow）的**审批段** | 首屏 + `parts.trays` / 2s live 轮询；输出非空时**替换核心审批托盘**，批准/拒绝仍提交核心 `/approvals/{call_id}/decision` |
 | `transcript.after` | 聊天页对话流末尾 | 首屏（整段同步时随对话流重渲染） |
 | `extensions.list` | `/extensions` | 整页加载 |
 | `dashboard.widgets` | `/overview` | 整页加载 / 5s 片段刷新（如插件自己声明） |

@@ -31,6 +31,8 @@ pub struct SlotContent {
     pub composer_above: String,
     /// 托盘区里提问段的插槽输出；非空时替换核心提问托盘（D5 降级规则）。
     pub thread_tray: String,
+    /// 托盘区里审批段的插槽输出；非空时替换核心审批托盘。
+    pub thread_approval: String,
     pub transcript_after: String,
     pub extensions_list: String,
     pub dashboard_widgets: String,

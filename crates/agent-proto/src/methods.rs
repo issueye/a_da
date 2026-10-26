@@ -71,6 +71,8 @@ pub const CHANGE_REVERT_ALL: &str = "change.revertAll";
 // 插件管理
 pub const PLUGIN_LIST: &str = "plugin.list";
 pub const PLUGIN_LOAD: &str = "plugin.load";
+/// 调用后端插件声明的界面动作（`registerAction`）：请求-响应，不是模型工具。
+pub const PLUGIN_INVOKE: &str = "plugin.invoke";
 pub const PLUGIN_RELOAD: &str = "plugin.reload";
 pub const PLUGIN_CAPABILITIES_SET: &str = "plugin.capabilities.set";
 pub const PLUGIN_CONFIG_SET: &str = "plugin.config.set";
@@ -184,6 +186,7 @@ pub const ALL_METHODS: &[&str] = &[
     CHANGE_REVERT_ALL,
     PLUGIN_LIST,
     PLUGIN_LOAD,
+    PLUGIN_INVOKE,
     PLUGIN_RELOAD,
     PLUGIN_CAPABILITIES_SET,
     PLUGIN_CONFIG_SET,
@@ -237,7 +240,8 @@ mod tests {
         // W7：新增 `config.setRetryCount`（模型请求重试次数）后 72 → 73
         // P1·SP-18：新增 `plugin.validate`（插件只读自检）后 74 → 75
         // 插件市场：新增 market.getConfig/setConfig/search/install/publish 后 77 → 82
-        assert_eq!(ALL_METHODS.len(), 82);
+        // 统一插件：新增 `plugin.invoke`（界面动作调用）后 82 → 83
+        assert_eq!(ALL_METHODS.len(), 83);
 
         let mut event_set = HashSet::new();
         for &e in ALL_EVENTS {

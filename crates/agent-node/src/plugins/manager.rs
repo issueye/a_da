@@ -1,13 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::Result;
 
 use super::builtins::get_builtin_plugin_items;
 use super::types::{
-    LoadedPlugin, LoadedPluginContributions, PluginCapabilities, PluginDiagnostic, PluginItem,
-    PluginManifest, PluginScope, ResolvedPluginCapabilitiesDto,
+    LoadedPlugin, LoadedPluginContributions, PluginActionError, PluginActionIntent,
+    PluginCapabilities, PluginDiagnostic, PluginItem, PluginManifest, PluginScope,
+    ResolvedPluginCapabilitiesDto,
 };
 use crate::session::{get_app_home, get_config_path};
 
@@ -20,6 +22,8 @@ use crate::session::{get_app_home, get_config_path};
 pub struct PluginManager {
     /// `None` = 进程默认应用目录（生产）；`Some` = 注入目录（测试 / 嵌入式宿主）。
     home: Option<PathBuf>,
+    /// 统一包根覆盖（测试 / 嵌入式宿主）；`None` 时读环境变量或 `<app_home>/plugins`。
+    unified_dir: Option<PathBuf>,
 }
 
 impl Default for PluginManager {
@@ -30,14 +34,24 @@ impl Default for PluginManager {
 
 impl PluginManager {
     pub fn new() -> Self {
-        Self { home: None }
+        Self {
+            home: None,
+            unified_dir: None,
+        }
     }
 
     /// 注入应用目录（测试 / 嵌入式宿主用；生产路径走 [`PluginManager::new`]）。
     pub fn with_home(home: impl Into<PathBuf>) -> Self {
         Self {
             home: Some(home.into()),
+            unified_dir: None,
         }
+    }
+
+    /// 注入统一包根（测试 / 嵌入式宿主；生产默认 `<app_home>/plugins`）。
+    pub fn with_unified_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.unified_dir = Some(dir.into());
+        self
     }
 
     /// `config.json` 落点
@@ -70,6 +84,43 @@ impl PluginManager {
         PathBuf::from(workspace).join(".ada").join("agent-coding").join("extensions")
     }
 
+    /// 统一插件包根：一个目录里同时有 `plugin.json` 的 `frontend` / `backend` 声明。
+    ///
+    /// 顺序：显式注入 → 环境变量 → 开发树（仅 debug）→ `<app_home>/plugins` →
+    /// 与 exe 同级的 `plugins/`。前端注册表用同一个根扫描，于是同一个包只装一次、
+    /// 两侧都能发现。
+    pub fn unified_extensions_dir(&self) -> PathBuf {
+        if let Some(dir) = &self.unified_dir {
+            return dir.clone();
+        }
+        if let Ok(dir) = std::env::var("A_DA_UNIFIED_PLUGINS_DIR") {
+            if !dir.trim().is_empty() {
+                return PathBuf::from(dir.trim());
+            }
+        }
+        // 注入了 home 的实例（测试 / 嵌入式宿主）只认自己的 plugins 目录：
+        // 否则 debug 构建的开发树回退会把仓库插件带进隔离测试。
+        if self.home.is_some() {
+            return self.app_home().join("plugins");
+        }
+        let dev_tree = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
+        if cfg!(debug_assertions) && dev_tree.is_dir() {
+            return dev_tree;
+        }
+        let home = self.app_home().join("plugins");
+        if home.is_dir() {
+            return home;
+        }
+        if let Some(exe_side) = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(|dir| dir.join("plugins")))
+            .filter(|path| path.is_dir())
+        {
+            return exe_side;
+        }
+        home
+    }
+
     /// Validate an explicit plugin entry: only canonical package-root
     /// `index.ts` / `index.js` files are accepted, never loose legacy scripts.
     pub fn is_extension_entry(&self, workspace: Option<&str>, entry: &Path) -> bool {
@@ -82,7 +133,10 @@ impl PluginManager {
             return false;
         }
         let Ok(entry) = fs::canonicalize(entry) else { return false };
-        let mut roots = vec![self.app_home().join("agent-coding").join("extensions")];
+        let mut roots = vec![
+            self.app_home().join("agent-coding").join("extensions"),
+            self.unified_extensions_dir(),
+        ];
         if let Some(workspace) = workspace.filter(|workspace| !workspace.trim().is_empty()) {
             roots.push(Self::agent_extensions_dir(workspace));
         }
@@ -102,6 +156,133 @@ impl PluginManager {
     /// callers can express intent and future caching can be added in one place.
     pub fn reload_plugins(&self, workspace: Option<&str>) -> Vec<PluginItem> {
         self.scan_plugins(workspace)
+    }
+
+    /// 调用一个**面向界面**的插件动作（`plugin.invoke` 的实现）。
+    ///
+    /// 动作不是模型工具：这里不碰审批、不产生工具卡、不进入轮次。调用方只负责
+    /// 声明意图（read/write）；动作自己的 `mode` 由沙箱在执行前校验。
+    pub async fn invoke_action(
+        &self,
+        plugin_id: &str,
+        action: &str,
+        input: serde_json::Value,
+        intent: PluginActionIntent,
+        workspace: &str,
+    ) -> Result<serde_json::Value, PluginActionError> {
+        const MAX_INPUT_BYTES: usize = 64 * 1024;
+        const MAX_OUTPUT_BYTES: usize = 256 * 1024;
+        const ACTION_TIMEOUT_SECS: u64 = 5;
+
+        let plugin_id = plugin_id.trim();
+        let action = action.trim();
+        let workspace = workspace.trim();
+        if plugin_id.is_empty() || action.is_empty() {
+            return Err(PluginActionError::Invalid(
+                "plugin.invoke 需要非空的 pluginId 与 action".to_string(),
+            ));
+        }
+        if workspace.is_empty() {
+            return Err(PluginActionError::Invalid(
+                "plugin.invoke 需要非空的工作区".to_string(),
+            ));
+        }
+        let input_bytes = serde_json::to_vec(&input)
+            .map_err(|error| PluginActionError::Invalid(format!("动作入参不是合法 JSON: {error}")))?
+            .len();
+        if input_bytes > MAX_INPUT_BYTES {
+            return Err(PluginActionError::TooLarge);
+        }
+
+        let item = self
+            .scan_plugins(Some(workspace))
+            .into_iter()
+            .find(|item| item.id == plugin_id)
+            .ok_or_else(|| {
+                PluginActionError::NotFound(format!("插件不存在: {plugin_id}"))
+            })?;
+        if !item.enabled || item.status != "ready" {
+            return Err(PluginActionError::NotReady(format!(
+                "插件未启用或未就绪: {plugin_id}"
+            )));
+        }
+        if item.file_path.trim().is_empty() {
+            return Err(PluginActionError::NotReady(format!(
+                "插件没有可装载的入口: {plugin_id}"
+            )));
+        }
+
+        let path = PathBuf::from(&item.file_path);
+        let source = tokio::fs::read_to_string(&path)
+            .await
+            .map_err(|error| {
+                PluginActionError::Failed(format!("读取插件失败（{}）：{error}", path.display()))
+            })?;
+        let declared = crate::scripts::needs::parse_needs(&source);
+        let needs = crate::scripts::to_engine_needs(declared.needs);
+        let context = serde_json::json!({
+            "workspace": workspace,
+            "caller": "web",
+            "now": agent_toolkit::now_ms(),
+        });
+
+        let call = super::PluginSandbox::call_action_budgeted(
+            &path,
+            action,
+            input,
+            context,
+            intent.as_str(),
+            Path::new(workspace),
+            ACTION_TIMEOUT_SECS,
+            needs,
+            ada_ts_engine::Limits::default(),
+        );
+        let result = match tokio::time::timeout(
+            Duration::from_secs(ACTION_TIMEOUT_SECS + 1),
+            call,
+        )
+        .await
+        {
+            Ok(Ok(value)) => value,
+            Ok(Err(error)) => {
+                let message = error.to_string();
+                if message.contains("超时") {
+                    return Err(PluginActionError::Timeout);
+                }
+                return Err(PluginActionError::Failed(message));
+            }
+            Err(_) => return Err(PluginActionError::Timeout),
+        };
+
+        match result.get("ok").and_then(|value| value.as_bool()) {
+            Some(true) => {
+                let data = result.get("data").cloned().unwrap_or(serde_json::Value::Null);
+                let data_bytes = serde_json::to_vec(&data)
+                    .map_err(|error| {
+                        PluginActionError::Failed(format!("动作返回值不是合法 JSON: {error}"))
+                    })?
+                    .len();
+                if data_bytes > MAX_OUTPUT_BYTES {
+                    return Err(PluginActionError::TooLarge);
+                }
+                Ok(serde_json::json!({ "ok": true, "data": data }))
+            }
+            Some(false) => {
+                let message = result
+                    .get("error")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("动作执行失败")
+                    .to_string();
+                match result.get("kind").and_then(|value| value.as_str()) {
+                    Some("not_found") => Err(PluginActionError::NotFound(message)),
+                    Some("denied") => Err(PluginActionError::Denied(message)),
+                    _ => Err(PluginActionError::Failed(message)),
+                }
+            }
+            None => Err(PluginActionError::Failed(
+                "动作返回缺少 ok 字段".to_string(),
+            )),
+        }
     }
 
     /// 获取配置中已禁用的插件集合
@@ -320,18 +501,21 @@ impl PluginManager {
 
         // 2. Scan canonical package roots only. The Extension Factory is the
         // source of truth; loose files and alternate folders are not discovered.
-        let mut scan_dirs: Vec<(PathBuf, &'static str)> = Vec::new();
+        // 第三项 `unified` 表示“统一插件包根”：只收 plugin.json 里声明了 `backend`
+        // 的包；只有前端声明的同目录包由 agent-web 处理，不在这里报 broken。
+        let mut scan_dirs: Vec<(PathBuf, &'static str, bool)> = Vec::new();
 
         if let Some(ws) = workspace {
             if !ws.trim().is_empty() {
-                scan_dirs.push((Self::agent_extensions_dir(ws), "workspace"));
+                scan_dirs.push((Self::agent_extensions_dir(ws), "workspace", false));
             }
         }
 
         let app_home = self.app_home();
-        scan_dirs.push((app_home.join("agent-coding").join("extensions"), "global"));
+        scan_dirs.push((app_home.join("agent-coding").join("extensions"), "global", false));
+        scan_dirs.push((self.unified_extensions_dir(), "global", true));
 
-        for (dir_path, scope) in scan_dirs {
+        for (dir_path, scope, unified) in scan_dirs {
             if !dir_path.exists() {
                 continue;
             }
@@ -355,7 +539,40 @@ impl PluginManager {
                     continue;
                 }
 
-                let id = format!("{}:{}", scope, file_name.trim_end_matches(".ts").trim_end_matches(".js"));
+                let unified_manifest = if unified {
+                    let manifest_path = path.join("plugin.json");
+                    let Ok(raw) = fs::read_to_string(&manifest_path) else {
+                        continue;
+                    };
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                        continue;
+                    };
+                    // 只有显式声明了 backend 对象的统一包才归 agent 管。
+                    // 前端-only 包不在这里列成“missing index.ts”的坏插件。
+                    if !value.get("backend").is_some_and(|backend| backend.is_object()) {
+                        continue;
+                    }
+                    Some(value)
+                } else {
+                    None
+                };
+
+                let id = if let Some(manifest) = &unified_manifest {
+                    manifest
+                        .get("backend")
+                        .and_then(|backend| backend.get("pluginId"))
+                        .and_then(|value| value.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("global:{}", file_name.trim_end_matches(".ts").trim_end_matches(".js")))
+                } else {
+                    format!(
+                        "{}:{}",
+                        scope,
+                        file_name.trim_end_matches(".ts").trim_end_matches(".js")
+                    )
+                };
                 if seen_ids.contains(&id) {
                     continue;
                 }
@@ -372,7 +589,14 @@ impl PluginManager {
                     }
                 }
 
-                let plugin_name = file_name.to_string();
+                let plugin_name = unified_manifest
+                    .as_ref()
+                    .and_then(|manifest| manifest.get("name"))
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| file_name.to_string());
 
                 let enabled = !disabled.contains(&id);
 
@@ -384,7 +608,24 @@ impl PluginManager {
                     .into_iter()
                     .find(|index| index.is_file());
 
-                let desc = format!("{} 扩展插件", if scope == "global" { "全局" } else { "工作区" });
+                let desc = unified_manifest
+                    .as_ref()
+                    .and_then(|manifest| manifest.get("description"))
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        format!("{} 扩展插件", if scope == "global" { "全局" } else { "工作区" })
+                    });
+                let version = unified_manifest
+                    .as_ref()
+                    .and_then(|manifest| manifest.get("version"))
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "1.0.0".to_string());
 
                 // 埋点：把"这个插件为什么不会生效"如实写进诊断字段。
                 //
@@ -424,7 +665,7 @@ impl PluginManager {
                     id: id.clone(),
                     name: plugin_name.clone(),
                     description: desc.clone(),
-                    version: Some("1.0.0".to_string()),
+                    version: Some(version.clone()),
                     author: None,
                     scope: Some(if scope == "global" {
                         PluginScope::Global
@@ -453,7 +694,7 @@ impl PluginManager {
                     scope: scope.to_string(),
                     enabled,
                     status: plugin_status.to_string(),
-                    version: Some("1.0.0".to_string()),
+                    version: Some(version),
                     diagnostics,
                     tools,
                     skills: Vec::new(),
@@ -616,5 +857,95 @@ mod tests {
         assert!(!entry.parent().unwrap().exists(), "deleting package entry removes its package root");
         let _ = fs::remove_dir_all(workspace);
         let _ = fs::remove_dir_all(home);
+    }
+
+    #[tokio::test]
+    async fn unified_package_is_scanned_and_actions_enforce_intent() {
+        let workspace = temp_dir("unified_ws");
+        let home = temp_dir("unified_home");
+        let unified = temp_dir("unified_root");
+        let package = unified.join("unified-demo");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("plugin.json"),
+            r#"{
+                "id": "unified-demo",
+                "name": "Unified Demo",
+                "version": "0.1.0",
+                "frontend": { "slots": [] },
+                "backend": {}
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            package.join("index.ts"),
+            r#"
+            // @ada-needs none
+            const metadata = {
+              name: 'unified-demo',
+              description: '统一包动作测试',
+              tools: { count: 0, names: [] },
+              systemPrompt: { count: 0, names: [] },
+              hooks: { count: 0, names: [] },
+              actions: { count: 2, names: ['status', 'refresh'] },
+            };
+            export default function (ada) {
+              ada.metadata = metadata;
+              ada.registerAction({ name: 'status', description: '读', mode: 'read', async execute() { return { ok: true, data: { value: 1 } }; } });
+              ada.registerAction({ name: 'refresh', description: '写', mode: 'write', async execute() { return { ok: true, data: { value: 2 } }; } });
+            }
+            "#,
+        )
+        .unwrap();
+
+        let manager = PluginManager::with_home(&home).with_unified_dir(&unified);
+        let items = manager.scan_plugins(Some(workspace.to_string_lossy().as_ref()));
+        let item = items
+            .iter()
+            .find(|item| item.id == "global:unified-demo")
+            .expect("统一包必须被 agent 侧扫描到");
+        assert_eq!(item.name, "Unified Demo");
+        assert_eq!(item.version.as_deref(), Some("0.1.0"));
+        assert!(item.enabled);
+
+        let read = manager
+            .invoke_action(
+                "global:unified-demo",
+                "status",
+                serde_json::json!({}),
+                PluginActionIntent::Read,
+                workspace.to_string_lossy().as_ref(),
+            )
+            .await
+            .expect("只读动作应成功");
+        assert_eq!(read["data"]["value"], 1);
+
+        let denied = manager
+            .invoke_action(
+                "global:unified-demo",
+                "refresh",
+                serde_json::json!({}),
+                PluginActionIntent::Read,
+                workspace.to_string_lossy().as_ref(),
+            )
+            .await
+            .expect_err("read 意图不能执行 write 动作");
+        assert!(matches!(denied, PluginActionError::Denied(_)));
+
+        let written = manager
+            .invoke_action(
+                "global:unified-demo",
+                "refresh",
+                serde_json::json!({}),
+                PluginActionIntent::Write,
+                workspace.to_string_lossy().as_ref(),
+            )
+            .await
+            .expect("write 动作应成功");
+        assert_eq!(written["data"]["value"], 2);
+
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(home);
+        let _ = fs::remove_dir_all(unified);
     }
 }

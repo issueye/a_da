@@ -2,7 +2,7 @@
 
 /* ── 会话区右上角的插件挂载点（`chat.corner` 插槽） ─────────────────────
    任务规划这类常驻状态卡不插进正文流：贴着右上角浮在对话流之上。
-   卡片本身由插件渲染（见 `frontend-plugins/task-plan/`），这里只提供位置。 */
+   卡片本身由统一插件渲染（见 `plugins/task-plan/`），这里只提供位置。 */
 .ada-corner-dock {
   position: absolute;
   top: 62px;

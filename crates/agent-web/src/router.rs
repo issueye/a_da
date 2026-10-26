@@ -117,6 +117,11 @@ pub fn router(state: AppState) -> Router {
             "/ext/{id}/api/{*path}",
             get(handlers::plugin_api).post(handlers::plugin_api),
         )
+        // 统一插件的前端 → 后端动作桥接。放在 `/{slug}` 之前，避免被页面路由吞掉。
+        .route(
+            "/ext/{id}/backend/{binding}",
+            get(handlers::backend_action).post(handlers::backend_action),
+        )
         .route("/ext/{id}/{slug}", get(handlers::plugin_page))
         .route("/static/app.css", get(static_css))
         // 产品 LOGO：源码树 `assets/logo.png` 是唯一真源，编译期内嵌。

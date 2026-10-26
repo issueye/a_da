@@ -55,15 +55,40 @@ pub struct PluginRecord {
     pub capabilities: Vec<String>,
     /// 插件自带的 HTTP API 端点（`/ext/{id}/api/{path}`）。
     pub api: Vec<ApiEntry>,
+    /// 统一包声明的后端插件 id（`global:<目录名>` 或显式 `backend.pluginId`）。
+    pub backend_plugin_id: Option<String>,
+    /// 前端可调用的后端动作绑定。
+    pub actions: Vec<PluginActionBinding>,
     pub errors: Vec<String>,
     /// 模板相对路径 → 已编译 TSX。
     pub tsx_templates: HashMap<String, Arc<CompiledTsx>>,
     fingerprint: u64,
 }
 
+/// 一条前端动作绑定（已归一化，带后端插件 id）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginActionBinding {
+    /// 所属前端插件 id（`props.data.backend.<id>.<name>` 用它分组）。
+    pub plugin_id: String,
+    /// URL 里的 binding 名（`/ext/{id}/backend/{name}`）。
+    pub name: String,
+    /// 后端 `registerAction` 的动作名。
+    pub action: String,
+    /// 是否允许首屏预取 / GET。
+    pub read: bool,
+    /// 写入动作的交互提示。
+    pub confirm: Option<String>,
+    /// 目标后端插件 id。
+    pub backend_plugin_id: String,
+}
+
 impl PluginRecord {
     pub fn is_active(&self) -> bool {
         self.enabled && matches!(self.status, PluginStatus::Ready)
+    }
+
+    pub fn action(&self, binding: &str) -> Option<&PluginActionBinding> {
+        self.actions.iter().find(|action| action.name == binding)
     }
 }
 
@@ -76,6 +101,8 @@ pub struct SlotOutput {
 
 pub struct PluginRegistry {
     dir: PathBuf,
+    /// 统一插件包根（`plugin.json` 里同时声明 frontend/backend）。
+    unified_dir: Option<PathBuf>,
     /// 停用状态文件。与插件目录分开，安装目录只读时也能记住用户选择。
     state_path: PathBuf,
     plugins: RwLock<Vec<PluginRecord>>,
@@ -101,6 +128,7 @@ pub struct PluginSnapshot {
     pub slots: Vec<String>,
     pub errors: Vec<String>,
     pub capabilities: Vec<String>,
+    pub actions: Vec<String>,
     pub tsx_compiled: usize,
 }
 
@@ -161,6 +189,8 @@ fn failed_record(root: &Path, id: &str, message: &str) -> PluginRecord {
         scripts: Vec::new(),
         api: Vec::new(),
         capabilities: Vec::new(),
+        backend_plugin_id: None,
+        actions: Vec::new(),
         errors: vec![message.to_string()],
         tsx_templates: HashMap::new(),
         fingerprint: 0,
@@ -178,6 +208,7 @@ impl PluginRegistry {
     pub fn with_state_path(dir: impl Into<PathBuf>, state_path: impl Into<PathBuf>) -> Self {
         let registry = Self {
             dir: dir.into(),
+            unified_dir: None,
             state_path: state_path.into(),
             plugins: RwLock::new(Vec::new()),
         };
@@ -187,8 +218,24 @@ impl PluginRegistry {
         registry
     }
 
+    /// 追加统一插件包根（同一个 `plugin.json` 里声明 frontend/backend）。
+    ///
+    /// 与旧的前端目录并存：旧目录继续提供扁平前端插件；统一根里的
+    /// 只有后端声明的包会被跳过（由 agent 侧处理）。
+    pub fn with_unified_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.unified_dir = Some(dir.into());
+        if let Err(error) = self.reload() {
+            tracing::warn!("扫描统一插件目录失败: {error:#}");
+        }
+        self
+    }
+
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    pub fn unified_dir(&self) -> Option<&Path> {
+        self.unified_dir.as_deref()
     }
 
     pub fn state_path(&self) -> &Path {
@@ -197,33 +244,52 @@ impl PluginRegistry {
 
     pub fn reload(&self) -> Result<ReloadReport> {
         let mut report = ReloadReport::default();
-        let entries = fs::read_dir(&self.dir)
-            .with_context(|| format!("读取前端插件目录失败: {}", self.dir.display()))?;
-
         let mut discovered: Vec<PluginRecord> = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
+        let mut roots = vec![self.dir.clone()];
+        if let Some(unified) = &self.unified_dir {
+            if unified != &self.dir {
+                roots.push(unified.clone());
             }
-            // 加载期也要隔离 panic：OXC/Boa 遇到诡异输入可能直接 panic，
-            // 一次 reload 不能把整个进程带走（渲染路径早就按同样口径处理了）。
-            match catch_unwind(AssertUnwindSafe(|| self.register(&path))) {
-                Ok(Ok(Some(record))) => discovered.push(record),
-                Ok(Ok(None)) => {}
-                Ok(Err(error)) => {
-                    let id = dir_plugin_id(&path);
-                    let message = format!("{error:#}");
-                    tracing::warn!("前端插件 {id} 加载失败: {message}");
-                    discovered.push(failed_record(&path, &id, &message));
-                    report.failed.push(id);
+        }
+
+        for root in roots {
+            let entries = match fs::read_dir(&root) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    // 主目录缺失是配置错误；统一目录还没建出来是正常状态。
+                    if root == self.dir {
+                        return Err(error).with_context(|| {
+                            format!("读取前端插件目录失败: {}", root.display())
+                        });
+                    }
+                    tracing::debug!("统一插件目录不可用（跳过）: {}: {error}", root.display());
+                    continue;
                 }
-                Err(_) => {
-                    let id = dir_plugin_id(&path);
-                    let message = "插件加载过程中 panic，已隔离".to_string();
-                    tracing::warn!("前端插件 {id} {message}");
-                    discovered.push(failed_record(&path, &id, &message));
-                    report.failed.push(id);
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                // 加载期也要隔离 panic：OXC/Boa 遇到诡异输入可能直接 panic，
+                // 一次 reload 不能把整个进程带走（渲染路径早就按同样口径处理了）。
+                match catch_unwind(AssertUnwindSafe(|| self.register(&path))) {
+                    Ok(Ok(Some(record))) => discovered.push(record),
+                    Ok(Ok(None)) => {}
+                    Ok(Err(error)) => {
+                        let id = dir_plugin_id(&path);
+                        let message = format!("{error:#}");
+                        tracing::warn!("前端插件 {id} 加载失败: {message}");
+                        discovered.push(failed_record(&path, &id, &message));
+                        report.failed.push(id);
+                    }
+                    Err(_) => {
+                        let id = dir_plugin_id(&path);
+                        let message = "插件加载过程中 panic，已隔离".to_string();
+                        tracing::warn!("前端插件 {id} {message}");
+                        discovered.push(failed_record(&path, &id, &message));
+                        report.failed.push(id);
+                    }
                 }
             }
         }
@@ -302,10 +368,30 @@ impl PluginRegistry {
             .with_context(|| format!("解析 {} 失败", manifest_path.display()))?;
         manifest.validate().context("插件清单校验失败")?;
 
+        // 统一包里只有 backend 的包交给 agent 侧，不应在前端注册表里变成
+        // “没有页面/插槽的插件”；旧版扁平清单仍然走 has_frontend 的顶层字段。
+        if !manifest.has_frontend() {
+            return Ok(None);
+        }
+
         let root = root
             .canonicalize()
             .with_context(|| format!("规范化插件目录失败: {}", root.display()))?;
-        let assets_dir = resolve_assets_dir(&root, manifest.assets.as_deref());
+        let frontend = manifest.frontend_spec();
+        let backend_plugin_id = manifest.backend_plugin_id(&root);
+        let actions: Vec<PluginActionBinding> = frontend
+            .actions
+            .iter()
+            .map(|(name, binding)| PluginActionBinding {
+                plugin_id: manifest.id.trim().to_ascii_lowercase(),
+                name: name.clone(),
+                action: binding.action.trim().to_string(),
+                read: binding.read,
+                confirm: binding.confirm.clone(),
+                backend_plugin_id: backend_plugin_id.clone().unwrap_or_default(),
+            })
+            .collect();
+        let assets_dir = resolve_assets_dir(&root, frontend.assets.as_deref());
 
         let mut record = PluginRecord {
             id: manifest.id.trim().to_ascii_lowercase(),
@@ -314,24 +400,26 @@ impl PluginRegistry {
             description: manifest.description.trim().to_string(),
             enabled: true,
             status: PluginStatus::Ready,
-            slots: manifest.slots,
-            nav: manifest.nav,
-            pages: manifest.pages,
-            dashboard: manifest.dashboard.clone(),
+            slots: frontend.slots,
+            nav: frontend.nav,
+            pages: frontend.pages,
+            dashboard: frontend.dashboard.clone(),
             root,
             assets_dir,
             styles: Vec::new(),
             scripts: Vec::new(),
-            capabilities: manifest.capabilities.clone(),
-            api: manifest.api,
+            capabilities: frontend.capabilities,
+            api: frontend.api,
+            backend_plugin_id,
+            actions,
             errors: Vec::new(),
             tsx_templates: HashMap::new(),
             fingerprint: 0,
         };
 
-        let styles = collect_assets(&mut record, &manifest.styles, "样式");
+        let styles = collect_assets(&mut record, &frontend.styles, "样式");
         record.styles = styles;
-        let scripts = collect_assets(&mut record, &manifest.scripts, "脚本");
+        let scripts = collect_assets(&mut record, &frontend.scripts, "脚本");
         record.scripts = scripts;
 
         let mut paths: Vec<String> = Vec::new();
@@ -563,6 +651,30 @@ impl PluginRegistry {
             .and_then(|guard| guard.iter().find(|plugin| plugin.id == id).cloned())
     }
 
+    /// 所有启用插件的只读动作绑定（首屏预取用）。
+    ///
+    /// 只返回 `read=true` 且后端插件 id 非空的绑定；写入动作永远由浏览器 POST 触发。
+    pub fn backend_reads(&self) -> Vec<PluginActionBinding> {
+        self.list()
+            .into_iter()
+            .filter(|plugin| plugin.is_active())
+            .flat_map(|plugin| plugin.actions)
+            .filter(|action| action.read && !action.backend_plugin_id.is_empty())
+            .collect()
+    }
+
+    /// 按 `(前端插件 id, binding)` 查一条动作。停用/未就绪返回 None。
+    pub fn find_action(&self, plugin_id: &str, binding: &str) -> Option<PluginActionBinding> {
+        let plugin = self.find(plugin_id)?;
+        if !plugin.is_active() {
+            return None;
+        }
+        plugin
+            .action(binding)
+            .filter(|action| !action.backend_plugin_id.is_empty())
+            .cloned()
+    }
+
     /// 查找插件的 API 端点（**热**：注册表是换帧级重扫的，重载后新端点立即生效）。
     ///
     /// 方法与路径都精确匹配；插件未启用/未就绪一律 None——API 面与页面/插槽
@@ -603,6 +715,11 @@ impl PluginRegistry {
                     .collect(),
                 errors: record.errors,
                 capabilities: record.capabilities,
+                actions: record
+                    .actions
+                    .iter()
+                    .map(|action| action.name.clone())
+                    .collect(),
                 tsx_compiled: record.tsx_templates.len(),
             })
             .collect()
@@ -1624,16 +1741,80 @@ export function Page() {
         );
     }
 
-    /// 任务卡片插件：把核心推演好的 `data.todo` 渲染成会话区右上角的悬浮卡。
+    #[test]
+    fn approval_plugin_renders_pending_and_keeps_core_decision_route() {
+        let primary = temp_root("approval-primary");
+        let unified = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
+        let registry = registry_at(&primary).with_unified_dir(unified);
+        let plugin = registry.find("approval").expect("approval 插件应当被发现");
+        assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
+        assert!(plugin.action("pending").is_some_and(|action| action.read));
+
+        let core = RenderContext::default().with_data(serde_json::json!({
+            "thread": { "id": "thread-1" },
+            "approvals": [{
+                "callId": "call-1",
+                "tool": "执行命令",
+                "args": "{\"command\":\"cargo test\"}",
+                "waited": "已等待 3s"
+            }]
+        }));
+        let slot = registry.render_slot_with(Slot::ThreadApproval, &core);
+        assert_eq!(slot.contributors, 1, "slot: {slot:?}");
+        assert!(slot.html.contains("call-1"), "{}", slot.html);
+        assert!(slot.html.contains("/approvals/call-1/decision"), "{}", slot.html);
+        assert!(slot.html.contains("name=\"thread_id\""), "{}", slot.html);
+        assert!(slot.html.contains("value=\"thread-1\""), "{}", slot.html);
+        assert!(slot.html.contains("cargo test"), "{}", slot.html);
+        assert!(slot.html.contains("需要批准"), "{}", slot.html);
+
+        // 后端 action 优先，并带上批准/拒绝统计。
+        let backend = RenderContext::default().with_data(serde_json::json!({
+            "thread": { "id": "thread-1" },
+            "approvals": [{
+                "callId": "call-2",
+                "tool": "写入文件",
+                "args": "{\"path\":\"a.rs\"}",
+                "waited": ""
+            }],
+            "backend": {
+                "approval": {
+                    "pending": {
+                        "ok": true,
+                        "data": {
+                            "items": [{
+                                "callId": "call-2",
+                                "tool": "写入文件",
+                                "args": "{\"path\":\"a.rs\"}",
+                                "waited": "已等待 5s"
+                            }],
+                            "approved": 2,
+                            "rejected": 1
+                        }
+                    }
+                }
+            }
+        }));
+        let slot = registry.render_slot_with(Slot::ThreadApproval, &backend);
+        assert!(slot.html.contains("call-2"), "{}", slot.html);
+        assert!(slot.html.contains("已批准 2"), "{}", slot.html);
+        assert!(slot.html.contains("已拒绝 1"), "{}", slot.html);
+
+        let empty = registry.render_slot_with(Slot::ThreadApproval, &RenderContext::default());
+        assert!(empty.html.is_empty(), "{:?}", empty.html);
+    }
+
     #[test]
     fn task_plan_plugin_renders_the_derived_plan() {
-        let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
-        let registry = registry_at(&plugins_dir);
+        let primary = temp_root("task-plan-primary");
+        let unified = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
+        let registry = registry_at(&primary).with_unified_dir(unified);
         let plugin = registry
             .find("task-plan")
             .expect("task-plan 插件应当被发现");
         assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
         assert_eq!(plugin.scripts, vec!["task-plan.js"]);
+        assert!(plugin.action("plan").is_some_and(|action| action.read));
         assert!(
             registry
                 .scripts()
@@ -1674,6 +1855,40 @@ export function Page() {
             "{}",
             slot.html
         );
+
+        // 后端插件优先：plan action 的 data 覆盖核心 todo；notes 仍从核心补。
+        let backend_context = RenderContext::default().with_data(serde_json::json!({
+            "todo": { "notes": "先读再写" },
+            "backend": {
+                "task-plan": {
+                    "plan": {
+                        "ok": true,
+                        "data": {
+                            "done": 3,
+                            "total": 4,
+                            "allDone": false,
+                            "active": "复核提交结果",
+                            "notes": "",
+                            "markdown": "### 任务规划步骤 (3/4)\n- [x] 读列表\n- [x] 建表\n- [x] 写条目\n- [ ] 复核提交结果",
+                            "steps": [
+                                { "id": "t1", "title": "读列表", "status": "completed" },
+                                { "id": "t2", "title": "建表", "status": "completed" },
+                                { "id": "t3", "title": "写条目", "status": "completed" },
+                                { "id": "t4", "title": "复核提交结果", "status": "in_progress" }
+                            ]
+                        }
+                    }
+                }
+            }
+        }));
+        let backend_slot = registry.render_slot_with(Slot::ChatCorner, &backend_context);
+        assert!(backend_slot.html.contains("3/4"), "{}", backend_slot.html);
+        assert!(
+            backend_slot.html.contains("复核提交结果"),
+            "{}",
+            backend_slot.html
+        );
+        assert!(backend_slot.html.contains("先读再写"), "{}", backend_slot.html);
 
         // 没有计划时卡片根本不出现：不画 0/0 的空面板。
         let empty = registry.render_slot_with(Slot::ChatCorner, &RenderContext::default());
@@ -1734,4 +1949,94 @@ export function Page() {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn unified_package_actions_are_discovered_from_second_root() {
+        let primary = temp_root("unified-primary");
+        let unified = temp_root("unified-root");
+        let package = unified.join("unified-demo");
+        fs::create_dir_all(package.join("static")).unwrap();
+        fs::write(
+            package.join("plugin.json"),
+            r#"{
+                "id": "unified-demo",
+                "name": "Unified Demo",
+                "version": "0.1.0",
+                "frontend": {
+                    "slots": [{"slot":"sidebar.bottom","template":"slot.tsx"}],
+                    "assets": "static",
+                    "actions": {
+                        "status": {"action":"status","read":true},
+                        "refresh": {"action":"refresh","confirm":"刷新？"}
+                    }
+                },
+                "backend": {}
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            package.join("slot.tsx"),
+            r#"function Page() { return <span>unified</span>; }"#,
+        )
+        .unwrap();
+        fs::write(package.join("static/demo.css"), ".ud{}").unwrap();
+
+        let registry = registry_at(&primary).with_unified_dir(&unified);
+        let plugin = registry.find("unified-demo").expect("unified plugin loads");
+        assert!(plugin.is_active(), "{:?}", plugin.errors);
+        assert_eq!(
+            plugin.backend_plugin_id.as_deref(),
+            Some("global:unified-demo")
+        );
+        assert_eq!(plugin.actions.len(), 2);
+        let status = plugin.action("status").expect("status binding");
+        assert!(status.read);
+        assert_eq!(status.plugin_id, "unified-demo");
+        let refresh = plugin.action("refresh").expect("refresh binding");
+        assert!(!refresh.read);
+        assert_eq!(refresh.confirm.as_deref(), Some("刷新？"));
+        assert_eq!(registry.backend_reads().len(), 1);
+
+        let _ = fs::remove_dir_all(&primary);
+        let _ = fs::remove_dir_all(&unified);
+    }
+
+    #[test]
+    fn backend_only_unified_package_is_not_a_frontend_plugin() {
+        let primary = temp_root("backend-only-primary");
+        let unified = temp_root("backend-only-root");
+        let package = unified.join("backend-only");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("plugin.json"),
+            r#"{"id":"backend-only","name":"Backend","backend":{}}"#,
+        )
+        .unwrap();
+        fs::write(
+            package.join("index.ts"),
+            "export default function (ada) { ada.metadata = { name: 'backend-only', description: 'x', tools: { count: 0, names: [] }, systemPrompt: { count: 0, names: [] }, hooks: { count: 0, names: [] } }; }",
+        )
+        .unwrap();
+
+        let registry = registry_at(&primary).with_unified_dir(&unified);
+        assert!(registry.find("backend-only").is_none());
+        let _ = fs::remove_dir_all(&primary);
+        let _ = fs::remove_dir_all(&unified);
+    }
+
+    /// 仓库里的统一示例必须能被真实注册表加载（含 slot.tsx 编译）。
+    #[test]
+    fn repo_unified_example_is_loadable() {
+        let primary = temp_root("repo-example-primary");
+        let repo_plugins = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
+        let registry = registry_at(&primary).with_unified_dir(repo_plugins);
+        let plugin = registry
+            .find("unified-demo")
+            .expect("仓库里的 unified-demo 应被加载");
+        assert!(plugin.is_active(), "{:?}", plugin.errors);
+        assert_eq!(plugin.actions.len(), 2);
+        assert!(plugin
+            .action("status")
+            .is_some_and(|action| action.read && !action.backend_plugin_id.is_empty()));
+        let _ = fs::remove_dir_all(&primary);
+    }
 }

@@ -1,0 +1,18 @@
+{
+  "id": "unified-demo",
+  "name": "统一插件示例",
+  "version": "0.1.0",
+  "description": "一个包同时包含前端插槽与后端动作：前端显示状态，按钮触发后端写入。",
+  "frontend": {
+    "slots": [
+      { "slot": "sidebar.bottom", "template": "slot.tsx", "order": 20 }
+    ],
+    "assets": "static",
+    "styles": ["unified-demo.css"],
+    "actions": {
+      "status": { "action": "status", "read": true },
+      "refresh": { "action": "refresh", "confirm": "刷新后端示例状态？" }
+    }
+  },
+  "backend": {}
+}

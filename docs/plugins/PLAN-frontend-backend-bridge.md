@@ -1,9 +1,11 @@
 # 前端插件 ↔ 后端插件交互方案
 
-> **状态：设计提案（未实现）。** 本文描述目标形态、契约与落地批次，不代表当前代码已经支持。
-> 现状见 [README.md](README.md) 与 [extension-factory.md](extension-factory.md)。
-> 读完本文再看 [quality/unfinished-features.md](../quality/unfinished-features.md)，
-> 那里会登记实施后仍未收口的边界。
+> **状态：v1 已部分落地（2026-10-26）。** 已实现：`registerAction`、`plugin.invoke`、
+> 统一插件包（一个 `plugin.json` 同时声明 `frontend` / `backend`）、SSR 只读预取与
+> `GET/POST /ext/{id}/backend/{binding}` 桥接。**当前实际契约以
+> [unified-package.md](unified-package.md) 为准**；本文保留完整设计与批次记录。
+> 尚未实现：多后端分组、`confirm` 的核心强制、`plugin.list` 的动作计数、事件推送。
+> 旧版分离插件仍没有直连通道。
 
 ---
 

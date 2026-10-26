@@ -3,6 +3,7 @@
 //! 在原有能力（导航 / 独立页面 / 仪表盘卡片 / 静态资源）之上，
 //! 插件模板只接受 `.tsx`；页面、插槽、仪表盘卡片都由 TSX 在服务端渲染。
 
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -38,6 +39,11 @@ pub enum Slot {
     /// **非空时替换核心提问托盘**（审批/排队不受影响）；插件停用、加载失败或
     /// 没有插件时自动退回核心实现（见 [docs/PLAN-question-panel.md](../docs/PLAN-question-panel.md) D5）。
     ThreadTray,
+    /// 托盘区里**审批段**的挂载点。
+    ///
+    /// 插件输出非空时替换核心审批托盘；批准/拒绝仍提交核心
+    /// `/approvals/{call}/decision`，插件只负责呈现，**不能**改变审批策略。
+    ThreadApproval,
     /// 对话流末尾（消息之后）。
     TranscriptAfter,
     /// 扩展页列表。
@@ -59,6 +65,7 @@ impl Slot {
             Slot::ComposerFooter => "composer.footer",
             Slot::ComposerAbove => "composer.above",
             Slot::ThreadTray => "thread.tray",
+            Slot::ThreadApproval => "thread.approval",
             Slot::TranscriptAfter => "transcript.after",
             Slot::ExtensionsList => "extensions.list",
             Slot::DashboardWidgets => "dashboard.widgets",
@@ -77,6 +84,7 @@ impl Slot {
             Slot::ComposerFooter,
             Slot::ComposerAbove,
             Slot::ThreadTray,
+            Slot::ThreadApproval,
             Slot::TranscriptAfter,
             Slot::ExtensionsList,
             Slot::DashboardWidgets,
@@ -211,6 +219,75 @@ impl ApiEntry {
     }
 }
 
+/// 统一包 `plugin.json` 的 `backend` 段。
+///
+/// 目前只声明“这个包有后端入口”；动作本身由后端代码的 `ada.registerAction`
+/// 声明（`mode` 以后端为准，前端不能改）。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendSection {
+    /// 后端插件 id；缺省为 `global:<包目录名>`。一般不需要写。
+    #[serde(default)]
+    pub plugin_id: Option<String>,
+}
+
+/// 前端声明的一条后端动作绑定。
+///
+/// `read=true` 只表示**允许首屏预取**；真正的只读/写入由后端动作自己的 `mode`
+/// 决定，后端会在 `intent=read` 时拒绝写动作。
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendActionBinding {
+    pub action: String,
+    #[serde(default)]
+    pub read: bool,
+    /// 写入动作的交互提示（不是权限边界）。
+    #[serde(default)]
+    pub confirm: Option<String>,
+}
+
+/// 统一包 `plugin.json` 的 `frontend` 段：字段与旧版扁平清单一致，另加 `actions`。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendSection {
+    #[serde(default)]
+    pub nav: Vec<NavEntry>,
+    #[serde(default)]
+    pub pages: Vec<PageEntry>,
+    #[serde(default)]
+    pub dashboard: Option<String>,
+    #[serde(default)]
+    pub assets: Option<String>,
+    #[serde(default)]
+    pub slots: Vec<SlotEntry>,
+    #[serde(default)]
+    pub styles: Vec<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub scripts: Vec<String>,
+    #[serde(default)]
+    pub api: Vec<ApiEntry>,
+    /// 前端可调用的后端动作：键是 URL 里的 binding 名。
+    #[serde(default)]
+    pub actions: BTreeMap<String, FrontendActionBinding>,
+}
+
+/// 归一化后的前端声明：统一包取 `frontend` 段，旧包取顶层字段。
+#[derive(Debug, Clone, Default)]
+pub struct FrontendSpec {
+    pub nav: Vec<NavEntry>,
+    pub pages: Vec<PageEntry>,
+    pub dashboard: Option<String>,
+    pub assets: Option<String>,
+    pub slots: Vec<SlotEntry>,
+    pub styles: Vec<String>,
+    pub capabilities: Vec<String>,
+    pub scripts: Vec<String>,
+    pub api: Vec<ApiEntry>,
+    pub actions: BTreeMap<String, FrontendActionBinding>,
+}
+
 /// `plugin.json`。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -246,6 +323,12 @@ pub struct Manifest {
     /// 插件自带的 HTTP API 端点（`/ext/{id}/api/{path}`，TSX 处理器返回 JSON）。
     #[serde(default)]
     pub api: Vec<ApiEntry>,
+    /// 统一包的前端声明。与顶层扁平字段**二选一**；同时写会被 `validate` 拒绝。
+    #[serde(default)]
+    pub frontend: Option<FrontendSection>,
+    /// 统一包的后端声明。有这个段才允许前端调用后端动作。
+    #[serde(default)]
+    pub backend: Option<BackendSection>,
 }
 
 impl Manifest {
@@ -263,6 +346,69 @@ impl Manifest {
         Ok(Some(manifest))
     }
 
+    /// 归一化前端声明：统一包取 `frontend` 段，旧包取顶层字段。
+    pub fn frontend_spec(&self) -> FrontendSpec {
+        match &self.frontend {
+            Some(frontend) => FrontendSpec {
+                nav: frontend.nav.clone(),
+                pages: frontend.pages.clone(),
+                dashboard: frontend.dashboard.clone(),
+                assets: frontend.assets.clone(),
+                slots: frontend.slots.clone(),
+                styles: frontend.styles.clone(),
+                capabilities: frontend.capabilities.clone(),
+                scripts: frontend.scripts.clone(),
+                api: frontend.api.clone(),
+                actions: frontend.actions.clone(),
+            },
+            None => FrontendSpec {
+                nav: self.nav.clone(),
+                pages: self.pages.clone(),
+                dashboard: self.dashboard.clone(),
+                assets: self.assets.clone(),
+                slots: self.slots.clone(),
+                styles: self.styles.clone(),
+                capabilities: self.capabilities.clone(),
+                scripts: self.scripts.clone(),
+                api: self.api.clone(),
+                actions: BTreeMap::new(),
+            },
+        }
+    }
+
+    /// 这个包是否有前端声明（统一包的 `frontend` 段，或旧版顶层字段）。
+    pub fn has_frontend(&self) -> bool {
+        self.frontend.is_some() || self.has_flat_frontend_fields()
+    }
+
+    /// 后端插件 id：显式 `backend.pluginId`，否则 `global:<包目录名>`。
+    pub fn backend_plugin_id(&self, root: &Path) -> Option<String> {
+        let backend = self.backend.as_ref()?;
+        if let Some(id) = backend
+            .plugin_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Some(id.to_string());
+        }
+        root.file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| format!("global:{name}"))
+    }
+
+    fn has_flat_frontend_fields(&self) -> bool {
+        !self.nav.is_empty()
+            || !self.pages.is_empty()
+            || self.dashboard.is_some()
+            || self.assets.is_some()
+            || !self.slots.is_empty()
+            || !self.styles.is_empty()
+            || !self.capabilities.is_empty()
+            || !self.scripts.is_empty()
+            || !self.api.is_empty()
+    }
+
     pub fn validate(&self) -> Result<()> {
         let id = self.id.trim().to_ascii_lowercase();
         if id.is_empty()
@@ -275,46 +421,112 @@ impl Manifest {
         if self.name.trim().is_empty() {
             bail!("插件 name 不能为空");
         }
-        for entry in &self.slots {
+
+        // 统一包把前端字段放在 `frontend`，旧包放在顶层；两处同时写会导致
+        // “到底哪份生效”说不清，加载期直接拒绝。
+        if self.frontend.is_some() && self.has_flat_frontend_fields() {
+            bail!("统一插件请把前端声明放进 `frontend`，不要同时使用顶层 nav/pages/slots 等字段");
+        }
+        if self.backend.is_some() && self.frontend.is_none() && self.has_flat_frontend_fields() {
+            bail!("声明了 `backend` 的统一插件，其前端声明也必须放进 `frontend`");
+        }
+
+        let frontend = self.frontend_spec();
+        for entry in &frontend.slots {
             // 插槽名写错要在加载阶段就报错，而不是等到页面上"插件没出现"。
             entry.parsed_slot()?;
             if !entry.template.trim().ends_with(".tsx") {
                 bail!("插槽 {} 的 template 必须是 .tsx", entry.slot);
             }
         }
-        for page in &self.pages {
+        for page in &frontend.pages {
             if !page.template.trim().ends_with(".tsx") {
                 bail!("页面 `{}` 的 template 必须是 .tsx", page.slug);
             }
         }
-        if let Some(dashboard) = &self.dashboard {
+        if let Some(dashboard) = &frontend.dashboard {
             if !dashboard.trim().ends_with(".tsx") {
                 bail!("dashboard 必须是 .tsx 文件");
             }
         }
-        for style in &self.styles {
+        for style in &frontend.styles {
             validate_asset_path(style, ".css", "样式")?;
         }
-        for capability in &self.capabilities {
+        for capability in &frontend.capabilities {
             if !matches!(capability.as_str(), "providers.read" | "processes.read") {
                 bail!("不支持的插件能力: {capability}");
             }
         }
-        for script in &self.scripts {
+        for script in &frontend.scripts {
             validate_asset_path(script, ".js", "脚本")?;
         }
-        for entry in &self.api {
+        for entry in &frontend.api {
             entry.validate()?;
         }
         // 同一 (method, path) 声明两次是清单笔误，加载期就报出来
-        let mut seen = std::collections::HashSet::new();
-        for entry in &self.api {
+        let mut seen = HashSet::new();
+        for entry in &frontend.api {
             if !seen.insert((entry.parsed_method().ok(), entry.path.trim().to_string())) {
                 bail!("插件 API `{} {}` 重复声明", entry.method, entry.path);
             }
         }
+
+        for (binding, action) in &frontend.actions {
+            validate_binding_name(binding)?;
+            validate_action_name(&action.action)?;
+        }
+        if !frontend.actions.is_empty() && self.backend.is_none() {
+            bail!("`frontend.actions` 需要同时声明 `backend` 段（否则动作没有后端入口）");
+        }
+        if let Some(backend) = &self.backend {
+            if let Some(plugin_id) = backend.plugin_id.as_deref() {
+                let plugin_id = plugin_id.trim();
+                if plugin_id.is_empty()
+                    || !plugin_id.contains(':')
+                    || plugin_id.chars().any(char::is_whitespace)
+                {
+                    bail!("`backend.pluginId` 必须是非空的 `scope:name` 形式");
+                }
+            }
+        }
         Ok(())
     }
+}
+
+/// binding 名走 URL 段：小写字母/数字/`-`/`_`，首字符必须是字母或数字。
+fn validate_binding_name(raw: &str) -> Result<()> {
+    let name = raw.trim();
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_alphanumeric())
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_'))
+    {
+        bail!("动作 binding 名不合法: {name}（小写字母/数字/-/_，首字符为字母或数字）");
+    }
+    Ok(())
+}
+
+/// 后端动作名允许下划线（与 binding 名同一字符集，但更宽松的长度上限）。
+fn validate_action_name(raw: &str) -> Result<()> {
+    let name = raw.trim();
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_alphanumeric())
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_'))
+    {
+        bail!("后端动作名不合法: {name}");
+    }
+    Ok(())
 }
 
 /// 插件资源路径校验（CSS / JS 共用一套口径）。
@@ -482,4 +694,140 @@ fn api_entries_are_validated() {
     }))
     .expect("manifest");
     assert!(manifest.validate().is_err());
+}
+
+#[test]
+fn unified_manifest_keeps_frontend_and_backend_together() {
+    let manifest: Manifest = serde_json::from_value(serde_json::json!({
+        "id": "unified-demo",
+        "name": "Unified Demo",
+        "version": "0.1.0",
+        "frontend": {
+            "slots": [{ "slot": "sidebar.bottom", "template": "slot.tsx" }],
+            "actions": {
+                "status": { "action": "status", "read": true },
+                "refresh": { "action": "refresh", "confirm": "刷新？" }
+            }
+        },
+        "backend": {}
+    }))
+    .expect("manifest");
+    assert!(manifest.validate().is_ok());
+    assert!(manifest.has_frontend());
+    assert_eq!(
+        manifest.backend_plugin_id(Path::new("/tmp/unified-demo")),
+        Some("global:unified-demo".to_string())
+    );
+    let frontend = manifest.frontend_spec();
+    assert_eq!(frontend.slots.len(), 1);
+    assert_eq!(frontend.actions.len(), 2);
+    assert!(frontend.actions["status"].read);
+    assert!(!frontend.actions["refresh"].read);
+}
+
+#[test]
+fn backend_only_unified_manifest_has_no_frontend() {
+    let manifest: Manifest = serde_json::from_value(serde_json::json!({
+        "id": "backend-only",
+        "name": "Backend Only",
+        "backend": {}
+    }))
+    .expect("manifest");
+    assert!(manifest.validate().is_ok());
+    assert!(!manifest.has_frontend());
+}
+
+#[test]
+fn unified_manifest_rejects_mixed_flat_and_nested_frontend() {
+    let manifest: Manifest = serde_json::from_value(serde_json::json!({
+        "id": "mixed",
+        "name": "Mixed",
+        "pages": [{ "slug": "p", "title": "P", "template": "page.tsx" }],
+        "frontend": {},
+        "backend": {}
+    }))
+    .expect("manifest");
+    assert!(manifest.validate().is_err());
+}
+
+#[test]
+fn frontend_actions_require_a_backend_section() {
+    let manifest: Manifest = serde_json::from_value(serde_json::json!({
+        "id": "no-backend",
+        "name": "No Backend",
+        "frontend": {
+            "actions": { "status": { "action": "status", "read": true } }
+        }
+    }))
+    .expect("manifest");
+    let error = manifest.validate().unwrap_err().to_string();
+    assert!(error.contains("backend"), "{error}");
+}
+
+#[test]
+fn action_binding_names_are_url_safe() {
+    for bad in ["", "Status", "a b", "-status", "../status"] {
+        let manifest: Manifest = serde_json::from_value(serde_json::json!({
+            "id": "demo",
+            "name": "Demo",
+            "frontend": {
+                "actions": { bad: { "action": "status", "read": true } }
+            },
+            "backend": {}
+        }))
+        .expect("manifest");
+        assert!(manifest.validate().is_err(), "binding `{bad}` 应被拒绝");
+    }
+}
+
+/// 仓库自带插件必须使用统一清单形状；旧扁平形状只保留兼容。
+#[test]
+fn bundled_plugin_manifests_use_the_unified_shape() {
+    let roots = [
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins"),
+    ];
+    let mut checked = 0;
+    for root in roots {
+        let entries = std::fs::read_dir(&root).expect("插件目录必须存在");
+        for entry in entries.flatten() {
+            let manifest_path = entry.path().join("plugin.json");
+            if !manifest_path.is_file() {
+                continue;
+            }
+            let raw = std::fs::read_to_string(&manifest_path).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            let has_frontend = value.get("frontend").is_some_and(|frontend| frontend.is_object());
+            let has_backend = value.get("backend").is_some_and(|backend| backend.is_object());
+            if !has_frontend {
+                assert!(
+                    has_backend,
+                    "{} 既没有 frontend 也没有 backend",
+                    manifest_path.display()
+                );
+                continue;
+            }
+            for legacy in [
+                "nav",
+                "pages",
+                "dashboard",
+                "assets",
+                "slots",
+                "styles",
+                "capabilities",
+                "scripts",
+                "api",
+            ] {
+                assert!(
+                    value.get(legacy).is_none(),
+                    "{} 仍在使用顶层 `{legacy}`；请收进 frontend",
+                    manifest_path.display()
+                );
+            }
+            let manifest = Manifest::read(&entry.path()).unwrap().expect("manifest");
+            manifest.validate().unwrap();
+            checked += 1;
+        }
+    }
+    assert!(checked >= 7, "至少要检查到 7 个自带前端插件，实际 {checked}");
 }

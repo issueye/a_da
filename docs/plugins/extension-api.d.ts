@@ -34,6 +34,28 @@ export interface SkillDefinition {
 	body?: string;
 }
 
+/** UI action intent; `read` forbids write-mode actions. */
+export type ActionMode = "read" | "write";
+
+export interface ActionContext {
+	readonly workspace: string;
+	readonly caller: "web";
+	/** Host clock, epoch milliseconds. */
+	readonly now: number;
+}
+
+export interface ActionDefinition {
+	name: string;
+	label?: string;
+	description: string;
+	mode?: ActionMode;
+	parameters?: Record<string, unknown>;
+	execute: (
+		input: Record<string, unknown>,
+		ctx: ActionContext,
+	) => unknown | Promise<unknown>;
+}
+
 /** Object-form hook declaration (`export default { hooks: [...] }`). */
 export interface HookDefinition {
 	point: string;
@@ -55,6 +77,8 @@ export interface ExtensionMetadata {
 	systemPrompt: ExtensionMetadataGroup;
 	skills: ExtensionMetadataGroup;
 	hooks: ExtensionMetadataGroup;
+	/** Optional; required when the factory registers actions. */
+	actions?: ExtensionMetadataGroup;
 }
 
 export interface ExtensionAPI {
@@ -63,6 +87,8 @@ export interface ExtensionAPI {
 	metadata?: ExtensionMetadata;
 	trace(message: string): void;
 	registerTool(tool: ToolDefinition): void;
+	/** UI-only action; never enters the model tool catalog or approval gate. */
+	registerAction(action: ActionDefinition): void;
 	registerSystemPrompt(prompt: SystemPromptDefinition): void;
 	/** Compatibility alias for registerSystemPrompt. */
 	registerPrompt(prompt: SystemPromptDefinition): void;

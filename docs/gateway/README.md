@@ -225,6 +225,11 @@ ada-gateway --port 52353 --workspace E:/proj
 exe 旁 `frontend-plugins` → 源码目录；停用状态写在 `~/.a-da/web-ui-state.json`，
 插件目录可以随包只读分发。
 
+统一插件包根：`A_DA_UNIFIED_PLUGINS_DIR` → `~/.a-da/plugins`。一个包可同时声明
+`frontend` / `backend`，前端走 SSR 插槽、后端走 `registerAction` + `plugin.invoke`；
+开发时把该变量指向仓库 `plugins/`，网关拉起的 agent 会继承同一路径。
+契约见 [../plugins/unified-package.md](../plugins/unified-package.md)。
+
 **反向代理**：`--web-public-url https://example.com`（`A_DA_WEB_PUBLIC_URL`）显式声明对外来源。
 guard 会接受代理改写后的 `Host: example.com`（端口可省略）与浏览器 `Origin: https://example.com`，
 https 时登录 cookie 自动加 `Secure`。不配置时仍只认绑定主机与监听端口；**不信任

@@ -42,9 +42,35 @@
 悄悄发到目标站比请求失败严重得多。域名白名单（`A_DA_PLUGIN_NET_ALLOW`）在**建连之前**生效，
 代理绕不过去。这些说明也会由 `create_plugin` 写进生成的技能正文与 `README.md`。
 
+### 1.1 统一插件包（v1）
+
+一个目录可以同时包含前端与后端：`plugin.json` 顶层写 `frontend` / `backend` 两段，
+包根 `index.ts` 是后端入口，TSX/静态资源路径仍相对包根。前端通过
+`frontend.actions` 绑定后端的 `ada.registerAction` 动作，SSR 走
+`/ext/{id}/backend/{binding}` 中转；浏览器不接触网关 token。
+
+```json
+{
+  "id": "unified-demo",
+  "name": "统一插件示例",
+  "frontend": {
+    "slots": [{ "slot": "sidebar.bottom", "template": "slot.tsx" }],
+    "actions": { "status": { "action": "status", "read": true } }
+  },
+  "backend": {}
+}
+```
+
+默认统一包根是 `~/.a-da/plugins`，开发时用 `A_DA_UNIFIED_PLUGINS_DIR` 指向仓库的
+`plugins/`。旧版扁平前端清单与独立后端插件仍兼容；它们之间没有直连通道。
+仓库自带的 5 个纯前端插件已改用 `frontend` 段并留在原目录；`task-plan` 与
+`approval` 已迁到统一根，分别带 `afterTodoUpdate` / `beforeApproval+afterApproval`
+后端与只读 action。审批策略与闸门仍在核心，插件不能改变。
+完整契约、限制与示例见 [unified-package.md](unified-package.md)。
+
 ---
 
-## 2. 三类脚本贡献 + 一类磁盘贡献（技能）
+## 2. 四类脚本贡献 + 一类磁盘贡献（技能）
 
 工厂函数里注册的贡献**在装配期结算**；技能则来自磁盘目录：
 
@@ -54,10 +80,12 @@
 | 系统提示词片段 | `ada.registerSystemPrompt({ id, content })` | 系统提示词，带 `plugin:<id>` 归因 |
 | 技能 | **磁盘目录** `skills/<name>/SKILL.md`（见 §2.1） | 技能三来源之一（目录 / 插件 / 内置） |
 | 钩子 | `ada.on(point, handler, { actions, order })` | 扩展点运行时（见 §3） |
+| 界面动作 | `ada.registerAction({ name, mode, execute })` | 统一插件的 `frontend.actions` → `plugin.invoke`；**不进模型工具目录** |
 
 ⚠️ **必须写 `ada.metadata`**（工厂里**第一句**）：宿主在装配后读它，且
 `tools` / `systemPrompt` / `hooks` 的 `count` 与 `names` 会**逐项、按顺序**
 与实际注册比对——多注册一条忘了同步，装载期直接拒。
+`actions` 组可选；一旦注册了动作，同样按 `count` / `names` 对账。
 `skills` 是**声明性**字段（宿主以目录扫描为准），不参与这条校验。
 
 工具的写入性**不由插件自述**：内置工具名走描述符（`registry.rs`），
@@ -177,13 +205,14 @@ description: 发布流程：先跑测试再打标签。Use when the user asks to
 | `plugin.builtinCatalog` | 内置插件目录（由工具注册表派生，不是写死清单） |
 | `plugin.list` / `plugin.load` | 列表与详情；贡献字段来自**装配期活体视图**（真的注册上的才算） |
 | `plugin.validate` | 只读自检：语法、`metadata` 契约、能力声明 |
+| `plugin.invoke` | 调用统一插件的界面动作（`intent=read/write`；不是模型工具） |
 | `plugin.setEnabled` | 启停；回执里带"本次实际改变了哪些贡献" |
 | `plugin.reload` | 重新装配 |
 | `plugin.delete` / `plugin.createTemplate` | 删除与生成骨架 |
 | `plugin.capabilities.set` / `plugin.config.set` / `plugin.secret.set` | 能力开关 / 配置 / 密钥 |
 
-**内置插件**（10 个，编译进产品）：`git-tools`、`code-outline`、`project-inspector`、
-`test-runner`、`batch-ops`、`plugin-forge`、`todo-guard`、`approval-guard`、`ask-user`、`ponytail`。
+**内置插件**（9 个，编译进产品）：`git-tools`、`code-outline`、`project-inspector`、
+`test-runner`、`batch-ops`、`plugin-forge`、`approval-guard`、`ask-user`、`ponytail`。
 其中 `approval-guard` 是**审批策略**的唯一归属（执行归核心，`AGENTS.md` §14）。
 
 ---
@@ -223,6 +252,8 @@ description: 发布流程：先跑测试再打标签。Use when the user asks to
 |---|---|
 | [extension-factory.md](extension-factory.md) | 工厂契约与 API 精确形状 |
 | [extension-api.d.ts](extension-api.d.ts) | 插件作者的类型声明 |
-| [PLAN-frontend-backend-bridge.md](PLAN-frontend-backend-bridge.md) | 前端插件调用后端插件：动作契约、`plugin.invoke`、SSR 桥接（**设计提案，未实现**） |
+| [frontend-backend-integration.md](frontend-backend-integration.md) | 前端插件与后端插件的**现有**对接方式（投影读取、核心路由写回、间接协同） |
+| [unified-package.md](unified-package.md) | 统一插件包：一个 `plugin.json` 同时声明 frontend/backend，含动作桥接 |
+| [PLAN-frontend-backend-bridge.md](PLAN-frontend-backend-bridge.md) | 前端插件调用后端插件：动作契约、`plugin.invoke`、SSR 桥接（设计提案与已落地 v1 的对照） |
 | [../quality/unfinished-features.md](../quality/unfinished-features.md) | 插件相关的缺口与尾巴 |
 | [../architecture/conventions.md](../architecture/conventions.md) | §12（钩子成对、工具集只能收窄）、§14（审批策略与执行分离）、§15（别断言钩子被调用，断言副作用） |

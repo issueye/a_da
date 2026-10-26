@@ -3,8 +3,20 @@
   "name": "进程管理",
   "version": "0.1.0",
   "description": "顶栏进程管理浮窗：网关与 agent 实例的只读视图（需要 processes.read 能力）。",
-  "capabilities": ["processes.read"],
-  "assets": "static",
-  "styles": ["process.css"],
-  "slots": [{ "slot": "topbar.right", "template": "slot.tsx", "order": 5 }]
+  "frontend": {
+    "capabilities": [
+      "processes.read"
+    ],
+    "assets": "static",
+    "styles": [
+      "process.css"
+    ],
+    "slots": [
+      {
+        "slot": "topbar.right",
+        "template": "slot.tsx",
+        "order": 5
+      }
+    ]
+  }
 }

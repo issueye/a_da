@@ -220,6 +220,7 @@ pub async fn plugin_page(
             data.insert("providerAdmin".to_string(), provider_admin);
         }
     }
+    super::attach_backend_actions(&state, &mut context).await;
     let (page_title, html) = crate::plugins::read_page_off_thread(
         std::sync::Arc::clone(&state.frontend),
         plugin_id.clone(),

@@ -139,9 +139,9 @@ function Page(props: any) {
   live 轮询每 2 秒刷新）、概览卡片。顺带演示相对 import（`components/weather.tsx` 三处共用）、
   `props.data.tokens` 数据契约（含 `cachedTokens` 缓存命中与 `M`/`K` 缩写），
   以及 `hx-get` + `hx-select` 做页面自刷新；
-- `frontend-plugins/task-plan/`：**任务规划卡片**。演示 `props.data.todo` 数据契约、
-  `chat.corner`（会话区右上角）与 `composer.above`（输入框上方）两处挂载点可切换，
-  以及 `scripts` 注入的浏览器增强（展开偏好 / 复制按钮不误触开合）；
+- `plugins/task-plan/`：**统一插件示例**。后端 `afterTodoUpdate` 维护计划状态，
+  前端 `plan` action 读取并渲染任务卡；演示 `chat.corner`（会话区右上角）与
+  `composer.above`（输入框上方）两处挂载点可切换，以及 `scripts` 注入的浏览器增强；
 - `plugin.json` 里所有 `template` / `dashboard` 都必须是 `.tsx`；
 
 ### 自定义 CSS / JS

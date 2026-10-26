@@ -5,7 +5,8 @@ use anyhow::Result;
 use ada_ts_engine::{compiler::transpile_ts_module_cached, PureTsRuntime};
 
 use super::types::{
-    PluginHookDeclaration, PluginPromptDeclaration, PluginSkillDeclaration, PluginToolDeclaration,
+    PluginActionDeclaration, PluginHookDeclaration, PluginPromptDeclaration,
+    PluginSkillDeclaration, PluginToolDeclaration,
 };
 use agent_toolkit::ToolResult;
 
@@ -26,6 +27,8 @@ pub struct PluginInspection {
     pub ignored_skills: Vec<String>,
     /// P3a·SP-50：插件声明的钩子注册（同上）
     pub hooks: Vec<PluginHookDeclaration>,
+    /// 面向界面的确定性动作（`ada.registerAction`）。空数组 = 没声明。
+    pub actions: Vec<PluginActionDeclaration>,
 }
 
 pub struct PluginSandbox;
@@ -116,12 +119,15 @@ impl PluginSandbox {
                     let promptsRaw = [];
                     let ignoredSkills = [];
                     let hooksRaw = [];
+                    let actionsRaw = [];
                     if (typeof desc === 'function') {{
                         const api = {{
                             trace: (msg) => console.log(msg),
                             workspace: ws,
                             metadata: metadata || undefined,
                             registerTool: (tool) => {{ toolsRaw.push(tool); }},
+                            // 面向界面的确定性动作：与工具分开收集，避免把界面动作装进模型工具目录。
+                            registerAction: (action) => {{ actionsRaw.push(action); }},
                             registerSystemPrompt: (prompt) => {{ promptsRaw.push(prompt); }},
                             registerPrompt: (prompt) => {{ promptsRaw.push(prompt); }},
                             // 🔴 技能不再"由脚本注册"：Skill 是**目录 + SKILL.md**
@@ -231,7 +237,28 @@ impl PluginSandbox {
                             hooks.push(declaration);
                         }}
                     }}
-                    return JSON.stringify({{ ok: true, metadata: metadata || null, tools: tools, prompts: prompts, skills: skills, ignoredSkills: ignoredSkills, hooks: hooks }});
+                    const actions = [];
+                    const actionNames = new Set();
+                    for (let i = 0; i < actionsRaw.length; i++) {{
+                        const inst = actionsRaw[i];
+                        if (!inst || typeof inst !== 'object') continue;
+                        const name = typeof inst.name === 'string' ? inst.name.trim() : '';
+                        if (!name) {{
+                            return JSON.stringify({{ ok: false, error: "registerAction requires a non-empty name" }});
+                        }}
+                        if (actionNames.has(name)) {{
+                            return JSON.stringify({{ ok: false, error: "重复的动作名: " + name }});
+                        }}
+                        actionNames.add(name);
+                        actions.push({{
+                            name,
+                            label: typeof inst.label === 'string' ? inst.label : undefined,
+                            description: typeof inst.description === 'string' ? inst.description : '',
+                            mode: inst.mode === 'read' ? 'read' : 'write',
+                            parameters: inst.parameters || {{ type: 'object', properties: {{}} }},
+                        }});
+                    }}
+                    return JSON.stringify({{ ok: true, metadata: metadata || null, tools: tools, prompts: prompts, skills: skills, ignoredSkills: ignoredSkills, hooks: hooks, actions: actions }});
                 }} catch (err) {{
                     // 🔴 带上 `stack`（P4·SP-73）：只拿 `err.message` 的话，报错不带文件与行号。
                     const detail = err && err.stack ? String(err.stack) : String(err);
@@ -291,6 +318,11 @@ impl PluginSandbox {
                 resp.get("hooks").cloned().unwrap_or(serde_json::json!([])),
             )
             .unwrap_or_default();
+            // 面向界面的动作声明（空数组 = 没声明）
+            let actions: Vec<PluginActionDeclaration> = serde_json::from_value(
+                resp.get("actions").cloned().unwrap_or(serde_json::json!([])),
+            )
+            .unwrap_or_default();
             let metadata = resp.get("metadata").cloned().filter(|value| !value.is_null());
             if plugin_path
                 .file_name()
@@ -300,7 +332,7 @@ impl PluginSandbox {
                 let metadata = metadata
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("插件包入口缺少 metadata 对象"))?;
-                Self::validate_package_metadata(metadata, &tools, &prompts, &skills, &hooks)?;
+                Self::validate_package_metadata(metadata, &tools, &prompts, &skills, &hooks, &actions)?;
             }
             Ok(PluginInspection {
                 metadata,
@@ -309,6 +341,7 @@ impl PluginSandbox {
                 skills,
                 ignored_skills,
                 hooks,
+                actions,
             })
         } else {
             let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("检查插件失败");
@@ -328,6 +361,7 @@ impl PluginSandbox {
         prompts: &[PluginPromptDeclaration],
         _skills: &[PluginSkillDeclaration],
         hooks: &[PluginHookDeclaration],
+        actions: &[PluginActionDeclaration],
     ) -> Result<()> {
         let object = metadata
             .as_object()
@@ -355,6 +389,21 @@ impl PluginSandbox {
             }
         }
         Self::validate_metadata_group(metadata, "hooks", hooks.len(), hooks.iter().map(|v| v.point.as_str()))?;
+        // 动作组是**可选**的：没有动作的旧插件不必补字段；一旦注册了动作就必须对账，
+        // 与 tools / systemPrompt / hooks 同一条失败安全口径。
+        if !actions.is_empty() {
+            Self::validate_metadata_group(
+                metadata,
+                "actions",
+                actions.len(),
+                actions.iter().map(|v| v.name.as_str()),
+            )?;
+        } else if let Some(group) = metadata.get("actions") {
+            if !group.is_object() {
+                anyhow::bail!("插件 metadata `actions` 必须是对象（可省略）");
+            }
+            Self::validate_metadata_group(metadata, "actions", 0, std::iter::empty())?;
+        }
         Ok(())
     }
 
@@ -495,6 +544,7 @@ impl PluginSandbox {
                             trace: (msg) => console.log(msg),
                             workspace: ws,
                             registerTool: () => {{}},
+                            registerAction: () => {{}},
                             registerSkill: () => {{}},
                             registerSystemPrompt: () => {{}},
                             registerPrompt: () => {{}},
@@ -612,6 +662,160 @@ impl PluginSandbox {
             .unwrap_or_else(|_| serde_json::json!({ "error": resp_str })))
     }
 
+    /// 执行一个**面向界面**的插件动作（`ada.registerAction`）。
+    ///
+    /// 与工具/钩子同构（同一套沙箱与预算），但语义不同：
+    /// - 不经过模型、不产生工具卡、不需要审批；
+    /// - `intent=read` 时**在沙箱内**拒绝 `mode=write` 的动作——前端把写动作标成只读也绕不过；
+    /// - 返回值统一成 `{ok,data}` / `{ok:false,error,kind}`，由 RPC 层映射错误码。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn call_action_budgeted(
+        plugin_path: &Path,
+        action_name: &str,
+        input: serde_json::Value,
+        context: serde_json::Value,
+        intent: &str,
+        workspace: &Path,
+        timeout_s: u64,
+        needs: ada_ts_engine::Needs,
+        limits: ada_ts_engine::Limits,
+    ) -> Result<serde_json::Value> {
+        let js_code = Self::load_and_transpile(plugin_path).await?;
+        let runtime = PureTsRuntime::with_environment_and_console(
+            Some(workspace.to_path_buf()),
+            limits,
+            needs,
+            ada_ts_engine::ConsoleMode::Capture,
+        );
+
+        let plugin_file_json = serde_json::to_string(&plugin_path.to_string_lossy())?;
+        let ws_json = serde_json::to_string(&workspace.to_string_lossy())?;
+        let action_json = serde_json::to_string(action_name)?;
+        let intent_json = serde_json::to_string(intent)?;
+        let require_factory = plugin_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| matches!(name, "index.ts" | "index.js"));
+
+        let init_script = format!(
+            "(function() {{ const module = {{ exports: {{}} }}; const exports = module.exports; \
+             const __filename = {plugin_file}; const __dirname = path.dirname(__filename);{js_code}\n\
+             globalThis.__ada_current_plugin = module.exports.default || module.exports;}})();",
+            plugin_file = plugin_file_json,
+            js_code = js_code.trim_start_matches(['\n', '\r'])
+        );
+        if let Err(e) = runtime.eval_ts(init_script, plugin_path.to_str()).await {
+            runtime.terminate();
+            anyhow::bail!("插件装载失败: {e}");
+        }
+
+        let call_setup = format!(
+            r#"
+            globalThis.__ada_call_action = async function(payload) {{
+                try {{
+                    const desc = globalThis.__ada_current_plugin;
+                    if (!desc) {{
+                        return JSON.stringify({{ ok: false, error: "插件未导出有效对象或函数", kind: "failed" }});
+                    }}
+                    const ws = {ws_json};
+                    const target = {action_json};
+                    const intent = {intent_json};
+                    const requireFactory = {require_factory};
+                    let actionsRaw = [];
+                    if (typeof desc === 'function') {{
+                        const api = {{
+                            trace: (msg) => console.log(msg),
+                            workspace: ws,
+                            metadata: undefined,
+                            registerTool: () => {{}},
+                            registerAction: (action) => {{ actionsRaw.push(action); }},
+                            registerSystemPrompt: () => {{}},
+                            registerPrompt: () => {{}},
+                            registerSkill: () => {{}},
+                            on: () => {{}},
+                        }};
+                        try {{
+                            await desc(api);
+                        }} catch (e) {{
+                            return JSON.stringify({{ ok: false, error: "插件初始化执行异常: " + (e && e.stack ? String(e.stack) : String(e)), kind: "failed" }});
+                        }}
+                    }} else {{
+                        return JSON.stringify({{ ok: false, error: "Extension Factory must be a default-exported function", kind: "failed" }});
+                    }}
+
+                    let found = null;
+                    for (let i = 0; i < actionsRaw.length; i++) {{
+                        const action = actionsRaw[i];
+                        if (action && typeof action === 'object' && action.name === target) {{
+                            found = action;
+                            break;
+                        }}
+                    }}
+                    if (!found) {{
+                        return JSON.stringify({{ ok: false, error: "插件中未找到动作: " + target, kind: "not_found" }});
+                    }}
+                    const mode = found.mode === 'read' ? 'read' : 'write';
+                    if (intent === 'read' && mode !== 'read') {{
+                        return JSON.stringify({{ ok: false, error: "动作 " + target + " 声明为 write，不能用 read 意图调用", kind: "denied" }});
+                    }}
+                    if (typeof found.execute !== 'function') {{
+                        return JSON.stringify({{ ok: false, error: "动作 " + target + " 未实现 execute 方法", kind: "failed" }});
+                    }}
+
+                    let result;
+                    try {{
+                        result = await found.execute(payload.input || {{}}, payload.context || {{}});
+                    }} catch (e) {{
+                        return JSON.stringify({{ ok: false, error: e && e.stack ? String(e.stack) : String(e), kind: "failed" }});
+                    }}
+                    if (result && typeof result === 'object' && typeof result.ok === 'boolean') {{
+                        if (!result.ok) {{
+                            return JSON.stringify({{
+                                ok: false,
+                                error: typeof result.error === 'string' ? result.error : "动作失败",
+                                hint: typeof result.hint === 'string' ? result.hint : undefined,
+                                kind: "failed",
+                            }});
+                        }}
+                        return JSON.stringify({{ ok: true, data: result.data !== undefined ? result.data : result }});
+                    }}
+                    return JSON.stringify({{ ok: true, data: result === undefined ? null : result }});
+                }} catch (err) {{
+                    const detail = err && err.stack ? String(err.stack) : String(err);
+                    return JSON.stringify({{ ok: false, error: detail, kind: "failed" }});
+                }}
+            }};
+            "#,
+            ws_json = ws_json,
+            action_json = action_json,
+            intent_json = intent_json,
+            require_factory = require_factory
+        );
+        if let Err(e) = runtime.eval_ts(call_setup, Some("ada_action_caller.js")).await {
+            runtime.terminate();
+            anyhow::bail!("初始化动作调度器失败: {e}");
+        }
+
+        let payload = serde_json::json!({ "input": input, "context": context });
+        let call_fut = runtime.call_async_fn(
+            "__ada_call_action",
+            serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string()),
+        );
+        let resp_str = match tokio::time::timeout(Duration::from_secs(timeout_s), call_fut).await {
+            Ok(res) => {
+                runtime.terminate();
+                res.map_err(|e| anyhow::anyhow!("动作执行失败: {e}"))?
+            }
+            Err(_) => {
+                runtime.terminate();
+                anyhow::bail!("动作执行超时（{} 秒）", timeout_s);
+            }
+        };
+
+        serde_json::from_str(&resp_str)
+            .map_err(|e| anyhow::anyhow!("动作返回值不是合法 JSON: {e}; {resp_str}"))
+    }
+
     /// 在纯 Rust 进程内微内核沙箱中执行插件工具
     ///
     /// 走**全量**环境（CLI/本地脚本口径）。插件路径请用 [`Self::call_tool_with_needs`]。
@@ -723,6 +927,7 @@ impl PluginSandbox {
                             trace: (msg) => console.log(msg),
                             workspace: ws,
                             registerTool: (tool) => {{ toolsRaw.push(tool); }},
+                            registerAction: () => {{}},
                             // 调用路径只找工具：技能/提示词/钩子在这里**收下就丢**是刻意的
                             // （声明清单在 `__ada_inspect_tools` 那条路上探明并挂在句柄上，
                             // 这里再收一遍只会多一份对不上的副本）。但它们**不能不存在**——
@@ -1487,6 +1692,354 @@ mod tests {
         .expect("示例工具必须能执行");
         assert!(out.ok, "{}", out.output);
         assert!(out.output.contains("收到：你好"), "{}", out.output);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn actions_are_inspected_and_read_intent_cannot_run_write() {
+        let dir = std::env::temp_dir().join(format!(
+            "a_da_action_test_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("index.ts");
+        std::fs::write(
+            &entry,
+            r#"
+            // @ada-needs none
+            const metadata = {
+              name: 'action-demo',
+              description: '动作测试',
+              tools: { count: 1, names: ['echo_tool'] },
+              systemPrompt: { count: 0, names: [] },
+              hooks: { count: 0, names: [] },
+              actions: { count: 2, names: ['status', 'refresh'] },
+            };
+            export default function (ada) {
+              ada.metadata = metadata;
+              ada.registerTool({
+                name: 'echo_tool',
+                description: '回显',
+                parameters: { type: 'object', properties: {} },
+                async execute(input) { return { ok: true, output: String(input.text || '') }; },
+              });
+              ada.registerAction({
+                name: 'status',
+                description: '读取状态',
+                mode: 'read',
+                async execute(input, ctx) {
+                  return { ok: true, data: { echo: input.echo || null, workspace: ctx.workspace } };
+                },
+              });
+              ada.registerAction({
+                name: 'refresh',
+                description: '写入状态',
+                mode: 'write',
+                async execute() {
+                  return { ok: true, data: { refreshed: true } };
+                },
+              });
+            }
+            "#,
+        )
+        .unwrap();
+
+        let inspected = PluginSandbox::inspect_plugin_full(
+            &entry,
+            &dir,
+            ada_ts_engine::Needs::everything(),
+        )
+        .await
+        .expect("action plugin should inspect");
+        assert_eq!(inspected.actions.len(), 2);
+        assert!(inspected.actions.iter().any(|a| a.name == "status" && a.is_read()));
+        assert!(inspected.actions.iter().any(|a| a.name == "refresh" && !a.is_read()));
+
+        // 工具调用路径会重新执行工厂；工厂里 registerAction 必须存在（空实现），
+        // 否则带动作的插件连工具都调不动。
+        let tool = PluginSandbox::call_tool(
+            &entry,
+            "echo_tool",
+            serde_json::json!({ "text": "ok" }),
+            &dir,
+            5,
+        )
+        .await
+        .expect("带动作的插件也必须能执行工具");
+        assert!(tool.ok, "{}", tool.output);
+        assert_eq!(tool.output, "ok");
+
+        let ctx = serde_json::json!({ "workspace": dir.to_string_lossy(), "caller": "web", "now": 1 });
+        let read = PluginSandbox::call_action_budgeted(
+            &entry,
+            "status",
+            serde_json::json!({ "echo": "hi" }),
+            ctx.clone(),
+            "read",
+            &dir,
+            5,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("read action should run");
+        assert_eq!(read["ok"], true);
+        assert_eq!(read["data"]["echo"], "hi");
+
+        let denied = PluginSandbox::call_action_budgeted(
+            &entry,
+            "refresh",
+            serde_json::json!({}),
+            ctx.clone(),
+            "read",
+            &dir,
+            5,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("denied action should return a structured refusal");
+        assert_eq!(denied["ok"], false);
+        assert_eq!(denied["kind"], "denied");
+
+        let written = PluginSandbox::call_action_budgeted(
+            &entry,
+            "refresh",
+            serde_json::json!({}),
+            ctx,
+            "write",
+            &dir,
+            5,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("write action should run");
+        assert_eq!(written["ok"], true);
+        assert_eq!(written["data"]["refreshed"], true);
+
+        let missing = PluginSandbox::call_action_budgeted(
+            &entry,
+            "missing",
+            serde_json::json!({}),
+            serde_json::json!({}),
+            "read",
+            &dir,
+            5,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("missing action should return a structured refusal");
+        assert_eq!(missing["kind"], "not_found");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 仓库里的 task-plan 统一包：afterTodoUpdate 写状态，plan action 读回。
+    #[tokio::test]
+    async fn repo_task_plan_backend_writes_and_reads_the_plan() {
+        let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/task-plan/index.ts");
+        let dir = std::env::temp_dir().join(format!(
+            "a_da_task_plan_test_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let inspected = PluginSandbox::inspect_plugin_full(
+            &entry,
+            &dir,
+            ada_ts_engine::Needs::everything(),
+        )
+        .await
+        .expect("task-plan backend should inspect");
+        assert!(
+            inspected.hooks.iter().any(|hook| hook.point == "afterTodoUpdate"),
+            "hooks: {:?}",
+            inspected.hooks
+        );
+        assert!(
+            inspected.actions.iter().any(|action| action.name == "plan" && action.is_read()),
+            "actions: {:?}",
+            inspected.actions
+        );
+
+        let hook = PluginSandbox::call_hook_budgeted(
+            &entry,
+            "afterTodoUpdate",
+            serde_json::json!({
+                "__ada_hook_event": {
+                    "todos": [
+                        { "id": "t1", "title": "读列表", "status": "completed" },
+                        { "id": "t2", "title": "写条目", "status": "in_progress" }
+                    ],
+                    "diff": ""
+                },
+                "__ada_hook_ctx": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-1",
+                    "pluginId": "task-plan",
+                    "point": "afterTodoUpdate",
+                    "timeoutMs": 500
+                }
+            }),
+            &dir,
+            5,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("afterTodoUpdate should run");
+        assert!(
+            hook.get("error").is_none(),
+            "hook should not fail: {hook:?}"
+        );
+
+        let plan = PluginSandbox::call_action_budgeted(
+            &entry,
+            "plan",
+            serde_json::json!({ "threadId": "thread-1" }),
+            serde_json::json!({ "workspace": dir.to_string_lossy(), "caller": "web", "now": 1 }),
+            "read",
+            &dir,
+            5,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("plan action should run");
+        assert_eq!(plan["ok"], true);
+        assert_eq!(plan["data"]["total"], 2);
+        assert_eq!(plan["data"]["done"], 1);
+        assert_eq!(plan["data"]["active"], "写条目");
+        assert_eq!(plan["data"]["steps"][1]["title"], "写条目");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 仓库里的 approval 统一包：beforeApproval 记 pending，afterApproval 累计。
+    #[tokio::test]
+    async fn repo_approval_backend_records_pending_and_decisions() {
+        let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/approval/index.ts");
+        let dir = std::env::temp_dir().join(format!(
+            "a_da_approval_test_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let inspected = PluginSandbox::inspect_plugin_full(
+            &entry,
+            &dir,
+            ada_ts_engine::Needs::everything(),
+        )
+        .await
+        .expect("approval backend should inspect");
+        assert!(inspected
+            .hooks
+            .iter()
+            .any(|hook| hook.point == "beforeApproval"));
+        assert!(inspected
+            .hooks
+            .iter()
+            .any(|hook| hook.point == "afterApproval"));
+        assert!(inspected
+            .actions
+            .iter()
+            .any(|action| action.name == "pending" && action.is_read()));
+
+        let hook_ctx = |call_id: &str| {
+            serde_json::json!({
+                "__ada_hook_ctx": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": call_id,
+                    "pluginId": "approval",
+                    "point": "beforeApproval",
+                    "timeoutMs": 500
+                }
+            })
+        };
+        let before = PluginSandbox::call_hook_budgeted(
+            &entry,
+            "beforeApproval",
+            serde_json::json!({
+                "__ada_hook_event": {
+                    "callId": "call-1",
+                    "tool": "run_command",
+                    "args": { "command": "cargo test" },
+                    "isWrite": true
+                },
+                "__ada_hook_ctx": hook_ctx("call-1")["__ada_hook_ctx"]
+            }),
+            &dir,
+            5,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("beforeApproval should run");
+        assert!(before.get("error").is_none(), "{before:?}");
+
+        let pending = PluginSandbox::call_action_budgeted(
+            &entry,
+            "pending",
+            serde_json::json!({ "threadId": "thread-1" }),
+            serde_json::json!({ "workspace": dir.to_string_lossy(), "caller": "web", "now": 10_000 }),
+            "read",
+            &dir,
+            5,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("pending action should run");
+        assert_eq!(pending["data"]["items"].as_array().unwrap().len(), 1);
+        assert_eq!(pending["data"]["items"][0]["tool"], "run_command");
+
+        let after = PluginSandbox::call_hook_budgeted(
+            &entry,
+            "afterApproval",
+            serde_json::json!({
+                "__ada_hook_event": {
+                    "tool": "run_command",
+                    "approved": true,
+                    "by": "user",
+                    "waitedMs": 1200
+                },
+                "__ada_hook_ctx": hook_ctx("call-1")["__ada_hook_ctx"]
+            }),
+            &dir,
+            5,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("afterApproval should run");
+        assert!(after.get("error").is_none(), "{after:?}");
+
+        let pending = PluginSandbox::call_action_budgeted(
+            &entry,
+            "pending",
+            serde_json::json!({ "threadId": "thread-1" }),
+            serde_json::json!({ "workspace": dir.to_string_lossy(), "caller": "web", "now": 20_000 }),
+            "read",
+            &dir,
+            5,
+            ada_ts_engine::Needs::everything(),
+            ada_ts_engine::Limits::default(),
+        )
+        .await
+        .expect("pending action should run");
+        assert!(pending["data"]["items"].as_array().unwrap().is_empty());
+        assert_eq!(pending["data"]["approved"], 1);
+        assert_eq!(pending["data"]["rejected"], 0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -64,6 +64,29 @@ impl AgentClient {
         self.backend.rpc(method, params).await
     }
 
+    /// 调用后端插件声明的界面动作（`plugin.invoke`）。
+    ///
+    /// `intent` 由调用方声明：只读预取/GET 用 `read`，表单/POST 用 `write`。
+    /// 真正的只读/写入判定在后端插件里，前端改标也绕不过去。
+    pub async fn invoke_plugin_action(
+        &self,
+        plugin_id: &str,
+        action: &str,
+        input: Value,
+        intent: &str,
+    ) -> Result<Value> {
+        self.rpc(
+            "plugin.invoke",
+            json!({
+                "pluginId": plugin_id,
+                "action": action,
+                "input": input,
+                "intent": intent,
+            }),
+        )
+        .await
+    }
+
     pub async fn snapshot(&self) -> Result<Value> {
         self.get("/api/snapshot").await
     }

@@ -117,8 +117,9 @@
 | 用户能力开关（6 位 + 超时，每位都有生产消费者） | `plugins/types.rs` 的 `PluginCapabilities`，门禁 `verify-wiring` check L2 |
 | 沙箱两档（进程内 Boa / 子进程） | `crates/ts-engine` + `--script-sandbox subprocess` |
 | 能力声明 `// @ada-needs`（`fs` / `fs=read` / `fs=write` / `net` / `none`） | `crates/agent-node/src/scripts/needs.rs` |
-| 管理面：`plugin.list/load/validate/setEnabled/reload/delete/builtinCatalog/createTemplate/capabilities.set/config.set/secret.set` | `spec/proto/ada-coding.ext.json` |
-| 内置插件 **10 个**：`git-tools`、`code-outline`、`project-inspector`、`test-runner`、`batch-ops`、`plugin-forge`、`todo-guard`、`approval-guard`、`ask-user`、`ponytail` | `crates/agent-node/src/plugins/builtins.rs` |
+| 管理面：`plugin.list/load/validate/invoke/setEnabled/reload/delete/builtinCatalog/createTemplate/capabilities.set/config.set/secret.set` | `spec/proto/ada-coding.ext.json` |
+| **统一插件包**（一个 `plugin.json` 同时声明 `frontend` / `backend`；动作 `registerAction`） | `crates/agent-web/src/plugins/manifest.rs` + `crates/agent-node/src/plugins/manager.rs`；说明见 [plugins/unified-package.md](../plugins/unified-package.md) |
+| 内置插件 **9 个**：`git-tools`、`code-outline`、`project-inspector`、`test-runner`、`batch-ops`、`plugin-forge`、`approval-guard`、`ask-user`、`ponytail` | `crates/agent-node/src/plugins/builtins.rs` |
 
 细节与排错见 [../plugins/README.md](../plugins/README.md)。
 

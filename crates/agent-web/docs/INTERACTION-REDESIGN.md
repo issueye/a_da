@@ -53,7 +53,7 @@
 建议：短期在回跳 URL 上带锚点/偏移标记（如 `?pos=<scrollTop>` 或 `#ada-keep`），chat.js 见标记时走 `restoreScroll` 而非置底；中期见 21（局部提交）。
 
 **02 展开态不跨刷新**
-工具/思考的展开状态只存 JS 内存（static/components.js:20 `openKeys`，Object，不落 storage）。整页跳转（01 触发）或手动刷新后全部折叠。对比：工作区分组（chat.js:554-582）与任务卡（frontend-plugins/task-plan/static/task-plan.js:13）都存了 localStorage。
+工具/思考的展开状态只存 JS 内存（static/components.js:20 `openKeys`，Object，不落 storage）。整页跳转（01 触发）或手动刷新后全部折叠。对比：工作区分组（chat.js:554-582）与任务卡（plugins/task-plan/static/task-plan.js:13）都存了 localStorage。
 建议：`openKeys` 落 sessionStorage（按 threadId 命名空间），容量顾虑时只存最近 N 条。
 
 **03 🔴 草稿三处全丢**

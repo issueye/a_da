@@ -126,6 +126,84 @@ pub struct PluginToolInfo {
     pub is_write: bool,
 }
 
+/// 动作的调用意图。**由调用方声明**，宿主据此拒绝“用只读意图执行写动作”。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginActionIntent {
+    Read,
+    Write,
+}
+
+impl PluginActionIntent {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "read" => Some(Self::Read),
+            "write" => Some(Self::Write),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+}
+
+/// 后端插件声明的**界面动作**。
+///
+/// 这是插件给前端插件用的确定性入口：不是模型工具（不进工具目录、不参与审批），
+/// 而是由 SSR 宿主经 `plugin.invoke` 调用的动作。
+///
+/// `mode` 是**后端自己的声明**，前端 manifest 的 `read` 只是“是否首屏预取”的意图；
+/// 后端在 `intent=read` 时拒绝 `mode=write`，所以前端改标只读也绕不过去。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginActionDeclaration {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub description: String,
+    /// `read` / `write`；沙箱里只认 `read`，其余一律按 write（失败安全）。
+    pub mode: String,
+    #[serde(default)]
+    pub parameters: serde_json::Value,
+}
+
+impl PluginActionDeclaration {
+    pub fn is_read(&self) -> bool {
+        self.mode.trim().eq_ignore_ascii_case("read")
+    }
+}
+
+/// `plugin.invoke` 的失败分类。RPC 层据此映射错误码，前端桥接据此选 HTTP 状态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginActionError {
+    NotFound(String),
+    NotReady(String),
+    Denied(String),
+    Invalid(String),
+    Timeout,
+    TooLarge,
+    Failed(String),
+}
+
+impl std::fmt::Display for PluginActionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(message) => write!(f, "{message}"),
+            Self::NotReady(message) => write!(f, "{message}"),
+            Self::Denied(message) => write!(f, "{message}"),
+            Self::Invalid(message) => write!(f, "{message}"),
+            Self::Timeout => f.write_str("插件动作执行超时"),
+            Self::TooLarge => f.write_str("插件动作返回值超过大小上限"),
+            Self::Failed(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+impl std::error::Error for PluginActionError {}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginDiagnostic {

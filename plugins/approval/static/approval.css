@@ -1,0 +1,11 @@
+.ada-approval-plugin {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ada-approval-plugin__stats {
+  padding: 0 2px;
+  color: var(--ph-muted);
+  font-size: var(--ada-text-xs);
+}

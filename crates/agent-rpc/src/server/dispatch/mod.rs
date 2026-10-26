@@ -2327,6 +2327,108 @@ impl Dispatcher {
                     .map_err(|e| ProtocolError::internal_error(e.to_string()))
             }
 
+            PLUGIN_INVOKE => {
+                let plugin_id = params
+                    .get("pluginId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let action = params
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if plugin_id.is_empty() || action.is_empty() {
+                    return Err(ProtocolError::invalid_params(
+                        "plugin.invoke 需要非空的 pluginId 与 action",
+                    ));
+                }
+                let intent_raw = params
+                    .get("intent")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("write");
+                let intent = agent_node::plugins::PluginActionIntent::parse(intent_raw)
+                    .ok_or_else(|| {
+                        ProtocolError::invalid_params(
+                            "plugin.invoke 的 intent 只接受 read / write",
+                        )
+                    })?;
+                let input = params
+                    .get("input")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let workspace = match params
+                    .get("workspace")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    Some(workspace) => workspace.to_string(),
+                    None => {
+                        let store = self.store.read().await;
+                        store.workspace.project.clone()
+                    }
+                };
+                if workspace.trim().is_empty() {
+                    return Err(ProtocolError::invalid_params(
+                        "plugin.invoke 缺少工作区（会话尚未绑定目录）",
+                    ));
+                }
+
+                self.plugin_mgr
+                    .invoke_action(&plugin_id, &action, input, intent, &workspace)
+                    .await
+                    .map_err(|error| match error {
+                        agent_node::plugins::PluginActionError::NotFound(message) => {
+                            ProtocolError::new(
+                                AppErrorCode::NotFound.code(),
+                                message,
+                                Some(serde_json::json!({ "kind": "plugin_action_not_found" })),
+                            )
+                        }
+                        agent_node::plugins::PluginActionError::NotReady(message) => {
+                            ProtocolError::new(
+                                AppErrorCode::NotReady.code(),
+                                message,
+                                Some(serde_json::json!({ "kind": "plugin_action_not_ready" })),
+                            )
+                        }
+                        agent_node::plugins::PluginActionError::Denied(message) => {
+                            ProtocolError::new(
+                                AppErrorCode::Denied.code(),
+                                message,
+                                Some(serde_json::json!({ "kind": "plugin_action_denied" })),
+                            )
+                        }
+                        agent_node::plugins::PluginActionError::Invalid(message) => {
+                            ProtocolError::invalid_params(message)
+                        }
+                        agent_node::plugins::PluginActionError::Timeout => {
+                            ProtocolError::new(
+                                AppErrorCode::Timeout.code(),
+                                "插件动作执行超时",
+                                Some(serde_json::json!({ "kind": "plugin_action_timeout" })),
+                            )
+                        }
+                        agent_node::plugins::PluginActionError::TooLarge => {
+                            ProtocolError::new(
+                                AppErrorCode::TooLarge.code(),
+                                "插件动作输入或输出超过大小上限",
+                                Some(serde_json::json!({ "kind": "plugin_action_too_large" })),
+                            )
+                        }
+                        agent_node::plugins::PluginActionError::Failed(message) => {
+                            ProtocolError::new(
+                                RpcErrorCode::InternalError.code(),
+                                message,
+                                Some(serde_json::json!({ "kind": "plugin_action_failed" })),
+                            )
+                        }
+                    })
+            }
+
             PLUGIN_LIST => {
                 let ws = params.get("workspace").and_then(|v| v.as_str());
                 let mut plugins = self.plugin_mgr.load_plugins(ws);

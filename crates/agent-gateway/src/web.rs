@@ -226,6 +226,7 @@ pub fn build_web_state(
     workspace: String,
     product: String,
     plugins_dir: PathBuf,
+    unified_plugins_dir: PathBuf,
     access: SharedAccess,
 ) -> WebState {
     let backend = Arc::new(GatewayBackend::new(
@@ -234,7 +235,9 @@ pub fn build_web_state(
         product,
     ));
     let agent = Arc::new(AgentClient::with_backend(backend, workspace));
-    let frontend = Arc::new(PluginRegistry::new(plugins_dir));
+    let frontend = Arc::new(
+        PluginRegistry::new(plugins_dir).with_unified_dir(unified_plugins_dir),
+    );
     WebState {
         agent,
         frontend,

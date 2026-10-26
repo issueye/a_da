@@ -32,7 +32,9 @@ UED 设计基线、组件规范与 原桌面端 对齐差距见 [docs/UED.md](do
   （写网关的 `config.setEffort`）、底部「管理供应商与模型」进插件页 `/ext/provider-admin/providers`。无 JS 也能开合与提交；
   点外面 / Esc 关闭由 `chat.js` 增强；live 轮询只替换药丸标签 `#composer-model`，不会把菜单关掉。
 - 向上阅读时对话区底部出现「回到最新」胶囊：点一下回到底部并恢复自动跟随。它是核心 UI（不依赖插件插槽），水平居中，不会和右下角 `composer.above` 的插件悬浮卡抢位置。
-- 任务规划（`todo` 工具）由 **`frontend-plugins/task-plan/` 插件**渲染：默认挂在会话区右上角（`chat.corner`），
+- 任务规划（`todo` 工具）由统一插件 **`plugins/task-plan/`** 渲染：前端默认挂在会话区右上角（`chat.corner`），
+  后端插件订阅 `afterTodoUpdate` 维护按会话的计划状态，前端优先读后端 `plan` action，
+  后端停用时回落到核心 `data.todo` 投影。
   收成胶囊药丸（进度 + 当前步骤）/ 展开是步骤清单卡片；改 `plugin.json` 的 `slot` 可换到输入框上方
   （`composer.above`）。计划仍按 `set`/`update`/`get` 的动作在核心推演（不是倒序取最后一张卡片），
   插件只消费 `props.data.todo` 的投影。
@@ -108,6 +110,7 @@ cargo run -p agent-gateway -- --port 52353 --workspace E:/codes/your-project
 |---|---|
 | `--web-token <t>` | 浏览器访问令牌；非回环监听时可与 `--token` 二选一 |
 | `--web-plugins-dir <p>` | 前端插件目录（默认 `~/.a-da/web-plugins` → exe 旁 → 源码目录） |
+| `A_DA_UNIFIED_PLUGINS_DIR` | 统一插件包根（默认 `~/.a-da/plugins`；开发时指向仓库 `plugins/`） |
 | `--web-public-url <u>` | 反向代理对外地址（如 `https://example.com`）；放行该 Host/Origin |
 | `A_DA_WEB_TOKEN` / `A_DA_WEB_PLUGINS_DIR` / `A_DA_WEB_PUBLIC_URL` | 上述参数的环境变量形式 |
 
@@ -233,28 +236,33 @@ frontend-plugins/hello-tsx/
   static/hello.js         # 插件自定义脚本（由 manifest scripts 注入，defer）
 ```
 
-`plugin.json`：
+`plugin.json`（统一格式；旧版扁平前端清单仍兼容）：
 
 ```json
 {
   "id": "hello-tsx",
   "name": "Hello TSX",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "演示 TSX 插件",
-  "nav": [{ "label": "Hello TSX", "slug": "hello" }],
-  "pages": [{ "slug": "hello", "title": "Hello TSX", "template": "page.tsx" }],
-  "dashboard": "dashboard.tsx",
-  "assets": "static",
-  "styles": ["hello.css"],
-  "scripts": ["hello.js"],
-  "slots": [
-    { "slot": "composer.left", "template": "slot.tsx", "order": 20 }
-  ],
-  "api": [
-    { "method": "get", "path": "info", "template": "api/info.tsx" }
-  ]
+  "frontend": {
+    "nav": [{ "label": "Hello TSX", "slug": "hello" }],
+    "pages": [{ "slug": "hello", "title": "Hello TSX", "template": "page.tsx" }],
+    "dashboard": "dashboard.tsx",
+    "assets": "static",
+    "styles": ["hello.css"],
+    "scripts": ["hello.js"],
+    "slots": [
+      { "slot": "composer.left", "template": "slot.tsx", "order": 20 }
+    ],
+    "api": [
+      { "method": "get", "path": "info", "template": "api/info.tsx" }
+    ]
+  }
 }
 ```
+
+同一个包也可以加 `backend` 段和后端 `index.ts`，用 `frontend.actions` 绑定
+`registerAction`；见 [docs/plugins/unified-package.md](../../docs/plugins/unified-package.md)。
 
 - 访问 `/extensions` 点「重载前端插件」即可重新扫描目录；新插件立即出现在导航与仪表盘，无需重启。
 - 独立页面地址：`/ext/{id}/{slug}`；资源地址：`/ext/{id}/assets/{path}`。
@@ -270,13 +278,16 @@ frontend-plugins/hello-tsx/
 - **自定义 JS**：`scripts` 字段与 `styles` 同口径（相对 assets 目录、只接受 `.js`），服务端把
   `<script src="/ext/{id}/assets/...?v=指纹" defer>` 注入所有页面 `<head>`。SSR 出来的插槽
   （`<details>` 开合、复制、偏好记忆）需要浏览器行为时用它；HTML 白名单**不开放 `<script>` 标签**。
-- **插槽（slots）**：把 TSX 挂到界面的固定位置（`chat.corner` / `composer.left` / `composer.right` / `composer.footer` / `composer.above` / `thread.tray` / `sidebar.top` / `sidebar.bottom` / `topbar.right` / `transcript.after` / `extensions.list` / `dashboard.widgets`）。插槽内容在服务端渲染进 HTML；插件加载失败只影响它自己，界面退回默认实现。
+- **插槽（slots）**：把 TSX 挂到界面的固定位置（`chat.corner` / `composer.left` / `composer.right` / `composer.footer` / `composer.above` / `thread.tray` / `thread.approval` / `sidebar.top` / `sidebar.bottom` / `topbar.right` / `transcript.after` / `extensions.list` / `dashboard.widgets`）。插槽内容在服务端渲染进 HTML；插件加载失败只影响它自己，界面退回默认实现。
   `chat.corner` 是会话区**右上角**的悬浮点位（`.ada-corner-dock`，只在聊天页存在）；
   `thread.tray` 是托盘区的**提问段**——输出非空时替换核心提问托盘（审批/排队不受影响），数据契约见 `data.questions`。
+  `thread.approval` 是托盘区的**审批段**——输出非空时替换核心审批托盘；
+  批准/拒绝仍提交核心 `/approvals/{call_id}/decision`，插件不能改变审批策略；
+  数据契约见 `data.approvals`，同意/拒绝计数来自统一 `plugins/approval/` 的后端 action。
 - `composer.above` 的插件（如 Token 天气）随 SSE `parts` 刷新：投影里带**当前会话**的助手 `usage`（不是快照的 `activeThreadId`），轮次收尾后会延迟补拉一次条目，所以不会停在「晴天 0%」。点击天气胶囊展开**浮层**（分档/百分比/已用/窗口/**缓存命中**/输出/会话/模型），不跳页；完整页面仍保留入口。token 数按 `M`/`K` 缩写、精确值在 `title` 里；缓存字段缺失时显示 `—` 而不是 `0%`。浮层是插件自己的 `<details class="ada-popover">`，`chat.js` 在 `parts` 替换后按 `id` 还原展开状态，并支持点外部/Esc 关闭。
 - `chat.corner` 的插件（如任务卡片）随 `parts` 的 `corner` 字段刷新：`props.data.todo` 是核心推演好的当前计划
   （`done` / `total` / `active` / `notes` / `markdown` / `steps[].status`），没有计划时是 `null`。
-  同一张卡片改挂 `composer.above` 也可用（见 `frontend-plugins/task-plan/README.md`），但不要两个都声明。
+  同一张卡片改挂 `composer.above` 也可用（见 `plugins/task-plan/README.md`），但不要两个都声明。
 - 可在扩展页逐个**停用/启用**插件（`POST /extensions/{id}/disable|enable`），停用后贡献立即消失、界面回到默认实现；`GET /web-ui/frontend-plugins` 暴露插件与插槽状态（与网关的 `/api/plugins` 不是一回事）。
   停用状态**落盘在插件目录旁的 `.ssr-h-state.json`**（只记停用的 id），重启后仍然生效；
   文件坏了按全启用处理并在下次停用时重写，不会把插件锁死在停用态。
@@ -288,9 +299,14 @@ frontend-plugins/hello-tsx/
   CSP 是 `connect-src 'self'`：插件浏览器 JS 正好可以 fetch 自己的这些同源端点
   （见 `hello-tsx` 的 `static/hello.js` 演示）。示例：`/ext/hello-tsx/api/info`。
 - 插件只接受 `.tsx` 模板；插件代码是**本地受信任内容**，不要在不受信任的目录里放插件。
-- **前端插件调用后端插件**（设计提案，尚未实现）：后端插件用 `ada.registerAction` 声明动作，
-  前端 `plugin.json` 用 `backend` 绑定，浏览器经同源桥接路由调用。完整契约见
-  [docs/plugins/PLAN-frontend-backend-bridge.md](../../docs/plugins/PLAN-frontend-backend-bridge.md)。
+- **统一插件包（v1 已落地）**：一个 `plugin.json` 同时声明 `frontend` 与 `backend`，
+  后端用 `ada.registerAction` 提供界面动作，前端用 `frontend.actions` 绑定。
+  支持首屏只读预取与 `GET/POST /ext/{id}/backend/{binding}` 桥接；旧版扁平前端清单仍兼容。
+  见 [docs/plugins/unified-package.md](../../docs/plugins/unified-package.md)。
+- **前端插件调用后端插件**（完整设计提案）：`registerAction` / `plugin.invoke` / SSR 桥接
+  的完整契约见 [docs/plugins/PLAN-frontend-backend-bridge.md](../../docs/plugins/PLAN-frontend-backend-bridge.md)。
+  今天能用的间接对接方式（`props.data` 投影 + 核心路由）见
+  [docs/plugins/frontend-backend-integration.md](../../docs/plugins/frontend-backend-integration.md)。
 
 ### 插件实现「置底/回到最新」按钮
 
@@ -347,8 +363,10 @@ export function Page(props: any) {
   `frontend-plugins/hello-tsx/`（最小页面 / 仪表盘 / JSON API）、
   `frontend-plugins/token-weather/`（按上下文用量显示天气：完整页面 + 输入框上方胶囊/浮层 +
   概览卡片，演示相对 import、`details` 浮层与 SSE `parts` 刷新；说明见插件目录内的 README）、
-  `frontend-plugins/task-plan/`（任务规划卡片：`chat.corner` 右上角 / `composer.above` 两处可挂，
-  演示 `props.data.todo` 数据契约、插件 CSS 与 `scripts` 注入的浏览器增强）、
+  `plugins/task-plan/`（任务规划卡片 + 后端计划状态：`chat.corner` 右上角 / `composer.above` 两处可挂，
+  `afterTodoUpdate` → `plan` action，演示 `props.data.todo` 降级、插件 CSS 与 `scripts` 注入的浏览器增强）、
+  `plugins/approval/`（审批面板：`thread.approval` 插槽 + `beforeApproval/afterApproval` 后端状态，
+  批准/拒绝仍走核心）、
   `frontend-plugins/ask-user/`（提问卡片：`thread.tray` 插槽渲染待答复提问与作答表单，
   演示 `props.data.questions` 数据契约与"插件替换核心托盘、停用回退"的降级规则）；
   完整 TSX 说明见 [docs/TSX.md](docs/TSX.md)。

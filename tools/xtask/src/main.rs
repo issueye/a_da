@@ -271,6 +271,14 @@ fn ship_product(product: &str, gui: bool, out_dir: &str) -> anyhow::Result<()> {
             copy_dir_all(plugins_src, &plugins_dst)?;
             println!("  ✔ 前端插件目录: {}", plugins_dst.display());
         }
+        // 统一插件包（frontend + backend）放在 exe 同级 `plugins/`；打包后的网关/agent
+        // 都会按“与 exe 同级”找到它。
+        let unified_src = Path::new("plugins");
+        if unified_src.is_dir() {
+            let unified_dst = Path::new(out_dir).join("plugins");
+            copy_dir_all(unified_src, &unified_dst)?;
+            println!("  ✔ 统一插件目录: {}", unified_dst.display());
+        }
     }
 
     // 3. 可选应用 Windows PE GUI 子系统补丁（消除控制台黑框）

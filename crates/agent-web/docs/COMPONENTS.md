@@ -291,12 +291,16 @@ ssr-h/
   "id": "hello",
   "name": "Hello Frontend Plugin",
   "version": "0.2.0",
-  "slots": [
-    { "slot": "composer.left", "template": "slot.tsx", "order": 20 }
-  ]
+  "frontend": {
+    "slots": [
+      { "slot": "composer.left", "template": "slot.tsx", "order": 20 }
+    ]
+  }
 }
 ```
 
+- 顶层只放 `id/name/version/description`；页面/插槽/资源都在 `frontend` 段。
+  旧版把 `slots` 等直接放顶层的清单仍兼容，但仓库自带插件已统一到新形状；
 - `slot`：必须是清单里的合法插槽名，**写错在加载阶段就报错**（而不是"挂上去却没生效"）；
 - `template`：相对插件根目录的 `.tsx`（页面/插槽/仪表盘都只接受 TSX）；
 - `order`：同一插槽内排序，小的在前；
@@ -328,9 +332,10 @@ register → load → mount → render → unmount → destroy
 
 ### 7.5 悬浮点位示例
 
-`frontend-plugins/task-plan/` 是现成的例子：同一张任务卡片可以挂 `chat.corner`（会话区右上角，默认）
-或 `composer.above`（输入框上方），改清单里的一行即可切换；卡片数据由核心投影到
-`props.data.todo`，浏览器增强（展开偏好、复制）由 `scripts` 注入的 `static/task-plan.js` 承担。
+`plugins/task-plan/` 是现成的例子：同一张任务卡片可以挂 `chat.corner`（会话区右上角，默认）
+或 `composer.above`（输入框上方），改清单里的一行即可切换；计划状态由**同包后端插件**
+通过 `afterTodoUpdate` 维护，前端优先读 `plan` action，核心 `props.data.todo` 作为降级；
+浏览器增强（展开偏好、复制）由 `scripts` 注入的 `static/task-plan.js` 承担。
 
 ### 7.6 SSR / 客户端一致性
 
@@ -355,13 +360,18 @@ register → load → mount → render → unmount → destroy
 
 ## 10. 任务规划（todo 工具）卡片
 
-任务清单**不插在正文流里**，也**不再由应用壳渲染**：它是 `frontend-plugins/task-plan/` 插件，
+任务清单**不插在正文流里**，也**不再由应用壳渲染**：它是 `plugins/task-plan/` 统一插件，
 默认挂 `chat.corner`（会话区右上角）；把清单里的 `slot` 改成 `composer.above` 就换到输入框上方。
-核心只负责**推演状态**并投影数据，卡片长什么样归插件。
+同包后端插件负责按会话维护计划状态（`afterTodoUpdate`），核心投影只作为降级。
 
-### 10.1 计划状态推演（唯一真源）
+### 10.1 计划状态：后端插件优先，核心降级
 
-`ui/todo.rs` 的 `derive_todo_plan`，与 原桌面端 的 `utils/todo-plan.ts` 同一套语义：
+`plugins/task-plan/index.ts` 订阅 `afterTodoUpdate`：该点位拿到的是**已生效**的全量
+`todos`（已经过 `beforeTodoUpdate` 的 deny/replace），后端按 `ctx.threadId` 写入
+工作区 `.ada/task-plan-state.json`，再通过只读 action `plan` 返回给卡片。
+
+后端停用/未就绪时，回落到 `ui/todo.rs` 的 `derive_todo_plan`，与 原桌面端 的
+`utils/todo-plan.ts` 同一套语义：
 
 | `action` | 含义 |
 |---|---|

@@ -867,7 +867,7 @@ pub(super) fn waited_label(value: &Value) -> String {
     ui::waited_from_ms(started)
 }
 
-pub(super) fn approval_rows(raw_items: &[Value]) -> Vec<ApprovalRow> {
+pub(crate) fn approval_rows(raw_items: &[Value]) -> Vec<ApprovalRow> {
     let mut rows = Vec::new();
     for raw in raw_items.iter() {
         // 用原始 status 判定；渲染后的行里 status 已经中文化了。
@@ -1034,17 +1034,18 @@ pub(crate) fn thread_rows(snapshot: &Value, active_thread_id: &str) -> Vec<Threa
 
 /// 审批 + 提问 + 排队托盘。返回 `(html, 待批准数, 排队数)`。
 ///
-/// `plugin_questions_html` 是 `thread.tray` 插槽的输出：**非空时替换核心提问托盘**
-/// （审批/排队不受影响）；插件停用、加载失败或没渲染出东西时传 `None`/空串，
-/// 自动退回核心实现（[docs/PLAN-question-panel.md](../../docs/PLAN-question-panel.md) D5）。
+/// `plugin_approvals_html` 是 `thread.approval` 插槽的输出：**非空时替换核心审批托盘**；
+/// `plugin_questions_html` 同理替换提问托盘。插件停用、加载失败或没渲染出东西时传
+/// `None`/空串，自动退回核心实现。
 pub(super) fn trays_html(
     snapshot: &Value,
     raw_items: &[Value],
     thread_id: &str,
+    plugin_approvals_html: Option<&str>,
     plugin_questions_html: Option<&str>,
 ) -> (String, usize, usize) {
     let approvals = approval_rows(raw_items);
-    let approvals_html = approvals
+    let core_approvals_html = approvals
         .iter()
         .map(|row| {
             ui::ApprovalTray {
@@ -1060,13 +1061,17 @@ pub(super) fn trays_html(
         .join("");
     // 多条审批同屏时补一条汇总带：卡片仍逐条保留（参数必须逐卡可见），
     // 但用户需要先知道"一共几件事在等我"。
-    let approvals_html = if approvals.len() > 1 {
+    let core_approvals_html = if approvals.len() > 1 {
         format!(
-            r#"<div class="ada-trays__summary">等待批准 ×{}</div>{approvals_html}"#,
+            r#"<div class="ada-trays__summary">等待批准 ×{}</div>{core_approvals_html}"#,
             approvals.len()
         )
     } else {
-        approvals_html
+        core_approvals_html
+    };
+    let approvals_html = match plugin_approvals_html {
+        Some(html) if !html.trim().is_empty() => html.to_string(),
+        _ => core_approvals_html,
     };
     let questions_html = match plugin_questions_html {
         Some(html) if !html.trim().is_empty() => html.to_string(),

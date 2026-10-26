@@ -22,7 +22,9 @@
 
 **v0.8 任务规划（todo）面板（2026-10-20）**：对齐 desktop-ui 的 `TodoFloatingPanel`——任务清单不插在正文流里，而是悬浮在会话区右上角，**默认收起为胶囊药丸**（列表图标 + 「任务规划」+ `3/12` 进度 + 当前步骤），展开是 320px 卡片（头部进度 + 复制 Markdown 清单 + 备注 + 步骤清单）。计划状态按 **set 替换 / update 按 id 增量合并 / get 只读** 的动作推演（不是"倒序找最后一张卡片"），由 `ui/todo.rs` 的 7 个单元测试锁住；展开收起用 `<details>`，无 JS 也可用，JS 只记住用户偏好。工具行里展开 `todo` 工具时同样排版显示清单。
 
-**v0.9 任务卡片改为插件（2026-10-23）**：卡片外观与交互从应用壳搬到 `frontend-plugins/task-plan/`，核心只保留计划推演并投影成 `props.data.todo`。挂载点由清单决定：**`chat.corner`（会话区右上角，默认）**或 **`composer.above`（输入框上方）**，改一行即可切换；卡片随 SSE `parts` 的 `corner` 字段刷新，展开偏好仍记在 `a_da_todo_panel_collapsed`。
+**v0.9 任务卡片改为插件（2026-10-23）**：卡片外观与交互从应用壳搬到 `plugins/task-plan/`，挂载点由清单决定：**`chat.corner`（会话区右上角，默认）**或 **`composer.above`（输入框上方）**，改一行即可切换；卡片随 SSE `parts` 的 `corner` 字段刷新，展开偏好仍记在 `a_da_todo_panel_collapsed`。
+
+**v1.0 task-plan 后端插件化（2026-10-26）**：同包后端 `index.ts` 订阅 `afterTodoUpdate`，按 `threadId` 把已生效的计划写入工作区状态文件，前端通过 `frontend.actions.plan` 读取；核心 `props.data.todo` 只作为停用/未就绪时的降级。
 
 **v0.10 模型选择器（参考 DeepSeek，2026-10-23）**：输入框右下角的模型药丸从"跳转供应商页"改为**向上弹出的两段式菜单**——`模型`（按供应商分组的清单，当前项打勾）与 `推理等级`（Auto / Low / Medium / High），底部保留「管理供应商与模型」入口。药丸同时显示当前模型与等级；切换走真实动作（`provider.setActive` / `config.setEffort`），切换后回到当前会话并给出 flash。无 JS 可用，JS 只补"点外面 / Esc 关闭、同层只开一个分组"；live 轮询替换的是 `#composer-model` 标签内容，菜单开合不受影响。
 
@@ -608,7 +610,7 @@ v0.5 起对齐桌面端输入框：大圆角输入卡 + 底部工具行（左右
 | 图标系统 | 内联线性 SVG 集 | ✅ | v0.4：14–16px，替代字符符号 |
 | 移动端抽屉侧栏 | 汉堡 + 遮罩 + Esc | ✅ | ≤760px |
 | Confirm 对话框 | 共享 `<dialog>` | ✅ | 中止已接入；删除/重载可接 |
-| 任务规划面板 | 悬浮药丸/卡片（插件） | ✅ | v0.9 起由 `task-plan` 插件渲染，`chat.corner` / `composer.above` 可挂载切换；计划推演仍在核心 |
+| 任务规划面板 | 悬浮药丸/卡片（插件） | ✅ | v1.0 起由 `plugins/task-plan/` 统一插件渲染；后端 `afterTodoUpdate` 维护计划，核心投影降级 |
 | Composer 主交互 | `chat-composer` | ◐ | v0.5 对齐桌面端输入框；v0.10 起模型/推理等级可切换；2026-10-24 起支持图片输入（选图/粘贴/拖入、预览移除）；仍无通用附件/@/斜杠 |
 | 模式滑块 | 空会话页四档分段 | ✅ | 2026-10-24：编码/规划/创造/PM 就在空会话页里选（`POST /threads/{id}/mode` → `thread.setMode`），开始后不可切（与 desktop-ui 的 EmptyConversationView 一致）；新建弹窗已移除 |
 | 工作区选择（新会话） | 空会话页药丸下拉 + 「选择工作区」弹窗 | ✅ | 2026-10-24：药丸列出已有工作区（当前项打勾）；「选择工作区」打开目录选择弹窗（对齐 desktop-ui WorkspaceSelector：盘符/常用位置、路径、进入子目录、新建文件夹、选定此工作区），选定只改会话属性、不换当前项目；无 JS 回退整页 `/workspaces?bind=` |

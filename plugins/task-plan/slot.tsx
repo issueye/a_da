@@ -5,14 +5,36 @@
  * - `chat.corner`（默认）：会话区右上角，与正文/顶栏都不抢位置；
  * - `composer.above`：输入框上方的悬浮区（贴底浮在对话流之上）。
  *
- * 🔴 计划状态**不在这里推演**：`set` 替换 / `update` 按 id 增量合并 / `get` 只读
- * 都由服务端 `ui::derive_todo_plan` 算好，经 `props.data.todo` 投影过来。
- * 插件只负责"长什么样"——重演一遍状态机就又是两份事实了。
+ * 🔴 计划状态的权威来源是**本包的后端插件**：它订阅 `afterTodoUpdate`，把已生效的
+ * `todos` 按会话写入工作区状态文件；前端通过 `plan` action 读取。核心的
+ * `props.data.todo` 只作为后端停用/未就绪时的降级。
+ * 插件只负责"长什么样"——重演状态机就又是两份事实了。
  *
  * 没有计划时返回 `null`：不画 0/0 的空面板。
  */
 export function Page(props: any) {
-  const todo = props && props.data && props.data.todo ? props.data.todo : null;
+  const coreTodo = props && props.data && props.data.todo ? props.data.todo : null;
+  const backendGroup = props && props.data && props.data.backend
+    ? props.data.backend["task-plan"]
+    : null;
+  const backendPlan = backendGroup ? backendGroup.plan : null;
+  const backendTodo = backendPlan && backendPlan.ok ? backendPlan.data : null;
+
+  // 后端插件优先；后端停用/未就绪时回落到核心投影。
+  // notes 仍从核心投影补：afterTodoUpdate 的载荷只有 todos，没有 notes。
+  let todo = backendTodo || coreTodo;
+  if (backendTodo) {
+    const notes = coreTodo && coreTodo.notes ? coreTodo.notes : (backendTodo.notes || "");
+    todo = {
+      done: backendTodo.done || 0,
+      total: backendTodo.total || 0,
+      allDone: !!backendTodo.allDone,
+      active: backendTodo.active || "",
+      notes: notes,
+      markdown: backendTodo.markdown || "",
+      steps: backendTodo.steps || [],
+    };
+  }
   if (!todo || !todo.total) return null;
 
   const done = todo.done || 0;

@@ -64,6 +64,35 @@ registration. Handlers receive `(event, ctx)`; `ctx` exposes workspace/session
 identifiers, timeout budget, and validated registration methods, but not raw host
 IO or arbitrary host actions.
 
+## UI actions: `registerAction`
+
+A factory may also register **UI-only actions**:
+
+```js
+ada.registerAction({
+  name: "status",
+  description: "读取状态",
+  mode: "read",                 // read | write; default write
+  async execute(input, ctx) {
+    return { ok: true, data: { count: 0 } };
+  },
+});
+```
+
+- Actions do **not** enter the model tool catalog, approval gate, or checkpoints.
+- They are called by the SSR bridge `plugin.invoke`; a unified package's
+  `plugin.json` maps a frontend binding to an action name.
+- `mode: "read"` is required for `intent: "read"`; write actions are rejected when
+  the caller declares read intent.
+- `metadata.actions` is optional but mandatory once an action is registered;
+  `count` / `names` are validated like tools and hooks.
+- The action result is `{ ok: true, data }`; a returned `{ ok: false, error }` is a
+  soft failure with a user-readable message.
+- Each call creates a fresh sandbox; actions have no cross-request module state.
+
+See [unified-package.md](unified-package.md) for the one-package `frontend` /
+`backend` layout, the SSR bridge route, and the current v1 limits.
+
 **Skills are directories, not declarations.** Put `skills/<name>/SKILL.md` next to
 `index.ts`; the host scans it during assembly and reads the YAML frontmatter
 (`name` must equal the directory name, `description` 1-1024 chars — see

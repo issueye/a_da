@@ -22,7 +22,9 @@
 | 客户端和宿主**怎么通信**（WS 线协议 + HTTP API 的统一接口文档） | [protocol/README.md](protocol/README.md) |
 | **插件怎么写**、有哪些钩子点位 | [plugins/README.md](plugins/README.md) |
 | 插件契约的精确形状（工厂 API / 类型） | [plugins/extension-factory.md](plugins/extension-factory.md)、[plugins/extension-api.d.ts](plugins/extension-api.d.ts) |
-| **前端插件怎么调用后端插件**（设计提案） | [plugins/PLAN-frontend-backend-bridge.md](plugins/PLAN-frontend-backend-bridge.md) |
+| **一个包同时包含前端与后端**（统一插件包） | [plugins/unified-package.md](plugins/unified-package.md) |
+| 前端插件与后端插件**现在怎么对接** | [plugins/frontend-backend-integration.md](plugins/frontend-backend-integration.md) |
+| 前端插件调用后端插件的**设计提案**（未实现） | [plugins/PLAN-frontend-backend-bridge.md](plugins/PLAN-frontend-backend-bridge.md) |
 | **网关**、工作区模型与瘦客户端 | [gateway/README.md](gateway/README.md) |
 | **ssr-h 合并进网关**的执行计划（已落地，保留实施记录） | [gateway/PLAN-merge-ssr-h.md](gateway/PLAN-merge-ssr-h.md) |
 | **插件库平台**（发布/下载插件 ZIP） | [../crates/plugin-hub/README.md](../crates/plugin-hub/README.md) |
@@ -46,7 +48,9 @@
 | [plugins/README.md](plugins/README.md) | 插件平台现状：发现规则、贡献模型、钩子点位与分级、能力开关、管理面、排错 | 插件现状总览 |
 | [plugins/extension-factory.md](plugins/extension-factory.md) | Extension Factory 契约：包形态、`metadata`、注册 API、动作分级 | **插件契约唯一口径** |
 | [plugins/extension-api.d.ts](plugins/extension-api.d.ts) | 插件作者用的 TypeScript 类型声明 | 类型契约 |
-| [plugins/PLAN-frontend-backend-bridge.md](plugins/PLAN-frontend-backend-bridge.md) | 前端插件 ↔ 后端插件：`registerAction` / `plugin.invoke` / SSR 桥接路由 | **设计提案（未实现）** |
+| [plugins/frontend-backend-integration.md](plugins/frontend-backend-integration.md) | 前端插件与后端插件的**现有**对接方式：投影读取、核心路由写回、间接协同 | **现状说明** |
+| [plugins/unified-package.md](plugins/unified-package.md) | 统一插件包：`frontend` / `backend` 两段、`registerAction`、SSR 桥接与 v1 边界 | **现状说明（v1）** |
+| [plugins/PLAN-frontend-backend-bridge.md](plugins/PLAN-frontend-backend-bridge.md) | 前端插件 ↔ 后端插件：`registerAction` / `plugin.invoke` / SSR 桥接路由 | **v1 部分落地；完整设计记录** |
 | [gateway/README.md](gateway/README.md) | 网关的三合一职责、工作区门户、极限瘦客户端、SSR 托管 | 设计（含更正记录） |
 | [../crates/agent-web/README.md](../crates/agent-web/README.md) | SSR 网页界面：页面 / SSE / 前端插件 / 入口防护 | 界面现状总览 |
 | [gateway/PLAN-merge-ssr-h.md](gateway/PLAN-merge-ssr-h.md) | ssr-h 合并进网关的批次、任务卡、验收与回退 | **执行计划（已落地，含记录）** |

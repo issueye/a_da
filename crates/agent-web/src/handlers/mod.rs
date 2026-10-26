@@ -15,6 +15,7 @@ use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::agent::AgentClient;
 use crate::context::{AppMeta, RenderContext};
@@ -30,6 +31,7 @@ pub struct AppState {
     pub access: SharedAccess,
 }
 
+#[derive(Debug)]
 pub struct AppError {
     status: StatusCode,
     message: String,
@@ -162,6 +164,7 @@ pub async fn rewrite_plugin_redirect(request: Request, next: Next) -> Response {
 const NOTICE_TEXTS: &[(&str, &str)] = &[
     ("frontend_reloaded", "前端插件已重新扫描"),
     ("agent_reloaded", "已请求 agent 重载插件；新增工具将在下一条消息生效"),
+    ("backend_action_ok", "后端动作已执行"),
     ("created", "会话已创建"),
     ("sent", "消息已发送"),
     ("aborted", "已请求中止当前轮次"),
@@ -318,6 +321,7 @@ async fn base_with_snapshot(
             data.insert("processes".to_string(), processes);
         }
     }
+    attach_backend_actions(state, &mut context).await;
     let slots = slot_content(&state.frontend, context).await;
     // 侧栏"新会话"要落在当前激活工作区。快照里的 `workspace.project` 是 agent 的真实
     // 当前项目（与 原桌面端 的 `activeWorkspace` 同源）；没有快照时退回启动参数。
@@ -395,6 +399,23 @@ fn render_context_with_tokens(
 /// `providers[]`（里面带密钥）。新增字段要同步 `docs/PLUGIN-DATA.md`。
 fn plugin_data(snapshot: &Value, thread_id: Option<&str>, plugin_count: usize) -> Value {
     let thread = thread_view(snapshot, thread_id);
+    let approvals: Vec<Value> = thread
+        .and_then(|thread| thread.get("items"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            chat::approval_rows(items)
+                .into_iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "callId": row.call_id,
+                        "tool": row.tool_name,
+                        "args": row.args,
+                        "waited": row.waited,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     serde_json::json!({
         "plugin_count": plugin_count,
         // 渲染时刻（epoch ms）：插件做"几秒前"之类的相对时间时用它，别信浏览器时钟。
@@ -411,7 +432,76 @@ fn plugin_data(snapshot: &Value, thread_id: Option<&str>, plugin_count: usize) -
         // 待答复的提问（`ask_user` 工具卡）：`thread.tray` 插件据此渲染作答表单，
         // 表单字段约定见 [docs/PLAN-question-panel.md](../docs/PLAN-question-panel.md) §4。
         "questions": questions_view(snapshot, thread_id),
+        "approvals": approvals,
     })
+}
+
+/// 给统一插件的前端插槽预取只读后端动作。
+///
+/// 只跑 `frontend.actions.read=true` 的绑定；每个动作独立超时，失败写进
+/// `props.data.backend.<plugin>.<binding>.error`，**不让整页 500**。
+/// 写入动作永远不预取——它们只能由浏览器显式 POST 触发。
+async fn attach_backend_actions(state: &AppState, context: &mut RenderContext) {
+    let bindings = state.frontend.backend_reads();
+    if bindings.is_empty() {
+        return;
+    }
+    if !context.data.is_object() {
+        context.data = serde_json::json!({});
+    }
+    // 后端动作可能需要会话 id（task-plan 的计划按 threadId 存）；没有会话就传空对象。
+    let thread_id = context
+        .data
+        .get("thread")
+        .and_then(|thread| thread.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let mut backend = serde_json::Map::new();
+    for binding in bindings.into_iter().take(16) {
+        let input = match &thread_id {
+            Some(thread_id) => serde_json::json!({ "threadId": thread_id }),
+            None => serde_json::json!({}),
+        };
+        let result = tokio::time::timeout(
+            Duration::from_secs(6),
+            state.agent.invoke_plugin_action(
+                &binding.backend_plugin_id,
+                &binding.action,
+                input,
+                "read",
+            ),
+        )
+        .await;
+        let value = match result {
+            Ok(Ok(value)) => serde_json::json!({
+                "ok": true,
+                "data": value.get("data").cloned().unwrap_or(value),
+                "error": Value::Null,
+                "fetchedAt": now_ms(),
+            }),
+            Ok(Err(error)) => serde_json::json!({
+                "ok": false,
+                "data": Value::Null,
+                "error": public_reason(&error),
+                "fetchedAt": now_ms(),
+            }),
+            Err(_) => serde_json::json!({
+                "ok": false,
+                "data": Value::Null,
+                "error": "后端动作预取超时",
+                "fetchedAt": now_ms(),
+            }),
+        };
+        let entry = backend
+            .entry(binding.plugin_id.clone())
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(object) = entry.as_object_mut() {
+            object.insert(binding.name.clone(), value);
+        }
+    }
+    if let Some(data) = context.data.as_object_mut() {
+        data.insert("backend".to_string(), Value::Object(backend));
+    }
 }
 
 /// 给 `processes.read` 插件的进程投影。
@@ -890,6 +980,7 @@ async fn slot_content(registry: &Arc<PluginRegistry>, context: RenderContext) ->
         composer_footer: pick(Slot::ComposerFooter),
         composer_above: pick(Slot::ComposerAbove),
         thread_tray: pick(Slot::ThreadTray),
+        thread_approval: pick(Slot::ThreadApproval),
         transcript_after: pick(Slot::TranscriptAfter),
         extensions_list: pick(Slot::ExtensionsList),
         dashboard_widgets: pick(Slot::DashboardWidgets),
@@ -1512,12 +1603,14 @@ mod tests {
     }
 }
 
+mod bridge;
 mod chat;
 mod dashboard;
 mod extensions;
 mod providers;
 mod workspaces;
 
+pub use bridge::*;
 pub use chat::*;
 pub use dashboard::*;
 pub use extensions::*;

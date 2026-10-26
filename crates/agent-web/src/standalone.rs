@@ -151,7 +151,23 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     let access = Arc::new(guard::Access::for_host(host, args.port, args.ui_token));
-    let frontend = Arc::new(PluginRegistry::new(plugins_dir.clone()));
+    let dev_tree = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
+    let unified_plugins_dir = std::env::var("A_DA_UNIFIED_PLUGINS_DIR")
+        .ok()
+        .filter(|dir| !dir.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| (cfg!(debug_assertions) && dev_tree.is_dir()).then_some(dev_tree))
+        .or_else(|| {
+            std::env::var("A_DA_HOME")
+                .ok()
+                .filter(|home| !home.trim().is_empty())
+                .map(|home| std::path::PathBuf::from(home).join("plugins"))
+        });
+    let registry = PluginRegistry::new(plugins_dir.clone());
+    let frontend = Arc::new(match unified_plugins_dir {
+        Some(dir) => registry.with_unified_dir(dir),
+        None => registry,
+    });
     let agent = Arc::new(AgentClient::new(gateway.clone(), token, workspace.clone()));
     let state = AppState {
         agent,

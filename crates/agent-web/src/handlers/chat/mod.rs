@@ -7,6 +7,7 @@ mod rows;
 mod stream;
 
 use rows::*;
+pub(super) use rows::approval_rows;
 
 pub use stream::live_stream;
 
@@ -410,7 +411,8 @@ async fn live_parts(
     // 🔴 必须带真实上下文：早先用 `render_slot()`（默认 `RenderContext`），
     // 于是首屏渲染正常、2 秒后第一次轮询就把 `props.app.*` / `props.data.*` 刷成空。
     // 三个插槽共用同一份（带 `data.tokens` / `data.todo`）的上下文，首屏与轮询看到的数据才一致。
-    let chat_context = super::render_context_with_tokens(state, "chat", snapshot, Some(thread_id));
+    let mut chat_context = super::render_context_with_tokens(state, "chat", snapshot, Some(thread_id));
+    super::attach_backend_actions(state, &mut chat_context).await;
     let footer = crate::plugins::render_slot_off_thread(
         std::sync::Arc::clone(&state.frontend),
         Slot::ComposerFooter,
@@ -430,6 +432,13 @@ async fn live_parts(
         chat_context.clone(),
     )
     .await;
+    // 审批段：`thread.approval` 插槽输出非空时替换核心审批托盘；批准/拒绝仍走核心。
+    let thread_approval = crate::plugins::render_slot_off_thread(
+        std::sync::Arc::clone(&state.frontend),
+        Slot::ThreadApproval,
+        chat_context.clone(),
+    )
+    .await;
     // 提问段：`thread.tray` 插槽输出非空时替换核心提问托盘（D5 降级规则）。
     let thread_tray = crate::plugins::render_slot_off_thread(
         std::sync::Arc::clone(&state.frontend),
@@ -437,8 +446,13 @@ async fn live_parts(
         chat_context,
     )
     .await;
-    let (trays, approval_count, queue_len) =
-        trays_html(snapshot, raw_items, thread_id, Some(thread_tray.html.trim()));
+    let (trays, approval_count, queue_len) = trays_html(
+        snapshot,
+        raw_items,
+        thread_id,
+        Some(thread_approval.html.trim()),
+        Some(thread_tray.html.trim()),
+    );
     // 侧栏树与首屏同源（thread_rows 的空占位过滤 + workspace_groups 分组排序），
     // 分组锚点与首屏一致：当前会话的工作区，缺了回落 agent 的当前项目。
     let tree_workspace = if workspace.is_empty() {
@@ -616,12 +630,13 @@ async fn load_chat(
         .connected(Some(true))
         .render();
 
-    // 托盘（审批/提问/排队）：`thread.tray` 插槽已在 base.slots 里按同一份
-    // 会话上下文渲染，输出非空时替换核心提问托盘（D5 降级规则）。
+    // 托盘（审批/提问/排队）：`thread.approval` / `thread.tray` 插槽已在 base.slots
+    // 里按同一份会话上下文渲染，输出非空时替换对应核心托盘。
     let (trays, approval_count, queue_len) = trays_html(
         &snapshot,
         raw_items,
         &active_thread_id,
+        Some(base.slots.thread_approval.trim()),
         Some(base.slots.thread_tray.trim()),
     );
 

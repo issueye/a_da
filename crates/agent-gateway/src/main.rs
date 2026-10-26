@@ -226,16 +226,19 @@ async fn main() -> anyhow::Result<()> {
         .clone()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(default_web_plugins_dir);
+    let unified_plugins_dir = default_unified_plugins_dir();
     let web_state = agent_gateway::web::build_web_state(
         gateway.clone(),
         workspace.clone(),
         args.product.clone(),
         plugins_dir.clone(),
+        unified_plugins_dir.clone(),
         access.clone(),
     );
     info!(
-        "网页界面：ssr（插件目录 {}；{}）",
+        "网页界面：ssr（前端插件 {}；统一插件 {}；{}）",
         plugins_dir.display(),
+        unified_plugins_dir.display(),
         agent_web::guard::access_summary(&access)
     );
     let web = agent_web::router(web_state);
@@ -324,6 +327,35 @@ fn default_web_plugins_dir() -> std::path::PathBuf {
         .flatten()
         .find(|path| path.is_dir())
         .unwrap_or(home)
+}
+
+/// 统一插件包根（一个包同时有 frontend/backend 声明）。
+///
+/// 顺序：显式环境变量 → 开发树 `plugins/`（仅 debug）→ `<app_home>/plugins` →
+/// 与 exe 同级的 `plugins/`（打包后 `resources/bin/plugins`）。agent 进程继承同一个
+/// 环境变量/发布布局，于是两侧看到同一个包。
+fn default_unified_plugins_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("A_DA_UNIFIED_PLUGINS_DIR") {
+        if !dir.trim().is_empty() {
+            return std::path::PathBuf::from(dir.trim());
+        }
+    }
+    let dev_tree = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
+    if cfg!(debug_assertions) && dev_tree.is_dir() {
+        return dev_tree;
+    }
+    let home = app_home().join("plugins");
+    if home.is_dir() {
+        return home;
+    }
+    if let Some(exe_side) = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|dir| dir.join("plugins")))
+        .filter(|path| path.is_dir())
+    {
+        return exe_side;
+    }
+    home
 }
 
 /// 写一份端点发现文件：`<app_home>/gateway_endpoint.json`。
@@ -442,7 +474,8 @@ fn parse_args(argv: Vec<String>) -> anyhow::Result<Args> {
                      --allow-plaintext   显式承认「非回环 + 明文 ws」（典型：反向代理终止 TLS）\n\
                      --web-token <t>   SSR 界面的浏览器访问令牌（非回环监听必填；也可用 A_DA_WEB_TOKEN）\n\
                      --web-plugins-dir <p>  SSR 前端插件目录（默认 ~/.a-da/web-plugins）\n\
-                     --web-public-url <u>  反向代理对外地址（如 https://example.com；放行该 Host/Origin，https 时 cookie 带 Secure）\n"
+                     --web-public-url <u>  反向代理对外地址（如 https://example.com；放行该 Host/Origin，https 时 cookie 带 Secure）\n\
+                     A_DA_UNIFIED_PLUGINS_DIR  统一插件包根（默认 ~/.a-da/plugins；开发时可指向仓库 plugins/）\n"
                 );
                 std::process::exit(0);
             }
