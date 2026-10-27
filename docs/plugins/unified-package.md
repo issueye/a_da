@@ -71,10 +71,15 @@
 
 | 侧 | 扫描根 | 规则 |
 |---|---|---|
-| 前端 | `--web-plugins-dir` / `~/.a-da/web-plugins` / 包内 `frontend-plugins` | 旧扁平清单；有 `plugin.json` 即可 |
-| 前端 | `<app_home>/plugins` 或 `A_DA_UNIFIED_PLUGINS_DIR` | 只收有 `frontend` 段的包 |
-| 后端 | `<workspace>/.ada/agent-coding/extensions`、`~/.a-da/agent-coding/extensions` | 旧包格式；包根 `index.ts` |
+| 前端 | `<app_home>/plugins` 或 `A_DA_UNIFIED_PLUGINS_DIR`（打包后是 exe 旁 `plugins/`） | 只收有 `frontend` 段的包 |
+| 前端（运维覆盖） | `A_DA_WEB_PLUGINS_DIR` | 显式指过去时整目录都扫（清单仍需合法） |
 | 后端 | `<app_home>/plugins` 或 `A_DA_UNIFIED_PLUGINS_DIR` | 只收 `backend` 段的包 |
+| 后端（旧包格式） | `<workspace>/.ada/agent-coding/extensions`、`~/.a-da/agent-coding/extensions` | 旧包格式；包根 `index.ts` |
+
+> **2026-10 收口**：不再有独立的 `frontend-plugins/` 目录。前端插件也住在统一插件包根
+> （`plugins/<id>/plugin.json` 里带 `frontend` 段），示例 `hello-tsx` / `token-weather`
+> 已随迁。`A_DA_WEB_PLUGINS_DIR` 仍可显式指一个旧目录（兼容运维脚本），但不给时
+> 前端根就等于统一根，注册表只扫一次。
 
 开发时让网关与 agent 看到同一个仓库目录：
 
@@ -142,7 +147,8 @@ export default function (ada) {
   的 `DatabaseSync` / `StatementSync`；库文件必须在工作区内，详见
   [extension-factory.md](extension-factory.md) 的 SQLite 一节；
 - 需要子进程时声明 `// @ada-needs exec`，用 `require("node:child_process")` 的
-  `execFileSync` / `spawnSync` / `execSync`；异步 `spawn`/`exec`/`fork` 尚未支持；
+  `execFileSync` / `spawnSync` / `execSync` 或异步的 `spawn` / `exec` / `execFile`
+  （异步是**真流式**：`stdout.on('data')` 边跑边收；`fork` 仍未提供，它需要 IPC channel）；
 - 动作没有读取 `pluginConfig` / `secret` 的 API（见 §7）。
 
 ---

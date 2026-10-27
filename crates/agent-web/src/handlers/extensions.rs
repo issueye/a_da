@@ -221,7 +221,7 @@ pub async fn plugin_page(
         }
     }
     super::attach_backend_actions(&state, &mut context).await;
-    super::attach_tasks(&state, &mut context).await;
+    super::attach_tasks(&state, &mut context, None).await;
     let (page_title, html) = crate::plugins::read_page_off_thread(
         std::sync::Arc::clone(&state.frontend),
         plugin_id.clone(),

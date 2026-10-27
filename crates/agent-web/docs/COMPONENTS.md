@@ -65,7 +65,7 @@ ssr-h/
 │   ├── ada-modal.js            # ★ `<ada-modal>` Web Component
 │   ├── components.js           # 组件库其余行为（折叠/复制/插槽注册表/输入框）
 │   ├── app.js / chat.js / theme.js
-└── frontend-plugins/<id>/
+└── plugins/<id>/
     ├── plugin.json             # 可声明 slots
     ├── slot.tsx                # 插槽示例
     └── ...

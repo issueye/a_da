@@ -16,7 +16,7 @@ import { createServer as createNetServer } from 'node:net'
 
 const REPO = 'E:\\codes\\rust_projects\\a_da'
 const GATEWAY = join(REPO, '..', 'cargo_target_ada', 'debug', 'ada-gateway.exe')
-const WEB_PLUGINS = join(REPO, 'crates', 'agent-web', 'frontend-plugins')
+const WEB_PLUGINS = join(REPO, 'plugins')
 const UNIFIED_PLUGINS = join(REPO, 'plugins')
 const COMMAND = 'ping 127.0.0.1 -n 60'
 
@@ -218,8 +218,68 @@ try {
   check(pageWithTask.includes('PID '), '面板显示进程 PID')
   check(/\/tasks\/task_\d+\/kill/.test(pageWithTask), '运行中的任务带终止表单')
   check(
+    pageWithTask.includes('id="task-manager-popover"') && pageWithTask.includes('ada-popover'),
+    '任务面板是输入框上方的悬浮胶囊/浮窗（composer.above）',
+  )
+  check(
+    pageWithTask.includes('id="composer-above"'),
+    '聊天页有插件悬浮区容器（SSE parts 的固定目标）',
+  )
+  check(
     pageWithTask.includes('/ext/task-manager/assets/task-manager.css'),
     '插件样式已挂载',
+  )
+
+  // ── 事件订阅：任务输出的变化要"推"过来，不能等 5 秒心跳/整页刷新 ────────────
+  //
+  // 此时模型已经收尾，会话状态不再变化——这 7 秒里能收到的 `parts` 只可能来自
+  // 两条路：5 秒心跳（最多 2 帧）与**任务表指纹**触发（应当每秒一帧）。
+  const frames = []
+  {
+    const controller = new AbortController()
+    const response = await fetch(`${base}/threads/${threadId}/stream`, { signal: controller.signal })
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    const deadline = Date.now() + 7000
+    let buffer = ''
+    // 🔴 读 promise 必须**跨超时保留**：`Promise.race` 里被超时"赢掉"的那次
+    // `reader.read()` 仍然挂着，下一轮再发一个新的会把它的数据整块丢掉
+    // （实测每次读超时都会漏掉一帧，7 秒只剩 1 帧）。
+    let pending = reader.read()
+    try {
+      while (Date.now() < deadline) {
+        const chunk = await Promise.race([
+          pending,
+          new Promise((resolve) => setTimeout(() => resolve(null), Math.max(50, deadline - Date.now()))),
+        ])
+        if (!chunk || chunk.done) break
+        pending = reader.read()
+        buffer += decoder.decode(chunk.value, { stream: true })
+        let index = buffer.indexOf('\n\n')
+        while (index >= 0) {
+          const raw = buffer.slice(0, index)
+          buffer = buffer.slice(index + 2)
+          const event = /^event: (.+)$/m.exec(raw)?.[1]
+          const data = /^data: (.*)$/m.exec(raw)?.[1] || ''
+          if (event === 'parts' && data.includes('task-manager')) {
+            frames.push(data.length)
+          }
+          index = buffer.indexOf('\n\n')
+        }
+      }
+    } finally {
+      controller.abort()
+    }
+  }
+  check(
+    frames.length >= 3,
+    '任务输出的变化通过 SSE parts 推到前端（不是等 5 秒心跳）',
+    `7 秒内收到 ${frames.length} 帧`,
+  )
+  check(
+    frames.length >= 2 && frames[frames.length - 1] > frames[0],
+    '推过来的帧里输出在变长（真的跟着任务长）',
+    JSON.stringify(frames),
   )
 
   const taskId = pageWithTask.match(/\/tasks\/(task_\d+)\/kill/)?.[1]

@@ -45,6 +45,7 @@
 | `backend` | object | 统一插件只读动作的预取结果（§2.12；`data.backend.<pluginId>.<binding>`） |
 | `approvals` | array | 当前会话待批准的工具调用（§2.13；`thread.approval` 插件用） |
 | `tasks` | object | 当前会话的后台命令任务（§2.14；仅声明 `tasks.read` 的插件） |
+| `runs` | object | 当前会话最近的前台命令（§2.15；仅声明 `runs.read` 的插件） |
 
 ### 2.2 `tokens`（上下文 / 缓存用量）
 
@@ -210,7 +211,7 @@
 - 端点查找走注册表（热）：`/extensions` 重载后新端点立即生效；插件停用/加载失败
   端点立即消失（404 JSON）；
 - 插件浏览器 JS 可以 fetch 这些同源端点（CSP `connect-src 'self'`），
-  完整示例见 `frontend-plugins/hello-tsx/`（`api/info.tsx` + `static/hello.js`）。
+  完整示例见 `plugins/hello-tsx/`（`api/info.tsx` + `static/hello.js`）。
 
 ### 2.11 `processes`（网关与 agent 实例）
 
@@ -321,6 +322,51 @@
 - 终止走核心路由 `POST /tasks/{id}/kill`（内部 `task.kill`），插件只渲染按钮；
 - 没有 `tasks.read` 的插件拿不到这份数据。
 
+**这份数据是"推"过来的，不是插件自己拉的**：任务表在 agent 进程里、网关不广播它，
+所以聊天页的 SSE 事件循环按 1 秒问一次 `task.list`，用指纹（`id` / `running` /
+`exitCode` / 输出长度）判断变化，变了就补一帧 `parts`。因此：
+
+- 有任务在跑时，浮窗里的输出大约 1 秒长一截；没有任务在跑时不轮询（表不会自己变），
+  结构变化（新卡片 / 条目重取）后强制重拉一次；
+- 同一帧里已经取到的任务表会直接交给插槽渲染，**一帧只打一次 `task.list`**；
+- 2 秒兜底轮询（SSE 断流时）与首屏渲染仍各自取一次，语义与其它投影一致。
+
+### 2.15 `runs`（当前会话最近的前台命令）
+
+仅当插件 manifest 声明 `capabilities: ["runs.read"]` 时注入。
+
+**数据源不是任务表，是会话快照里的 tool item。** `run_command` 是阻塞调用：它结束后
+不留任何活体（不在 `BackgroundTasks` 里、没有可终止的进程），唯一权威记录就是对话流里
+那条「执行命令」卡片本身。所以这里**只做投影**，不新增 RPC、不缓存第二份状态。
+
+```jsonc
+{
+  "runs": [{
+    "id": "item_…",            // 会话 item id（不是 task id，不能拿去 kill）
+    "callId": "call_…",
+    "command": "ping -n 6 127.0.0.1",
+    "cwd": "",                 // 未显式指定 cwd 时为空串（= 引擎工作区）
+    "status": "done",          // done / error / timeout / aborted / running …
+    "running": false,
+    "exitCode": 0,             // 只认 details.exitCode / details.exit_code，缺失为 null
+    "durationMs": 5100,
+    "startedAt": 1760999994000,
+    "at": 9,
+    "outputLines": 13,
+    "outputPreview": "来自 127.0.0.1 的回复: 字节=32 时间<1ms…"
+  }],
+  "count": 1,                  // 本帧给出的条数（≤ 20）
+  "total": 1                   // 会话里一共有多少条（可能大于 count）
+}
+```
+
+- **只投影 `run_command`**：`run_background` / `check_task` / `kill_task` 属于 `tasks`（§2.14）；
+- 最新的排最前；最多回看 20 条（面板是"最近命令"，不是完整历史），超出部分用 `total` 如实报数；
+- `outputPreview` 截断到 1200 字符（比后台任务的 4000 小：一屏要挤 20 条）；
+- 历史被 `compact` 掉的老 item 不再出现——这正是"最近"的语义，不是缺陷；
+- 没有会话 / 还没跑过命令 → `{ runs: [], count: 0 }`，**这不是读取失败**（没有 `error` 字段）；
+- 只读：这些记录**不可终止**（进程早已结束），插件不要给它们渲染 kill 表单。
+
 ## 3. 点位与刷新时机
 
 | 插槽 | 出现在 | 内容刷新 |
@@ -330,7 +376,7 @@
 | `chat.corner` | **仅聊天页**，会话区右上角 | 首屏 + SSE `parts.corner` / 2s live 轮询 |
 | `composer.left` / `composer.right` | 聊天页输入框工具行 | 整页加载（`live` 会整块换输入框辅助区，但工具行不换） |
 | `composer.footer` | 聊天页输入框下方辅助区 | 首屏 + `parts.aux` / 2s live 轮询 |
-| `composer.above` | 聊天页右下角悬浮区 | 首屏 + `parts.above` / 2s live 轮询 |
+| `composer.above` | 聊天页右下角悬浮区 | 首屏 + `parts.above` / 2s live 轮询；有后台任务在跑时，输出变化会额外触发 `parts`（约 1 秒一帧） |
 | `thread.tray` | 聊天页托盘区（输入框上方 in-flow）的**提问段** | 首屏 + `parts.trays` / 2s live 轮询；输出非空时**替换核心提问托盘**，为空/停用/失败自动回退核心实现 |
 | `thread.approval` | 聊天页托盘区（输入框上方 in-flow）的**审批段** | 首屏 + `parts.trays` / 2s live 轮询；输出非空时**替换核心审批托盘**，批准/拒绝仍提交核心 `/approvals/{call_id}/decision` |
 | `transcript.after` | 聊天页对话流末尾 | 首屏（整段同步时随对话流重渲染） |
@@ -374,7 +420,7 @@ const windowSize = t ? t.window : 0;
 <p>{formatTokens(used)} / {formatTokens(windowSize)} tokens</p>
 ```
 
-完整实现见 [`frontend-plugins/token-weather/`](../frontend-plugins/token-weather/)，
+完整实现见 [`plugins/token-weather/`](../plugins/token-weather/)，
 数据投影的唯一出口在 `src/handlers/mod.rs::plugin_data`。
 
 

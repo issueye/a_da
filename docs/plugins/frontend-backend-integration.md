@@ -103,11 +103,14 @@
 | `model` / `config` / `workspace` | 快照与配置 | 通用 |
 | `providerAdmin` | 供应商 RPC + 配置，**仅声明 `providers.read` 的插件页面** | `provider-admin` |
 | `processes` | 网关管理面，**任一启用插件声明 `processes.read` 时全页注入** | `process-manager` |
+| `tasks` | 后台任务表（`run_background` 族），仅声明 `tasks.read` | `task-manager` |
+| `runs` | 会话快照里的 `run_command` tool item，仅声明 `runs.read` | `task-manager` |
 
 实现位置：
 
 - 通用投影：`crates/agent-web/src/handlers/mod.rs` 的 `plugin_data` / `render_context_with_tokens`；
 - `processes.read`：`crates/agent-web/src/handlers/mod.rs:315`；
+- `runs.read`：`crates/agent-web/src/handlers/mod.rs` 的 `runs_view`（纯函数，不新增 RPC）；
 - `providers.read`：`crates/agent-web/src/handlers/extensions.rs:199`；
 - TSX props 组装：`crates/agent-web/src/plugins/registry.rs` 的 `tsx_props`。
 
@@ -222,10 +225,15 @@ agent RPC：
 
 - `run_background` 族在 agent 进程里持有一张实例态 `BackgroundTasks` 表；
 - `AgentClient` 经 `task.list` 按 `threadId` 取当前会话任务，注入 `props.data.tasks`；
-- `plugins/task-manager` 用 `sidebar.bottom` 渲染命令、PID、状态与输出预览；
+- `plugins/task-manager` 挂在 `composer.above`（输入框上方悬浮区）：胶囊 + 向上弹出的
+  浮窗，渲染命令、PID、状态与输出预览（与 Token 天气同构）；
+- **输出是推送的**：任务表没有事件通道（网关不广播它），聊天页的 SSE 事件循环按 1 秒
+  问一次 `task.list`，用指纹（`id` / `running` / `exitCode` / 输出长度）判断变化，
+  变了就补一帧 `parts`；同一帧里已取到的表会直接交给插槽渲染，不会打两次 RPC。
+  只在有任务在跑时轮询，没有任务时不空转；
 - 终止走核心 `POST /tasks/{id}/kill` → `task.kill`，插件不直接操作进程。
 
-任务表不落盘、不跨进程；插件停用或读取失败时面板隐藏/显示错误，不影响工具本身。
+任务表不落盘、不跨进程；插件停用或读取失败时胶囊不显示/显示错误，不影响工具本身。
 
 ### 5.7 `ada.route`：后端接口由 TS 自己长出来
 
@@ -274,8 +282,8 @@ agent RPC：
 
 1. 在 agent 侧产生数据（工具结果、事件、快照字段）；
 2. 在 `agent-web` 的 `plugin_data` 或专用投影里增加字段；
-3. 如果数据敏感，增加一个 manifest capability（像 `providers.read` / `processes.read` / `tasks.read`）；
-4. 在 `frontend-plugins/<id>/` 里消费 `props.data.<field>`；
+3. 如果数据敏感，增加一个 manifest capability（像 `providers.read` / `processes.read` / `tasks.read` / `runs.read`）；
+4. 在 `plugins/<id>/` 里消费 `props.data.<field>`；
 5. 补 `PLUGIN-DATA.md` 与测试。
 
 代价：需要改核心投影层；但边界清晰，符合 INV-8（只投影，不缓存真源）。
@@ -307,7 +315,7 @@ agent RPC：
 | 前端 TSX → 宿主 | 无 fs/net/process；HTML 白名单；500ms 渲染预算；无内存上限 |
 | 前端浏览器脚本 | 与页面同源，能调核心路由；**能力声明不约束脚本** |
 | 后端插件 → 宿主 | `@ada-needs` 沙箱；工作区 fs 边界；net 默认关；sqlite/exec 需显式声明；工具审批；钩子分级 |
-| 前端能力 | `providers.read` / `processes.read` / `tasks.read` 是**数据最小化**，不是授权系统 |
+| 前端能力 | `providers.read` / `processes.read` / `tasks.read` / `runs.read` 是**数据最小化**，不是授权系统 |
 
 两个需要特别记住的事实：
 

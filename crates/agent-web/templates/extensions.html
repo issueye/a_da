@@ -31,7 +31,7 @@
   {% if frontend.is_empty() %}
   <div class="empty-state">
     <p class="text-sm font-medium text-ink">没有前端插件</p>
-    <p class="mt-1 text-xs leading-5 text-faint">在 <code class="code-inline">ssr-h/frontend-plugins/&lt;id&gt;/plugin.json</code> 放一个 manifest，再点上方“重载前端插件”。</p>
+    <p class="mt-1 text-xs leading-5 text-faint">在 <code class="code-inline">ssr-h/plugins/&lt;id&gt;/plugin.json</code> 放一个 manifest，再点上方“重载前端插件”。</p>
   </div>
   {% else %}
   <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">

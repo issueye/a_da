@@ -1394,9 +1394,9 @@ mod tests {
     /// 用户点过什么而随机红；测试也绝不能反过来写用户的状态文件。
     #[test]
     fn hello_tsx_example_compiles_and_renders() {
-        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/hello-tsx");
         let root = temp_root("example-copy");
-        copy_tree(&source, &root);
+        copy_tree(&source, &root.join("hello-tsx"));
         let registry = registry_at(&root);
         let plugin = registry.find("hello-tsx").expect("hello-tsx exists");
         assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
@@ -1613,7 +1613,7 @@ export function Page() {
     /// 分档口径：0-30 晴天 / 31-60 多云 / 61-85 阴天 / >85 暴雨（边界归上一档）。
     #[test]
     fn token_weather_plugin_maps_percent_to_weather() {
-        let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
+        let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
         let registry = registry_at(&plugins_dir);
         let plugin = registry
             .find("token-weather")
@@ -1703,7 +1703,7 @@ export function Page() {
     /// 天气插件的展示细节：M/K 缩写 + 缓存命中率（都来自 `props.data.tokens`）。
     #[test]
     fn token_weather_plugin_formats_tokens_and_cache() {
-        let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins");
+        let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
         let registry = registry_at(&plugins_dir);
         let plugin = registry
             .find("token-weather")
@@ -1782,7 +1782,7 @@ export function Page() {
                 "error": null
             }
         }));
-        let slot = registry.render_slot_with(Slot::SidebarBottom, &context);
+        let slot = registry.render_slot_with(Slot::ComposerAbove, &context);
         assert!(
             slot.failed.is_empty(),
             "failed={:?}; html={}",
@@ -1791,6 +1791,13 @@ export function Page() {
         );
         assert!(slot.contributors >= 1, "slot: {slot:?}");
         assert!(slot.html.contains(r#"data-plugin-scope="task-manager""#), "{}", slot.html);
+        // 悬浮形态：`composer.above` 里的胶囊 + 向上弹的浮窗（与天气胶囊同构）。
+        assert!(
+            slot.html.contains(r#"class="ada-popover tm-popover""#),
+            "应是浮窗形态而不是内嵌面板: {}",
+            slot.html
+        );
+        assert!(slot.html.contains(r#"id="task-manager-popover""#), "{}", slot.html);
         assert!(slot.html.contains("cargo run"), "{}", slot.html);
         assert!(slot.html.contains("PID 777"), "{}", slot.html);
         assert!(slot.html.contains("/tasks/task_1/kill"), "{}", slot.html);
@@ -1798,12 +1805,62 @@ export function Page() {
         assert!(slot.html.contains("1/2"), "{}", slot.html);
         assert!(!slot.html.contains("/tasks/task_2/kill"), "已结束的任务不该有终止按钮: {}", slot.html);
 
-        let empty = registry.render_slot_with(Slot::SidebarBottom, &RenderContext::default());
+        let empty = registry.render_slot_with(Slot::ComposerAbove, &RenderContext::default());
         assert!(
             !empty.html.contains(r#"data-plugin-scope="task-manager""#),
             "{:?}",
             empty.html
         );
+    }
+
+    /// 「最近命令」分区：前台命令（`run_command`）结束后没有可终止的进程，
+    /// 所以这份记录**只读**——不许出现终止表单，也不该装出 PID。
+    #[test]
+    fn task_manager_plugin_lists_recent_commands_readonly() {
+        let primary = temp_root("task-manager-runs");
+        let unified = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
+        let registry = registry_at(&primary).with_unified_dir(unified);
+        let plugin = registry.find("task-manager").expect("task-manager 插件应当被发现");
+        assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
+        assert!(
+            plugin.capabilities.iter().any(|cap| cap == "runs.read"),
+            "插件必须声明 runs.read 才拿得到 runs：{:?}",
+            plugin.capabilities
+        );
+
+        // 没有后台任务、只有命令记录：胶囊仍然出现——否则"跑过命令"没有别的出口。
+        let context = RenderContext::default().with_data(serde_json::json!({
+            "render": { "at": 1_761_000_000_000u64 },
+            "thread": { "id": "thread-1" },
+            "tasks": { "tasks": [], "count": 0, "error": null },
+            "runs": {
+                "runs": [{
+                    "id": "item-9",
+                    "callId": "call-9",
+                    "command": "ping -n 6 127.0.0.1",
+                    "cwd": "",
+                    "status": "done",
+                    "running": false,
+                    "exitCode": 0,
+                    "durationMs": 5100,
+                    "startedAt": 1_760_999_994_000u64,
+                    "at": 9,
+                    "outputLines": 13,
+                    "outputPreview": "来自 127.0.0.1 的回复: 字节=32 时间<1ms"
+                }],
+                "count": 1,
+                "total": 1
+            }
+        }));
+        let slot = registry.render_slot_with(Slot::ComposerAbove, &context);
+        assert!(slot.failed.is_empty(), "failed={:?}; html={}", slot.failed, slot.html);
+        assert!(slot.html.contains(r#"data-plugin-scope="task-manager""#), "{}", slot.html);
+        assert!(slot.html.contains("最近命令"), "{}", slot.html);
+        assert!(slot.html.contains("ping -n 6 127.0.0.1"), "{}", slot.html);
+        assert!(slot.html.contains("5.1s"), "耗时要按 durationMs 渲染: {}", slot.html);
+        assert!(slot.html.contains("退出码 0"), "{}", slot.html);
+        assert!(!slot.html.contains("/kill"), "最近命令是只读记录，不该有终止表单: {}", slot.html);
+        assert!(!slot.html.contains("PID "), "最近命令没有 pid: {}", slot.html);
     }
 
     #[test]

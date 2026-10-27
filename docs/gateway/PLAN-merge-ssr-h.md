@@ -135,7 +135,7 @@ crates/agent-web/
   templates/          # Askama 编译期模板
   static/             # 内嵌静态资源
   tests/              # ui_scale.rs 等
-  frontend-plugins/   # 示例插件（打包时可外置）
+  plugins/   # 示例插件（打包时可外置）
 ```
 
 依赖方向：
@@ -232,7 +232,7 @@ pub trait WebBackend: Send + Sync {
 
 - 新建 `crates/agent-web/Cargo.toml`，把 `ssr-h/Cargo.toml` 的依赖整体搬过来（去掉 `clap` 与
   `reqwest`/`tokio-tungstenite` 在 M1 之后再决定是否保留给 `HttpBackend`）。
-- 平移 `ssr-h/src`、`ssr-h/templates`、`ssr-h/static`、`ssr-h/tests`、`ssr-h/frontend-plugins`。
+- 平移 `ssr-h/src`、`ssr-h/templates`、`ssr-h/static`、`ssr-h/tests`、`plugins`。
 - 根 `Cargo.toml` 增加成员与 `agent-web = { path = "crates/agent-web" }`；
   把 `oxc_ast` 补进 `[workspace.dependencies]`（ssr-h 直接用它）。
 - 修正 Askama 模板根（默认即 crate 根，搬到 `crates/agent-web/templates` 后无需额外配置）、
@@ -332,8 +332,8 @@ M4 删除）。
   `docs/` 与 README。
 - `AgentClient::plugins()` 改为调 `plugin.list`（agent 方法），不再请求本进程的 HTTP 路由。
 - 插件目录解析顺序：`--web-plugins-dir` → `A_DA_WEB_PLUGINS_DIR` → `<A_DA_HOME>/web-plugins`
-  → exe 旁 `frontend-plugins` → 当前目录 `frontend-plugins`；
-  开发时最后回退到 crate 内的 `frontend-plugins`。
+  → exe 旁 `plugins` → 当前目录 `plugins`；
+  开发时最后回退到 crate 内的 `plugins`。
 - 停用状态写入 `<A_DA_HOME>/web-ui-state.json`；读取时兼容旧的插件目录内 `.ssr-h-state.json`
   （一次性迁移或忽略，二选一，需在实现时定）。
 
@@ -341,8 +341,8 @@ M4 删除）。
 
 **T08 打包与资源**
 
-- SSR 的模板与静态资源是编译期内嵌，不需要额外拷贝；只有 `frontend-plugins` 需要随包分发。
-- `electron-builder.json` 增加 `frontend-plugins` 到 `resources/bin/`（若决定随包）；
+- SSR 的模板与静态资源是编译期内嵌，不需要额外拷贝；只有 `plugins` 需要随包分发。
+- `electron-builder.json` 增加 `plugins` 到 `resources/bin/`（若决定随包）；
   `findUiDir`/`--ui-dir` 逻辑不变（仍服务 `desktop` 模式）。
 - `dist/` 不再产出第二个 `ssr-h.exe`；`cargo xtask ship` 的产物清单同步。
 
@@ -542,7 +542,7 @@ cargo xtask verify --fast
 | `ssr-h/src/handlers/*` | `agent-web` 原样保留 |
 | `ssr-h/src/plugins/*`、`src/tsx/*` | `agent-web` 原样保留 |
 | `ssr-h/templates/`、`ssr-h/static/` | `crates/agent-web/templates/`、`crates/agent-web/static/` |
-| `ssr-h/frontend-plugins/` | `crates/agent-web/frontend-plugins/`（打包可外置） |
+| `plugins/` | `plugins/`（打包可外置） |
 | `ssr-h/tests/ui_scale.rs` | `crates/agent-web/tests/ui_scale.rs`（路径断言更新） |
 | `ssr-h/Cargo.toml` + `Cargo.lock` | 删除；根 workspace 增加 `crates/agent-web` |
 | `tools/verify-ssr-*.mjs` | 改为单进程单端口；新增 `verify-gateway-web.mjs` |

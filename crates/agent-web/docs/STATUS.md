@@ -87,7 +87,7 @@
 
 ### 4. 动态前端插件体系
 
-- [x] `frontend-plugins/<id>/plugin.json` 运行时扫描 + 热重载（`/extensions` 点重载，无需重启）
+- [x] `plugins/<id>/plugin.json` 运行时扫描 + 热重载（`/extensions` 点重载，无需重启）
 - [x] **只接受 TSX**：OXC 转译 + Boa 运行时，支持相对 import / export（ESM loader），不需要 Node/Bun
 - [x] 独立页面（`/ext/{id}/{slug}`）、仪表盘卡片、静态资源（路径规范化 + 越界拒绝）
 - [x] 插槽：`chat.corner` / `composer.left|right|footer|above` / `sidebar.top|bottom` / `topbar.right` / `transcript.after` / `extensions.list` / `dashboard.widgets`

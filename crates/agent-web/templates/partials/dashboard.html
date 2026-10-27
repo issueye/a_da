@@ -41,14 +41,14 @@
   <div class="section-head">
     <div>
       <h2 class="section-title">插件贡献</h2>
-      <p class="section-sub">来自 <code class="code-inline">frontend-plugins/</code> 的 dashboard 片段</p>
+      <p class="section-sub">来自 <code class="code-inline">plugins/</code> 的 dashboard 片段</p>
     </div>
     <a class="link text-xs" href="/extensions">管理扩展</a>
   </div>
   {% if view.widgets.is_empty() %}
   <div class="empty-state py-8">
     <p class="text-xs font-medium text-ink">还没有前端插件卡片</p>
-    <p class="mt-1 text-xs text-faint">新增 <code class="code-inline">frontend-plugins/&lt;id&gt;/plugin.json</code> 后到扩展页点“重载前端插件”。</p>
+    <p class="mt-1 text-xs text-faint">新增 <code class="code-inline">plugins/&lt;id&gt;/plugin.json</code> 后到扩展页点“重载前端插件”。</p>
   </div>
   {% else %}  <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
     {% for w in view.widgets %}

@@ -303,30 +303,19 @@ fn app_home() -> std::path::PathBuf {
     }
 }
 
-/// SSR 前端插件目录：用户目录优先，其次 exe 旁，最后开发树。
+/// 前端插件目录。
 ///
-/// 插件停用状态写在 `~/.a-da/web-ui-state.json`（见 `agent-web` 的插件注册表），
-/// 所以插件目录本身可以随包只读分发。
+/// 2026-10 收口：**不再有独立的 `frontend-plugins/`** —— 前端插件也住在统一插件包根
+/// （一个 `plugin.json` 同时声明 frontend/backend）。`A_DA_WEB_PLUGINS_DIR` 仍可显式
+/// 指过去（运维开关）；不给时与统一根一致，注册表因此只扫一次（`reload` 里
+/// `unified == dir` 会自动去重）。
 fn default_web_plugins_dir() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("A_DA_WEB_PLUGINS_DIR") {
         if !dir.trim().is_empty() {
             return std::path::PathBuf::from(dir.trim());
         }
     }
-    let home = app_home().join("web-plugins");
-    let exe_side = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(|dir| dir.join("frontend-plugins")));
-    let cwd_side = std::env::current_dir()
-        .ok()
-        .map(|dir| dir.join("frontend-plugins"));
-    let dev_tree = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../agent-web/frontend-plugins");
-    [Some(home.clone()), exe_side, cwd_side, Some(dev_tree)]
-        .into_iter()
-        .flatten()
-        .find(|path| path.is_dir())
-        .unwrap_or(home)
+    default_unified_plugins_dir()
 }
 
 /// 统一插件包根（一个包同时有 frontend/backend 声明）。

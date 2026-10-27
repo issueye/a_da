@@ -386,6 +386,7 @@ async fn live_parts(
     snapshot: &Value,
     thread_id: &str,
     thread: &Value,
+    tasks: Option<&Value>,
 ) -> LiveParts {
     let raw_items = thread
         .get("items")
@@ -413,7 +414,8 @@ async fn live_parts(
     // 三个插槽共用同一份（带 `data.tokens` / `data.todo`）的上下文，首屏与轮询看到的数据才一致。
     let mut chat_context = super::render_context_with_tokens(state, "chat", snapshot, Some(thread_id));
     super::attach_backend_actions(state, &mut chat_context).await;
-    super::attach_tasks(state, &mut chat_context).await;
+    // 事件循环每拍已经为算指纹取过任务表时直接复用，别在同一帧里再问一次网关。
+    super::attach_tasks(state, &mut chat_context, tasks).await;
     let footer = crate::plugins::render_slot_off_thread(
         std::sync::Arc::clone(&state.frontend),
         Slot::ComposerFooter,
@@ -846,7 +848,7 @@ pub async fn live(State(state): State<AppState>, Path(thread_id): Path<String>) 
     else {
         return (StatusCode::NOT_FOUND, "会话不存在").into_response();
     };
-    let parts = live_parts(&state, &snapshot, &thread_id, thread).await;
+    let parts = live_parts(&state, &snapshot, &thread_id, thread, None).await;
     let items: Vec<ItemRow> = thread
         .get("items")
         .and_then(Value::as_array)

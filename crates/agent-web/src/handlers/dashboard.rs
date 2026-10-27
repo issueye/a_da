@@ -50,7 +50,7 @@ async fn dashboard_view(state: &AppState) -> Result<DashboardView, AppError> {
             Stat {
                 label: "前端插件".to_string(),
                 value: frontend_count.to_string(),
-                hint: "运行时扫描 frontend-plugins/".to_string(),
+                hint: "运行时扫描 plugins/（统一插件包）".to_string(),
                 tone: "brand".to_string(),
             },
         ],

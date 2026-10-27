@@ -12,7 +12,7 @@ import { createServer as createNetServer } from 'node:net'
 
 const REPO = 'E:\\codes\\rust_projects\\a_da'
 const GATEWAY = join(REPO, '..', 'cargo_target_ada', 'debug', 'ada-gateway.exe')
-const WEB_PLUGINS = join(REPO, 'crates', 'agent-web', 'frontend-plugins')
+const WEB_PLUGINS = join(REPO, 'plugins')
 const UNIFIED_PLUGINS = join(REPO, 'plugins')
 
 const failures = []

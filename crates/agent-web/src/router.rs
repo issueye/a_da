@@ -155,9 +155,13 @@ pub fn router(state: AppState) -> Router {
         .layer(axum::middleware::from_fn_with_state(state, guard::guard))
 }
 
-/// 插件目录按“可执行文件旁 → 当前目录 → 源码目录”查找。
+/// 插件目录：**统一插件根**（`plugins/`）。
 ///
-/// 这样 `cargo run` 和把 `ssr-h.exe` 连同 `frontend-plugins/` 拷贝到别的机器都能工作。
+/// 2026-10 收口：前端插件也住在统一包里（一个 `plugin.json` 同时声明
+/// `frontend` / `backend` 两段），**不再有独立的 `frontend-plugins/` 目录**。
+/// 查找顺序：可执行文件旁 → 当前目录 → 源码树。
+///
+/// 这样 `cargo run` 和把 `ssr-h.exe` 连同 `plugins/` 拷贝到别的机器都能工作。
 pub fn default_plugins_dir() -> PathBuf {
     let exe_dir = std::env::current_exe()
         .ok()
@@ -165,15 +169,15 @@ pub fn default_plugins_dir() -> PathBuf {
     let cwd = std::env::current_dir().ok();
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let candidates = [
-        exe_dir.as_ref().map(|dir| dir.join("frontend-plugins")),
-        cwd.as_ref().map(|dir| dir.join("frontend-plugins")),
-        Some(manifest.join("frontend-plugins")),
+        exe_dir.as_ref().map(|dir| dir.join("plugins")),
+        cwd.as_ref().map(|dir| dir.join("plugins")),
+        Some(manifest.join("../../plugins")),
     ];
     candidates
         .into_iter()
         .flatten()
         .find(|path| path.is_dir())
-        .unwrap_or_else(|| manifest.join("frontend-plugins"))
+        .unwrap_or_else(|| manifest.join("../../plugins"))
 }
 
 async fn static_css() -> Response {

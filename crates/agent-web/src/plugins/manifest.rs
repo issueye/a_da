@@ -455,7 +455,7 @@ impl Manifest {
         for capability in &frontend.capabilities {
             if !matches!(
                 capability.as_str(),
-                "providers.read" | "processes.read" | "tasks.read"
+                "providers.read" | "processes.read" | "tasks.read" | "runs.read"
             ) {
                 bail!("不支持的插件能力: {capability}");
             }
@@ -644,11 +644,14 @@ fn capabilities_are_an_explicit_allowlist() {
         "id": "demo",
         "name": "Demo",
         "version": "0.1.0",
-        "capabilities": ["providers.read"],
+        "capabilities": ["providers.read", "tasks.read", "runs.read"],
         "pages": [{ "slug": "home", "title": "Home", "template": "page.tsx" }],
     }))
     .expect("manifest");
-    assert!(ok.validate().is_ok());
+    assert!(
+        ok.validate().is_ok(),
+        "tasks.read / runs.read 必须放行（task-manager 靠它们取数据）"
+    );
     ok.capabilities.push("providers.write".to_string());
     assert!(ok.validate().is_err());
 }
@@ -786,10 +789,8 @@ fn action_binding_names_are_url_safe() {
 /// 仓库自带插件必须使用统一清单形状；旧扁平形状只保留兼容。
 #[test]
 fn bundled_plugin_manifests_use_the_unified_shape() {
-    let roots = [
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("frontend-plugins"),
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins"),
-    ];
+    // 2026-10 收口：前端插件也住在统一包根 `plugins/` 里，只有这一个源码根。
+    let roots = [Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins")];
     let mut checked = 0;
     for root in roots {
         let entries = std::fs::read_dir(&root).expect("插件目录必须存在");

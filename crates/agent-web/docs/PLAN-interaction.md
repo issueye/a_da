@@ -118,7 +118,7 @@
 **T12 provider-admin：脏检查 + 文案纠偏（1d，建议 17）**
 - 新增 `plugins/provider-admin/static/provider-admin.js`（manifest `scripts` 注入，机制已有）：表单 `input/change` 记 dirty；拦截站内链接（点击时若 dirty → 复用核心 `data-confirm` 委托弹确认「未保存的修改将丢弃」）+ `beforeunload` 兜底。
 - 文案纠偏：`page.tsx:117` 按钮与结果片段「测试连接」→「校验参数」，结果文案明确「仅检查参数完整性，未访问端点；验可达性请用『获取远程模型』」（与 UED §9「不用已完成描述未确认状态」对齐）。
-- 注意：改源码插件后同步 `dist/frontend-plugins/`（README 🔴 已记），或验收时用 `--plugins-dir ssr-h/frontend-plugins`。
+- 注意：改源码插件后同步 `dist/plugins/`（README 🔴 已记），或验收时用 `--plugins-dir plugins`。
 
 ### M2 批
 
@@ -179,7 +179,7 @@ T03 的投影函数提取 ──> T06 的 queue 三动作（同一批 handler，
 | sessionStorage 草稿 / 状态键泄漏 | 键全带 `{threadId}` 命名空间；`pruneQuestionStates` 同款清理模式（chat.js:467-484）扩到草稿键 |
 | T09 确认页被自动化脚本绕过 | `confirm=1` 只是二次点击等价物，安全门槛本就在 token / Origin 校验（guard.rs），不新增攻击面 |
 | 排队指纹误报（同文本相邻项） | 语义等价可接受；flash 文案引导刷新重看 |
-| 插件改动 dist 不同步（T12） | 沿用 README 🔴 口径：验收命令带 `--plugins-dir ssr-h/frontend-plugins`，收口时同步 dist |
+| 插件改动 dist 不同步（T12） | 沿用 README 🔴 口径：验收命令带 `--plugins-dir plugins`，收口时同步 dist |
 
 回退总原则：一任务一 commit，任何一张卡出问题 `git revert` 单点回退，不牵连批次。
 

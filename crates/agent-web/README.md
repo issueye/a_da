@@ -15,7 +15,7 @@ UED 设计基线、组件规范与 原桌面端 对齐差距见 [docs/UED.md](do
 ## 目标
 
 - 参考 `crates/plugin-hub` 的前端框架：Axum MVC + Askama SSR + HTMX/Alpine + 本地 Tailwind CSS。
-- 以 **动态前端插件** 为核心：`frontend-plugins/<id>/plugin.json` 可在运行时扫描、重载，新增导航、仪表盘卡片、独立页面与静态资源，不需要重新编译或重启。
+- 以 **动态前端插件** 为核心：`plugins/<id>/plugin.json` 可在运行时扫描、重载，新增导航、仪表盘卡片、独立页面与静态资源，不需要重新编译或重启。
 - Agent 数据通过 `WebBackend` 端口获取：网关挂载时走**进程内调用**（`GatewayBackend`），
   独立运行时走 HTTP `/api/*` + WebSocket `/rpc`（`HttpBackend`）；两种实现共用同一套处理器。
 - 本 crate 是**投影层**：不持有线程/消息/工具状态的第二份真相，不跑多轮引擎。
@@ -125,7 +125,7 @@ cargo run -p agent-web --bin ssr-h -- \
   --gateway http://127.0.0.1:52353 \
   --token <gateway token> \
   --workspace E:/codes/your-project \
-  --plugins-dir crates/agent-web/frontend-plugins
+  --plugins-dir plugins
 ```
 
 未显式给 `--gateway/--token/--workspace` 时会尝试读取 `~/.a-da/gateway_endpoint.json`。
@@ -133,8 +133,8 @@ cargo run -p agent-web --bin ssr-h -- \
 （避免把凭据目录当成会话工作区）。
 
 🔴 **插件目录与状态分开**：停用状态写在 `<A_DA_HOME>/web-ui-state.json`，不再写插件目录旁。
-插件目录按“用户目录 → exe 旁 → 当前目录 → 源码目录”查找；打包后随 `resources/bin/frontend-plugins`
-分发，源码开发时用 `crates/agent-web/frontend-plugins`。改了源码插件后，重载读的是**当前插件目录**；
+插件目录按“用户目录 → exe 旁 → 当前目录 → 源码目录”查找；打包后随 `resources/bin/plugins`
+分发，源码开发时用 `plugins`。改了源码插件后，重载读的是**当前插件目录**；
 必要时用 `--web-plugins-dir` 显式指过去。
 
 ### 局域网访问与访问令牌
@@ -225,7 +225,7 @@ node tools/verify-ssr-workspaces.mjs
 **插件只接受 TSX**：`.slang` / `.html` 模板已移除。目录结构：
 
 ```text
-frontend-plugins/hello-tsx/
+plugins/hello-tsx/
   plugin.json             # 清单：导航 / 页面 / 仪表盘 / 插槽
   page.tsx                # 独立页面
   dashboard.tsx           # 仪表盘卡片（可选）
@@ -364,9 +364,10 @@ export function Page(props: any) {
 - 每次渲染新建 Boa Context（模块状态不跨请求）；release 单文件页约 5ms、
   含内置组件库的模块页约 3.4ms（组件库每次 Context 都要初始化，后续可做池化/预编译）；
 - **示例插件**：`plugins/process-manager/`（顶栏进程管理浮窗，`processes.read`）、
-  `plugins/task-manager/`（侧栏后台任务面板，`tasks.read`；命令 / PID / 输出预览 / 终止）、
-  `frontend-plugins/hello-tsx/`（最小页面 / 仪表盘 / JSON API）、
-  `frontend-plugins/token-weather/`（按上下文用量显示天气：完整页面 + 输入框上方胶囊/浮层 +
+  `plugins/task-manager/`（输入框上方的后台任务胶囊 / 浮窗，`tasks.read`；命令 / PID /
+  状态 / 输出预览随事件流刷新 / 终止）、
+  `plugins/hello-tsx/`（最小页面 / 仪表盘 / JSON API）、
+  `plugins/token-weather/`（按上下文用量显示天气：完整页面 + 输入框上方胶囊/浮层 +
   概览卡片，演示相对 import、`details` 浮层与 SSE `parts` 刷新；说明见插件目录内的 README）、
   `plugins/task-plan/`（任务规划卡片 + 后端计划状态：`chat.corner` 右上角 / `composer.above` 两处可挂，
   `afterTodoUpdate` → `plan` action，演示 `props.data.todo` 降级、插件 CSS 与 `scripts` 注入的浏览器增强）、

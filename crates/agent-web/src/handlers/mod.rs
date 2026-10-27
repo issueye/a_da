@@ -323,7 +323,7 @@ async fn base_with_snapshot(
         }
     }
     attach_backend_actions(state, &mut context).await;
-    attach_tasks(state, &mut context).await;
+    attach_tasks(state, &mut context, None).await;
     let slots = slot_content(&state.frontend, context).await;
     // 侧栏"新会话"要落在当前激活工作区。快照里的 `workspace.project` 是 agent 的真实
     // 当前项目（与 原桌面端 的 `activeWorkspace` 同源）；没有快照时退回启动参数。
@@ -388,11 +388,15 @@ fn render_context_with_tokens(
     snapshot: &Value,
     thread_id: Option<&str>,
 ) -> RenderContext {
-    render_context(state, active).with_data(plugin_data(
-        snapshot,
-        thread_id,
-        state.frontend.count(),
-    ))
+    let mut data = plugin_data(snapshot, thread_id, state.frontend.count());
+    // `runs`/`processes` 同一口径：只有**已启用**的插件声明了能力才算这份投影
+    // （停用即消失，不白遍历一遍会话 item）。
+    if state.frontend.has_capability("runs.read") {
+        if let Some(object) = data.as_object_mut() {
+            object.insert("runs".to_string(), runs_view(thread_view(snapshot, thread_id)));
+        }
+    }
+    render_context(state, active).with_data(data)
 }
 
 /// 插件可见的数据投影（唯一出口）。
@@ -510,12 +514,21 @@ async fn attach_backend_actions(state: &AppState, context: &mut RenderContext) {
 ///
 /// 任务表在 agent 进程的 `command` 工具包里（`BackgroundTasks`）；这里只做投影，
 /// 不缓存第二份状态。拿不到时给空列表 + 错误文案，插件自己显示“读取失败”。
-async fn attach_tasks(state: &AppState, context: &mut RenderContext) {
+///
+/// `preset`：调用方**刚刚**为同一条会话取到的任务表（SSE 事件循环为算指纹每拍取一次）。
+/// 给了就不再问一遍网关——否则同一帧会打两次 `task.list`。
+async fn attach_tasks(state: &AppState, context: &mut RenderContext, preset: Option<&Value>) {
     if !state.frontend.has_capability("tasks.read") {
         return;
     }
     if !context.data.is_object() {
         context.data = serde_json::json!({});
+    }
+    if let Some(value) = preset {
+        if let Some(data) = context.data.as_object_mut() {
+            data.insert("tasks".to_string(), value.clone());
+        }
+        return;
     }
     // 任务管理是**当前会话**的视图：没有会话（插件页/仪表盘）就只给空列表，
     // 不能把整个工作区乃至整个 agent 进程的后台任务摊到别的页面上。
@@ -551,6 +564,82 @@ async fn attach_tasks(state: &AppState, context: &mut RenderContext) {
     if let Some(data) = context.data.as_object_mut() {
         data.insert("tasks".to_string(), value);
     }
+}
+
+/// 当前会话最近执行过的**前台命令**（`run_command`），给声明 `runs.read` 的插件。
+///
+/// # 为什么从会话快照取，而不是新增一份 RPC
+///
+/// `run_command` 是**阻塞调用**：它结束后不留任何活体句柄（不在 `BackgroundTasks`
+/// 里，也没有可终止的进程），唯一权威记录就是它在对话流里留下的那条 tool item——
+/// 也就是用户看到的"执行命令 + 执行输出 + 输入参数"卡片本身。
+///
+/// 所以这里**只做投影**（命令 / cwd / 退出码 / 耗时 / 输出预览全部原样取自 item），
+/// 不新开 RPC、不缓存第二份状态。代价是历史被压缩（`compact` 掉的老 item 不再出现），
+/// 而这恰好就是"最近命令"的语义。
+///
+/// 没跑过命令 / 当前会话不在快照里 → 空列表（这是"还没有"，不是"读取失败"）。
+fn runs_view(thread: Option<&Value>) -> Value {
+    /// 最多回看多少条：面板是"最近命令"，不是完整历史。
+    const RUNS_LIMIT: usize = 20;
+    /// 单条输出预览上限（与后台任务的 4000 同量级，这里更小：面板里一次要挤 20 条）。
+    const OUTPUT_PREVIEW: usize = 1200;
+
+    let items = thread
+        .and_then(|thread| thread.get("items"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let mut runs: Vec<Value> = Vec::new();
+    for item in items {
+        if str_at(item, "kind") != "tool" || str_at(item, "name") != "run_command" {
+            continue;
+        }
+        // 参数既可能是对象，也可能是模型原始吐出的 JSON 字符串（`rawArgs`）。
+        // 口径与工具行一致（对话流里的"输入参数"就是这么解析的）。
+        let args = match item
+            .get("args")
+            .filter(|value| value.is_object())
+            .or_else(|| item.get("rawArgs"))
+            .cloned()
+            .unwrap_or(Value::Null)
+        {
+            Value::String(text) => serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)),
+            other => other,
+        };
+        let command = str_at(&args, "command").trim().to_string();
+        let cwd = str_at(&args, "cwd").trim().to_string();
+        let status = str_at(item, "status").to_string();
+        let output = item.get("output").and_then(Value::as_str).unwrap_or("");
+        // 退出码只认结构化字段（与工具行尾标同一套口径），不解析输出措辞。
+        let exit_code = item
+            .get("details")
+            .and_then(|details| {
+                details
+                    .get("exitCode")
+                    .or_else(|| details.get("exit_code"))
+            })
+            .and_then(Value::as_i64);
+        runs.push(serde_json::json!({
+            "id": str_at(item, "id"),
+            "callId": str_at(item, "callId"),
+            "command": command,
+            "cwd": cwd,
+            "status": status,
+            "running": matches!(status.as_str(), "running" | "queued" | "waiting_approval" | "awaiting"),
+            "exitCode": exit_code,
+            "durationMs": item.get("durationMs").and_then(Value::as_u64),
+            "startedAt": item.get("startedAt").and_then(Value::as_i64),
+            "at": item.get("at").and_then(Value::as_i64),
+            "outputLines": output.lines().count(),
+            "outputPreview": truncate(output, OUTPUT_PREVIEW),
+        }));
+    }
+    // 面板自上而下"新 → 旧"：会话 item 是正序的，这里翻一次；超出上限的老记录直接丢。
+    runs.reverse();
+    let total = runs.len();
+    runs.truncate(RUNS_LIMIT);
+    serde_json::json!({ "runs": runs, "count": runs.len(), "total": total })
 }
 
 /// 给 `processes.read` 插件的进程投影。
@@ -1221,6 +1310,68 @@ pub async fn not_found(State(state): State<AppState>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `runs` 投影只认 `run_command`：后台任务走 `tasks`，两者不能混。
+    ///
+    /// 顺带守两条口径：① 最新的排最前；② `rawArgs` 是 JSON 字符串时也要解析出
+    /// `command`——模型偶尔把参数当字符串吐，界面上早就是这么兜的。
+    #[test]
+    fn runs_view_projects_run_command_items_newest_first() {
+        let thread = serde_json::json!({
+            "id": "t1",
+            "items": [
+                {"id":"i1","kind":"tool","name":"run_command","status":"done",
+                 "args":{"command":"echo a"},"output":"a\n","durationMs":820,
+                 "details":{"exitCode":0}},
+                {"id":"i2","kind":"assistant","text":"ok"},
+                {"id":"i3","kind":"tool","name":"run_background","status":"done",
+                 "args":{"command":"npm run dev"}},
+                {"id":"i4","kind":"tool","name":"run_command","status":"done",
+                 "rawArgs":"{\"command\":\"cargo build\"}","output":"x",
+                 "details":{"exit_code":101}}
+            ]
+        });
+        let view = runs_view(Some(&thread));
+        let runs = view.get("runs").and_then(Value::as_array).expect("runs 数组");
+        assert_eq!(runs.len(), 2, "只投影 run_command：{view}");
+        assert_eq!(runs[0]["id"], "i4", "最新的在最前：{view}");
+        assert_eq!(runs[0]["command"], "cargo build", "rawArgs 要能解析：{view}");
+        assert_eq!(runs[0]["exitCode"], 101, "退出码只认结构化字段：{view}");
+        assert_eq!(runs[1]["id"], "i1");
+        assert_eq!(runs[1]["durationMs"], 820);
+        assert_eq!(runs[1]["exitCode"], 0);
+        assert_eq!(view["count"], 2);
+    }
+
+    /// 超过上限只留最近 20 条，但 `total` 如实报出被截掉的规模。
+    #[test]
+    fn runs_view_caps_history_and_keeps_total_honest() {
+        let items: Vec<Value> = (0..25)
+            .map(|index| {
+                serde_json::json!({
+                    "id": format!("i{index}"),
+                    "kind": "tool",
+                    "name": "run_command",
+                    "status": "done",
+                    "args": { "command": format!("echo {index}") }
+                })
+            })
+            .collect();
+        let thread = serde_json::json!({ "id": "t1", "items": items });
+        let view = runs_view(Some(&thread));
+        let runs = view.get("runs").and_then(Value::as_array).expect("runs 数组");
+        assert_eq!(runs.len(), 20, "面板最多回看 20 条：{view}");
+        assert_eq!(runs[0]["command"], "echo 24", "留下的必须是最新的：{view}");
+        assert_eq!(view["total"], 25, "total 要如实报规模：{view}");
+    }
+
+    /// 没有会话 / 还没跑过命令 = 空列表，不是"读取失败"（不塞 `error`）。
+    #[test]
+    fn runs_view_without_thread_is_empty_not_an_error() {
+        let view = runs_view(None);
+        assert_eq!(view["count"], 0);
+        assert!(view.get("error").is_none(), "没有命令不是读取失败：{view}");
+    }
 
     #[test]
     fn plugin_referer_rewrites_provider_redirect_back_to_plugin_page() {

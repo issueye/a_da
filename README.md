@@ -273,7 +273,7 @@ cargo build --workspace
 
 # 打包独立二进制 / Electron 免安装包
 cargo xtask ship --product ada-coding
-cargo xtask ship --product ada-gateway   # 同时带上 frontend-plugins/
+cargo xtask ship --product ada-gateway   # 同时带上 plugins/
 bun run electron:pack            # → dist/electron/win-unpacked
 ```
 

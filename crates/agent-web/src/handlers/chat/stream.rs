@@ -57,6 +57,16 @@ const PARTS_HEARTBEAT: Duration = Duration::from_secs(5);
 /// 之后也不会再有 patch 来纠正。等一拍再拉，用量才稳定在卡片上。
 const FINISH_RESYNC_DELAY: Duration = Duration::from_millis(220);
 
+/// 后台任务表的轮询间隔。
+///
+/// 任务表在 **agent 进程**里（`BackgroundTasks`），网关不广播它——没有事件通道，
+/// Web 侧只能主动问。但"任务输出在长"必须能**推到前端**（悬浮窗里的输出要跟着长），
+/// 所以按 1 秒问一次；没有任务在跑时只在结构变化后问一次（表不会自己变，不必空转 RPC）。
+const TASKS_POLL: Duration = Duration::from_secs(1);
+
+/// `task.list` 的等待上限：读的是一张内存表，超过它说明网关已经不对劲了。
+const TASKS_RPC_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// SSE 保活间隔：中间有反代/浏览器空闲超时，定期发一个注释帧。
 const KEEP_ALIVE: Duration = Duration::from_secs(15);
 
@@ -134,6 +144,10 @@ async fn stream_loop(
     let mut resync_at: Option<Instant> = None;
     let mut last_parts = Instant::now() - PARTS_MIN_INTERVAL;
     let mut last_heartbeat = Instant::now();
+    // 后台任务表：`None` = 这一拍需要重新问一次（首帧 / 结构变化 / 上次读失败）。
+    let mut tasks_state: Option<Value> = None;
+    let mut tasks_fp = String::new();
+    let mut last_tasks_poll = Instant::now() - TASKS_POLL;
 
     let mut ticker = tokio::time::interval(RENDER_TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -198,6 +212,23 @@ async fn stream_loop(
             }
         }
 
+        // 后台任务的变化**没有事件通道**（任务表在 agent 进程里，网关不广播它）：
+        // 由这里按 TASKS_POLL 问一次，指纹（id / 运行态 / 退出码 / 输出长度）一变就
+        // 补一帧 `parts`——悬浮窗里的输出是"被推过来的"，不用等 5 秒心跳或整页刷新。
+        // 结构变化（新卡片 / 条目重取）后强制重拉：任务多半就是这一拍出现的。
+        if refresh_tasks(
+            state,
+            &view.thread_id,
+            &mut tasks_state,
+            &mut tasks_fp,
+            structural || resync_due,
+            &mut last_tasks_poll,
+        )
+        .await
+        {
+            parts = true;
+        }
+
         if structural {
             // 结构变化（新增/删除卡片）：整段重发。条目身份由 data-item-id 表达，
             // 客户端替换后展开状态仍按 data-key 恢复（components.js）。
@@ -229,7 +260,7 @@ async fn stream_loop(
         }
 
         if parts && last_parts.elapsed() >= PARTS_MIN_INTERVAL {
-            if let Some(payload) = render_parts(state, view).await {
+            if let Some(payload) = render_parts(state, view, tasks_state.as_ref()).await {
                 send(tx, Event::default().event("parts").data(payload)).await?;
             }
             parts = false;
@@ -247,13 +278,17 @@ async fn send(tx: &mpsc::Sender<Event>, event: Event) -> anyhow::Result<()> {
 }
 
 /// 对话流之外的动态区域（与 `/threads/{id}/live` 的 OOB 片段一一对应）。
-async fn render_parts(state: &AppState, view: &StreamView) -> Option<String> {
+async fn render_parts(
+    state: &AppState,
+    view: &StreamView,
+    tasks: Option<&Value>,
+) -> Option<String> {
     let snapshot = view.render_parts_snapshot()?;
     let thread = array_at(&snapshot, "threads")
         .iter()
         .find(|thread| str_at(thread, "id") == view.thread_id)?
         .clone();
-    let parts = live_parts(state, &snapshot, &view.thread_id, &thread).await;
+    let parts = live_parts(state, &snapshot, &view.thread_id, &thread, tasks).await;
     Some(
         json!({
             "trays": parts.trays,
@@ -614,6 +649,90 @@ fn parts_fingerprint(meta: &Value) -> String {
     .to_string()
 }
 
+/// 任务表里是否还有在跑的任务（空表 / 读失败都算"没有"）。
+fn tasks_running(tasks: &Value) -> bool {
+    array_at(tasks, "tasks")
+        .iter()
+        .any(|task| task.get("running").and_then(Value::as_bool).unwrap_or(false))
+}
+
+/// 任务表指纹：只关心"用户看得见的东西变了没有"。
+///
+/// 取 `id` / 运行态 / 退出码 / **输出长度**——输出原文不进指纹（几 KB 的预览每拍比一次
+/// 字符串不值当），长度变了就说明有新输出，足够触发一帧 `parts`。
+fn tasks_fingerprint(tasks: &Value) -> String {
+    let rows: Vec<Value> = array_at(tasks, "tasks")
+        .iter()
+        .map(|task| {
+            json!({
+                "id": task.get("id"),
+                "running": task.get("running"),
+                "exit": task.get("exitCode"),
+                "out": task
+                    .get("outputPreview")
+                    .and_then(Value::as_str)
+                    .map(|preview| preview.len()),
+            })
+        })
+        .collect();
+    json!({ "count": rows.len(), "tasks": rows, "error": tasks.get("error") }).to_string()
+}
+
+/// 问一次任务表并推进指纹；返回 `true` 表示结果和上一次不同（该补一帧 `parts`）。
+///
+/// 只在**确实可能有变化**时才问网关：
+/// - `force`（结构变化后 / 上次读失败）：必须重拉，任务多半就是这一拍出现的；
+/// - 上次拿到的表里还有任务在跑：按 [`TASKS_POLL`] 节流轮询，让输出跟着长；
+/// - 其余情况（没有任务、任务都结束了）不空转 RPC——表不会自己变。
+///
+/// 读失败时把缓存清空（渲染路径会自己再取一次，与旧行为一致），下一拍按节流重试。
+async fn refresh_tasks(
+    state: &AppState,
+    thread_id: &str,
+    cached: &mut Option<Value>,
+    fingerprint: &mut String,
+    force: bool,
+    last_poll: &mut Instant,
+) -> bool {
+    if !state.frontend.has_capability("tasks.read") {
+        return false;
+    }
+    if force {
+        *cached = None;
+    }
+    let due = force || last_poll.elapsed() >= TASKS_POLL;
+    if !due {
+        return false;
+    }
+    // 缓存为空 = 还不知道有没有任务：当成"有"，让这一拍去问一次。
+    let running = cached.as_ref().map(tasks_running).unwrap_or(true);
+    if cached.is_some() && !running {
+        return false;
+    }
+    *last_poll = Instant::now();
+    match tokio::time::timeout(TASKS_RPC_TIMEOUT, state.agent.tasks(Some(thread_id))).await {
+        Ok(Ok(value)) => {
+            let next = tasks_fingerprint(&value);
+            *cached = Some(value);
+            if next == *fingerprint {
+                return false;
+            }
+            *fingerprint = next;
+            true
+        }
+        Ok(Err(error)) => {
+            tracing::debug!("读取后台任务失败: {error:#}");
+            *cached = None;
+            false
+        }
+        Err(_) => {
+            tracing::debug!("读取后台任务超时");
+            *cached = None;
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -694,6 +813,59 @@ mod tests {
         assert!(change.parts);
         let ids: Vec<&str> = view.items.iter().map(|i| str_at(i, "id")).collect();
         assert_eq!(ids, vec!["a1", "a2", "a3"]);
+    }
+
+    fn task_row(id: &str, running: bool, exit: Option<i64>, output: &str) -> Value {
+        json!({
+            "id": id,
+            "command": "npm run dev",
+            "pid": 42,
+            "startedAt": 10,
+            "threadId": "t1",
+            "running": running,
+            "exitCode": exit,
+            "outputPreview": output,
+        })
+    }
+
+    /// 任务输出是"事件推过去的"：指纹必须对**输出变长**与**状态变化**敏感，
+    /// 对"内容没变的重渲染"不敏感（否则每拍都会白推一帧 `parts`）。
+    #[test]
+    fn task_output_growth_advances_the_fingerprint_and_idle_rerender_does_not() {
+        let before = json!({
+            "tasks": [task_row("task_1", true, None, "vite ready")],
+            "count": 1,
+            "error": null,
+        });
+        assert!(tasks_running(&before));
+        let fingerprint = tasks_fingerprint(&before);
+        assert_eq!(fingerprint, tasks_fingerprint(&before), "同一张表指纹必须稳定");
+
+        let grown = json!({
+            "tasks": [task_row("task_1", true, None, "vite ready\nhmr update")],
+            "count": 1,
+            "error": null,
+        });
+        assert_ne!(fingerprint, tasks_fingerprint(&grown), "输出变长要触发一帧 parts");
+
+        let finished = json!({
+            "tasks": [task_row("task_1", false, Some(0), "vite ready")],
+            "count": 1,
+            "error": null,
+        });
+        assert_ne!(fingerprint, tasks_fingerprint(&finished), "任务结束要触发一帧 parts");
+        assert!(!tasks_running(&finished));
+    }
+
+    #[test]
+    fn empty_task_table_is_not_running_and_keeps_one_fingerprint() {
+        let empty = json!({ "tasks": [], "count": 0 });
+        assert!(!tasks_running(&empty));
+        assert_eq!(
+            tasks_fingerprint(&empty),
+            tasks_fingerprint(&json!({ "tasks": [] })),
+            "缺字段与空列表是同一件事，不该反复推出新指纹"
+        );
     }
 
     #[test]

@@ -222,7 +222,7 @@ ada-gateway --port 52353 --workspace E:/proj
 静态令牌兼容项。SSR 进程内调用 agent 不需要 token，也不再走 HTTP 回环。
 
 前端插件目录：`--web-plugins-dir` → `A_DA_WEB_PLUGINS_DIR` → `~/.a-da/web-plugins` →
-exe 旁 `frontend-plugins` → 源码目录；停用状态写在 `~/.a-da/web-ui-state.json`，
+exe 旁 `plugins` → 源码目录；停用状态写在 `~/.a-da/web-ui-state.json`，
 插件目录可以随包只读分发。
 
 统一插件包根：`A_DA_UNIFIED_PLUGINS_DIR` → `~/.a-da/plugins`。一个包可同时声明

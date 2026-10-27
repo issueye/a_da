@@ -1,132 +1,331 @@
-.tm-card {
-  margin: 8px 6px 4px;
-  border: 1px solid var(--ph-line);
-  border-radius: 10px;
-  background: var(--ph-surface);
-  color: var(--ph-ink);
-  font-size: 12px;
+/* 任务管理：作用域由 ssr-h 注入的 @scope 保证，这里只写插件内部 class。
+   口径与 Token 天气一致：accent 全部取自应用的 --ph-* 语义对（随深浅主题自动切换），
+   不自备色板；表面走 surface/elevated/line/shadow 令牌，无渐变无发光；
+   圆角/字号/等宽字体都用全局令牌。运行中=brand、全部结束=neutral、读取失败=danger。 */
+
+.tm-popover {
+  --tm-accent: var(--ph-muted);
+  --tm-accent-soft: var(--ph-subtle);
+  --tm-line: color-mix(in srgb, var(--tm-accent) 22%, var(--ph-line));
+}
+.tm-chip.ada-chip--brand {
+  --tm-accent: var(--ph-brand-ink);
+  --tm-accent-soft: var(--ph-brand-soft);
+}
+.tm-chip.ada-chip--danger {
+  --tm-accent: var(--ph-danger-ink);
+  --tm-accent-soft: var(--ph-danger-soft);
 }
 
-.tm-card__summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 10px;
-  cursor: pointer;
-  list-style: none;
-}
-
-.tm-card__summary::-webkit-details-marker {
-  display: none;
-}
-
-.tm-card__title {
-  display: inline-flex;
-  align-items: center;
+/* ── 胶囊触发器 ─────────────────────────────────────────────────────── */
+.tm-chip {
   gap: 5px;
-  font-weight: 600;
+  border-color: var(--tm-line);
+  background: var(--tm-accent-soft);
+  transition: border-color var(--ada-transition), background var(--ada-transition);
 }
-
-.tm-card__badge {
-  color: var(--ph-muted);
+.tm-chip:hover {
+  border-color: color-mix(in srgb, var(--tm-accent) 46%, var(--ph-line));
+}
+.tm-chip__icon {
+  color: var(--tm-accent);
+}
+.tm-chip__badge {
+  flex: 0 0 auto;
+  color: var(--tm-accent);
   font-family: var(--mono-font, Consolas, monospace);
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.tm-chip__caret {
+  width: 11px;
+  height: 11px;
+  margin-left: 1px;
+  flex: 0 0 auto;
+  color: var(--ph-faint);
+  transition: transform var(--ada-transition);
+  transform-origin: center;
+}
+.tm-popover[open] .tm-chip__caret {
+  transform: rotate(180deg);
 }
 
-.tm-card__body {
-  padding: 0 10px 10px;
+/* ── 浮窗 ───────────────────────────────────────────────────────────── */
+.tm-popover .ada-popover__panel {
+  right: 0;
+  bottom: calc(100% + 10px);
+  width: min(420px, calc(100vw - 32px));
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--tm-line);
+  border-radius: var(--ada-radius-lg);
+  background: var(--ph-elevated);
+  box-shadow: var(--ph-shadow);
+  color: var(--ph-muted);
+}
+/* 任务多时整块滚动，而不是把每一行都压扁。 */
+.tm-popover .tm-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: min(460px, 62vh);
+}
+.tm-popover .ada-popover__panel.tm-panel {
+  max-height: min(460px, 62vh);
+  overflow: hidden;
+}
+
+.tm-panel__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px 12px;
+}
+.tm-panel__orb {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--tm-accent) 26%, var(--ph-line));
+  border-radius: var(--ada-radius-md);
+  background: var(--tm-accent-soft);
+  color: var(--tm-accent);
+}
+.tm-panel__copy {
+  min-width: 0;
+  flex: 1;
+}
+.tm-panel__kicker {
+  color: var(--ph-faint);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+}
+.tm-panel__title {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-top: 2px;
+  color: var(--ph-ink);
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.tm-panel__count {
+  color: var(--ph-faint);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: 11px;
+  font-weight: 500;
+}
+.tm-panel__advice {
+  margin-top: 4px;
+  color: var(--ph-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* ── 分区（后台任务 / 最近命令）─────────────────────────────────────── */
+.tm-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  /* 在 flex 列里必须显式允许收缩，否则内容多时会把底部口径说明顶出面板。 */
+  min-height: 0;
+  padding-bottom: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.tm-group {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-
-.tm-task {
-  padding: 8px;
-  border: 1px solid var(--ph-line);
-  border-radius: 8px;
-  background: var(--ph-elevated);
+.tm-section {
+  padding: 0 16px;
+  color: var(--ph-faint);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
 }
 
+/* ── 任务清单 ───────────────────────────────────────────────────────── */
+.tm-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 16px;
+}
+.tm-task,
+.tm-run {
+  padding: 9px 10px;
+  border: 1px solid var(--ph-line);
+  border-radius: var(--ada-radius-md);
+  background: var(--ph-surface);
+}
+.tm-task[data-running="1"],
+.tm-run[data-running="1"] {
+  border-color: color-mix(in srgb, var(--ph-brand-ink) 26%, var(--ph-line));
+}
+/* 最近命令是只读记录：与"活着的任务"区分开，左侧一条细淡的标线。 */
+.tm-run {
+  border-left: 2px solid var(--ph-line-strong);
+}
+.tm-run__cwd {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ph-faint);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: right;
+}
 .tm-task__head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   min-width: 0;
 }
-
 .tm-task__dot {
   width: 6px;
   height: 6px;
+  flex: 0 0 auto;
   border-radius: 999px;
-  flex-shrink: 0;
 }
-
 .tm-task__dot.is-running {
-  background: var(--ph-success-ink);
+  background: var(--ph-brand-ink);
+  box-shadow: 0 0 0 3px var(--ph-brand-soft);
 }
-
 .tm-task__dot.is-done {
   background: var(--ph-faint);
 }
-
 .tm-task__command {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
+  color: var(--ph-ink);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: 11.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.tm-task__pid {
+  flex: 0 0 auto;
+  color: var(--ph-faint);
   font-family: var(--mono-font, Consolas, monospace);
-  font-size: 11px;
+  font-size: 10.5px;
 }
-
 .tm-task__meta {
-  flex-shrink: 0;
-  color: var(--ph-muted);
-  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 5px;
+}
+.tm-task__status {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ph-faint);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tm-task__status.is-running {
+  color: var(--ph-brand-ink);
 }
 
-.tm-task__output {
-  margin-top: 6px;
-  color: var(--ph-muted);
-}
-
-.tm-task__output summary {
-  cursor: pointer;
-}
-
-.tm-task__output pre {
-  margin: 6px 0 0;
-  max-height: 180px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 11px;
-}
-
+/* 终止：破坏性动作，用 danger 语义，但按钮本身保持轻量。 */
 .tm-task__kill {
-  margin-top: 6px;
+  flex: 0 0 auto;
+  margin: 0;
 }
-
 .tm-task__kill-btn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  padding: 3px 7px;
   border: 1px solid var(--ph-line-strong);
-  border-radius: 6px;
+  border-radius: var(--ada-radius-sm);
   background: var(--ph-surface);
   color: var(--ph-danger-ink);
-  padding: 3px 7px;
-  font-size: 11px;
+  font-family: inherit;
+  font-size: 10.5px;
   cursor: pointer;
+  transition: background var(--ada-transition), border-color var(--ada-transition);
 }
-
 .tm-task__kill-btn:hover {
+  border-color: color-mix(in srgb, var(--ph-danger-ink) 40%, var(--ph-line));
   background: var(--ph-danger-soft);
 }
 
-.tm-card__error {
-  margin: 0;
-  color: var(--ph-danger-ink);
-  font-size: 11px;
+/* ── 输出预览（默认折叠：任务在长输出时也不会把浮窗撑爆） ─────────────── */
+.tm-task__output {
+  margin-top: 6px;
+}
+.tm-task__output-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ph-faint);
+  font-size: 10.5px;
+  list-style: none;
+  cursor: pointer;
+}
+.tm-task__output-summary::-webkit-details-marker {
+  display: none;
+}
+.tm-task__output-summary:hover {
+  color: var(--ph-muted);
+}
+.tm-task__output-caret {
+  flex: 0 0 auto;
+  transition: transform var(--ada-transition);
+}
+.tm-task__output[open] .tm-task__output-caret {
+  transform: rotate(90deg);
+}
+.tm-task__pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  max-height: 180px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--ph-line);
+  border-radius: var(--ada-radius-sm);
+  background: var(--ph-subtle);
+  color: var(--ph-muted);
+  font-family: var(--mono-font, Consolas, monospace);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tm-panel__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 9px 16px 11px;
+  border-top: 1px solid var(--ph-line);
+  background: var(--ph-subtle);
+}
+.tm-note {
+  color: var(--ph-faint);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tm-chip,
+  .tm-chip__caret,
+  .tm-task__output-caret,
+  .tm-task__kill-btn {
+    transition: none;
+  }
 }

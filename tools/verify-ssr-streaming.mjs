@@ -26,7 +26,7 @@ const GATEWAY =
     join(REPO, 'dist', 'ada-gateway.exe'),
   ].find((candidate) => existsSync(candidate)) ||
   join(REPO, 'dist', 'ada-gateway.exe')
-const WEB_PLUGINS = join(REPO, 'crates', 'agent-web', 'frontend-plugins')
+const WEB_PLUGINS = join(REPO, 'plugins')
 
 const failures = []
 const check = (ok, what, extra = '') => {

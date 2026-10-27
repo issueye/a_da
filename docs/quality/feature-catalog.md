@@ -118,7 +118,7 @@
 | 沙箱两档（进程内 Boa / 子进程） | `crates/ts-engine` + `--script-sandbox subprocess` |
 | 能力声明 `// @ada-needs`（`fs` / `fs=read` / `fs=write` / `net` / `sqlite` / `exec` / `none`） | `crates/agent-node/src/scripts/needs.rs` |
 | SQLite（`node:sqlite` 的 `DatabaseSync` / `StatementSync` 子集；路径受工作区沙箱） | `crates/ts-engine/src/env/sqlite.rs`（rusqlite，`@ada-needs sqlite`） |
-| 子进程（`node:child_process` 同步子集：`execFileSync` / `spawnSync` / `execSync`；异步与 `fork` 未提供） | `crates/ts-engine/src/env/child_process.rs`（`@ada-needs exec`） |
+| 子进程（`node:child_process`：同步 `execFileSync` / `spawnSync` / `execSync`，异步 `spawn` / `exec` / `execFile` 带真流式 stdio；`fork` 未提供） | `crates/ts-engine/src/env/child_process.rs` + `child_process_async.rs`（`@ada-needs exec`） |
 | 管理面：`plugin.list/load/validate/invoke/setEnabled/reload/delete/builtinCatalog/createTemplate/capabilities.set/config.set/secret.set` | `spec/proto/ada-coding.ext.json` |
 | **统一插件包**（一个 `plugin.json` 同时声明 `frontend` / `backend`；动作 `registerAction`） | `crates/agent-web/src/plugins/manifest.rs` + `crates/agent-node/src/plugins/manager.rs`；说明见 [plugins/unified-package.md](../plugins/unified-package.md) |
 | 内置插件 **9 个**：`git-tools`、`code-outline`、`project-inspector`、`test-runner`、`batch-ops`、`plugin-forge`、`approval-guard`、`ask-user`、`ponytail` | `crates/agent-node/src/plugins/builtins.rs` |
@@ -164,9 +164,14 @@
   **进程管理浮窗**：由 `plugins/process-manager/` 插件（`topbar.right` 插槽 +
   `processes.read` 能力）渲染，展示网关 PID/实例数与 agent 实例（工作区 / 状态 / PID / 最近活跃）；
   只读，面板与窗口控制分层正确（浮窗打开时仍可点标题栏按钮）。
-  **任务管理浮窗**：由 `plugins/task-manager/` 插件（`sidebar.bottom` 插槽 +
-  `tasks.read` 能力）渲染当前会话的后台命令任务（命令 / PID / 状态 / 输出预览），
+  **任务管理浮窗**：由 `plugins/task-manager/` 插件（`composer.above` 插槽 +
+  `tasks.read` / `runs.read` 能力）渲染当前会话的后台命令任务——输入框上方一枚胶囊（`1/2`），
+  点开是向上弹出的浮窗（命令 / PID / 状态 / 输出预览）；输出变化由 SSE `parts`
+  按任务表指纹推过来（约 1 秒一帧），
   可经 `POST /tasks/{id}/kill` → `task.kill` 终止整棵进程树。
+  同一浮窗还有**「最近命令」只读分区**：前台 `run_command`（阻塞调用，结束后没有可终止的
+  进程）由会话快照的 tool item 投影成命令 / 耗时 / 退出码 / 输出预览，不新开 RPC，
+  也不出现「终止」按钮。
   **动态后端路由**：统一包在 `index.ts` 里用 `ada.route({ method, path, handler })`
   声明接口，浏览器走 `/ext/{id}/route/*` → `plugin.route` → TS 沙箱匹配执行。
   宿主只做兜底转发与同源/大小/头校验，**后续新增后端接口不再改 Rust**。

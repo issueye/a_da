@@ -510,7 +510,7 @@ if state.frontend.has_backend_reads() {
   [protocol/README.md](../protocol/README.md)（新方法与错误表）、
   [PLUGIN-DATA](../../crates/agent-web/docs/PLUGIN-DATA.md)（`data.backend` 契约）；
 - 新增一个**成对示例**：
-  - `crates/agent-web/frontend-plugins/system-panel/`：插槽 + 一个只读状态块 + 一个写入按钮；
+  - `plugins/system-panel/`：插槽 + 一个只读状态块 + 一个写入按钮；
   - 后端示例插件放进文档/模板（不默认启用）：`system-monitor`，提供 `status`（read）与
     `refresh`（write）两个动作；
 - `plugin.createTemplate` 生成的新插件骨架里加一个注释掉的 `registerAction` 示例，

@@ -263,14 +263,10 @@ fn ship_product(product: &str, gui: bool, out_dir: &str) -> anyhow::Result<()> {
     let size_mb = (file_size as f64) / 1024.0 / 1024.0;
     println!("  ✔ 单文件产物就绪: {} ({:.2} MB)", target_path.display(), size_mb);
 
-    // 网关内置 SSR 界面时，示例前端插件随产物分发（模板与静态资源已编译进二进制）。
+    // 统一插件包（frontend + backend）放在 exe 同级 `plugins/`；打包后的网关/agent
+    // 都会按“与 exe 同级”找到它。
+    // 2026-10 收口：不再有独立的 `frontend-plugins/`，前端插件也在统一包里。
     if product == "ada-gateway" {
-        let plugins_src = Path::new("crates/agent-web/frontend-plugins");
-        if plugins_src.is_dir() {
-            let plugins_dst = Path::new(out_dir).join("frontend-plugins");
-            copy_dir_all(plugins_src, &plugins_dst)?;
-            println!("  ✔ 前端插件目录: {}", plugins_dst.display());
-        }
         // 统一插件包（frontend + backend）放在 exe 同级 `plugins/`；打包后的网关/agent
         // 都会按“与 exe 同级”找到它。
         let unified_src = Path::new("plugins");

@@ -3,7 +3,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-10-24 |
-| 范围 | `ssr-h/` 全部交互面：浏览器脚本（`static/*.js`）、服务端渲染与路由（`src/ui`、`src/handlers`、`templates/`）、前端插件（`frontend-plugins/`） |
+| 范围 | `ssr-h/` 全部交互面：浏览器脚本（`static/*.js`）、服务端渲染与路由（`src/ui`、`src/handlers`、`templates/`）、前端插件（`plugins/`） |
 | 性质 | **分析 + 建议，未实施**；编号 01–20 供 STATUS/后续 commit 引用 |
 | 依据 | 代码实测（各条附 file:line）、[UED.md](UED.md) §3 设计原则、[STATUS.md](STATUS.md) 已知 TODO |
 | 基线 | 主链路（发送 / 流式 / 审批 / 提问 / 排队 / 重试 / 工作区树）已齐整；本文只谈「哪里还硌手」 |

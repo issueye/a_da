@@ -24,10 +24,6 @@
       ]
     },
     {
-      "from": "crates/agent-web/frontend-plugins",
-      "to": "bin/frontend-plugins"
-    },
-    {
       "from": "plugins",
       "to": "bin/plugins"
     }

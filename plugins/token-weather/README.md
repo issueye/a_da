@@ -33,8 +33,8 @@
 
 插件在 ssr-h 启动时扫描；改完模板后到 `/extensions` 点「重载前端插件」，或重启 ssr-h。
 
-> 直接用 `dist/ssr-h.exe` 运行时，默认读的是 exe 旁的 `dist/frontend-plugins/`。
-> 想让本目录生效，启动时加 `--plugins-dir ssr-h/frontend-plugins`，或把本目录同步到 `dist/frontend-plugins/`。
+> 直接用 `dist/ssr-h.exe` 运行时，默认读的是 exe 旁的 `dist/plugins/`。
+> 想让本目录生效，启动时加 `--plugins-dir plugins`，或把本目录同步到 `dist/plugins/`。
 
 ## 口径
 

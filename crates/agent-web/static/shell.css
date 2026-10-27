@@ -278,7 +278,6 @@
   min-height: 0;
   overflow-y: auto;
   /* 会话增删会跨越滚动阈值，预留位置避免标题串位 */
-  scrollbar-gutter: stable;
   overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
