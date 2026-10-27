@@ -510,7 +510,10 @@ impl PluginSandbox {
                             name: inst.name,
                             label: inst.label,
                             description: inst.description || '',
-                            parameters: inst.parameters || {{}}
+                            parameters: inst.parameters || {{}},
+                            // 访问类别：只认显式的 'read'（作者担保只读），其余一律按写。
+                            // 归一化在这里做一次，宿主侧不再猜字符串。
+                            access: (inst.access === 'read' || inst.readOnly === true) ? 'read' : 'write'
                         }});
                     }}
                     const prompts = [];

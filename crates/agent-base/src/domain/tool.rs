@@ -33,8 +33,9 @@ pub enum Access {
     ///
     /// 1. **永不只读**：[`ToolDescriptor::is_readonly`] 只对 [`Access::ReadOnly`] 为真，
     ///    因此只读档、只读子智能体、plan 模式对 `External` 一律按写处理。
-    ///    想要"这个外部工具是只读的"，得先有**用户授权**这一条路（尚不存在），
-    ///    而不是让外部自己声明。
+    ///    想要"这个外部工具是只读的"，基座**不**采信外部自述；插件工具的唯一例外是
+    ///    显式的 `ScriptToolAccess::ReadOnly`（2026-10-27：只允许声明"读"，代价与边界
+    ///    写在那个枚举上，见 `ports/scripts.rs`）。
     /// 2. **不进路径沙箱**：参数里没有工作区路径可校验（`path_fields_of` 为空）。
     /// 3. **不得声明回滚策略**：本地没有可回滚的路径，`RollbackPolicy` 必须是 `None`。
     ///    早先插件自定义工具谎称 `Mutates { Batch("paths") }` + `PerTargetInBatch`，

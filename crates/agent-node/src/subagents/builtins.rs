@@ -1,5 +1,17 @@
 use super::types::{SubagentMode, SubagentProfile, SubagentScope};
 
+/// 由**插件**提供、因而不在 `ToolDescriptor` 注册表里的工具名。
+///
+/// 为什么需要这张小表：子智能体的 `allowed_tools` 要按"名字是否真实存在"校验
+/// （`test_subagent_tool_lists_have_no_ghost_names`），而插件工具的描述符由插件自述
+/// （`ScriptToolDeclaration`），基座注册表里查不到。当前只有 `plugins/git-tools`
+/// 提供 `git` / `git_read`。
+///
+/// ⚠️ 加名字的门槛：必须是**仓内自带插件**提供的名字，并且要在那个插件的
+/// `metadata.tools.names` 里出现；插件停用时白名单里的名字会被老实过滤掉
+/// （白名单只表达"允许"，不保证"存在"）。
+pub const PLUGIN_TOOL_NAMES: &[&str] = &["git", "git_read"];
+
 pub fn builtin_subagents() -> Vec<SubagentProfile> {
     vec![
         SubagentProfile {
@@ -129,8 +141,11 @@ pub fn builtin_subagents() -> Vec<SubagentProfile> {
                 "search_files".to_string(),
                 "code_outline".to_string(),
                 "run_command".to_string(),
-                // 读写 profile：`git` 的读写动作都能用（危险动作仍走审批）。
+                // 读写 profile：`git`（全动作）与 `git_read`（只读查询）都能用。
+                // 它们是**插件工具**（`plugins/git-tools`），不在描述符注册表里，
+                // 所以白名单校验单独认 `PLUGIN_TOOL_NAMES`；插件停用时会被过滤掉。
                 "git".to_string(),
+                "git_read".to_string(),
                 "todo".to_string(),
             ],
             disallowed_tools: None,

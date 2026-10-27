@@ -144,7 +144,12 @@ mod tests {
             .map(|d| d.name.clone())
             .collect();
         let legacy: HashSet<&str> = LEGACY_ONLY_TOOLS.iter().copied().collect();
-        let known = |name: &str| registry.contains(name) || legacy.contains(name);
+        // 插件工具的描述符由插件自述，注册表里没有——用显式小表认（见 `PLUGIN_TOOL_NAMES`）。
+        let plugin: HashSet<&str> = crate::subagents::builtins::PLUGIN_TOOL_NAMES
+            .iter()
+            .copied()
+            .collect();
+        let known = |name: &str| registry.contains(name) || legacy.contains(name) || plugin.contains(name);
 
         for p in builtin_subagents() {
             for name in &p.allowed_tools {

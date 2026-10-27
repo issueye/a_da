@@ -32,6 +32,12 @@ pub struct PluginToolDeclaration {
     pub description: String,
     #[serde(default)]
     pub parameters: serde_json::Value,
+    /// 插件自述的访问类别：`"read"` = 作者担保只读；缺失/其他一律写。
+    ///
+    /// 沙箱只做**归一化**（`"read"` → `"read"`，其余 → `"write"`），
+    /// 采信与否则由宿主决定（见 `ScriptToolAccess`）。
+    #[serde(default)]
+    pub access: String,
 }
 
 /// 插件声明的一段**提示词片段**（P2 · SP-44）。

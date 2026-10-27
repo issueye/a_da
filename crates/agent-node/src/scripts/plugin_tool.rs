@@ -138,12 +138,15 @@ impl PluginTool {
 
     /// Create a plugin-defined tool.
     ///
-    /// Since third-party declarations cannot claim read-only status, custom tools are
-    /// conservatively classified as write-classified and require approval.
+    /// 描述符优先级：**注册表命中就用注册表**（决策 1，注册表即真源）；
+    /// 未命中才由插件声明构造，此时：
     ///
-    /// 描述符用 [`Access::External`]，**不是** `Mutates { Batch("paths") }`：
-    /// 后者是一句谎话——插件工具的 schema 里没有 `paths` 字段，而声明了批量路径
-    /// 就等于向回滚/检查点承诺“我能按路径撤销”。外部工具的作用域根本不在工作区坐标系里。
+    /// - 默认 [`Access::External`]（作用域不可静态描述）→ **永不只读**、审批 `Always`。
+    ///   不用 `Mutates { Batch("paths") }`：那会向回滚/检查点承诺"我能按路径撤销"，
+    ///   而插件工具的 schema 里根本没有 `paths`——是一句谎话；
+    /// - 作者显式声明 `access: "read"` 时采信为 [`Access::ReadOnly`]（2026-10-27 决策，
+    ///   见 [`ScriptToolAccess`]）：只读档 / plan 模式 / 只读子智能体不再把它整条过滤掉。
+    ///   这是一句承诺，宿主无法验证——谎报会绕过写审批，代价记在 `ScriptToolAccess` 上。
     pub fn from_declaration(
         declaration: &ScriptToolDeclaration,
         host: Arc<dyn ScriptHost>,
@@ -157,6 +160,7 @@ impl PluginTool {
         if !declaration.parameters.is_object() {
             return Err(format!("插件工具 `{name}` 的 parameters 必须是 JSON Schema 对象"));
         }
+        let read_only = declaration.access == agent_base::ports::ScriptToolAccess::ReadOnly;
         let descriptor = agent_toolkit::find_tool_descriptor(name).cloned().unwrap_or_else(|| ToolDescriptor {
             name: name.to_string(),
             summary: if declaration.description.trim().is_empty() {
@@ -165,8 +169,17 @@ impl PluginTool {
                 declaration.description.clone()
             },
             schema: declaration.parameters.clone(),
-            access: Access::External,
-            approval: ApprovalPolicy::Always,
+            access: if read_only {
+                Access::ReadOnly
+            } else {
+                Access::External
+            },
+            // 自述只读的工具不打扰用户；其余仍按"每次都要问"的失败方向。
+            approval: if read_only {
+                ApprovalPolicy::Never
+            } else {
+                ApprovalPolicy::Always
+            },
             rollback: RollbackPolicy::None,
             execution: Execution::Sequential,
             termination: Termination::ContinueTurn,
@@ -299,6 +312,7 @@ mod tests {
             label: None,
             description: "plugin custom tool".to_string(),
             parameters: serde_json::json!({ "type": "object", "properties": {} }),
+            access: agent_base::ports::ScriptToolAccess::External,
         };
         let custom = PluginTool::from_declaration(&declaration, host.clone(), handle.clone(), "p")
             .expect("valid custom declaration is dynamically registered");
@@ -319,6 +333,46 @@ mod tests {
         let tool = PluginTool::new("read_file", host, handle, "p").expect("已注册名字应当可以构造");
         assert_eq!(tool.descriptor().name, "read_file");
         assert!(tool.descriptor().is_readonly(), "读写性来自注册表");
+    }
+
+    /// 作者显式声明 `access: "read"` 时，宿主采信为只读（2026-10-27 决策）。
+    ///
+    /// 这条钉住两件事：① 采信后 `is_readonly()` 为真，只读档 / plan 模式 / 只读子智能体
+    /// 不再把纯查询工具整条过滤掉；② 审批降为 `Never`（只读不该打扰用户）。
+    /// 谎报的代价由 `ScriptToolAccess` 的文档承担——宿主**无法**验证这句承诺。
+    #[test]
+    fn test_declared_read_access_is_honoured_as_readonly() {
+        let host: Arc<dyn ScriptHost> = Arc::new(crate::scripts::TsScriptHost::new());
+        let handle = ModuleHandle {
+            id: "script-ro".to_string(),
+        };
+        let declaration = ScriptToolDeclaration {
+            name: "plugin_query".to_string(),
+            label: None,
+            description: "query only".to_string(),
+            parameters: serde_json::json!({ "type": "object", "properties": {} }),
+            access: agent_base::ports::ScriptToolAccess::ReadOnly,
+        };
+        let tool = PluginTool::from_declaration(&declaration, host, handle, "p")
+            .expect("只读声明同样应当装配成功");
+        assert!(
+            tool.descriptor().is_readonly(),
+            "声明 access=read 之后必须被当作只读"
+        );
+        assert_eq!(tool.descriptor().access, Access::ReadOnly);
+        assert_eq!(tool.descriptor().approval, ApprovalPolicy::Never);
+        assert_eq!(tool.descriptor().rollback, RollbackPolicy::None);
+    }
+
+    /// 写错或缺失的自述一律按写处理（失败方向朝严的一侧）。
+    #[test]
+    fn test_unknown_access_strings_fall_back_to_write() {
+        use agent_base::ports::ScriptToolAccess;
+        assert_eq!(ScriptToolAccess::from_declared(Some("read")), ScriptToolAccess::ReadOnly);
+        assert_eq!(ScriptToolAccess::from_declared(Some(" read ")), ScriptToolAccess::ReadOnly);
+        assert_eq!(ScriptToolAccess::from_declared(Some("READ")), ScriptToolAccess::External);
+        assert_eq!(ScriptToolAccess::from_declared(Some("readonly")), ScriptToolAccess::External);
+        assert_eq!(ScriptToolAccess::from_declared(None), ScriptToolAccess::External);
     }
 
     /// SP-15 的端到端：**真插件 + 真沙箱**，回执由引擎认得。

@@ -171,6 +171,8 @@ impl ScriptHost for TsScriptHost {
                     label: tool.label,
                     description: tool.description,
                     parameters: tool.parameters,
+                    // 自述只读由沙箱归一化成 `"read"` / `"write"`，这里只做映射。
+                    access: agent_base::ports::ScriptToolAccess::from_declared(Some(&tool.access)),
                 })
                 .collect();
             let exports: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();

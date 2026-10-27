@@ -44,15 +44,6 @@ pub struct BuiltinPluginDefinition {
 
 pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
     BuiltinPluginDefinition {
-        id: "git-tools",
-        name: "Git 变更与协作工具 (git-tools)",
-        description: "一个 git 工具覆盖版本库读写：状态、限长 diff、提交历史、blame 查询，以及 add/commit/checkout/restore/reset/stash/branch/merge/push/pull。",
-        tools: &[
-            ("git", "按 action 执行 Git 动作：只读（status/diff/log/show/blame）直接返回；写入（add/commit/checkout/restore/reset/stash/branch/merge/push/pull）会改仓库，危险动作需审批。"),
-        ],
-        skills: &[],
-    },
-    BuiltinPluginDefinition {
         id: "code-outline",
         name: "代码大纲与结构提取 (code-outline)",
         description: "提取类、接口、函数与结构体骨架签名，快速理解大型代码文件架构。",
@@ -211,6 +202,9 @@ pub fn get_builtin_plugin_items(disabled_ids: &std::collections::HashSet<String>
                         label: Some(name.to_string()),
                         description: desc.to_string(),
                         parameters: param_schema,
+                        // 内置插件的工具是编译进基座的实现，读写性来自注册表描述符；
+                        // 这里的 `access` 只是卡片投影的占位（没有脚本声明可采信）。
+                        access: "write".to_string(),
                     }
                 })
                 .collect();

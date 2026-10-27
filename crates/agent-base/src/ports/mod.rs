@@ -33,7 +33,7 @@ pub use scope::Scope;
 pub use scripts::{
     InvokeRequest, LoadRequest, ModuleHandle, ScriptBudget, ScriptCtx, ScriptError, ScriptHookDeclaration,
     ScriptHookOutcome, ScriptHost, ScriptNeeds, ScriptOutcome, ScriptPromptFragment,
-    ScriptSkillDeclaration, ScriptSource, ScriptToolDeclaration,
+    ScriptSkillDeclaration, ScriptSource, ScriptToolAccess, ScriptToolDeclaration,
 };
 pub use store::SessionStore;
 pub use tools::{BoxFuture, Consumer, ContractViolation, Tool, ToolCatalog, ToolContext, ToolError};

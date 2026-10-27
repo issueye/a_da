@@ -91,12 +91,23 @@
 `actions` 组可选；一旦注册了动作，同样按 `count` / `names` 对账。
 `skills` 是**声明性**字段（宿主以目录扫描为准），不参与这条校验。
 
-工具的写入性**不由插件自述**：内置工具名走描述符（`registry.rs`），
+工具的写入性**默认不由插件自述**：内置工具名走描述符（`registry.rs`），
 第三方新工具名一律**按写操作 + 需要审批**处理（失败安全，`AGENTS.md` §2）。
 它们在描述符里用 `Access::External`（作用域不可静态描述）——**不是** `Mutates { Batch("paths") }`：
 后者的回滚承诺会去找一个 schema 里根本不存在的 `paths` 字段。
-外部工具的审批读写性取自**描述符**（`Access`），不再按工具名回查注册表——
-注册表里只有内置工具，插件/外部工具的名字永远不在里面。
+
+**例外（2026-10-27 决策）：作者可以自述只读。** `ada.registerTool({ ..., access: "read" })`
+会被采信为 `Access::ReadOnly`（审批降为 `Never`）。理由：插件化推进到真实工具之后
+（`git` 就是第一个），纯查询工具在只读档、plan 模式、只读子智能体里被整条过滤掉，属于功能回退。
+
+🔴 边界必须清楚：
+
+- 自述只读是一句**承诺**，宿主无法验证；谎报会绕过写审批。第三方插件自述只读属于
+  "安装即信任"的一部分，分发侧要能审计（这是本条决策的已知代价）；
+- 只能声明"读"，**不能**声明"我改哪个路径 / 执行什么命令"（`Mutates` / `Executes` 不可自述）；
+- 一个工具里既有读又有写（如 `git` 含 `commit` / `push`）时**不得**整体声明只读——
+  请把只读部分拆成独立工具（`plugins/git-tools` 就是这么做的：`git` + `git_read`）；
+- 写错（`"READ"` / `"readonly"` / 缺失）一律按写处理，失败方向朝严的一侧。
 
 ### 2.1 技能：目录 + `SKILL.md`（Agent Skills 规范）
 
@@ -219,9 +230,12 @@ description: 发布流程：先跑测试再打标签。Use when the user asks to
 | `plugin.delete` / `plugin.createTemplate` | 删除与生成骨架 |
 | `plugin.capabilities.set` / `plugin.config.set` / `plugin.secret.set` | 能力开关 / 配置 / 密钥 |
 
-**内置插件**（9 个，编译进产品）：`git-tools`、`code-outline`、`project-inspector`、
+**内置插件**（8 个，编译进产品）：`code-outline`、`project-inspector`、
 `test-runner`、`batch-ops`、`plugin-forge`、`approval-guard`、`ask-user`、`ponytail`。
 其中 `approval-guard` 是**审批策略**的唯一归属（执行归核心，`AGENTS.md` §14）。
+
+> `git-tools` 已不再内置：它现在是统一插件包 `plugins/git-tools`（TS 实现，
+> `git` + `git_read` 两枚工具），用插件启停控制，而不是一个工具包。
 
 ---
 

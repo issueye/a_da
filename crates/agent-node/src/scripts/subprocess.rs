@@ -282,6 +282,8 @@ impl ScriptHost for SubprocessScriptHost {
                     label: tool.label,
                     description: tool.description,
                     parameters: tool.parameters,
+                    // 子进程档走同一份归一化结果（runner 回的 `access` 字段）。
+                    access: agent_base::ports::ScriptToolAccess::from_declared(Some(&tool.access)),
                 })
                 .collect();
             let prompts: Vec<crate::plugins::PluginPromptDeclaration> = serde_json::from_value(

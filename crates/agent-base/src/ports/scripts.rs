@@ -95,6 +95,48 @@ pub struct ScriptToolDeclaration {
     pub label: Option<String>,
     pub description: String,
     pub parameters: serde_json::Value,
+    /// 插件自述的访问类别（见 [`ScriptToolAccess`]）。
+    pub access: ScriptToolAccess,
+}
+
+/// 插件对一个工具声明的**访问类别**（插件自述只读的**唯一**合法出口）。
+///
+/// 只有两档，且都只会让权限"更可描述"而不会扩张：
+///
+/// - [`ScriptToolAccess::External`]（默认）：作用域不可由基座静态描述（外部进程、
+///   远端服务、第三方脚本）→ 宿主一律按写处理（`Access::External`）；
+/// - [`ScriptToolAccess::ReadOnly`]：作者**担保**这个工具不改动工作区与外部状态
+///   → 宿主采信为 `Access::ReadOnly`。
+///
+/// 🔴 为什么允许自述只读（2026-10-27 决策）
+///
+/// 插件工具曾一律降级为"永不只读"，于是 `git status` 一类纯查询在只读档、plan 模式、
+/// 只读子智能体里被**整条过滤掉**——插件化推进到真实工具时这就是功能回退。
+/// 现在允许作者自述，但边界必须清楚：
+///
+/// 1. 自述只读是一句**承诺**，宿主无法验证——谎报会绕过写审批闸门。第三方插件自述只读
+///    属于"安装即信任"的一部分，分发侧要能审计（这是本条决策的已知代价）；
+/// 2. 只能声明"读"，**不能**声明"我改哪个路径 / 执行什么命令"（`Mutates` / `Executes`
+///    仍不可自述）——那才是真正的权限扩张；
+/// 3. 若要收紧，唯一改动点是 `scripts::plugin_tool::PluginTool::from_declaration`，
+///    不必动协议与端口。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScriptToolAccess {
+    #[default]
+    External,
+    ReadOnly,
+}
+
+impl ScriptToolAccess {
+    /// 从插件的字面声明解析：只认 `"read"`，其余（含缺失）一律 `External`。
+    ///
+    /// 失败方向朝严的一侧：写错一个字母不会把工具变成只读。
+    pub fn from_declared(raw: Option<&str>) -> Self {
+        match raw.map(str::trim) {
+            Some("read") => Self::ReadOnly,
+            _ => Self::External,
+        }
+    }
 }
 
 /// 插件被授予的**能力**（P4 · SP-71）。

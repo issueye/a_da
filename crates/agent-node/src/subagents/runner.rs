@@ -670,11 +670,9 @@ mod tests {
     #[test]
     fn test_subagent_pool_follows_profile_mode() {
         let ws = std::path::Path::new("E:/subagent_pool_ws");
-        let pm_like: Vec<String> = vec![
-            "core".to_string(),
-            "git".to_string(),
-            "project".to_string(),
-        ];
+        // 2026-10-27：`git` 不再是工具包（已搬成 `plugins/git-tools` 插件），
+        // 所以 PM 风格的工具包声明里不再有它；本用例测的是“按档位补读/补写”。
+        let pm_like: Vec<String> = vec!["core".to_string(), "project".to_string()];
 
         // 1) 只读档位：能读，绝不拿到写/命令
         let pool = subagent_tool_pool(&pm_like, ws, SubagentMode::Readonly)
