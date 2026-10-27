@@ -17,6 +17,9 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 sha2 = { workspace = true }
 reqwest = { workspace = true }
+# SQLite 原生绑定（节点兼容的 node:sqlite 子集）
+rusqlite = { workspace = true }
+base64 = { workspace = true }
 
 # TypeScript 编译与执行核心依赖
 boa_engine = { workspace = true }

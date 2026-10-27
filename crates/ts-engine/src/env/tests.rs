@@ -39,6 +39,7 @@ fn test_needs_gate_what_gets_injected() {
             fs_read: false,
             fs_write: false,
             net: false,
+            sqlite: false,
         },
     )
     .expect("注入失败");
@@ -241,6 +242,253 @@ fn test_p0_environment_in_boa() {
         ))
         .expect("eval web api 失败");
     assert_eq!(res_web.to_boolean(), true);
+
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
+/// SQLite：`node:sqlite` 的同步子集真的能建表、读写、命名参数、BLOB 与只读打开。
+///
+/// 这条用例同时钉住三件事：能力位确实注入了；数据库文件落在工作区内；
+/// 读出来的 BLOB 回到了 Buffer（而不是 base64 字符串）。
+#[test]
+fn test_sqlite_database_sync_round_trip_and_sandbox() {
+    let temp_dir = std::env::temp_dir().join(format!("a_da_sqlite_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let mut ctx = Context::default();
+    inject_environment(
+        &mut ctx,
+        Some(&temp_dir),
+        Needs {
+            fs_read: true,
+            fs_write: true,
+            net: false,
+            sqlite: true,
+        },
+    )
+    .expect("注入 SQLite 环境失败");
+
+    let result = ctx
+        .eval(Source::from_bytes(
+            r#"
+            (function() {
+                const { DatabaseSync } = require('node:sqlite');
+                const db = new DatabaseSync('sqlite-test.db');
+                db.exec('CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT, data BLOB)');
+                const first = db.prepare('INSERT INTO t(name, data) VALUES (?, ?)').run('alpha', Buffer.from('hi'));
+                const second = db.prepare('INSERT INTO t(name) VALUES (:name)').run({ name: 'beta' });
+                const row = db.prepare('SELECT id, name, data FROM t WHERE name = ?').get('alpha');
+                const rows = db.prepare('SELECT name FROM t ORDER BY id').all();
+                const wasOpen = db.isOpen;
+                db.close();
+                return JSON.stringify({
+                    changes: first.changes,
+                    secondId: second.lastInsertRowid,
+                    id: row.id,
+                    name: row.name,
+                    blob: row.data.toString(),
+                    rows: rows.map(function(r) { return r.name; }),
+                    wasOpen: wasOpen,
+                    isOpen: db.isOpen,
+                });
+            })();
+            "#,
+        ))
+        .expect("SQLite 脚本执行失败");
+    let text = result.to_string(&mut ctx).unwrap().to_std_string_escaped();
+    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(parsed["changes"], 1, "{parsed}");
+    assert_eq!(parsed["secondId"], 2, "{parsed}");
+    assert_eq!(parsed["id"], 1, "{parsed}");
+    assert_eq!(parsed["name"], "alpha", "{parsed}");
+    assert_eq!(parsed["blob"], "hi", "BLOB 应回到 Buffer：{parsed}");
+    assert_eq!(parsed["rows"], serde_json::json!(["alpha", "beta"]), "{parsed}");
+    assert_eq!(parsed["wasOpen"], true);
+    assert_eq!(parsed["isOpen"], false);
+
+    // 只读打开：写入必须被 SQLite 拒绝，读取仍然可用。
+    let read_only = ctx
+        .eval(Source::from_bytes(
+            r#"
+            (function() {
+                const { DatabaseSync } = require('node:sqlite');
+                const db = new DatabaseSync('sqlite-test.db', { readOnly: true });
+                let blocked = false;
+                try {
+                    db.exec("INSERT INTO t(name) VALUES ('blocked')");
+                } catch (e) {
+                    blocked = true;
+                }
+                const count = db.prepare('SELECT COUNT(*) AS n FROM t').get().n;
+                db.close();
+                return JSON.stringify({ blocked: blocked, count: count });
+            })();
+            "#,
+        ))
+        .expect("SQLite 只读脚本执行失败");
+    let read_only_text = read_only
+        .to_string(&mut ctx)
+        .unwrap()
+        .to_std_string_escaped();
+    let read_only: serde_json::Value = serde_json::from_str(&read_only_text).unwrap();
+    assert_eq!(read_only["blocked"], true, "{read_only}");
+    assert_eq!(read_only["count"], 2, "{read_only}");
+
+    // :memory: 与工作区沙箱：内存库可用，越界路径必须被拦。
+    let sandbox = ctx
+        .eval(Source::from_bytes(
+            r#"
+            (function() {
+                const { DatabaseSync } = require('node:sqlite');
+                const mem = new DatabaseSync(':memory:');
+                mem.exec('CREATE TABLE x(a)');
+                mem.prepare('INSERT INTO x VALUES (?)').run(7);
+                const value = mem.prepare('SELECT a FROM x').get().a;
+                mem.close();
+                let blocked = false;
+                try {
+                    new DatabaseSync('../outside.db');
+                } catch (e) {
+                    blocked = String((e && e.message) || e).indexOf('沙箱') >= 0;
+                }
+                return JSON.stringify({ value: value, blocked: blocked });
+            })();
+            "#,
+        ))
+        .expect("SQLite 内存/沙箱脚本执行失败");
+    let sandbox_text = sandbox.to_string(&mut ctx).unwrap().to_std_string_escaped();
+    let sandbox: serde_json::Value = serde_json::from_str(&sandbox_text).unwrap();
+    assert_eq!(sandbox["value"], 7, "{sandbox}");
+    assert_eq!(sandbox["blocked"], true, "越界数据库路径必须被沙箱拦下：{sandbox}");
+
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
+/// 未声明 `sqlite` 时连模块都不存在（不是"存在但调用被拦"）。
+#[test]
+fn test_sqlite_is_not_injected_without_the_need() {
+    let mut ctx = Context::default();
+    inject_environment(&mut ctx, None, Needs::plugin_default()).expect("注入失败");
+    let result = ctx
+        .eval(Source::from_bytes(
+            r#"
+            (function() {
+                try {
+                    require('node:sqlite');
+                    return 'injected';
+                } catch (e) {
+                    return String((e && e.message) || e);
+                }
+            })();
+            "#,
+        ))
+        .expect("检查 sqlite 门禁失败");
+    let message = result.to_string(&mut ctx).unwrap().to_std_string_escaped();
+    assert!(
+        message.contains("未注入") || message.contains("needs"),
+        "未声明 sqlite 时必须给出说清原因的错误：{message}"
+    );
+}
+
+/// SQL 也能打开文件：`ATTACH` 与 `VACUUM INTO` 必须和主库路径走同一条沙箱。
+#[test]
+fn test_sqlite_attach_and_vacuum_into_cannot_escape_the_workspace() {
+    let temp_dir = std::env::temp_dir().join(format!("a_da_sqlite_guard_{}", uuid::Uuid::new_v4()));
+    let workspace = temp_dir.join("ws");
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    let mut ctx = Context::default();
+    inject_environment(
+        &mut ctx,
+        Some(&workspace),
+        Needs {
+            fs_read: true,
+            fs_write: true,
+            net: false,
+            sqlite: true,
+        },
+    )
+    .expect("注入 SQLite 环境失败");
+
+    let result = ctx
+        .eval(Source::from_bytes(
+            r#"
+            (function() {
+                const { DatabaseSync } = require('node:sqlite');
+                const db = new DatabaseSync('guard.db');
+                db.exec('CREATE TABLE t(a)');
+                let attachBlocked = false;
+                try {
+                    db.exec("ATTACH DATABASE '../outside-attach.db' AS outside");
+                } catch (e) {
+                    attachBlocked = true;
+                }
+                let attachMemory = false;
+                try {
+                    db.exec("ATTACH DATABASE ':memory:' AS mem2");
+                    attachMemory = true;
+                } catch (e) {}
+                let attachInside = false;
+                let attachInsideError = '';
+                try {
+                    const pathMod = require('node:path');
+                    const insidePath = pathMod.join(process.cwd(), 'attached.db').replace(/\\/g, '/');
+                    db.exec("ATTACH DATABASE '" + insidePath.replace(/'/g, "''") + "' AS inside");
+                    db.exec("CREATE TABLE inside.t(x)");
+                    attachInside = true;
+                } catch (e) {
+                    attachInsideError = String((e && e.message) || e);
+                }
+                let vacuumBlocked = false;
+                try {
+                    db.exec("VACUUM INTO '../outside-vacuum.db'");
+                } catch (e) {
+                    vacuumBlocked = true;
+                }
+                let lengthBlocked = false;
+                try {
+                    db.prepare('SELECT randomblob(9000000)').get();
+                } catch (e) {
+                    lengthBlocked = true;
+                }
+                db.close();
+                return JSON.stringify({
+                    attachBlocked: attachBlocked,
+                    attachMemory: attachMemory,
+                    attachInside: attachInside,
+                    attachInsideError: attachInsideError,
+                    vacuumBlocked: vacuumBlocked,
+                    lengthBlocked: lengthBlocked,
+                });
+            })();
+            "#,
+        ))
+        .expect("执行 SQLite 沙箱脚本失败");
+    let text = result.to_string(&mut ctx).unwrap().to_std_string_escaped();
+    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(parsed["attachBlocked"], true, "{parsed}");
+    assert_eq!(parsed["attachMemory"], true, "内存库应允许 ATTACH：{parsed}");
+    assert_eq!(
+        parsed["attachInside"], true,
+        "工作区内的库应允许 ATTACH：{parsed}"
+    );
+    assert_eq!(parsed["vacuumBlocked"], true, "VACUUM INTO 越界必须被拦：{parsed}");
+    assert_eq!(
+        parsed["lengthBlocked"], true,
+        "超过 SQLITE_LIMIT_LENGTH 的 BLOB 必须被拒：{parsed}"
+    );
+    assert!(
+        workspace.join("attached.db").exists(),
+        "工作区内的 ATTACH 应该真的建出文件"
+    );
+    assert!(
+        !temp_dir.join("outside-attach.db").exists(),
+        "越界 ATTACH 不应留下文件"
+    );
+    assert!(
+        !temp_dir.join("outside-vacuum.db").exists(),
+        "越界 VACUUM INTO 不应留下文件"
+    );
 
     let _ = std::fs::remove_dir_all(temp_dir);
 }

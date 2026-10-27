@@ -1,4 +1,4 @@
-// @ada-needs fs
+// @ada-needs fs,sqlite
 //
 // 统一插件示例的后端入口：一个包同时被前端注册表与 agent 插件装配器发现。
 // 动作不是模型工具：它们只由 SSR 的 /ext/unified-demo/backend/* 路由调用。
@@ -7,12 +7,15 @@
 
 const metadata = {
   name: "unified-demo",
-  description: "统一插件示例：前端插槽 + 后端动作 + 动态路由",
+  description: "统一插件示例：前端插槽 + 后端动作 + 动态路由 + SQLite",
   tools: { count: 0, names: [] },
   systemPrompt: { count: 0, names: [] },
   hooks: { count: 0, names: [] },
   actions: { count: 2, names: ["status", "refresh"] },
-  routes: { count: 3, names: ["GET /hello/:name", "POST /echo", "GET /text"] },
+  routes: {
+    count: 4,
+    names: ["GET /hello/:name", "POST /echo", "GET /text", "GET /sqlite"],
+  },
 };
 
 function readState() {
@@ -108,6 +111,28 @@ export default function (ada) {
     path: "/text",
     async handler() {
       return ada.text("unified-demo route ok", 200, { "x-demo": "text" });
+    },
+  });
+
+  // SQLite：声明了 `@ada-needs sqlite` 才能 require。每次请求开一个库、
+  // 累加一次路由命中数，用来证明文件落在工作区、写入与查询都真的生效。
+  ada.route({
+    method: "GET",
+    path: "/sqlite",
+    async handler() {
+      const { DatabaseSync } = require("node:sqlite");
+      const db = new DatabaseSync(".ada-unified-demo.db");
+      db.exec(
+        "CREATE TABLE IF NOT EXISTS route_hits (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL)",
+      );
+      db.prepare("INSERT INTO route_hits(at) VALUES (?)").run(Date.now());
+      const total = db.prepare("SELECT COUNT(*) AS total FROM route_hits").get().total;
+      const last = db
+        .prepare("SELECT id, at FROM route_hits ORDER BY id DESC LIMIT 1")
+        .get();
+      db.close();
+      return { total: total, last: last };
     },
   });
 }

@@ -48,6 +48,11 @@ fn inject_common(ctx: &mut Context, workspace: Option<&Path>, needs: Needs) -> R
         fs::register_fs_native_and_script(ctx, workspace)?;
     }
 
+    // 6.5 注册 SQLite 原生绑定（**按声明**：`@ada-needs sqlite`）
+    if needs.sqlite {
+        sqlite::register_sqlite_native_and_script(ctx, workspace)?;
+    }
+
     // 7. 注册 crypto 原生哈希与加密能力
     crypto::register_crypto_native_and_script(ctx)?;
 
@@ -277,6 +282,7 @@ fn inject_common(ctx: &mut Context, workspace: Option<&Path>, needs: Needs) -> R
                 putAlias('fs', globalThis.fs);
                 if (globalThis.fs.promises) putAlias('fs/promises', globalThis.fs.promises);
             }
+            if (globalThis.sqlite) putAlias('sqlite', globalThis.sqlite);
             putAlias('os', globalThis.os);
             putAlias('events', { EventEmitter: globalThis.EventEmitter, default: { EventEmitter: globalThis.EventEmitter } });
             putAlias('buffer', { Buffer: globalThis.Buffer, default: { Buffer: globalThis.Buffer } });

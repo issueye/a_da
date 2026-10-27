@@ -1402,4 +1402,90 @@ mod tests {
         let _ = fs::remove_dir_all(home);
         let _ = fs::remove_dir_all(unified);
     }
+
+    /// `@ada-needs sqlite` 从源码声明一路走到引擎注入：动作里真的能建表、写入、读回。
+    #[tokio::test]
+    async fn sqlite_action_runs_only_when_declared_and_writes_inside_the_workspace() {
+        let workspace = temp_dir("sqlite_ws");
+        let home = temp_dir("sqlite_home");
+        let unified = temp_dir("sqlite_root");
+        let package = unified.join("sqlite-demo");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("plugin.json"),
+            r#"{
+                "id": "sqlite-demo",
+                "name": "SQLite Demo",
+                "version": "0.1.0",
+                "frontend": { "slots": [] },
+                "backend": {}
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            package.join("index.ts"),
+            r#"
+            // @ada-needs sqlite
+            const metadata = {
+              name: 'sqlite-demo',
+              description: 'SQLite 能力测试',
+              tools: { count: 0, names: [] },
+              systemPrompt: { count: 0, names: [] },
+              hooks: { count: 0, names: [] },
+              actions: { count: 1, names: ['bump'] },
+            };
+            export default function (ada) {
+              ada.metadata = metadata;
+              ada.registerAction({
+                name: 'bump',
+                description: '在 SQLite 里累加计数',
+                mode: 'write',
+                async execute() {
+                  const { DatabaseSync } = require('node:sqlite');
+                  const db = new DatabaseSync('.ada-sqlite-demo.db');
+                  db.exec('CREATE TABLE IF NOT EXISTS counts(name TEXT PRIMARY KEY, n INTEGER NOT NULL)');
+                  db.prepare('INSERT INTO counts(name, n) VALUES (?, 1) ON CONFLICT(name) DO UPDATE SET n = n + 1').run('demo');
+                  const row = db.prepare('SELECT n FROM counts WHERE name = ?').get('demo');
+                  db.close();
+                  return { count: row.n };
+                },
+              });
+            }
+            "#,
+        )
+        .unwrap();
+
+        let manager = PluginManager::with_home(&home).with_unified_dir(&unified);
+        let workspace_text = workspace.to_string_lossy().to_string();
+        let first = manager
+            .invoke_action(
+                "global:sqlite-demo",
+                "bump",
+                serde_json::json!({}),
+                PluginActionIntent::Write,
+                &workspace_text,
+            )
+            .await
+            .expect("SQLite 动作应成功");
+        assert_eq!(first["data"]["count"], 1, "{first}");
+        let second = manager
+            .invoke_action(
+                "global:sqlite-demo",
+                "bump",
+                serde_json::json!({}),
+                PluginActionIntent::Write,
+                &workspace_text,
+            )
+            .await
+            .expect("SQLite 动作第二次应成功");
+        assert_eq!(second["data"]["count"], 2, "{second}");
+        assert!(
+            workspace.join(".ada-sqlite-demo.db").is_file(),
+            "数据库必须落在工作区内"
+        );
+
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(home);
+        let _ = fs::remove_dir_all(unified);
+    }
 }

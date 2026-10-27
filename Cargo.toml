@@ -58,6 +58,9 @@ async-trait = "0.1"
 
 # 插件库平台：SQLite + SSR 模板 + 上传
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
+# TS 引擎的 SQLite 原生绑定（同步 API；bundled 避免依赖系统 libsqlite3）
+# `hooks` 只用来装 authorizer：堵住 ATTACH / VACUUM INTO 借 SQL 绕过工作区沙箱。
+rusqlite = { version = "0.32", features = ["bundled", "hooks", "limits"] }
 askama = "0.12"
 argon2 = "0.5"
 rand = "0.8"

@@ -1,4 +1,4 @@
-//! 插件运行环境注入（process / path / Buffer / fs / net / timers 等）。
+//! 插件运行环境注入（process / path / Buffer / fs / net / sqlite / timers 等）。
 //!
 //! `Needs` 是能力声明；具体注入流程在 `inject` 子模块，本文件只保留公开类型与再导出。
 
@@ -10,6 +10,7 @@ pub mod fs;
 pub mod os;
 pub mod path;
 pub mod process;
+pub mod sqlite;
 pub mod timers;
 pub mod url;
 pub mod util;
@@ -40,6 +41,11 @@ pub struct Needs {
     ///
     /// **默认 false**：这是插件唯一能"把数据送出去"的口子，值得显式声明才开。
     pub net: bool,
+    /// 注入 `node:sqlite`（`DatabaseSync` / `StatementSync`）。
+    ///
+    /// **默认 false**：SQLite 会创建/改写工作区里的数据库文件。它与 fs 的边界
+    /// 不同（SQL 能批量读写、能触发触发器），所以单独声明而不是搭 fs 的便车。
+    pub sqlite: bool,
 }
 
 impl Default for Needs {
@@ -57,15 +63,17 @@ impl Needs {
             fs_read: true,
             fs_write: true,
             net: true,
+            sqlite: true,
         }
     }
 
-    /// 插件默认档：`fs: true`、`net: false`（见设计文档 §3.5 的默认档位）。
+    /// 插件默认档：`fs: true`、`net: false`、`sqlite: false`（见设计文档 §3.5 的默认档位）。
     pub fn plugin_default() -> Self {
         Self {
             fs_read: true,
             fs_write: true,
             net: false,
+            sqlite: false,
         }
     }
 }

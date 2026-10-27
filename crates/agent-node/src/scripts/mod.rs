@@ -481,6 +481,7 @@ pub(crate) fn to_engine_needs(needs: ScriptNeeds) -> ada_ts_engine::Needs {
         fs_read: needs.fs_read,
         fs_write: needs.fs_write,
         net: needs.net,
+        sqlite: needs.sqlite,
     }
 }
 

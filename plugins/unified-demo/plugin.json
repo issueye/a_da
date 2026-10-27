@@ -2,7 +2,7 @@
   "id": "unified-demo",
   "name": "统一插件示例",
   "version": "0.1.0",
-  "description": "一个包同时包含前端插槽、后端动作与动态路由：前端显示状态，按钮触发后端写入，路由用 ada.route 自己声明。",
+  "description": "一个包同时包含前端插槽、后端动作、动态路由与 SQLite：前端显示状态，按钮触发后端写入，路由用 ada.route 自己声明。",
   "frontend": {
     "slots": [
       { "slot": "sidebar.bottom", "template": "slot.tsx", "order": 20 }

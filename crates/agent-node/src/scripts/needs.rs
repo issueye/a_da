@@ -69,6 +69,7 @@ pub fn parse_needs(source: &str) -> ParsedNeeds {
             "fs=read" | "fs_read" | "read" => needs.fs_read = true,
             "fs=write" | "fs_write" | "write" => needs.fs_write = true,
             "net" | "network" | "fetch" => needs.net = true,
+            "sqlite" | "database" | "db" => needs.sqlite = true,
             // 显式空集：`// @ada-needs none` 比"声明一个空列表"更难读错
             "none" => {}
             other => unknown.push(other.to_string()),
@@ -134,6 +135,20 @@ mod tests {
         assert!(p.needs.fs_read && p.needs.fs_write);
         assert!(!p.needs.net, "拼错的 token 绝不能授予能力");
         assert_eq!(p.unknown, vec!["nett".to_string()]);
+    }
+
+    /// SQLite 是独立能力：声明了才有，且不会顺带把 fs 打开。
+    #[test]
+    fn test_sqlite_is_a_separate_capability() {
+        let p = parse_needs("// @ada-needs sqlite\nexport default {}");
+        assert!(p.declared);
+        assert!(p.needs.sqlite);
+        assert!(!p.needs.fs_read && !p.needs.fs_write, "sqlite 不应该顺带给 fs");
+        assert!(!p.needs.net);
+
+        let p = parse_needs("// @ada-needs fs\n");
+        assert!(p.needs.fs_read && p.needs.fs_write);
+        assert!(!p.needs.sqlite, "fs 不应该顺带给 sqlite");
     }
 
     /// 指令只在前 40 行里找：写在文件深处不算（那时插件早有机会做别的）。

@@ -148,6 +148,27 @@ try {
   check(text.headers.get('x-demo') === 'text', '自定义响应头生效')
   check((await text.text()) === 'unified-demo route ok', 'text 响应体正确')
 
+  const sqliteFirst = await fetch(routeUrl('sqlite'))
+  check(sqliteFirst.status === 200, 'SQLite 路由返回 200', `HTTP ${sqliteFirst.status}`)
+  const sqliteFirstBody = await sqliteFirst.json()
+  check(
+    typeof sqliteFirstBody.total === 'number' && sqliteFirstBody.total >= 1,
+    'SQLite 建表与写入生效',
+    JSON.stringify(sqliteFirstBody),
+  )
+  check(
+    typeof sqliteFirstBody.last?.id === 'number' && typeof sqliteFirstBody.last?.at === 'number',
+    'SQLite 查询返回 last 行',
+    JSON.stringify(sqliteFirstBody),
+  )
+  const sqliteSecond = await fetch(routeUrl('sqlite'))
+  const sqliteSecondBody = await sqliteSecond.json()
+  check(
+    sqliteSecondBody.total === sqliteFirstBody.total + 1,
+    'SQLite 文件在工作区内持续累加',
+    `${JSON.stringify(sqliteFirstBody)} -> ${JSON.stringify(sqliteSecondBody)}`,
+  )
+
   const missing = await fetch(routeUrl('nope'))
   check(missing.status === 404, '未声明的路由返回 404', `HTTP ${missing.status}`)
   const missingBody = await missing.json()

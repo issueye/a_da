@@ -153,6 +153,57 @@ return ada.response({ status: 204, headers: { "cache-control": "no-store" } });
 - `metadata.routes` is optional; if present, `count` / `names` are validated against
   the registered routes.
 
+## SQLite: `require('node:sqlite')`
+
+Declare the capability first; without it the module is not injected at all:
+
+```ts
+// @ada-needs sqlite
+export default function (ada) {
+  ada.registerAction({
+    name: "bump",
+    description: "累加计数",
+    mode: "write",
+    async execute() {
+      const { DatabaseSync } = require("node:sqlite");
+      const db = new DatabaseSync(".data/counter.db");
+      db.exec("CREATE TABLE IF NOT EXISTS counts(name TEXT PRIMARY KEY, n INTEGER)");
+      db.prepare(
+        "INSERT INTO counts(name, n) VALUES (?, 1) " +
+        "ON CONFLICT(name) DO UPDATE SET n = n + 1",
+      ).run("demo");
+      const row = db.prepare("SELECT n FROM counts WHERE name = ?").get("demo");
+      db.close();
+      return { count: row.n };
+    },
+  });
+}
+```
+
+Supported surface (Node-compatible subset):
+
+- `new DatabaseSync(path, { readOnly?, timeout?, enableForeignKeyConstraints?, open? })`
+- `db.exec(sql)`, `db.prepare(sql)`, `db.open()`, `db.close()`, `db.isOpen`, `db.location()`
+- `stmt.run(...params)` → `{ changes, lastInsertRowid }`
+- `stmt.get(...params)` → object / `undefined`
+- `stmt.all(...params)` → array
+- Positional (`?`) and named (`:name` / `$name` / `@name` / bare `name`) parameters
+- `null` / number / string / boolean (0/1) / `Buffer`/`Uint8Array` (BLOB) / `BigInt`
+- Query results are plain objects; BLOB columns come back as `Buffer`
+- `:memory:` is always allowed; an empty path is treated as `:memory:`
+- Database files must resolve inside the plugin workspace; `file:` URIs are rejected
+- `ATTACH DATABASE` / `VACUUM INTO` go through the same workspace check and must use
+  **absolute** paths inside the workspace (relative paths are denied because SQLite
+  resolves them against the host process CWD); `load_extension` / `readfile` /
+  `writefile` functions are denied
+- Result sets are capped at 10,000 rows / 8 MB, SQL at 1 MB; default busy timeout is 5s
+- SQLite runtime limits: value/row 8 MB, SQL 1 MB, 4 attached databases,
+  expression depth 500, 1,000 variables, trigger depth 100
+- SQLite extension loading is not exposed
+
+SQL is not a model tool and does not enter the approval gate: it is a backend
+capability, same as `fs`. Use `readOnly: true` for read-only databases.
+
 **Skills are directories, not declarations.** Put `skills/<name>/SKILL.md` next to
 `index.ts`; the host scans it during assembly and reads the YAML frontmatter
 (`name` must equal the directory name, `description` 1-1024 chars — see
