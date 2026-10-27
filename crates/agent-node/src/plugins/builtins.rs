@@ -159,13 +159,6 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
         }],
     },
     BuiltinPluginDefinition {
-        id: "approval-guard",
-        name: "审批安全守卫 (approval-guard)",
-        description: "提供前置操作拦截、高危指令阻断与审批策略管控。",
-        tools: &[],
-        skills: &[],
-    },
-    BuiltinPluginDefinition {
         id: "ask-user",
         name: "向用户提问 (ask-user)",
         description: "向用户发起单选、多选按钮交互或自由文本输入提问。",

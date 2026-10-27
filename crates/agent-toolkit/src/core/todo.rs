@@ -1,32 +1,37 @@
-//! `todo` 工具：清单的**全量替换**，并跑自己的两个点位（P3b · SP-63）。
+//! `todo` 工具：清单的**全量替换**。
 //!
 //! # 状态在哪
 //!
 //! **权威清单不在 Rust 侧**：模型每次调用都带全量 `todos`，界面据这次调用的参数渲染。
-//! 所以这里只保留**每个线程上一次见到的清单**（只用于算 diff，不落盘、不给它"权威"地位）。
-//! 重启后第一份快照没有历史可比，此时如实说"首个快照"，而不是把整张清单报成"全是新增"
-//! ——那是最像数据、其实最误导的一种输出。
+//! 工具只负责解析、归一化并回执，不维护跨调用状态。
 //!
-//! # 点位（设计 §5.4 把实施位置定在"todo 工具内部"）
-//!
-//! - `beforeTodoUpdate`：载荷是全量清单。可 `Deny`（不更新，理由作为普通工具结果回模型）、
-//!   可 `Replace`（**改写后重新校验**：必须还是"对象数组 + 非空标题"）。
-//! - `afterTodoUpdate`：只追加旁注（带 [`crate::core::todo_diff::TodoDiff`] 的差异）。
+//! 原来的 `beforeTodoUpdate` / `afterTodoUpdate` 点位已移除：待办更新的拦截/旁注
+//! 后续由插件事件系统实现，核心工具不再跑钩子。
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use serde::{Deserialize, Serialize};
 
 use agent_base::domain::{ToolCall, ToolDescriptor, ToolReceipt};
-use agent_base::ports::hooks::{points, AfterNote, AfterRequest, BeforeOutcome, BeforeRequest};
 use agent_base::ports::{BoxFuture, Tool, ToolContext};
 
-use crate::core::todo_diff::{diff_todos, TodoStep};
+/// 一条待办（工具收到的形状）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoStep {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub title: String,
+    #[serde(default)]
+    pub status: String,
+}
+
+impl TodoStep {
+    pub fn is_done(&self) -> bool {
+        self.status.eq_ignore_ascii_case("completed") || self.status.eq_ignore_ascii_case("done")
+    }
+}
 
 /// `todo` 工具。
 pub struct TodoTool {
     descriptor: ToolDescriptor,
-    /// 每个线程**上一次见到的**清单（只用于算 diff，见模块说明）。
-    last_seen: Mutex<HashMap<String, Vec<TodoStep>>>,
 }
 
 impl Default for TodoTool {
@@ -41,10 +46,7 @@ impl TodoTool {
             .expect("todo descriptor must be registered in agent-toolkit registry")
             .clone();
 
-        Self {
-            descriptor,
-            last_seen: Mutex::new(HashMap::new()),
-        }
+        Self { descriptor }
     }
 
     /// 从参数里取清单。**形状不对就如实报错**（而不是当空清单继续跑——
@@ -70,45 +72,6 @@ impl TodoTool {
                 )),
             ),
         }
-    }
-
-    /// 改写后的清单**重新校验**（§5.6：改写不是授权）。
-    fn revalidate_replacement(args: &serde_json::Value) -> Result<Vec<TodoStep>, String> {
-        let steps_raw = args
-            .get("todos")
-            .or_else(|| args.get("items"))
-            .ok_or_else(|| "改写必须给出 `todos` / `items` 字段".to_string())?;
-        let steps: Vec<TodoStep> =
-            serde_json::from_value(normalize_steps(steps_raw)).map_err(|e| {
-                format!(
-                    "改写后的清单不合法（{e}）：期望 `[{{title, status}}]` 或 `[{{title, done}}]`"
-                )
-            })?;
-        if steps.iter().any(|s| s.title.trim().is_empty()) {
-            return Err("改写后的清单里有空标题".to_string());
-        }
-        Ok(steps)
-    }
-
-    /// 取走并写入"上一次见到的清单"（返回**上一版**，用于算 diff）。
-    fn remember(&self, thread_id: &str, steps: &[TodoStep]) -> Option<Vec<TodoStep>> {
-        let mut map = self.last_seen.lock().ok()?;
-        map.insert(thread_id.to_string(), steps.to_vec())
-    }
-}
-
-/// 把旁注追进工具结果（与 `afterToolCall` 同一口径：模型读到的就是那一份文本）。
-fn append_notes(output: &mut String, notes: &[AfterNote]) {
-    let texts: Vec<&str> = notes
-        .iter()
-        .filter_map(|n| match n {
-            AfterNote::Note { text } => Some(text.as_str()),
-            AfterNote::Observe { .. } => None,
-        })
-        .collect();
-    if !texts.is_empty() {
-        output.push_str("\n\n[插件旁注] ");
-        output.push_str(&texts.join("\n"));
     }
 }
 
@@ -142,7 +105,7 @@ impl Tool for TodoTool {
     fn execute<'a>(
         &'a self,
         call: &'a ToolCall,
-        ctx: &'a ToolContext<'a>,
+        _ctx: &'a ToolContext<'a>,
     ) -> BoxFuture<'a, ToolReceipt> {
         Box::pin(async move {
             let started_at = crate::now_ms();
@@ -164,92 +127,19 @@ impl Tool for TodoTool {
                 );
             }
 
-            let (mut steps, parse_problem) = Self::parse_steps(&call.args);
+            let (steps, parse_problem) = Self::parse_steps(&call.args);
             if let Some(problem) = parse_problem {
                 return ToolReceipt::error(problem, started_at, crate::now_ms());
             }
 
-            // ── beforeTodoUpdate（P3b·SP-63）───────────────────────────────
-            let mut replaced_by: Option<String> = None;
-            if let Some(hooks) = &ctx.hooks {
-                let outcome = hooks
-                    .runner
-                    .before(
-                        BeforeRequest {
-                            point: points::BEFORE_TODO_UPDATE.to_string(),
-                            subject: Some("todo".to_string()),
-                            payload: serde_json::json!({ "todos": steps }),
-                        },
-                        &hooks.ctx(ctx.thread_id, ctx.cancel, hooks.on_event),
-                    )
-                    .await;
-                match outcome {
-                    BeforeOutcome::Pass => {}
-                    BeforeOutcome::Deny { reason } => {
-                        // 拦下即定稿：**清单不变**，理由作为普通工具结果回模型（可纠正）
-                        return ToolReceipt::denied(reason, started_at, crate::now_ms());
-                    }
-                    BeforeOutcome::AbortTurn { reason } => {
-                        // 工具内部没有"结束整轮"的能力（那要引擎才能做）：如实说明、按拦下处理
-                        return ToolReceipt::denied(
-                            format!("{reason}（注：todo 点位不支持结束整轮，已按拦下处理）"),
-                            started_at,
-                            crate::now_ms(),
-                        );
-                    }
-                    BeforeOutcome::Replace { args: new_args, by } => {
-                        match Self::revalidate_replacement(&new_args) {
-                            Ok(new_steps) => {
-                                steps = new_steps;
-                                replaced_by = Some(by);
-                            }
-                            Err(reason) => {
-                                // 改写过不了校验：**不改**，如实说清（改写不是授权）
-                                return ToolReceipt::error(
-                                    format!("插件改写清单被拒：{reason}"),
-                                    started_at,
-                                    crate::now_ms(),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ── 应用 ───────────────────────────────────────────────────────
-            let previous = self.remember(ctx.thread_id, &steps);
-
-            let mut output = if steps.is_empty() {
+            let output = if steps.is_empty() {
                 "待办清单已清空。".to_string()
             } else {
                 format!("待办清单状态已更新（共 {} 条）。", steps.len())
             };
-            if let Some(by) = &replaced_by {
-                // 改写必须让模型看见：它得知道清单**不是自己写的那份**
-                output.push_str(&format!("\n（清单被插件 `{by}` 改写后生效）"));
-            }
-
-            // ── afterTodoUpdate（P3b·SP-63）────────────────────────────────
-            if let Some(hooks) = &ctx.hooks {
-                let diff_text = match &previous {
-                    Some(prev) => diff_todos(prev, &steps).describe(),
-                    None => "（首个快照：没有上一版清单可比）".to_string(),
-                };
-                let notes = hooks
-                    .runner
-                    .after(
-                        AfterRequest {
-                            point: points::AFTER_TODO_UPDATE.to_string(),
-                            subject: Some("todo".to_string()),
-                            payload: serde_json::json!({ "todos": steps, "diff": diff_text }),
-                        },
-                        &hooks.ctx(ctx.thread_id, ctx.cancel, hooks.on_event),
-                    )
-                    .await;
-                append_notes(&mut output, &notes);
-            }
 
             ToolReceipt::success(output, started_at, crate::now_ms())
+
         })
     }
 }

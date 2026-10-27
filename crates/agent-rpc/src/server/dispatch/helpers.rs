@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn builtin_tool_info(d: &agent_base::domain::ToolDescriptor) -> serde_json::Value {
-    use agent_base::domain::{ApprovalPolicy, Execution};
+    use agent_base::domain::{Execution};
 
     let kind = if d.is_readonly() {
         "只读工具"
@@ -12,15 +12,11 @@ pub(super) fn builtin_tool_info(d: &agent_base::domain::ToolDescriptor) -> serde
         Execution::Sequential => "顺序执行",
         Execution::ParallelSafe => "可并行",
     };
-    let approval = match &d.approval {
-        ApprovalPolicy::Never => "免审批",
-        _ => "需审批",
-    };
 
     serde_json::json!({
         "name": d.name,
         "label": d.summary,
-        "description": format!("{kind} · {exec} · {approval}"),
+        "description": format!("{kind} · {exec}"),
         "isReadOnly": d.is_readonly(),
     })
 }
@@ -99,14 +95,10 @@ pub(super) fn save_app_config(store: &AgentStore) -> Result<(), String> {
             "retryCount".to_string(),
             serde_json::json!(store.config.retry_count),
         );
-        // 审批档位 / 深度档位 / 默认模式 / 外观：启动时都会从这份文件读回来
+        // 深度档位 / 默认模式 / 外观：启动时都会从这份文件读回来
         // （`AgentStore` 的加载段），所以**必须写**。
         // 早先这几项只改内存、字段表里也没有它们，于是每次重启都回到默认值——
         // 表现就是"改完设置、重启又变回去了"。
-        obj.insert(
-            "approval".to_string(),
-            serde_json::to_value(store.config.approval).unwrap_or(serde_json::json!("ask")),
-        );
         obj.insert(
             "effort".to_string(),
             serde_json::to_value(store.config.effort).unwrap_or(serde_json::json!("medium")),
@@ -359,15 +351,9 @@ pub trait PluginReassembler: Send + Sync {
     }
 }
 
-/// W3-T2：宿主注入的**真引擎**及其**必须共用**的单例。
-///
-/// ⚠️ `approval_mgr` 不是可选项：新引擎的审批闸门（`HostApprovalGate`）把 waiter 注册到
-/// 它持有的 `ApprovalManager` 上，而 UI 的"批准/拒绝"经 `APPROVAL_DECIDE` 落到
-/// `Dispatcher.approval_mgr`。两者若是**不同实例**，UI 的答复就永远送不到闸门，
-/// 每次审批都会静默等到超时（默认 300s）。
+/// W3-T2：宿主注入的**真引擎**与产品声明。
 pub struct EngineInjection {
     pub runtime: Arc<agent_base::engine::AgentRuntime>,
-    pub approval_mgr: Arc<ApprovalManager>,
     /// 产品声明（W3-T6）：握手要**如实**回报这个产品的能力位与身份，
     /// 而不是回报一份硬编码常量。
     ///
@@ -402,12 +388,10 @@ pub struct EngineInjection {
 impl EngineInjection {
     pub fn new(
         runtime: Arc<agent_base::engine::AgentRuntime>,
-        approval_mgr: Arc<ApprovalManager>,
         spec: Arc<agent_runtime::AgentSpec>,
     ) -> Self {
         Self {
             runtime,
-            approval_mgr,
             spec,
             factory: None,
             plugin_skills: None,

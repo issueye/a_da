@@ -15,7 +15,7 @@
 /// 事件来源：谁产生了这件事。
 ///
 /// 这是"归因"的唯一口径——诊断面板按它过滤，门禁用它判断"某个扩展点是否真被调用过"。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Origin {
     /// 宿主/组合根（装配期、进程级动作）
     Host,
@@ -58,7 +58,7 @@ impl Origin {
 ///
 /// `turn_id` 由引擎在 `run_turn` 开头生成（每轮唯一）；`step_index` 是轮内步号
 /// （一次模型调用 = 一步）；`call_id` 在工具执行期间有效。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TraceCtx {
     pub turn_id: Option<String>,
     pub step_index: u32,

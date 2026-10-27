@@ -35,15 +35,10 @@ pub enum Slot {
     ComposerAbove,
     /// 托盘区（输入框上方 in-flow 区域）里**提问段**的挂载点。
     ///
-    /// 托盘区从上到下是：审批（核心）→ 提问 → 排队（核心）。插件在这里的输出
-    /// **非空时替换核心提问托盘**（审批/排队不受影响）；插件停用、加载失败或
+    /// 托盘区从上到下是：提问 → 排队（核心）。插件在这里的输出
+    /// **非空时替换核心提问托盘**（排队不受影响）；插件停用、加载失败或
     /// 没有插件时自动退回核心实现（见 [docs/PLAN-question-panel.md](../docs/PLAN-question-panel.md) D5）。
     ThreadTray,
-    /// 托盘区里**审批段**的挂载点。
-    ///
-    /// 插件输出非空时替换核心审批托盘；批准/拒绝仍提交核心
-    /// `/approvals/{call}/decision`，插件只负责呈现，**不能**改变审批策略。
-    ThreadApproval,
     /// 对话流末尾（消息之后）。
     TranscriptAfter,
     /// 扩展页列表。
@@ -65,7 +60,6 @@ impl Slot {
             Slot::ComposerFooter => "composer.footer",
             Slot::ComposerAbove => "composer.above",
             Slot::ThreadTray => "thread.tray",
-            Slot::ThreadApproval => "thread.approval",
             Slot::TranscriptAfter => "transcript.after",
             Slot::ExtensionsList => "extensions.list",
             Slot::DashboardWidgets => "dashboard.widgets",
@@ -84,7 +78,6 @@ impl Slot {
             Slot::ComposerFooter,
             Slot::ComposerAbove,
             Slot::ThreadTray,
-            Slot::ThreadApproval,
             Slot::TranscriptAfter,
             Slot::ExtensionsList,
             Slot::DashboardWidgets,

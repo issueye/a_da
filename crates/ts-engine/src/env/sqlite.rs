@@ -315,15 +315,14 @@ fn resolve_db_path(raw: &str) -> Result<PathBuf, String> {
         return Ok(PathBuf::from(":memory:"));
     }
     if trimmed.starts_with("file:") {
-        return Err("SQLite 不接受 file: URI（无法通过工作区沙箱校验）".to_string());
+        return Err("SQLite 不接受 file: URI".to_string());
     }
     let workspace = SQLITE_WORKSPACE.with(|cell| {
         cell.borrow()
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
     });
-    crate::sandbox::check_workspace_sandbox(&workspace, trimmed)
-        .map_err(|error| format!("沙箱拦截: {error}"))
+    Ok(crate::sandbox::resolve_workspace_path(&workspace, trimmed))
 }
 
 fn open_db(raw_path: &str, options_json: &str) -> Result<u64, String> {
@@ -428,7 +427,7 @@ fn install_authorizer(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-fn attached_database_allowed(workspace: &Path, filename: &str) -> bool {
+fn attached_database_allowed(_workspace: &Path, filename: &str) -> bool {
     let trimmed = filename.trim();
     if trimmed.is_empty() || trimmed == ":memory:" {
         return true;
@@ -440,10 +439,7 @@ fn attached_database_allowed(workspace: &Path, filename: &str) -> bool {
     // 在 authorizer 里改写 filename，所以只能要求绝对路径——否则
     // `ATTACH 'x.db'` 会落在宿主的工作目录，而不是插件工作区。
     let path = Path::new(trimmed);
-    if !path.is_absolute() {
-        return false;
-    }
-    crate::sandbox::check_workspace_sandbox(workspace, trimmed).is_ok()
+    path.is_absolute()
 }
 
 fn with_db<R>(
@@ -736,7 +732,7 @@ mod tests {
     }
 
     #[test]
-    fn file_uri_is_rejected_before_the_sandbox() {
+    fn file_uri_is_rejected() {
         assert!(resolve_db_path("file:../../outside.db").is_err());
         assert_eq!(
             resolve_db_path(":memory:").unwrap(),

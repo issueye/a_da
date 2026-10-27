@@ -106,11 +106,6 @@ pub struct CreateThreadForm {
     mode: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ApprovalForm {
-    thread_id: String,
-    approved: String,
-}
 
 fn plugin_redirect_target(referer: Option<&str>, location: &str) -> Option<String> {
     let referer = referer?.parse::<axum::http::Uri>().ok()?;
@@ -169,15 +164,9 @@ const NOTICE_TEXTS: &[(&str, &str)] = &[
     ("created", "会话已创建"),
     ("sent", "消息已发送"),
     ("aborted", "已请求中止当前轮次"),
-    ("approved", "已提交批准结果"),
-    ("rejected", "已提交拒绝结果"),
     ("retried", "已请求重试上一轮"),
     ("model_selected", "已切换模型"),
     ("effort_selected", "已更新推理等级"),
-    ("approval_auto", "审批档位已切换为「自动批准」"),
-    ("approval_ask", "审批档位已切换为「每次询问」"),
-    ("approval_readonly", "审批档位已切换为「严格只读」"),
-    ("approval_full", "审批档位已切换为「完全访问」"),
     ("queue_promoted", "已把排队消息提升到队首"),
     ("queue_removed", "已删除排队消息"),
     ("queue_cleared", "已清空当前会话的排队消息"),
@@ -405,23 +394,6 @@ fn render_context_with_tokens(
 /// `providers[]`（里面带密钥）。新增字段要同步 `docs/PLUGIN-DATA.md`。
 fn plugin_data(snapshot: &Value, thread_id: Option<&str>, plugin_count: usize) -> Value {
     let thread = thread_view(snapshot, thread_id);
-    let approvals: Vec<Value> = thread
-        .and_then(|thread| thread.get("items"))
-        .and_then(Value::as_array)
-        .map(|items| {
-            chat::approval_rows(items)
-                .into_iter()
-                .map(|row| {
-                    serde_json::json!({
-                        "callId": row.call_id,
-                        "tool": row.tool_name,
-                        "args": row.args,
-                        "waited": row.waited,
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
     serde_json::json!({
         "plugin_count": plugin_count,
         // 渲染时刻（epoch ms）：插件做"几秒前"之类的相对时间时用它，别信浏览器时钟。
@@ -438,7 +410,6 @@ fn plugin_data(snapshot: &Value, thread_id: Option<&str>, plugin_count: usize) -
         // 待答复的提问（`ask_user` 工具卡）：`thread.tray` 插件据此渲染作答表单，
         // 表单字段约定见 [docs/PLAN-question-panel.md](../docs/PLAN-question-panel.md) §4。
         "questions": questions_view(snapshot, thread_id),
-        "approvals": approvals,
     })
 }
 
@@ -626,7 +597,7 @@ fn runs_view(thread: Option<&Value>) -> Value {
             "command": command,
             "cwd": cwd,
             "status": status,
-            "running": matches!(status.as_str(), "running" | "queued" | "waiting_approval" | "awaiting"),
+            "running": matches!(status.as_str(), "running" | "queued" | "awaiting"),
             "exitCode": exit_code,
             "durationMs": item.get("durationMs").and_then(Value::as_u64),
             "startedAt": item.get("startedAt").and_then(Value::as_i64),
@@ -927,7 +898,6 @@ fn config_view(snapshot: &Value) -> Value {
             .and_then(Value::as_str)
     };
     serde_json::json!({
-        "approval": text("approval").unwrap_or("auto"),
         "effort": text("effort").unwrap_or("max"),
         "mode": text("mode").unwrap_or("code"),
         "contextWindow": config
@@ -974,14 +944,6 @@ fn counts_view(snapshot: &Value, thread: Option<&Value>) -> Value {
         .iter()
         .filter(|item| thread_id.is_empty() || str_at(item, "threadId") == thread_id)
         .count();
-    let approvals = thread
-        .map(|thread| {
-            array_at(thread, "items")
-                .iter()
-                .filter(|item| matches!(str_at(item, "status"), "waiting_approval" | "waiting"))
-                .count()
-        })
-        .unwrap_or(0);
     // 待答复的提问：`ask_user` 卡的状态是 `awaiting`（不是审批），单列一个数
     let questions = thread
         .map(|thread| {
@@ -999,7 +961,6 @@ fn counts_view(snapshot: &Value, thread: Option<&Value>) -> Value {
         "running": array_at(snapshot, "runningThreadIds").len(),
         "waiting": array_at(snapshot, "waitingThreadIds").len(),
         "queue": queue,
-        "approvals": approvals,
         "questions": questions,
     })
 }
@@ -1118,7 +1079,6 @@ async fn slot_content(registry: &Arc<PluginRegistry>, context: RenderContext) ->
         composer_footer: pick(Slot::ComposerFooter),
         composer_above: pick(Slot::ComposerAbove),
         thread_tray: pick(Slot::ThreadTray),
-        thread_approval: pick(Slot::ThreadApproval),
         transcript_after: pick(Slot::TranscriptAfter),
         extensions_list: pick(Slot::ExtensionsList),
         dashboard_widgets: pick(Slot::DashboardWidgets),
@@ -1414,8 +1374,7 @@ mod tests {
     }
 
     /// 收集 `src/` 里所有 `notice=<key>` 字面量（含 format 字符串与测试断言里的）。
-    /// 动态拼接（`notice={}`）抓不到 key、天然跳过；`notice=approval_` 这类前缀
-    /// 允许命中「以它开头的完整映射」（approval_auto…）。
+    /// 动态拼接（`notice={}`）抓不到 key、天然跳过。
     fn notice_keys_in_source() -> Vec<String> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut keys: Vec<String> = Vec::new();
@@ -1668,7 +1627,7 @@ mod tests {
                         "cachedTokens": 8500
                     }
                 },
-                { "kind": "tool", "status": "waiting_approval" },
+                { "kind": "tool", "status": "waiting" },
                 { "kind": "tool", "status": "done" }
             ]
         });
@@ -1680,7 +1639,6 @@ mod tests {
             "threads": [thread],
             "config": {
                 "model": "m1",
-                "approval": "ask",
                 "effort": "high",
                 "mode": "code",
                 "contextWindow": 100000,
@@ -1717,7 +1675,6 @@ mod tests {
         assert_eq!(data["config"]["effort"], "high");
         assert_eq!(data["config"]["maxOutputTokens"], 8000);
         assert_eq!(data["counts"]["queue"], 1, "只数当前会话的排队");
-        assert_eq!(data["counts"]["approvals"], 1);
         assert_eq!(data["workspace"]["current"], "E:/proj");
         assert!(data["render"]["at"].as_u64().unwrap_or(0) > 0);
         // 数据投影绝不能带供应商密钥。

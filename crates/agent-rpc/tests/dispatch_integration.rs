@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use agent_node::approval::ApprovalManager;
 use agent_node::checkpoint::CheckpointManager;
 use agent_node::plugins::PluginManager;
 use agent_node::session::SessionManager;
@@ -115,14 +114,14 @@ fn test_thread_lifecycle() {
 #[tokio::test]
 async fn test_stats_prompt_chars_are_measured_not_fabricated() {
     use agent_base::domain::{
-        Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolDescriptor,
+        Access, Execution, RollbackPolicy, Termination, ToolDescriptor,
         ToolReceipt,
     };
     use agent_base::engine::{AgentRuntime, RunPolicy};
     use agent_base::ports::ToolCatalog;
     use agent_base::testing::{
         FixedClock, FixedPrompt, InMemorySessionStore, InMemoryToolCatalog, MockScope, MockTool,
-        RecordingApprovalGate, ScriptedModelClient,
+        ScriptedModelClient,
     };
 
     const PROMPT: &str = "你是一个测试用系统提示词。";
@@ -138,7 +137,6 @@ async fn test_stats_prompt_chars_are_measured_not_fabricated() {
             summary: "探针工具".to_string(),
             schema: schema.clone(),
             access: Access::ReadOnly,
-            approval: ApprovalPolicy::Never,
             rollback: RollbackPolicy::None,
             execution: Execution::Sequential,
             termination: Termination::ContinueTurn,
@@ -151,7 +149,6 @@ async fn test_stats_prompt_chars_are_measured_not_fabricated() {
     let rt = Arc::new(AgentRuntime::new(
         Arc::new(ScriptedModelClient::new(vec![])),
         catalog,
-        Arc::new(RecordingApprovalGate::new(true)),
         Arc::new(InMemorySessionStore::new()),
         Arc::new(FixedPrompt::new(PROMPT)),
         Arc::new(MockScope::new("s")),
@@ -165,7 +162,6 @@ async fn test_stats_prompt_chars_are_measured_not_fabricated() {
         Arc::new(SessionManager::new(Some(std::env::temp_dir().join("a_da_test_home")))),
         Arc::new(CheckpointManager::new(Some(std::env::temp_dir().join("a_da_test_home")))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(test_home_dir())),
         Arc::new(SkillManager::with_home(test_home_dir())),
         None,
@@ -204,7 +200,6 @@ async fn test_stats_prompt_chars_without_engine_is_an_error() {
         Arc::new(SessionManager::new(Some(std::env::temp_dir().join("a_da_test_home")))),
         Arc::new(CheckpointManager::new(Some(std::env::temp_dir().join("a_da_test_home")))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(test_home_dir())),
         Arc::new(SkillManager::with_home(test_home_dir())),
         None,
@@ -225,7 +220,6 @@ async fn test_dispatcher_extension_methods() {
     let session_mgr = Arc::new(SessionManager::new(Some(std::env::temp_dir().join("a_da_test_home"))));
     let checkpoint_mgr = Arc::new(CheckpointManager::new(Some(std::env::temp_dir().join("a_da_test_home"))));
     let subagent_mgr = Arc::new(SubagentManager::new());
-    let approval_mgr = Arc::new(ApprovalManager::new());
     let plugin_mgr = Arc::new(PluginManager::with_home(test_home_dir()));
     let skill_mgr = Arc::new(SkillManager::with_home(test_home_dir()));
     let dispatcher = Dispatcher::new(
@@ -233,21 +227,11 @@ async fn test_dispatcher_extension_methods() {
         session_mgr,
         checkpoint_mgr,
         subagent_mgr,
-        approval_mgr,
         plugin_mgr,
         skill_mgr,
         None,
     );
 
-    // 验证 approval.decide
-    let decide_res = dispatcher.dispatch("approval.decide", serde_json::json!({
-        "toolItemId": "item_123",
-        "approved": true
-    }))
-    .await
-    .expect("approval.decide 分发失败");
-    assert_eq!(decide_res.get("toolItemId").and_then(|v| v.as_str()), Some("item_123"));
-    assert_eq!(decide_res.get("approved").and_then(|v| v.as_bool()), Some(true));
 
     // 验证 subagentProfile.list
     let subagents = dispatcher.dispatch("subagentProfile.list", serde_json::json!({ "workspace": "E:/test" }))
@@ -282,8 +266,8 @@ async fn test_dispatcher_extension_methods() {
         .expect("plugin.list 分发失败");
     assert!(plugins.get("plugins").is_some());
     let plugins_arr = plugins.get("plugins").unwrap().as_array().unwrap();
-    // 8 个内置插件（`decision` 已于 2026-10-18 随 `decide`/`check_gate` 一并下线）
-    assert!(plugins_arr.len() >= 8);
+    // 6 个内置插件（`decision` 已于 2026-10-18 随 `decide`/`check_gate` 一并下线）
+    assert!(plugins_arr.len() >= 6);
     assert!(plugins_arr.iter().any(|p| p.get("id").and_then(|v| v.as_str()) == Some("builtin:code-outline")));
     assert!(plugins.get("capabilities").is_some());
 
@@ -339,7 +323,6 @@ async fn test_mode_can_only_be_chosen_before_the_conversation_starts() {
         Arc::new(SessionManager::new(Some(test_dir.clone()))),
         Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(test_home_dir())),
         Arc::new(SkillManager::with_home(test_home_dir())),
         None,
@@ -419,7 +402,6 @@ async fn test_plugin_and_skill_lifecycle() {
     let session_mgr = Arc::new(SessionManager::new(Some(test_dir.clone())));
     let checkpoint_mgr = Arc::new(CheckpointManager::new(Some(test_dir.clone())));
     let subagent_mgr = Arc::new(SubagentManager::new());
-    let approval_mgr = Arc::new(ApprovalManager::new());
     let plugin_mgr = Arc::new(PluginManager::with_home(test_home_dir()));
     let skill_mgr = Arc::new(SkillManager::with_home(test_home_dir()));
     let dispatcher = Dispatcher::new(
@@ -427,7 +409,6 @@ async fn test_plugin_and_skill_lifecycle() {
         session_mgr,
         checkpoint_mgr,
         subagent_mgr,
-        approval_mgr,
         plugin_mgr.clone(),
         skill_mgr.clone(),
         None,
@@ -460,15 +441,14 @@ async fn test_plugin_and_skill_lifecycle() {
         "enabled": true
     })).await.unwrap();
 
-    // 3. 测试 8 大内置插件（`decision` 已于 2026-10-18 下线）
+    // 3. 测试内置插件（`decision` 已于 2026-10-18 下线）
     let plugins = plugin_mgr.scan_plugins(None);
-    assert!(plugins.len() >= 8);
+    assert!(plugins.len() >= 6);
     let plugin_ids: Vec<String> = plugins.iter().map(|p| p.id.clone()).collect();
     assert!(plugin_ids.contains(&"builtin:code-outline".to_string()));
     assert!(plugin_ids.contains(&"builtin:project-inspector".to_string()));
     assert!(plugin_ids.contains(&"builtin:test-runner".to_string()));
     assert!(plugin_ids.contains(&"builtin:batch-ops".to_string()));
-    assert!(plugin_ids.contains(&"builtin:approval-guard".to_string()));
     assert!(plugin_ids.contains(&"builtin:ask-user".to_string()));
     assert!(plugin_ids.contains(&"builtin:ponytail".to_string()));
 
@@ -499,7 +479,6 @@ async fn test_thread_create_binds_requested_workspace() {
         session_mgr.clone(),
         checkpoint_mgr,
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(test_home_dir())),
         Arc::new(SkillManager::with_home(test_home_dir())),
         None,
@@ -570,7 +549,6 @@ async fn test_thread_delete_with_hook_runner_returns_promptly() {
         session_mgr.clone(),
         Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(test_home_dir())),
         Arc::new(SkillManager::with_home(test_home_dir())),
         None,
@@ -632,7 +610,6 @@ async fn test_thread_delete_denied_by_hook_keeps_session() {
         session_mgr.clone(),
         Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(test_home_dir())),
         Arc::new(SkillManager::with_home(test_home_dir())),
         None,
@@ -684,7 +661,6 @@ async fn test_dispatcher_provider_management() {
     let session_mgr = Arc::new(SessionManager::new(Some(test_dir.clone())));
     let checkpoint_mgr = Arc::new(CheckpointManager::new(Some(test_dir.clone())));
     let subagent_mgr = Arc::new(SubagentManager::new());
-    let approval_mgr = Arc::new(ApprovalManager::new());
     let plugin_mgr = Arc::new(PluginManager::with_home(test_home_dir()));
     let skill_mgr = Arc::new(SkillManager::with_home(test_home_dir()));
     let dispatcher = Dispatcher::new(
@@ -692,7 +668,6 @@ async fn test_dispatcher_provider_management() {
         session_mgr,
         checkpoint_mgr,
         subagent_mgr,
-        approval_mgr,
         plugin_mgr,
         skill_mgr,
         None,
@@ -834,7 +809,6 @@ async fn test_provider_models_stay_bound_and_survive_restart() {
         Arc::new(SessionManager::new(Some(test_dir.clone()))),
         Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(test_home_dir())),
         Arc::new(SkillManager::with_home(test_home_dir())),
         None,
@@ -948,7 +922,6 @@ async fn test_conversation_queue_lifecycle() {
         session_mgr.clone(),
         checkpoint_mgr,
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(test_home_dir())),
         Arc::new(SkillManager::with_home(test_home_dir())),
         None,
@@ -1048,7 +1021,6 @@ async fn test_config_set_retry_count_is_clamped_and_persisted() {
         Arc::new(SessionManager::new(Some(test_dir.clone()))),
         Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(test_home_dir())),
         Arc::new(SkillManager::with_home(test_home_dir())),
         None,
@@ -1114,291 +1086,6 @@ async fn test_config_set_retry_count_is_clamped_and_persisted() {
 /// 所以这条测试同时钉两件事：
 /// 1. 配置文件里真的出现了这几个键（漏写字段 = 这里红）；
 /// 2. 用同一份 home 重建 store（等价于"重启进程"）能把值读回来（漏读 = 这里红）。
-#[tokio::test]
-async fn test_effort_and_approval_survive_restart() {
-    use agent_base::testing::TempAppHome;
-    use agent_proto::{ApprovalMode, Effort};
-
-    let test_dir = std::env::temp_dir().join(format!("a_da_effort_cfg_{}", uuid::Uuid::new_v4()));
-    let _ = std::fs::create_dir_all(&test_dir);
-    let cfg_path = test_dir.join("config.json");
-    let home = TempAppHome::at(&test_dir).with_config_file(&cfg_path);
-
-    let store = Arc::new(RwLock::new(AgentStore::with_home("E:/test".to_string(), &home)));
-    let dispatcher = Dispatcher::new(
-        store.clone(),
-        Arc::new(SessionManager::new(Some(test_dir.clone()))),
-        Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
-        Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
-        Arc::new(PluginManager::with_home(test_home_dir())),
-        Arc::new(SkillManager::with_home(test_home_dir())),
-        None,
-    );
-
-    // 1. 默认档位：深度 = Max（"最大"），审批 = Auto
-    assert_eq!(store.read().await.config.effort, Effort::Max);
-
-    // 2. 改成「中」+「询问确认」
-    dispatcher
-        .dispatch("config.setEffort", serde_json::json!({ "effort": "medium" }))
-        .await
-        .expect("config.setEffort 必须可分发");
-    dispatcher
-        .dispatch("config.setApproval", serde_json::json!({ "mode": "ask" }))
-        .await
-        .expect("config.setApproval 必须可分发");
-    assert_eq!(store.read().await.config.effort, Effort::Medium, "内存态必须立即生效");
-
-    // 3. 真的落盘——这正是不变量所在：手工列字段的写法最容易漏项
-    let written: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&cfg_path).expect("配置必须已落盘")).unwrap();
-    assert_eq!(
-        written.get("effort").and_then(|v| v.as_str()),
-        Some("medium"),
-        "深度档位必须写进 config.json：{written}"
-    );
-    assert_eq!(
-        written.get("approval").and_then(|v| v.as_str()),
-        Some("ask"),
-        "审批档位必须写进 config.json：{written}"
-    );
-
-    // 4. 重启：同一份 home 重新构造 store，值必须原样回来
-    let reloaded = AgentStore::with_home("E:/test".to_string(), &home);
-    assert_eq!(reloaded.config.effort, Effort::Medium, "重启后深度档位不能回默认");
-    assert_eq!(reloaded.config.approval, ApprovalMode::Ask, "重启后审批档位不能回默认");
-    assert_eq!(
-        reloaded.config.retry_count,
-        agent_base::model::DEFAULT_MODEL_RETRY_COUNT as u32,
-        "别的设置项不该被顺手改掉"
-    );
-
-    let _ = std::fs::remove_dir_all(&test_dir);
-}
-
-/// 端到端守门：**审批请求必须真的能弹到界面上，并被界面放行**。
-///
-/// 引擎的事件顺序是 `ApprovalRequested` →（等用户）→ `ToolCallStarted`（建卡，且在审批
-/// 通过**之后**）。早先 `store.set_tool_waiting_approval` 只改"已存在的卡片"，于是审批
-/// 事件静默 no-op：界面既没有审批卡、`waiting_thread_ids` 也为空——用户无从批准，只能干等
-/// 审批超时（默认 30 分钟）被自动拒绝。实测踩到：一条含 `Format-Table` 的**只读**列目录
-/// 命令被危险命令子串匹配误判为高危，整轮就此卡死。
-///
-/// 这条测试跑的是**真链路**：脚本模型 → `AgentRuntime::run_turn` → 事件桥 → dispatch 事件
-/// 循环 → `AgentStore`；然后走与前端完全相同的 `approval.decide` 把闸门放行，并断言本轮
-/// 继续跑完。闸门接的是**本 dispatcher 的** `ApprovalManager`（生产同构）。
-#[tokio::test]
-async fn test_approval_request_reaches_store_and_decide_resumes_the_turn() {
-    use agent_base::domain::{
-        Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolDescriptor, ToolReceipt,
-    };
-    use agent_base::engine::{AgentRuntime, RunPolicy};
-    use agent_base::model::{StreamDelta, ToolCallInfo};
-    use agent_base::ports::ToolCatalog;
-    use agent_base::testing::{
-        FixedClock, FixedPrompt, InMemorySessionStore, InMemoryToolCatalog, MockScope, MockTool,
-        ScriptedModelClient,
-    };
-    use agent_node::approval::HostApprovalGate;
-    use agent_node::node_config::FixedNodeConfig;
-    use agent_proto::ApprovalMode;
-
-    const CALL_ID: &str = "call_approval_e2e";
-
-    let approval_mgr = Arc::new(ApprovalManager::new());
-    // `Ask` 档位：一律要问，稳定触发审批（不依赖危险命令匹配）
-    let gate = Arc::new(HostApprovalGate::new(
-        Arc::new(FixedNodeConfig::new(
-            agent_base::model::ProviderConfig::default(),
-            ApprovalMode::Ask,
-        )),
-        approval_mgr.clone(),
-    ));
-
-    let tool = Arc::new(MockTool::new(
-        ToolDescriptor {
-            name: "read_file".to_string(),
-            summary: "读取文件".to_string(),
-            schema: serde_json::json!({
-                "type": "object",
-                "properties": { "path": { "type": "string" } }
-            }),
-            access: Access::ReadOnly,
-            approval: ApprovalPolicy::Named("approval-guard"),
-            rollback: RollbackPolicy::None,
-            execution: Execution::Sequential,
-            termination: Termination::ContinueTurn,
-        },
-        ToolReceipt::success("文件内容", 0, 1),
-    ));
-    let catalog: Arc<dyn ToolCatalog> = Arc::new(InMemoryToolCatalog::with_tools(vec![tool]));
-
-    let model = Arc::new(ScriptedModelClient::new(vec![
-        // 第 1 轮：模型要求调用工具（必须先过审批）
-        vec![
-            StreamDelta::ToolCall {
-                call: ToolCallInfo {
-                    id: CALL_ID.to_string(),
-                    name: "read_file".to_string(),
-                    args: r#"{"path":"README.md"}"#.to_string(),
-                },
-            },
-            StreamDelta::Done { stop_reason: "tool_calls".to_string() },
-        ],
-        // 第 2 轮：拿到工具结果后自然收尾
-        vec![
-            StreamDelta::Text { text: "读完了".to_string() },
-            StreamDelta::Done { stop_reason: "stop".to_string() },
-        ],
-    ]));
-
-    let rt = Arc::new(AgentRuntime::new(
-        model,
-        catalog,
-        gate,
-        Arc::new(InMemorySessionStore::new()),
-        Arc::new(FixedPrompt::new("测试系统提示词")),
-        Arc::new(MockScope::new("s")),
-        Arc::new(FixedClock::new(1000)),
-        RunPolicy::default(),
-    ));
-
-    let store = Arc::new(RwLock::new(store_for_test("E:/codes/approval_e2e_ws")));
-    let test_dir = std::env::temp_dir().join(format!("a_da_appr_test_{}", uuid::Uuid::new_v4()));
-    let _ = std::fs::create_dir_all(&test_dir);
-    let dispatcher = Dispatcher::new(
-        store.clone(),
-        Arc::new(SessionManager::new(Some(test_dir.clone()))),
-        Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
-        Arc::new(SubagentManager::new()),
-        approval_mgr.clone(),
-        Arc::new(PluginManager::with_home(test_home_dir())),
-        Arc::new(SkillManager::with_home(test_home_dir())),
-        None,
-    )
-    .with_engine(rt);
-
-    let created = dispatcher
-        .dispatch("thread.create", serde_json::json!({ "title": "审批端到端" }))
-        .await
-        .unwrap();
-    let tid = created
-        .get("threadId")
-        .and_then(|v| v.as_str())
-        .unwrap()
-        .to_string();
-
-    dispatcher
-        .dispatch(
-            "thread.send",
-            serde_json::json!({ "threadId": tid, "text": "读一下 README" }),
-        )
-        .await
-        .unwrap();
-
-    // 取该会话下 CALL_ID 对应卡片的状态（界面渲染的依据就是这个状态）
-    let card_status = |store: &Arc<RwLock<AgentStore>>, tid: &str| {
-        let store = store.clone();
-        let tid = tid.to_string();
-        async move {
-            let s = store.read().await;
-            s.threads
-                .iter()
-                .find(|t| t.id == tid)
-                .and_then(|t| {
-                    t.items.iter().find_map(|it| match it.as_ref() {
-                        Item::Tool { call_id, status, .. } if call_id == CALL_ID => {
-                            Some(status.clone())
-                        }
-                        _ => None,
-                    })
-                })
-        }
-    };
-
-    // 1) 审批请求必须落到 store：卡片进入 `waiting_approval`，且"有会话在等你"可见。
-    //    这两件事缺任何一件，界面就弹不出审批卡（正是本次修的病）。
-    let mut saw_waiting = false;
-    let mut saw_visible = false;
-    for _ in 0..300 {
-        saw_waiting = card_status(&store, &tid).await.as_deref() == Some("waiting_approval");
-        saw_visible = store
-            .read()
-            .await
-            .waiting_thread_ids
-            .iter()
-            .any(|id| id == &tid);
-        if saw_waiting && saw_visible {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    assert!(
-        saw_waiting,
-        "审批到达时工具卡片必须被补出来并进入 waiting_approval（否则界面没有批准按钮）"
-    );
-    assert!(
-        saw_visible,
-        "审批等待必须让 waiting_thread_ids 可见（否则别的标签页上完全看不出来）"
-    );
-
-    // 2) 界面上点"批准" → 与前端同一条 RPC
-    let decided = dispatcher
-        .dispatch(
-            "approval.decide",
-            serde_json::json!({ "toolItemId": CALL_ID, "approved": true }),
-        )
-        .await
-        .expect("approval.decide 必须可分发");
-    assert_eq!(
-        decided.get("resolved").and_then(|v| v.as_bool()),
-        Some(true),
-        "必须命中引擎注册的等待通道（命中不了就说明闸门与 manager 没接上）"
-    );
-
-    // 3) 放行后本轮必须继续跑完：卡片收尾、等待态摘除、会话不再运行
-    let mut done = false;
-    for _ in 0..300 {
-        done = card_status(&store, &tid).await.as_deref() == Some("done");
-        if done {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    assert!(done, "批准后工具必须真的执行并收尾（卡片应为 done）");
-    let s = store.read().await;
-    assert!(
-        !s.waiting_thread_ids.iter().any(|id| id == &tid),
-        "开始执行/收尾后不得仍挂着'等待审批'"
-    );
-    assert!(
-        s.threads
-            .iter()
-            .find(|t| t.id == tid)
-            .map(|t| {
-                t.items.iter().any(|it| {
-                    matches!(it.as_ref(), Item::Assistant { text, .. } if text.contains("读完了"))
-                })
-            })
-            .unwrap_or(false),
-        "闸门放行后本轮应继续到底（第 2 轮模型的收尾文本要落进会话）"
-    );
-
-    let _ = std::fs::remove_dir_all(&test_dir);
-}
-
-/// 「模型请求失败」的报错必须落在 **Notice 卡片**上，而不是助手正文里。
-///
-/// 为什么值得一条集成测试（而不是只测 jsonl 的 `fold_messages`）：
-/// 失败链路的三个环节分布在三个 crate——宿主拼文案并落盘（`agent-rpc`）、
-/// 会话文件读写（`agent-adapter`）、还原成 UI 卡片（`agent-node`）。
-/// 任何一环把 Notice 当成普通消息，"报错混进模型上下文"就会悄悄回来。
-///
-/// 这条测试同时钉住两件事：
-/// 1. 还原出的 items 里有 `Item::Notice`（界面有东西可渲染）；
-/// 2. 模型上下文（`load_session` 的 messages）里**没有**这条报错——
-///    否则模型会以为"我上一轮说过这句"，而一段连贯回答也会被从中间劈开。
 #[tokio::test]
 async fn test_failure_notice_stays_out_of_assistant_text_and_model_context() {
     let test_dir = std::env::temp_dir().join(format!("a_da_test_notice_{}", uuid::Uuid::new_v4()));
@@ -1522,8 +1209,7 @@ async fn test_diagnostics_reach_store_log_and_snapshot_with_origin() {
     use agent_base::engine::{AgentRuntime, RunPolicy};
     use agent_base::model::StreamDelta;
     use agent_base::testing::{
-        FixedClock, FixedPrompt, InMemorySessionStore, InMemoryToolCatalog, RecordingApprovalGate,
-        MockScope, ScriptedModelClient,
+        FixedClock, FixedPrompt, InMemorySessionStore, InMemoryToolCatalog, MockScope, ScriptedModelClient,
     };
 
     // 最小回合：无工具、纯文本收尾
@@ -1534,7 +1220,6 @@ async fn test_diagnostics_reach_store_log_and_snapshot_with_origin() {
     let rt = Arc::new(AgentRuntime::new(
         model,
         Arc::new(InMemoryToolCatalog::new()),
-        Arc::new(RecordingApprovalGate::new(true)),
         Arc::new(InMemorySessionStore::new()),
         Arc::new(FixedPrompt::new("测试系统提示词")),
         Arc::new(MockScope::new("s")),
@@ -1550,7 +1235,6 @@ async fn test_diagnostics_reach_store_log_and_snapshot_with_origin() {
         Arc::new(SessionManager::new(Some(test_dir.clone()))),
         Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(test_home_dir())),
         Arc::new(SkillManager::with_home(test_home_dir())),
         None,
@@ -1647,7 +1331,6 @@ async fn test_plugin_and_skill_scan_diagnostics_with_absence_signal() {
         Arc::new(SessionManager::new(Some(home.clone()))),
         Arc::new(CheckpointManager::new(Some(home.clone()))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(home.clone())),
         Arc::new(SkillManager::with_home(home.clone())),
         None,
@@ -1740,7 +1423,6 @@ async fn test_skill_list_reports_plugin_skills_and_invalid_frontmatter() {
         Arc::new(SessionManager::new(Some(home.clone()))),
         Arc::new(CheckpointManager::new(Some(home.clone()))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(home.clone())),
         Arc::new(SkillManager::with_home(home.clone())),
         None,
@@ -1818,7 +1500,6 @@ async fn test_management_plane_hooks_gate_toggle_and_thread_create() {
             Arc::new(SessionManager::new(Some(home.clone()))),
             Arc::new(CheckpointManager::new(Some(home.clone()))),
             Arc::new(SubagentManager::new()),
-            Arc::new(ApprovalManager::new()),
             Arc::new(PluginManager::with_home(home.clone())),
             Arc::new(SkillManager::with_home(home.clone())),
             None,
@@ -1967,7 +1648,6 @@ async fn test_plugin_set_enabled_drives_reassembly_and_reports_the_delta() {
             Arc::new(SessionManager::new(Some(home.clone()))),
             Arc::new(CheckpointManager::new(Some(home.clone()))),
             Arc::new(SubagentManager::new()),
-            Arc::new(ApprovalManager::new()),
             Arc::new(PluginManager::with_home(home.clone())),
             Arc::new(SkillManager::with_home(home.clone())),
             None,
@@ -2058,7 +1738,6 @@ async fn test_plugin_create_template_triggers_reassembly() {
         Arc::new(SessionManager::new(Some(home.clone()))),
         Arc::new(CheckpointManager::new(Some(home.clone()))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(home.clone())),
         Arc::new(SkillManager::with_home(home.clone())),
         None,
@@ -2111,7 +1790,6 @@ async fn test_disk_plugin_is_reported_as_discovered_with_listing_caveat() {
         Arc::new(SessionManager::new(Some(home.clone()))),
         Arc::new(CheckpointManager::new(Some(home.clone()))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(home.clone())),
         Arc::new(SkillManager::with_home(home.clone())),
         None,
@@ -2197,7 +1875,7 @@ async fn test_plugin_tool_is_called_by_the_model_and_returns_success() {
     use agent_base::ports::{ScriptBudget, ScriptHost, ToolCatalog};
     use agent_base::testing::{
         FixedClock, FixedPrompt, InMemorySessionStore, InMemoryToolCatalog, MockScope,
-        RecordingApprovalGate, ScriptedModelClient,
+        ScriptedModelClient,
     };
     use std::sync::Arc;
 
@@ -2249,7 +1927,6 @@ async fn test_plugin_tool_is_called_by_the_model_and_returns_success() {
     let rt = Arc::new(AgentRuntime::new(
         model,
         catalog,
-        Arc::new(RecordingApprovalGate::new(true)),
         Arc::new(InMemorySessionStore::new()),
         Arc::new(FixedPrompt::new("测试系统提示词")),
         Arc::new(MockScope::new("s")),
@@ -2265,7 +1942,6 @@ async fn test_plugin_tool_is_called_by_the_model_and_returns_success() {
         Arc::new(SessionManager::new(Some(test_dir.clone()))),
         Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(test_home_dir())),
         Arc::new(SkillManager::with_home(test_home_dir())),
         None,
@@ -2336,7 +2012,6 @@ async fn test_plugin_validate_reports_actionable_problems() {
         Arc::new(SessionManager::new(Some(test_dir.clone()))),
         Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(test_home_dir())),
         Arc::new(SkillManager::with_home(test_home_dir())),
         None,
@@ -2431,7 +2106,6 @@ async fn test_plugin_list_merges_live_contribution_views() {
         Arc::new(SessionManager::new(Some(home.clone()))),
         Arc::new(CheckpointManager::new(Some(home.clone()))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(home.clone())),
         Arc::new(SkillManager::with_home(home.clone())),
         None,
@@ -2495,7 +2169,6 @@ async fn test_turn_without_engine_leaves_a_visible_notice() {
         session_mgr.clone(),
         Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(test_home_dir())),
         Arc::new(SkillManager::with_home(test_home_dir())),
         None, // 故意不注入引擎
@@ -2547,7 +2220,6 @@ async fn test_market_config_roundtrip_and_guards() {
         Arc::new(SessionManager::new(Some(home.clone()))),
         Arc::new(CheckpointManager::new(Some(home.clone()))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(home.clone())),
         Arc::new(SkillManager::with_home(home.clone())),
         None,
@@ -2631,7 +2303,6 @@ async fn test_market_publish_rejects_paths_outside_extension_roots() {
         Arc::new(SessionManager::new(Some(home.clone()))),
         Arc::new(CheckpointManager::new(Some(home.clone()))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(home.clone())),
         Arc::new(SkillManager::with_home(home.clone())),
         None,

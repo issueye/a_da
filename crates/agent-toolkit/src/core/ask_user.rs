@@ -391,7 +391,6 @@ impl Tool for AskUserTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_base::domain::DenialKind;
     use agent_base::testing::{ManualCancel, RecordingSink};
     use agent_base::ports::Scope;
     use std::path::PathBuf;
@@ -401,8 +400,8 @@ mod tests {
         fn id(&self) -> &str {
             "dummy"
         }
-        fn resolve_path(&self, raw: &str) -> Result<PathBuf, DenialKind> {
-            Ok(PathBuf::from(raw))
+        fn resolve_path(&self, raw: &str) -> PathBuf {
+            PathBuf::from(raw)
         }
     }
 

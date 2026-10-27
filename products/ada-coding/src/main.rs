@@ -69,12 +69,9 @@ struct CliArgs {
 
 /// 按声明装配真引擎（**唯一实现**，Coding 与 PM 模式共用）；任何失败都如实降级为 legacy。
 ///
-/// 注意三件事都是刻意的：
-/// 1. **复用宿主的 `store`**：引擎的审批闸门要读 `config.approval`，各造一份会出现
-///    "界面上是只读档、引擎按默认档跑"；
-/// 2. **会话落盘到 app home**（不是工作区），与 legacy 路径一致；
-/// 3. 返回的 `approval_mgr` 会被 ws 宿主用于构造 `Dispatcher`——**必须是同一个实例**，
-///    否则 UI 的批准送不到闸门。
+/// 注意两件事都是刻意的：
+/// 1. **复用宿主的 `store`**：provider / 上下文窗口等运行期配置与界面看同一份；
+/// 2. **会话落盘到 app home**（不是工作区），与 legacy 路径一致。
 ///
 /// `spec_json` 决定"装哪一套"：产品声明（coding）或**模式预设**（pm）。
 /// 早先这里是两份几乎逐行相同的拷贝（`build_engine_injection` /
@@ -86,7 +83,6 @@ async fn build_injection(
     workspace: &str,
     gateway_override: Option<&str>,
     apply_delegation: bool,
-    approval_mgr: &Arc<agent_node::approval::ApprovalManager>,
     // P4·SP-70：**脚本宿主由 main 建好传进来**。理由：档位选错（要求子进程档却找不到入口）
     // 必须让进程**拒绝启动**，而这里只能返回 `Option`（失败 = 没有真引擎）。把"能不能起"
     // 放在 main 里判，才不会出现"以为在隔离里跑、其实跑在宿主进程里"。
@@ -173,9 +169,6 @@ async fn build_injection(
     let options = agent_host::HostOptions::new(&ws)
         .with_store(store.clone())
         .with_sessions_root(sessions_root)
-        // 审批 waiter 表**全进程共用一张**：ws 宿主会把它交给 `Dispatcher`，
-        // UI 的 `approval.decide` 才找得到闸门注册的等待者。
-        .with_approval_manager(approval_mgr.clone())
         // P1/P2/P3a：插件贡献（工具 / 提示词片段 / 技能 / 钩子运行时）一次交齐
         .with_plugin_contributions(contributions)
         // P4：装配面的两位能力开关（同名覆盖 / 提示词片段）——由宿主在装配管线里判
@@ -188,7 +181,7 @@ async fn build_injection(
     match agent_host::run_from_spec(spec, options) {
         Ok(hosted) => {
             let tool_count = hosted.tool_names().len();
-            let agent_host::HostedProduct { runtime, approval, spec, live, background_tasks, .. } = hosted;
+            let agent_host::HostedProduct { runtime, spec, live, background_tasks, plugin_events, .. } = hosted;
             // 启动时装配的这份引擎**带着插件贡献**（工具 / 提示词 / 技能 / 钩子）。
             // 下面按工作区动态装配的那条路收不到异步装载结果，所以同一工作区必须复用它。
             let runtime = Arc::new(runtime);
@@ -213,15 +206,15 @@ async fn build_injection(
                     // P4：启停后刷新界面读的**贡献视图**（否则"关掉了插件、卡片还列着它的工具"）
                     r = r.with_contribution_views(plugin_contribution_views.clone());
                     r = r.with_background_tasks(background_tasks.clone());
+                    if let Some(events) = &plugin_events {
+                        r = r.with_event_runtime(events.clone());
+                    }
                     Some(Arc::new(r))
                 } else {
                     None
                 };
 
             let store_for_factory = store.clone();
-            // 🔴 动态装配的引擎也必须复用**同一张** waiter 表：只搬走 `h.runtime` 而让它
-            // 自建一份表，UI 的批准就永远送不到这个引擎的闸门（点了批准一直卡到超时）。
-            let approval_for_factory = approval_mgr.clone();
             let gateway_override_owned = gateway_override.map(|s| s.to_string());
             let script_host_for_factory = script_host.clone();
             let plugin_mgr_for_factory = plugin_mgr.clone();
@@ -232,7 +225,6 @@ async fn build_injection(
             let factory: agent_rpc::server::dispatch::EngineFactory =
                 Arc::new(move |ws_path: std::path::PathBuf| {
                     let store = store_for_factory.clone();
-                    let approval = approval_for_factory.clone();
                     let gateway_override_owned = gateway_override_owned.clone();
                     let host = script_host_for_factory.clone();
                     let mgr = plugin_mgr_for_factory.clone();
@@ -269,7 +261,6 @@ async fn build_injection(
                         let opts = agent_host::HostOptions::new(&ws_path)
                             .with_store(store)
                             .with_sessions_root(s_root)
-                            .with_approval_manager(approval)
                             .with_plugin_contributions(collected.contributions)
                             .with_plugin_capabilities(collected.caps)
                             // 动态装配同样要能创建全局插件（同一条组合根口径）
@@ -298,7 +289,6 @@ async fn build_injection(
 
             Some(agent_rpc::server::dispatch::EngineInjection {
                 runtime: runtime.clone(),
-                approval_mgr: approval,
                 // W3-T6：声明一起注入，握手才能如实回报能力位
                 spec: Arc::new(spec),
                 factory: Some(factory),
@@ -487,13 +477,6 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     };
 
-    // W3-T2：按声明装配**真引擎**（coding 产品 + PM 模式预设），共用同一处装配函数。
-    //
-    // 审批 waiter 表**一个进程一张**：coding / PM / 之后按工作区动态装配的引擎全部共用它。
-    // ws 宿主会把它交给 `Dispatcher`，UI 的 `approval.decide` 才落得到闸门注册的那张表上
-    // （各装配一份就变成"界面能弹审批卡、点批准却永远卡住"，见 `HostOptions::approval_mgr`）。
-    let approval_mgr = Arc::new(agent_node::approval::ApprovalManager::new());
-
     // ── 插件脚本的执行档位（P4·SP-70）────────────────────────────────────
     //
     // **在启动时定死**：要求子进程档却找不到 `runner.exe` 时，这里直接拒绝启动，
@@ -523,6 +506,7 @@ async fn main() -> Result<(), anyhow::Error> {
             ),
         };
 
+    // W3-T2：按声明装配**真引擎**（coding 产品 + PM 模式预设），共用同一处装配函数。
     let injection = build_injection(
         SPEC_JSON,
         "ada-coding 产品声明",
@@ -530,7 +514,6 @@ async fn main() -> Result<(), anyhow::Error> {
         &initial_ws,
         args.gateway.as_deref(),
         false,
-        &approval_mgr,
         script_host.clone(),
     )
     .await;
@@ -541,7 +524,6 @@ async fn main() -> Result<(), anyhow::Error> {
         &initial_ws,
         args.gateway.as_deref(),
         true,
-        &approval_mgr,
         script_host.clone(),
     )
     .await;

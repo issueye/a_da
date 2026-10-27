@@ -1,20 +1,18 @@
-//! AGENT BASE 单一引擎（INV-1）：多轮流式驱动、工具执行、审批守门与收尾保证。
+//! AGENT BASE 单一引擎（INV-1）：多轮流式驱动、工具执行与收尾保证。
 //!
 //! 核心断言（合规契约）：
-//! 1. `ApprovalGate::decide` 在每次受策略约束的调用前被调用一次；`Denied` 以工具结果回模型，不抛错；
-//! 2. `ToolCallStarted` 必先于同 `CallId` 的 `ToolCallFinished`；每轮**恰好一个** `TurnFinished`；
-//! 3. `CancelToken` 贯穿传进 `ModelClient::stream` 与 `Tool::execute`；
-//! 4. 无工具调用即结束；无隐式步数上限，达到预算时自报 `TurnStopReason::BudgetExhausted`；
-//! 5. 消费 `Termination::EndTurn`：当工具声明整轮终止时结束并发出恰好一个 `TurnFinished`；
-//! 6. 零 IO、零产品名词（不依赖具体文件系统或产品词汇）。
+//! 1. `ToolCallStarted` 必先于同 `CallId` 的 `ToolCallFinished`；每轮**恰好一个** `TurnFinished`；
+//! 2. `CancelToken` 贯穿传进 `ModelClient::stream` 与 `Tool::execute`；
+//! 3. 无工具调用即结束；无隐式步数上限，达到预算时自报 `TurnStopReason::BudgetExhausted`；
+//! 4. 消费 `Termination::EndTurn`：当工具声明整轮终止时结束并发出恰好一个 `TurnFinished`；
+//! 5. 零 IO、零产品名词（不依赖具体文件系统或产品词汇）。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::domain::{
-    Access, AgentError, AgentEvent, AgentEventBody, AgentMessage, ApprovalPolicy, DiagFamily,
-    DiagOutcome, DiagnosticEvent, FailDirection, Origin, POINT_APPROVAL_SKIPPED,
-    POINT_APPROVAL_WAITED, POINT_HOOK_REPLACE_APPLIED, POINT_HOOK_REPLACE_REJECTED,
+    AgentError, AgentEvent, AgentEventBody, AgentMessage, DiagFamily, DiagOutcome,
+    DiagnosticEvent, Origin, POINT_HOOK_REPLACE_APPLIED, POINT_HOOK_REPLACE_REJECTED,
     POINT_PROMPT_COMPOSED, POINT_TURN_ABORTED, Termination, ToolCall, ToolCallBlock, ToolReceipt,
     ToolStatus, TraceCtx, TurnStopReason, make_turn_id,
 };
@@ -28,16 +26,15 @@ use crate::ports::hooks::{
     AfterNote, AfterRequest, BeforeOutcome, BeforeRequest, HookCtx, HookObservation, HookRunner,
     points,
 };
+use crate::domain::{EventOutcome, EventSource, PluginEvent};
 use crate::ports::{
-    AnsweredBy, ApprovalGate, ApprovalOutcome, ApprovalRequest, CancelToken, Clock,
-    CompletionRequest, EventSink, ModelClient, ModelError, PromptSource, Scope, SessionStore,
-    ToolCatalog, ToolContext, ToolError,
+    CancelToken, Clock, CompletionRequest, EventDispatcher, EventSink, ModelClient, ModelError,
+    PromptSource, Scope, SessionStore, ToolCatalog, ToolContext, ToolError,
 };
 
 pub struct AgentRuntime {
     pub model: Arc<dyn ModelClient>,
     pub tools: Arc<dyn ToolCatalog>,
-    pub approval: Arc<dyn ApprovalGate>,
     pub store: Arc<dyn SessionStore>,
     pub prompt: Arc<dyn PromptSource>,
     pub scope: Arc<dyn Scope>,
@@ -49,6 +46,9 @@ pub struct AgentRuntime {
     /// 钩子运行时（P3a · SP-51）。`None` = 这个产品没开钩子——那时**一条钩子诊断都不发**：
     /// 没开钩子的产品报"没人订阅这个点位"只会污染面板，还会掩盖真正的问题。
     hooks: Option<Arc<dyn HookRunner>>,
+    /// 统一事件分发器（迁移期）。装了它之后，`run_before_hook` 优先走 `event_*`，
+    /// 由 `HookEventDispatcher` 折回 `hooks`；`None` = 保持旧的直连路径（测试/老调用点）。
+    events: Option<Arc<dyn EventDispatcher>>,
 }
 
 /// `AFTER_TURN` 钩子的 payload（**给插件钩子的公开契约**：字段增删都算破坏性变更）。
@@ -86,7 +86,6 @@ impl AgentRuntime {
     pub fn new(
         model: Arc<dyn ModelClient>,
         tools: Arc<dyn ToolCatalog>,
-        approval: Arc<dyn ApprovalGate>,
         store: Arc<dyn SessionStore>,
         prompt: Arc<dyn PromptSource>,
         scope: Arc<dyn Scope>,
@@ -96,7 +95,6 @@ impl AgentRuntime {
         Self {
             model,
             tools,
-            approval,
             store,
             prompt,
             scope,
@@ -105,6 +103,7 @@ impl AgentRuntime {
             seq: AtomicU64::new(1),
             turn_ordinal: AtomicU64::new(1),
             hooks: None,
+            events: None,
         }
     }
 
@@ -123,6 +122,17 @@ impl AgentRuntime {
     /// 是否装了钩子（宿主自检 / 测试断言用）。
     pub fn has_hooks(&self) -> bool {
         self.hooks.is_some()
+    }
+
+    /// 装上统一事件分发器（迁移期）：`event_before_*` 走它，不再直连 `HookRunner`。
+    pub fn with_events(mut self, dispatcher: Arc<dyn EventDispatcher>) -> Self {
+        self.events = Some(dispatcher);
+        self
+    }
+
+    /// 是否装了统一事件分发器。
+    pub fn has_events(&self) -> bool {
+        self.events.is_some()
     }
 
     fn next_seq(&self) -> u64 {
@@ -175,6 +185,35 @@ impl AgentRuntime {
         trace: &TraceCtx,
         cancel: &dyn CancelToken,
     ) -> BeforeOutcome {
+        if let Some(dispatcher) = &self.events {
+            let name = crate::ports::hooks::event_name_for_point(point).unwrap_or(point);
+            let event = PluginEvent {
+                name: name.to_string(),
+                // 插件事件不占用领域事件的 seq；同一个轮次内保持同一个值即可。
+                seq: self.seq.load(Ordering::SeqCst),
+                at_ms: self.clock.now_ms(),
+                thread_id: thread_id.to_string(),
+                turn_id: trace.turn_id.clone(),
+                call_id: trace.call_id.clone(),
+                trace: trace.clone(),
+                source: EventSource::Engine,
+                payload,
+            };
+            let on_event = |obs: HookObservation| {
+                self.emit_hook_observation(sink, thread_id, trace, &obs);
+            };
+            return match dispatcher.dispatch(event, &on_event).await {
+                EventOutcome::Pass | EventOutcome::Note { .. } | EventOutcome::Observe { .. } => {
+                    BeforeOutcome::Pass
+                }
+                EventOutcome::Deny { reason } => BeforeOutcome::Deny { reason },
+                EventOutcome::Replace { payload } => BeforeOutcome::Replace {
+                    args: payload,
+                    by: "event".to_string(),
+                },
+                EventOutcome::AbortTurn { reason } => BeforeOutcome::AbortTurn { reason },
+            };
+        }
         let Some(runner) = &self.hooks else {
             return BeforeOutcome::Pass;
         };
@@ -212,6 +251,33 @@ impl AgentRuntime {
         trace: &TraceCtx,
         cancel: &dyn CancelToken,
     ) -> Vec<AfterNote> {
+        if let Some(dispatcher) = &self.events {
+            let name = crate::ports::hooks::event_name_for_point(point).unwrap_or(point);
+            let event = PluginEvent {
+                name: name.to_string(),
+                seq: self.seq.load(Ordering::SeqCst),
+                at_ms: self.clock.now_ms(),
+                thread_id: thread_id.to_string(),
+                turn_id: trace.turn_id.clone(),
+                call_id: trace.call_id.clone(),
+                trace: trace.clone(),
+                source: EventSource::Engine,
+                payload,
+            };
+            let on_event = |obs: HookObservation| {
+                self.emit_hook_observation(sink, thread_id, trace, &obs);
+            };
+            return dispatcher
+                .dispatch_many(event, &on_event)
+                .await
+                .into_iter()
+                .filter_map(|outcome| match outcome {
+                    EventOutcome::Note { text } => Some(AfterNote::Note { text }),
+                    EventOutcome::Observe { data } => Some(AfterNote::Observe { data }),
+                    _ => None,
+                })
+                .collect();
+        }
         let Some(runner) = &self.hooks else {
             return Vec::new();
         };
@@ -260,23 +326,6 @@ impl AgentRuntime {
             )
             .await;
         self.store.append_message(thread_id, message).await
-    }
-
-    /// 问审批端口"这次调用需要问吗"（`Never` 短路——它与档位无关，声明就是声明）。
-    ///
-    /// 抽出来是为了**改写路径上的风险单调性判定**与真正执行前的那次判定
-    /// 用的是**同一个**判据：两处各写一份，迟早出现"单调性说没降级、闸门却没问"。
-    async fn needs_approval_for(
-        &self,
-        tool: &str,
-        access: &Access,
-        policy: &ApprovalPolicy,
-        args: &serde_json::Value,
-    ) -> bool {
-        match policy {
-            ApprovalPolicy::Never => false,
-            policy => self.approval.needs_approval(tool, access, policy, args).await,
-        }
     }
 
     /// 改写被重新校验拒了：**留痕**（这是"插件想做但没做成"的记录）。
@@ -336,7 +385,7 @@ impl AgentRuntime {
     /// 发一条**诊断遥测**（P0 埋点地基）：只给人看，不进模型上下文、不进会话正文。
     ///
     /// `diag.origin` 是**产生方**（例如提示词组装是 `Engine`），与 `trace.origin`
-    /// （当前正在执行谁，例如某个工具）刻意分开：一条"审批等待"是引擎测出来的，
+    /// （当前正在执行谁，例如某个工具）刻意分开：一条"钩子点位"是引擎测出来的，
     /// 但它测的是那个工具的等待。
     fn emit_diag(
         &self,
@@ -370,47 +419,6 @@ impl AgentRuntime {
                 .with_outcome(DiagOutcome::Aborted)
                 .with_reason(source),
         );
-    }
-
-    /// 按 `FailDirection` 裁决**没有判定依据**的审批结果（W5-T5 / INV-4）。
-    ///
-    /// | `outcome.by` | 含义 | 处理 |
-    /// |---|---|---|
-    /// | `User` | 有人明确点了批准/拒绝 | **原样采信**（方向不得覆盖人的决定） |
-    /// | `Policy` | 策略给出了确定判定 | **原样采信** |
-    /// | `Timeout` | 等到超时也没人回答 | 按 `direction`：`Closed` → 拒绝，`Open` → 放行 |
-    /// | `Aborted` | 等待期间会话被中止 | 同上 |
-    ///
-    /// 纯函数，便于直接断言（无需构造完整运行时）。
-    pub(crate) fn apply_fail_direction(
-        outcome: ApprovalOutcome,
-        direction: FailDirection,
-    ) -> ApprovalOutcome {
-        match outcome.by {
-            AnsweredBy::User | AnsweredBy::Policy => outcome,
-            AnsweredBy::Timeout | AnsweredBy::Aborted => match direction {
-                FailDirection::Closed => {
-                    if outcome.approved {
-                        // 安全网：闸门声明 Closed 却对"没答案"给了放行 → 引擎翻成拒绝
-                        ApprovalOutcome::denied(
-                            outcome.by,
-                            outcome.reason.clone().unwrap_or_else(|| {
-                                "无判定依据，按失败方向 Closed 拒绝".to_string()
-                            }),
-                        )
-                    } else {
-                        outcome
-                    }
-                }
-                FailDirection::Open => {
-                    if outcome.approved {
-                        outcome
-                    } else {
-                        ApprovalOutcome::allowed(outcome.by)
-                    }
-                }
-            },
-        }
     }
 
     /// 运行一轮 Agent 多轮决策与执行循环。
@@ -609,7 +617,7 @@ impl AgentRuntime {
             .collect();
 
         let mut step_index = 0u32;
-        let mut final_stop_reason: TurnStopReason;
+        let final_stop_reason: TurnStopReason;
         // 上一轮模型**如实报回来**的用量：上下文治理拿它当"下一轮 prompt 会有多大"的依据
         let mut last_round_usage: Option<TokenUsage> = None;
 
@@ -1122,16 +1130,10 @@ impl AgentRuntime {
 
                         let mut is_denied = false;
                         let mut denial_reason = None;
-                        // 风险判定的**预计算结果**：改写路径上算过一次就复用，
-                        // 免得同一次调用问端口两遍（两遍之间端口若给了不同答案，
-                        // "风险单调性"这条安全性质就没法证明了）。
-                        let mut approval_prechecked: Option<bool> = None;
 
                         // ── beforeToolCall（P3a·SP-51 拦下 / P3b·SP-60 改写）─────
                         //
-                        // 位置是**安全序**（设计 §5.6）：在审批判定**之前**。
-                        // 改写之后**必须**重跑 schema / 路径 / 风险单调性——改写不是授权，
-                        // 它只是"换个参数再走同一套闸门"。
+                        // 改写之后**必须**重跑 schema——改写不是授权，它只是"换个参数再走同一套流程"。
                         let before_outcome = self
                             .run_before_hook(
                                 points::BEFORE_TOOL_CALL,
@@ -1168,18 +1170,11 @@ impl AgentRuntime {
                                 break 'turn_loop;
                             }
                             BeforeOutcome::Replace { args: new_args, by } => {
-                                // ① 形状 / schema / 路径沙箱（纯函数，见 `hook_guard`）
+                                // ① 形状 / schema（纯函数，见 `hook_guard`）
                                 let structural = crate::engine::validate_args_against_schema(
                                     &new_args,
                                     &desc.schema,
-                                )
-                                .and_then(|()| {
-                                    crate::engine::check_paths(
-                                        self.scope.as_ref(),
-                                        &desc.access,
-                                        &new_args,
-                                    )
-                                });
+                                );
 
                                 match structural {
                                     Err(rej) => {
@@ -1192,246 +1187,30 @@ impl AgentRuntime {
                                         );
                                     }
                                     Ok(()) => {
-                                        // ② 风险单调性：改写**不得降低**风险等级。
-                                        //
-                                        // 判据就是审批端口对同一 (工具, 声明, 参数) 的判定：
-                                        // 改之前要问、改之后不用问 = 降级 → 拒。理由很硬：
-                                        // 否则插件可以把危险命令改写成无害形式骗过审批，
-                                        // 而**实际执行的是改写后的 args**（事后点位没有副作用能力）。
-                                        let before_risk = self
-                                            .needs_approval_for(
-                                                &raw_call.name,
-                                                &desc.access,
-                                                &desc.approval,
-                                                &parsed_args,
-                                            )
-                                            .await;
-                                        let after_risk = self
-                                            .needs_approval_for(
-                                                &raw_call.name,
-                                                &desc.access,
-                                                &desc.approval,
-                                                &new_args,
-                                            )
-                                            .await;
-                                        if before_risk && !after_risk {
-                                            self.emit_replace_rejected(
-                                                sink,
-                                                &thread_id,
-                                                &trace,
-                                                &by,
-                                                "risk_downgrade:改写不得把需要审批的调用变成免审批",
-                                            );
-                                        } else {
-                                            // ③ 生效：之后**一切**（审批、执行、回执）都用新参数
-                                            let before_hash =
-                                                crate::ports::hooks::content_hash8(&parsed_args);
-                                            let after_hash =
-                                                crate::ports::hooks::content_hash8(&new_args);
-                                            parsed_args = new_args;
-                                            approval_prechecked = Some(after_risk);
-                                            self.emit_diag(
-                                                sink,
-                                                &thread_id,
-                                                &trace,
-                                                DiagnosticEvent::new(
-                                                    DiagFamily::Hook,
-                                                    POINT_HOOK_REPLACE_APPLIED,
-                                                    Origin::Plugin { id: by.clone() },
-                                                )
-                                                .with_outcome(DiagOutcome::Passed)
-                                                .with_data(serde_json::json!({
-                                                    "tool": raw_call.name,
-                                                    "beforeHash": before_hash,
-                                                    "afterHash": after_hash,
-                                                })),
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // 审批检查（M1-T4 + W1-T6）：
-                        // **策略归端口**——引擎不解释档位/危险命令/白名单/Named 策略，
-                        // 只把工具名、声明与参数递过去（AGENTS.md §14）。
-                        // `Never` 是唯一的例外：它连问都不必问，引擎直接短路。
-                        //
-                        // 🔴 读的是**改写后**的 `parsed_args`（安全序的要求）。
-                        let needs_approval = match approval_prechecked {
-                            Some(v) => v,
-                            None => {
-                                self.needs_approval_for(
-                                    &raw_call.name,
-                                    &desc.access,
-                                    &desc.approval,
-                                    &parsed_args,
-                                )
-                                .await
-                            }
-                        };
-
-                        // P1b（SP-36）：**没问就放行**的审计留痕。
-                        //
-                        // 只记"声明侧要求审批（非 `Never`）而最终没问"的那一类——被档位
-                        // （`auto` / `full`）或免问白名单放行的调用。`read_file` 这种本来就
-                        // 免问的工具每次都记，只会把 60 条环形缓冲刷满、把真信号淹掉。
-                        //
-                        // 刻意**不记档位**：按 AGENTS §14 引擎不解释档位（策略归端口），
-                        // 档位在界面的选择器上本来就看得见。
-                        if !needs_approval && !matches!(desc.approval, ApprovalPolicy::Never) {
-                            self.emit_diag(
-                                sink,
-                                &thread_id,
-                                &trace,
-                                DiagnosticEvent::new(
-                                    DiagFamily::Approval,
-                                    POINT_APPROVAL_SKIPPED,
-                                    Origin::Engine,
-                                )
-                                .with_outcome(DiagOutcome::Passed)
-                                .with_data(serde_json::json!({
-                                    "tool": raw_call.name,
-                                    "isWrite": is_write,
-                                })),
-                            );
-                        }
-
-                        let mut approval_hook_notes = Vec::new();
-                        if needs_approval {
-                            match self
-                                .run_before_hook(
-                                    points::BEFORE_APPROVAL,
-                                    Some(raw_call.name.clone()),
-                                    serde_json::json!({
-                                        "callId": raw_call.id,
-                                        "tool": raw_call.name,
-                                        "args": parsed_args,
-                                        "isWrite": is_write,
-                                    }),
-                                    sink,
-                                    &thread_id,
-                                    &trace,
-                                    cancel,
-                                )
-                                .await
-                            {
-                                BeforeOutcome::Pass | BeforeOutcome::Replace { .. } => {}
-                                BeforeOutcome::Deny { reason } => {
-                                    is_denied = true;
-                                    denial_reason = Some(format!("approval hook denied: {reason}"));
-                                    approval_hook_notes = self
-                                        .run_after_hook(
-                                            points::AFTER_APPROVAL,
-                                            Some(raw_call.name.clone()),
-                                            serde_json::json!({
-                                                "tool": raw_call.name,
-                                                "approved": false,
-                                                "by": "hook",
-                                                "reason": reason,
-                                            }),
+                                        // ② 生效：之后**一切**（执行、回执）都用新参数
+                                        let before_hash =
+                                            crate::ports::hooks::content_hash8(&parsed_args);
+                                        let after_hash =
+                                            crate::ports::hooks::content_hash8(&new_args);
+                                        parsed_args = new_args;
+                                        self.emit_diag(
                                             sink,
                                             &thread_id,
                                             &trace,
-                                            cancel,
-                                        )
-                                        .await;
+                                            DiagnosticEvent::new(
+                                                DiagFamily::Hook,
+                                                POINT_HOOK_REPLACE_APPLIED,
+                                                Origin::Plugin { id: by.clone() },
+                                            )
+                                            .with_outcome(DiagOutcome::Passed)
+                                            .with_data(serde_json::json!({
+                                                "tool": raw_call.name,
+                                                "beforeHash": before_hash,
+                                                "afterHash": after_hash,
+                                            })),
+                                        );
+                                    }
                                 }
-                                BeforeOutcome::AbortTurn { reason } => {
-                                    self.emit_aborted(
-                                        sink,
-                                        &thread_id,
-                                        &trace,
-                                        &format!("hook:{}:{reason}", points::BEFORE_APPROVAL),
-                                    );
-                                    final_stop_reason = TurnStopReason::Aborted;
-                                    break 'turn_loop;
-                                }
-                            }
-
-                            if !is_denied {
-                                // 审批事件**带上参数原文**：界面要能把"要批准的命令"完整摆出来，
-                                // 否则用户只能对着一个工具名点"批准"（等于没有确认闸门）。
-                                self.emit(
-                                    sink,
-                                    &thread_id,
-                                    &trace,
-                                    AgentEventBody::ApprovalRequested {
-                                        call_id: raw_call.id.clone(),
-                                        tool: raw_call.name.clone(),
-                                        args: parsed_args.clone(),
-                                    },
-                                );
-
-                                let app_req = ApprovalRequest {
-                                    call_id: raw_call.id.clone(),
-                                    thread_id: thread_id.clone(),
-                                    tool: raw_call.name.clone(),
-                                    args: parsed_args.clone(),
-                                    is_write,
-                                    reason: None,
-                                };
-
-                                let approval_started = self.clock.now_ms();
-                                let outcome = self.approval.decide(app_req, Some(cancel)).await;
-                                let waited_ms =
-                                    (self.clock.now_ms() - approval_started).max(0) as u64;
-                                // W5-T5 / INV-4：**无判定依据**时由端口声明的方向裁决。
-                                //
-                                // `User` / `Policy` 是**确定的答案**（有人点了、或策略判了），
-                                // 方向不得覆盖它——否则"用户明确拒绝"会被 fail-open 翻成放行。
-                                // `Timeout` / `Aborted` 是**没拿到答案**，正是方向该起作用的地方。
-                                //
-                                // 引擎是唯一裁决点：这样"声明了 `Open` 的闸门"才不会与自己的声明打架
-                                // （此前每个闸门各自硬编码超时结果，`direction()` 形同虚设）。
-                                let outcome =
-                                    Self::apply_fail_direction(outcome, self.approval.direction());
-                                // 审批等待的埋点（§1.2 记的缺口：等多久、谁给的答案、结果如何，
-                                // 此前完全没有输出——只有前端自己打的四段耗时）。
-                                let by = match outcome.by {
-                                    AnsweredBy::User => "user",
-                                    AnsweredBy::Policy => "policy",
-                                    AnsweredBy::Timeout => "timeout",
-                                    AnsweredBy::Aborted => "aborted",
-                                };
-                                self.emit_diag(
-                                sink,
-                                &thread_id,
-                                &trace,
-                                DiagnosticEvent::new(
-                                    DiagFamily::Approval,
-                                    POINT_APPROVAL_WAITED,
-                                    Origin::Engine,
-                                )
-                                .with_duration_ms(waited_ms)
-                                .with_outcome(if outcome.approved {
-                                    DiagOutcome::Passed
-                                } else {
-                                    DiagOutcome::Denied
-                                })
-                                .with_data(serde_json::json!({ "by": by, "approved": outcome.approved })),
-                            );
-                                if !outcome.approved {
-                                    is_denied = true;
-                                    denial_reason =
-                                        outcome.reason.or_else(|| Some("审批未通过".to_string()));
-                                }
-                                approval_hook_notes = self
-                                    .run_after_hook(
-                                        points::AFTER_APPROVAL,
-                                        Some(raw_call.name.clone()),
-                                        serde_json::json!({
-                                            "tool": raw_call.name,
-                                            "approved": outcome.approved,
-                                            "by": by,
-                                            "waitedMs": waited_ms,
-                                        }),
-                                        sink,
-                                        &thread_id,
-                                        &trace,
-                                        cancel,
-                                    )
-                                    .await;
                             }
                         }
 
@@ -1450,7 +1229,6 @@ impl AgentRuntime {
                                 "status": "denied",
                                 "outputChars": receipt.output.chars().count(),
                             }));
-                            Self::append_hook_notes(&mut receipt, &approval_hook_notes);
 
                             // afterToolCall 对**被拒的调用**同样触发（P3a·SP-51）：
                             // 拒绝也产生一条模型会读到的结果，插件（例如一个审计插件）
@@ -1496,7 +1274,7 @@ impl AgentRuntime {
                             trace.call_id = None;
                             trace.origin = Origin::Engine;
                         } else {
-                            // 审批通过，执行工具。
+                            // 通过 before 校验，执行工具。
                             // 事件里报的参数与真正执行的是**同一份**（改写后的那份）：
                             // 界面看到的、模型之后读到的、工具收到的三者必须一致。
                             self.emit(
@@ -1543,7 +1321,7 @@ impl AgentRuntime {
                             // ——如实回一条 `Timeout` 回执，让模型换路子，整轮继续。
                             //
                             // `long_running()` 的工具（等用户/派活/命令执行）不受它约束：
-                            // 拿 120 秒去掐"等审批"和"跑长命令"只会制造假失败。
+                            // 拿 120 秒去掐"等用户提问"和"跑长命令"只会制造假失败。
                             // 🔴 执行用的参数**在这一点**才组装：`parsed_args` 可能已被
                             // `beforeToolCall` 的改写换掉（P3b）。早一点绑定就会变成
                             // "事件里报的是新参数、真正执行的是旧参数"——两本账，最难查。

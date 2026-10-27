@@ -128,7 +128,6 @@ agent RPC：
 | 前端动作 | 核心路由 | 最终落到 agent 的 |
 |---|---|---|
 | 发送消息 | `/threads/{id}/send` | `thread.send` |
-| 批准/拒绝工具 | `/approvals/{...}` | `approval.decide` |
 | 回答提问 | `/questions/{call_id}/answer` | `question.answer` |
 | 保存供应商 | `/providers/*` | `provider.save` 等 |
 | 新建会话/工作区 | `/threads`、`/workspaces/select` | `thread.create` / `workspace.add` |
@@ -139,7 +138,7 @@ agent RPC：
 
 ### 4.3 后端工具/钩子产生界面可见的状态
 
-后端插件不能直接渲染 UI，但它的工具结果、提问、计划、审批事件会被核心投影成卡片，
+后端插件不能直接渲染 UI，但它的工具结果、提问、计划事件会被核心投影成卡片，
 再被前端插件消费。典型链路：
 
 ```text
@@ -152,8 +151,8 @@ agent RPC：
                            └─ question.answer → ask_user 工具返回
 ```
 
-`todo` 与 `task-plan`、审批卡与审批浮窗也是同一模式：**后端产生状态，核心投影状态，
-前端渲染状态**。前端插件与后端插件之间没有直接调用，只有共享的核心状态契约。
+`todo` 与 `task-plan` 也是同一模式：**后端产生状态，核心投影状态，前端渲染状态**。
+前端插件与后端插件之间没有直接调用，只有共享的核心状态契约。
 
 ### 4.4 管理页：两套插件并列，但管理动作不同
 
@@ -190,14 +189,12 @@ agent RPC：
 前端插件停用后，核心提问托盘自动接管。这是“共享核心契约”的正面例子，不是两个插件
 互相调用。
 
-### 5.2 `task-plan`：统一包内的后端计划状态
+### 5.2 `task-plan`：核心投影上的前端卡片
 
-- `todo` 工具执行后触发 `afterTodoUpdate`；
-- 同包后端插件按 `threadId` 把已生效的 `todos` 写入工作区状态文件；
-- 前端 `frontend.actions.plan` 声明 `read:true`，SSR 预取/`parts` 刷新时调用；
-- 后端停用/未就绪时，卡片回落到核心 `data.todo`（核心 `derive_todo_plan` 仍保留）。
-
-这是目前两个“后端状态 + 前端卡片”同包例子之一（另一个是 `approval`）。
+- `todo` 工具执行后，核心 `todo_view` 从工具调用参数投影出计划；
+- `plugins/task-plan` 是**纯前端插件**，直接读 `props.data.todo`；
+- 2026-10-27：`afterTodoUpdate` 已从核心移除，不再有后端状态文件或 `plan` action；
+- 后续需要拦截/旁注时，由统一事件系统提供。
 
 ### 5.3 `process-manager`：不依赖后端插件
 
@@ -210,16 +207,12 @@ agent RPC：
 - 新建/保存/删除/切换供应商仍提交到核心 `/providers/*`；
 - API Key 不进入 Boa，插件只渲染“已配置 + 掩码”。
 
-### 5.5 `approval`：审批面板插件化，闸门仍在核心
+### 5.5 `approval`：已随审批物理删除（2026-10-27）
 
-- 后端插件订阅 `beforeApproval` / `afterApproval`，按 `threadId` 记录待批准项与
-  已批准/拒绝计数；
-- 前端插件占 `thread.approval` 插槽，优先读后端 `pending` action，并用核心
-  `data.approvals` 决定“当前到底有哪些待批准项”（避免 abort/timeout 残留）；
-- 批准/拒绝仍提交核心 `/approvals/{call_id}/decision`；
-  `needs_approval` / `decide` 的策略不变，插件**不能**改变审批结果。
-
-这条边界是刻意的：审批是安全闸门，不能交给沙箱插件；插件化的是状态镜像与界面。
+- `plugins/approval`、`thread.approval` 插槽、`/approvals/*` 路由与 `approval.decide`
+  均已删除；核心不再产生 `waiting_approval` 新卡；
+- 需要策略时由受信插件通过 `event_before_*` 决定，不再有核心审批闸门；
+- 历史会话里的 `waiting_approval` 卡片按已结束记录展示，不带操作按钮。
 
 ### 5.6 `task-manager`：后台任务表的核心投影
 
@@ -314,7 +307,7 @@ agent RPC：
 | SSR → agent | 服务端 `AgentClient`，网关 token 不下发浏览器 |
 | 前端 TSX → 宿主 | 无 fs/net/process；HTML 白名单；500ms 渲染预算；无内存上限 |
 | 前端浏览器脚本 | 与页面同源，能调核心路由；**能力声明不约束脚本** |
-| 后端插件 → 宿主 | `@ada-needs` 沙箱；工作区 fs 边界；net 默认关；sqlite/exec 需显式声明；工具审批；钩子分级 |
+| 后端插件 → 宿主 | `@ada-needs` 模块注入清单；路径只解析；net 按策略；sqlite/exec 需声明；钩子分级 |
 | 前端能力 | `providers.read` / `processes.read` / `tasks.read` / `runs.read` 是**数据最小化**，不是授权系统 |
 
 两个需要特别记住的事实：

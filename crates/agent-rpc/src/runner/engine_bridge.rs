@@ -80,15 +80,6 @@ pub fn project_to_loop_event(event: &AgentEvent) -> Option<AgentLoopEvent> {
                 question: question.clone(),
             })
         }
-        // W3-T3：审批请求必须有界面通道，否则处于"询问档"时工具会静默等满超时（P1-14）
-        AgentEventBody::ApprovalRequested { call_id, tool, args } => {
-            Some(AgentLoopEvent::ApprovalRequested {
-                id: call_id.clone(),
-                tool: tool.clone(),
-                // 参数原文照搬：审批卡要摆出"要批准什么"，不能只剩一个工具名
-                args: args.clone(),
-            })
-        }
         AgentEventBody::TurnFinished { stop } => Some(AgentLoopEvent::TurnFinished {
             stop_reason: stop_reason_name(stop),
         }),
@@ -197,8 +188,7 @@ pub struct DirectEventSink {
 fn is_critical_event(body: &AgentEventBody) -> bool {
     matches!(
         body,
-        AgentEventBody::ApprovalRequested { .. }
-            | AgentEventBody::QuestionAsked { .. }
+        AgentEventBody::QuestionAsked { .. }
             | AgentEventBody::ToolCallFinished { .. }
             | AgentEventBody::TurnFinished { .. }
             | AgentEventBody::Failed { .. }
@@ -228,7 +218,7 @@ impl EventSink for DirectEventSink {
         self.seq.check(&event);
         // 🔴 关键事件**绝不静默丢弃**：通道满时做**有界**退避重试（上限约 1 秒）。
         //
-        // 丢一条增量只是少刷一帧文字；丢一次 `ApprovalRequested` / `TurnFinished`，
+        // 丢一条增量只是少刷一帧文字；丢一次 `QuestionAsked` / `TurnFinished`，
         // 界面就永远不知道"有人在等你"或"这轮已经结束"——那是静默卡死，用户没有任何线索。
         if is_critical_event(&event.body) {
             let mut pending = event;
@@ -538,8 +528,7 @@ mod tests {
     async fn test_runtime_path_actually_runs_the_real_engine() {
         use agent_base::model::{ProviderConfig, StreamDelta};
         use agent_base::testing::{
-            FixedClock, FixedPrompt, InMemorySessionStore, MockScope, RecordingApprovalGate,
-            ScriptedModelClient,
+            FixedClock, FixedPrompt, InMemorySessionStore, MockScope, ScriptedModelClient,
         };
         use agent_runtime::ProductBuilder;
 
@@ -554,7 +543,6 @@ mod tests {
                         .expect("core 工具包可装配"),
                 )
                 .with_model(model)
-                .with_approval(Arc::new(RecordingApprovalGate::new(true)))
                 .with_store(Arc::new(InMemorySessionStore::new()))
                 .with_prompt(Arc::new(FixedPrompt::new("测试人格")))
                 .with_scope(Arc::new(MockScope::new("s")))
@@ -605,8 +593,7 @@ mod tests {
     async fn test_images_reach_the_model_request() {
         use agent_base::model::{ProviderConfig, StreamDelta};
         use agent_base::testing::{
-            FixedClock, FixedPrompt, InMemorySessionStore, MockScope, RecordingApprovalGate,
-            ScriptedModelClient,
+            FixedClock, FixedPrompt, InMemorySessionStore, MockScope, ScriptedModelClient,
         };
         use agent_runtime::ProductBuilder;
 
@@ -621,7 +608,6 @@ mod tests {
                         .expect("core 工具包可装配"),
                 )
                 .with_model(model.clone())
-                .with_approval(Arc::new(RecordingApprovalGate::new(true)))
                 .with_store(Arc::new(InMemorySessionStore::new()))
                 .with_prompt(Arc::new(FixedPrompt::new("测试人格")))
                 .with_scope(Arc::new(MockScope::new("s")))
@@ -701,14 +687,6 @@ mod tests {
                 true,
             ),
             (
-                AgentEventBody::ApprovalRequested {
-                    call_id: "c".into(),
-                    tool: "n".into(),
-                    args: serde_json::json!({ "command": "rm -rf build" }),
-                },
-                true,
-            ),
-            (
                 AgentEventBody::QuestionAsked { call_id: "c".into(), question: serde_json::json!({}) },
                 true,
             ),
@@ -744,7 +722,6 @@ mod tests {
                 AgentEventBody::TextDelta { .. } => "text.delta",
                 AgentEventBody::ToolCallStarted { .. } => "tool.started",
                 AgentEventBody::ToolCallFinished { .. } => "tool.finished",
-                AgentEventBody::ApprovalRequested { .. } => "approval.requested",
                 AgentEventBody::QuestionAsked { .. } => "question.asked",
                 AgentEventBody::SubagentStarted { .. } => "subagent.started",
                 AgentEventBody::SubagentFinished { .. } => "subagent.finished",
@@ -761,7 +738,7 @@ mod tests {
         let mut unique = kinds.clone();
         unique.dedup();
         assert_eq!(unique.len(), cases.len(), "投影表里同一事件种类出现了多次：{kinds:?}");
-        assert_eq!(unique.len(), 13, "领域事件共 13 种，投影表必须全覆盖：{unique:?}");
+        assert_eq!(unique.len(), 12, "领域事件共 13 种，投影表必须全覆盖：{unique:?}");
 
         // 3. 结论与表一致
         for (body, expect_mapped) in &cases {
@@ -776,167 +753,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// W3-T3 出口判据（修 P1-14）：**审批请求真的能走到界面并等回答复**。
-    ///
-    /// 完整链路：引擎发 `ApprovalRequested` → 桥投影成 `AgentLoopEvent::ApprovalRequested`
-    /// → 界面按 `waiting_approval` 渲染批准/拒绝按钮 → `approval.decide` →
-    /// `ApprovalManager::resolve_approval` → 唤醒闸门 → 工具继续执行 → 正常收尾。
-    ///
-    /// 若这条链路断了（正是 P1-14 的症状），本用例会**超时失败**而不是悄悄变绿。
-    #[tokio::test]
-    async fn test_approval_request_reaches_ui_channel_and_unblocks_the_gate() {
-        use std::time::Duration;
-
-        use agent_base::domain::{
-            Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolDescriptor,
-        };
-        use agent_base::testing::{FixedClock, FixedPrompt, InMemorySessionStore, MockScope, ScriptedModelClient};
-        use agent_base::model::{ProviderConfig, StreamDelta, ToolCallInfo};
-        use agent_proto::ApprovalMode;
-        use agent_runtime::ProductBuilder;
-
-        // 受审批约束的工具：只读 + Named 策略 → 在 Ask 档下会被问
-        let gated_desc = ToolDescriptor {
-            name: "gated_tool".to_string(),
-            summary: "受审批约束的工具".to_string(),
-            schema: serde_json::json!({ "type": "object" }),
-            access: Access::ReadOnly,
-            approval: ApprovalPolicy::Named("approval-guard"),
-            rollback: RollbackPolicy::None,
-            execution: Execution::Sequential,
-            termination: Termination::ContinueTurn,
-        };
-
-        let store = Arc::new(tokio::sync::RwLock::new(crate::state::AgentStore::new(
-            "E:/codes/gate_test_ws".to_string(),
-        )));
-        // 权威档位：Ask（一律问）
-        store.write().await.config.approval = ApprovalMode::Ask;
-
-        let approval_mgr = Arc::new(agent_node::approval::ApprovalManager::new());
-        // S2：这里用**真实**的桥接实现（store → 端口 → 闸门），
-        // 于是这条测试同时证明了"界面改档位，闸门立刻看到"这条链路。
-        let node_config: Arc<dyn agent_node::node_config::NodeConfigSource> =
-            Arc::new(crate::server::StoreBackedNodeConfig::new(store.clone()));
-        let gate = Arc::new(
-            agent_node::approval::HostApprovalGate::new(node_config, approval_mgr.clone())
-                .with_timeout(Duration::from_secs(5)),
-        );
-
-        let model = Arc::new(ScriptedModelClient::new(vec![
-            vec![
-                StreamDelta::ToolCall {
-                    call: ToolCallInfo {
-                        id: "call_gate".into(),
-                        name: "gated_tool".into(),
-                        // 用**真实形状**的参数（不是 `{}`）：审批事件必须把它带到界面，
-                        // 否则界面上只有工具名，用户没法判断该不该批准。
-                        args: r#"{"command":"rm -rf build"}"#.into(),
-                    },
-                },
-                StreamDelta::Done { stop_reason: "tool_calls".into() },
-            ],
-            vec![
-                StreamDelta::Text { text: "批准后完成。".into() },
-                StreamDelta::Done { stop_reason: "stop".into() },
-            ],
-        ]));
-
-        let runtime = Arc::new(
-            ProductBuilder::new(switch_spec())
-                .with_tool(Arc::new(agent_base::testing::MockTool::new(
-                    gated_desc,
-                    ToolReceipt::success("工具已执行", 1, 2),
-                )))
-                .with_model(model)
-                .with_approval(gate)
-                .with_store(Arc::new(InMemorySessionStore::new()))
-                .with_prompt(Arc::new(FixedPrompt::new("测试人格")))
-                .with_scope(Arc::new(MockScope::new("s")))
-                .with_clock(Arc::new(FixedClock::new(1_700_000_000_000)))
-                .build()
-                .expect("装配真引擎"),
-        );
-
-        let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
-
-        let handle = tokio::spawn(async move {
-            run_turn_with_engine(
-                runtime,
-                "t_gate",
-                Some("执行受约束的工具"),
-                None,
-                ProviderConfig {
-                    id: "p".into(),
-                    name: "p".into(),
-                    protocol: Default::default(),
-                    base_url: "http://localhost".into(),
-                    api_key: "k".into(),
-                    model: "m".into(),
-                    max_output_tokens: None,
-                    custom_headers: None,
-                    proxy_url: None,
-                },
-                None,
-                Some(5),
-                tx,
-                None,
-            )
-            .await
-        });
-
-        // 1. 审批请求必须到达通道
-        let call_id = tokio::time::timeout(Duration::from_secs(3), async {
-            loop {
-                match rx.recv().await {
-                    Some(AgentEvent {
-                        body: AgentEventBody::ApprovalRequested { call_id, tool, args },
-                        ..
-                    }) => {
-                        assert_eq!(tool, "gated_tool", "审批事件必须带工具名");
-                        // 🔴 只带工具名的审批请求等于没有确认闸门：用户看不到要批准什么。
-                        // 这条断言就是钉住"审批卡能显示命令原文"。
-                        assert_eq!(
-                            args.get("command").and_then(|v| v.as_str()),
-                            Some("rm -rf build"),
-                            "审批事件必须带上参数原文（界面要显示待批准的命令），实际：{args}"
-                        );
-                        return call_id;
-                    }
-                    Some(_) => continue,
-                    None => panic!("事件通道关闭，但从未收到审批请求（P1-14 症状）"),
-                }
-            }
-        })
-        .await
-        .expect("审批请求必须到达通道——这正是 P1-14 要修的");
-
-        // 2. 界面点"批准"（等价于 `approval.decide` 落到同一个 manager 上）
-        assert!(
-            approval_mgr.resolve_approval(&call_id, true),
-            "批准必须命中等待中的 waiter（否则 UI 的答复送不到闸门）"
-        );
-
-        // 3. 轮次必须**继续并收尾**，而不是等满超时
-        let result = tokio::time::timeout(Duration::from_secs(5), handle)
-            .await
-            .expect("批准后轮次必须继续（不得等满超时）")
-            .expect("任务不应 panic");
-        assert!(result.is_ok(), "轮次应成功：{result:?}");
-
-        let mut saw_finished = false;
-        let mut saw_tool_finish = false;
-        while let Ok(ev) = rx.try_recv() {
-            match ev.body {
-                AgentEventBody::TurnFinished { .. } => saw_finished = true,
-                AgentEventBody::ToolCallFinished { .. } => saw_tool_finish = true,
-                _ => {}
-            }
-        }
-        assert!(saw_tool_finish, "批准后工具应真的执行完");
-        assert!(saw_finished, "批准后应正常收尾");
     }
 
     #[tokio::test]

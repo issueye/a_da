@@ -149,6 +149,8 @@ pub struct LivePluginReassembler {
     contribution_views: Option<agent_node::plugins::PluginContributionStore>,
     /// 后台任务表：重装配必须复用同一份，否则启停插件会把正在跑的任务"弄丢"。
     background_tasks: Arc<agent_toolkit::background::BackgroundTasks>,
+    /// 插件事件运行时：启停后递增 generation，让旧排队事件作废。
+    event_runtime: Option<Arc<agent_node::hooks::PluginEventRuntime>>,
 }
 
 impl LivePluginReassembler {
@@ -173,6 +175,7 @@ impl LivePluginReassembler {
             hook_runtime: None,
             contribution_views: None,
             background_tasks,
+            event_runtime: None,
         }
     }
 
@@ -200,6 +203,15 @@ impl LivePluginReassembler {
         runtime: Arc<agent_node::hooks::HookRuntime>,
     ) -> Self {
         self.hook_runtime = Some(runtime);
+        self
+    }
+
+    /// 接上插件事件运行时：启停后递增 generation，旧排队事件不再执行。
+    pub fn with_event_runtime(
+        mut self,
+        runtime: Arc<agent_node::hooks::PluginEventRuntime>,
+    ) -> Self {
+        self.event_runtime = Some(runtime);
         self
     }
 
@@ -299,6 +311,12 @@ impl LivePluginReassembler {
                 hooks_by_plugin = rt.points_by_plugin();
             }
 
+            // 2.5 事件运行时：旧 generation 的排队事件在 worker 取到时作废，
+            // 避免“插件已经停用，排队中的拦截还在跑”。
+            if let Some(events) = &self.event_runtime {
+                events.bump_generation();
+            }
+
             // 3.6 刷新界面读的贡献视图（P4）：工具/片段/技能/钩子点位四样一起换。
             // 与初装走**同一个** `views_from_assembly`，免得两处各算一份、说不一样的话。
             if let Some(store) = &self.contribution_views {
@@ -365,7 +383,7 @@ impl agent_rpc::server::dispatch::PluginReassembler for LivePluginReassembler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_base::domain::{Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolDescriptor};
+    use agent_base::domain::{Access, Execution, RollbackPolicy, Termination, ToolDescriptor};
     use agent_base::ports::ToolCatalog;
     use agent_runtime::{AssemblyBuilder, ContributionOrigin};
     use std::sync::Arc;
@@ -392,7 +410,6 @@ mod tests {
             summary: format!("{name} 的说明"),
             schema: serde_json::json!({ "type": "object" }),
             access: Access::ReadOnly,
-            approval: ApprovalPolicy::Never,
             rollback: RollbackPolicy::None,
             execution: Execution::Sequential,
             termination: Termination::ContinueTurn,

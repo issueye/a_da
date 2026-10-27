@@ -33,10 +33,10 @@ mod tests {
     use std::sync::Arc;
 
     use agent_base::domain::{
-        Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor, ToolReceipt,
+        Access, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor, ToolReceipt,
     };
     use agent_base::ports::{BoxFuture, Tool, ToolCatalog, ToolContext};
-    use agent_base::testing::{FixedClock, FixedPrompt, InMemorySessionStore, MockScope, NeverCancel, RecordingApprovalGate, RecordingSink, ScriptedModelClient};
+    use agent_base::testing::{FixedClock, FixedPrompt, InMemorySessionStore, MockScope, NeverCancel, RecordingSink, ScriptedModelClient};
     use agent_base::engine::TurnRequest;
     use agent_base::model::{ProviderConfig, StreamDelta};
 
@@ -65,7 +65,6 @@ mod tests {
                 summary: "dummy".to_string(),
                 schema: serde_json::json!({}),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -138,7 +137,6 @@ mod tests {
         let builder = ProductBuilder::new(spec)
             .with_tool(make_dummy_tool("echo"))
             .with_model(model)
-            .with_approval(Arc::new(RecordingApprovalGate::new(true)))
             .with_store(Arc::new(InMemorySessionStore::new()))
             .with_prompt(Arc::new(FixedPrompt::new("测试人格")))
             .with_scope(Arc::new(MockScope::new("test_scope")))
@@ -179,7 +177,6 @@ mod tests {
                 summary: "一个合格的工具".to_string(),
                 schema: serde_json::json!({ "type": "object" }),
                 access: Access::Mutates { paths: PathSelector::Single("path") },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::SingleTarget,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -196,7 +193,6 @@ mod tests {
                 summary: "不安全写入".to_string(),
                 schema: serde_json::json!({ "type": "object" }),
                 access: Access::Mutates { paths: PathSelector::Single("path") },
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None, // 违约！
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -215,7 +211,6 @@ mod tests {
                 summary: "".to_string(), // 空摘要触发 SubagentAllowlist
                 schema: serde_json::json!("not an object"), // 非 object
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,

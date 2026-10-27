@@ -23,7 +23,7 @@
 use std::sync::Arc;
 
 use agent_base::domain::{
-    Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
+    Access, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
     ToolReceipt,
 };
 use agent_base::ports::{
@@ -174,12 +174,6 @@ impl PluginTool {
             } else {
                 Access::External
             },
-            // 自述只读的工具不打扰用户；其余仍按"每次都要问"的失败方向。
-            approval: if read_only {
-                ApprovalPolicy::Never
-            } else {
-                ApprovalPolicy::Always
-            },
             rollback: RollbackPolicy::None,
             execution: Execution::Sequential,
             termination: Termination::ContinueTurn,
@@ -300,7 +294,7 @@ mod tests {
     }
 
     /// Builtin wrappers still use the canonical descriptor, while custom
-    /// plugin tools receive a conservative write/approval descriptor.
+    /// plugin tools receive a conservative write descriptor.
     #[test]
     fn test_custom_tool_gets_conservative_descriptor() {
         let host: Arc<dyn ScriptHost> = Arc::new(crate::scripts::TsScriptHost::new());
@@ -317,7 +311,6 @@ mod tests {
         let custom = PluginTool::from_declaration(&declaration, host.clone(), handle.clone(), "p")
             .expect("valid custom declaration is dynamically registered");
         assert!(!custom.descriptor().is_readonly(), "custom tool registration must fail safe as write");
-        assert_eq!(custom.descriptor().approval, ApprovalPolicy::Always);
         assert_eq!(
             custom.descriptor().access,
             Access::External,
@@ -338,8 +331,8 @@ mod tests {
     /// 作者显式声明 `access: "read"` 时，宿主采信为只读（2026-10-27 决策）。
     ///
     /// 这条钉住两件事：① 采信后 `is_readonly()` 为真，只读档 / plan 模式 / 只读子智能体
-    /// 不再把纯查询工具整条过滤掉；② 审批降为 `Never`（只读不该打扰用户）。
-    /// 谎报的代价由 `ScriptToolAccess` 的文档承担——宿主**无法**验证这句承诺。
+    /// 不再把纯查询工具整条过滤掉；② 谎报的代价由 `ScriptToolAccess` 的文档承担——
+    /// 宿主**无法**验证这句承诺。
     #[test]
     fn test_declared_read_access_is_honoured_as_readonly() {
         let host: Arc<dyn ScriptHost> = Arc::new(crate::scripts::TsScriptHost::new());
@@ -360,7 +353,6 @@ mod tests {
             "声明 access=read 之后必须被当作只读"
         );
         assert_eq!(tool.descriptor().access, Access::ReadOnly);
-        assert_eq!(tool.descriptor().approval, ApprovalPolicy::Never);
         assert_eq!(tool.descriptor().rollback, RollbackPolicy::None);
     }
 

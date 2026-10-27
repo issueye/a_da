@@ -11,7 +11,8 @@ use crate::ui::{self, Render, Tone};
 use super::super::{array_at, running_ids, short_title, str_at, thread_row, truncate};
 pub(super) fn tool_status_label(raw: &str) -> String {
     match raw {
-        "waiting_approval" => "等待批准",
+        // 历史会话里的旧审批卡：不再有操作面，按已结束的历史记录展示。
+        "waiting_approval" => "已结束",
         "awaiting" => "待答复",
         "running" => "执行中",
         "done" | "completed" | "success" => "完成",
@@ -24,12 +25,11 @@ pub(super) fn tool_status_label(raw: &str) -> String {
     .to_string()
 }
 
-/// 工具状态的语义色：warn（等待批准）/ brand（执行中、待答复）/ danger（失败）。
+/// 工具状态的语义色：brand（执行中、待答复）/ danger（失败）。
 ///
 /// 完成态不给色——默认就是"完成"，到处挂绿标反而吵。
 pub(super) fn tool_status_tone(raw: &str) -> String {
     match raw {
-        "waiting_approval" => "warn",
         "awaiting" | "running" | "queued" => "brand",
         "error" | "failed" | "timeout" => "danger",
         _ => "",
@@ -356,12 +356,7 @@ pub(super) fn elapsed_label(value: &Value, status: &str) -> String {
             let elapsed = now_ms() - start;
             // 起点明显不合理（时钟漂移、单位写错）就不要显示天文数字。
             if (0..86_400_000).contains(&elapsed) {
-                let prefix = if status == "waiting_approval" {
-                    "待批 "
-                } else {
-                    "已 "
-                };
-                return format!("{prefix}{}", duration_text(elapsed as u64));
+                return format!("已 {}", duration_text(elapsed as u64));
             }
         }
     }
@@ -469,7 +464,7 @@ fn started_ms(value: &Value) -> Option<i64> {
 
 /// 还在跑的状态（等待批准也算：用户要看到自己已经犹豫了多久）。
 fn running_status(raw: &str) -> bool {
-    matches!(raw, "running" | "queued" | "awaiting" | "waiting_approval")
+    matches!(raw, "running" | "queued" | "awaiting")
 }
 
 /// 已经有结论的状态：只有这些才配结果尾标。
@@ -798,33 +793,6 @@ pub(super) fn model_of(snapshot: &Value, config: &Value) -> String {
         .to_string()
 }
 
-/// 审批档位的真实字段是 `snapshot.config.approval`。
-///
-/// 历史实现找的是 `approvalMode`（不存在的字段），所以"完全访问"一直显示成
-/// "自动批准"、危险档也不显红——这是安全信息，不能靠猜。
-pub(super) fn approval_mode(snapshot: &Value, config: &Value) -> String {
-    snapshot
-        .get("config")
-        .and_then(|cfg| cfg.get("approval"))
-        .or_else(|| config.get("saved").and_then(|saved| saved.get("approval")))
-        .or_else(|| config.get("approval"))
-        .and_then(Value::as_str)
-        .unwrap_or("auto")
-        .to_string()
-}
-
-/// 审批档位的中文标签（与 原桌面端 `APPROVAL_OPTIONS` 同一套文案）。
-pub(super) fn approval_label(mode: &str) -> String {
-    match mode {
-        "full" | "yolo" => "完全访问",
-        "ask" | "manual" => "每次询问",
-        "readonly" => "严格只读",
-        "auto" | "" => "自动批准",
-        other => other,
-    }
-    .to_string()
-}
-
 /// 推理等级的真值：`low | medium | high | max`（与 原桌面端 设置项同源）。
 ///
 /// 快照优先（运行时值），其次是 `/api/config` 的 `saved` / 顶层（旧网关）。
@@ -838,16 +806,6 @@ pub(super) fn effort_of(snapshot: &Value, config: &Value) -> String {
         .and_then(Value::as_str)
         .map(|effort| effort.to_string())
         .unwrap_or_else(|| "max".to_string())
-}
-
-/// 审批档位的语义色：完全访问是危险档（红），每次询问是提醒档（琥珀）。
-pub(super) fn approval_tone(mode: &str) -> String {
-    match mode {
-        "full" | "yolo" => "danger",
-        "ask" | "manual" | "readonly" => "warn",
-        _ => "neutral",
-    }
-    .to_string()
 }
 
 /// 工作区短名：路径最后一段（`E:/code/app` → `app`），供输入框展示。
@@ -865,42 +823,6 @@ pub(super) fn waited_label(value: &Value) -> String {
     // 与行内 `elapsed_label` 同一口径（拿不到就干脆不显示，不拿 at 兜底）。
     let started = value.get("startedAt").and_then(Value::as_u64).unwrap_or(0);
     ui::waited_from_ms(started)
-}
-
-pub(crate) fn approval_rows(raw_items: &[Value]) -> Vec<ApprovalRow> {
-    let mut rows = Vec::new();
-    for raw in raw_items.iter() {
-        // 用原始 status 判定；渲染后的行里 status 已经中文化了。
-        if str_at(raw, "kind") != "tool" || str_at(raw, "status") != "waiting_approval" {
-            continue;
-        }
-        let call_id = str_at(raw, "callId").to_string();
-        if call_id.is_empty() {
-            continue;
-        }
-        let args = raw
-            .get("rawArgs")
-            .and_then(Value::as_str)
-            .filter(|text| !text.trim().is_empty())
-            .map(str::to_string)
-            .or_else(|| {
-                raw.get("args")
-                    .map(|args| serde_json::to_string_pretty(args).unwrap_or_default())
-            })
-            .unwrap_or_default();
-        let raw_name = str_at(raw, "name");
-        rows.push(ApprovalRow {
-            call_id,
-            tool_name: if raw_name.is_empty() {
-                "工具".to_string()
-            } else {
-                tool_label(raw_name)
-            },
-            args: truncate(&args, 1200),
-            waited: waited_label(raw),
-        });
-    }
-    rows
 }
 
 pub(super) fn queue_rows(snapshot: &Value, thread_id: &str) -> Vec<QueueRow> {
@@ -1032,47 +954,16 @@ pub(crate) fn thread_rows(snapshot: &Value, active_thread_id: &str) -> Vec<Threa
         .collect()
 }
 
-/// 审批 + 提问 + 排队托盘。返回 `(html, 待批准数, 排队数)`。
+/// 提问 + 排队托盘。返回 `(html, 排队数)`。
 ///
-/// `plugin_approvals_html` 是 `thread.approval` 插槽的输出：**非空时替换核心审批托盘**；
-/// `plugin_questions_html` 同理替换提问托盘。插件停用、加载失败或没渲染出东西时传
-/// `None`/空串，自动退回核心实现。
+/// `plugin_questions_html` 是 `thread.tray` 插槽的输出：非空时替换核心提问托盘。
+/// 插件停用、加载失败或没渲染出东西时传 `None`/空串，自动退回核心实现。
 pub(super) fn trays_html(
     snapshot: &Value,
     raw_items: &[Value],
     thread_id: &str,
-    plugin_approvals_html: Option<&str>,
     plugin_questions_html: Option<&str>,
-) -> (String, usize, usize) {
-    let approvals = approval_rows(raw_items);
-    let core_approvals_html = approvals
-        .iter()
-        .map(|row| {
-            ui::ApprovalTray {
-                call_id: row.call_id.clone(),
-                thread_id: thread_id.to_string(),
-                tool_name: row.tool_name.clone(),
-                args: row.args.clone(),
-                waited: row.waited.clone(),
-            }
-            .render()
-        })
-        .collect::<Vec<_>>()
-        .join("");
-    // 多条审批同屏时补一条汇总带：卡片仍逐条保留（参数必须逐卡可见），
-    // 但用户需要先知道"一共几件事在等我"。
-    let core_approvals_html = if approvals.len() > 1 {
-        format!(
-            r#"<div class="ada-trays__summary">等待批准 ×{}</div>{core_approvals_html}"#,
-            approvals.len()
-        )
-    } else {
-        core_approvals_html
-    };
-    let approvals_html = match plugin_approvals_html {
-        Some(html) if !html.trim().is_empty() => html.to_string(),
-        _ => core_approvals_html,
-    };
+) -> (String, usize) {
     let questions_html = match plugin_questions_html {
         Some(html) if !html.trim().is_empty() => html.to_string(),
         _ => crate::questions::pending_questions_from_items(raw_items)
@@ -1104,11 +995,7 @@ pub(super) fn trays_html(
         }
         .render()
     };
-    (
-        format!("{approvals_html}{questions_html}{queue_html}"),
-        approvals.len(),
-        queue.len(),
-    )
+    (format!("{questions_html}{queue_html}"), queue.len())
 }
 
 pub(super) fn render_string<T: Template>(template: &T) -> String {
@@ -1122,22 +1009,6 @@ pub(super) fn render_string<T: Template>(template: &T) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn approval_mode_reads_snapshot_config_approval() {
-        let snapshot = json!({"config":{"approval":"full","model":"deepseek-chat"}});
-        assert_eq!(approval_mode(&snapshot, &Value::Null), "full");
-        assert_eq!(approval_label("full"), "完全访问");
-        assert_eq!(approval_tone("full"), "danger");
-    }
-
-    #[test]
-    fn approval_mode_falls_back_to_saved_config() {
-        let snapshot = json!({});
-        let config = json!({"saved":{"approval":"ask"}});
-        assert_eq!(approval_mode(&snapshot, &config), "ask");
-        assert_eq!(approval_mode(&snapshot, &Value::Null), "auto");
-    }
 
     #[test]
     fn waited_label_uses_started_at_not_sort_ordinal() {

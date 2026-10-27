@@ -1,4 +1,4 @@
-//! 浮层：审批托盘、提问托盘与排队托盘。
+//! 浮层：提问托盘与排队托盘。
 
 use crate::questions::PendingQuestion;
 use crate::ui::icons::icon;
@@ -8,39 +8,7 @@ use crate::ui::theme::{
 
 use super::Render;
 
-// ── 浮层（审批 / 排队） ───────────────────────────────────────────────────
-
-/// 审批托盘：显示工具名、等待时长与待批准原文，批准/拒绝只在这里。
-#[derive(Debug, Clone)]
-pub struct ApprovalTray {
-    pub call_id: String,
-    pub thread_id: String,
-    pub tool_name: String,
-    pub args: String,
-    pub waited: String,
-}
-
-impl Render for ApprovalTray {
-    fn render(&self) -> String {
-        let args = if self.args.trim().is_empty() {
-            "<span class=\"ada-tray__empty\">（这个工具没有提供参数预览）</span>".to_string()
-        } else {
-            format!("<pre class=\"ada-tray__args\">{}</pre>", escape(&self.args))
-        };
-        format!(
-            r#"<div class="ada-tray ada-tray--approval"><div class="ada-tray__head"><span class="ada-tray__icon">{icon}</span><span class="ada-tray__title">需要批准 · {tool}</span><span class="ada-tray__meta">{clock}{waited}</span></div>{args}<div class="ada-tray__actions"><form method="post" action="/approvals/{call}/decision" class="ada-tray__form" data-partial><input type="hidden" name="thread_id" value="{thread}"><button class="ada-btn ada-btn--primary ada-btn--sm" type="submit" name="approved" value="true">{check}批准</button><button class="ada-btn ada-btn--secondary ada-btn--sm" type="submit" name="approved" value="false">{cross}拒绝</button></form></div></div>"#,
-            icon = icon("i-shield-check", 14),
-            tool = escape(&self.tool_name),
-            clock = icon("i-clock", 12),
-            waited = escape(&self.waited),
-            args = args,
-            call = escape(&self.call_id),
-            thread = escape(&self.thread_id),
-            check = icon("i-check", 12),
-            cross = icon("i-x", 12),
-        )
-    }
-}
+// ── 浮层（提问 / 排队） ───────────────────────────────────────────────────
 
 /// 提问托盘：显示题目、选项（单选 radio / 多选 checkbox / 可选文本补充），
 /// 作答只在这里——对话流里的 ask_user 卡只留记录（原桌面端「操作面唯一」）。

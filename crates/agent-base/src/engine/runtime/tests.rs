@@ -1,7 +1,7 @@
 use super::*;
 use crate::domain::{
     Access, Execution, POINT_HOOK_ENTERED, POINT_HOOK_FINISHED, POINT_HOOK_SKIPPED,
-    POINT_TURN_ABORTED, PathSelector, RollbackPolicy, ToolCall, ToolDescriptor,
+    POINT_TURN_ABORTED, RollbackPolicy, ToolCall, ToolDescriptor,
 };
 use crate::model::{ProviderConfig, ToolCallInfo};
 use crate::ports::{BoxFuture, Tool, ToolContext};
@@ -23,7 +23,6 @@ fn mock_provider_config() -> ProviderConfig {
 
 fn make_test_descriptor(
     name: &str,
-    approval: ApprovalPolicy,
     termination: Termination,
 ) -> ToolDescriptor {
     ToolDescriptor {
@@ -34,257 +33,10 @@ fn make_test_descriptor(
             "properties": { "arg": { "type": "string" } }
         }),
         access: Access::ReadOnly,
-        approval,
         rollback: RollbackPolicy::None,
         execution: Execution::Sequential,
         termination,
     }
-}
-
-// ── W5-T5：`FailDirection` 真的参与裁决（INV-4）──────────────────────────
-
-/// 确定答案（`User` / `Policy`）**不受方向影响**——否则"用户明确拒绝"会被 fail-open 翻成放行。
-#[test]
-fn test_direction_never_overrides_a_definite_answer() {
-    for direction in [FailDirection::Closed, FailDirection::Open] {
-        let user_denied = ApprovalOutcome::denied(AnsweredBy::User, "用户点了拒绝");
-        assert!(
-            !AgentRuntime::apply_fail_direction(user_denied, direction).approved,
-            "用户明确拒绝不得被 {direction:?} 覆盖"
-        );
-
-        let policy_allowed = ApprovalOutcome::allowed(AnsweredBy::Policy);
-        assert!(
-            AgentRuntime::apply_fail_direction(policy_allowed, direction).approved,
-            "策略明确放行不得被 {direction:?} 覆盖"
-        );
-    }
-}
-
-/// 无判定依据（`Timeout` / `Aborted`）**由方向裁决**。
-#[test]
-fn test_direction_arbitrates_when_there_is_no_answer() {
-    // Closed（默认，安全方向）→ 拒绝
-    let denied = AgentRuntime::apply_fail_direction(
-        ApprovalOutcome::denied(AnsweredBy::Timeout, "等待超时"),
-        FailDirection::Closed,
-    );
-    assert!(!denied.approved);
-    assert_eq!(denied.by, AnsweredBy::Timeout, "来路必须保留，事后要能分辨");
-    assert!(denied.reason.as_deref().unwrap_or("").contains("超时"));
-
-    // Open（显式配置的 fail-open）→ 放行：**这是 direction() 存在的意义**
-    let allowed = AgentRuntime::apply_fail_direction(
-        ApprovalOutcome::denied(AnsweredBy::Timeout, "等待超时"),
-        FailDirection::Open,
-    );
-    assert!(allowed.approved, "声明 Open 的闸门在超时时必须放行");
-
-    // Aborted 同口径
-    assert!(
-        !AgentRuntime::apply_fail_direction(
-            ApprovalOutcome::denied(AnsweredBy::Aborted, "会话中止"),
-            FailDirection::Closed
-        )
-        .approved
-    );
-    assert!(
-        AgentRuntime::apply_fail_direction(
-            ApprovalOutcome::denied(AnsweredBy::Aborted, "会话中止"),
-            FailDirection::Open
-        )
-        .approved
-    );
-}
-
-/// **安全网**：闸门声明 `Closed` 却对"没答案"给了放行 → 引擎必须翻成拒绝。
-///
-/// 这条是"声明与行为打架时以声明为准"的兜底——否则一个写错的闸门会静默 fail-open。
-#[test]
-fn test_closed_direction_is_a_safety_net_over_a_wrong_gate() {
-    let wrong = ApprovalOutcome::allowed(AnsweredBy::Timeout);
-    let fixed = AgentRuntime::apply_fail_direction(wrong, FailDirection::Closed);
-    assert!(!fixed.approved, "声明 Closed 时不得放行无判定依据的调用");
-    assert_eq!(fixed.by, AnsweredBy::Timeout);
-    assert!(
-        fixed.reason.as_deref().unwrap_or("").contains("Closed"),
-        "理由应说明是方向裁决：{:?}",
-        fixed.reason
-    );
-}
-
-/// 端到端：声明 `Open` 的闸门在超时时，工具**真的被执行**（不只是纯函数层面对）。
-#[tokio::test]
-async fn test_open_direction_lets_the_tool_run_after_timeout() {
-    let clock = Arc::new(FixedClock::new(1000));
-    let store = Arc::new(InMemorySessionStore::new());
-    let prompt = Arc::new(FixedPrompt::new("system prompt"));
-    let scope = Arc::new(MockScope::new("ws"));
-
-    let tool = Arc::new(MockTool::new(
-        make_test_descriptor(
-            "gated_tool",
-            ApprovalPolicy::Always,
-            Termination::ContinueTurn,
-        ),
-        ToolReceipt::success("工具真的跑了", 0, 1),
-    ));
-    let catalog = Arc::new(InMemoryToolCatalog::with_tools(vec![tool]));
-
-    let model = Arc::new(ScriptedModelClient::new(vec![
-        vec![
-            StreamDelta::ToolCall {
-                call: ToolCallInfo {
-                    id: "c1".into(),
-                    name: "gated_tool".into(),
-                    args: "{}".into(),
-                },
-            },
-            StreamDelta::Done {
-                stop_reason: "tool_calls".into(),
-            },
-        ],
-        vec![
-            StreamDelta::Text {
-                text: "done".into(),
-            },
-            StreamDelta::Done {
-                stop_reason: "stop".into(),
-            },
-        ],
-    ]));
-
-    // 闸门：等待超时（没人回答），但声明 fail-open
-    let gate = Arc::new(
-        RecordingApprovalGate::with_outcomes(vec![ApprovalOutcome::denied(
-            AnsweredBy::Timeout,
-            "等待超时",
-        )])
-        .with_direction(FailDirection::Open),
-    );
-
-    let rt = AgentRuntime::new(
-        model,
-        catalog,
-        gate,
-        store,
-        prompt,
-        scope,
-        clock,
-        RunPolicy {
-            max_steps: Some(5),
-            max_parallel_tools: 1,
-            tool_timeout: None,
-        },
-    );
-
-    let sink = RecordingSink::new();
-    let req = TurnRequest::new("t_open", mock_provider_config()).with_user_prompt("go");
-    let outcome = rt
-        .run_turn(req, &sink, &NeverCancel)
-        .await
-        .expect("轮次应正常结束");
-
-    assert_eq!(outcome.stop_reason, TurnStopReason::Completed);
-    let executed = sink.snapshot().iter().any(|e| {
-        matches!(
-            &e.body,
-            AgentEventBody::ToolCallFinished { receipt, .. }
-                if receipt.status == ToolStatus::Success
-        )
-    });
-    assert!(
-        executed,
-        "声明 Open 时超时必须放行并真的执行工具：{:?}",
-        sink.snapshot()
-    );
-}
-
-/// 端到端对照：同场景下声明 `Closed`（默认）→ 工具**不被执行**，以拒绝回执回模型。
-#[tokio::test]
-async fn test_closed_direction_denies_after_timeout() {
-    let clock = Arc::new(FixedClock::new(1000));
-    let store = Arc::new(InMemorySessionStore::new());
-    let prompt = Arc::new(FixedPrompt::new("system prompt"));
-    let scope = Arc::new(MockScope::new("ws"));
-
-    let tool = Arc::new(MockTool::new(
-        make_test_descriptor(
-            "gated_tool",
-            ApprovalPolicy::Always,
-            Termination::ContinueTurn,
-        ),
-        ToolReceipt::success("工具不该跑", 0, 1),
-    ));
-    let catalog = Arc::new(InMemoryToolCatalog::with_tools(vec![tool]));
-
-    let model = Arc::new(ScriptedModelClient::new(vec![
-        vec![
-            StreamDelta::ToolCall {
-                call: ToolCallInfo {
-                    id: "c1".into(),
-                    name: "gated_tool".into(),
-                    args: "{}".into(),
-                },
-            },
-            StreamDelta::Done {
-                stop_reason: "tool_calls".into(),
-            },
-        ],
-        vec![
-            StreamDelta::Text {
-                text: "done".into(),
-            },
-            StreamDelta::Done {
-                stop_reason: "stop".into(),
-            },
-        ],
-    ]));
-
-    let gate = Arc::new(RecordingApprovalGate::with_outcomes(vec![
-        ApprovalOutcome::denied(AnsweredBy::Timeout, "等待超时"),
-    ]));
-    assert_eq!(
-        ApprovalGate::direction(gate.as_ref()),
-        FailDirection::Closed,
-        "默认方向必须是 Closed"
-    );
-
-    let rt = AgentRuntime::new(
-        model,
-        catalog,
-        gate,
-        store,
-        prompt,
-        scope,
-        clock,
-        RunPolicy {
-            max_steps: Some(5),
-            max_parallel_tools: 1,
-            tool_timeout: None,
-        },
-    );
-
-    let sink = RecordingSink::new();
-    let req = TurnRequest::new("t_closed", mock_provider_config()).with_user_prompt("go");
-    rt.run_turn(req, &sink, &NeverCancel)
-        .await
-        .expect("轮次应正常结束");
-
-    let receipts: Vec<ToolStatus> = sink
-        .snapshot()
-        .iter()
-        .filter_map(|e| match &e.body {
-            AgentEventBody::ToolCallFinished { receipt, .. } => Some(receipt.status.clone()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(receipts.len(), 1, "应恰好一个工具回执：{receipts:?}");
-    assert_eq!(
-        receipts[0],
-        ToolStatus::Denied,
-        "默认 Closed 时超时必须拒绝，而不是执行工具"
-    );
 }
 
 // ── P3a 钩子（SP-51 / SP-52）：引擎侧的行为与成对埋点 ────────────────────
@@ -298,7 +50,6 @@ fn runtime_with_one_tool(
         MockTool::new(
             make_test_descriptor(
                 "run_command",
-                ApprovalPolicy::Never,
                 Termination::ContinueTurn,
             ),
             tool_receipt,
@@ -329,7 +80,6 @@ fn runtime_with_one_tool(
     let mut rt = AgentRuntime::new(
         model,
         catalog.clone(),
-        Arc::new(RecordingApprovalGate::new(true)),
         Arc::new(InMemorySessionStore::new()),
         Arc::new(FixedPrompt::new("system")),
         Arc::new(MockScope::new("ws")),
@@ -468,7 +218,6 @@ async fn test_after_tool_call_note_is_appended_without_changing_status() {
         MockTool::new(
             make_test_descriptor(
                 "run_command",
-                ApprovalPolicy::Never,
                 Termination::ContinueTurn,
             ),
             ToolReceipt::success("命令输出", 0, 5),
@@ -499,7 +248,6 @@ async fn test_after_tool_call_note_is_appended_without_changing_status() {
     let rt = AgentRuntime::new(
         model,
         catalog,
-        Arc::new(RecordingApprovalGate::new(true)),
         store.clone(),
         Arc::new(FixedPrompt::new("system")),
         Arc::new(MockScope::new("ws")),
@@ -588,7 +336,7 @@ async fn test_hook_diagnostics_are_paired_and_absence_is_reported() {
         );
     }
 
-    // 没订阅的点位（这里：afterToolCall 有订阅、beforeApproval 没被问过）
+    // 没订阅的点位（这里：afterToolCall 有订阅、afterTurn 没被问过）
     // —— 用"没人订阅"的替身再跑一遍，断言 skipped 如实出现
     let quiet = Arc::new(ScriptedHookRunner::new().unsubscribed());
     let (rt2, _) = runtime_with_one_tool(Some(quiet), ToolReceipt::success("ok", 0, 5));
@@ -663,51 +411,15 @@ impl Tool for CapturingTool {
     }
 }
 
-/// 按**参数内容**判定的假闸门：命令里出现 `rm -rf` 才要问。
-///
-/// 用它才能表达"风险单调性"要验的那件事——同一个工具的**不同参数**风险不同，
-/// 而改写不得把风险降下去。
-#[derive(Default)]
-struct DangerScanGate {
-    asked: std::sync::Mutex<Vec<serde_json::Value>>,
-}
-
-impl ApprovalGate for DangerScanGate {
-    fn needs_approval<'a>(
-        &'a self,
-        _tool: &'a str,
-        _access: &'a crate::domain::Access,
-        _policy: &'a ApprovalPolicy,
-        args: &'a serde_json::Value,
-    ) -> BoxFuture<'a, bool> {
-        Box::pin(async move { args.to_string().contains("rm -rf") })
-    }
-    fn decide<'a>(
-        &'a self,
-        req: ApprovalRequest,
-        _cancel: Option<&'a dyn CancelToken>,
-    ) -> BoxFuture<'a, ApprovalOutcome> {
-        if let Ok(mut v) = self.asked.lock() {
-            v.push(req.args.clone());
-        }
-        Box::pin(async { ApprovalOutcome::allowed(AnsweredBy::Policy) })
-    }
-    fn direction(&self) -> FailDirection {
-        FailDirection::Closed
-    }
-}
-
 /// 造一个"模型调一次 `probe`、再收尾"的运行时；`probe` 的参数由用例给。
 fn runtime_with_capturing_probe(
     runner: Arc<dyn HookRunner>,
     access: Access,
     schema: serde_json::Value,
-    approval_policy: ApprovalPolicy,
     raw_args: &str,
 ) -> (
     AgentRuntime,
     Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
-    Arc<DangerScanGate>,
 ) {
     use crate::model::{StreamDelta as SD, ToolCallInfo};
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -717,7 +429,6 @@ fn runtime_with_capturing_probe(
             summary: "探针".to_string(),
             schema,
             access,
-            approval: approval_policy,
             rollback: RollbackPolicy::None,
             execution: Execution::Sequential,
             termination: Termination::ContinueTurn,
@@ -746,11 +457,9 @@ fn runtime_with_capturing_probe(
             },
         ],
     ]));
-    let gate = Arc::new(DangerScanGate::default());
     let rt = AgentRuntime::new(
         model,
         Arc::new(InMemoryToolCatalog::with_tools(vec![tool])),
-        gate.clone(),
         Arc::new(InMemorySessionStore::new()),
         Arc::new(FixedPrompt::new("system")),
         Arc::new(MockScope::new("ws")),
@@ -762,7 +471,7 @@ fn runtime_with_capturing_probe(
         },
     )
     .with_hooks(runner);
-    (rt, seen, gate)
+    (rt, seen)
 }
 
 /// 跑一轮并返回（看到的参数、接收器）。
@@ -792,11 +501,10 @@ async fn test_replacement_is_applied_and_the_tool_sees_new_args() {
         "beforeToolCall",
         serde_json::json!({ "cmd": "echo 更精确的路径" }),
     ));
-    let (rt, seen, _gate) = runtime_with_capturing_probe(
+    let (rt, seen) = runtime_with_capturing_probe(
         runner,
         Access::ReadOnly,
         serde_json::json!({ "type": "object" }),
-        ApprovalPolicy::Never,
         r#"{"cmd":"echo 太宽了"}"#,
     );
     let sink = run_probe_turn(&rt, "t_replace").await;
@@ -834,119 +542,17 @@ async fn test_replacement_is_applied_and_the_tool_sees_new_args() {
 ///
 /// 用例设计成"改之前无害、改之后危险"：如果审批读的是原参数，它就永远不会被问到——
 /// 那正是这条链要防的形态（插件把危险命令塞进参数、审批却按旧参数放行）。
-#[tokio::test]
-async fn test_approval_reads_the_rewritten_args() {
-    let runner = Arc::new(ScriptedHookRunner::new().replace_at(
-        "beforeToolCall",
-        serde_json::json!({ "cmd": "rm -rf /workspace" }),
-    ));
-    let (rt, seen, gate) = runtime_with_capturing_probe(
-        runner,
-        Access::ReadOnly,
-        serde_json::json!({ "type": "object" }),
-        ApprovalPolicy::DangerScan {
-            patterns: vec!["rm -rf".to_string()],
-        },
-        r#"{"cmd":"echo 无害"}"#,
-    );
-    let _sink = run_probe_turn(&rt, "t_risk_up").await;
-
-    let asked = gate.asked.lock().expect("lock").clone();
-    assert_eq!(
-        asked.len(),
-        1,
-        "改写后的危险参数**必须**触发审批：{asked:?}"
-    );
-    assert!(
-        asked[0].to_string().contains("rm -rf"),
-        "闸门看到的必须是改写后的参数：{asked:?}"
-    );
-    let seen = seen.lock().expect("lock").clone();
-    assert!(
-        seen[0].to_string().contains("rm -rf"),
-        "审批通过后执行的是改写后的参数：{seen:?}"
-    );
-}
-
 /// SP-62：**风险单调性**——改写不得把"需要审批"降成"不需要"。
 ///
 /// 这是最容易被绕过的一环：执行的是改写后的参数，所以只要允许把危险形式改成无害形式
 /// 骗过审批，闸门就形同虚设。被拒时**用回原参数**，并留下理由。
-#[tokio::test]
-async fn test_risk_downgrade_is_rejected_and_original_args_are_used() {
-    let runner = Arc::new(ScriptedHookRunner::new().replace_at(
-        "beforeToolCall",
-        serde_json::json!({ "cmd": "echo 看起来人畜无害" }),
-    ));
-    let (rt, seen, gate) = runtime_with_capturing_probe(
-        runner,
-        Access::ReadOnly,
-        serde_json::json!({ "type": "object" }),
-        ApprovalPolicy::DangerScan {
-            patterns: vec!["rm -rf".to_string()],
-        },
-        r#"{"cmd":"rm -rf /workspace"}"#,
-    );
-    let sink = run_probe_turn(&rt, "t_risk_down").await;
-
-    let asked = gate.asked.lock().expect("lock").clone();
-    assert_eq!(asked.len(), 1, "原参数该问就问：{asked:?}");
-    assert!(
-        asked[0].to_string().contains("rm -rf"),
-        "闸门看到的应当是**原**参数：{asked:?}"
-    );
-    let seen = seen.lock().expect("lock").clone();
-    assert!(
-        seen[0].to_string().contains("rm -rf"),
-        "被拒的改写不得生效，执行的必须是原参数：{seen:?}"
-    );
-    let reason = diag_reason(&sink, POINT_HOOK_REPLACE_REJECTED).expect("降级企图必须留痕");
-    assert!(
-        reason.starts_with("risk_downgrade"),
-        "理由要说清是风险降级：{reason}"
-    );
-}
-
-/// SP-62：改写**不得把路径挪出作用域**——越界路径必须被重新校验拦下。
-#[tokio::test]
-async fn test_out_of_scope_path_in_replacement_is_rejected() {
-    let runner = Arc::new(ScriptedHookRunner::new().replace_at(
-        "beforeToolCall",
-        serde_json::json!({ "path": "/etc/passwd" }),
-    ));
-    let (rt, seen, _gate) = runtime_with_capturing_probe(
-        runner,
-        Access::Mutates {
-            paths: PathSelector::Single("path"),
-        },
-        serde_json::json!({
-            "type": "object",
-            "properties": { "path": { "type": "string" } },
-            "required": ["path"]
-        }),
-        ApprovalPolicy::Never,
-        r#"{"path":"ws/a.txt"}"#,
-    );
-    let sink = run_probe_turn(&rt, "t_path").await;
-
-    let seen = seen.lock().expect("lock").clone();
-    assert_eq!(
-        seen[0].get("path").and_then(|v| v.as_str()),
-        Some("ws/a.txt"),
-        "越界改写必须被拒、用回原参数：{seen:?}"
-    );
-    let reason = diag_reason(&sink, POINT_HOOK_REPLACE_REJECTED).expect("越界改写必须留痕");
-    assert!(reason.contains("path_out_of_scope"), "{reason}");
-}
-
-/// SP-62：改写不得让参数**脱离工具契约**（schema 由描述符声明，插件改不动它）。
 #[tokio::test]
 async fn test_schema_mismatch_in_replacement_is_rejected() {
     let runner = Arc::new(
         ScriptedHookRunner::new()
             .replace_at("beforeToolCall", serde_json::json!({ "count": "不是数字" })),
     );
-    let (rt, seen, _gate) = runtime_with_capturing_probe(
+    let (rt, seen) = runtime_with_capturing_probe(
         runner,
         Access::ReadOnly,
         serde_json::json!({
@@ -954,7 +560,6 @@ async fn test_schema_mismatch_in_replacement_is_rejected() {
             "properties": { "count": { "type": "integer" } },
             "required": ["count"]
         }),
-        ApprovalPolicy::Never,
         r#"{"count":1}"#,
     );
     let sink = run_probe_turn(&rt, "t_schema").await;
@@ -979,11 +584,10 @@ async fn test_replacement_cannot_change_the_tool_identity() {
         "beforeToolCall",
         serde_json::json!({ "tool": "read_file", "cmd": "echo hi" }),
     ));
-    let (rt, seen, _gate) = runtime_with_capturing_probe(
+    let (rt, seen) = runtime_with_capturing_probe(
         runner,
         Access::ReadOnly,
         serde_json::json!({ "type": "object" }),
-        ApprovalPolicy::Never,
         r#"{"cmd":"echo 原样"}"#,
     );
     let sink = run_probe_turn(&rt, "t_identity").await;
@@ -1008,11 +612,10 @@ async fn test_replacement_cannot_change_the_tool_identity() {
 #[tokio::test]
 async fn test_no_replacement_path_when_nothing_subscribes() {
     let runner = Arc::new(ScriptedHookRunner::new().unsubscribed());
-    let (rt, seen, _gate) = runtime_with_capturing_probe(
+    let (rt, seen) = runtime_with_capturing_probe(
         runner,
         Access::ReadOnly,
         serde_json::json!({ "type": "object" }),
-        ApprovalPolicy::Never,
         r#"{"cmd":"原样"}"#,
     );
     let sink = run_probe_turn(&rt, "t_nosub").await;
@@ -1036,7 +639,7 @@ async fn test_turn_completes_without_tools() {
     let prompt = Arc::new(FixedPrompt::new("system prompt"));
     let scope = Arc::new(MockScope::new("ws"));
     let catalog = Arc::new(InMemoryToolCatalog::new());
-    let approval = Arc::new(RecordingApprovalGate::new(true));
+
 
     let model = Arc::new(ScriptedModelClient::new(vec![vec![
         StreamDelta::Thinking {
@@ -1053,7 +656,6 @@ async fn test_turn_completes_without_tools() {
     let runtime = AgentRuntime::new(
         model,
         catalog,
-        approval,
         store.clone(),
         prompt,
         scope,
@@ -1124,13 +726,12 @@ async fn test_turn_aborted_before_start() {
     let prompt = Arc::new(FixedPrompt::new("system prompt"));
     let scope = Arc::new(MockScope::new("ws"));
     let catalog = Arc::new(InMemoryToolCatalog::new());
-    let approval = Arc::new(RecordingApprovalGate::new(true));
+
     let model = Arc::new(ScriptedModelClient::new(vec![]));
 
     let runtime = AgentRuntime::new(
         model,
         catalog,
-        approval,
         store,
         prompt,
         scope,
@@ -1166,7 +767,7 @@ async fn test_turn_aborted_during_stream() {
     let prompt = Arc::new(FixedPrompt::new("system prompt"));
     let scope = Arc::new(MockScope::new("ws"));
     let catalog = Arc::new(InMemoryToolCatalog::new());
-    let approval = Arc::new(RecordingApprovalGate::new(true));
+
 
     // 模型在流结束时自报 aborted
     let model = Arc::new(ScriptedModelClient::new(vec![vec![
@@ -1181,7 +782,6 @@ async fn test_turn_aborted_during_stream() {
     let runtime = AgentRuntime::new(
         model,
         catalog,
-        approval,
         store,
         prompt,
         scope,
@@ -1211,7 +811,7 @@ async fn test_turn_model_error_yields_single_finished() {
     let prompt = Arc::new(FixedPrompt::new("system prompt"));
     let scope = Arc::new(MockScope::new("ws"));
     let catalog = Arc::new(InMemoryToolCatalog::new());
-    let approval = Arc::new(RecordingApprovalGate::new(true));
+
 
     let model = Arc::new(ScriptedModelClient::new(vec![vec![StreamDelta::Error {
         error: "连接超时 504".into(),
@@ -1220,7 +820,6 @@ async fn test_turn_model_error_yields_single_finished() {
     let runtime = AgentRuntime::new(
         model,
         catalog,
-        approval,
         store,
         prompt,
         scope,
@@ -1283,7 +882,6 @@ async fn test_prompt_composed_diagnostic_reports_segments() {
             },
         ]])),
         Arc::new(InMemoryToolCatalog::new()),
-        Arc::new(RecordingApprovalGate::new(true)),
         Arc::new(InMemorySessionStore::new()),
         Arc::new(SegmentedPrompt),
         Arc::new(MockScope::new("ws")),
@@ -1334,9 +932,9 @@ async fn test_diagnostics_carry_trace_and_stay_out_of_conversation() {
     let prompt = Arc::new(FixedPrompt::new("system prompt"));
     let scope = Arc::new(MockScope::new("ws"));
     let catalog = Arc::new(InMemoryToolCatalog::new());
-    let approval = Arc::new(RecordingApprovalGate::new(true));
 
-    let desc = make_test_descriptor("echo", ApprovalPolicy::Never, Termination::ContinueTurn);
+
+    let desc = make_test_descriptor("echo", Termination::ContinueTurn);
     let tool = Arc::new(MockTool::new(desc, ToolReceipt::success("ok", 1010, 1020)));
     catalog.register(tool);
 
@@ -1366,7 +964,6 @@ async fn test_diagnostics_carry_trace_and_stay_out_of_conversation() {
     let runtime = AgentRuntime::new(
         model,
         catalog,
-        approval,
         store,
         prompt,
         scope,
@@ -1443,9 +1040,9 @@ async fn test_trace_call_id_is_cleared_after_tool_call() {
     let prompt = Arc::new(FixedPrompt::new("system prompt"));
     let scope = Arc::new(MockScope::new("ws"));
     let catalog = Arc::new(InMemoryToolCatalog::new());
-    let approval = Arc::new(RecordingApprovalGate::new(true));
 
-    let desc = make_test_descriptor("echo", ApprovalPolicy::Never, Termination::ContinueTurn);
+
+    let desc = make_test_descriptor("echo", Termination::ContinueTurn);
     catalog.register(Arc::new(MockTool::new(
         desc,
         ToolReceipt::success("ok", 0, 0),
@@ -1477,7 +1074,6 @@ async fn test_trace_call_id_is_cleared_after_tool_call() {
     let runtime = AgentRuntime::new(
         model,
         catalog,
-        approval,
         store,
         prompt,
         scope,
@@ -1513,10 +1109,10 @@ async fn test_tool_call_started_before_finished_and_multi_turn() {
     let prompt = Arc::new(FixedPrompt::new("system prompt"));
     let scope = Arc::new(MockScope::new("ws"));
     let catalog = Arc::new(InMemoryToolCatalog::new());
-    let approval = Arc::new(RecordingApprovalGate::new(true));
+
 
     // 注册一个简单工具
-    let desc = make_test_descriptor("echo", ApprovalPolicy::Never, Termination::ContinueTurn);
+    let desc = make_test_descriptor("echo", Termination::ContinueTurn);
     let receipt = ToolReceipt::success("echoed_result", 1010, 1020);
     let tool = Arc::new(MockTool::new(desc, receipt));
     catalog.register(tool);
@@ -1548,7 +1144,6 @@ async fn test_tool_call_started_before_finished_and_multi_turn() {
     let runtime = AgentRuntime::new(
         model,
         catalog,
-        approval,
         store.clone(),
         prompt,
         scope,
@@ -1596,9 +1191,9 @@ async fn test_context_window_guard_stops_before_over_limit_request() {
     let prompt = Arc::new(FixedPrompt::new("system prompt"));
     let scope = Arc::new(MockScope::new("ws"));
     let catalog = Arc::new(InMemoryToolCatalog::new());
-    let approval = Arc::new(RecordingApprovalGate::new(true));
 
-    let desc = make_test_descriptor("echo", ApprovalPolicy::Never, Termination::ContinueTurn);
+
+    let desc = make_test_descriptor("echo", Termination::ContinueTurn);
     let tool = Arc::new(MockTool::new(desc, ToolReceipt::success("echoed", 0, 0)));
     catalog.register(tool);
 
@@ -1637,7 +1232,6 @@ async fn test_context_window_guard_stops_before_over_limit_request() {
     let runtime = AgentRuntime::new(
         model,
         catalog,
-        approval,
         store,
         prompt,
         scope,
@@ -1675,94 +1269,16 @@ async fn test_context_window_guard_stops_before_over_limit_request() {
 }
 
 #[tokio::test]
-async fn test_approval_denied_returns_as_tool_result_without_throwing() {
-    let clock = Arc::new(FixedClock::new(1000));
-    let store = Arc::new(InMemorySessionStore::new());
-    let prompt = Arc::new(FixedPrompt::new("system prompt"));
-    let scope = Arc::new(MockScope::new("ws"));
-    let catalog = Arc::new(InMemoryToolCatalog::new());
-
-    // 注册必须审批的工具，审批闸门配置为拒绝
-    let desc = make_test_descriptor(
-        "dangerous_cmd",
-        ApprovalPolicy::Always,
-        Termination::ContinueTurn,
-    );
-    let tool = Arc::new(MockTool::new(desc, ToolReceipt::success("ok", 0, 0)));
-    catalog.register(tool);
-
-    let approval = Arc::new(RecordingApprovalGate::new(false)); // 拒绝
-
-    let model = Arc::new(ScriptedModelClient::new(vec![
-        vec![
-            StreamDelta::ToolCall {
-                call: ToolCallInfo {
-                    id: "call_dang".into(),
-                    name: "dangerous_cmd".into(),
-                    args: "{\"arg\":\"rm -rf\"}".into(),
-                },
-            },
-            StreamDelta::Done {
-                stop_reason: "tool_calls".into(),
-            },
-        ],
-        vec![
-            StreamDelta::Text {
-                text: "操作被拒绝，放弃执行。".into(),
-            },
-            StreamDelta::Done {
-                stop_reason: "stop".into(),
-            },
-        ],
-    ]));
-
-    let runtime = AgentRuntime::new(
-        model,
-        catalog,
-        approval.clone(),
-        store.clone(),
-        prompt,
-        scope,
-        clock,
-        RunPolicy::default(),
-    );
-
-    let sink = RecordingSink::new();
-    let cancel = NeverCancel;
-    let req = TurnRequest::new("t1", mock_provider_config());
-    let outcome = runtime.run_turn(req, &sink, &cancel).await.unwrap();
-
-    assert_eq!(outcome.stop_reason, TurnStopReason::Completed);
-
-    // 断言审批闸门被调了一次
-    assert_eq!(approval.recorded_calls().len(), 1);
-    assert_eq!(approval.recorded_calls()[0].tool, "dangerous_cmd");
-
-    // 断言 Denied 作为工具结果返回给模型
-    let messages = store.get("t1");
-    assert_eq!(messages.len(), 3);
-    match &messages[1] {
-        AgentMessage::ToolResult {
-            is_error, status, ..
-        } => {
-            assert_eq!(is_error, &Some(true));
-            assert_eq!(status.as_deref(), Some("denied"));
-        }
-        _ => panic!("必须为 ToolResult"),
-    }
-}
-
-#[tokio::test]
 async fn test_termination_end_turn_stops_entire_turn() {
     let clock = Arc::new(FixedClock::new(1000));
     let store = Arc::new(InMemorySessionStore::new());
     let prompt = Arc::new(FixedPrompt::new("system prompt"));
     let scope = Arc::new(MockScope::new("ws"));
     let catalog = Arc::new(InMemoryToolCatalog::new());
-    let approval = Arc::new(RecordingApprovalGate::new(true));
+
 
     // 声明 Termination::EndTurn 的工具（例如 finish 或 terminate）
-    let desc = make_test_descriptor("finish", ApprovalPolicy::Never, Termination::EndTurn);
+    let desc = make_test_descriptor("finish", Termination::EndTurn);
     let tool = Arc::new(MockTool::new(
         desc,
         ToolReceipt::success("任务已结束", 1000, 1005),
@@ -1785,7 +1301,6 @@ async fn test_termination_end_turn_stops_entire_turn() {
     let runtime = AgentRuntime::new(
         model,
         catalog,
-        approval,
         store,
         prompt,
         scope,
@@ -1817,11 +1332,10 @@ async fn test_budget_exhausted_reported_explicitly() {
     let prompt = Arc::new(FixedPrompt::new("system prompt"));
     let scope = Arc::new(MockScope::new("ws"));
     let catalog = Arc::new(InMemoryToolCatalog::new());
-    let approval = Arc::new(RecordingApprovalGate::new(true));
+
 
     let desc = make_test_descriptor(
         "step_tool",
-        ApprovalPolicy::Never,
         Termination::ContinueTurn,
     );
     catalog.register(Arc::new(MockTool::new(
@@ -1864,7 +1378,7 @@ async fn test_budget_exhausted_reported_explicitly() {
     };
 
     let runtime = AgentRuntime::new(
-        model, catalog, approval, store, prompt, scope, clock, policy,
+        model, catalog, store, prompt, scope, clock, policy,
     );
 
     let sink = RecordingSink::new();
@@ -1906,7 +1420,6 @@ async fn test_max_retries_reaches_the_model_request() {
     let runtime = AgentRuntime::new(
         model.clone(),
         Arc::new(InMemoryToolCatalog::new()),
-        Arc::new(RecordingApprovalGate::new(true)),
         Arc::new(InMemorySessionStore::new()),
         Arc::new(FixedPrompt::new("system prompt")),
         Arc::new(MockScope::new("ws")),
@@ -1943,7 +1456,6 @@ async fn test_max_retries_reaches_the_model_request() {
     let runtime2 = AgentRuntime::new(
         model2.clone(),
         Arc::new(InMemoryToolCatalog::new()),
-        Arc::new(RecordingApprovalGate::new(true)),
         Arc::new(InMemorySessionStore::new()),
         Arc::new(FixedPrompt::new("system prompt")),
         Arc::new(MockScope::new("ws")),
@@ -2027,7 +1539,6 @@ async fn test_tool_timeout_cuts_a_hanging_tool_and_turn_continues() {
     let hang = Arc::new(HangingTool {
         descriptor: make_test_descriptor(
             "hang_tool",
-            ApprovalPolicy::Never,
             Termination::ContinueTurn,
         ),
     });
@@ -2035,7 +1546,6 @@ async fn test_tool_timeout_cuts_a_hanging_tool_and_turn_continues() {
     let slow = Arc::new(LongRunningHangingTool {
         descriptor: make_test_descriptor(
             "slow_tool",
-            ApprovalPolicy::Never,
             Termination::ContinueTurn,
         ),
     });
@@ -2073,7 +1583,6 @@ async fn test_tool_timeout_cuts_a_hanging_tool_and_turn_continues() {
     let rt = AgentRuntime::new(
         model,
         catalog,
-        Arc::new(RecordingApprovalGate::new(true)),
         store,
         prompt,
         scope,

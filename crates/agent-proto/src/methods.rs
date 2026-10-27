@@ -32,8 +32,7 @@ pub const THREAD_UPDATE: &str = "thread.update";
 pub const TASK_LIST: &str = "task.list";
 pub const TASK_KILL: &str = "task.kill";
 
-// 审批与问答
-pub const APPROVAL_DECIDE: &str = "approval.decide";
+// 提问
 pub const QUESTION_ANSWER: &str = "question.answer";
 
 // 工作区与配置
@@ -47,7 +46,6 @@ pub const CONFIG_GET: &str = "config.get";
 pub const CONFIG_PRESETS: &str = "config.presets";
 pub const CONFIG_SET_PROVIDER: &str = "config.setProvider";
 pub const CONFIG_CHECK_PROVIDER: &str = "config.checkProvider";
-pub const CONFIG_SET_APPROVAL: &str = "config.setApproval";
 pub const CONFIG_SET_EFFORT: &str = "config.setEffort";
 /// 设置"模型请求重试次数"（默认 5；重试耗尽即断开本轮对话）
 pub const CONFIG_SET_RETRY_COUNT: &str = "config.setRetryCount";
@@ -163,7 +161,6 @@ pub const ALL_METHODS: &[&str] = &[
     THREAD_SET_WORKSPACE,
     THREAD_EDIT_AND_RESEND,
     THREAD_RETRY,
-    APPROVAL_DECIDE,
     QUESTION_ANSWER,
     WORKSPACE_ADD,
     WORKSPACE_REMOVE,
@@ -173,7 +170,6 @@ pub const ALL_METHODS: &[&str] = &[
     CONFIG_PRESETS,
     CONFIG_SET_PROVIDER,
     CONFIG_CHECK_PROVIDER,
-    CONFIG_SET_APPROVAL,
     CONFIG_SET_EFFORT,
     CONFIG_SET_RETRY_COUNT,
     PROVIDER_LIST,
@@ -252,7 +248,8 @@ mod tests {
         // 统一插件：新增 `plugin.invoke`（界面动作调用）后 82 → 83
         // 任务管理：新增 `task.list` / `task.kill` 后 83 → 85
         // 动态路由：新增 `plugin.route` 后 85 → 86
-        assert_eq!(ALL_METHODS.len(), 86);
+        // 审批/安全下线：删除审批与配置档位两个方法后 86 → 84
+        assert_eq!(ALL_METHODS.len(), 84);
 
         let mut event_set = HashSet::new();
         for &e in ALL_EVENTS {

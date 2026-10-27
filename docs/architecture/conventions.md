@@ -17,13 +17,13 @@
 > | 3 | 子智能体只拿 `profile.system_prompt`，不拿主线程提示词 | `ProfilePrompt`（`agent-base` 端口 + `agent-node` 实现） |
 > | 4 | 新写工具要能被检查点覆盖 | 描述符的 `RollbackPolicy`（不再有手写的 `CHECKPOINT_TOOLS` 名单） |
 > | 5 | `terminate` 结束的是**整轮**，不是这一批 | 描述符的 `Termination` |
-> | 6 | 审批一次只该问一件事；工具并发受策略约束 | `RunPolicy.max_parallel_tools`（**当前引擎未消费，实际始终串行**；改并发前先补语义断言） |
+> | 6 | ~~审批一次只该问一件事~~；工具并发受策略约束 | 审批已删除；并发仍是 `RunPolicy.max_parallel_tools`（**当前引擎未消费，实际始终串行**） |
 > | 7 / 8 | 委派与等待：别轮询，用挂起等待 | `AgentBus` 端口（`crates/agent-node/src/subagents/agent_bus.rs`；网关实现 `GatewayAgentBus` 在 `agent-rpc`） |
 > | 9 | 决策：拿不到就失败，**绝不捏造确定性** | 决策插件已于 **2026-10-18 整体下线**（`decide` / `check_gate` / 工具包 / 实现一并删除）；只保留这条原则 |
 > | 10 / 11 | 插件生效要"多处同时登记"；`LoadedPlugin` 是唯一产物 | 现行口径：贡献在**装配期结算**（工具 / 提示词 / 技能 / 钩子），见 [`../plugins/README.md`](../plugins/README.md) |
 > | 12 | 钩子**成对**是硬约束；钩子不得扩张工具集 | `crates/agent-base/src/ports/hooks.rs`（`points::IMPLEMENTED`、`HookLevel`、`allows`） |
-> | 13 | 审批与压缩的效力**刻意不对称** | 压缩点位 `beforeCompaction` / `afterCompaction`；审批见 §14 |
-> | 14 | 审批：**策略**归插件 `approval-guard`、**执行**归核心 | `agent-node/src/plugins/builtins.rs`（`approval-guard`）+ 引擎 `ApprovalGate` |
+> | 13 | 压缩的效力**刻意不对称** | 压缩点位 `beforeCompaction` / `afterCompaction` |
+> | 14 | ~~审批策略与执行分离~~ | **2026-10-27 物理删除**：`ApprovalGate` / 审批点位 / `approval.decide` 均不存在；策略走受信插件 + `event_before_*` |
 > | 15 | 陷阱：断言**副作用**，别断言钩子被调用 | 现行诊断 `hook.entered` / `hook.finished` / `hook.skipped`（成对、缺席可见） |
 > | 16 | 加 / 删协议方法要同步多处 | 现在是**四处**：`spec/proto/*.json` → `methods.rs` → `dispatch/` → `client-ts/methods.ts`（见 [`../../spec/proto/README.md`](../../spec/proto/README.md)） |
 > | 17 | 打包后的 exe 用**应用日志**当证据 | 仍是现行口径（`launcher.log`，见 `electron/`） |

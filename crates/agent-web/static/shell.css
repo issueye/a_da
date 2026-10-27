@@ -893,67 +893,6 @@
   }
 }
 
-/* 审批档位弹层（输入框工具行）：四档单选，当前项打勾禁用；向上展开 */
-.ada-approval-picker {
-  position: relative;
-}
-.ada-approval-picker > summary {
-  list-style: none;
-  cursor: pointer;
-}
-.ada-approval-picker > summary::-webkit-details-marker {
-  display: none;
-}
-.ada-approval-picker__panel {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 0;
-  z-index: 45;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 180px;
-  padding: 6px;
-  border: 1px solid var(--ph-line-strong);
-  border-radius: var(--ada-radius-md);
-  background: var(--ph-elevated);
-  box-shadow: var(--ph-shadow);
-}
-.ada-approval-picker__panel form {
-  display: contents;
-}
-.ada-approval-picker__option {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 7px 10px;
-  border: 0;
-  border-radius: var(--ada-radius-sm);
-  background: transparent;
-  color: var(--ph-muted);
-  font-family: inherit;
-  font-size: var(--ada-text-sm);
-  text-align: left;
-  cursor: pointer;
-  transition: background var(--ada-transition), color var(--ada-transition);
-}
-.ada-approval-picker__option:hover:not(:disabled) {
-  background: var(--ph-subtle);
-  color: var(--ph-ink);
-}
-.ada-approval-picker__option:disabled {
-  color: var(--ph-ink);
-  font-weight: 600;
-  cursor: default;
-}
-.ada-approval-picker__option .ada-icon {
-  color: var(--ph-brand-ink);
-}
-.ada-approval-picker__check {
-  display: inline-flex;
-  margin-left: auto;
-}
 
 /* 空态：没有会话 / 没有匹配 */
 .ada-list-empty {
@@ -1382,16 +1321,6 @@
   border-radius: var(--ada-radius-lg);
   background: var(--ph-elevated);
   box-shadow: var(--ph-shadow);
-}
-.ada-tray--approval {
-  border-color: color-mix(in srgb, var(--ph-warn-ink) 35%, var(--ph-line));
-}
-/* 多条审批同屏时的汇总带（卡片仍逐条保留，见 trays_html） */
-.ada-trays__summary {
-  padding: 0 4px;
-  color: var(--ph-warn-ink);
-  font-size: var(--ada-text-xs);
-  font-weight: 600;
 }
 /* 局部提交的就地反馈（成功/失败都不跳页，见 chat.js 的 data-partial） */
 .ada-partial-feedback {

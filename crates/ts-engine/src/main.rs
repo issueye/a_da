@@ -129,6 +129,9 @@ async fn run_script(file_path: &Path, args: Vec<String>) -> ExitCode {
             // 不等一下的话，脚本里 `cp.spawn(...)` 的输出还没来得及打印，进程就退了。
             // 与 node 同语义：一个常驻子进程（dev server）就是会让脚本不退出。
             let _ = runtime.wait_children().await;
+            // 子进程退出事件和 stdout data 都经事件循环投递；再等一次 idle，
+            // 保证脚本里的 `stdout.on('data')` 回调真的执行完（而不是只等到进程退出）。
+            let _ = runtime.wait_idle().await;
             ExitCode::SUCCESS
         }
         Err(err) => {
@@ -145,6 +148,8 @@ async fn eval_code(code: &str) -> ExitCode {
         Ok(res) => {
             let _ = runtime.wait_idle().await;
             let _ = runtime.wait_children().await;
+            // 同 run_script：等事件循环把子进程的 data/exit 回调排空。
+            let _ = runtime.wait_idle().await;
             if res != "undefined" && !res.is_empty() {
                 println!("{res}");
             }

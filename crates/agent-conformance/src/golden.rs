@@ -49,8 +49,7 @@ use agent_base::domain::{AgentEvent, AgentEventBody, TurnStopReason};
 use agent_base::engine::TurnRequest;
 use agent_base::model::{ProviderConfig, StreamDelta};
 use agent_base::testing::{
-    FixedClock, FixedPrompt, InMemorySessionStore, MockScope, NeverCancel, RecordingApprovalGate,
-    RecordingSink, ScriptedModelClient,
+    FixedClock, FixedPrompt, InMemorySessionStore, MockScope, NeverCancel, RecordingSink, ScriptedModelClient,
 };
 use agent_runtime::{AgentSpec, ProductBuilder};
 use serde::{Deserialize, Serialize};
@@ -153,7 +152,6 @@ pub async fn replay(fixture: &GoldenFixture) -> Result<GoldenReport, String> {
     let builder = ProductBuilder::new(spec)
         .with_tools(tools)
         .with_model(model)
-        .with_approval(Arc::new(RecordingApprovalGate::new(true)))
         .with_store(Arc::new(InMemorySessionStore::new()))
         .with_prompt(Arc::new(FixedPrompt::new("golden 系统提示词")))
         .with_scope(Arc::new(MockScope::new("golden_scope")))

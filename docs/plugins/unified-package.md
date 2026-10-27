@@ -60,10 +60,11 @@
 
 `frontend` 与顶层扁平字段**不能同时写**；加载期会拒绝，避免“哪份生效”说不清。
 仓库自带的纯前端插件（`ask-user` / `hello-tsx` / `process-manager` /
-`provider-admin` / `task-manager` / `token-weather`）已经统一到 `frontend` 段，
-它们没有后端入口，因此不写 `backend`。`task-plan` 与 `approval` 是完整的前后端
-一体例子：同包 `index.ts` 订阅钩子维护状态，前端通过只读 action 读取；
-审批策略/闸门仍在核心。
+`provider-admin` / `task-manager` / `task-plan` / `token-weather`）
+已经统一到 `frontend` 段，它们没有后端入口，因此不写 `backend`。
+`plugins/approval` 已删除（2026-10-27）。
+`unified-demo` 是完整的前后端一体例子：同包 `index.ts` 提供动作与动态路由，
+前端通过只读 action / route 读取。
 
 ---
 
@@ -141,7 +142,7 @@ export default function (ada) {
 - `execute(input, ctx)` 的 `ctx` 包含 `workspace` / `caller: "web"` / `now`；
 - 返回值：任意 JSON → 宿主包成 `{ok:true,data}`；返回 `{ok:false,error}` → 软失败；
 - `metadata.actions` 可选；**注册了动作就必须写**，`count` / `names` 逐项对账；
-- 动作**不是模型工具**：不进工具目录、不产生工具卡、不进入审批闸门；
+- 动作**不是模型工具**：不进工具目录、不产生工具卡；
 - 每次调用新建沙箱，模块状态不跨请求；需要持久化请写工作区文件；
 - 需要数据库时在包首行声明 `// @ada-needs sqlite`，用 `require("node:sqlite")`
   的 `DatabaseSync` / `StatementSync`；库文件必须在工作区内，详见
@@ -237,7 +238,7 @@ GET /ext/{frontend_id}/route/hello/ada?q=1
 - `cookie` / `authorization` 不转发给插件；响应头只放行常见内容头与 `x-*`；
 - 一个包同时有 frontend/backend 才有浏览器入口，`backend` 段仍然是开关；
 - `route` 是保留的页面 slug（`/ext/{id}/route` 归动态路由使用），插件页面不要再占它；
-- 路由不是模型工具，也不进审批闸门；它只是**后端 HTTP 能力**的同源入口；
+- 路由不是模型工具；它只是**后端 HTTP 能力**的同源入口；
 - v1 是请求-响应，**不支持 SSE / WebSocket 流式**；需要长流时再补 `ada.stream` 一类的入口；
 - `GET` 是否只读由插件自己守：宿主不检查 handler 的副作用；需要写操作请用
   `POST/PUT/PATCH/DELETE`（入口 guard 会校验跨站写请求）；
@@ -278,7 +279,7 @@ GET /ext/{frontend_id}/route/hello/ada?q=1
 | 前端能调什么 | 只有 `frontend.actions` 显式列出的 binding |
 | 后端怎么判 | 沙箱按动作自己的 `mode` 判 `intent`；前端把写动作标只读也绕不过 |
 | 数据面 | 动作输入 ≤64KB、输出 ≤256KB、单次超时 5 秒 |
-| 沙箱 | 与工具相同的 `@ada-needs` / 工作区 fs / net / sqlite / exec 策略；无模型、无工具、无审批 |
+| 沙箱 | 与工具相同的 `@ada-needs` 模块注入 / net / sqlite / exec 策略；无模型、无工具 |
 | 信任 | 统一包仍是**本地受信任内容**；没有签名校验 |
 
 ---

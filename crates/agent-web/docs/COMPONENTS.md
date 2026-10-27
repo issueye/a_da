@@ -122,7 +122,7 @@ ssr-h/
 | `Notice` | 提示卡（可带动作） | `tone` `action` |
 | `EmptyState` | 空状态 | `icon` `title` `description` `action` |
 | `Composer` + `ComposerAux` | 输入框与辅助区 | `left` `right` `aux` `focus_hint` |
-| `ApprovalTray` / `QueueTray` | 审批 / 排队浮层 | — |
+| `QueueTray` / `QuestionTray` | 排队 / 提问浮层 | — |
 | `SendButton` | 发送主操作 | `disabled` |
 | `Slot` | 插件插槽容器 | `name` `html` `fallback` `contributors` |
 
@@ -333,8 +333,8 @@ register → load → mount → render → unmount → destroy
 ### 7.5 悬浮点位示例
 
 `plugins/task-plan/` 是现成的例子：同一张任务卡片可以挂 `chat.corner`（会话区右上角，默认）
-或 `composer.above`（输入框上方），改清单里的一行即可切换；计划状态由**同包后端插件**
-通过 `afterTodoUpdate` 维护，前端优先读 `plan` action，核心 `props.data.todo` 作为降级；
+或 `composer.above`（输入框上方），改清单里的一行即可切换；计划状态直接读核心
+`props.data.todo`（2026-10-27 起 `afterTodoUpdate` 已移除，不再有后端 action）；
 浏览器增强（展开偏好、复制）由 `scripts` 注入的 `static/task-plan.js` 承担。
 
 ### 7.6 SSR / 客户端一致性
@@ -360,18 +360,14 @@ register → load → mount → render → unmount → destroy
 
 ## 10. 任务规划（todo 工具）卡片
 
-任务清单**不插在正文流里**，也**不再由应用壳渲染**：它是 `plugins/task-plan/` 统一插件，
+任务清单**不插在正文流里**，也**不再由应用壳渲染**：它是 `plugins/task-plan/` 前端插件，
 默认挂 `chat.corner`（会话区右上角）；把清单里的 `slot` 改成 `composer.above` 就换到输入框上方。
-同包后端插件负责按会话维护计划状态（`afterTodoUpdate`），核心投影只作为降级。
+计划状态直接来自核心 `props.data.todo`。
 
-### 10.1 计划状态：后端插件优先，核心降级
+### 10.1 计划状态：核心投影
 
-`plugins/task-plan/index.ts` 订阅 `afterTodoUpdate`：该点位拿到的是**已生效**的全量
-`todos`（已经过 `beforeTodoUpdate` 的 deny/replace），后端按 `ctx.threadId` 写入
-工作区 `.ada/task-plan-state.json`，再通过只读 action `plan` 返回给卡片。
-
-后端停用/未就绪时，回落到 `ui/todo.rs` 的 `derive_todo_plan`，与 原桌面端 的
-`utils/todo-plan.ts` 同一套语义：
+`plugins/task-plan` 只读 `ui/todo.rs` 的 `derive_todo_plan` 投影（`props.data.todo`），
+与 原桌面端 的 `utils/todo-plan.ts` 同一套语义：
 
 | `action` | 含义 |
 |---|---|

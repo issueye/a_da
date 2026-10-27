@@ -21,6 +21,7 @@
 | 系统是**怎么分层**的、有哪些端口 | [architecture/kernel-design.md](architecture/kernel-design.md) |
 | 客户端和宿主**怎么通信**（WS 线协议 + HTTP API 的统一接口文档） | [protocol/README.md](protocol/README.md) |
 | **插件怎么写**、有哪些钩子点位 | [plugins/README.md](plugins/README.md) |
+| **统一事件总线与插件系统**（基座 + TS 引擎 + 插件系统） | [architecture/PLAN-unified-events.md](architecture/PLAN-unified-events.md) |
 | 插件契约的精确形状（工厂 API / 类型） | [plugins/extension-factory.md](plugins/extension-factory.md)、[plugins/extension-api.d.ts](plugins/extension-api.d.ts) |
 | **一个包同时包含前端与后端**（统一插件包） | [plugins/unified-package.md](plugins/unified-package.md) |
 | 前端插件与后端插件**现在怎么对接** | [plugins/frontend-backend-integration.md](plugins/frontend-backend-integration.md) |
@@ -41,10 +42,11 @@
 |---|---|---|
 | [architecture/kernel-design.md](architecture/kernel-design.md) | 内核与产品线的设计口径：分层、端口、协议单源、装配、交付 | **设计唯一口径** |
 | [architecture/conventions.md](architecture/conventions.md) | `AGENTS.md` 的深度约定全文（§1–§18），接手须知 | **约定唯一口径** |
+| [architecture/PLAN-unified-events.md](architecture/PLAN-unified-events.md) | 统一事件总线与插件系统：基座 / TS 引擎 / 插件系统分层、`event_*` 目录、异步投递语义、迁移与门禁 | **事件/插件设计草案** |
 | [quality/feature-catalog.md](quality/feature-catalog.md) | 已实现功能清单（按功能域，逐条给出代码落点） | 现状清单 |
 | [quality/unfinished-features.md](quality/unfinished-features.md) | **功能缺口**清单（证据 + 最小实现路径 + 状态） | 缺口唯一口径 |
 | [plans/README.md](plans/README.md) | 历史计划入口（wiring / milestones 已精简） | 历史归档 |
-| [protocol/README.md](protocol/README.md) | **接口文档（唯一）**：WS JSON-RPC 帧、HTTP `/api/*` 端点表、事件与增量帧契约、审批通道、错误码与 HTTP 映射、Phase 3 缺口 | **接口唯一口径** |
+| [protocol/README.md](protocol/README.md) | **接口文档（唯一）**：WS JSON-RPC 帧、HTTP `/api/*` 端点表、事件与增量帧契约、提问通道、错误码与 HTTP 映射、Phase 3 缺口 | **接口唯一口径** |
 | [plugins/README.md](plugins/README.md) | 插件平台现状：发现规则、贡献模型、钩子点位与分级、能力开关、管理面、排错 | 插件现状总览 |
 | [plugins/extension-factory.md](plugins/extension-factory.md) | Extension Factory 契约：包形态、`metadata`、注册 API、动作分级 | **插件契约唯一口径** |
 | [plugins/extension-api.d.ts](plugins/extension-api.d.ts) | 插件作者用的 TypeScript 类型声明 | 类型契约 |

@@ -12,7 +12,7 @@
 
 | 面 | 传输 | 路径 | 用途 | 服务端事件 |
 |---|---|---|---|---|
-| **WS 线协议** | JSON-RPC 2.0 over WebSocket | `/rpc` | 全部方法；流式输出、状态增量、审批/提问、长任务 | ✅ 推送 `evt.*` |
+| **WS 线协议** | JSON-RPC 2.0 over WebSocket | `/rpc` | 全部方法；流式输出、状态增量、提问、长任务 | ✅ 推送 `evt.*` |
 | **HTTP API** | HTTP/1.1 unary | `/api/*` | 一问一答的命令/查询（配置、工作区、插件、文件、快照读取） | ❌ 不承载事件 |
 | **静态页面** | HTTP GET | `/`、`/assets/*` | 前端产物（网页形态，见 §1.2） | — |
 
@@ -22,7 +22,7 @@
    两者参数与结果形状一致——HTTP 只是换了信封，没有第二套语义。
 2. **事件只能走 WS**：`evt.state.snapshot` / `evt.state.patch` / `evt.message.delta` /
    `evt.card.updated` 全部经 `/rpc` 推送，HTTP 不做轮询。
-3. **人和流式只能走 WS**：审批（`approval.decide`）、提问（`question.answer`）、
+3. **人和流式只能走 WS**：提问（`question.answer`）、
    `thread.send` 这类"要等模型说很久"的操作没有 HTTP 形态（§8 说明了为什么）。
 
 ---
@@ -216,7 +216,6 @@ curl -i -H 'Authorization: Bearer secret' -H 'If-None-Match: "snap-42"' \
 | HTTP | 路径 | 对应 RPC |
 |---|---|---|
 | PUT | `/api/config/provider` | `config.setProvider`（body 可为 `{config}` 或直接字段） |
-| PUT | `/api/config/approval` | `config.setApproval` |
 | PUT | `/api/config/effort` | `config.setEffort` |
 | PUT | `/api/config/retry-count` | `config.setRetryCount` |
 | PUT | `/api/providers/{id}` | `provider.save`（body 可为 `{provider}` 或直接字段；id 以路径为准） |
@@ -235,7 +234,6 @@ curl -i -H 'Authorization: Bearer secret' -H 'If-None-Match: "snap-42"' \
 | DELETE | `/api/threads/{id}/queue` | `queue.clear` |
 | POST | `/api/threads/{id}/queue/{index}/promote` | `queue.promote` |
 | DELETE | `/api/threads/{id}/queue/{index}` | `queue.remove` |
-| POST | `/api/approvals/{callId}/decision` | `approval.decide` |
 | POST | `/api/questions/{callId}/answer` | `question.answer` |
 | POST | `/api/threads/{id}/changes/revert-card` | `change.revertCard` |
 | POST | `/api/threads/{id}/changes/revert-checkpoint` | `change.revertCheckpoint` |
@@ -371,22 +369,13 @@ curl -i -H 'Authorization: Bearer secret' -H 'If-None-Match: "snap-42"' \
 
 ---
 
-## 5. 审批与提问（**唯一需要"人"的通道**）
+## 5. 提问（**唯一需要"人"的通道**）
 
-审批的**策略**归插件 `approval-guard`、**执行**归核心（`AGENTS.md` §14），线上表现为两条方法 + 一条状态：
+审批已随核心物理删除（2026-10-27）：不再有 `ApprovalRequested`、`waiting_approval` 新卡、
+`approval.decide` 或 `/api/approvals/*`。需要策略时由受信插件通过 `event_before_*` 决定。
 
-1. 引擎判定"要问" → 发 `ApprovalRequested`（**带 `args`**，审批卡要能回答"我在批准什么"）
-   → 工具卡片进入 `status: "waiting_approval"`；
-2. 界面在**输入框上方的浮动审批窗口**渲染批准/拒绝按钮 → 调 `approval.decide`
-   （`{ callId, approved }`，HTTP 侧 `POST /api/approvals/{callId}/decision`）→ 唤醒等待中的审批闸门；
-3. 拒绝时**不抛错**，而是把拒绝原因作为**工具结果**回给模型（模型知道被拒了，不会以为成功）。
-
-同一形态用于 `ask_user` / `question.answer`（`POST /api/questions/{callId}/answer`，模型主动提问）。
-
-> ⚠️ **超时**：审批闸门默认 300s。超时按 `ApprovalGate::direction()` 处理——
-> 默认 `Closed`（拒绝），并记 `by: Timeout` 便于事后分辨来路。
-> `Scope`（路径沙箱）的失败方向**刻意不可配置**：路径越界是确定的判定，
-> 给它一个 `Open` 开关等于"拿不准时允许逃出沙箱"。
+模型主动提问走 `ask_user` / `question.answer`（HTTP 侧 `POST /api/questions/{callId}/answer`）：
+提问卡进入 `status: "awaiting"`，界面作答后方法返回。
 
 ---
 
@@ -410,7 +399,7 @@ curl -i -H 'Authorization: Bearer secret' -H 'If-None-Match: "snap-42"' \
 | `-32001` | Unauthorized | 未授权 |
 | `-32002` | NotFound | 目标不存在 |
 | `-32003` | NotReady | 宿主未就绪 |
-| `-32004` | Denied | 被策略拒绝（**审批拒绝走这里**，见 §5） |
+| `-32004` | Denied | 被策略/钩子拒绝 |
 | `-32005` | Timeout | 超时 |
 | `-32006` | AlreadyAnswered | 该问题/审批已被回答 |
 | `-32007` | WorkspaceDenied | 工作区路径被沙箱拒绝 |

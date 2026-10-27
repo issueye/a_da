@@ -1,9 +1,8 @@
-//! PluginHost 端口契约合规断言（INV-2, INV-3, INV-4, §8.1）
+//! PluginHost 端口契约合规断言（INV-2, INV-3, §8.1）
 //!
 //! 断言点：
 //! 1. 禁用状态插件（enabled = false）的工具调用必须被强行阻断
-//! 2. 插件执行失败或超时时，按照 FailDirection::Closed 处理
-//! 3. 插件自述工具必须符合注册表 ToolDescriptor 规范
+//! 2. 插件自述工具必须符合注册表 ToolDescriptor 规范
 
 use agent_base::domain::ToolDescriptor;
 use agent_base::ports::{Consumer, ContractViolation};
@@ -34,7 +33,7 @@ pub fn verify_plugin_tool_descriptor(desc: &ToolDescriptor) -> Vec<ContractViola
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_base::domain::{Access, ApprovalPolicy, Execution, RollbackPolicy, Termination};
+    use agent_base::domain::{Access, Execution, RollbackPolicy, Termination};
 
     #[test]
     fn test_plugin_descriptor_conformance() {
@@ -43,7 +42,6 @@ mod tests {
             summary: "计算器".into(),
             schema: serde_json::json!({ "type": "object" }),
             access: Access::ReadOnly,
-            approval: ApprovalPolicy::Never,
             rollback: RollbackPolicy::None,
             execution: Execution::Sequential,
             termination: Termination::ContinueTurn,
@@ -55,7 +53,6 @@ mod tests {
             summary: "不合格".into(),
             schema: serde_json::json!("not object"),
             access: Access::ReadOnly,
-            approval: ApprovalPolicy::Never,
             rollback: RollbackPolicy::None,
             execution: Execution::Sequential,
             termination: Termination::ContinueTurn,

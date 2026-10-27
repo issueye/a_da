@@ -140,7 +140,7 @@ export interface ExtensionAPI extends RouteResponseHelpers {
 	metadata?: ExtensionMetadata;
 	trace(message: string): void;
 	registerTool(tool: ToolDefinition): void;
-	/** UI-only action; never enters the model tool catalog or approval gate. */
+	/** UI-only action; never enters the model tool catalog. */
 	registerAction(action: ActionDefinition): void;
 	/** Dynamic HTTP route; adding one needs no host change. */
 	route(route: RouteDefinition): void;

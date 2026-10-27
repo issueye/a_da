@@ -3,8 +3,6 @@
  */
 
 export type AgentMode = 'code' | 'plan' | 'create' | 'pm'
-/** `full` = 完全访问（P1b）：不问 + 放开工作区边界与脚本网络（`~/.a-da` 红线除外）。 */
-export type ApprovalMode = 'auto' | 'ask' | 'readonly' | 'full'
 export type Effort = 'max' | 'high' | 'medium' | 'low'
 export type ModelProtocol = 'openai_chat' | 'anthropic' | 'openai_responses'
 
@@ -201,7 +199,6 @@ export interface ConfigSnapshot {
   contextWindow: number
   maxOutputTokens?: number
   supportsImages: boolean
-  approval: ApprovalMode
   effort: Effort
   mode: AgentMode
   /** 模型请求重试次数（默认 5；重试耗尽即断开本轮对话） */
@@ -230,13 +227,12 @@ export interface ClientSnapshot {
   activeWorkspace: string
   currentMode: AgentMode
   providerConfig: ProviderConfig
-  approvalMode: ApprovalMode
   effort: Effort
   /** 模型请求重试次数（默认 5；重试耗尽即断开本轮对话） */
   retryCount: number
   running: boolean
   runningThreadIds: string[]
-  /** 正在等待用户操作（审批 / 提问）的会话——用于"别的会话在等你"的全局提示 */
+  /** 正在等待用户操作（提问）的会话——用于"别的会话在等你"的全局提示 */
   waitingThreadIds?: string[]
   queue: QueuedItem[]
   providers?: ProviderEntry[]

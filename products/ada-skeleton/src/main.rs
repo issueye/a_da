@@ -36,8 +36,8 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // 2. 装配：宿主层按声明装工具包、接真实端口。
     //    骨架是**演示产品**，没有真实 API key，所以只注入脚本化模型；
-    //    其余端口全部是生产实现（WorkspaceScope / FsSessionStore / CodingPromptSource /
-    //    SystemClock / HostApprovalGate / WsEventSink）。
+    //    其余端口全部是生产实现（PathResolver / FsSessionStore / CodingPromptSource /
+    //    SystemClock / WsEventSink）。
     let model = Arc::new(ScriptedModelClient::new(vec![vec![
         StreamDelta::Text { text: "你好！我是 ada-skeleton 极简骨架助手。".into() },
         StreamDelta::Done { stop_reason: "stop".into() },

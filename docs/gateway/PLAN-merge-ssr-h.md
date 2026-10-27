@@ -463,13 +463,12 @@ cargo xtask verify --fast
 ### 7.3 实机验收
 
 - `node tools/verify-ssr-streaming.mjs`（T10 改造后单进程）
-- `node tools/verify-ssr-approval-abort.mjs`（审批批准 → 工具真正执行 → 流式中止）
+- `node tools/verify-ssr-abort.mjs`（审批批准 → 工具真正执行 → 流式中止）
 - `node tools/verify-ssr-workspaces.mjs`（同上）
 - `node tools/verify-gateway-web.mjs`（新增）
 - `pwsh -NoProfile -File tools/verify-desktop-shell.ps1`（桌面壳行为不变；锁屏时自动改用
   `tools/verify-desktop-shell-headless.mjs` 的 CDP 无头验收：窗口控制 / 状态同步 / 发消息 /
   退出清理，真实命中渲染层与原生窗口状态）
-- `bun tools/verify-full-access-paths.mjs`（路径权限未被 UI 层改变）
 
 ### 7.4 最终出场门
 
@@ -530,7 +529,7 @@ cargo xtask verify --fast
 | 插件 | 自省端点 `/web-ui/frontend-plugins`；停用状态 `~/.a-da/web-ui-state.json` |
 | 默认值 | 网关 `--web-ui` 默认 `ssr`；Electron `--ui` 默认 `ssr`，`desktop` 保留回退 |
 | Electron | 等网关就绪后加载 `http://127.0.0.1:<port>/`，带 token 时 `?token=` 自动登录；窗口保持无边框，preload 在 SSR 顶栏注入窗口控制；`--ui=desktop` 回退 React |
-| 验收 | `cargo test -p agent-web`、`cargo test -p agent-gateway`、`node tools/verify-gateway-web.mjs`、`node tools/verify-ssr-streaming.mjs`、`node tools/verify-ssr-approval-abort.mjs`、`node tools/verify-ssr-workspaces.mjs`、`node tools/verify-electron-ssr.mjs`、`pwsh -NoProfile -File tools/verify-desktop-shell.ps1`（`--ui=desktop`；锁屏时走 `verify-desktop-shell-headless.mjs`）、`cargo xtask verify-docs` |
+| 验收 | `cargo test -p agent-web`、`cargo test -p agent-gateway`、`node tools/verify-gateway-web.mjs`、`node tools/verify-ssr-streaming.mjs`、`node tools/verify-ssr-abort.mjs`、`node tools/verify-ssr-workspaces.mjs`、`node tools/verify-electron-ssr.mjs`、`pwsh -NoProfile -File tools/verify-desktop-shell.ps1`（`--ui=desktop`；锁屏时走 `verify-desktop-shell-headless.mjs`）、`cargo xtask verify-docs` |
 
 ## 附录 A：文件落点对照
 

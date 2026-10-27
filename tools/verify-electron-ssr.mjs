@@ -95,7 +95,6 @@ writeFileSync(
       maxOutputTokens: 1024,
       model: 'stub-model',
       protocol: 'openai_chat',
-      approval: 'auto',
       retryCount: 1,
       disabledPlugins: [],
       providers: [
@@ -442,20 +441,6 @@ try {
   )
 
   // 1. 审批档位弹层：每个选项都有 SVG 图标（4 图标 + 当前项勾 + 药丸 + caret）。
-  const approvalPicker = await evaluate(
-    cdp,
-    'document.querySelector("#approval-picker")?.outerHTML || ""',
-  )
-  check(
-    (approvalPicker.match(/<svg/g) || []).length >= 5,
-    '审批档位弹层每个选项都带 SVG 图标',
-    `${(approvalPicker.match(/<svg/g) || []).length} 个 svg`,
-  )
-  check(
-    !(await evaluate(cdp, 'document.body.innerText')).includes('TSX 插槽'),
-    '工具栏不再显示「TSX 插槽」演示胶囊',
-  )
-
   // 2. 最窄 450px：侧栏变抽屉、无横向溢出。
   await cdp.send('Emulation.setDeviceMetricsOverride', {
     width: 450,
@@ -472,22 +457,18 @@ try {
   check(narrow.scroll <= narrow.inner + 1, '450px 下无横向溢出', JSON.stringify(narrow))
   check(narrow.menu === true, '450px 下侧栏折叠为抽屉按钮', JSON.stringify(narrow))
 
-  // 模型药丸只留图标：长模型名会挤占审批档位，两个药丸在窄卡片里重叠。
+  // 模型药丸只留图标：长模型名会挤占工具行。
   const modelTool = await evaluate(
     cdp,
     `(() => {
       const model = document.querySelector('.ada-model-picker__summary');
       const label = document.querySelector('.ada-model-picker__summary .ada-tool__label');
       const effort = document.querySelector('.ada-model-picker__summary .ada-model-picker__effort');
-      const approval = document.querySelector('#composer-approval .ada-tool');
       const mr = model ? model.getBoundingClientRect() : null;
-      const ar = approval ? approval.getBoundingClientRect() : null;
       return {
         modelW: mr ? Math.round(mr.width) : null,
         label: label ? getComputedStyle(label).display : null,
         effort: effort ? getComputedStyle(effort).display : null,
-        overlap: Boolean(mr && ar && mr.left < ar.right && mr.right > ar.left),
-        approvalText: approval ? approval.innerText : null,
       };
     })()`,
   )
@@ -501,7 +482,6 @@ try {
     '模型名/推理等级在窄卡片隐藏',
     JSON.stringify(modelTool),
   )
-  check(modelTool.overlap === false, '模型药丸与审批档位不重叠', JSON.stringify(modelTool))
 
   // 进程管理浮窗在窄窗口里也必须完整落在视口内（不能向左溢出被裁）。
   await clickLabel(cdp, '进程管理')

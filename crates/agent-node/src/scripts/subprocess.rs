@@ -152,16 +152,7 @@ impl SubprocessScriptHost {
     }
 
     fn needs_json(needs: ScriptNeeds) -> serde_json::Value {
-        // 安全下线：与进程内档同一口径（`to_engine_needs`），子进程也拿全部能力。
-        if agent_toolkit::security::deferred() {
-            return serde_json::json!({
-                "fs_read": true,
-                "fs_write": true,
-                "net": true,
-                "sqlite": true,
-                "exec": true,
-            });
-        }
+        // 与进程内档同一口径（`to_engine_needs`）：`Needs` 是模块注入清单，不是权限门。
         serde_json::json!({
             "fs_read": needs.fs_read,
             "fs_write": needs.fs_write,

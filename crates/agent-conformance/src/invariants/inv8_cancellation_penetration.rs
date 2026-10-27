@@ -5,7 +5,7 @@ use std::sync::Arc;
 use agent_base::domain::TurnStopReason;
 use agent_base::engine::TurnRequest;
 use agent_base::model::{ProviderConfig, StreamDelta};
-use agent_base::testing::{FixedClock, FixedPrompt, InMemorySessionStore, ManualCancel, MockScope, RecordingApprovalGate, RecordingSink, ScriptedModelClient};
+use agent_base::testing::{FixedClock, FixedPrompt, InMemorySessionStore, ManualCancel, MockScope, RecordingSink, ScriptedModelClient};
 use agent_runtime::{AgentSpec, ProductBuilder};
 use agent_toolkit::core::FinishTool;
 
@@ -31,7 +31,6 @@ pub async fn assert_cancellation_penetrates_turn() -> Result<(), String> {
     let rt = ProductBuilder::new(spec)
         .with_tool(Arc::new(FinishTool::default()))
         .with_model(model)
-        .with_approval(Arc::new(RecordingApprovalGate::new(true)))
         .with_store(Arc::new(InMemorySessionStore::new()))
         .with_prompt(Arc::new(FixedPrompt::new("p")))
         .with_scope(Arc::new(MockScope::new("s")))
@@ -73,7 +72,7 @@ pub async fn assert_cancellation_penetrates_running_tool() -> Result<(), String>
     use std::time::Duration;
 
     use agent_base::domain::{
-        Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
+        Access, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
         ToolReceipt, ToolStatus,
     };
     use agent_base::ports::{BoxFuture, Tool, ToolContext};
@@ -133,7 +132,6 @@ pub async fn assert_cancellation_penetrates_running_tool() -> Result<(), String>
             summary: "阻塞直到被取消".to_string(),
             schema: serde_json::json!({ "type": "object" }),
             access: Access::ReadOnly,
-            approval: ApprovalPolicy::Never,
             rollback: RollbackPolicy::None,
             execution: Execution::Sequential,
             termination: Termination::ContinueTurn,
@@ -162,7 +160,6 @@ pub async fn assert_cancellation_penetrates_running_tool() -> Result<(), String>
     let rt = ProductBuilder::new(spec)
         .with_tool(slow_tool)
         .with_model(model)
-        .with_approval(Arc::new(RecordingApprovalGate::new(true)))
         .with_store(Arc::new(InMemorySessionStore::new()))
         .with_prompt(Arc::new(FixedPrompt::new("p")))
         .with_scope(Arc::new(MockScope::new("s")))

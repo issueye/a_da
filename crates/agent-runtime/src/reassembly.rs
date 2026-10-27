@@ -323,7 +323,7 @@ mod tests {
     use super::*;
     use crate::contributions::{AssemblyBuilder, SkillEntry};
     use agent_base::domain::{
-        Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
+        Access, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
         ToolReceipt,
     };
     use agent_base::ports::{BoxFuture, Tool, ToolCatalog, ToolContext};
@@ -352,7 +352,6 @@ mod tests {
                 summary: format!("{name} 的说明"),
                 schema: serde_json::json!({ "type": "object" }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,

@@ -12,7 +12,7 @@
 //! |---|---|
 //! | 只拿到 profile 人格（AGENTS.md §3） | [`ProfilePrompt`] |
 //! | 上下文一次性、不污染主会话 | [`EphemeralSessionStore`] |
-//! | 只读档位挡写工具（运行期第二道防线） | [`ReadonlyEnforcingGate`] |
+//! | 只读档位挡写工具 | 装配期按 `Access::ReadOnly` 裁切工具面 |
 //! | 只装裁切后的工具（第一道防线） | [`filter_subagent_tools`] + `CompositeToolCatalog` |
 //! | 父会话取消**真的**传进来（W4-T3） | `WatchedCancel` → 引擎 `CancelToken` |
 
@@ -25,14 +25,14 @@ use std::time::{Duration, Instant};
 use agent_adapter::cancel::WatchedCancel;
 use agent_adapter::clock::SystemClock;
 use agent_adapter::model::client::NetworkModelClient;
-use agent_adapter::scope::WorkspaceScope;
+use agent_adapter::scope::PathResolver;
 use agent_base::domain::{AgentEvent, AgentEventBody, TurnStopReason};
 use agent_base::engine::{AgentRuntime, RunPolicy, TurnRequest};
 use agent_base::ports::{AfterRequest, BeforeOutcome, BeforeRequest, EventSink, HookCtx, HookRunner, Tool};
 use agent_runtime::CompositeToolCatalog;
 use tokio::sync::{mpsc, watch};
 
-use super::ports::{EphemeralSessionStore, ProfilePrompt, ReadonlyEnforcingGate};
+use super::ports::{EphemeralSessionStore, ProfilePrompt};
 use super::types::{SubagentMode, SubagentProfile, SubagentRunResult, SubagentStepUpdate};
 use agent_base::model::ProviderConfig;
 use crate::checkpoint::CheckpointManager;
@@ -103,7 +103,7 @@ pub fn filter_subagent_tools(
 /// - `Readwrite`（执行类）→ 补完整的 `fs` + `command`，让"写文件、跑测试"真的能做。
 ///
 /// 产品的角色边界（PM 自己不写代码）不受影响：这里只影响**被委派的子智能体**，
-/// 而它本来就按 profile 定义职责（另有 `ReadonlyEnforcingGate` 作为运行期第二道防线）。
+/// 而它本来就按 profile 定义职责。
 pub fn subagent_tool_pool(
     product_toolkits: &[String],
     workspace: &std::path::Path,
@@ -504,7 +504,6 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
 
     // 5. 装配隔离运行时
     let sink = Arc::new(SubagentProgressSink::new(options.update_tx.clone(), max_steps));
-    let readonly = options.profile.mode == SubagentMode::Readonly;
     let model: Arc<dyn agent_base::ports::ModelClient> = options
         .model
         .clone()
@@ -512,10 +511,9 @@ pub async fn run_subagent(options: RunSubagentOptions) -> SubagentRunResult {
     let runtime = AgentRuntime::new(
         model,
         Arc::new(CompositeToolCatalog::new(authorized, None)),
-        Arc::new(ReadonlyEnforcingGate::new(readonly)),
         Arc::new(session_store),
         Arc::new(ProfilePrompt::new(options.profile.system_prompt.clone())),
-        Arc::new(WorkspaceScope::new(options.workspace.clone())),
+        Arc::new(PathResolver::new(options.workspace.clone())),
         Arc::new(SystemClock),
         RunPolicy {
             max_steps: max_steps.map(|s| s as u32),

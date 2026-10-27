@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use agent_base::domain::{
-    Access, ApprovalPolicy, Execution, PathSelector, RollbackPolicy, Termination, ToolDescriptor,
+    Access, Execution, PathSelector, RollbackPolicy, Termination, ToolDescriptor,
 };
 use serde_json::json;
 
@@ -46,7 +46,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["path"]
                 }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::ParallelSafe,
                 termination: Termination::ContinueTurn,
@@ -63,7 +62,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["path", "content"]
                 }),
                 access: Access::Mutates { paths: PathSelector::Single("path") },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::SingleTarget,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -93,7 +91,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["path"]
                 }),
                 access: Access::Mutates { paths: PathSelector::Single("path") },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::SingleTarget,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -109,7 +106,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     }
                 }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::ParallelSafe,
                 termination: Termination::ContinueTurn,
@@ -130,7 +126,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["pattern"]
                 }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::ParallelSafe,
                 termination: Termination::ContinueTurn,
@@ -157,7 +152,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["files"]
                 }),
                 access: Access::Mutates { paths: PathSelector::Batch("files") },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::PerTargetInBatch,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -179,7 +173,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["files", "old_string", "new_string"]
                 }),
                 access: Access::Mutates { paths: PathSelector::Batch("files") },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::PerTargetInBatch,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -209,7 +202,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                 // `id` 不是路径字段，但落点由它派生（<ws>/.ada/agent-coding/extensions/<id>）：
                 // 把它交给 PathSelector 是为了让钩子/回滚能看到"这次动了哪个插件"。
                 access: Access::Mutates { paths: PathSelector::Single("id") },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 // 一次只动一个目标（一个插件目录）→ SingleTarget。
                 // 🔴 不能写 `None`：变更类工具声明 None 会被 catalog 契约判违约，
                 // 而那是**装配期**才炸的——表现是"引擎没注入"→发消息毫无反应（2026-10-18 真事故）。
@@ -230,7 +222,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["command"]
                 }),
                 access: Access::Executes { command_arg: "command" },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -247,7 +238,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["command"]
                 }),
                 access: Access::Executes { command_arg: "command" },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -317,7 +307,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     ]
                 }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -349,7 +338,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     }
                 }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -365,7 +353,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["summary"]
                 }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::EndTurn,
@@ -375,7 +362,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                 summary: "项目工程与环境诊断报告。".to_string(),
                 schema: json!({ "type": "object" }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::ParallelSafe,
                 termination: Termination::ContinueTurn,
@@ -391,7 +377,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["path"]
                 }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::ParallelSafe,
                 termination: Termination::ContinueTurn,
@@ -401,7 +386,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                 summary: "自动探测并执行项目单元测试。".to_string(),
                 schema: json!({ "type": "object" }),
                 access: Access::Executes { command_arg: "command" },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -415,7 +399,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["task_id"]
                 }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::ParallelSafe,
                 termination: Termination::ContinueTurn,
@@ -429,7 +412,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["task_id"]
                 }),
                 access: Access::Executes { command_arg: "task_id" },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -455,7 +437,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                 // 因此按"驱动一段外部执行"归到 Executes，字段名说明它取的是任务文本。
                 // 失败安全（AGENTS.md §2）：绝不能标成 ReadOnly，否则只读档/plan 模式会放行它。
                 access: Access::Executes { command_arg: "task" },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -479,10 +460,9 @@ pub fn find_tool_descriptor(name: &str) -> Option<&'static ToolDescriptor> {
 
 /// 🔴 **遗留口径**：按**工具名**回查内置注册表判断只读性。
 ///
-/// 权威判据是**描述符**（`ToolDescriptor::access` / `is_readonly()`；审批侧用
-/// `agent_adapter::approval::is_write_by_access(Some(&desc.access))`）。按名字回查有个
+/// 权威判据是**描述符**（`ToolDescriptor::access` / `is_readonly()`）。按名字回查有个
 /// 结构性缺陷：注册表里只有内置工具，插件工具与外部工具（MCP server / 远端）的名字永远查不到，
-/// 于是它们被无条件判成“写”——读类工具在只读档里会被逐次审批，而“用户授权某个外部工具只读”
+/// 于是它们被无条件判成“写”——读类工具在只读档里会被逐次过滤，而“用户授权某个外部工具只读”
 /// 也无处落地（见 `Access::External`）。
 ///
 /// 保留它是为了兼容既有调用方；**新代码不要再调它**。

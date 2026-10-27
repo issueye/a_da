@@ -45,8 +45,8 @@ impl Tool for ListFilesTool {
             let path = call.args.get("path").and_then(|v| v.as_str());
             let depth = call.args.get("depth").and_then(|v| v.as_u64()).map(|n| n as usize);
 
-            let gate = crate::fs_tools::PathGate::scoped(ctx.scope, &self.workspace);
-            let res = list_files(gate, path, depth);
+            let paths = crate::fs_tools::ToolPaths::new(&self.workspace);
+            let res = list_files(paths, path, depth);
             let finished_at = crate::now_ms().max(started_at);
 
             if res.ok {

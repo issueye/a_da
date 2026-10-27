@@ -194,10 +194,9 @@ impl AgentBus for LocalAgentBus {
 mod tests {
     use super::*;
     use crate::node_config::FixedNodeConfig;
-    use agent_proto::ApprovalMode;
 
     fn bus_with(provider: ProviderConfig) -> LocalAgentBus {
-        let cfg = FixedNodeConfig::new(provider, ApprovalMode::Auto);
+        let cfg = FixedNodeConfig::new(provider);
         LocalAgentBus::new(
             std::env::current_dir().unwrap(),
             Arc::new(SubagentManager::new()),

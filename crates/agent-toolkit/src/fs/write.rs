@@ -45,8 +45,8 @@ impl Tool for WriteFileTool {
             let path = call.args.get("path").and_then(|v| v.as_str()).unwrap_or("");
             let content = call.args.get("content").and_then(|v| v.as_str()).unwrap_or("");
 
-            let gate = crate::fs_tools::PathGate::scoped(ctx.scope, &self.workspace);
-            let res = write_file(gate, path, content);
+            let paths = crate::fs_tools::ToolPaths::new(&self.workspace);
+            let res = write_file(paths, path, content);
             let finished_at = crate::now_ms().max(started_at);
 
             if res.ok {

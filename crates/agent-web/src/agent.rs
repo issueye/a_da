@@ -182,15 +182,6 @@ impl AgentClient {
             .await
     }
 
-    /// 切换审批档位（`config.setApproval`：auto / ask / readonly / full）。
-    ///
-    /// 后端会落盘并广播——快照的 `config.approval` 变化会让 parts 重发，
-    /// 输入框的档位弹层随之更新。
-    pub async fn set_approval_mode(&self, mode: &str) -> Result<Value> {
-        self.rpc("config.setApproval", json!({ "mode": mode }))
-            .await
-    }
-
     /// agent 插件列表（网关 `/api/plugins` → `plugin.list`）。
     ///
     /// 注意与前端插件自省端点（`/web-ui/frontend-plugins`）不是一回事。
@@ -301,14 +292,6 @@ impl AgentClient {
     pub async fn retry_thread(&self, thread_id: &str) -> Result<Value> {
         self.rpc("thread.retry", json!({ "threadId": thread_id }))
             .await
-    }
-
-    pub async fn decide_approval(&self, call_id: &str, approved: bool) -> Result<Value> {
-        self.rpc(
-            "approval.decide",
-            json!({ "toolItemId": call_id, "approved": approved }),
-        )
-        .await
     }
 
     /// 当前会话的后台任务（`task.list`）；`thread_id` 为空时返回工作区全部任务。

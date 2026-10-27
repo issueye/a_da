@@ -33,32 +33,22 @@
 
 - **现状**：无 MCP 实现（`grep mcp` 只命中文档与代码注释）。**底座第一块已就位**：
   `Access::External` 已能表达"作用域不可静态描述的外部工具"（外部进程 / 远端 / 第三方脚本），
-  审批的读写性改从**描述符**取（不再按工具名回查注册表——那里只有内置工具）；
+  读写性从**描述符**取（不再按工具名回查注册表——那里只有内置工具）；
   插件自定义工具也已改用 `External`（原先是谎称 `Mutates { Batch("paths") }` + 回滚承诺）。
 - **已评估的最小路径**：stdio 传输 + `tools/list` / `tools/call` 桥接进 `ToolCatalog`
   （`mcp__<server>__<tool>` 前缀），配置放 `~/.a-da/mcp.json`；resource / prompt 后置。
 - **需要决定**：是否接受"外部进程可以注册工具"，以及它的工具按什么分类——
-  按失败安全语义（AGENTS.md §2），**外部工具一律按写操作处理**（该审批就审批）；
-  想让它进只读档，得先有"用户逐工具授权"这条路（`auto_approve` 现在是幽灵开关，见 §一.2）。
+  按失败安全语义（AGENTS.md §2），**外部工具一律按写操作处理**；想让它进只读档，
+  需要客户端自己的授权策略（核心审批已删除）。
 
-### 2. 审批的持久化 allowlist（"以后都允许"）　`未排期`
-
-- **现状**：审批档位只有全局三档 `auto | ask | readonly`
-  （`crates/agent-proto/src/dto.rs` 的 `ApprovalMode`）。
-- 🔴 **同时是一处"声明了没接线"**：`ApprovalGuardConfig.auto_approve`
-  （`crates/agent-adapter/src/approval/`）存在，但**全仓零消费者**——
-  即使有人往里填工具名也不会生效。详见接线计划的缺口台账。
-- **最小实现路径**：给 `auto_approve` 接上配置项与协议入口（生产装配目前始终用默认空配置），
-  审批卡片加一个"以后都允许"的勾选；配置落 `config.json`。
-
-### 3. 会话全文搜索　`未排期`
+### 2. 会话全文搜索　`未排期`
 
 - **现状**：`SessionManager::list_sessions_for_workspace` 能列出会话摘要；
   没有搜索**会话内容**的能力（无索引、无关键词过滤）。
 - **最小实现路径**：扫工作区下各会话 JSONL 内容并支持关键词高亮过滤。
   会话已是 JSONL（`FsSessionStore` 落盘），逐行读即可，不需要引入索引。
 
-### 4. 文件树与编辑器视图　`未排期`
+### 3. 文件树与编辑器视图　`未排期`
 
 - **现状**：侧栏列工作区与会话；工作区文件**不渲染成树**，看代码只能靠工具调用与搜索。
 - **底盘已就绪**：协议有 `fs.roots` / `fs.list` / `fs.mkdir`，
@@ -66,13 +56,13 @@
   （已是"目录在前 + 截断如实报告"的形状）。
 - **编辑是更大的工程**：当前定位是"改代码都经工具 + 改动审阅面板"。
 
-### 5. 成本统计（计价）　`未排期`
+### 4. 成本统计（计价）　`未排期`
 
 - **现状**：用量遥测很细（`assistantMessage.usage` 有 prompt/completion/total tokens，
   界面有上下文用量细分），但**没有计价**：全仓 `grep pricing|pricePerMillion` 零命中。
 - **最小实现路径**：给 `PROVIDER_PRESETS` 加每百万 token 单价，按 `usage` 累计到会话与全局。
 
-### 6. 子智能体无法"续跑"　`明确不做（按当前设计）`
+### 5. 子智能体无法"续跑"　`明确不做（按当前设计）`
 
 - **现状**：协议方法 `subagent.resume` 已在 W6-T1 **按 R3 删除**（原先是只回 `{ok:true}` 的桩，
   前端"恢复执行"按钮点了没反应）。**W4-T6 之后子智能体上下文刻意是临时的**
@@ -80,7 +70,7 @@
 - **如果要做**：得先决定"子智能体会话是否持久化"——那是对 W4-T6 设计决定的反转，
   不能顺手加回来。
 
-### 7. `stats.promptChars` 缺前端消费者　`未排期`
+### 6. `stats.promptChars` 缺前端消费者　`未排期`
 
 - **现状**：W6-T2 把它从硬编码 `{1200, 800}` 改成了**实测值**（系统提示词长度 +
   工具 schema 字符数之和），但 SSR 界面**仍未消费它**，上下文用量仍在客户端估算
@@ -88,7 +78,7 @@
 - **最小实现路径**：在上下文用量 Popover 打开时调 `stats.promptChars`，
   把它作为 `buildContextBreakdown` 的输入。
 
-### 8. ~~图片输入从未送进模型~~　`✅ 已完成（2026-10-14）`
+### 7. ~~图片输入从未送进模型~~　`✅ 已完成（2026-10-14）`
 
 - **现状**：已接通。`thread.send` / `thread.editAndResend` 的 `images` 经
   `dispatch::normalize_images` 归一成 **data URI** → `spawn_thread_loop` 的 `current_images`
@@ -106,50 +96,44 @@
 - **仍不在范围内**：`run_turn_with_images` 的门禁（W5-T4）只在 `agent-host` 直连路径上，
   RPC 生产路径没有二次校验——两份产品声明现在都是 `true`，所以不构成不一致。
 
-### 9. 钩子点位　`已落地（P3a，2026-10-16；P4 复核修正 2026-10-17）`
+### 8. 钩子点位　`已落地（P3a，2026-10-16；P4 复核修正 2026-10-17；2026-10-27 缩减）`
 
-- **现状（已按代码复核）**：`agent_base::ports::hooks::points::IMPLEMENTED` 列 **33 个点位**，
-  **全部**都有真实调用方（对照表：`engine/runtime/` 轮内、`dispatch/` 管理面、
-  `subagents/runner.rs`、`toolkit/core/todo.rs`）：
+- **现状（已按代码复核）**：`agent_base::ports::hooks::points::IMPLEMENTED` 列 **29 个点位**，
+  **全部**都有真实调用方：
   - 工具：`beforeToolCall` / `afterToolCall`（拦下 / 旁注 / 改写）
-  - 审批：`beforeApproval` / `afterApproval`　轮次：`beforeTurn` / `afterTurn`
+  - 轮次：`beforeTurn` / `afterTurn`
   - 会话：`beforeThreadCreate` / `afterThreadCreate` / `beforeThreadDelete` / `afterThreadDelete`
   - Agent：`beforeAgentStart` / `afterAgentEnd`　压缩：`beforeCompaction` / `afterCompaction`
   - 模型：`beforeLlmRequest` / `afterLlmResponse` / `beforeProviderRequest` /
     `beforeProviderHeaders` / `afterProviderResponse`；上下文：`beforeContext` / `afterContext`
   - 提示词：`beforeSystemPrompt` / `afterSystemPrompt`　只读面：`beforePersist` /
     `afterCheckpoint` / `beforeSkillLoad` / `afterSkillLoad`
-  - 子智能体：`beforeSubagentStart` / `afterSubagentEnd`　待办：`beforeTodoUpdate` / `afterTodoUpdate`
+  - 子智能体：`beforeSubagentStart` / `afterSubagentEnd`
   - 插件启停：`beforePluginToggle` / `afterPluginToggle`
   成对埋点 `hook.entered` / `hook.finished` / `hook.skipped`。
+- **2026-10-27 移除**：`beforeTodoUpdate` / `afterTodoUpdate` / `beforeApproval` /
+  `afterApproval` 已从点位表与调用点删除；`task-plan` 改为纯前端，`plugins/approval`
+  整个删除，`todo_diff` 与相关测试一并删除。后续由统一事件系统（`event_*`）提供。
 - ⚠️ **本文此前的"仍未接"清单已过时**（把上表一大半点位列为未接），**已删除**：
   那些点位既在 `IMPLEMENTED` 里、也都有调用方。判断口径以
   `points::IMPLEMENTED` + 调用点为准，不要看旧清单。
-- **两处修正（P4，2026-10-17）**：
-  1. **`beforeTodoUpdate` / `afterTodoUpdate` 曾经"可注册不上"**：`HookLevel::of` 漏了这两个
-     分支 → `register()` 一律以 `unknown_point` 拒收，而 `IMPLEMENTED` 与
-     `REPLACE_SUPPORTED` 都声称它们可用、`todo` 工具也真的在发事件——生产链路上永远是
-     `no_subscriber`。**已补分级（数据面）**，并加了门禁测试
-     `test_every_implemented_point_is_gradable`（`IMPLEMENTED ⊆ HookLevel` 值域），
-     同类矛盾不会再静默出现。
-  2. **`onThreadSwitch` 不存在**（旧清单里列着它）：代码里没有这个点位常量，
-     `HookLevel::of` 也没有它。要做请先加常量 + 调用点，别只登记名字。
-- **改写（`Replace`）**：`beforeToolCall` 与 `beforeTodoUpdate`（数据面）已开，
-  与"改写后重校验（形状 / schema / 路径沙箱）+ 风险单调性"同批落地——改写不是授权，
-  改完还要过同一套闸门。载荷只有 `args`：工具名、读写性、描述符字段都改不动。
+- **`onThreadSwitch` 不存在**（旧清单里列着它）：代码里没有这个点位常量，
+  `HookLevel::of` 也没有它。要做请先加常量 + 调用点，别只登记名字。
+- **改写（`Replace`）**：当前只有 `beforeToolCall`（数据面）开放；
+  改完只重跑形状 / schema 校验。载荷只有 `args`：工具名、读写性、描述符字段都改不动。
   **其余点位不支持改写**（`points::REPLACE_SUPPORTED` 是单一真源，声明会被装配期如实拒）。
 - **"受信"档位不存在**：控制面点位的 `Deny` 因此对第三方一律关闭（只有内置插件能用）。
   将来要放开，应由 manifest 的显式字段驱动，不靠目录猜。
 - **熔断未做**：只有"超时 = 无意见""脚本抛错 = 无意见"两条失败安全口径，
   没有对反复失败的插件降权/熔断。
 
-### 10. i18n　`未排期`
+### 9. i18n　`未排期`
 
 - **现状**：文案硬编码中文（部分中英混排）。`grep i18n|useTranslation` 零命中。
 - **注**：产品声明里有 `identity.locale`（W5-T4 已接进系统提示词），
   但**界面文案**仍与 locale 无关。
 
-### 11. 插件能力开关　`已接线（P4，2026-10-17）`
+### 10. 插件能力开关　`已接线（P4，2026-10-17）`
 
 - **背景**：`PluginCapabilities` 的 8 个位被界面渲染成"关掉后会发生什么"的开关，
   而其中**只有 `hookTimeoutMs` 有真实消费者**——其余 7 位只被解析、无人读取。
@@ -177,7 +161,7 @@
   执行侧没有任何分支读它。也就是说，它连"要判什么"都不存在。要做得先把 mode 接进引擎，
   届时连开关一起加（界面文案已同步删除）。
 
-### 12. 事件变体的发射者缺口（3 个豁免，其中 1 个口径不一致）　`部分已闭、口径待定`
+### 11. 事件变体的发射者缺口（3 个豁免，其中 1 个口径不一致）　`部分已闭、口径待定`
 
 - **现状**：`cargo xtask verify-wiring` 的 `check_event_emitters` 要求每个 `AgentEventBody`
   变体都在 `crates/agent-base/src/engine/**` 的生产段里有发射者。当前明细：
@@ -200,14 +184,14 @@
 
 ---
 
-### 13. 并行工具执行　`未排期`
+### 12. 并行工具执行　`未排期`
 
 - **现状**：`RunPolicy.max_parallel_tools` 只被 `agent-runtime` 装进结构体，引擎的工具循环
   （`crates/agent-base/src/engine/runtime/mod.rs`）始终按 `for raw_call in &tool_calls` 串行；
   `Execution::ParallelSafe` 只在 `dispatch` 里做界面标签；`ada-coding` 的 `parallelTools: 4` 不生效。
 - **影响**：产品声明与运行行为不一致。`verify-spec` 把"字段被生产代码读取"当成消费者，
   抓不到"读进结构体但没执行"这一类空转。
-- **最小实现路径**：只对 `Execution::ParallelSafe` 且无需审批的工具做有界并发，补一条端到端断言；
+- **最小实现路径**：只对 `Execution::ParallelSafe` 的工具做有界并发，补一条端到端断言；
   或者删掉 `parallelTools` / `Execution::ParallelSafe` 的对外承诺，把它们标成未实现。
 
 ---
@@ -248,9 +232,8 @@
 > - **诊断面板只聚合到"来源"这一层**（SP-74 的余下部分）：插件卡已渲染自述诊断、
 >   诊断日志已按来源聚合（条数 + 最近点位），但还没有跨会话的持久化汇总、
 >   也没有按点位的二次分组。
-> - **待办清单的"上一次"在内存里**（SP-63 的口径）：权威清单不在 Rust 侧（模型每次带全量、
->   界面据参数渲染），所以工具只为"算 diff"记了每线程上一版；**重启后第一份快照没有历史可比**，
->   此时 `afterTodoUpdate` 如实说"首个快照"，而不是把整张清单报成新增。
+> - ~~**待办清单的"上一次"在内存里**~~：`afterTodoUpdate` 已移除（2026-10-27），
+>   `todo` 工具不再记上一版清单、不再算 diff；计划状态只由核心 `todo_view` 从工具参数投影。
 
 ---
 
@@ -311,7 +294,7 @@
     或把子进程句柄收进一个可 shutdown 的守护器。注意别破坏"网关死了 agent 也跟着死"
     这条已有的看门狗语义。
 
-### 14. HTTP API 的 Phase 3（长活 / 流式 / 幂等）　`未排期`
+### 13. HTTP API 的 Phase 3（长活 / 流式 / 幂等）　`未排期`
 
 - **现状**：`crates/agent-gateway/src/http_api.rs` 已把 Phase 1/2 的 **60 个 unary 方法**
   映射为 `/api/*`（18 查询 + 42 写），另有 11 条网关管理面；Bearer/Origin/作用域、
@@ -324,7 +307,7 @@
   WS 事件；写接口补 `Idempotency-Key` 与按 thread 的版本号；把每请求一条短 WS
   换成按实例复用的多路复用连接。
 
-### 15. SSR 合并后的已知边界（2026-10-25）　`未排期`
+### 14. SSR 合并后的已知边界（2026-10-25）　`未排期`
 
 - **反向代理的 Host 白名单**　`✅ 已支持（2026-10-25）`：新增 `--web-public-url`
   （或 `A_DA_WEB_PUBLIC_URL`），例如 `--web-public-url https://example.com`。

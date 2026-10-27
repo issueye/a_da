@@ -252,7 +252,7 @@ fn test_p0_environment_in_boa() {
 /// 这条用例同时钉住三件事：能力位确实注入了；数据库文件落在工作区内；
 /// 读出来的 BLOB 回到了 Buffer（而不是 base64 字符串）。
 #[test]
-fn test_sqlite_database_sync_round_trip_and_sandbox() {
+fn test_sqlite_database_sync_round_trip_and_memory() {
     let temp_dir = std::env::temp_dir().join(format!("a_da_sqlite_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -336,7 +336,7 @@ fn test_sqlite_database_sync_round_trip_and_sandbox() {
     assert_eq!(read_only["blocked"], true, "{read_only}");
     assert_eq!(read_only["count"], 2, "{read_only}");
 
-    // :memory: 与工作区沙箱：内存库可用，越界路径必须被拦。
+    // :memory: 与路径解析：内存库可用；相对路径按工作区解析，不再做边界拒绝。
     let sandbox = ctx
         .eval(Source::from_bytes(
             r#"
@@ -361,7 +361,10 @@ fn test_sqlite_database_sync_round_trip_and_sandbox() {
     let sandbox_text = sandbox.to_string(&mut ctx).unwrap().to_std_string_escaped();
     let sandbox: serde_json::Value = serde_json::from_str(&sandbox_text).unwrap();
     assert_eq!(sandbox["value"], 7, "{sandbox}");
-    assert_eq!(sandbox["blocked"], true, "越界数据库路径必须被沙箱拦下：{sandbox}");
+    assert_eq!(
+        sandbox["blocked"], false,
+        "相对路径只解析、不再按工作区边界拒绝：{sandbox}"
+    );
 
     let _ = std::fs::remove_dir_all(temp_dir);
 }

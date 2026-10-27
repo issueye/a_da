@@ -147,24 +147,6 @@ pub enum AgentMode {
     Pm,
 }
 
-/// 审批模式
-///
-/// `Full`（完全访问）是 P1b 新增的第四档：**完全放行**——不再询问，且放开工作区边界与
-/// 脚本的网络能力（见 `docs/plugins/README.md` §5 "沙箱与运行时"）。
-///
-/// 它**不是** `Auto` 的别名：`Auto` 只是"不再询问"，路径仍在工作区内、插件仍拿不到网络；
-/// 真正的增量是那两项（命令执行在 `Auto` 下本来就放行）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum ApprovalMode {
-    #[default]
-    Auto,
-    Ask,
-    Readonly,
-    /// 完全访问：不问 + 放开工作区边界与脚本网络（`~/.a-da` 红线除外）
-    Full,
-}
-
 /// 深度档位
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -457,7 +439,6 @@ pub struct ConfigSnapshot {
     pub max_output_tokens: Option<u64>,
     #[serde(rename = "supportsImages")]
     pub supports_images: bool,
-    pub approval: ApprovalMode,
     pub effort: Effort,
     pub mode: AgentMode,
     /// 模型请求**重试次数**（首次失败后最多再试几次；默认见
@@ -480,7 +461,6 @@ impl Default for ConfigSnapshot {
             context_window: 0,
             max_output_tokens: None,
             supports_images: false,
-            approval: ApprovalMode::default(),
             effort: Effort::default(),
             mode: AgentMode::default(),
             retry_count: default_retry_count(),

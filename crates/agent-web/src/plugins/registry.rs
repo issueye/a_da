@@ -1864,69 +1864,6 @@ export function Page() {
     }
 
     #[test]
-    fn approval_plugin_renders_pending_and_keeps_core_decision_route() {
-        let primary = temp_root("approval-primary");
-        let unified = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
-        let registry = registry_at(&primary).with_unified_dir(unified);
-        let plugin = registry.find("approval").expect("approval 插件应当被发现");
-        assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
-        assert!(plugin.action("pending").is_some_and(|action| action.read));
-
-        let core = RenderContext::default().with_data(serde_json::json!({
-            "thread": { "id": "thread-1" },
-            "approvals": [{
-                "callId": "call-1",
-                "tool": "执行命令",
-                "args": "{\"command\":\"cargo test\"}",
-                "waited": "已等待 3s"
-            }]
-        }));
-        let slot = registry.render_slot_with(Slot::ThreadApproval, &core);
-        assert_eq!(slot.contributors, 1, "slot: {slot:?}");
-        assert!(slot.html.contains("call-1"), "{}", slot.html);
-        assert!(slot.html.contains("/approvals/call-1/decision"), "{}", slot.html);
-        assert!(slot.html.contains("name=\"thread_id\""), "{}", slot.html);
-        assert!(slot.html.contains("value=\"thread-1\""), "{}", slot.html);
-        assert!(slot.html.contains("cargo test"), "{}", slot.html);
-        assert!(slot.html.contains("需要批准"), "{}", slot.html);
-
-        // 后端 action 优先，并带上批准/拒绝统计。
-        let backend = RenderContext::default().with_data(serde_json::json!({
-            "thread": { "id": "thread-1" },
-            "approvals": [{
-                "callId": "call-2",
-                "tool": "写入文件",
-                "args": "{\"path\":\"a.rs\"}",
-                "waited": ""
-            }],
-            "backend": {
-                "approval": {
-                    "pending": {
-                        "ok": true,
-                        "data": {
-                            "items": [{
-                                "callId": "call-2",
-                                "tool": "写入文件",
-                                "args": "{\"path\":\"a.rs\"}",
-                                "waited": "已等待 5s"
-                            }],
-                            "approved": 2,
-                            "rejected": 1
-                        }
-                    }
-                }
-            }
-        }));
-        let slot = registry.render_slot_with(Slot::ThreadApproval, &backend);
-        assert!(slot.html.contains("call-2"), "{}", slot.html);
-        assert!(slot.html.contains("已批准 2"), "{}", slot.html);
-        assert!(slot.html.contains("已拒绝 1"), "{}", slot.html);
-
-        let empty = registry.render_slot_with(Slot::ThreadApproval, &RenderContext::default());
-        assert!(empty.html.is_empty(), "{:?}", empty.html);
-    }
-
-    #[test]
     fn task_plan_plugin_renders_the_derived_plan() {
         let primary = temp_root("task-plan-primary");
         let unified = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
@@ -1936,7 +1873,11 @@ export function Page() {
             .expect("task-plan 插件应当被发现");
         assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
         assert_eq!(plugin.scripts, vec!["task-plan.js"]);
-        assert!(plugin.action("plan").is_some_and(|action| action.read));
+        assert!(
+            plugin.actions.is_empty(),
+            "task-plan 不再有后端动作：{:?}",
+            plugin.actions
+        );
         assert!(
             registry
                 .scripts()
@@ -1977,40 +1918,6 @@ export function Page() {
             "{}",
             slot.html
         );
-
-        // 后端插件优先：plan action 的 data 覆盖核心 todo；notes 仍从核心补。
-        let backend_context = RenderContext::default().with_data(serde_json::json!({
-            "todo": { "notes": "先读再写" },
-            "backend": {
-                "task-plan": {
-                    "plan": {
-                        "ok": true,
-                        "data": {
-                            "done": 3,
-                            "total": 4,
-                            "allDone": false,
-                            "active": "复核提交结果",
-                            "notes": "",
-                            "markdown": "### 任务规划步骤 (3/4)\n- [x] 读列表\n- [x] 建表\n- [x] 写条目\n- [ ] 复核提交结果",
-                            "steps": [
-                                { "id": "t1", "title": "读列表", "status": "completed" },
-                                { "id": "t2", "title": "建表", "status": "completed" },
-                                { "id": "t3", "title": "写条目", "status": "completed" },
-                                { "id": "t4", "title": "复核提交结果", "status": "in_progress" }
-                            ]
-                        }
-                    }
-                }
-            }
-        }));
-        let backend_slot = registry.render_slot_with(Slot::ChatCorner, &backend_context);
-        assert!(backend_slot.html.contains("3/4"), "{}", backend_slot.html);
-        assert!(
-            backend_slot.html.contains("复核提交结果"),
-            "{}",
-            backend_slot.html
-        );
-        assert!(backend_slot.html.contains("先读再写"), "{}", backend_slot.html);
 
         // 没有计划时卡片根本不出现：不画 0/0 的空面板。
         let empty = registry.render_slot_with(Slot::ChatCorner, &RenderContext::default());

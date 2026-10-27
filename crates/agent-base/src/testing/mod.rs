@@ -189,10 +189,9 @@ impl CancelToken for ManualCancel {
 }
 
 use std::sync::Arc;
-use crate::domain::{Access, AgentError, AgentMessage, ApprovalPolicy, DenialKind, FailDirection, ToolCall, ToolDescriptor, ToolReceipt};
+use crate::domain::{AgentError, AgentMessage, ToolCall, ToolDescriptor, ToolReceipt};
 use crate::model::StreamDelta;
 use crate::ports::{
-    AnsweredBy, ApprovalGate, ApprovalOutcome, ApprovalRequest,
     CompletionRequest, Consumer, ContractViolation, DeltaStream, ModelCapabilities,
     ModelClient, ModelError, PromptSource, Scope, SessionStore, Tool,
     ToolCatalog, ToolContext, ToolError,
@@ -286,108 +285,8 @@ impl Scope for MockScope {
         &self.id
     }
 
-    fn resolve_path(&self, raw: &str) -> Result<PathBuf, DenialKind> {
-        if raw.contains("..") || raw.starts_with('/') || raw.starts_with('\\') {
-            return Err(DenialKind::Sandbox {
-                path: raw.to_string(),
-            });
-        }
-        Ok(PathBuf::from(&self.id).join(raw))
-    }
-}
-
-/// 记录型审批闸门替身。
-pub struct RecordingApprovalGate {
-    outcomes: Mutex<Vec<ApprovalOutcome>>,
-    calls: Mutex<Vec<ApprovalRequest>>,
-    /// 策略询问的记录（证明"引擎确实把策略问过端口"，而不是自己拍脑袋）
-    queries: Mutex<Vec<(String, ApprovalPolicy)>>,
-    direction: FailDirection,
-    /// `needs_approval` 的答复（默认 `true`：受约束调用一律要问）
-    needs_approval: bool,
-}
-
-impl RecordingApprovalGate {
-    pub fn new(default_approved: bool) -> Self {
-        let outcome = if default_approved {
-            ApprovalOutcome::allowed(AnsweredBy::Policy)
-        } else {
-            ApprovalOutcome::denied(AnsweredBy::Policy, "测试策略拒绝")
-        };
-        Self {
-            outcomes: Mutex::new(vec![outcome]),
-            calls: Mutex::new(Vec::new()),
-            queries: Mutex::new(Vec::new()),
-            direction: FailDirection::Closed,
-            needs_approval: true,
-        }
-    }
-
-    pub fn with_outcomes(outcomes: Vec<ApprovalOutcome>) -> Self {
-        Self {
-            outcomes: Mutex::new(outcomes),
-            calls: Mutex::new(Vec::new()),
-            queries: Mutex::new(Vec::new()),
-            direction: FailDirection::Closed,
-            needs_approval: true,
-        }
-    }
-
-    /// 让 `needs_approval` 回答 `false`（用于断言"策略说不用问时，`decide` 不被调用"）。
-    pub fn with_needs_approval(mut self, needs: bool) -> Self {
-        self.needs_approval = needs;
-        self
-    }
-
-    /// 声明失败方向（W5-T5）：用于断言"无判定依据时引擎按方向裁决"。
-    pub fn with_direction(mut self, direction: FailDirection) -> Self {
-        self.direction = direction;
-        self
-    }
-
-    pub fn recorded_calls(&self) -> Vec<ApprovalRequest> {
-        self.calls.lock().expect("lock").clone()
-    }
-
-    /// 引擎问过端口的策略询问记录。
-    pub fn recorded_queries(&self) -> Vec<(String, ApprovalPolicy)> {
-        self.queries.lock().expect("lock").clone()
-    }
-}
-
-impl ApprovalGate for RecordingApprovalGate {
-    fn direction(&self) -> FailDirection {
-        self.direction
-    }
-
-    fn needs_approval<'a>(
-        &'a self,
-        tool: &'a str,
-        _access: &'a Access,
-        policy: &'a ApprovalPolicy,
-        _args: &'a serde_json::Value,
-    ) -> BoxFuture<'a, bool> {
-        self.queries
-            .lock()
-            .expect("lock")
-            .push((tool.to_string(), policy.clone()));
-        let needs = self.needs_approval;
-        Box::pin(async move { needs })
-    }
-
-    fn decide<'a>(
-        &'a self,
-        req: ApprovalRequest,
-        _cancel: Option<&'a dyn CancelToken>,
-    ) -> BoxFuture<'a, ApprovalOutcome> {
-        self.calls.lock().expect("lock").push(req);
-        let mut outcomes = self.outcomes.lock().expect("lock");
-        let outcome = if outcomes.len() > 1 {
-            outcomes.remove(0)
-        } else {
-            outcomes.first().cloned().unwrap_or_else(|| ApprovalOutcome::allowed(AnsweredBy::Policy))
-        };
-        Box::pin(async move { outcome })
+    fn resolve_path(&self, raw: &str) -> PathBuf {
+        PathBuf::from(&self.id).join(raw)
     }
 }
 

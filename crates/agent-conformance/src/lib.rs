@@ -3,7 +3,7 @@
 //! 提供：
 //! 1. [`ports`] —— 端口契约断言集合。
 //!    端口清单以 `crates/agent-base/src/ports/` 的 `pub trait` 为**唯一真源**
-//!    （`AppHome`、`ApprovalGate`、`CancelToken`、`Clock`、`EventSink`、`ModelClient`、
+//!    （`AppHome`、`CancelToken`、`Clock`、`EventSink`、`ModelClient`、
 //!    `PromptSource`、`Scope`、`ScriptHost`、`SessionStore`、`Tool`、`ToolCatalog`）。
 //!    **这里刻意不写"共 N 个"**：数字随端口增加而变，写死必然过期（本节就吃过一次亏，见下）。
 //!    `cargo xtask verify-wiring` 会**从 trait 定义派生**这份清单，逐个要求有生产实现。
@@ -11,7 +11,7 @@
 //!    口径订正（W6-T5）：此处曾写"8 个端口（… RollbackStore, PluginHost, ScopePolicy …）"，
 //!    但 `RollbackStore` / `PluginHost` **在本仓从未存在**，`ScopePolicy` 也早已改名 `Scope`——
 //!    那是一句"看起来在描述系统、实际描述幻想"的注释。现在按 trait 实际列出。
-//! 2. [`invariants`] —— 8 条跨端口系统级不变量（单一引擎、隔离运行、注册表真源、失败闭合、结构化回执、单调 seq、领域投影分离、取消贯穿）
+//! 2. [`invariants`] —— 7 条跨端口系统级不变量（单一引擎、隔离运行、注册表真源、结构化回执、单调 seq、领域投影分离、取消贯穿）
 //! 3. [`golden`] —— golden 回放夹具（W3-T5）：脚本化模型 → 冻结事件序列
 
 pub mod golden;

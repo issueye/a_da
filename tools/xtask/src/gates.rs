@@ -613,7 +613,6 @@ pub fn verify_wiring() -> anyhow::Result<Report> {
     check_builtin_catalog(&root, &mut rep)?;
     check_descriptor_reachability(&root, &mut rep)?;
     check_port_impls(&root, &mut rep)?;
-    check_fail_direction_is_consumed(&root, &mut rep)?;
     check_frontend_reconnect(&root, &mut rep)?;
     check_event_emitters(&root, &mut rep)?;
     check_no_ui_store_in_node_layer(&root, &mut rep)?;
@@ -852,33 +851,6 @@ fn check_descriptor_reachability(root: &Path, rep: &mut Report) -> anyhow::Resul
 ///
 /// 只断言"引擎里出现方向裁决"这一件具体的事，不做宽泛的"所有 trait 方法都要被调用"
 /// 启发式（那会把合法的扩展点也判红）。
-fn check_fail_direction_is_consumed(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
-    let engine_dir = root.join("crates/agent-base/src/engine");
-    let mut callers: Vec<String> = Vec::new();
-
-    let mut files: Vec<PathBuf> = Vec::new();
-    collect_rs(&engine_dir, &mut files);
-    for p in &files {
-        let Ok(src) = fs::read_to_string(p) else { continue };
-        // 只看生产段（跳过 `#[cfg(test)]` 之后的断言）
-        let prod = production_prefix(&src).unwrap_or(&src);
-        if prod.contains(".direction()") {
-            callers.push(rel(root, p));
-        }
-    }
-
-    if callers.is_empty() {
-        rep.violations.push(
-            "`FailDirection` 没有被真实消费：`crates/agent-base/src/engine` 里没有任何 \
-             `.direction()` 调用点（声明了安全默认，但代码路径上不存在）"
-                .to_string(),
-        );
-    } else {
-        rep.notes
-            .push(format!("`FailDirection` 的生产消费者 → {}", callers.join(", ")));
-    }
-    Ok(())
-}
 
 /// F. SSR 实时通道必须具备五项能力（2026-10 由 W6-T6 的 WS 客户端契约迁移而来）。
 ///

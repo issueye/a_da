@@ -43,7 +43,6 @@
 | `providerAdmin` | object | 供应商只读投影（§2.9；仅声明 `providers.read` 的插件） |
 | `processes` | object \| null | 网关与 agent 实例的只读投影（§2.11；仅声明 `processes.read` 的插件） |
 | `backend` | object | 统一插件只读动作的预取结果（§2.12；`data.backend.<pluginId>.<binding>`） |
-| `approvals` | array | 当前会话待批准的工具调用（§2.13；`thread.approval` 插件用） |
 | `tasks` | object | 当前会话的后台命令任务（§2.14；仅声明 `tasks.read` 的插件） |
 | `runs` | object | 当前会话最近的前台命令（§2.15；仅声明 `runs.read` 的插件） |
 
@@ -100,11 +99,10 @@
 ### 2.5 `config`
 
 ```json
-{ "approval": "ask", "effort": "high", "mode": "code", "contextWindow": 1000000,
+{ "effort": "high", "mode": "code", "contextWindow": 1000000,
   "maxOutputTokens": 64000, "supportsImages": true, "retryCount": 5 }
 ```
 
-- `approval`: `auto` / `ask` / `readonly` / `full`
 - `effort`: `low` / `medium` / `high` / `max`（推理等级）
 - `maxOutputTokens` 可能是 `null`；`contextWindow` 为 0 表示未配置。
 
@@ -121,9 +119,8 @@
 | 字段 | 含义 |
 |---|---|
 | `threads` | 快照里的会话总数 |
-| `running` / `waiting` | 运行中 / 等待批准的会话数（全工作区） |
+| `running` / `waiting` | 运行中 / 等待用户答复的会话数（全工作区） |
 | `queue` | **当前会话**的排队消息数 |
-| `approvals` | 当前会话里 `waiting_approval` 的工具卡数 |
 
 ### 2.8 `todo`
 
@@ -274,26 +271,11 @@
 - 写入动作（`read:false`）不会出现在这里，必须由表单/脚本 `POST`；
 - 预取每个 binding 独立超时 6 秒，最多 16 个；不要在 `data.backend` 里期待写入结果。
 
-### 2.13 `approvals`（待批准工具调用）
+### 2.13 `approvals`（已删除）
 
-`thread.approval` 插槽的降级数据：当前会话里 `status == "waiting_approval"` 的工具卡。
-统一 `plugins/approval/` 会优先用后端 action `pending` 的结果；后端停用/未就绪时用这份核心投影。
-
-```jsonc
-[{
-  "callId": "call_…",
-  "tool": "执行命令",
-  "args": "{\n  \"command\": \"cargo test\"\n}",
-  "waited": "已等待 12s"
-}]
-```
-
-- 没有待批准项时是空数组；
-- 批准/拒绝表单必须提交核心路由 `POST /approvals/{call_id}/decision`
-  （字段 `thread_id` + `approved=true|false`）；插件只负责呈现，
-  **不能**改变 `needs_approval` / `decide` 的策略；
-- 后端插件 `beforeApproval` / `afterApproval` 的审计状态在
-  `.ada/approval-state.json`，与 `props.data.backend["approval"].pending` 对应。
+审批已随核心物理删除（2026-10-27）：`data.approvals`、`thread.approval` 插槽、
+`/approvals/{call_id}/decision` 路由与 `plugins/approval` 均不再存在。
+历史会话里的 `waiting_approval` 卡片按已结束记录展示。
 
 ### 2.14 `tasks`（当前会话的后台命令任务）
 
@@ -378,7 +360,6 @@
 | `composer.footer` | 聊天页输入框下方辅助区 | 首屏 + `parts.aux` / 2s live 轮询 |
 | `composer.above` | 聊天页右下角悬浮区 | 首屏 + `parts.above` / 2s live 轮询；有后台任务在跑时，输出变化会额外触发 `parts`（约 1 秒一帧） |
 | `thread.tray` | 聊天页托盘区（输入框上方 in-flow）的**提问段** | 首屏 + `parts.trays` / 2s live 轮询；输出非空时**替换核心提问托盘**，为空/停用/失败自动回退核心实现 |
-| `thread.approval` | 聊天页托盘区（输入框上方 in-flow）的**审批段** | 首屏 + `parts.trays` / 2s live 轮询；输出非空时**替换核心审批托盘**，批准/拒绝仍提交核心 `/approvals/{call_id}/decision` |
 | `transcript.after` | 聊天页对话流末尾 | 首屏（整段同步时随对话流重渲染） |
 | `extensions.list` | `/extensions` | 整页加载 |
 | `dashboard.widgets` | `/overview` | 整页加载 / 5s 片段刷新（如插件自己声明） |

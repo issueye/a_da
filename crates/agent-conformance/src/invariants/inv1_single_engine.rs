@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use agent_base::engine::TurnRequest;
 use agent_base::model::{ProviderConfig, StreamDelta};
-use agent_base::testing::{FixedClock, FixedPrompt, InMemorySessionStore, MockScope, NeverCancel, RecordingApprovalGate, RecordingSink, ScriptedModelClient};
+use agent_base::testing::{FixedClock, FixedPrompt, InMemorySessionStore, MockScope, NeverCancel, RecordingSink, ScriptedModelClient};
 use agent_runtime::{AgentSpec, ProductBuilder};
 use agent_toolkit::core::FinishTool;
 
@@ -20,7 +20,6 @@ pub async fn assert_single_engine_executes_turn(spec_json: &str) -> Result<(), S
     let builder = ProductBuilder::new(spec)
         .with_tool(Arc::new(FinishTool::default()))
         .with_model(model)
-        .with_approval(Arc::new(RecordingApprovalGate::new(true)))
         .with_store(Arc::new(InMemorySessionStore::new()))
         .with_prompt(Arc::new(FixedPrompt::new("系统提示词")))
         .with_scope(Arc::new(MockScope::new("test_scope")))

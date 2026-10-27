@@ -220,10 +220,6 @@ mod tests {
                 "工具 `{}` access 语义不匹配", desc.name
             );
             assert_eq!(
-                desc.approval, registered.approval,
-                "工具 `{}` approval 策略不匹配", desc.name
-            );
-            assert_eq!(
                 desc.rollback, registered.rollback,
                 "工具 `{}` rollback 策略不匹配", desc.name
             );

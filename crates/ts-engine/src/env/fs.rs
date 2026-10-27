@@ -1,4 +1,4 @@
-use crate::sandbox::check_workspace_sandbox;
+use crate::sandbox::resolve_workspace_path;
 use boa_engine::{
     js_error, js_string, Context, JsValue, NativeFunction, Source,
 };
@@ -16,13 +16,13 @@ pub fn set_fs_workspace(workspace: Option<&Path>) {
     });
 }
 
-fn get_safe_path(target: &str) -> Result<PathBuf, String> {
+fn get_safe_path(target: &str) -> PathBuf {
     let ws = FS_WORKSPACE.with(|cell| {
         cell.borrow().clone().unwrap_or_else(|| {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
         })
     });
-    check_workspace_sandbox(&ws, target).map_err(|e| format!("沙箱拦截: {e}"))
+    resolve_workspace_path(&ws, target)
 }
 
 /// 向 Boa 上下文注册同步 `fs` 原生函数与模块脚本
@@ -33,8 +33,7 @@ pub fn register_fs_native_and_script(ctx: &mut Context, workspace: Option<&Path>
     let native_exists = NativeFunction::from_copy_closure(|_this, args, ctx| {
         let path_str = args.get(0).map(|v| v.to_string(ctx).unwrap_or_default().to_std_string_escaped()).unwrap_or_default();
         match get_safe_path(&path_str) {
-            Ok(safe) => Ok(JsValue::from(safe.exists())),
-            Err(_) => Ok(JsValue::from(false)),
+            safe => Ok(JsValue::from(safe.exists())),
         }
     });
     ctx.register_global_callable(js_string!("__native_fs_exists_sync"), 1, native_exists).ok();
@@ -42,7 +41,7 @@ pub fn register_fs_native_and_script(ctx: &mut Context, workspace: Option<&Path>
     // 2. 同步 readFileSync
     let native_read_sync = NativeFunction::from_copy_closure(|_this, args, ctx| {
         let path_str = args.get(0).map(|v| v.to_string(ctx).unwrap_or_default().to_std_string_escaped()).unwrap_or_default();
-        let safe = get_safe_path(&path_str).map_err(|e| js_error!("{}", e))?;
+        let safe = get_safe_path(&path_str);
         let content = std::fs::read_to_string(&safe).map_err(|e| js_error!("读取失败: {}", e))?;
         Ok(JsValue::from(js_string!(content.as_str())))
     });
@@ -52,7 +51,7 @@ pub fn register_fs_native_and_script(ctx: &mut Context, workspace: Option<&Path>
     let native_write_sync = NativeFunction::from_copy_closure(|_this, args, ctx| {
         let path_str = args.get(0).map(|v| v.to_string(ctx).unwrap_or_default().to_std_string_escaped()).unwrap_or_default();
         let content_str = args.get(1).map(|v| v.to_string(ctx).unwrap_or_default().to_std_string_escaped()).unwrap_or_default();
-        let safe = get_safe_path(&path_str).map_err(|e| js_error!("{}", e))?;
+        let safe = get_safe_path(&path_str);
         if let Some(parent) = safe.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -65,7 +64,7 @@ pub fn register_fs_native_and_script(ctx: &mut Context, workspace: Option<&Path>
     let native_mkdir_sync = NativeFunction::from_copy_closure(|_this, args, ctx| {
         let path_str = args.get(0).map(|v| v.to_string(ctx).unwrap_or_default().to_std_string_escaped()).unwrap_or_default();
         let recursive = args.get(1).map(|v| v.to_boolean()).unwrap_or(true);
-        let safe = get_safe_path(&path_str).map_err(|e| js_error!("{}", e))?;
+        let safe = get_safe_path(&path_str);
         if recursive {
             std::fs::create_dir_all(&safe).map_err(|e| js_error!("创建目录失败: {}", e))?;
         } else {
@@ -78,7 +77,7 @@ pub fn register_fs_native_and_script(ctx: &mut Context, workspace: Option<&Path>
     // 5. 同步 readdirSync
     let native_readdir_sync = NativeFunction::from_copy_closure(|_this, args, ctx| {
         let path_str = args.get(0).map(|v| v.to_string(ctx).unwrap_or_default().to_std_string_escaped()).unwrap_or_default();
-        let safe = get_safe_path(&path_str).map_err(|e| js_error!("{}", e))?;
+        let safe = get_safe_path(&path_str);
         let mut entries = Vec::new();
         let read_dir = std::fs::read_dir(&safe).map_err(|e| js_error!("读取目录失败: {}", e))?;
         for entry in read_dir.flatten() {
@@ -97,7 +96,7 @@ pub fn register_fs_native_and_script(ctx: &mut Context, workspace: Option<&Path>
     // 6. 同步 statSync
     let native_stat_sync = NativeFunction::from_copy_closure(|_this, args, ctx| {
         let path_str = args.get(0).map(|v| v.to_string(ctx).unwrap_or_default().to_std_string_escaped()).unwrap_or_default();
-        let safe = get_safe_path(&path_str).map_err(|e| js_error!("{}", e))?;
+        let safe = get_safe_path(&path_str);
         let meta = std::fs::metadata(&safe).map_err(|e| js_error!("获取元数据失败: {}", e))?;
         let size = meta.len();
         let is_file = meta.is_file();
@@ -122,7 +121,7 @@ pub fn register_fs_native_and_script(ctx: &mut Context, workspace: Option<&Path>
     let native_rm_sync = NativeFunction::from_copy_closure(|_this, args, ctx| {
         let path_str = args.get(0).map(|v| v.to_string(ctx).unwrap_or_default().to_std_string_escaped()).unwrap_or_default();
         let recursive = args.get(1).map(|v| v.to_boolean()).unwrap_or(false);
-        let safe = get_safe_path(&path_str).map_err(|e| js_error!("{}", e))?;
+        let safe = get_safe_path(&path_str);
         if safe.is_dir() {
             if recursive {
                 std::fs::remove_dir_all(&safe).map_err(|e| js_error!("删除失败: {}", e))?;

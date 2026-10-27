@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use agent_base::engine::{AgentRuntime, RunPolicy};
 use agent_base::ports::{
-    ApprovalGate, Clock, Consumer, ContractViolation, HookRunner, ModelClient, PromptSource,
+    Clock, Consumer, ContractViolation, EventDispatcher, HookRunner, ModelClient, PromptSource,
     Scope, SessionStore, Tool, ToolCatalog,
 };
 use thiserror::Error;
@@ -26,7 +26,6 @@ pub struct ProductBuilder {
     pub spec: AgentSpec,
     tools: Vec<Arc<dyn Tool>>,
     model: Option<Arc<dyn ModelClient>>,
-    approval: Option<Arc<dyn ApprovalGate>>,
     store: Option<Arc<dyn SessionStore>>,
     prompt: Option<Arc<dyn PromptSource>>,
     scope: Option<Arc<dyn Scope>>,
@@ -34,6 +33,7 @@ pub struct ProductBuilder {
     /// 外部给定的注册表（SP-46）：给了就用它，没给就按 `tools` 新建一个。
     catalog: Option<Arc<CompositeToolCatalog>>,
     hooks: Option<Arc<dyn HookRunner>>,
+    events: Option<Arc<dyn EventDispatcher>>,
 }
 
 impl ProductBuilder {
@@ -42,13 +42,13 @@ impl ProductBuilder {
             spec,
             tools: Vec::new(),
             model: None,
-            approval: None,
             store: None,
             prompt: None,
             scope: None,
             clock: None,
             catalog: None,
             hooks: None,
+            events: None,
         }
     }
 
@@ -64,11 +64,6 @@ impl ProductBuilder {
 
     pub fn with_model(mut self, model: Arc<dyn ModelClient>) -> Self {
         self.model = Some(model);
-        self
-    }
-
-    pub fn with_approval(mut self, approval: Arc<dyn ApprovalGate>) -> Self {
-        self.approval = Some(approval);
         self
     }
 
@@ -123,6 +118,12 @@ impl ProductBuilder {
         self
     }
 
+    /// 装配统一事件分发器（迁移期：`event_before_*` 走它）。
+    pub fn with_events(mut self, dispatcher: Arc<dyn EventDispatcher>) -> Self {
+        self.events = Some(dispatcher);
+        self
+    }
+
     /// 校验当前装配是否与产品声明契约双向一致。
     pub fn validate(&self) -> Vec<ContractViolation> {
         let catalog = CompositeToolCatalog::new(self.tools.clone(), None);
@@ -137,7 +138,6 @@ impl ProductBuilder {
         }
 
         let model = self.model.ok_or_else(|| SpecError::MissingPort("ModelClient".into()))?;
-        let approval = self.approval.ok_or_else(|| SpecError::MissingPort("ApprovalGate".into()))?;
         let store = self.store.ok_or_else(|| SpecError::MissingPort("SessionStore".into()))?;
         let prompt = self.prompt.ok_or_else(|| SpecError::MissingPort("PromptSource".into()))?;
         let scope = self.scope.ok_or_else(|| SpecError::MissingPort("Scope".into()))?;
@@ -161,7 +161,6 @@ impl ProductBuilder {
         let mut runtime = AgentRuntime::new(
             model,
             catalog,
-            approval,
             store,
             prompt,
             scope,
@@ -171,6 +170,9 @@ impl ProductBuilder {
 
         if let Some(hooks) = self.hooks {
             runtime = runtime.with_hooks(hooks);
+        }
+        if let Some(events) = self.events {
+            runtime = runtime.with_events(events);
         }
 
         Ok(runtime)

@@ -114,8 +114,8 @@ mod tests {
         fn id(&self) -> &str {
             "test_root"
         }
-        fn resolve_path(&self, raw: &str) -> Result<PathBuf, agent_base::domain::DenialKind> {
-            Ok(self.0.join(raw))
+        fn resolve_path(&self, raw: &str) -> PathBuf {
+            self.0.join(raw)
         }
     }
     /// 可外部翻转的取消令牌（测试替身；生产用 `agent-adapter` 的 `CancelHandle`）。

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use agent_base::engine::TurnRequest;
 use agent_base::model::{ProviderConfig, StreamDelta};
-use agent_base::testing::{FixedClock, FixedPrompt, InMemorySessionStore, MockScope, NeverCancel, RecordingApprovalGate, RecordingSink, ScriptedModelClient};
+use agent_base::testing::{FixedClock, FixedPrompt, InMemorySessionStore, MockScope, NeverCancel, RecordingSink, ScriptedModelClient};
 use agent_runtime::{AgentSpec, ProductBuilder};
 use agent_toolkit::core::FinishTool;
 
@@ -41,7 +41,6 @@ pub async fn assert_isolated_runtimes_in_same_process() -> Result<(), String> {
             StreamDelta::Text { text: "我是1".into() },
             StreamDelta::Done { stop_reason: "stop".into() },
         ]])))
-        .with_approval(Arc::new(RecordingApprovalGate::new(true)))
         .with_store(store1.clone())
         .with_prompt(Arc::new(FixedPrompt::new("p1")))
         .with_scope(Arc::new(MockScope::new("s1")))
@@ -54,7 +53,6 @@ pub async fn assert_isolated_runtimes_in_same_process() -> Result<(), String> {
             StreamDelta::Text { text: "我是2".into() },
             StreamDelta::Done { stop_reason: "stop".into() },
         ]])))
-        .with_approval(Arc::new(RecordingApprovalGate::new(true)))
         .with_store(store2.clone())
         .with_prompt(Arc::new(FixedPrompt::new("p2")))
         .with_scope(Arc::new(MockScope::new("s2")))

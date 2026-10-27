@@ -40,8 +40,7 @@ export const THREAD_SET_WORKSPACE = 'thread.setWorkspace'
 export const THREAD_EDIT_AND_RESEND = 'thread.editAndResend'
 export const THREAD_RETRY = 'thread.retry'
 
-// 审批与问答 (Approval & Question)
-export const APPROVAL_DECIDE = 'approval.decide'
+// 问答 (Question)
 export const QUESTION_ANSWER = 'question.answer'
 
 // 指令队列 (Queue)
@@ -65,7 +64,6 @@ export const CONFIG_GET = 'config.get'
 export const CONFIG_PRESETS = 'config.presets'
 export const CONFIG_SET_PROVIDER = 'config.setProvider'
 export const CONFIG_CHECK_PROVIDER = 'config.checkProvider'
-export const CONFIG_SET_APPROVAL = 'config.setApproval'
 export const CONFIG_SET_EFFORT = 'config.setEffort'
 /** 设置"模型请求重试次数"（默认 5；重试耗尽即断开本轮对话） */
 export const CONFIG_SET_RETRY_COUNT = 'config.setRetryCount'

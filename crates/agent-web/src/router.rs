@@ -40,7 +40,6 @@ pub fn router(state: AppState) -> Router {
         // 模型选择器（DeepSeek 式弹层）：切换模型 / 推理等级后回到原会话。
         .route("/model/select", post(handlers::select_model))
         .route("/model/effort", post(handlers::select_effort))
-        .route("/approval/mode", post(handlers::set_approval_mode))
         .route("/threads/{id}/retry", post(handlers::retry_thread))
         .route("/threads/{id}/rename", post(handlers::rename_thread))
         .route("/threads/{id}/delete", post(handlers::delete_thread))
@@ -58,10 +57,6 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/threads/{id}/queue/{index}/remove",
             post(handlers::remove_queue),
-        )
-        .route(
-            "/approvals/{call_id}/decision",
-            post(handlers::decide_approval),
         )
         .route(
             "/questions/{call_id}/answer",
