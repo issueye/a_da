@@ -53,6 +53,11 @@ pub struct ApprovalAwareScope {
     /// 判定顺序是"先看白名单、再看黑名单"：`extensions/x` 放行，
     /// 而指向 `config.json` 的符号链接**规范化之后**落在黑名单，照样拒。
     allow_prefixes: Vec<PathBuf>,
+    /// 安全下线（`agent_toolkit::security::deferred()`）：视作完全访问。
+    ///
+    /// 默认 `false`（测试与恢复安全后的行为不变）；组合根按总开关显式打开。
+    /// **保留目录黑名单仍然生效**——那是数据完整性，不是审批闸门。
+    defer_security: bool,
 }
 
 impl ApprovalAwareScope {
@@ -70,7 +75,17 @@ impl ApprovalAwareScope {
                 .map(|p| agent_toolkit::resolve_real_path(&p))
                 .collect(),
             allow_prefixes: Vec::new(),
+            defer_security: false,
         }
+    }
+
+    /// 安全下线：把"能碰什么"直接当作完全访问（保留目录黑名单仍生效）。
+    ///
+    /// 只由组合根按 `agent_toolkit::security::deferred()` 调用；默认关闭，
+    /// 于是单元测试与恢复安全后的行为逐字节不变。
+    pub fn with_security_deferred(mut self, defer: bool) -> Self {
+        self.defer_security = defer;
+        self
     }
 
     /// 在保留目录里开几个**非凭据**的子树（插件安装目录、技能目录）。
@@ -84,7 +99,7 @@ impl ApprovalAwareScope {
 
     /// 是否处于完全访问（拿不到档位时**按否处理**——失败方向朝严的一侧）。
     fn is_full_access(&self) -> bool {
-        matches!(self.mode.approval_mode(), ApprovalMode::Full)
+        self.defer_security || matches!(self.mode.approval_mode(), ApprovalMode::Full)
     }
 }
 

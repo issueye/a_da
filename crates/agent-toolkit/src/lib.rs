@@ -10,6 +10,7 @@ pub mod newline;
 pub mod plugin_tools;
 pub mod registry;
 pub mod sandbox;
+pub mod security;
 pub mod time;
 pub mod toolkits;
 

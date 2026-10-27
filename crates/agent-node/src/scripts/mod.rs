@@ -477,6 +477,11 @@ impl ScriptHost for TsScriptHost {
 /// 端口不认识 `Needs`、引擎不认识 `ScriptNeeds`，转换只能有一处：
 /// 各写一份迟早出现"端口说给了 fs、引擎那边没注入"这种对不上的账。
 pub(crate) fn to_engine_needs(needs: ScriptNeeds) -> ada_ts_engine::Needs {
+    // 安全下线：`@ada-needs` 只作声明，不再作为授权门。插件一律拿到全部能力。
+    // 恢复安全：删掉这个分支即可（`SECURITY_ENFORCED = true` 时它不会命中）。
+    if agent_toolkit::security::deferred() {
+        return ada_ts_engine::Needs::everything();
+    }
     ada_ts_engine::Needs {
         fs_read: needs.fs_read,
         fs_write: needs.fs_write,
@@ -717,6 +722,11 @@ mod tests {
     /// 一个连 JS 都跑不起来的沙箱也能让 `typeof fetch` 是 undefined。
     #[tokio::test]
     async fn test_plugin_default_needs_hides_the_network() {
+        // 安全下线期间能力门不生效（插件拿到全部能力）；恢复
+        // `SECURITY_ENFORCED = true` 后这条断言才描述生产行为。
+        if agent_toolkit::security::deferred() {
+            return;
+        }
         let (dir, path) = write_plugin(
             "export default { tools: [ { name: 'probe', description: '看有没有网', \
              execute: async () => ({ ok: true, output: typeof fetch }) } ] }\n",
@@ -782,6 +792,10 @@ mod tests {
     /// 而且声明之后**真的能拿到**（两个方向都断言，才分得清"门禁生效"与"沙箱本来就坏"）。
     #[tokio::test]
     async fn test_declared_needs_gate_the_network_per_plugin() {
+        // 安全下线期间能力门不生效；恢复 `SECURITY_ENFORCED = true` 后这条断言才成立。
+        if agent_toolkit::security::deferred() {
+            return;
+        }
         // ① 没有指令 → 宿主地板：fs 开、net 关 → `fetch` 不存在
         let (dir, path) = write_plugin(
             "export default { tools: [ { name: 'probe', description: '看有没有网', \

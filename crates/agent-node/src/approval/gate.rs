@@ -49,6 +49,10 @@ pub struct HostApprovalGate {
     /// 策略配置（免问白名单 / 危险命令清单）
     config: agent_adapter::approval::ApprovalGuardConfig,
     timeout: Duration,
+    /// 安全下线（`agent_toolkit::security::deferred()`）：一律放行、不等用户。
+    ///
+    /// 默认 `false`：单测与恢复安全后的行为不变；组合根按总开关显式打开。
+    defer_security: bool,
 }
 
 impl HostApprovalGate {
@@ -58,7 +62,16 @@ impl HostApprovalGate {
             manager,
             config: agent_adapter::approval::ApprovalGuardConfig::default(),
             timeout: DEFAULT_APPROVAL_TIMEOUT,
+            defer_security: false,
         }
+    }
+
+    /// 安全下线：`needs_approval` 恒 false，`decide` 直接放行。
+    ///
+    /// 只由组合根按 `agent_toolkit::security::deferred()` 调用。
+    pub fn with_security_deferred(mut self, defer: bool) -> Self {
+        self.defer_security = defer;
+        self
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -109,6 +122,10 @@ impl ApprovalGate for HostApprovalGate {
         args: &'a serde_json::Value,
     ) -> BoxFuture<'a, bool> {
         Box::pin(async move {
+            // 安全下线：不询问、不建卡、不等用户。
+            if self.defer_security {
+                return false;
+            }
             match policy {
                 // 引擎已短路 Never；这里再答一次，保证"从端口问"总有确定答案
                 ApprovalPolicy::Never => false,
@@ -141,6 +158,10 @@ impl ApprovalGate for HostApprovalGate {
         cancel: Option<&'a dyn CancelToken>,
     ) -> BoxFuture<'a, ApprovalOutcome> {
         Box::pin(async move {
+            // 安全下线：直接放行（`AnsweredBy::Policy` 如实标明"不是用户答的"）。
+            if self.defer_security {
+                return ApprovalOutcome::allowed(AnsweredBy::Policy);
+            }
             // 档位可能在上游询问之后被用户改过，这里按**当前**档位复核一次：
             // 若策略说不用问了，就直接放行（AnsweredBy::Policy，如实标明不是用户答的）
             let mode = self.mode().await;

@@ -29,7 +29,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use super::cmd_tools::{kill_process_tree, truncate_buffer};
-use super::sandbox::check_workspace_sandbox;
+use super::sandbox::{check_workspace_sandbox, resolve_path_unrestricted};
 
 /// 已知 INV-8 缝隙：`ToolContext` 目前**没有**时钟端口，所以这里直接读系统时间。
 /// 与同目录的 `command/run.rs` 是同一个缺口，一并等 `ToolContext` 拿到 clock 后收敛。
@@ -137,7 +137,11 @@ impl BackgroundTasks {
     ) -> Result<String, String> {
         let run_cwd = match cwd {
             Some(p) if !p.trim().is_empty() => {
-                check_workspace_sandbox(workspace, p.trim()).map_err(|e| e.to_string())?
+                if crate::security::deferred() {
+                    resolve_path_unrestricted(workspace, p.trim())
+                } else {
+                    check_workspace_sandbox(workspace, p.trim()).map_err(|e| e.to_string())?
+                }
             }
             _ => workspace.to_path_buf(),
         };
@@ -624,6 +628,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_shared_store_still_validates_cwd_against_the_engine_workspace() {
+        // 安全下线期间 cwd 边界不生效；恢复 `SECURITY_ENFORCED = true` 后这条断言才成立。
+        if crate::security::deferred() {
+            return;
+        }
         // 多工作区引擎共用一张任务表时，缺省目录与 cwd 沙箱必须跟着**发起任务的引擎**
         // 走，而不是任务表创建时的工作区。
         let root = std::env::temp_dir().join(format!("a_da_bg_shared_{}", uuid::Uuid::new_v4()));

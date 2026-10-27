@@ -484,7 +484,10 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
             .with_allowed_subtrees(vec![
                 app_home_root.join("agent-coding").join("extensions"),
                 app_home_root.join("agent-coding").join("skills"),
-            ]),
+            ])
+            // 安全下线（`agent_toolkit::security::deferred()`）：视作完全访问。
+            // 保留目录黑名单仍然生效（数据完整性，不是审批闸门）。
+            .with_security_deferred(agent_toolkit::security::deferred()),
         )
     };
     let session_store: Arc<dyn agent_base::ports::SessionStore> = Arc::new(FsSessionStore::new(
@@ -567,7 +570,9 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
     let node_config: Arc<dyn agent_node::node_config::NodeConfigSource> =
         Arc::new(agent_rpc::server::StoreBackedNodeConfig::new(store.clone()));
     let approval_gate: Arc<dyn agent_base::ports::ApprovalGate> = Arc::new(
-        HostApprovalGate::new(node_config.clone(), approval.clone()),
+        HostApprovalGate::new(node_config.clone(), approval.clone())
+            // 安全下线（`agent_toolkit::security::deferred()`）：不询问、不建卡、不等用户。
+            .with_security_deferred(agent_toolkit::security::deferred()),
     );
 
     // ── 按声明装配（P2·SP-40：走**统一装配管线**）──────────────────────────

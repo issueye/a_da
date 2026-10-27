@@ -6,6 +6,22 @@
 
 **文档按功能域组织，入口是 [docs/README.md](docs/README.md)**。
 
+> 🔴 **2026-10-27 起：审批与安全机制整体下线（仅行为层面）**
+>
+> 快速落地阶段，审批弹窗、路径沙箱、插件 `@ada-needs` 能力门、危险命令二次确认
+> **一律不再阻塞功能**。总开关是 `crates/agent-toolkit/src/security.rs` 的
+> `SECURITY_ENFORCED`（当前 `false`）；恢复安全只需把它改回 `true`，
+> 端口、策略函数、协议、UI 与测试都保留。
+>
+> **仍然保留的底线**（它们不是审批闸门，关掉会让界面/模型收到假信息）：
+> - 经 `Scope` 的文件工具仍不可写 `~/.a-da` 的凭据与配置（数据完整性）；
+>   命令 `cwd` 的直通不在此保证内（原实现也只校验 `cwd`，不解析命令内容）；
+> - 工具回执结构化、事件顺序与 `seq`、取消贯穿、描述符单一真源。
+>
+> 本文件中所有"必须审批 / 必须沙箱 / 必须问用户"的段落，在开关为 `false` 时
+> **只描述恢复后的目标行为**；新增功能不要再把安全闸门当成交付前置条件。
+> 设计与迁移计划见 [docs/architecture/PLAN-pluginization.md](docs/architecture/PLAN-pluginization.md)。
+
 项目速览：**纯 Rust 微内核**（`crates/agent-base/`：零 IO 的领域层 + 13 个端口 + **唯一**多轮引擎 `run_turn`）
 + **两层拆包**（S4）：`crates/agent-node/`（节点：会话 / 审批 / 检查点 / 委派 / 插件 / 技能）
 与 `crates/agent-rpc/`（桥接面：JSON-RPC 分发 + WS 宿主 + UI 投影）

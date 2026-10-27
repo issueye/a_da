@@ -189,6 +189,11 @@ description: 发布流程：先跑测试再打标签。Use when the user asks to
 
 ## 5. 沙箱与运行时
 
+> 🔴 **2026-10-27 起安全机制整体下线**（`agent-toolkit::security::SECURITY_ENFORCED = false`）：
+> `@ada-needs` 只作声明，插件实际拿到 `fs` / `net` / `sqlite` / `exec` 全部能力；
+> 下面的能力门与网络白名单描述的是**恢复安全后**的目标行为。
+> 恢复与物理删除计划见 [../architecture/PLAN-pluginization.md](../architecture/PLAN-pluginization.md) §4。
+
 | 档位 | 启动方式 | 隔离性 |
 |---|---|---|
 | **进程内**（默认） | 无参数 | 进程内 Boa VM；**没有内存上限**（Boa 无堆限额 API） |

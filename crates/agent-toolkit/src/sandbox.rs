@@ -140,6 +140,20 @@ pub fn check_workspace_sandbox(workspace: &Path, target_path: &str) -> Result<Pa
     Ok(real_full)
 }
 
+/// 安全下线期间的直通解析：相对路径拼到工作区根，**不做边界判定**。
+///
+/// 只给宿主明确选择 `security::deferred()` 时使用；纯函数
+/// [`check_workspace_sandbox`] 保持原语义，单测继续描述"启用安全时"的行为。
+pub fn resolve_path_unrestricted(workspace: &Path, target: &str) -> PathBuf {
+    let p = Path::new(target);
+    let full = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        workspace.join(p)
+    };
+    resolve_real_path(&full)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
