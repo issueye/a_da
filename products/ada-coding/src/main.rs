@@ -813,9 +813,15 @@ mod tests {
              若这里为 false，注册表里的 invoke_subagent 就会成为不可达工具"
         );
 
+        // 2026-10-27：`git` 已搬成插件（`plugins/git-tools`），不再来自工具包；
+        // 这里改为断言仍在工具包里的 `project` 工具，另外单独钉住 git 不该由基座提供。
         assert!(
-            assembled.contains("git") && assembled.contains("project_inspect"),
-            "W2-T2 的插件工具应已进 catalog（`git` 于 2026-10-19 合并了 status/diff/log）：{assembled:?}"
+            assembled.contains("project_inspect") && assembled.contains("code_outline"),
+            "W2-T2 的项目诊断工具应已进 catalog：{assembled:?}"
+        );
+        assert!(
+            !assembled.contains("git"),
+            "git 是插件工具（plugins/git-tools），基座工具包不提供它：{assembled:?}"
         );
     }
 

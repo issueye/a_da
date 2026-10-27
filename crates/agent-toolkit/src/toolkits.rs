@@ -20,7 +20,10 @@ use agent_base::ports::Tool;
 ///
 /// `decision` 已于 2026-10-18 整体下线（`decide` / `check_gate` 两个工具 + 实现模块一起删），
 /// 产品声明里再出现它会在装配期直接报错——这正是这张表存在的意义。
-pub const TOOLKIT_NAMES: &[&str] = &["core", "fs", "command", "git", "project", "forge"];
+///
+/// `git` 已于 2026-10-27 搬成插件（`plugins/git-tools`）：它现在是**插件启停**控制，
+/// 不再是一个工具包。产品声明里再写 `"git"` 同样会在装配期报错。
+pub const TOOLKIT_NAMES: &[&str] = &["core", "fs", "command", "project", "forge"];
 
 /// 该名字是否是已知工具包。
 pub fn is_known_toolkit(name: &str) -> bool {
@@ -73,7 +76,6 @@ pub fn tools_for_toolkit_in(name: &str, env: ToolkitEnv<'_>) -> Option<Vec<Arc<d
         // 指定全局时得知道 `~/.a-da/agent-coding/extensions` 在哪。
         "forge" => Some(crate::forge::forge_tools_in(workspace, env.app_home)),
         // W2-T2：原先只在 `execute_builtin_plugin_tool` 字符串分派里的插件工具
-        "git" => Some(crate::plugin_tools::git_tools(workspace)),
         "project" => Some(crate::plugin_tools::project_tools(workspace)),
         _ => None,
     }

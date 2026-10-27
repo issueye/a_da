@@ -121,7 +121,8 @@
 | 子进程（`node:child_process`：同步 `execFileSync` / `spawnSync` / `execSync`，异步 `spawn` / `exec` / `execFile` 带真流式 stdio；`fork` 未提供） | `crates/ts-engine/src/env/child_process.rs` + `child_process_async.rs`（`@ada-needs exec`） |
 | 管理面：`plugin.list/load/validate/invoke/setEnabled/reload/delete/builtinCatalog/createTemplate/capabilities.set/config.set/secret.set` | `spec/proto/ada-coding.ext.json` |
 | **统一插件包**（一个 `plugin.json` 同时声明 `frontend` / `backend`；动作 `registerAction`） | `crates/agent-web/src/plugins/manifest.rs` + `crates/agent-node/src/plugins/manager.rs`；说明见 [plugins/unified-package.md](../plugins/unified-package.md) |
-| 内置插件 **9 个**：`git-tools`、`code-outline`、`project-inspector`、`test-runner`、`batch-ops`、`plugin-forge`、`approval-guard`、`ask-user`、`ponytail` | `crates/agent-node/src/plugins/builtins.rs` |
+| 内置插件 **8 个**：`code-outline`、`project-inspector`、`test-runner`、`batch-ops`、`plugin-forge`、`approval-guard`、`ask-user`、`ponytail` | `crates/agent-node/src/plugins/builtins.rs` |
+| **Git 工具是插件**（`plugins/git-tools`）：`git`（全动作，写语义）+ `git_read`（status/diff/log/show/blame，自述只读） | `plugins/git-tools/index.ts`；自述只读见 `ScriptToolAccess` |
 
 细节与排错见 [../plugins/README.md](../plugins/README.md)。
 

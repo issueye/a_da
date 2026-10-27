@@ -59,6 +59,20 @@
    工具实际编译在 `agent-toolkit`。`collect_plugin_tools` 明确跳过 `scope == "builtin"`
    （`scripts/assembly.rs`），装配走 `spec.toolkits`（`agent-host/src/lib.rs`）。
    结果是：**关掉 `builtin:git-tools` 不会移除 `git` 工具**。
+
+   > ✅ **2026-10-27 已破局一条**：`git` 整体搬到 `plugins/git-tools`（TS 插件，
+   > `git` + 只读的 `git_read`），基座删掉了 `git` 的实现、描述符、`git` 工具包与
+   > `builtin:git-tools` 卡片；产品声明里不再写 `"git"`，改为**插件启停控制**。
+   > 这是一次样板迁移（“基座只补 ts 引擎能力，不再自带工具”）：`project` / `test` /
+   > `forge` 可按同一路径处理。代价与已知缺口见 §1.3 补注 A。
+   > 
+   > **补注 A（迁移代价）**：
+   > 1. 插件工具默认 `Access::External`（永不只读）——已用 `ScriptToolAccess::ReadOnly`
+   >    补上“自述只读”这条路（只允许声明“读”，谎报代价见端口文档）；
+   > 2. 工具级审批策略（原来的 `DangerScan` 危险动作清单）随描述符一起消失，
+   >    恢复安全后插件工具是“每次都问”（比原来更严，不是变宽）；
+   > 3. 预设级裁剪（`modes/*.spec.json` 的 `toolkits`）不再能单方面择掉 git：
+   >    插件启停是**全局**的，不能按预设区分。
 2. **能力选择是"工具包"，不是"插件"**
    产品只能声明 `toolkits`（`toolkits.rs` 的 `TOOLKIT_NAMES`），新增/裁剪能力都要改 Rust。
 3. **内核里残留协议形状**
@@ -278,6 +292,9 @@ pub const fn deferred() -> bool { !SECURITY_ENFORCED }
       （不可启停）。
 - [ ] 新增守门测试：关闭 `builtin:git-tools` 后，`ToolCatalog::descriptors()` 不含 `git`；
       `plugin.setEnabled` 的收据里工具 delta 非空。
+      （🔴 2026-10-27：`git-tools` 已是**磁盘插件**，这条不再成立——等价守门是
+      `cargo test -p agent-node --test git_plugin` + 关闭 `git-tools` 插件后
+      `git` / `git_read` 同时消失。）
 - 验收：`cargo test -p agent-node -p agent-rpc` + 手动点一次插件开关。
 
 ### P1：叶子能力插件化（1–2 周）

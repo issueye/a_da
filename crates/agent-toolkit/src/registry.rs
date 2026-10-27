@@ -381,74 +381,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                 termination: Termination::ContinueTurn,
             },
             ToolDescriptor {
-                name: "git".to_string(),
-                summary: "查看与操作 Git 版本库（action 选动作：status/diff/log/show/blame 只读；\
-                          add/commit/checkout/restore/reset/stash/branch/merge/push/pull 会改仓库）。\
-                          多仓库工作区用 cwd 指定在哪个仓库执行。"
-                    .to_string(),
-                schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string",
-                            "enum": [
-                                "status", "diff", "log", "show", "blame",
-                                "add", "commit", "checkout", "restore", "reset",
-                                "stash", "branch", "merge", "push", "pull"
-                            ],
-                            "description": "要执行的 Git 动作。只读：status/diff/log/show/blame；写入：add/commit/checkout/restore/reset/stash/branch/merge/push/pull"
-                        },
-                        "file": { "type": "string", "description": "单个文件（相对 cwd，默认工作区根）；diff/log/show/add/restore/blame 用，path 是别名" },
-                        "path": { "type": "string", "description": "file 的别名——它是**文件过滤**（pathspec），不是仓库目录；要换仓库请用 cwd" },
-                        "files": {
-                            "type": "array",
-                            "items": { "type": "string" },
-                            "description": "多个文件（add/restore/commit 用，相对 cwd）"
-                        },
-                        "cwd": {
-                            "type": "string",
-                            "description": "在哪个子目录执行 git（相对工作区，默认工作区根）。多仓库工作区（根目录下 frontend/backend 各自是仓库）必须用它指定仓库，例如 cwd:\"frontend\""
-                        },
-                        "ref": { "type": "string", "description": "提交/分支/标签引用（diff/log/show/reset/checkout/merge/push/pull 用；默认 HEAD）" },
-                        "branch": { "type": "string", "description": "分支名（branch 创建/删除、checkout 目标、push/pull 目标分支）" },
-                        "message": { "type": "string", "description": "提交信息（commit 必填；stash push 可选，不能含换行）" },
-                        "limit": { "type": "integer", "description": "log 返回条数（默认 10，上限 200）" },
-                        "staged": { "type": "boolean", "description": "diff: 看暂存区（--cached）；restore: 从暂存区恢复（--staged）" },
-                        "all": { "type": "boolean", "description": "commit: 先暂存已跟踪文件的改动（-a）" },
-                        "mode": { "type": "string", "enum": ["soft", "mixed", "hard"], "description": "reset 模式（默认 mixed；hard 会丢弃工作区改动，需要审批）" },
-                        "sub": { "type": "string", "enum": ["list", "push", "pop", "apply", "drop", "show"], "description": "stash 子操作（默认 list）" },
-                        "remote": { "type": "string", "description": "push/pull 的远端名（默认 origin）" },
-                        "create": { "type": "boolean", "description": "checkout: 创建并切换到新分支（-b）" },
-                        "delete": { "type": "boolean", "description": "branch: 删除分支（-d）" },
-                        "force": { "type": "boolean", "description": "push: 使用 --force-with-lease 强推（需要审批）" }
-                    },
-                    "required": ["action"]
-                }),
-                // 会真的执行 git 子进程（argv 直传，不经 shell），按"命令型工具"记账。
-                access: Access::Executes { command_arg: "action" },
-                // 只读动作不打扰用户；危险动作必问——**即使开了自动批准**。
-                // 匹配串是序列化后的 JSON 片段（`"action":"reset"` 这种），比裸词
-                // `reset` 精确：提交信息里写 "reset cache" 不该触发审批。
-                approval: ApprovalPolicy::DangerScan {
-                    patterns: vec![
-                        "\"action\":\"reset\"".to_string(),
-                        "\"action\":\"checkout\"".to_string(),
-                        "\"action\":\"restore\"".to_string(),
-                        "\"action\":\"merge\"".to_string(),
-                        "\"action\":\"push\"".to_string(),
-                        "\"sub\":\"drop\"".to_string(),
-                        "\"force\":true".to_string(),
-                        "\"mode\":\"hard\"".to_string(),
-                    ],
-                },
-                // git 自己管自己的历史：这里的"回滚"指工作区文件，工具不参与 checkpoint。
-                rollback: RollbackPolicy::None,
-                // 读写混在一个工具里：并行跑两条 git 命令（一条 reset 一条 diff）
-                // 会让第二个读到半截状态，串行是唯一安全的语义。
-                execution: Execution::Sequential,
-                termination: Termination::ContinueTurn,
-            },
-            ToolDescriptor {
                 name: "code_outline".to_string(),
                 summary: "解析代码文件结构大纲。".to_string(),
                 schema: json!({
@@ -580,7 +512,8 @@ mod tests {
     fn test_standard_tool_descriptors_are_valid_and_unique() {
         let list = standard_tool_descriptors();
         // 2026-10-19：`git_status` / `git_diff` / `git_log` 合并为一个 `git`（22 → 20）。
-        assert_eq!(list.len(), 20, "必须声明全部 20 个标准内置工具描述符");
+        // 2026-10-27：`git` 搬成插件 `plugins/git-tools`，基座描述符里不再有它（20 → 19）。
+        assert_eq!(list.len(), 19, "必须声明全部 19 个标准内置工具描述符");
 
         let mut seen = HashSet::new();
         for desc in list {
