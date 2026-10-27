@@ -638,11 +638,58 @@ impl AgentStore {
             .map(|t| t.id.clone())
     }
 
-    /// 删除会话
+    /// 删除会话（连带名下的子智能体会话），并把**按线程记账**的状态一起清掉。
+    ///
+    /// 早先只 `retain` 掉目标线程：子会话留在内存里（磁盘文件已被级联删除）、
+    /// `runningThreadIds` / 等待列表 / 排队指令也还挂着被删的 id，界面于是出现
+    /// "删了还在跑 / 还在排队"的幽灵条目。
     pub fn delete_thread(&mut self, thread_id: &str) -> bool {
+        // 先收集要一起删掉的子会话（父 → 子 → 孙……）
+        let mut doomed: Vec<String> = vec![thread_id.to_string()];
+        let mut cursor = 0;
+        while cursor < doomed.len() {
+            let parent = doomed[cursor].clone();
+            for thread in &self.threads {
+                if thread.parent_id.as_deref() == Some(parent.as_str())
+                    && !doomed.contains(&thread.id)
+                {
+                    doomed.push(thread.id.clone());
+                }
+            }
+            cursor += 1;
+        }
+
         let prev_len = self.threads.len();
-        self.threads.retain(|t| t.id != thread_id);
-        self.close_tab(thread_id);
+        self.threads.retain(|thread| !doomed.contains(&thread.id));
+        self.ui.open_tab_ids.retain(|id| !doomed.contains(id));
+        self.running_thread_ids.retain(|id| !doomed.contains(id));
+        self.waiting_thread_ids.retain(|id| !doomed.contains(id));
+        self.queue.retain(|item| !doomed.contains(&item.thread_id));
+        for id in &doomed {
+            self.delegation_depths.remove(id);
+        }
+
+        // 被删的可能正是激活会话：挑一个仍然存在的 Tab，没有再退到第一条。
+        if doomed.contains(&self.active_id) {
+            let next = self
+                .ui
+                .open_tab_ids
+                .iter()
+                .rev()
+                .find(|id| self.threads.iter().any(|thread| thread.id == **id))
+                .cloned()
+                .or_else(|| self.threads.first().map(|thread| thread.id.clone()));
+            match next {
+                Some(next) => {
+                    self.focus_thread(next);
+                }
+                None => {
+                    self.active_id.clear();
+                    self.ui.active_id.clear();
+                }
+            }
+        }
+
         if self.threads.is_empty() {
             self.create_thread(None, None);
         }
@@ -1240,6 +1287,55 @@ fn items_visibly_differ(a: &[Item], b: &[Item]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 删除会话必须连带清掉按线程记账的状态（运行 / 等待 / 排队 / 委派深度），
+    /// 并把激活会话落到一个仍然存在的会话上——否则界面会出现"删了还在跑/还在排队"。
+    #[test]
+    fn test_delete_thread_clears_runtime_bookkeeping_and_descendants() {
+        let temp_home =
+            std::env::temp_dir().join(format!("a_da_delete_store_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_home);
+        let home = agent_base::testing::TempAppHome::at(&temp_home);
+        let mut store = AgentStore::with_home("E:/ws".to_string(), &home);
+
+        let parent = store.create_thread(Some("父会话".to_string()), None);
+        let child = store.create_thread_with_details(
+            Some("子代理".to_string()),
+            None,
+            None,
+            None,
+            Some(true),
+            Some(parent.clone()),
+            Some("general_purpose".to_string()),
+        );
+        store.set_thread_running(&parent, true);
+        store.waiting_thread_ids.push(parent.clone());
+        store.queue.push(QueuedItem {
+            id: "q1".to_string(),
+            thread_id: parent.clone(),
+            text: "排队的话".to_string(),
+            enqueued_at: now_millis(),
+            images: None,
+        });
+        store.delegation_depths.insert(parent.clone(), 1);
+
+        assert!(store.delete_thread(&parent));
+
+        assert!(
+            !store.threads.iter().any(|t| t.id == parent || t.id == child),
+            "父子会话都必须从内存里删掉"
+        );
+        assert!(!store.running_thread_ids.contains(&parent));
+        assert!(!store.waiting_thread_ids.contains(&parent));
+        assert!(store.queue.is_empty(), "排队指令必须随会话一起清掉");
+        assert!(!store.delegation_depths.contains_key(&parent));
+        assert!(
+            store.threads.iter().any(|t| t.id == store.active_id),
+            "激活会话必须落在一个仍然存在的会话上，不能悬空指向已删 id"
+        );
+
+        let _ = std::fs::remove_dir_all(temp_home);
+    }
 
     /// 同一会话里新卡片的 `at` 必须**不比上一张小**。
     ///

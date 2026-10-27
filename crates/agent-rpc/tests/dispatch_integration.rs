@@ -555,6 +555,125 @@ async fn test_thread_create_binds_requested_workspace() {
     let _ = std::fs::remove_dir_all(&test_dir);
 }
 
+/// 🔴 回归：带钩子运行时时 `thread.delete` 必须**立即返回**。
+///
+/// 历史 bug：`THREAD_DELETE` 持有 store 写锁时跑 `beforeThreadDelete`，而钩子观测
+/// 的投影又去抢同一把写锁 → 同一任务重入 → 任务永不返回、guard 永不释放，整台
+/// agent 的 store 从此锁死（删除不生效，之后所有会话都切不动）。
+#[tokio::test]
+async fn test_thread_delete_with_hook_runner_returns_promptly() {
+    let store = Arc::new(RwLock::new(store_for_test("E:/codes/default_ws")));
+    let test_dir = std::env::temp_dir().join(format!("a_da_del_hook_{}", uuid::Uuid::new_v4()));
+    let session_mgr = Arc::new(SessionManager::new(Some(test_dir.clone())));
+    let hook_runner = Arc::new(agent_base::testing::ScriptedHookRunner::new());
+    let dispatcher = Dispatcher::new(
+        store.clone(),
+        session_mgr.clone(),
+        Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::with_home(test_home_dir())),
+        Arc::new(SkillManager::with_home(test_home_dir())),
+        None,
+    )
+    .with_hook_runner(hook_runner.clone());
+
+    let created = dispatcher
+        .dispatch("thread.create", serde_json::json!({ "title": "待删会话" }))
+        .await
+        .expect("thread.create 分发失败");
+    let tid = created
+        .get("threadId")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .to_string();
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        dispatcher.dispatch("thread.delete", serde_json::json!({ "threadId": tid })),
+    )
+    .await
+    .expect("thread.delete 卡死：store 写锁被同一任务重入")
+    .expect("thread.delete 分发失败");
+
+    assert_eq!(result.get("ok").and_then(|v| v.as_bool()), Some(true));
+    assert!(
+        hook_runner
+            .calls()
+            .iter()
+            .any(|point| point == "beforeThreadDelete"),
+        "删除必须真的跑过 beforeThreadDelete（不能为了避死锁把钩子跳过）"
+    );
+    assert!(
+        !session_mgr
+            .get_session_path("E:/codes/default_ws", &tid)
+            .exists(),
+        "会话文件必须被真正删掉"
+    );
+    assert!(
+        !store.read().await.threads.iter().any(|t| t.id == tid),
+        "内存里的会话也必须被删掉"
+    );
+
+    let _ = std::fs::remove_dir_all(&test_dir);
+}
+
+/// 钩子拒绝时必须如实回报，而且**不能动磁盘**（先删文件再拦下 = 数据没了还说没删）。
+#[tokio::test]
+async fn test_thread_delete_denied_by_hook_keeps_session() {
+    let store = Arc::new(RwLock::new(store_for_test("E:/codes/default_ws")));
+    let test_dir = std::env::temp_dir().join(format!("a_da_del_deny_{}", uuid::Uuid::new_v4()));
+    let session_mgr = Arc::new(SessionManager::new(Some(test_dir.clone())));
+    let hook_runner = Arc::new(
+        agent_base::testing::ScriptedHookRunner::new()
+            .deny_at("beforeThreadDelete", "这条会话要保留"),
+    );
+    let dispatcher = Dispatcher::new(
+        store.clone(),
+        session_mgr.clone(),
+        Arc::new(CheckpointManager::new(Some(test_dir.clone()))),
+        Arc::new(SubagentManager::new()),
+        Arc::new(ApprovalManager::new()),
+        Arc::new(PluginManager::with_home(test_home_dir())),
+        Arc::new(SkillManager::with_home(test_home_dir())),
+        None,
+    )
+    .with_hook_runner(hook_runner);
+
+    let created = dispatcher
+        .dispatch("thread.create", serde_json::json!({ "title": "不能删的会话" }))
+        .await
+        .expect("thread.create 分发失败");
+    let tid = created
+        .get("threadId")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .to_string();
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        dispatcher.dispatch("thread.delete", serde_json::json!({ "threadId": tid })),
+    )
+    .await
+    .expect("thread.delete 卡死（拒绝路径同样不能重入 store 写锁）")
+    .expect("thread.delete 分发失败");
+
+    assert_eq!(result.get("ok").and_then(|v| v.as_bool()), Some(false));
+    assert_eq!(result.get("denied").and_then(|v| v.as_bool()), Some(true));
+    assert!(
+        store.read().await.threads.iter().any(|t| t.id == tid),
+        "被拒绝后会话必须还在内存里"
+    );
+    assert!(
+        session_mgr
+            .get_session_path("E:/codes/default_ws", &tid)
+            .exists(),
+        "被拒绝后磁盘文件必须原样保留"
+    );
+
+    let _ = std::fs::remove_dir_all(&test_dir);
+}
+
 #[tokio::test]
 async fn test_dispatcher_provider_management() {
     let test_dir = std::env::temp_dir().join(format!("a_da_test_{}", uuid::Uuid::new_v4()));

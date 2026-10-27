@@ -1161,34 +1161,103 @@ impl SessionManager {
         threads
     }
 
-    /// 删除指定会话并级联删除名下的子会话
-    pub fn delete_session(&self, session_id: &str, workspace: Option<&str>) -> Result<()> {
-        let file_path = if let Some(ws) = workspace {
-            self.get_session_path(ws, session_id)
-        } else if let Some(path) = self.find_session_path(session_id) {
-            path
-        } else {
-            return Ok(());
+    /// 所有会话文件（根目录直挂 + 各工作区目录下的一层）。
+    ///
+    /// 与 [`Self::restore_all_threads`] 的扫描口径一致：删除必须能覆盖"读得回来的"
+    /// 全部位置，否则删完又被下一次同步读回来。
+    fn all_session_files(&self) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let root = self.sessions_dir();
+        let Ok(entries) = fs::read_dir(&root) else {
+            return out;
         };
-
-        if file_path.exists() {
-            let _ = fs::remove_file(&file_path);
-        }
-
-        // 级联删除名下的所有子智能体会话
-        if let Some(parent_dir) = file_path.parent() {
-            if let Some(ws) = self.read_workspace_pointer(parent_dir) {
-                if let Ok(sub_list) = self.list_sessions_for_workspace(&ws) {
-                    for item in sub_list {
-                        if item.parent_id.as_deref() == Some(session_id) {
-                            let _ = fs::remove_file(&item.file_path);
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                out.push(path);
+            } else if path.is_dir() {
+                if let Ok(files) = fs::read_dir(&path) {
+                    for file in files.flatten() {
+                        let path = file.path();
+                        if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                        {
+                            out.push(path);
                         }
                     }
                 }
             }
         }
+        out
+    }
 
-        Ok(())
+    /// 读一个会话文件的 header（只读第一行；解析失败当作没有）。
+    fn read_session_header(path: &Path) -> Option<SessionHeader> {
+        let file = File::open(path).ok()?;
+        let mut first = String::new();
+        BufReader::new(file).read_line(&mut first).ok()?;
+        let header: SessionHeader = serde_json::from_str(first.trim()).ok()?;
+        (header.entry_type == "session").then_some(header)
+    }
+
+    /// 删除指定会话并级联删除名下的子会话。
+    ///
+    /// 🔴 文件定位**不能只按给定 workspace**：`thread.setWorkspace` 只改会话属性、
+    /// 不移动文件，老盘上还有根目录直挂的 `.jsonl`。按单一目录拼路径会让删除落空，
+    /// 而下一次 `sync_threads_from_disk` 又把它读回内存——表现就是"删了又回来"。
+    /// 所以这里跨所有工作区目录兜底，并把 IO 失败**如实回传**：调用方据此提示重试，
+    /// 而不是先删内存、留下文件等着被同步复活。
+    ///
+    /// 返回值：是否真的删掉了文件（false = 本来就没有文件，例如还没落盘的空会话）。
+    pub fn delete_session(&self, session_id: &str, workspace: Option<&str>) -> Result<bool> {
+        let mut targets: Vec<PathBuf> = Vec::new();
+
+        // ① 首选路径（快路径）：调用方给的工作区
+        if let Some(ws) = workspace {
+            let preferred = self.get_session_path(ws, session_id);
+            if preferred.exists() {
+                targets.push(preferred);
+            }
+        }
+
+        // ② 兜底：同名会话文件可能落在别的（或改绑前/老格式的）目录，甚至根目录
+        let file_name = format!("{}.jsonl", safe_id(session_id));
+        let all_files = self.all_session_files();
+        for path in &all_files {
+            if path.file_name().and_then(|name| name.to_str()) == Some(file_name.as_str()) {
+                targets.push(path.clone());
+            }
+        }
+
+        // ③ 级联：名下所有子会话（同样跨工作区）
+        for path in &all_files {
+            if targets.contains(path) {
+                continue;
+            }
+            if let Some(header) = Self::read_session_header(path) {
+                if header.parent_id.as_deref() == Some(session_id) {
+                    targets.push(path.clone());
+                }
+            }
+        }
+
+        targets.sort();
+        targets.dedup();
+        if targets.is_empty() {
+            return Ok(false);
+        }
+
+        let mut failures: Vec<String> = Vec::new();
+        for path in &targets {
+            if let Err(error) = fs::remove_file(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    failures.push(format!("{}: {error}", path.display()));
+                }
+            }
+        }
+        if !failures.is_empty() {
+            anyhow::bail!("删除会话文件失败：{}", failures.join("；"));
+        }
+        Ok(true)
     }
 
     /// 归档一份会话副本（`<id>.jsonl.archived`）
@@ -1223,6 +1292,44 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 删除会话时文件定位必须跨工作区兜底：`thread.setWorkspace` 只改会话属性、
+    /// 不移动文件，按新工作区拼路径会删空，下一次同步又把它读回来。
+    #[test]
+    fn test_delete_session_finds_file_in_other_workspace() -> Result<()> {
+        let temp_dir = std::env::temp_dir().join(format!("a_da_delete_ws_{}", uuid::Uuid::new_v4()));
+        let manager = SessionManager::new(Some(temp_dir.clone()));
+        let old_ws = "E:/old_workspace";
+        let new_ws = "E:/new_workspace";
+        manager.create_session("thread_rebound", old_ws, Some("改绑过的会话"), None, None)?;
+
+        // 模拟 thread.setWorkspace 之后：调用方给的是新工作区，文件仍在旧目录
+        assert!(manager.delete_session("thread_rebound", Some(new_ws))?);
+        assert!(!manager.get_session_path(old_ws, "thread_rebound").exists());
+        assert!(!manager.get_session_path(new_ws, "thread_rebound").exists());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
+
+    /// 级联删除子会话同样要跨工作区（父/子不在同一目录时也得能删干净）。
+    #[test]
+    fn test_delete_session_cascades_children_across_workspaces() -> Result<()> {
+        let temp_dir = std::env::temp_dir().join(format!("a_da_delete_cascade_{}", uuid::Uuid::new_v4()));
+        let manager = SessionManager::new(Some(temp_dir.clone()));
+        let parent = "thread_parent_cascade";
+        let child = "thread_child_cascade";
+        manager.create_session(parent, "E:/ws_a", Some("父会话"), None, None)?;
+        manager.create_session(child, "E:/ws_b", Some("子代理"), Some(parent), Some("general_purpose"))?;
+
+        // 故意给一个不对的工作区：兜底扫描必须仍然删掉父与子
+        assert!(manager.delete_session(parent, Some("E:/not_the_workspace"))?);
+        assert!(!manager.get_session_path("E:/ws_a", parent).exists());
+        assert!(!manager.get_session_path("E:/ws_b", child).exists());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
 
     /// 端到端：老格式子会话在**读盘时**就被补上短 id，并且**写回磁盘**、且只写一次。
     #[test]

@@ -551,9 +551,17 @@ impl Dispatcher {
                     .get("threadId")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
-                let mut store = self.store.write().await;
-                // 会话文件躺在它自己的工作区目录下，删除前先取出来
-                let ws = thread_workspace(&store, thread_id);
+                // 会话文件躺在它自己的工作区目录下，删除前先取出来（短读锁，拷贝即走）
+                let ws = {
+                    let store = self.store.read().await;
+                    thread_workspace(&store, thread_id)
+                };
+                // 🔴 轮外钩子必须在**任何状态变更之前**、且**不持有 store 锁**时跑。
+                //
+                // 钩子观测的投影自己要拿 store 写锁（`hooks.rs::project_hook_observations`），
+                // 持锁再跑就是同一任务重入同一把写锁：任务永远等自己，agent 的 store 从此
+                // 锁死——表现是删除不生效，之后所有会话（包括没在跑的）都切不动。
+                // 顺序与 `beforeThreadCreate` 保持一致（见上面 THREAD_CREATE 的注释）。
                 let before = self
                     .run_out_of_turn_before(
                         agent_base::ports::hooks::points::BEFORE_THREAD_DELETE,
@@ -571,10 +579,21 @@ impl Dispatcher {
                         );
                     }
                 }
-                let deleted = store.delete_thread(thread_id);
-                drop(store);
 
-                let _ = self.session_mgr.delete_session(thread_id, Some(&ws));
+                // 落盘先删：文件删不掉时**不能**先把内存里那条删掉——否则下一次
+                // `sync_threads_from_disk` 会把它从磁盘读回来，用户看到的就是
+                // "删了，过一会儿又出现了"。失败如实回报，由调用方提示重试。
+                let files_deleted = self
+                    .session_mgr
+                    .delete_session(thread_id, Some(&ws))
+                    .map_err(|error| {
+                        ProtocolError::internal_error(format!("删除会话文件失败：{error:#}"))
+                    })?;
+
+                let deleted = {
+                    let mut store = self.store.write().await;
+                    store.delete_thread(thread_id)
+                };
                 let _ = self.checkpoint_mgr.discard(thread_id);
                 let notes = self
                     .run_out_of_turn_after(
@@ -584,6 +603,7 @@ impl Dispatcher {
                             "threadId": thread_id,
                             "workspace": ws,
                             "deleted": deleted,
+                            "filesDeleted": files_deleted,
                         }),
                     )
                     .await;
@@ -593,7 +613,9 @@ impl Dispatcher {
                 }
 
                 Ok(serde_json::json!({
-                    "ok": deleted,
+                    // 内存里有这条会话 → 删掉了；或者只剩磁盘文件 → 也删掉了。
+                    // 两者都 false 才是真的什么都没删。
+                    "ok": deleted || files_deleted,
                     "message": null,
                     "notes": notes
                 }))

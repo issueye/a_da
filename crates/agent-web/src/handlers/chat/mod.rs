@@ -1308,20 +1308,32 @@ pub async fn delete_thread(
     if thread_id.trim().is_empty() {
         return Err(AppError::bad("删除会话缺少 threadId"));
     }
+    let back = thread_action_back(form.back.as_deref(), &thread_id);
+    let failed = |message: String| -> Response {
+        if back == "/" {
+            redirect(&format!("/?error={}", encode_query(&message)))
+        } else {
+            redirect(&format!("{back}?error={}", encode_query(&message)))
+        }
+    };
+
     match state.agent.delete_thread(&thread_id).await {
-        Ok(_) => Ok(redirect(&format!(
-            "{}?notice=thread_deleted",
-            thread_action_back(form.back.as_deref(), &thread_id)
-        ))),
+        // 插件可以在 `beforeThreadDelete` 里拦下删除：这是**正常的业务结果**，
+        // 不能当成功提示（历史 bug：删没删成都回报"已删除会话"）。
+        Ok(value) if value.get("ok").and_then(Value::as_bool) == Some(false) => {
+            let reason = value
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|reason| !reason.is_empty())
+                .unwrap_or("删除会话被拒绝");
+            tracing::warn!("删除会话被拒绝: {reason}");
+            Ok(failed(format!("删除会话失败：{reason}")))
+        }
+        Ok(_) => Ok(redirect(&format!("{back}?notice=thread_deleted"))),
         Err(error) => {
-            let back = thread_action_back(form.back.as_deref(), &thread_id);
-            if back == "/" {
-                tracing::warn!("删除会话失败: {error:#}");
-                let message = format!("删除会话失败：{}", public_reason(&error));
-                Ok(redirect(&format!("/?error={}", encode_query(&message))))
-            } else {
-                Ok(action_failed(&back, "删除会话失败", error))
-            }
+            tracing::warn!("删除会话失败: {error:#}");
+            Ok(failed(format!("删除会话失败：{}", public_reason(&error))))
         }
     }
 }

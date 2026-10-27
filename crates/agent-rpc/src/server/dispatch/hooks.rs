@@ -102,12 +102,41 @@ impl Dispatcher {
         if obs.is_empty() {
             return;
         }
-        let mut store_w = self.store.write().await;
-        for o in &obs {
-            crate::server::diag::project_out_of_turn(
-                &mut store_w,
-                &agent_base::ports::hooks::observation_to_diagnostic(o),
-            );
+        // 🔴 **不能在这里阻塞重入**：调用方可能正握着 store 写锁（历史上的
+        // `thread.delete` 就是），此时再 `write().await` 等于同一任务等自己手里的锁，
+        // 任务永不恢复、guard 永不释放，整台 agent 的 store 从此锁死。
+        // 观测是诊断、不是事实：先试一次（绝大多数路径没有竞争）；拿不到就交给后台
+        // 任务在锁释放后补投影，晚一拍不影响任何判定。
+        match self.store.try_write() {
+            Ok(mut store_w) => {
+                for o in &obs {
+                    crate::server::diag::project_out_of_turn(
+                        &mut store_w,
+                        &agent_base::ports::hooks::observation_to_diagnostic(o),
+                    );
+                }
+            }
+            Err(_) => {
+                // 没有运行时（极少数同步驱动的调用点）就放弃这次投影：诊断可以丢，
+                // 阻塞调用方换取一条日志不值得。
+                let Ok(handle) = tokio::runtime::Handle::try_current() else {
+                    tracing::debug!(
+                        "[hooks] store 写锁被占用且没有异步运行时，跳过 {} 条轮外观测",
+                        obs.len()
+                    );
+                    return;
+                };
+                let store = Arc::clone(&self.store);
+                handle.spawn(async move {
+                    let mut store_w = store.write().await;
+                    for o in &obs {
+                        crate::server::diag::project_out_of_turn(
+                            &mut store_w,
+                            &agent_base::ports::hooks::observation_to_diagnostic(o),
+                        );
+                    }
+                });
+            }
         }
     }
 }
