@@ -27,6 +27,36 @@ pub fn set_clock(c: Box<dyn Clock>) -> Result<(), Box<dyn Clock>> {
 /// 不是领域状态；放静态可以避免动结构体与所有构造点（把改动面压到最小）。
 static SYNC_STAMPS: std::sync::Mutex<Option<Vec<(std::path::PathBuf, u64, u64)>>> =
     std::sync::Mutex::new(None);
+
+/// 整树同步的**锁外第一阶段**：会话文件有变化时把磁盘会话解析好返回，没变化返回 `None`。
+///
+/// 🔴 为什么必须在锁外：`restore_all_threads` 会把 `sessions/` 下每个会话文件重新解析
+/// 一遍（实测环境 2.8MB + 1.3MB + 454KB + …），是秒级 CPU 活儿。它原来整个压在 store
+/// 写锁里，WS 读取循环逐条 await，于是批准/发消息只能排队（实测"点批准等 6437ms"）。
+/// 现在解析在这里做完，调用方只在 [`AgentStore::merge_disk_threads`] 里短暂持有写锁。
+///
+/// `force`：有**正在跑的子会话**时必须解析——子会话的进度只从磁盘回流，
+/// `restore_all_threads` 是它唯一的实时来源。
+pub fn load_changed_threads(
+    session_mgr: &agent_node::session::SessionManager,
+    force: bool,
+) -> Option<Vec<Thread>> {
+    // 🔴 **一个文件都没动，就别解析**：先 stat 比对 `(mtime, len)`。
+    if !force {
+        let stamps = session_mgr.session_file_stamps();
+        let mut guard = SYNC_STAMPS.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.as_ref() == Some(&stamps) {
+            return None;
+        }
+        *guard = Some(stamps);
+    }
+    let disk_threads = session_mgr.restore_all_threads();
+    if disk_threads.is_empty() {
+        return None;
+    }
+    Some(disk_threads)
+}
+
 pub fn now_millis() -> u64 {
     clock().now_ms().max(0) as u64
 }
@@ -542,32 +572,21 @@ impl AgentStore {
         id
     }
 
-    /// 同步并合并来自磁盘持久化存储的会话（支持多 Agent 实例/跨网关创建的子智能体会话动态发现）
+    /// 同步并合并来自磁盘持久化存储的会话（支持多 Agent 实例/跨网关创建的子智能体会话动态发现）。
+    ///
+    /// 这是**兼容入口**：调用方已经握着 store 写锁时用它。新代码优先走两阶段——
+    /// [`load_changed_threads`]（锁外解析）+ [`Self::merge_disk_threads`]（锁内合并），
+    /// 别把秒级的 `restore_all_threads` 压在写锁里。
     pub fn sync_threads_from_disk(&mut self, session_mgr: &agent_node::session::SessionManager) -> bool {
-        // 🔴 **一个文件都没动，就别解析**。
-        //
-        // 原先每次都把 sessions/ 下每个会话文件重新解析一遍（实测环境 2.8MB + 1.3MB + 454KB + …），
-        // 秒级 CPU，还握着 store 写锁；WS 读取循环逐条 await，于是批准/发消息只能排队
-        // ——实测“点批准等 6437ms → 限流后 2207ms”，那 2.2 秒就是它单次的成本。
-        // 这里先 stat 比对 `(mtime, len)`：没变直接 return false（不去碰锁里的解析）。
-        // 例外：有**正在跑的子会话**时不做早退——子会话的进度只从磁盘回流，
-        // `restore_all_threads` 是它唯一的实时来源（守门测试 test_running_subagent_thread_still_merges_disk_content 钉的就是这条）。
-        let live_subagent = self
-            .threads
-            .iter()
-            .any(|t| t.is_subagent == Some(true) && self.running_thread_ids.contains(&t.id));
-        if !live_subagent {
-            let stamps = session_mgr.session_file_stamps();
-            let mut guard = SYNC_STAMPS.lock().unwrap_or_else(|e| e.into_inner());
-            if guard.as_ref() == Some(&stamps) {
-                return false;
-            }
-            *guard = Some(stamps);
+        let force = self.needs_full_disk_scan();
+        match load_changed_threads(session_mgr, force) {
+            Some(disk_threads) => self.merge_disk_threads(disk_threads),
+            None => false,
         }
-        let disk_threads = session_mgr.restore_all_threads();
-        if disk_threads.is_empty() {
-            return false;
-        }
+    }
+
+    /// 把**锁外解析好的**磁盘会话合并进内存（只做合并，不碰磁盘）。
+    pub fn merge_disk_threads(&mut self, disk_threads: Vec<Thread>) -> bool {
         let mut changed = false;
         for dt in disk_threads {
             // 「运行中就不合并磁盘」这条保护只对**本进程自己流式吐字**的会话成立。
@@ -734,6 +753,29 @@ impl AgentStore {
     /// 查询指定会话是否处于运行中
     pub fn is_thread_running(&self, thread_id: &str) -> bool {
         self.running_thread_ids.iter().any(|id| id == thread_id)
+    }
+
+    /// 快照 / 增量帧是否需要投影这条会话的完整 items。
+    ///
+    /// 只有**激活 / 打开的 Tab / 运行中 / 子智能体**会话带 items；其余历史会话只留元数据
+    /// （否则一份长历史就会把每一帧撑爆）。快照与增量帧必须用**同一份**判据，
+    /// 否则"快照里有、增量里没有"会让客户端把卡片整批判成 removed。
+    pub fn projects_thread_items(&self, thread: &Thread) -> bool {
+        thread.id == self.active_id
+            || self.ui.open_tab_ids.iter().any(|id| id == &thread.id)
+            || self.running_thread_ids.iter().any(|id| id == &thread.id)
+            || thread.is_subagent.unwrap_or(false)
+    }
+
+    /// 是否需要跳过"文件没变就不解析"的早退。
+    ///
+    /// 例外只有一种：**有正在跑的子会话**——子会话的进度只从磁盘回流，
+    /// `restore_all_threads` 是它唯一的实时来源。这个判断要在**取写锁之前**做，
+    /// 解析才能挪到锁外（两阶段同步）。
+    pub fn needs_full_disk_scan(&self) -> bool {
+        self.threads
+            .iter()
+            .any(|t| t.is_subagent == Some(true) && self.running_thread_ids.contains(&t.id))
     }
 
     /// 追加排队消息

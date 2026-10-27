@@ -2,5 +2,5 @@ pub mod snapshot;
 pub mod patch;
 pub mod store;
 
-pub use snapshot::{generate_snapshot, generate_snapshot_with_seq};
-pub use store::{next_id, now_millis, AgentStore};
+pub use snapshot::{generate_snapshot, generate_snapshot_meta, generate_snapshot_with_seq};
+pub use store::{load_changed_threads, next_id, now_millis, AgentStore};

@@ -116,46 +116,47 @@ impl StateBroadcaster {
     pub async fn broadcast_immediate(&self) {
         self.dirty.store(false, Ordering::Relaxed);
         let current_seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
-        let snapshot = {
-            let store = self.store.read().await;
-            generate_snapshot_with_seq(&store, current_seq)
-        };
-        let base_seq = self.last_sent_seq.swap(current_seq, Ordering::Relaxed);
 
         let payload = if self.patch_enabled() {
-            // 本帧要投影的全部 item（只数带 items 的会话）
-            let current: Vec<(String, agent_proto::Item)> = snapshot
-                .threads
-                .iter()
-                .filter(|t| !t.items.is_empty())
-                .flat_map(|t| t.items.iter().map(move |it| (t.id.clone(), it.clone())))
-                .collect();
-
-            let delta = {
+            // 增量帧只给 `meta`（不带 items）+ 变过的条目：
+            //  - 不生成全量快照——那会先把所有 items 克隆一遍，再把 items 整段清掉；
+            //  - diff 直接遍历引用，只有**真的变了**的条目才 clone 进 upserted。
+            // 流式期间每帧都走这条路，这是长会话下最大的一笔固定开销。
+            let (meta, mut delta) = {
+                let store = self.store.read().await;
+                let meta = crate::state::generate_snapshot_meta(&store, current_seq);
+                let current: Vec<(&str, &agent_proto::Item)> = store
+                    .threads
+                    .iter()
+                    .filter(|thread| store.projects_thread_items(thread))
+                    .flat_map(|thread| {
+                        thread
+                            .items
+                            .iter()
+                            .map(move |item| (thread.id.as_str(), item))
+                    })
+                    .collect();
                 let mut versions = self.versions.lock().expect("版本表锁被毒化");
-                let d = crate::state::patch::diff_items(&versions, &current);
+                let delta = crate::state::patch::diff_items(&versions, &current);
                 crate::state::patch::advance_versions(&mut versions, &current);
-                d
+                (meta, delta)
             };
+            // 与全量快照**同一套限幅**：upserted 里可能带着超大工具输出，
+            // 不截断就会让一帧重新背上几 MB（正是增量帧要解决的问题）。
+            for (_, item) in delta.upserted.iter_mut() {
+                crate::state::snapshot::shrink_item_in_place(item);
+            }
+            let base_seq = self.last_sent_seq.swap(current_seq, Ordering::Relaxed);
 
             // `meta` 与快照**同形**，只是各会话不带 items——客户端 applyPatch 正是这么消费的：
             // 先用 meta 覆盖线程元数据与小字段，再按 upserted/removed 合并 item。
-            let mut meta = serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null);
-            if let Some(threads) = meta.get_mut("threads").and_then(|t| t.as_array_mut()) {
-                for t in threads.iter_mut() {
-                    if let Some(obj) = t.as_object_mut() {
-                        obj.insert("items".to_string(), serde_json::json!([]));
-                    }
-                }
-            }
-
             serde_json::json!({
                 "jsonrpc": "2.0",
                 "method": EVT_STATE_PATCH,
                 "params": {
                     "seq": current_seq,
                     "baseSeq": base_seq,
-                    "meta": meta,
+                    "meta": serde_json::to_value(&meta).unwrap_or(serde_json::Value::Null),
                     "upserted": delta
                         .upserted
                         .iter()
@@ -169,8 +170,14 @@ impl StateBroadcaster {
                 }
             })
         } else {
-            let event = SnapshotEvent {
-                seq: current_seq,
+            let snapshot = {
+                let store = self.store.read().await;
+                generate_snapshot_with_seq(&store, current_seq)
+            };
+            // 全量帧没有 baseSeq，但"已发出的版本"仍要推进：
+            // `session.snapshot` 的响应要带它（客户端据此对齐增量帧）。
+            self.last_sent_seq.store(current_seq, Ordering::Relaxed);
+            let event = SnapshotEvent {                seq: current_seq,
                 topic: EVT_STATE_SNAPSHOT.to_string(),
                 payload: snapshot,
             };
@@ -440,5 +447,54 @@ mod tests {
             full.len(),
             steady.len()
         );
+    }
+
+    /// 增量帧的 `upserted` 必须**和全量快照同一套限幅**：一条几 MB 的工具输出
+    /// 不能借 `upserted` 把单帧重新撑爆（那会让"增量帧"失去意义）。
+    #[tokio::test]
+    async fn test_patch_upserted_caps_huge_tool_output() {
+        let store = Arc::new(RwLock::new(AgentStore::new(
+            "E:/test_patch_cap".to_string(),
+        )));
+        let seq = Arc::new(AtomicU64::new(0));
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let broadcaster = StateBroadcaster::new(store.clone(), seq, tx);
+
+        let limit = crate::state::snapshot::SNAPSHOT_FIELD_LIMIT;
+        {
+            let mut s = store.write().await;
+            let tid = s.create_thread(Some("超大输出".to_string()), None);
+            let huge = "x".repeat(limit * 4);
+            s.start_tool_call(&tid, "call_huge", "run_command", "{}");
+            s.finish_tool_call(
+                &tid,
+                "call_huge",
+                true,
+                Some(huge),
+                Some(1),
+                Some(0),
+                Some(1),
+                None,
+            );
+        }
+
+        broadcaster.enable_patch_mode();
+        broadcaster.broadcast_immediate().await;
+        let frame = rx.recv().await.expect("增量首帧");
+        let value: serde_json::Value = serde_json::from_str(&frame).expect("增量帧应是 JSON");
+        let output = value["params"]["upserted"]
+            .as_array()
+            .expect("upserted 应是数组")
+            .iter()
+            .find(|u| u["item"]["callId"].as_str() == Some("call_huge"))
+            .and_then(|u| u["item"]["output"].as_str())
+            .expect("增量帧里应有该工具卡");
+
+        assert!(
+            output.len() < limit + 512,
+            "upserted 必须限幅（实际 {} 字节）",
+            output.len()
+        );
+        assert!(output.contains("本帧已截断"), "截断要如实说明：{output:.80}");
     }
 }

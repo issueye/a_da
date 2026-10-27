@@ -107,6 +107,18 @@ impl Dispatcher {
         self.pm_workspace_engines.lock().await.clear();
     }
 
+    /// 需要时把磁盘上的新会话并进内存（两阶段：锁外解析，锁内合并且只持一小会儿）。
+    ///
+    /// 用于"内存里找不到这条会话"的兜底路径（打开 Tab / 聚焦 / 快照）。
+    /// 解析（`restore_all_threads`，秒级）不再压在 store 写锁里。
+    async fn ensure_threads_loaded(&self) {
+        let force = self.store.read().await.needs_full_disk_scan();
+        if let Some(disk_threads) = crate::state::load_changed_threads(&self.session_mgr, force) {
+            let mut store = self.store.write().await;
+            store.merge_disk_threads(disk_threads);
+        }
+    }
+
     pub async fn dispatch(
         &self,
         method: &str,
@@ -247,8 +259,16 @@ impl Dispatcher {
             }
 
             SESSION_SNAPSHOT => {
-                let mut store = self.store.write().await;
-                store.sync_threads_from_disk(&self.session_mgr);
+                // 两阶段同步：`restore_all_threads` 是秒级解析，放到 store 锁外；
+                // 写锁里只合并解析结果。快照本身是只读投影，也用读锁生成——
+                // 否则一次 200ms+ 的快照会把 focus / items.page 一起堵在写锁后面。
+                let force = self.store.read().await.needs_full_disk_scan();
+                if let Some(disk_threads) =
+                    crate::state::load_changed_threads(&self.session_mgr, force)
+                {
+                    let mut store = self.store.write().await;
+                    store.merge_disk_threads(disk_threads);
+                }
                 // 响应必须带**当前已发出的状态版本**（不能写死 0）。
                 // 客户端把它的 `seq` 记为 `lastSnapshotSeq`，下一帧增量帧的 `baseSeq` 就是它；
                 // 写死 0 时比对永远失败 → 客户端每帧都判"缺帧"并发起自愈请求 → 死循环
@@ -258,8 +278,10 @@ impl Dispatcher {
                     .as_ref()
                     .map(|b| b.last_sent_seq())
                     .unwrap_or(0);
-                let snapshot = generate_snapshot_with_seq(&store, seq);
-                drop(store);
+                let snapshot = {
+                    let store = self.store.read().await;
+                    generate_snapshot_with_seq(&store, seq)
+                };
                 Ok(serde_json::to_value(snapshot)
                     .map_err(|e| ProtocolError::internal_error(e.to_string()))?)
             }
@@ -350,10 +372,17 @@ impl Dispatcher {
                     .get("threadId")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
-                let mut store = self.store.write().await;
-                if !store.threads.iter().any(|t| t.id == thread_id) {
-                    store.sync_threads_from_disk(&self.session_mgr);
+                let known = self
+                    .store
+                    .read()
+                    .await
+                    .threads
+                    .iter()
+                    .any(|t| t.id == thread_id);
+                if !known {
+                    self.ensure_threads_loaded().await;
                 }
+                let mut store = self.store.write().await;
                 store.open_tab(thread_id.to_string());
                 drop(store);
 
@@ -385,10 +414,17 @@ impl Dispatcher {
                     .get("threadId")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
-                let mut store = self.store.write().await;
-                if !store.threads.iter().any(|t| t.id == thread_id) {
-                    store.sync_threads_from_disk(&self.session_mgr);
+                let known = self
+                    .store
+                    .read()
+                    .await
+                    .threads
+                    .iter()
+                    .any(|t| t.id == thread_id);
+                if !known {
+                    self.ensure_threads_loaded().await;
                 }
+                let mut store = self.store.write().await;
                 if !store.focus_thread(thread_id.to_string()) {
                     return Err(ProtocolError::new(
                         AppErrorCode::NotFound.code(),
@@ -1566,10 +1602,17 @@ impl Dispatcher {
                     .get("threadId")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ProtocolError::invalid_params("缺少 threadId 参数"))?;
-                let mut store = self.store.write().await;
-                if !store.threads.iter().any(|t| t.id == thread_id) {
-                    store.sync_threads_from_disk(&self.session_mgr);
+                let known = self
+                    .store
+                    .read()
+                    .await
+                    .threads
+                    .iter()
+                    .any(|t| t.id == thread_id);
+                if !known {
+                    self.ensure_threads_loaded().await;
                 }
+                let mut store = self.store.write().await;
                 store.focus_thread(thread_id.to_string());
                 drop(store);
 

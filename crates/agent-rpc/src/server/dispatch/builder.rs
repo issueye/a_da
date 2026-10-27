@@ -15,29 +15,35 @@ impl Dispatcher {
         let session_mgr_bg = session_mgr.clone();
         let broadcaster_bg = broadcaster.clone();
         tokio::spawn(async move {
-            // 🔴 **整树会话同步很贵，不能每 1.5s 跑一次**。
+            // 🔴 **整树会话同步很贵**：`restore_all_threads` 会把 `sessions/` 下
+            // **每个**会话文件重新解析一遍（实测环境有 2.8MB + 1.3MB + 454KB + … 的会话），
+            // 是**秒级** CPU 活儿。它原来整段压在 store 写锁里，而 WS 读取循环逐条 await，
+            // 于是批准/发消息只能排队（实测"点批准等 6437ms"）。
             //
-            // 实测（用户报"点批准要等 2–4 秒→四段日志实测 ②→③ 6437ms"）：
-            // `sync_threads_from_disk` 会把 `sessions/` 下**每个**会话文件重新解析一遍
-            // （实测环境有 2.8MB + 1.3MB + 454KB + … 的会话），是**秒级** CPU 活儿；
-            // 它还要握着 store 写锁，而 WS 读取循环是逐条 await 的——
-            // 于是批准/发消息这类请求只能在它后面排队，表现就是"点了没反应"。
-            //
-            // 先做**止损式**限流：间隔 1.5s → 10s，并把耗时打进日志（`[sync]`），
-            // 让"它到底多贵"变成可见数字。真正的修法是 mtime 过滤（只解析改过的文件），
-            // 见 docs/protocol/README.md §4.4 的后续项——那时才能把间隔调回来。
+            // 现在拆成两阶段：stat 比对 + 解析都在**锁外**（`load_changed_threads`），
+            // 写锁只做一次内存合并。没文件变化时连解析都不做；有变化时也不再挡住别的请求。
+            // 间隔仍是 10s：有**运行中的子会话**时必须每拍全量解析（它的进度只从磁盘回流），
+            // 缩短间隔会让那一路的解析成本线性翻倍。
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
                 let started = std::time::Instant::now();
-                let mut s = store_bg.write().await;
-                let changed = s.sync_threads_from_disk(&session_mgr_bg);
-                drop(s);
+                let force = store_bg.read().await.needs_full_disk_scan();
+                let Some(disk_threads) =
+                    crate::state::load_changed_threads(&session_mgr_bg, force)
+                else {
+                    continue;
+                };
+                let changed = {
+                    let mut store_w = store_bg.write().await;
+                    store_w.merge_disk_threads(disk_threads)
+                };
                 let ms = started.elapsed().as_millis();
                 if ms >= 200 {
                     tracing::warn!(
-                        "[sync] 整树会话同步耗时 {}ms（changed={}）——会话文件越多越贵，待做 mtime 过滤",
+                        "[sync] 整树会话同步耗时 {}ms（changed={}）——解析已在锁外，\
+                         超过 200ms 说明这一拍变化的会话文件很多",
                         ms,
                         changed
                     );

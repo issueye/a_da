@@ -57,30 +57,34 @@ pub fn fingerprint(item: &Item) -> u64 {
 /// - `prev`：上次发出去的 `{(threadId,itemId) → 指纹}`（新连接传空表 → 全部当新增）；
 /// - `current`：本次要投影的 item 列表（**同一个 thread 的 item 也要带 threadId**）。
 ///
+/// 参数用**引用**而不是克隆后的 `Item`：流式期间每帧都要过一遍全部卡片，
+/// 先克隆一份再算差量等于把最贵的那笔开销付了两遍（实测一条长会话有几百张卡）。
+/// 只有**真的变了**的条目才会被克隆进 `upserted`。
+///
 /// 语义：
 /// - 指纹相同 → **不发**（这是省掉 99% 字节的地方）；
 /// - `prev` 里有、`current` 里没有 → `removed`（卡片被删/会话被清）；
 /// - 其余 → `upserted`。
-pub fn diff_items(prev: &BTreeMap<ItemKey, u64>, current: &[(String, Item)]) -> ItemDelta {
+pub fn diff_items(prev: &BTreeMap<ItemKey, u64>, current: &[(&str, &Item)]) -> ItemDelta {
     let mut delta = ItemDelta::default();
     let mut seen: HashSet<ItemKey> = HashSet::new();
 
     for (thread_id, item) in current {
-        let key = (thread_id.clone(), item_id(item).to_string());
+        let key = ((*thread_id).to_string(), item_id(item).to_string());
         // 同一帧里出现重复 id：以最后一条为准，但不重复推送
         if !seen.insert(key.clone()) {
-            if let Some(slot) = delta
-                .upserted
-                .iter_mut()
-                .find(|(tid, it)| tid == thread_id && item_id(it) == item_id(item))
-            {
-                *slot = (thread_id.clone(), item.clone());
+            if let Some(slot) = delta.upserted.iter_mut().find(|(tid, it)| {
+                tid.as_str() == *thread_id && item_id(it) == item_id(item)
+            }) {
+                *slot = ((*thread_id).to_string(), (*item).clone());
             }
             continue;
         }
         match prev.get(&key) {
             Some(fp) if *fp == fingerprint(item) => {} // 没变：不推
-            _ => delta.upserted.push((thread_id.clone(), item.clone())),
+            _ => delta
+                .upserted
+                .push(((*thread_id).to_string(), (*item).clone())),
         }
     }
 
@@ -99,15 +103,15 @@ pub fn diff_items(prev: &BTreeMap<ItemKey, u64>, current: &[(String, Item)]) -> 
 }
 
 /// 用本次差量更新"已发版本"，供下一次 `diff_items` 使用。
-pub fn advance_versions(prev: &mut BTreeMap<ItemKey, u64>, current: &[(String, Item)]) {
+pub fn advance_versions(prev: &mut BTreeMap<ItemKey, u64>, current: &[(&str, &Item)]) {
     let live: HashSet<ItemKey> = current
         .iter()
-        .map(|(tid, it)| (tid.clone(), item_id(it).to_string()))
+        .map(|(tid, it)| ((*tid).to_string(), item_id(it).to_string()))
         .collect();
     prev.retain(|k, _| live.contains(k));
     for (thread_id, item) in current {
         prev.insert(
-            (thread_id.clone(), item_id(item).to_string()),
+            ((*thread_id).to_string(), item_id(item).to_string()),
             fingerprint(item),
         );
     }
@@ -128,6 +132,11 @@ mod tests {
         }
     }
 
+    /// 测试里把拥有的 `(threadId, Item)` 列表借成差量函数要的引用切片。
+    fn refs(items: &[(String, Item)]) -> Vec<(&str, &Item)> {
+        items.iter().map(|(tid, it)| (tid.as_str(), it)).collect()
+    }
+
     /// 没变就不推——这是省字节的全部意义所在。
     #[test]
     fn test_unchanged_items_are_not_resent() {
@@ -136,9 +145,9 @@ mod tests {
             ("t1".to_string(), user("b", "第二句")),
         ];
         let mut prev = BTreeMap::new();
-        advance_versions(&mut prev, &items);
+        advance_versions(&mut prev, &refs(&items));
 
-        let delta = diff_items(&prev, &items);
+        let delta = diff_items(&prev, &refs(&items));
         assert!(delta.is_empty(), "完全没变就一字节都不该推：{delta:?}");
     }
 
@@ -150,13 +159,13 @@ mod tests {
             ("t1".to_string(), user("b", "第二句")),
         ];
         let mut prev = BTreeMap::new();
-        advance_versions(&mut prev, &before);
+        advance_versions(&mut prev, &refs(&before));
 
         let after = vec![
             ("t1".to_string(), user("a", "第一句")),
             ("t1".to_string(), user("b", "第二句改了")),
         ];
-        let delta = diff_items(&prev, &after);
+        let delta = diff_items(&prev, &refs(&after));
         assert_eq!(delta.upserted.len(), 1, "只该推变过的那一条：{delta:?}");
         assert_eq!(item_id(&delta.upserted[0].1), "b");
         assert!(delta.removed.is_empty());
@@ -170,10 +179,10 @@ mod tests {
             ("t1".to_string(), user("b", "乙")),
         ];
         let mut prev = BTreeMap::new();
-        advance_versions(&mut prev, &before);
+        advance_versions(&mut prev, &refs(&before));
 
         let after = vec![("t1".to_string(), user("a", "甲"))];
-        let delta = diff_items(&prev, &after);
+        let delta = diff_items(&prev, &refs(&after));
         assert_eq!(delta.removed, vec![("t1".to_string(), "b".to_string())]);
         assert!(delta.upserted.is_empty());
     }
@@ -185,7 +194,7 @@ mod tests {
             ("t1".to_string(), user("a", "甲")),
             ("t2".to_string(), user("a", "另一个会话")),
         ];
-        let delta = diff_items(&BTreeMap::new(), &items);
+        let delta = diff_items(&BTreeMap::new(), &refs(&items));
         assert_eq!(delta.upserted.len(), 2);
         assert!(delta.removed.is_empty());
     }
@@ -198,8 +207,8 @@ mod tests {
             ("t1".to_string(), user("b", "2")),
             ("t1".to_string(), user("a", "3")),
         ];
-        let d1 = diff_items(&BTreeMap::new(), &items);
-        let d2 = diff_items(&BTreeMap::new(), &items);
+        let d1 = diff_items(&BTreeMap::new(), &refs(&items));
+        let d2 = diff_items(&BTreeMap::new(), &refs(&items));
         assert_eq!(
             format!("{d1:?}"),
             format!("{d2:?}"),
@@ -217,9 +226,11 @@ mod tests {
     /// 同一个 item 的进度更新（指纹里的文本长度/状态变了）必须被推。
     #[test]
     fn test_streaming_growth_is_pushed() {
+        let before = vec![("t1".to_string(), user("a", "半句"))];
+        let after = vec![("t1".to_string(), user("a", "半句加了下半句"))];
         let mut prev = BTreeMap::new();
-        advance_versions(&mut prev, &[("t1".to_string(), user("a", "半句"))]);
-        let delta = diff_items(&prev, &[("t1".to_string(), user("a", "半句加了下半句"))]);
+        advance_versions(&mut prev, &refs(&before));
+        let delta = diff_items(&prev, &refs(&after));
         assert_eq!(delta.upserted.len(), 1, "流式增长必须推给界面");
     }
 }

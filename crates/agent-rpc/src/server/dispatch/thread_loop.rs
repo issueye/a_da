@@ -196,8 +196,20 @@ impl Dispatcher {
                                     for _ in 0..60 {
                                         tokio::time::sleep(tokio::time::Duration::from_millis(100))
                                             .await;
+                                        // 两阶段：解析在锁外（子会话进度只从磁盘回流，
+                                        // 这里几乎每拍都要解析），写锁只做合并。
+                                        let force =
+                                            store_monitor.read().await.needs_full_disk_scan();
+                                        if let Some(disk_threads) = crate::state::load_changed_threads(
+                                            &sess_mgr_monitor,
+                                            force,
+                                        ) {
+                                            store_monitor
+                                                .write()
+                                                .await
+                                                .merge_disk_threads(disk_threads);
+                                        }
                                         let mut st = store_monitor.write().await;
-                                        st.sync_threads_from_disk(&sess_mgr_monitor);
                                         // 已经被**别的运行中委派卡片**认领过的子会话不再重复认领
                                         let bound_children: Vec<String> = st
                                             .threads
@@ -316,7 +328,19 @@ impl Dispatcher {
                                 receipt.details.clone(),
                             );
                             if name == "invoke_subagent" {
-                                store.sync_threads_from_disk(&session_mgr_clone);
+                                // 子会话的最终状态只从磁盘回流：先放掉写锁做两阶段同步，
+                                // 再回来解除运行态（全量解析是秒级活儿，不能压在锁里）。
+                                drop(store);
+                                let force = store_clone.read().await.needs_full_disk_scan();
+                                if let Some(disk_threads) =
+                                    crate::state::load_changed_threads(&session_mgr_clone, force)
+                                {
+                                    store_clone
+                                        .write()
+                                        .await
+                                        .merge_disk_threads(disk_threads);
+                                }
+                                store = store_clone.write().await;
                                 match finished_child {
                                     // 精确解除：只摘掉**这次**派活那个子会话的运行态。
                                     // 按"父会话名下所有子会话"一刀切会误伤并行派活的另一个子会话。

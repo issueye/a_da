@@ -1,6 +1,5 @@
 use agent_proto::*;
 use crate::state::store::AgentStore;
-use std::collections::HashSet;
 
 /// 快照里**单个文本字段**的上限。
 ///
@@ -28,8 +27,11 @@ fn capped(text: &str, field: &str) -> Option<String> {
 }
 
 /// 投影用的 item 瘦身：只截**可能极大**的字段（工具输出 / diff / 参数原文）。
-pub(crate) fn shrink_item_for_snapshot(mut item: Item) -> Item {
-    if let Item::Tool { output, patch, raw_args, .. } = &mut item {
+///
+/// 就地版本：增量帧的 `upserted` 已经是克隆出来的可写副本，直接在它上面截，
+/// 不必先构造一个新 Item（超大输出时那等于再复制一次几 MB）。
+pub(crate) fn shrink_item_in_place(item: &mut Item) {
+    if let Item::Tool { output, patch, raw_args, .. } = item {
         if let Some(o) = output.as_deref().and_then(|s| capped(s, "output")) {
             *output = Some(o);
         }
@@ -40,6 +42,10 @@ pub(crate) fn shrink_item_for_snapshot(mut item: Item) -> Item {
             *raw_args = r;
         }
     }
+}
+
+pub(crate) fn shrink_item_for_snapshot(mut item: Item) -> Item {
+    shrink_item_in_place(&mut item);
     item
 }
 
@@ -50,10 +56,19 @@ pub fn generate_snapshot(store: &AgentStore) -> ClientSnapshot {
 
 /// 组装带单调递增版本序号的可渲染快照（M3-T2）
 pub fn generate_snapshot_with_seq(store: &AgentStore, seq: u64) -> ClientSnapshot {
-    let active_id = &store.active_id;
-    let open_tabs: HashSet<&str> = store.ui.open_tab_ids.iter().map(|s| s.as_str()).collect();
-    let running: HashSet<&str> = store.running_thread_ids.iter().map(|s| s.as_str()).collect();
+    generate_snapshot_inner(store, seq, true)
+}
 
+/// **只带元数据**的快照（各会话的 `items` 一律为空）。
+///
+/// 增量帧（`evt.state.patch`）的 `meta` 与全量快照同形，但客户端只消费会话元数据。
+/// 用它就不必"先把所有 items 克隆一遍、再把 items 清空"——那正好是流式期间最贵的两笔。
+/// `itemCount` / `updatedAt` 仍从内存里的完整 items 算（界面靠它们判断会话有没有内容）。
+pub fn generate_snapshot_meta(store: &AgentStore, seq: u64) -> ClientSnapshot {
+    generate_snapshot_inner(store, seq, false)
+}
+
+fn generate_snapshot_inner(store: &AgentStore, seq: u64, include_items: bool) -> ClientSnapshot {
     // 内存瘦身：
     // 1. messages 恒置空（UI 渲染层不消费模型底层的 messages 历史）
     // 2. 只有激活会话、打开的 Tab、运行中的会话或子智能体会话才带完整 items
@@ -66,10 +81,7 @@ pub fn generate_snapshot_with_seq(store: &AgentStore, seq: u64) -> ClientSnapsho
         .threads
         .iter()
         .map(|t| {
-            let need_full = t.id == *active_id
-                || open_tabs.contains(t.id.as_str())
-                || running.contains(t.id.as_str())
-                || t.is_subagent.unwrap_or(false);
+            let need_full = include_items && store.projects_thread_items(t);
 
             Thread {
                 id: t.id.clone(),
@@ -278,5 +290,45 @@ mod tests {
             current.updated_at >= current.created_at,
             "空会话的最近活动回退到创建时刻"
         );
+    }
+
+    /// 增量帧的 meta 快照：**一条 items 都不带**，但 `itemCount` / `updatedAt` 必须照实。
+    ///
+    /// 它替代了"先克隆全部 items、再把 items 清空"的老路径（流式期间每帧一笔大开销）。
+    /// 如果计数/时刻跟着丢，侧栏会把有内容的会话判成空会话。
+    #[test]
+    fn test_meta_snapshot_drops_items_but_keeps_counts() {
+        let mut store = AgentStore::new("E:/snap_meta_ws".to_string());
+        let tid = store.create_thread(Some("带内容的会话".to_string()), None);
+        let at = store
+            .threads
+            .iter()
+            .find(|t| t.id == tid)
+            .map(|t| t.created_at)
+            .unwrap_or(1)
+            + 5_000;
+        store.threads.iter_mut().find(|t| t.id == tid).unwrap().items.push(Item::User {
+            id: "u1".to_string(),
+            at,
+            text: "你好".to_string(),
+            images: None,
+            queued: None,
+        });
+
+        let meta = generate_snapshot_meta(&store, 7);
+        let thread = meta
+            .threads
+            .iter()
+            .find(|t| t.id == tid)
+            .expect("激活会话必须在 meta 里");
+        assert!(thread.items.is_empty(), "meta 帧不许带 items（它只负责会话元数据）");
+        assert_eq!(thread.item_count, 1, "条目数必须照实给");
+        assert_eq!(thread.updated_at, at, "最近活动必须照实给");
+        assert_eq!(meta.seq, 7);
+
+        // 对照：完整快照仍然带 items（页面首屏/自愈要用）
+        let full = generate_snapshot_with_seq(&store, 7);
+        let thread = full.threads.iter().find(|t| t.id == tid).unwrap();
+        assert_eq!(thread.items.len(), 1, "完整快照的激活会话必须带 items");
     }
 }
