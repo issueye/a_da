@@ -5,6 +5,7 @@
 pub mod assert;
 pub mod buffer;
 pub mod child_process;
+pub mod child_process_async;
 pub mod crypto;
 pub mod events;
 pub mod fs;
@@ -47,10 +48,11 @@ pub struct Needs {
     /// **默认 false**：SQLite 会创建/改写工作区里的数据库文件。它与 fs 的边界
     /// 不同（SQL 能批量读写、能触发触发器），所以单独声明而不是搭 fs 的便车。
     pub sqlite: bool,
-    /// 注入 `node:child_process` 的同步子集（`execFileSync` / `spawnSync` / `execSync`）。
+    /// 注入 `node:child_process`：同步子集（`execFileSync` / `spawnSync` / `execSync`）
+    /// 与异步子集（`spawn` / `exec` / `execFile`，流式 stdout/stderr）。
     ///
     /// **默认 false**：这是任意代码执行，等价于把宿主用户的权限交给插件；只有
-    /// 本地受信插件才应声明 `@ada-needs exec`。异步 `spawn`/`exec`/`fork` 不提供。
+    /// 本地受信插件才应声明 `@ada-needs exec`。异步 `fork`（需要 IPC channel）仍不提供。
     pub exec: bool,
 }
 

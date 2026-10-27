@@ -204,13 +204,13 @@ Supported surface (Node-compatible subset):
 SQL is not a model tool and does not enter the approval gate: it is a backend
 capability, same as `fs`. Use `readOnly: true` for read-only databases.
 
-## child_process: `execFileSync` / `spawnSync` / `execSync`
+## child_process: sync subset + async subset
 
 Declare `@ada-needs exec` (aliases: `child_process`, `child-process`, `shell`).
 
 ```ts
 // @ada-needs exec
-const { execFileSync, spawnSync, execSync } = require("node:child_process");
+const { execFileSync, spawnSync, execSync, spawn, exec } = require("node:child_process");
 
 // argv，不经 shell
 const out = execFileSync("git", ["status", "--short"], { encoding: "utf8" });
@@ -221,27 +221,54 @@ execSync("echo shell-ok", { encoding: "utf8" });
 // 不抛错的形态
 const result = spawnSync("cmd.exe", ["/d", "/s", "/c", "exit 3"]);
 // result.status === 3, result.stdout / result.stderr 是 string 或 Buffer
+
+// 异步：真流式，进程还在跑的时候就能一块一块收到输出
+const child = spawn("git", ["log", "--oneline"]);
+child.stdout.on("data", (chunk) => { /* Buffer */ });
+child.on("close", (code, signal) => { /* stdio 全关之后 */ });
+
+// 异步 + 回调
+exec("git status --short", (error, stdout, stderr) => { /* ... */ });
 ```
 
-Supported options (sync subset):
+Supported options (shared by both subsets):
 
 - `cwd`（缺省是工作区；绝对路径可指向任意目录，相对路径以工作区为基准）
 - `env`（给了就**替换**环境；始终补 `A_DA_AGENT=1`）
-- `input`（string / Buffer；喂给 stdin）
 - `stdio`：`pipe` / `ignore` / `null` / `inherit`（`inherit` 直接接宿主 stdout/stderr）
 - `encoding`：`utf8`（默认）或 `buffer` / `null`
 - `timeout`：毫秒；`0` / 省略 = 不超时，超时杀整棵进程树
 - `maxBuffer`：默认 1 MB；`0` = 不限制
-- `shell`：`spawnSync` / `execFileSync` 传 `shell:true` 时把 file+args 交给系统 shell；
-  `execSync` 本身就是 shell 命令
+- `shell`：`spawnSync` / `execFileSync` / `spawn` / `execFile` 传 `shell:true` 时把
+  file+args 交给系统 shell；`execSync` / `exec` 本身就是 shell 命令
+
+Sync subset (`execFileSync` / `spawnSync` / `execSync`):
 
 - `execFileSync` / `execSync` 在非零退出、超时、`maxBuffer`、启动失败时**抛错**，
   错误上带 `status` / `signal` / `stdout` / `stderr` / `code`（超时 `ETIMEDOUT`，
   超限 `ENOBUFS`，找不到可执行文件 `ENOENT`）。
 - `spawnSync` 不抛错；失败放在 `result.error`。
-- 异步 `spawn` / `exec` / `execFile` / `fork` **尚未提供**，调用会抛出明确错误，
-  请改用对应的同步 API。
 - stdin 默认为空设备；只有传 `input` 时才写数据。
+
+Async subset (`spawn` / `exec` / `execFile`):
+
+- `spawn(file[, args][, options])` 返回 `ChildProcess`，事件顺序
+  `spawn` → `stdout`/`stderr`(`data`…) → `end` → `exit(code, signal)` → `close(code, signal)`。
+  `close` 一定晚于最后一块 `data`（与 Node 一致），所以 `exec` 的回调在输出收齐后才触发。
+- `child.stdout` / `child.stderr` 支持 `on('data')`、`on('end')`、`setEncoding()`；
+  **不支持 `pipe()`**（半实现的 pipe 比没有更糟），需要转发请自行在 `data` 里写。
+- `child.stdin.write(chunk[, cb])` / `child.stdin.end()`（写入按调用顺序落地）。
+- `child.kill([signal])` 杀**整棵进程树**；`pid` / `exitCode` / `signalCode` / `killed`
+  与 Node 同义。
+- `exec(command, options?, callback?)` / `execFile(file, args?, options?, callback?)`
+  回调签名 `(error, stdout, stderr)`；非零退出、超时（`ETIMEDOUT`）、
+  `maxBuffer`（`ENOBUFS`）都会给出 `error`。
+- 超时由宿主侧（Tokio）计时并杀树，不走 JS 的 `setTimeout`——否则 `wait_idle()`
+  会被一个已经没用的定时器拖满整个超时时间。
+- `fork` **不提供**：它需要 IPC channel（父子进程间的结构化消息通道），
+  用 `spawn` 起独立进程、走 stdin/stdout 通信。
+- `ChildProcess` 上没人监听的 `'error'` 不会抛出（抛会把事件循环炸掉）：会记到
+  `child.spawnError` 并打一条 `console.error`，在插件日志里能看到。
 - ⚠️ `exec` 等价于任意代码执行。当前阶段优先功能实现，信任边界由插件安装者负责；
   后续再补审批/策略。不要在不可信插件上声明 `exec`。
 

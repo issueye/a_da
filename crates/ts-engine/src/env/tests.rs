@@ -558,6 +558,8 @@ fn test_child_process_sync_surface_works() {
                 }
                 let asyncError = null;
                 try { cp.spawn('x'); } catch (e) { asyncError = String(e.message || e); }
+                let forkError = null;
+                try { cp.fork('x'); } catch (e) { forkError = String(e.message || e); }
                 return JSON.stringify({
                     argvOut: argvOut,
                     shellOut: shellOut,
@@ -570,6 +572,10 @@ fn test_child_process_sync_surface_works() {
                     timeoutStatus: timeout.status,
                     bufferError: bufferError,
                     asyncError: asyncError,
+                    forkError: forkError,
+                    spawnType: typeof cp.spawn,
+                    execType: typeof cp.exec,
+                    execFileType: typeof cp.execFile,
                 });
             })();
             "#,
@@ -609,12 +615,22 @@ fn test_child_process_sync_surface_works() {
     assert_eq!(parsed["timeoutCode"], "ETIMEDOUT", "{parsed}");
     assert_eq!(parsed["timeoutStatus"], serde_json::Value::Null, "{parsed}");
     assert_eq!(parsed["bufferError"], "ENOBUFS", "{parsed}");
+    // 异步 API 现在**真的有实现**（不再是“改用同步 API”的占位）。
+    // 这个纯 `Context` 里没挂原生桥，所以调用时要报的是“缺配置（needs exec）”——
+    // 把这种情况说成“API 不存在”会把作者往错的方向弓。
+    assert_eq!(parsed["spawnType"], "function", "{parsed}");
+    assert_eq!(parsed["execType"], "function", "{parsed}");
+    assert_eq!(parsed["execFileType"], "function", "{parsed}");
     assert!(
         parsed["asyncError"]
             .as_str()
             .unwrap()
-            .contains("spawnSync"),
-        "异步 spawn 应给出可用替代：{parsed}"
+            .contains("@ada-needs exec"),
+        "缺原生桥时要把“需要声明 exec”说清：{parsed}"
+    );
+    assert!(
+        parsed["forkError"].as_str().unwrap().contains("IPC"),
+        "fork 仍不支持，且要说清是 **IPC** 这一条能力缺失（不是“暂时没写”）：{parsed}"
     );
 
     let _ = std::fs::remove_dir_all(temp_dir);

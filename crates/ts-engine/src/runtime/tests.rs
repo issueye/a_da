@@ -673,3 +673,166 @@ async fn test_js_error_exposes_a_stack_string() {
         "Boa 必须把 `stack` 暴露成字符串（宿主靠它把位置带给插件作者）：{out}"
     );
 }
+
+/// 异步 `child_process` 的端到端：真进程 + JS 包装层 + 事件回流。
+///
+/// 刻意走 `call_async_fn`（工具路径）而不是 `eval_ts`：插件里真正决定"能不能等到子进程"
+/// 的不是 JS 的 Promise，而是 `__native_tool_return` 那条回执链路——子进程事件没被
+/// 投回事件循环，这条就会挂到墙钟超时，而不是悄悄通过。
+#[tokio::test]
+async fn test_async_child_process_streams_output_and_invokes_exec_callback() {
+    let runtime =
+        PureTsRuntime::with_environment(None, Limits::default(), crate::env::Needs::everything());
+    runtime
+        .eval_ts(
+            r#"
+            globalThis.__childAsyncProbe = async function () {
+                const cp = require('node:child_process');
+                const isWin = process.platform === 'win32';
+                const stdoutChunks = [];
+                const child = cp.spawn(
+                    isWin ? 'cmd.exe' : '/bin/sh',
+                    isWin ? ['/d', '/s', '/c', 'echo spawn-out'] : ['-c', 'printf spawn-out']
+                );
+                child.stdout.on('data', (d) => stdoutChunks.push(d.toString('utf8')));
+                const closed = await new Promise((resolve, reject) => {
+                    child.on('error', reject);
+                    child.on('close', (code, signal) => resolve({ code: code, signal: signal }));
+                });
+                const execResult = await new Promise((resolve) => {
+                    cp.exec(isWin ? 'echo exec-ok' : 'printf exec-ok', (error, stdout) => {
+                        resolve({ error: error ? String(error.message) : null, stdout: String(stdout) });
+                    });
+                });
+                return JSON.stringify({
+                    stdout: stdoutChunks.join(''),
+                    pidType: typeof child.pid,
+                    exitCode: child.exitCode,
+                    closed: closed,
+                    exec: execResult,
+                });
+            };
+            "#,
+            Some("plugins/child_async.ts"),
+        )
+        .await
+        .expect("注入异步探针失败");
+
+    let raw = runtime
+        .call_async_fn("__childAsyncProbe", "[]")
+        .await
+        .expect("异步探针应当成功");
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("探针返回值必须是 JSON");
+
+    assert!(
+        parsed["stdout"].as_str().unwrap().contains("spawn-out"),
+        "stdout 的 data 事件必须把内容送到 JS：{parsed}"
+    );
+    assert_eq!(
+        parsed["pidType"], "number",
+        "spawn 之后 pid 必须是可用的数字：{parsed}"
+    );
+    assert_eq!(parsed["exitCode"], 0, "close 之后 exitCode 要落定：{parsed}");
+    assert_eq!(parsed["closed"]["code"], 0, "{parsed}");
+    assert_eq!(
+        parsed["exec"]["error"],
+        serde_json::Value::Null,
+        "exec 成功时回调的 error 必须是 null：{parsed}"
+    );
+    assert!(
+        parsed["exec"]["stdout"].as_str().unwrap().contains("exec-ok"),
+        "exec 的 stdout 必须攒齐后交给回调：{parsed}"
+    );
+    runtime.terminate();
+}
+
+/// stdin 回写 + `kill()`。
+///
+/// `kill` 这条特别重要：它是**唯一**能在超时之前叫停一个跑飞的子进程的入口。
+/// 用例不挂死本身就是断言的一部分（不 kill 的话 `sleep 30` 会把这条测试拖到 30s）。
+#[tokio::test]
+async fn test_async_child_process_stdin_and_kill() {
+    if cfg!(windows) {
+        // 依赖 `/bin/cat` 与 POSIX 的信号语义；不为 Windows 再造一份（宁缺勿假绿）。
+        return;
+    }
+    let runtime =
+        PureTsRuntime::with_environment(None, Limits::default(), crate::env::Needs::everything());
+    runtime
+        .eval_ts(
+            r#"
+            globalThis.__childIoProbe = async function () {
+                const cp = require('node:child_process');
+                const cat = cp.spawn('/bin/cat', []);
+                const chunks = [];
+                cat.stdout.on('data', (d) => chunks.push(d.toString('utf8')));
+                cat.stdin.write('ping-from-stdin\n');
+                cat.stdin.end();
+                await new Promise((resolve) => cat.on('close', resolve));
+
+                const sleeper = cp.spawn('/bin/sh', ['-c', 'sleep 30']);
+                const killed = await new Promise((resolve) => {
+                    sleeper.on('close', (code, signal) => {
+                        resolve({ code: code, signal: signal, killed: sleeper.killed });
+                    });
+                    setTimeout(() => sleeper.kill('SIGKILL'), 100);
+                });
+                return JSON.stringify({ echoed: chunks.join(''), killed: killed });
+            };
+            "#,
+            Some("plugins/child_io.ts"),
+        )
+        .await
+        .expect("注入 IO 探针失败");
+
+    let raw = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        runtime.call_async_fn("__childIoProbe", "[]"),
+    )
+    .await
+    .expect("kill 没生效：子进程把整条用例拖到了超时")
+    .expect("IO 探针应当成功");
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("探针返回值必须是 JSON");
+
+    assert!(
+        parsed["echoed"].as_str().unwrap().contains("ping-from-stdin"),
+        "stdin 写进去的内容必须能被子进程读到：{parsed}"
+    );
+    assert_eq!(parsed["killed"]["killed"], true, "kill() 必须真的发出：{parsed}");
+    runtime.terminate();
+}
+
+/// SP-13 的延续：**异步** child_process 也要按声明裁剪到原生桥这一层。
+///
+/// 与 `fetch` 一样的理由：只关 JS 包装挡不住 `globalThis.__native_child_process_spawn_async`
+/// 这种直呼，所以门禁必须在注册原生桥时就生效。
+#[tokio::test]
+async fn test_exec_bridge_is_gated_by_needs() {
+    let closed =
+        PureTsRuntime::with_environment(None, Limits::default(), crate::env::Needs::plugin_default());
+    for expr in [
+        "typeof globalThis.__native_child_process_spawn_async",
+        "typeof globalThis.__native_child_process_kill_async",
+        "(function(){ try { require('node:child_process'); return 'injected'; } catch (e) { return 'blocked'; } })()",
+    ] {
+        let got = closed.eval_ts(expr, None).await.expect("eval 应当成功");
+        assert!(
+            got == "undefined" || got == "blocked",
+            "未声明 exec 时 `{expr}` 必须不可用，实际：{got}"
+        );
+    }
+    closed.terminate();
+
+    let open =
+        PureTsRuntime::with_environment(None, Limits::default(), crate::env::Needs::everything());
+    for expr in [
+        "typeof globalThis.__native_child_process_spawn_async",
+        "typeof require('node:child_process').spawn",
+        "typeof require('node:child_process').exec",
+        "typeof require('node:child_process').execFile",
+    ] {
+        let got = open.eval_ts(expr, None).await.expect("eval 应当成功");
+        assert_eq!(got, "function", "声明 exec 之后 `{expr}` 必须存在");
+    }
+    open.terminate();
+}

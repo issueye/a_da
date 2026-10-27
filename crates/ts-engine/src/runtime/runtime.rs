@@ -106,12 +106,37 @@ impl PureTsRuntime {
     }
 
     /// 等待当前所有未决异步任务排空（空闲）
+    ///
+    /// ⚠️ 只统计**未决 Promise**。异步子进程的流式事件不在册——它们由
+    /// `EventLoopMsg::ChildEvent` 驱动，不是 Promise。要等一个子进程结束，请在脚本里
+    /// `await new Promise(r => child.on('close', r))`：那条 Promise 才会被这里看见。
+    ///
+    /// 为什么不把"还活着的子进程"也算进空闲判定：一个常驻进程（dev server）
+    /// 会让 `wait_idle()` 永不返回，宿主就再也收不到"这一轮跑完了"。
     pub async fn wait_idle(&self) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
         self.sender
             .send(EventLoopMsg::WaitIdle { response_tx: tx })
             .map_err(|e| e.to_string())?;
         rx.await.map_err(|e| format!("等待空闲被中断: {e}"))
+    }
+
+    /// 等所有**当前活跃**的子进程跑完（CLI 与脚本场景用）。
+    ///
+    /// 与 [`Self::wait_idle`] 刻意分开：
+    ///
+    /// - `wait_idle` 回答“这一轮 JS 跑完了吗”；
+    /// - 本方法回答“生出来的进程都收尸了吗”。
+    ///
+    /// 合并两者会把一个常驻子进程（dev server）变成“宿主永远不退”的另一类 bug，
+    /// 所以真需要等的时候由调用方显式说明。推荐用法是先 `wait_idle()`
+    /// （等 `spawn` 的 Promise 兑现），再调本方法。
+    pub async fn wait_children(&self) -> Result<(), String> {
+        // 轮询而不是注册回调：这一层只关心“多久能走”，不值得为它再开一条状态通道。
+        while crate::env::child_process_async::active_count() > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Ok(())
     }
 
     /// 设置微内核中 process.argv 命令行参数列表

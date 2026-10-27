@@ -125,6 +125,10 @@ async fn run_script(file_path: &Path, args: Vec<String>) -> ExitCode {
                 eprintln!("[Runtime Wait Error] {}", err);
                 return ExitCode::FAILURE;
             }
+            // 🔴 异步子进程不在 `wait_idle` 的账上（它们不是 Promise）：
+            // 不等一下的话，脚本里 `cp.spawn(...)` 的输出还没来得及打印，进程就退了。
+            // 与 node 同语义：一个常驻子进程（dev server）就是会让脚本不退出。
+            let _ = runtime.wait_children().await;
             ExitCode::SUCCESS
         }
         Err(err) => {
@@ -140,6 +144,7 @@ async fn eval_code(code: &str) -> ExitCode {
     match runtime.eval_ts(code, Some("eval.ts")).await {
         Ok(res) => {
             let _ = runtime.wait_idle().await;
+            let _ = runtime.wait_children().await;
             if res != "undefined" && !res.is_empty() {
                 println!("{res}");
             }
@@ -242,6 +247,44 @@ mod tests {
 
         let exit_code = run_script(&script_file, vec!["--env=prod".to_string()]).await;
         assert_eq!(exit_code, ExitCode::SUCCESS);
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    /// CLI 必须等**异步子进程**收尾。
+    ///
+    /// `wait_idle()` 只盯未决 Promise，子进程的输出不在它的账上；少这一步的话，
+    /// 脚本里 `cp.spawn(...).stdout` 的内容会在打印前就丢掉（表现为“异步版什么都没有”，
+    /// 而同步版一切正常——最难查的那类不一致）。
+    #[tokio::test]
+    async fn test_cli_run_waits_for_async_child_process() {
+        let temp_dir = std::env::temp_dir().join(format!("a_da_cli_child_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let script_file = temp_dir.join("child.ts");
+
+        std::fs::write(
+            &script_file,
+            r#"
+            const cp = require('node:child_process');
+            const fs = require('node:fs');
+            const isWin = process.platform === 'win32';
+            const child = cp.spawn(
+                isWin ? 'cmd.exe' : '/bin/sh',
+                isWin ? ['/d', '/s', '/c', 'echo async-ok'] : ['-c', 'echo async-ok']
+            );
+            child.stdout.on('data', (d) => {
+                fs.writeFileSync('out.txt', 'got:' + d.toString('utf8').trim());
+            });
+            "#,
+        )
+        .unwrap();
+
+        let exit_code = run_script(&script_file, vec![]).await;
+        assert_eq!(exit_code, ExitCode::SUCCESS);
+
+        let text = std::fs::read_to_string(temp_dir.join("out.txt"))
+            .expect("子进程的输出必须落地（CLI 得等它跑完，而不是 eval 一返回就退出）");
+        assert!(text.contains("async-ok"), "实际：{text}");
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }

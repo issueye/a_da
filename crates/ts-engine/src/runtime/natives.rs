@@ -1,16 +1,21 @@
 use std::path::PathBuf;
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
 
 use crate::env::Needs;
+use crate::env::child_process_async::{self, ChildEvent, EventSink};
 use crate::net::NetPolicy;
 
 use super::PureTsRuntime;
+use super::messages::EventLoopMsg;
 
-/// 按声明注册 fs / fetch / sleep 三类异步原生能力。
+/// 按声明注册 fs / fetch / sleep / child_process 四类异步原生能力。
 pub(super) fn register(
     runtime: &PureTsRuntime,
     workspace: Option<PathBuf>,
     needs: Needs,
     net: NetPolicy,
+    event_loop_tx: Sender<EventLoopMsg>,
 ) {
     let net_for_thread = net.clone();
     // 自动注册 Tokio 异步 fs 原生能力并附加沙箱安全防御
@@ -284,4 +289,95 @@ pub(super) fn register(
             Ok("ok".to_string())
         }
     });
+
+    // ── 异步 child_process（**按声明**：`@ada-needs exec`）──────────────────────
+    //
+    // 四个原生桥各管一件事：spawn / 写 stdin / 关 stdin / kill。
+    // 输出与退出**不走 Promise** 而走 `EventLoopMsg::ChildEvent`：Promise 只能兼现一次，
+    // 而流式输出天然是多次的（这也是“异步”比“同步”真正多出来的东西）。
+    if needs.exec {
+        // `std::sync::mpsc::Sender` 是 Send 但 **不是** Sync，而 sink 必须 Send+Sync：
+        // 套一层 Mutex 是最小的代价（临界区只是一次 send）。
+        let sender = Arc::new(Mutex::new(event_loop_tx));
+        let sink: EventSink = {
+            let sender = sender.clone();
+            Arc::new(move |client_id: &str, event: ChildEvent| {
+                if let Ok(guard) = sender.lock() {
+                    let _ = guard.send(EventLoopMsg::ChildEvent {
+                        client_id: client_id.to_string(),
+                        event,
+                    });
+                }
+            })
+        };
+
+        let sink_for_spawn = sink.clone();
+        runtime.register_async_fn_gated(
+            needs.exec,
+            "__native_child_process_spawn_async",
+            move |args| {
+                let spec = args.get(0).cloned().unwrap_or_default();
+                let client_id = args.get(1).cloned().unwrap_or_default();
+                let sink = sink_for_spawn.clone();
+                async move {
+                    child_process_async::spawn(&spec, &client_id, sink).map(|id| id.to_string())
+                }
+            },
+        );
+
+        runtime.register_async_fn_gated(
+            needs.exec,
+            "__native_child_process_write_stdin_async",
+            move |args| {
+                let handle = parse_handle(args.get(0));
+                let data = args.get(1).cloned().unwrap_or_default();
+                async move {
+                    child_process_async::write_stdin_base64(handle?, &data)
+                        .await
+                        .map(|()| "ok".to_string())
+                }
+            },
+        );
+
+        runtime.register_async_fn_gated(
+            needs.exec,
+            "__native_child_process_end_stdin_async",
+            move |args| {
+                let handle = parse_handle(args.get(0));
+                async move {
+                    child_process_async::close_stdin(handle?)
+                        .await
+                        .map(|()| "ok".to_string())
+                }
+            },
+        );
+
+        runtime.register_async_fn_gated(
+            needs.exec,
+            "__native_child_process_kill_async",
+            move |args| {
+                let handle = parse_handle(args.get(0));
+                let signal = args
+                    .get(1)
+                    .cloned()
+                    .unwrap_or_else(|| "SIGTERM".to_string());
+                async move {
+                    let handle = handle?;
+                    // 返回 "1"/"0" 而不是抛错：进程已经退出时 `kill()` 在 Node 里
+                    // 也只是返回 `false`，不是异常。
+                    Ok(if child_process_async::kill(handle, &signal) {
+                        "1".to_string()
+                    } else {
+                        "0".to_string()
+                    })
+                }
+            },
+        );
+    }
+}
+
+fn parse_handle(raw: Option<&String>) -> Result<u64, String> {
+    let text = raw.map(String::as_str).unwrap_or_default().trim();
+    text.parse::<u64>()
+        .map_err(|_| format!("无效的子进程句柄号: {text:?}"))
 }

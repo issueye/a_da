@@ -310,6 +310,11 @@ pub(super) fn build(
                                 }
                             }
                         }
+                        EventLoopMsg::ChildEvent { client_id, event } => {
+                            // 子进程事件是**增量**到达的：每块输出都经这里投给 JS 侧，
+                            // 于是插件能在进程还在跑的时候就处理数据（真流式）。
+                            dispatch_child_event(&mut ctx, &client_id, &event);
+                        }
                         EventLoopMsg::WaitIdle { response_tx } => {
                             let is_empty = PENDING_PROMISES.with(|cell| cell.borrow().is_empty());
                             if is_empty {
@@ -318,17 +323,59 @@ pub(super) fn build(
                                 PENDING_IDLE_WAITERS.with(|cell| cell.borrow_mut().push(response_tx));
                             }
                         }
-                        EventLoopMsg::Terminate => break,
+                        EventLoopMsg::Terminate => {
+                            // 🔴 子进程不能活过运行时的账：插件跑起来的 `npm run dev`
+                            // 一类东西留在系统里，用户既看不见、也不知道是哪个插件的。
+                            crate::env::child_process_async::kill_all();
+                            break;
+                        }
                     }
                 }
+
+                // 🔴 另一个出口同样要收尾：宿主没调 `terminate()` 就把运行时扔了，
+                // 于是 `rx.recv()` 返回 Err 直接跳出循环。子进程不能因为
+                // “没人记得调清理” 就活下来。`kill_all` 幂等，多跑一次无害。
+                crate::env::child_process_async::kill_all();
             })
             .expect("创建纯 Rust TS 事件循环线程失败");
 
+    let event_loop_tx = tx.clone();
     let runtime = PureTsRuntime {
         sender: tx,
         console: capture,
     };
 
-    super::natives::register(&runtime, workspace, needs, net);
+    super::natives::register(&runtime, workspace, needs, net, event_loop_tx);
     runtime
+}
+
+/// 把一条子进程事件投递给 JS 侧的 `__child_process_dispatch`。
+///
+/// # 为什么用 `eval` 拼一段调用，而不是缓存 `JsObject` 直接 `call`
+///
+/// JS 函数对象的生命周期归 Boa 的 GC 管：把它吊在线程局部里跨消息复用，
+/// 要么漏 root（被回收后调用就炸）要么漏解绑（泄漏）。而这个 `eval` 只有一行、
+/// 开销与既有的 `CallAsyncFunction` 同量级，换来的是"没有悬空句柄"。
+fn dispatch_child_event(
+    ctx: &mut boa_engine::Context,
+    client_id: &str,
+    event: &crate::env::child_process_async::ChildEvent,
+) {
+    let payload = serde_json::to_string(&event.to_json()).unwrap_or_else(|_| "null".to_string());
+    let client = serde_json::to_string(client_id).unwrap_or_else(|_| "\"\"".to_string());
+    let script = format!(
+        "(function(){{ var dispatch = globalThis.__child_process_dispatch; \
+         if (typeof dispatch === 'function') {{ dispatch(String({client}), {payload}); }} }})();"
+    );
+    // U+2028 / U+2029 在 JS 里是**行终止符**（在 JSON 里不是）：不转义就会把这段脚本
+    // 从中间断开、变成一个语法错误。它们完全可能出现在子进程输出里（任何 UTF-8 文本）。
+    let script = script
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
+    if let Err(error) = ctx.eval(Source::from_bytes(&script)) {
+        tracing::warn!("child_process 事件分发失败: {error}");
+    }
+    // 与 AsyncJobDone 同一时序：每批数据落地后立刻排空微任务，
+    // 否则 `on('data')` 里的 `await` 要等到下一次无关事件才被唤醒。
+    let _ = ctx.run_jobs();
 }

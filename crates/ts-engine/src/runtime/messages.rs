@@ -27,6 +27,15 @@ pub enum EventLoopMsg {
     },
     /// 等待当前所有未决 Promise 与微任务全部完成（达到空闲状态）
     WaitIdle { response_tx: oneshot::Sender<()> },
+    /// 子进程事件回流（异步 `child_process` 的流式输出、退出与关闭）。
+    ///
+    /// `client_id` 是 **JS 侧**生成的会话标识而不是宿主句柄号：最早那批 `data`
+    /// 可能先于 `spawn()` 的 Promise 到达事件循环，只有 JS 自己发的标识
+    /// 才能在那之前就把路由表建好，否则头几个数据块会静默丢失。
+    ChildEvent {
+        client_id: String,
+        event: crate::env::child_process_async::ChildEvent,
+    },
     /// 终止专有事件循环
     Terminate,
 }
