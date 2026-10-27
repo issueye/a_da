@@ -26,7 +26,7 @@
 | 插件标识 = 目录名 | 改目录名 = 换一个插件；线上标识为 `workspace:<id>` / `global:<id>` |
 | 单文件不支持 | 旧时代的"单文件插件 / 对象式默认导出"已下线，`plugin.validate` 会如实拒绝 |
 | 没有模块解析器 | 沙箱**不支持**相对路径 import，插件必须自包含 |
-| 能力声明 | 源码前 40 行内的注释 `// @ada-needs fs,net`；识别 `fs` / `fs=read` / `fs=write` / `net`(=`fetch`) / `sqlite` / `none`。**没有指令时按地板给权限（fs 开、net 与 sqlite 关）**；认不出的 token 不授予，并在装配期报 `unknown_need:<token>` |
+| 能力声明 | 源码前 40 行内的注释 `// @ada-needs fs,net`；识别 `fs` / `fs=read` / `fs=write` / `net`(=`fetch`) / `sqlite` / `exec`(=`child_process`=`shell`) / `none`。**没有指令时按地板给权限（fs 开、net / sqlite / exec 关）**；认不出的 token 不授予，并在装配期报 `unknown_need:<token>` |
 
 生成一个正确的骨架用内置工具 [`create_plugin`](../quality/feature-catalog.md)（插件 `plugin-forge` 提供）。
 它的 `scope` **必填**（`workspace` / `global`）：用户没说清装在哪时，工具**拒绝执行**并让模型

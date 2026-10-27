@@ -63,6 +63,8 @@ struct NeedsSpec {
     net: bool,
     #[serde(default)]
     sqlite: bool,
+    #[serde(default)]
+    exec: bool,
 }
 
 fn default_timeout_ms() -> u64 {
@@ -106,6 +108,7 @@ async fn handle(req: Request) -> serde_json::Value {
             fs_write: n.fs_write,
             net: n.net,
             sqlite: n.sqlite,
+            exec: n.exec,
         },
         // 缺省按**最紧**（什么都不给）：这个入口是"不可信第三方"跑的地方，
         // 默认值不该是宽的那一端。
@@ -114,6 +117,7 @@ async fn handle(req: Request) -> serde_json::Value {
             fs_write: false,
             net: false,
             sqlite: false,
+            exec: false,
         },
     };
     let limits = req

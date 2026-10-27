@@ -116,8 +116,9 @@
 | 动作分级（数据面 / 控制面 / 只读面；`abort` 只给内置；`replace` 仅两处） | 同上 `HookLevel` / `allows` / `REPLACE_SUPPORTED` |
 | 用户能力开关（6 位 + 超时，每位都有生产消费者） | `plugins/types.rs` 的 `PluginCapabilities`，门禁 `verify-wiring` check L2 |
 | 沙箱两档（进程内 Boa / 子进程） | `crates/ts-engine` + `--script-sandbox subprocess` |
-| 能力声明 `// @ada-needs`（`fs` / `fs=read` / `fs=write` / `net` / `sqlite` / `none`） | `crates/agent-node/src/scripts/needs.rs` |
+| 能力声明 `// @ada-needs`（`fs` / `fs=read` / `fs=write` / `net` / `sqlite` / `exec` / `none`） | `crates/agent-node/src/scripts/needs.rs` |
 | SQLite（`node:sqlite` 的 `DatabaseSync` / `StatementSync` 子集；路径受工作区沙箱） | `crates/ts-engine/src/env/sqlite.rs`（rusqlite，`@ada-needs sqlite`） |
+| 子进程（`node:child_process` 同步子集：`execFileSync` / `spawnSync` / `execSync`；异步与 `fork` 未提供） | `crates/ts-engine/src/env/child_process.rs`（`@ada-needs exec`） |
 | 管理面：`plugin.list/load/validate/invoke/setEnabled/reload/delete/builtinCatalog/createTemplate/capabilities.set/config.set/secret.set` | `spec/proto/ada-coding.ext.json` |
 | **统一插件包**（一个 `plugin.json` 同时声明 `frontend` / `backend`；动作 `registerAction`） | `crates/agent-web/src/plugins/manifest.rs` + `crates/agent-node/src/plugins/manager.rs`；说明见 [plugins/unified-package.md](../plugins/unified-package.md) |
 | 内置插件 **9 个**：`git-tools`、`code-outline`、`project-inspector`、`test-runner`、`batch-ops`、`plugin-forge`、`approval-guard`、`ask-user`、`ponytail` | `crates/agent-node/src/plugins/builtins.rs` |

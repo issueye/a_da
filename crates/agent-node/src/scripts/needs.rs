@@ -70,6 +70,7 @@ pub fn parse_needs(source: &str) -> ParsedNeeds {
             "fs=write" | "fs_write" | "write" => needs.fs_write = true,
             "net" | "network" | "fetch" => needs.net = true,
             "sqlite" | "database" | "db" => needs.sqlite = true,
+            "exec" | "child_process" | "child-process" | "shell" => needs.exec = true,
             // 显式空集：`// @ada-needs none` 比"声明一个空列表"更难读错
             "none" => {}
             other => unknown.push(other.to_string()),
@@ -149,6 +150,20 @@ mod tests {
         let p = parse_needs("// @ada-needs fs\n");
         assert!(p.needs.fs_read && p.needs.fs_write);
         assert!(!p.needs.sqlite, "fs 不应该顺带给 sqlite");
+        assert!(!p.needs.exec, "fs 不应该顺带给 exec");
+    }
+
+    /// exec 同样是独立能力：拼写错误不能静默放行。
+    #[test]
+    fn test_exec_is_granted_explicitly_only() {
+        for token in ["exec", "child_process", "child-process", "shell"] {
+            let p = parse_needs(&format!("// @ada-needs {token}\n"));
+            assert!(p.needs.exec, "{token} 应该授予 exec");
+            assert!(!p.needs.fs_read && !p.needs.sqlite);
+        }
+        let p = parse_needs("// @ada-needs exe\n");
+        assert!(!p.needs.exec);
+        assert_eq!(p.unknown, vec!["exe".to_string()]);
     }
 
     /// 指令只在前 40 行里找：写在文件深处不算（那时插件早有机会做别的）。

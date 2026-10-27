@@ -1,4 +1,4 @@
-// @ada-needs fs,sqlite
+// @ada-needs fs,sqlite,exec
 //
 // 统一插件示例的后端入口：一个包同时被前端注册表与 agent 插件装配器发现。
 // 动作不是模型工具：它们只由 SSR 的 /ext/unified-demo/backend/* 路由调用。
@@ -7,14 +7,20 @@
 
 const metadata = {
   name: "unified-demo",
-  description: "统一插件示例：前端插槽 + 后端动作 + 动态路由 + SQLite",
+  description: "统一插件示例：前端插槽 + 后端动作 + 动态路由 + SQLite + child_process",
   tools: { count: 0, names: [] },
   systemPrompt: { count: 0, names: [] },
   hooks: { count: 0, names: [] },
   actions: { count: 2, names: ["status", "refresh"] },
   routes: {
-    count: 4,
-    names: ["GET /hello/:name", "POST /echo", "GET /text", "GET /sqlite"],
+    count: 5,
+    names: [
+      "GET /hello/:name",
+      "POST /echo",
+      "GET /text",
+      "GET /sqlite",
+      "GET /exec",
+    ],
   },
 };
 
@@ -133,6 +139,23 @@ export default function (ada) {
         .get();
       db.close();
       return { total: total, last: last };
+    },
+  });
+
+  // child_process：声明了 `@ada-needs exec` 才能 require。固定跑一条 echo，
+  // 不接收用户输入，只用来演示同步子进程与 stdout 回传。
+  ada.route({
+    method: "GET",
+    path: "/exec",
+    async handler() {
+      const { execFileSync } = require("node:child_process");
+      const isWin = process.platform === "win32";
+      const output = isWin
+        ? execFileSync("cmd.exe", ["/d", "/s", "/c", "echo exec-ok"], {
+            encoding: "utf8",
+          })
+        : execFileSync("/bin/echo", ["exec-ok"], { encoding: "utf8" });
+      return { output: String(output).trim() };
     },
   });
 }

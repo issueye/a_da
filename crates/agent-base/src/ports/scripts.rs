@@ -114,6 +114,8 @@ pub struct ScriptNeeds {
     pub net: bool,
     /// 工作区 SQLite（`node:sqlite` 的 `DatabaseSync` / `StatementSync`）
     pub sqlite: bool,
+    /// 子进程（`node:child_process` 的同步子集：`execFileSync` / `spawnSync` / `execSync`）
+    pub exec: bool,
 }
 
 impl ScriptNeeds {
@@ -124,21 +126,23 @@ impl ScriptNeeds {
             fs_write: false,
             net: false,
             sqlite: false,
+            exec: false,
         }
     }
 
-    /// **宿主地板**（没有声明时的默认）：`fs` 开、`net` 关、`sqlite` 关。
+    /// **宿主地板**（没有声明时的默认）：`fs` 开、`net` / `sqlite` / `exec` 关。
     ///
     /// 为什么地板不是"全关"：在这个产品里，读写工作区**就是**插件存在的意义
     /// （它是个编码助手），把它默认关掉只会逼每个插件都写声明，而声明一旦变成仪式，
-    /// 就没人认真读了。真正需要显式声明的是**网络**（唯一能把数据送出去的口子）
-    /// 与 **SQLite**（SQL 能批量读写、能触发触发器，值得单独开）。
+    /// 就没人认真读了。真正需要显式声明的是**网络**（唯一能把数据送出去的口子）、
+    /// **SQLite**（SQL 能批量读写）与 **exec**（任意代码执行）。
     pub fn plugin_floor() -> Self {
         Self {
             fs_read: true,
             fs_write: true,
             net: false,
             sqlite: false,
+            exec: false,
         }
     }
 }

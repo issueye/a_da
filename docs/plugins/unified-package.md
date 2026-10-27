@@ -141,6 +141,8 @@ export default function (ada) {
 - 需要数据库时在包首行声明 `// @ada-needs sqlite`，用 `require("node:sqlite")`
   的 `DatabaseSync` / `StatementSync`；库文件必须在工作区内，详见
   [extension-factory.md](extension-factory.md) 的 SQLite 一节；
+- 需要子进程时声明 `// @ada-needs exec`，用 `require("node:child_process")` 的
+  `execFileSync` / `spawnSync` / `execSync`；异步 `spawn`/`exec`/`fork` 尚未支持；
 - 动作没有读取 `pluginConfig` / `secret` 的 API（见 §7）。
 
 ---
@@ -270,7 +272,7 @@ GET /ext/{frontend_id}/route/hello/ada?q=1
 | 前端能调什么 | 只有 `frontend.actions` 显式列出的 binding |
 | 后端怎么判 | 沙箱按动作自己的 `mode` 判 `intent`；前端把写动作标只读也绕不过 |
 | 数据面 | 动作输入 ≤64KB、输出 ≤256KB、单次超时 5 秒 |
-| 沙箱 | 与工具相同的 `@ada-needs` / 工作区 fs / net / sqlite 策略；无模型、无工具、无审批 |
+| 沙箱 | 与工具相同的 `@ada-needs` / 工作区 fs / net / sqlite / exec 策略；无模型、无工具、无审批 |
 | 信任 | 统一包仍是**本地受信任内容**；没有签名校验 |
 
 ---

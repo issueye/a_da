@@ -204,6 +204,47 @@ Supported surface (Node-compatible subset):
 SQL is not a model tool and does not enter the approval gate: it is a backend
 capability, same as `fs`. Use `readOnly: true` for read-only databases.
 
+## child_process: `execFileSync` / `spawnSync` / `execSync`
+
+Declare `@ada-needs exec` (aliases: `child_process`, `child-process`, `shell`).
+
+```ts
+// @ada-needs exec
+const { execFileSync, spawnSync, execSync } = require("node:child_process");
+
+// argv，不经 shell
+const out = execFileSync("git", ["status", "--short"], { encoding: "utf8" });
+
+// shell 命令
+execSync("echo shell-ok", { encoding: "utf8" });
+
+// 不抛错的形态
+const result = spawnSync("cmd.exe", ["/d", "/s", "/c", "exit 3"]);
+// result.status === 3, result.stdout / result.stderr 是 string 或 Buffer
+```
+
+Supported options (sync subset):
+
+- `cwd`（缺省是工作区；绝对路径可指向任意目录，相对路径以工作区为基准）
+- `env`（给了就**替换**环境；始终补 `A_DA_AGENT=1`）
+- `input`（string / Buffer；喂给 stdin）
+- `stdio`：`pipe` / `ignore` / `null` / `inherit`（`inherit` 直接接宿主 stdout/stderr）
+- `encoding`：`utf8`（默认）或 `buffer` / `null`
+- `timeout`：毫秒；`0` / 省略 = 不超时，超时杀整棵进程树
+- `maxBuffer`：默认 1 MB；`0` = 不限制
+- `shell`：`spawnSync` / `execFileSync` 传 `shell:true` 时把 file+args 交给系统 shell；
+  `execSync` 本身就是 shell 命令
+
+- `execFileSync` / `execSync` 在非零退出、超时、`maxBuffer`、启动失败时**抛错**，
+  错误上带 `status` / `signal` / `stdout` / `stderr` / `code`（超时 `ETIMEDOUT`，
+  超限 `ENOBUFS`，找不到可执行文件 `ENOENT`）。
+- `spawnSync` 不抛错；失败放在 `result.error`。
+- 异步 `spawn` / `exec` / `execFile` / `fork` **尚未提供**，调用会抛出明确错误，
+  请改用对应的同步 API。
+- stdin 默认为空设备；只有传 `input` 时才写数据。
+- ⚠️ `exec` 等价于任意代码执行。当前阶段优先功能实现，信任边界由插件安装者负责；
+  后续再补审批/策略。不要在不可信插件上声明 `exec`。
+
 **Skills are directories, not declarations.** Put `skills/<name>/SKILL.md` next to
 `index.ts`; the host scans it during assembly and reads the YAML frontmatter
 (`name` must equal the directory name, `description` 1-1024 chars — see

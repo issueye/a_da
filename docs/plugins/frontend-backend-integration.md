@@ -306,7 +306,7 @@ agent RPC：
 | SSR → agent | 服务端 `AgentClient`，网关 token 不下发浏览器 |
 | 前端 TSX → 宿主 | 无 fs/net/process；HTML 白名单；500ms 渲染预算；无内存上限 |
 | 前端浏览器脚本 | 与页面同源，能调核心路由；**能力声明不约束脚本** |
-| 后端插件 → 宿主 | `@ada-needs` 沙箱；工作区 fs 边界；net 默认关；sqlite 需显式声明；工具审批；钩子分级 |
+| 后端插件 → 宿主 | `@ada-needs` 沙箱；工作区 fs 边界；net 默认关；sqlite/exec 需显式声明；工具审批；钩子分级 |
 | 前端能力 | `providers.read` / `processes.read` / `tasks.read` 是**数据最小化**，不是授权系统 |
 
 两个需要特别记住的事实：

@@ -4,6 +4,7 @@
 
 pub mod assert;
 pub mod buffer;
+pub mod child_process;
 pub mod crypto;
 pub mod events;
 pub mod fs;
@@ -46,6 +47,11 @@ pub struct Needs {
     /// **默认 false**：SQLite 会创建/改写工作区里的数据库文件。它与 fs 的边界
     /// 不同（SQL 能批量读写、能触发触发器），所以单独声明而不是搭 fs 的便车。
     pub sqlite: bool,
+    /// 注入 `node:child_process` 的同步子集（`execFileSync` / `spawnSync` / `execSync`）。
+    ///
+    /// **默认 false**：这是任意代码执行，等价于把宿主用户的权限交给插件；只有
+    /// 本地受信插件才应声明 `@ada-needs exec`。异步 `spawn`/`exec`/`fork` 不提供。
+    pub exec: bool,
 }
 
 impl Default for Needs {
@@ -64,16 +70,18 @@ impl Needs {
             fs_write: true,
             net: true,
             sqlite: true,
+            exec: true,
         }
     }
 
-    /// 插件默认档：`fs: true`、`net: false`、`sqlite: false`（见设计文档 §3.5 的默认档位）。
+    /// 插件默认档：`fs: true`、`net/sqlite/exec: false`（见设计文档 §3.5 的默认档位）。
     pub fn plugin_default() -> Self {
         Self {
             fs_read: true,
             fs_write: true,
             net: false,
             sqlite: false,
+            exec: false,
         }
     }
 }

@@ -169,6 +169,15 @@ try {
     `${JSON.stringify(sqliteFirstBody)} -> ${JSON.stringify(sqliteSecondBody)}`,
   )
 
+  const execRoute = await fetch(routeUrl('exec'))
+  check(execRoute.status === 200, 'child_process 路由返回 200', `HTTP ${execRoute.status}`)
+  const execBody = await execRoute.json()
+  check(
+    String(execBody.output || '').includes('exec-ok'),
+    'child_process.execFileSync 的 stdout 回传',
+    JSON.stringify(execBody),
+  )
+
   const missing = await fetch(routeUrl('nope'))
   check(missing.status === 404, '未声明的路由返回 404', `HTTP ${missing.status}`)
   const missingBody = await missing.json()

@@ -157,6 +157,7 @@ impl SubprocessScriptHost {
             "fs_write": needs.fs_write,
             "net": needs.net,
             "sqlite": needs.sqlite,
+            "exec": needs.exec,
         })
     }
 }

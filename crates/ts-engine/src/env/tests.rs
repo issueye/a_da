@@ -40,6 +40,7 @@ fn test_needs_gate_what_gets_injected() {
             fs_write: false,
             net: false,
             sqlite: false,
+            exec: false,
         },
     )
     .expect("注入失败");
@@ -264,6 +265,7 @@ fn test_sqlite_database_sync_round_trip_and_sandbox() {
             fs_write: true,
             net: false,
             sqlite: true,
+            exec: false,
         },
     )
     .expect("注入 SQLite 环境失败");
@@ -406,6 +408,7 @@ fn test_sqlite_attach_and_vacuum_into_cannot_escape_the_workspace() {
             fs_write: true,
             net: false,
             sqlite: true,
+            exec: false,
         },
     )
     .expect("注入 SQLite 环境失败");
@@ -491,4 +494,154 @@ fn test_sqlite_attach_and_vacuum_into_cannot_escape_the_workspace() {
     );
 
     let _ = std::fs::remove_dir_all(temp_dir);
+}
+
+/// child_process 同步子集：argv、shell、input、cwd、timeout、maxBuffer 与非零退出。
+#[test]
+fn test_child_process_sync_surface_works() {
+    let temp_dir = std::env::temp_dir().join(format!("a_da_child_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let mut ctx = Context::default();
+    inject_environment(
+        &mut ctx,
+        Some(&temp_dir),
+        Needs {
+            fs_read: true,
+            fs_write: true,
+            net: false,
+            sqlite: false,
+            exec: true,
+        },
+    )
+    .expect("注入 child_process 环境失败");
+
+    let result = ctx
+        .eval(Source::from_bytes(
+            r#"
+            (function() {
+                const cp = require('node:child_process');
+                const isWin = process.platform === 'win32';
+                function run(file, args, options) {
+                    return cp.execFileSync(file, args, options || { encoding: 'utf8' });
+                }
+                const argvOut = isWin
+                    ? run('cmd.exe', ['/d', '/s', '/c', 'echo child-ok'])
+                    : run('/bin/echo', ['child-ok']);
+                const shellOut = cp.execSync('echo shell-ok', { encoding: 'utf8' });
+                const shellTrue = cp.spawnSync('echo', ['shell-true'], { shell: true, encoding: 'utf8' });
+                const statusResult = cp.spawnSync(
+                    isWin ? 'cmd.exe' : '/bin/sh',
+                    isWin ? ['/d', '/s', '/c', 'exit 3'] : ['-c', 'exit 3'],
+                    { encoding: 'utf8' },
+                );
+                const inputOut = isWin
+                    ? cp.execFileSync('cmd.exe', ['/d', '/s', '/c', 'more'], { input: 'from-stdin', encoding: 'utf8' })
+                    : cp.execFileSync('/bin/cat', [], { input: 'from-stdin', encoding: 'utf8' });
+                const cwdOut = isWin
+                    ? cp.execFileSync('cmd.exe', ['/d', '/s', '/c', 'cd'], { cwd: process.cwd(), encoding: 'utf8' })
+                    : cp.execFileSync('/bin/pwd', [], { cwd: process.cwd(), encoding: 'utf8' });
+                const timeout = cp.spawnSync(
+                    isWin ? 'cmd.exe' : '/bin/sleep',
+                    isWin ? ['/d', '/s', '/c', 'ping 127.0.0.1 -n 10 > nul'] : ['10'],
+                    { timeout: 100 },
+                );
+                let bufferError = null;
+                try {
+                    cp.execFileSync(
+                        isWin ? 'cmd.exe' : '/bin/echo',
+                        isWin ? ['/d', '/s', '/c', 'echo 1234567890'] : ['1234567890'],
+                        { maxBuffer: 4, encoding: 'utf8' },
+                    );
+                } catch (e) {
+                    bufferError = e.code || 'error';
+                }
+                let asyncError = null;
+                try { cp.spawn('x'); } catch (e) { asyncError = String(e.message || e); }
+                return JSON.stringify({
+                    argvOut: argvOut,
+                    shellOut: shellOut,
+                    shellTrueStatus: shellTrue.status,
+                    shellTrueOut: shellTrue.stdout,
+                    status: statusResult.status,
+                    inputOut: inputOut,
+                    cwdOut: cwdOut,
+                    timeoutCode: timeout.error ? timeout.error.code : null,
+                    timeoutStatus: timeout.status,
+                    bufferError: bufferError,
+                    asyncError: asyncError,
+                });
+            })();
+            "#,
+        ))
+        .expect("child_process 脚本执行失败");
+    let text = result.to_string(&mut ctx).unwrap().to_std_string_escaped();
+    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(
+        parsed["argvOut"].as_str().unwrap().contains("child-ok"),
+        "{parsed}"
+    );
+    assert!(
+        parsed["shellOut"].as_str().unwrap().contains("shell-ok"),
+        "{parsed}"
+    );
+    assert_eq!(parsed["shellTrueStatus"], 0, "{parsed}");
+    assert!(
+        parsed["shellTrueOut"]
+            .as_str()
+            .unwrap()
+            .contains("shell-true"),
+        "{parsed}"
+    );
+    assert_eq!(parsed["status"], 3, "{parsed}");
+    assert!(
+        parsed["inputOut"].as_str().unwrap().contains("from-stdin"),
+        "{parsed}"
+    );
+    assert!(
+        parsed["cwdOut"]
+            .as_str()
+            .unwrap()
+            .to_ascii_lowercase()
+            .contains(&temp_dir.to_string_lossy().to_ascii_lowercase()),
+        "cwd 选项应生效：{parsed}"
+    );
+    assert_eq!(parsed["timeoutCode"], "ETIMEDOUT", "{parsed}");
+    assert_eq!(parsed["timeoutStatus"], serde_json::Value::Null, "{parsed}");
+    assert_eq!(parsed["bufferError"], "ENOBUFS", "{parsed}");
+    assert!(
+        parsed["asyncError"]
+            .as_str()
+            .unwrap()
+            .contains("spawnSync"),
+        "异步 spawn 应给出可用替代：{parsed}"
+    );
+
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
+/// 未声明 exec 时模块不存在。
+#[test]
+fn test_child_process_is_not_injected_without_the_need() {
+    let mut ctx = Context::default();
+    inject_environment(&mut ctx, None, Needs::plugin_default()).expect("注入失败");
+    let result = ctx
+        .eval(Source::from_bytes(
+            r#"
+            (function() {
+                try {
+                    require('node:child_process');
+                    return 'injected';
+                } catch (e) {
+                    return String((e && e.message) || e);
+                }
+            })();
+            "#,
+        ))
+        .expect("检查 child_process 门禁失败");
+    let message = result.to_string(&mut ctx).unwrap().to_std_string_escaped();
+    assert!(
+        message.contains("未注入") || message.contains("needs"),
+        "未声明 exec 时必须给出说清原因的错误：{message}"
+    );
 }

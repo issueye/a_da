@@ -1488,4 +1488,80 @@ mod tests {
         let _ = fs::remove_dir_all(home);
         let _ = fs::remove_dir_all(unified);
     }
+
+    /// `@ada-needs exec` 从源码声明走到引擎注入：动作里真的能起子进程并读回 stdout。
+    #[tokio::test]
+    async fn exec_action_runs_only_when_declared() {
+        let workspace = temp_dir("exec_ws");
+        let home = temp_dir("exec_home");
+        let unified = temp_dir("exec_root");
+        let package = unified.join("exec-demo");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("plugin.json"),
+            r#"{
+                "id": "exec-demo",
+                "name": "Exec Demo",
+                "version": "0.1.0",
+                "frontend": { "slots": [] },
+                "backend": {}
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            package.join("index.ts"),
+            r#"
+            // @ada-needs exec
+            const metadata = {
+              name: 'exec-demo',
+              description: 'child_process 能力测试',
+              tools: { count: 0, names: [] },
+              systemPrompt: { count: 0, names: [] },
+              hooks: { count: 0, names: [] },
+              actions: { count: 1, names: ['echo'] },
+            };
+            export default function (ada) {
+              ada.metadata = metadata;
+              ada.registerAction({
+                name: 'echo',
+                description: '执行 echo 并返回 stdout',
+                mode: 'write',
+                async execute() {
+                  const { execFileSync } = require('node:child_process');
+                  const isWin = process.platform === 'win32';
+                  const output = isWin
+                    ? execFileSync('cmd.exe', ['/d', '/s', '/c', 'echo exec-ok'], { encoding: 'utf8' })
+                    : execFileSync('/bin/echo', ['exec-ok'], { encoding: 'utf8' });
+                  return { output: output };
+                },
+              });
+            }
+            "#,
+        )
+        .unwrap();
+
+        let manager = PluginManager::with_home(&home).with_unified_dir(&unified);
+        let workspace_text = workspace.to_string_lossy().to_string();
+        let result = manager
+            .invoke_action(
+                "global:exec-demo",
+                "echo",
+                serde_json::json!({}),
+                PluginActionIntent::Write,
+                &workspace_text,
+            )
+            .await
+            .expect("exec 动作应成功");
+        assert!(
+            result["data"]["output"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("exec-ok"),
+            "{result}"
+        );
+
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(home);
+        let _ = fs::remove_dir_all(unified);
+    }
 }
