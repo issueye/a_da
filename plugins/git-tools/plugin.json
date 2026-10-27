@@ -1,0 +1,7 @@
+{
+  "id": "git-tools",
+  "name": "Git 工具",
+  "version": "0.1.0",
+  "description": "按 action 执行 Git 动作：只读（status/diff/log/show/blame）在只读档也能用；写入（add/commit/checkout/restore/reset/stash/branch/merge/push/pull）会改仓库，危险动作需审批。argv 直传、不经 shell，输出按 48KB 截断。",
+  "backend": {}
+}
