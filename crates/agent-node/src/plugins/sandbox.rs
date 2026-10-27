@@ -243,6 +243,145 @@ pub struct PluginInspection {
 
 pub struct PluginSandbox;
 
+/// `ada` API 的表面能力开关。
+///
+/// 🔴 **为什么需要这个东西**：插件工厂会被**五个入口**重新执行一遍（检查 / 工具 /
+/// 动作 / 路由 / 钩子）。过去五处各写一份 `api` 字面量，于是"某处少给了一个入口"
+/// 就成了一批**只在特定场景才炸**的 bug：插件在工厂里调了 `ada.route(...)`，
+/// 检查期过、动态路由期也过，一点界面按钮就报
+/// `插件初始化执行异常: ... is not a function`
+/// （本轮实测：`plugins/unified-demo` 的动作就是这样挂的）。
+///
+/// 现在只有这一份表面：每个入口只打开自己需要的收集器，其余入口给 **no-op**
+/// —— 存在但不生效。插件工厂不会因为"某个入口不存在"而抛错，而"到底声明了什么"
+/// 仍然只有检查期那一份是真相来源。
+#[derive(Clone, Copy, Default)]
+struct ApiSurface {
+    tools: bool,
+    actions: bool,
+    routes: bool,
+    hooks: bool,
+    prompts: bool,
+    /// 技能已改为目录约定（`skills/<name>/SKILL.md`）：这里只把调用记成诊断。
+    skill_diagnostics: bool,
+    /// 是否把插件的 `metadata` 透出去（只有检查期需要）。
+    metadata: bool,
+}
+
+impl ApiSurface {
+    /// 检查期：**全收集**——它是"这个插件到底声明了什么"的唯一真相来源。
+    const INSPECT: Self = Self {
+        tools: true,
+        actions: true,
+        routes: true,
+        hooks: true,
+        prompts: true,
+        skill_diagnostics: true,
+        metadata: true,
+    };
+}
+
+/// 一行收集器：开着的往数组里推，关着的给 no-op。
+fn collector_line(enabled: bool, name: &str, push: &str) -> String {
+    if enabled {
+        format!("                {name}: (item) => {{ {push}; }},\n")
+    } else {
+        format!("                {name}: () => {{}},\n")
+    }
+}
+
+/// 钩子收集器（`ada.on`）。
+///
+/// 单独抽出来是因为它比一行 no-op 复杂得多（事件别名 + 动作声明），而检查期与
+/// 钩子调用期**必须**用同一套别名表——两边不一致的话，会出现"检查说有这个点位、
+/// 调的时候找不到"。
+const HOOK_ON_JS: &str = r#"                on: (event, handler, options = {}) => {
+                    const aliases = {
+                        turn_start: 'beforeTurn', turn_end: 'afterTurn',
+                        tool_call: 'beforeToolCall', tool_execution_start: 'beforeToolCall',
+                        tool_execution_end: 'afterToolCall', tool_result: 'afterToolCall',
+                        agent_start: 'beforeAgentStart', agent_end: 'afterAgentEnd',
+                        before_provider_request: 'beforeProviderRequest',
+                        before_provider_headers: 'beforeProviderHeaders',
+                        after_provider_response: 'afterProviderResponse',
+                        context: 'beforeContext',
+                    };
+                    const point = aliases[event] || event;
+                    // 写错就报错：静默跳过会让作者一直以为钩子装上了。
+                    if (typeof handler !== 'function') throw new Error('ada.on requires a handler');
+                    const inferredActions = point === 'beforeToolCall'
+                        ? ['observe', 'note', 'deny', 'replace']
+                        : ['observe', 'note'];
+                    hooksRaw.push({
+                        point,
+                        apiEvent: event,
+                        handler,
+                        actions: Array.isArray(options.actions) ? options.actions : inferredActions,
+                        order: typeof options.order === 'number' ? options.order : 0,
+                    });
+                },
+"#;
+
+impl PluginSandbox {
+    /// 生成 `ada` API 字面量（五个入口共用，见 [`ApiSurface`]）。
+    ///
+    /// 🔴 调用方必须保证两件事，否则生成的 API 会在执行期炸：
+    /// 1. 作用域里有 `ws`；
+    /// 2. **已注入** [`ROUTE_RUNTIME_JS`]（`response` / `json` / `text` / `html` /
+    ///    `redirect` 都从 `globalThis.__ada_route_runtime` 取；没注入时取属性就会抛
+    ///    TypeError，那正是这次要修的那类错）。
+    fn api_literal(surface: ApiSurface) -> String {
+        let mut out = String::from("{\n");
+        out.push_str("                trace: (msg) => console.log(msg),\n");
+        out.push_str("                workspace: ws,\n");
+        out.push_str(if surface.metadata {
+            "                metadata: metadata || undefined,\n"
+        } else {
+            "                metadata: undefined,\n"
+        });
+        out.push_str(&collector_line(surface.tools, "registerTool", "toolsRaw.push(item)"));
+        out.push_str(&collector_line(
+            surface.actions,
+            "registerAction",
+            "actionsRaw.push(item)",
+        ));
+        out.push_str(&collector_line(surface.routes, "route", "routesRaw.push(item)"));
+        out.push_str(&collector_line(
+            surface.routes,
+            "registerRoute",
+            "routesRaw.push(item)",
+        ));
+        for helper in ["response", "json", "text", "html", "redirect"] {
+            out.push_str(&format!(
+                "                {helper}: globalThis.__ada_route_runtime.{helper},\n"
+            ));
+        }
+        out.push_str(&collector_line(
+            surface.prompts,
+            "registerSystemPrompt",
+            "promptsRaw.push(item)",
+        ));
+        out.push_str(&collector_line(
+            surface.prompts,
+            "registerPrompt",
+            "promptsRaw.push(item)",
+        ));
+        out.push_str(if surface.skill_diagnostics {
+            "                registerSkill: (skill) => { ignoredSkills.push(skill && skill.name ? String(skill.name) : '<unnamed>'); },\n"
+        } else {
+            "                registerSkill: () => {},\n"
+        });
+        out.push_str(if surface.hooks {
+            HOOK_ON_JS
+        } else {
+            "                on: () => {},\n"
+        });
+        out.push_str("            }");
+        out
+    }
+}
+
+
 impl PluginSandbox {
     /// 读取并转译插件的 TypeScript/JavaScript 源码为沙箱闭包代码
     async fn load_and_transpile(plugin_path: &Path) -> Result<String> {
@@ -336,57 +475,7 @@ impl PluginSandbox {
                     let actionsRaw = [];
                     let routesRaw = [];
                     if (typeof desc === 'function') {{
-                        const api = {{
-                            trace: (msg) => console.log(msg),
-                            workspace: ws,
-                            metadata: metadata || undefined,
-                            registerTool: (tool) => {{ toolsRaw.push(tool); }},
-                            // 面向界面的确定性动作：与工具分开收集，避免把界面动作装进模型工具目录。
-                            registerAction: (action) => {{ actionsRaw.push(action); }},
-                            // 动态 HTTP 路由：只在 TS 侧收集，宿主不登记静态路由表。
-                            route: (route) => {{ routesRaw.push(route); }},
-                            registerRoute: (route) => {{ routesRaw.push(route); }},
-                            response: globalThis.__ada_route_runtime.response,
-                            json: globalThis.__ada_route_runtime.json,
-                            text: globalThis.__ada_route_runtime.text,
-                            html: globalThis.__ada_route_runtime.html,
-                            redirect: globalThis.__ada_route_runtime.redirect,
-                            registerSystemPrompt: (prompt) => {{ promptsRaw.push(prompt); }},
-                            registerPrompt: (prompt) => {{ promptsRaw.push(prompt); }},
-                            // 🔴 技能不再"由脚本注册"：Skill 是**目录 + SKILL.md**
-                            // （docs/SKILL_SPEC.md），由宿主直接扫 `skills/<name>/SKILL.md`。
-                            // 这里保留入口只为**给出明确诊断**——静默忽略会让作者一直以为装上了。
-                            registerSkill: (skill) => {{
-                                ignoredSkills.push(skill && skill.name ? String(skill.name) : '<unnamed>');
-                            }},
-                            // 钩子只有 `on` 一个入口：`registerHook` 曾经与它等价，
-                            // 但多一个入口只会让作者问"用哪个"，而且对象形态里
-                            // `handlerExport` 在执行期根本找不到函数（永远静默跳过）。
-                            on: (event, handler, options = {{}}) => {{
-                                const aliases = {{
-                                    turn_start: 'beforeTurn', turn_end: 'afterTurn',
-                                    tool_call: 'beforeToolCall', tool_execution_start: 'beforeToolCall',
-                                    tool_execution_end: 'afterToolCall', tool_result: 'afterToolCall',
-                                    agent_start: 'beforeAgentStart', agent_end: 'afterAgentEnd',
-                                    before_provider_request: 'beforeProviderRequest',
-                                    before_provider_headers: 'beforeProviderHeaders',
-                                    after_provider_response: 'afterProviderResponse',
-                                    context: 'beforeContext',
-                                }};
-                                const point = aliases[event] || event;
-                                if (typeof handler !== 'function') throw new Error('ada.on requires a handler');
-                                const inferredActions = point === 'beforeToolCall'
-                                    ? ['observe', 'note', 'deny', 'replace']
-                                    : ['observe', 'note'];
-                                hooksRaw.push({{
-                                    point,
-                                    apiEvent: event,
-                                    handler,
-                                    actions: Array.isArray(options.actions) ? options.actions : inferredActions,
-                                    order: typeof options.order === 'number' ? options.order : 0,
-                                }});
-                            }},
-                        }};
+                        const api = {api};
                         try {{
                             await desc(api);
                             metadata = api.metadata || metadata;
@@ -504,6 +593,7 @@ impl PluginSandbox {
                 }}
             }};
             "#,
+            api = Self::api_literal(ApiSurface::INSPECT),
             ws_json = ws_json,
             require_factory = require_factory
         );
@@ -749,6 +839,13 @@ impl PluginSandbox {
             runtime.terminate();
             return Ok(serde_json::json!({ "error": format!("插件装载失败: {e}") }));
         }
+        // 路由助手（`ada.text` / `json` / `html` / `redirect`）都从这份运行时取。
+        // 不注入的话，插件在工厂里调 `ada.text(...)` 会撞 `undefined.xxx`——
+        // 这正是"动作/工具/钩子路径少给入口"那类错的另一半。
+        if let Err(e) = runtime.eval_ts(ROUTE_RUNTIME_JS, Some("ada_route_runtime.js")).await {
+            runtime.terminate();
+            return Ok(serde_json::json!({ "error": format!("初始化动态路由运行时失败: {e}") }));
+        }
 
         // 2. 挂载钩子调度器
         let call_setup = format!(
@@ -810,32 +907,7 @@ impl PluginSandbox {
                     // 需要新增钩子请在工厂期用 `ada.on` 声明。
                     let hooksRaw = [];
                     if (typeof desc === 'function') {{
-                        const api = {{
-                            trace: (msg) => console.log(msg),
-                            workspace: ws,
-                            registerTool: () => {{}},
-                            registerAction: () => {{}},
-                            registerSkill: () => {{}},
-                            registerSystemPrompt: () => {{}},
-                            registerPrompt: () => {{}},
-                            on: (event, handler, options = {{}}) => {{
-                                const aliases = {{
-                                    turn_start: 'beforeTurn', turn_end: 'afterTurn',
-                                    tool_call: 'beforeToolCall', tool_execution_end: 'afterToolCall',
-                                    agent_start: 'beforeAgentStart', agent_end: 'afterAgentEnd',
-                                    before_provider_request: 'beforeProviderRequest',
-                                    before_provider_headers: 'beforeProviderHeaders',
-                                    after_provider_response: 'afterProviderResponse',
-                                    context: 'beforeContext',
-                                }};
-                                const point = aliases[event] || event;
-                                if (typeof handler === 'function') hooksRaw.push({{
-                                    point, apiEvent: event, handler,
-                                    actions: Array.isArray(options.actions) ? options.actions : (point === 'beforeToolCall' ? ['observe', 'note', 'deny', 'replace'] : ['observe', 'note']),
-                                    order: typeof options.order === 'number' ? options.order : 0,
-                                }});
-                            }},
-                        }};
+                        const api = {api};
                         try {{
                             await desc(api);
                         }} catch (e) {{
@@ -905,6 +977,7 @@ impl PluginSandbox {
             "#,
             ws_json = ws_json,
             point_json = point_json,
+            api = Self::api_literal(ApiSurface { hooks: true, ..Default::default() }),
             require_factory = require_factory
         );
         if let Err(e) = runtime.eval_ts(call_setup, Some("ada_hook_caller.js")).await {
@@ -978,6 +1051,12 @@ impl PluginSandbox {
             runtime.terminate();
             anyhow::bail!("插件装载失败: {e}");
         }
+        // 路由助手（`ada.text` / `json` / …）来自这份运行时；动作路径同样要能调它们，
+        // 否则插件在工厂里准备响应常量就会撞 `undefined.xxx`。
+        if let Err(e) = runtime.eval_ts(ROUTE_RUNTIME_JS, Some("ada_route_runtime.js")).await {
+            runtime.terminate();
+            anyhow::bail!("初始化动态路由运行时失败: {e}");
+        }
 
         let call_setup = format!(
             r#"
@@ -993,17 +1072,7 @@ impl PluginSandbox {
                     const requireFactory = {require_factory};
                     let actionsRaw = [];
                     if (typeof desc === 'function') {{
-                        const api = {{
-                            trace: (msg) => console.log(msg),
-                            workspace: ws,
-                            metadata: undefined,
-                            registerTool: () => {{}},
-                            registerAction: (action) => {{ actionsRaw.push(action); }},
-                            registerSystemPrompt: () => {{}},
-                            registerPrompt: () => {{}},
-                            registerSkill: () => {{}},
-                            on: () => {{}},
-                        }};
+                        const api = {api};
                         try {{
                             await desc(api);
                         }} catch (e) {{
@@ -1059,6 +1128,7 @@ impl PluginSandbox {
             ws_json = ws_json,
             action_json = action_json,
             intent_json = intent_json,
+            api = Self::api_literal(ApiSurface { actions: true, ..Default::default() }),
             require_factory = require_factory
         );
         if let Err(e) = runtime.eval_ts(call_setup, Some("ada_action_caller.js")).await {
@@ -1146,24 +1216,7 @@ impl PluginSandbox {
                     const requireFactory = {require_factory};
                     let routesRaw = [];
                     if (typeof desc === 'function') {{
-                        const api = {{
-                            trace: (msg) => console.log(msg),
-                            workspace: ws,
-                            metadata: undefined,
-                            registerTool: () => {{}},
-                            registerAction: () => {{}},
-                            route: (route) => {{ routesRaw.push(route); }},
-                            registerRoute: (route) => {{ routesRaw.push(route); }},
-                            response: rt.response,
-                            json: rt.json,
-                            text: rt.text,
-                            html: rt.html,
-                            redirect: rt.redirect,
-                            registerSystemPrompt: () => {{}},
-                            registerPrompt: () => {{}},
-                            registerSkill: () => {{}},
-                            on: () => {{}},
-                        }};
+                        const api = {api};
                         try {{
                             await desc(api);
                         }} catch (e) {{
@@ -1206,6 +1259,7 @@ impl PluginSandbox {
             }};
             "#,
             ws_json = ws_json,
+            api = Self::api_literal(ApiSurface { routes: true, ..Default::default() }),
             require_factory = require_factory
         );
         if let Err(e) = runtime.eval_ts(call_setup, Some("ada_route_caller.js")).await {
@@ -1329,6 +1383,12 @@ impl PluginSandbox {
             runtime.terminate();
             return Ok(ToolResult::error(format!("插件装载失败: {e}")));
         }
+        // 工具路径同样要能有路由助手：插件工厂准备响应常量时会用 `ada.text(...)`，
+        // 少这份运行时就会撞 `undefined.xxx`（与"少给入口"是同一类错的两半）。
+        if let Err(e) = runtime.eval_ts(ROUTE_RUNTIME_JS, Some("ada_route_runtime.js")).await {
+            runtime.terminate();
+            return Ok(ToolResult::error(format!("初始化动态路由运行时失败: {e}")));
+        }
 
         // 2. 挂载工具调度执行器
         let call_setup = format!(
@@ -1344,21 +1404,10 @@ impl PluginSandbox {
                     const requireFactory = {require_factory};
                     let toolsRaw = [];
                     if (typeof desc === 'function') {{
-                        const api = {{
-                            trace: (msg) => console.log(msg),
-                            workspace: ws,
-                            registerTool: (tool) => {{ toolsRaw.push(tool); }},
-                            registerAction: () => {{}},
-                            // 调用路径只找工具：技能/提示词/钩子在这里**收下就丢**是刻意的
-                            // （声明清单在 `__ada_inspect_tools` 那条路上探明并挂在句柄上，
-                            // 这里再收一遍只会多一份对不上的副本）。但它们**不能不存在**——
-                            // 插件工厂调了任何一个都会抛，工具就再也找不到了
-                            // （实测过一次：少了钩子注册入口，带钩子的插件连工具都调不动）。
-                            registerSkill: () => {{}},
-                            registerSystemPrompt: () => {{}},
-                            registerPrompt: () => {{}},
-                            on: () => {{}},
-                        }};
+                        // 调用路径只找工具：动作/路由/钩子在这里**收下就丢**是刻意的
+                        // （声明清单在检查期那条路上探明）。但入口**必须存在**——
+                        // 少一个，插件工厂就会抛，连工具都调不动。
+                        const api = {api};
                         try {{
                             await desc(api);
                         }} catch (e) {{
@@ -1433,6 +1482,7 @@ impl PluginSandbox {
             "#,
             ws_json = ws_json,
             tool_name_json = tool_name_json,
+            api = Self::api_literal(ApiSurface { tools: true, ..Default::default() }),
             require_factory = require_factory
         );
 
@@ -1550,6 +1600,94 @@ mod tests {
         assert_eq!(tools[0].label.as_deref(), Some("问候工具"));
         assert_eq!(tools[0].description, "返回问候语");
         assert_eq!(tools[1].name, "static_tool");
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    /// 🔴 回归：**同一个插件工厂必须在每个入口上都能跑通**。
+    ///
+    /// 本轮实测的真实故障：`plugins/unified-demo` 在工厂里调 `ada.route(...)`，
+    /// 检查期与动态路由期都正常，但一点界面按钮（动作路径）就报
+    /// `插件初始化执行异常: ... is not a function` —— 因为动作路径的 `ada` 少了
+    /// `route` / `text` 入口。这类"某处少给一个入口"的错只在特定场景出现，
+    /// 所以五个入口必须共用同一份 API 表面（见 [`ApiSurface`]）。
+    #[tokio::test]
+    async fn test_factory_runs_on_action_and_route_entries_too() {
+        let temp_dir = std::env::temp_dir().join(format!("a_da_entries_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let plugin_file = temp_dir.join("multi_entry.ts");
+
+        // 工厂里同时用 registerAction 与 route/ada.text：任何入口只要少给一个，
+        // 这个插件就会在该入口上抛 TypeError。
+        let plugin_code = r#"
+            export default function (ada: any) {
+                ada.metadata = {
+                    name: "multi-entry",
+                    description: "动作与动态路由同在一个工厂里",
+                    tools: { count: 0, names: [] },
+                    systemPrompt: { count: 0, names: [] },
+                    hooks: { count: 0, names: [] },
+                    actions: { count: 1, names: ["ping"] },
+                    routes: { count: 1, names: ["GET /ping"] },
+                };
+                ada.registerAction({
+                    name: "ping",
+                    label: "ping",
+                    mode: "read",
+                    async execute() { return { ok: true, data: { pong: 1 } }; },
+                });
+                ada.route({
+                    method: "GET",
+                    path: "/ping",
+                    async handler() { return ada.text("pong", 200); },
+                });
+            }
+        "#;
+        std::fs::write(&plugin_file, plugin_code).unwrap();
+
+        let needs = ada_ts_engine::Needs::everything();
+        let limits = ada_ts_engine::Limits::default();
+
+        // 1) 检查期：动作与路由都要被收集到
+        let inspection = PluginSandbox::inspect_plugin_full(&plugin_file, &temp_dir, needs)
+            .await
+            .expect("检查期应当成功");
+        assert_eq!(inspection.actions.len(), 1);
+        assert_eq!(inspection.routes.len(), 1);
+
+        // 2) 动作期（本轮故障现场）：工厂能跑完，动作真的执行
+        let action = PluginSandbox::call_action_budgeted(
+            &plugin_file,
+            "ping",
+            serde_json::json!({}),
+            serde_json::json!({ "workspace": temp_dir.to_string_lossy() }),
+            "read",
+            &temp_dir,
+            20,
+            needs,
+            limits,
+        )
+        .await
+        .expect("动作调用本身不该失败");
+        assert_eq!(action["ok"], serde_json::json!(true), "动作必须能跑：{action}");
+        assert_eq!(action["data"]["pong"], serde_json::json!(1), "{action}");
+
+        // 3) 路由期：handler 里的 `ada.text(...)` 也要拿得到
+        let route = PluginSandbox::call_route_budgeted(
+            &plugin_file,
+            "GET",
+            "/ping",
+            serde_json::json!({}),
+            &temp_dir,
+            20,
+            needs,
+            limits,
+        )
+        .await
+        .expect("路由调用本身不该失败");
+        assert_eq!(route["ok"], serde_json::json!(true), "路由必须能跑：{route}");
+        assert_eq!(route["response"]["status"], serde_json::json!(200), "{route}");
+        assert_eq!(route["response"]["body"], serde_json::json!("pong"), "{route}");
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }
