@@ -78,8 +78,8 @@ pub fn next_id(prefix: &str) -> String {
 ///
 /// 这里退化成"不比上一张早"，顺序就只由生成顺序决定。
 /// 磁盘回填侧（`agent_node::session::SessionManager::restore_all_threads`）遵守同一条不变量。
-pub fn next_item_at(prev: &[Item]) -> u64 {
-    let last = prev.last().map(|i| item_at(i)).unwrap_or(0);
+pub fn next_item_at(prev: &[Arc<Item>]) -> u64 {
+    let last = prev.last().map(|i| item_at(i.as_ref())).unwrap_or(0);
     let now = now_millis();
     if now > last {
         now
@@ -91,6 +91,24 @@ pub fn next_item_at(prev: &[Item]) -> u64 {
 /// 取一张卡片的 `at`（唯一实现见 `agent_proto::Item::at`）。
 fn item_at(item: &Item) -> u64 {
     item.at()
+}
+
+/// `Arc<Item>` 的可变借用：**只有共享时才复制一份**（copy-on-write）。
+///
+/// 快照已经向外分享了同一批 Arc 时，改一张卡才会付出一次 clone；
+/// 平时流式追加/改状态都是独占的，`make_mut` 直接返回原对象、零拷贝。
+fn item_mut(item: &mut Arc<Item>) -> &mut Item {
+    Arc::make_mut(item)
+}
+
+/// 会话最后一张卡片的可变引用。
+fn last_item_mut(thread: &mut Thread) -> Option<&mut Item> {
+    thread.items.last_mut().map(item_mut)
+}
+
+/// 会话最后一张卡片的只读引用（把 `&Arc<Item>` 解成 `&Item`，供 match 使用）。
+fn last_item(thread: &Thread) -> Option<&Item> {
+    thread.items.last().map(|item| item.as_ref())
 }
 
 #[derive(Debug, Clone)]
@@ -813,22 +831,25 @@ impl AgentStore {
     /// 追加用户提问 Item（支持图片）
     pub fn add_user_message_with_images(&mut self, thread_id: &str, text: &str, images: Option<Vec<String>>) {
         if let Some(t) = self.get_thread_mut(thread_id) {
-            t.items.push(Item::User {
+            t.items.push(Arc::new(Item::User {
                 id: next_id("item_user"),
                 at: next_item_at(&t.items),
                 text: text.to_string(),
                 images,
                 queued: None,
-            });
+            }));
         }
     }
 
     /// 标记结束未闭合的 Thinking Item
     pub fn end_thinking(&mut self, thread_id: &str) {
         if let Some(t) = self.get_thread_mut(thread_id) {
-            if let Some(Item::Thinking { ended_at, .. }) = t.items.last_mut() {
-                if ended_at.is_none() {
-                    *ended_at = Some(now_millis());
+            // 先判类型：不是 Thinking 就不要 make_mut（那会为共享卡片白复制一份）
+            if matches!(last_item(t), Some(Item::Thinking { .. })) {
+                if let Some(Item::Thinking { ended_at, .. }) = last_item_mut(t) {
+                    if ended_at.is_none() {
+                        *ended_at = Some(now_millis());
+                    }
                 }
             }
         }
@@ -840,19 +861,21 @@ impl AgentStore {
             return;
         }
         if let Some(t) = self.get_thread_mut(thread_id) {
-            if let Some(Item::Thinking { text, ended_at, .. }) = t.items.last_mut() {
-                if ended_at.is_none() {
-                    text.push_str(delta);
-                    return;
+            if matches!(last_item(t), Some(Item::Thinking { .. })) {
+                if let Some(Item::Thinking { text, ended_at, .. }) = last_item_mut(t) {
+                    if ended_at.is_none() {
+                        text.push_str(delta);
+                        return;
+                    }
                 }
             }
             // 否则创建新的 Thinking 卡片
-            t.items.push(Item::Thinking {
+            t.items.push(Arc::new(Item::Thinking {
                 id: next_id("item_think"),
                 at: next_item_at(&t.items),
                 text: delta.to_string(),
                 ended_at: None,
-            });
+            }));
         }
     }
 
@@ -866,7 +889,7 @@ impl AgentStore {
 
         if let Some(t) = self.get_thread_mut(thread_id) {
             // 清理末尾无内容的空思考卡片（避免模型思考为空时占位隔断）
-            if let Some(Item::Thinking { text, .. }) = t.items.last() {
+            if let Some(Item::Thinking { text, .. }) = last_item(t) {
                 if text.trim().is_empty() {
                     t.items.pop();
                 }
@@ -874,7 +897,10 @@ impl AgentStore {
 
             // 倒序寻找当前仍处于流式中的 Assistant Item，优先复用追加
             for item in t.items.iter_mut().rev() {
-                if let Item::Assistant { text, streaming, .. } = item {
+                if !matches!(item.as_ref(), Item::Assistant { .. }) {
+                    continue;
+                }
+                if let Item::Assistant { text, streaming, .. } = item_mut(item) {
                     if *streaming == Some(true) {
                         text.push_str(delta);
                         return;
@@ -884,7 +910,7 @@ impl AgentStore {
             }
 
             // 否则创建新的流式 Assistant 卡片
-            t.items.push(Item::Assistant {
+            t.items.push(Arc::new(Item::Assistant {
                 id: next_id("item_asst"),
                 at: next_item_at(&t.items),
                 text: delta.to_string(),
@@ -892,7 +918,7 @@ impl AgentStore {
                 duration_ms: None,
                 turn_duration_ms: None,
                 usage: None,
-            });
+            }));
         }
     }
 
@@ -910,9 +936,9 @@ impl AgentStore {
     ) {
         let Some(t) = self.get_thread_mut(thread_id) else { return };
 
-        if matches!(t.items.last(), Some(Item::Assistant { .. })) {
+        if matches!(last_item(t), Some(Item::Assistant { .. })) {
             if let Some(Item::Assistant { usage: u, duration_ms: d, turn_duration_ms: td, .. }) =
-                t.items.last_mut()
+                last_item_mut(t)
             {
                 *u = usage;
                 *d = Some(duration_ms);
@@ -921,7 +947,7 @@ impl AgentStore {
             return;
         }
 
-        t.items.push(Item::Assistant {
+        t.items.push(Arc::new(Item::Assistant {
             id: next_id("item_asst"),
             at: next_item_at(&t.items),
             text: String::new(),
@@ -929,15 +955,18 @@ impl AgentStore {
             duration_ms: Some(duration_ms),
             turn_duration_ms: Some(turn_duration_ms),
             usage,
-        });
+        }));
     }
 
     /// 记录工具调用开始
     pub fn start_tool_call(&mut self, thread_id: &str, call_id: &str, name: &str, raw_args: &str) {
         if let Some(t) = self.get_thread_mut(thread_id) {
-            // 停止所有未闭合 Assistant 的流式标记
+            // 停止所有未闭合 Assistant 的流式标记（只对 Assistant 做 copy-on-write）
             for item in t.items.iter_mut() {
-                if let Item::Assistant { streaming, .. } = item {
+                if !matches!(item.as_ref(), Item::Assistant { .. }) {
+                    continue;
+                }
+                if let Item::Assistant { streaming, .. } = item_mut(item) {
                     *streaming = None;
                 }
             }
@@ -947,7 +976,7 @@ impl AgentStore {
             // **复用同一张**，不能再 push：同一 call_id 出现两张卡时，`finish_tool_call`
             // 只会命中最后一张，先出现的那张会永远停在"等待批准"上。
             let existing = t.items.iter().rposition(
-                |it| matches!(it, Item::Tool { call_id: cid, .. } if cid.as_str() == call_id),
+                |it| matches!(it.as_ref(), Item::Tool { call_id: cid, .. } if cid.as_str() == call_id),
             );
             if let Some(idx) = existing {
                 if let Item::Tool {
@@ -957,7 +986,7 @@ impl AgentStore {
                     status,
                     started_at,
                     ..
-                } = &mut t.items[idx]
+                } = item_mut(&mut t.items[idx])
                 {
                     *n = name.to_string();
                     *args = serde_json::from_str(raw_args).unwrap_or(serde_json::Value::Null);
@@ -968,7 +997,7 @@ impl AgentStore {
                     }
                 }
             } else {
-                t.items.push(Item::Tool {
+                t.items.push(Arc::new(Item::Tool {
                     id: next_id("item_tool"),
                     at: next_item_at(&t.items),
                     call_id: call_id.to_string(),
@@ -985,7 +1014,7 @@ impl AgentStore {
                     duration_ms: None,
                     started_at: Some(now_millis() as i64),
                     finished_at: None,
-                });
+                }));
             }
         }
 
@@ -1008,8 +1037,16 @@ impl AgentStore {
     ) {
         if let Some(t) = self.get_thread_mut(thread_id) {
             for item in t.items.iter_mut().rev() {
+                // 先按不可变引用确认是这张卡，再 copy-on-write：
+                // 其它工具卡可能带着巨大输出，不该为一次收尾被整份复制。
+                let hit = matches!(
+                    item.as_ref(),
+                    Item::Tool { call_id: cid, .. } if cid == call_id
+                );
+                if !hit {
+                    continue;
+                }
                 if let Item::Tool {
-                    call_id: cid,
                     status,
                     output: out,
                     duration_ms: dur,
@@ -1017,29 +1054,27 @@ impl AgentStore {
                     finished_at: fin,
                     details: det,
                     ..
-                } = item
+                } = item_mut(item)
                 {
-                    if cid == call_id {
-                        *status = if ok { "done".to_string() } else { "error".to_string() };
-                        *out = output;
-                        *dur = duration_ms;
-                        if started_at.is_some() {
-                            *st = started_at;
-                        }
-                        *fin = finished_at;
-                        if let Some(new_det) = details {
-                            let mut base = det.take().unwrap_or_else(|| serde_json::json!({}));
-                            if let (Some(b_obj), Some(n_obj)) = (base.as_object_mut(), new_det.as_object()) {
-                                for (k, v) in n_obj {
-                                    b_obj.insert(k.clone(), v.clone());
-                                }
-                                *det = Some(base);
-                            } else {
-                                *det = Some(new_det);
-                            }
-                        }
-                        break;
+                    *status = if ok { "done".to_string() } else { "error".to_string() };
+                    *out = output;
+                    *dur = duration_ms;
+                    if started_at.is_some() {
+                        *st = started_at;
                     }
+                    *fin = finished_at;
+                    if let Some(new_det) = details {
+                        let mut base = det.take().unwrap_or_else(|| serde_json::json!({}));
+                        if let (Some(b_obj), Some(n_obj)) = (base.as_object_mut(), new_det.as_object()) {
+                            for (k, v) in n_obj {
+                                b_obj.insert(k.clone(), v.clone());
+                            }
+                            *det = Some(base);
+                        } else {
+                            *det = Some(new_det);
+                        }
+                    }
+                    break;
                 }
             }
         }
@@ -1057,24 +1092,27 @@ impl AgentStore {
     /// 因为 store 不持有会话文件——它只是"给界面看的投影"。
     pub fn add_notice(&mut self, thread_id: &str, text: &str, level: &str) {
         let Some(t) = self.get_thread_mut(thread_id) else { return };
-        // 收尾流式态：提示一到，本轮就没有更多正文了
+        // 收尾流式态：提示一到，本轮就没有更多正文了（只对 Assistant 做 copy-on-write）
         for item in t.items.iter_mut() {
-            if let Item::Assistant { streaming, .. } = item {
+            if !matches!(item.as_ref(), Item::Assistant { .. }) {
+                continue;
+            }
+            if let Item::Assistant { streaming, .. } = item_mut(item) {
                 *streaming = None;
             }
         }
         // 末尾的空助手卡片只是占位（模型还没吐字就失败了）→ 清掉，别留个空气泡在提示前面
-        if let Some(Item::Assistant { text: t_text, .. }) = t.items.last() {
+        if let Some(Item::Assistant { text: t_text, .. }) = last_item(t) {
             if t_text.trim().is_empty() {
                 t.items.pop();
             }
         }
-        t.items.push(Item::Notice {
+        t.items.push(Arc::new(Item::Notice {
             id: next_id("item_notice"),
             at: next_item_at(&t.items),
             text: text.to_string(),
             level: level.to_string(),
-        });
+        }));
     }
 
     /// 移除该会话的所有提示卡片（重试时清掉上一次的报错）。
@@ -1087,7 +1125,7 @@ impl AgentStore {
     pub fn clear_notices(&mut self, thread_id: &str) -> bool {
         let Some(t) = self.get_thread_mut(thread_id) else { return false };
         let before = t.items.len();
-        t.items.retain(|it| !matches!(it, Item::Notice { .. }));
+        t.items.retain(|it| !matches!(it.as_ref(), Item::Notice { .. }));
         before != t.items.len()
     }
 
@@ -1095,16 +1133,21 @@ impl AgentStore {
     pub fn set_tool_awaiting_question(&mut self, thread_id: &str, call_id: &str, question_val: serde_json::Value) {
         if let Some(t) = self.get_thread_mut(thread_id) {
             for item in t.items.iter_mut().rev() {
-                if let Item::Tool { call_id: cid, status, details, .. } = item {
-                    if cid == call_id {
-                        *status = "awaiting".to_string();
-                        let mut det = details.take().unwrap_or_else(|| serde_json::json!({}));
-                        if let Some(obj) = det.as_object_mut() {
-                            obj.insert("question".to_string(), question_val.clone());
-                        }
-                        *details = Some(det);
-                        break;
+                let hit = matches!(
+                    item.as_ref(),
+                    Item::Tool { call_id: cid, .. } if cid == call_id
+                );
+                if !hit {
+                    continue;
+                }
+                if let Item::Tool { status, details, .. } = item_mut(item) {
+                    *status = "awaiting".to_string();
+                    let mut det = details.take().unwrap_or_else(|| serde_json::json!({}));
+                    if let Some(obj) = det.as_object_mut() {
+                        obj.insert("question".to_string(), question_val.clone());
                     }
+                    *details = Some(det);
+                    break;
                 }
             }
         }
@@ -1138,7 +1181,7 @@ impl AgentStore {
             .map(|t| {
                 t.items.iter().any(|it| {
                     matches!(
-                        it,
+                        it.as_ref(),
                         Item::Tool { status, .. }
                             if status == "waiting_approval" || status == "awaiting"
                     )
@@ -1178,26 +1221,33 @@ impl AgentStore {
         if let Some(t) = self.get_thread_mut(thread_id) {
             let mut found = false;
             for item in t.items.iter_mut().rev() {
-                if let Item::Tool { call_id: cid, status, details, args: card_args, raw_args, .. } = item {
-                    if cid == call_id {
-                        *status = "waiting_approval".to_string();
-                        // 卡片通常还没建（审批在建卡之前）；先有卡的路径要**以审批事件带的参数为准**
-                        // ——它和 `ToolCallStarted` 同源，但只有它一定带着"用户要看的那份内容"。
-                        // 早先只补 `Null`，于是"卡片存在但是 `{}`"会再次变成"看不到命令"。
-                        if has_content(args) {
-                            *card_args = args.clone();
-                            *raw_args = args.to_string();
-                        }
-                        let mut det = details.take().unwrap_or_else(|| serde_json::json!({}));
-                        if let Some(obj) = det.as_object_mut() {
-                            obj.insert("approval".to_string(), approval_detail.clone());
-                        } else {
-                            det = serde_json::json!({ "approval": approval_detail.clone() });
-                        }
-                        *details = Some(det);
-                        found = true;
-                        break;
+                let hit = matches!(
+                    item.as_ref(),
+                    Item::Tool { call_id: cid, .. } if cid == call_id
+                );
+                if !hit {
+                    continue;
+                }
+                if let Item::Tool { status, details, args: card_args, raw_args, .. } =
+                    item_mut(item)
+                {
+                    *status = "waiting_approval".to_string();
+                    // 卡片通常还没建（审批在建卡之前）；先有卡的路径要**以审批事件带的参数为准**
+                    // ——它和 `ToolCallStarted` 同源，但只有它一定带着"用户要看的那份内容"。
+                    // 早先只补 `Null`，于是"卡片存在但是 `{}`"会再次变成"看不到命令"。
+                    if has_content(args) {
+                        *card_args = args.clone();
+                        *raw_args = args.to_string();
                     }
+                    let mut det = details.take().unwrap_or_else(|| serde_json::json!({}));
+                    if let Some(obj) = det.as_object_mut() {
+                        obj.insert("approval".to_string(), approval_detail.clone());
+                    } else {
+                        det = serde_json::json!({ "approval": approval_detail.clone() });
+                    }
+                    *details = Some(det);
+                    found = true;
+                    break;
                 }
             }
 
@@ -1209,7 +1259,7 @@ impl AgentStore {
             // 也为空——用户根本无从批准，只能干等审批超时（30 分钟）被自动拒绝。
             // 卡片的 `call_id` 与后续 `ToolCallStarted` 一致，届时由 `start_tool_call` 复用。
             if !found {
-                t.items.push(Item::Tool {
+                t.items.push(Arc::new(Item::Tool {
                     id: next_id("item_tool"),
                     at: next_item_at(&t.items),
                     call_id: call_id.to_string(),
@@ -1227,7 +1277,7 @@ impl AgentStore {
                     duration_ms: None,
                     started_at: None,
                     finished_at: None,
-                });
+                }));
             }
         }
 
@@ -1239,14 +1289,17 @@ impl AgentStore {
     pub fn finish_turn(&mut self, thread_id: &str) {
         self.end_thinking(thread_id);
         if let Some(t) = self.get_thread_mut(thread_id) {
-            // 闭合该会话中全部处于流式中的 Assistant 卡片
+            // 闭合该会话中全部处于流式中的 Assistant 卡片（只对 Assistant 做 copy-on-write）
             for item in t.items.iter_mut() {
-                if let Item::Assistant { streaming, .. } = item {
+                if !matches!(item.as_ref(), Item::Assistant { .. }) {
+                    continue;
+                }
+                if let Item::Assistant { streaming, .. } = item_mut(item) {
                     *streaming = None;
                 }
             }
             // 清理末尾无内容的空思考卡片
-            if let Some(Item::Thinking { text, .. }) = t.items.last() {
+            if let Some(Item::Thinking { text, .. }) = last_item(t) {
                 if text.trim().is_empty() {
                     t.items.pop();
                 }
@@ -1317,13 +1370,14 @@ pub(crate) fn item_visible_key(it: &Item) -> (String, usize, String, bool, Optio
 }
 
 /// 两份 item 列表是否有**可见差异**（见 [`item_visible_key`]）。
-fn items_visibly_differ(a: &[Item], b: &[Item]) -> bool {
+fn items_visibly_differ(a: &[Arc<Item>], b: &[Arc<Item>]) -> bool {
     if a.len() != b.len() {
         return true;
     }
-    a.iter()
-        .zip(b.iter())
-        .any(|(x, y)| item_visible_key(x) != item_visible_key(y))
+    a.iter().zip(b.iter()).any(|(x, y)| {
+        // 同一份 Arc 一定没变（快照共享出去的那批）；否则退回可见指纹比较。
+        !Arc::ptr_eq(x, y) && item_visible_key(x.as_ref()) != item_visible_key(y.as_ref())
+    })
 }
 
 #[cfg(test)]
@@ -1396,7 +1450,7 @@ mod tests {
             queued: None,
         };
         assert_eq!(
-            next_item_at(&[last.clone()]),
+            next_item_at(&[Arc::new(last.clone())]),
             future + 1,
             "比上一张卡还早的时刻必须顺延，否则两张卡会共用同一个 at"
         );
@@ -1525,7 +1579,7 @@ mod tests {
                 .iter()
                 .find(|t| t.id == tid)
                 .and_then(|t| {
-                    t.items.iter().find_map(|i| match i {
+                    t.items.iter().find_map(|i| match i.as_ref() {
                         Item::Tool { call_id, status, .. } if call_id == "call_ui_1" => {
                             Some(status.clone())
                         }
@@ -1554,7 +1608,7 @@ mod tests {
             .iter()
             .find(|t| t.id == tid)
             .and_then(|t| {
-                t.items.iter().find_map(|i| match i {
+                t.items.iter().find_map(|i| match i.as_ref() {
                     Item::Tool { call_id, details, .. } if call_id == "call_ui_1" => details.clone(),
                     _ => None,
                 })
@@ -1568,7 +1622,7 @@ mod tests {
             .iter()
             .find(|t| t.id == tid)
             .and_then(|t| {
-                t.items.iter().find_map(|i| match i {
+                t.items.iter().find_map(|i| match i.as_ref() {
                     Item::Tool { call_id, args, .. } if call_id == "call_ui_1" => Some(args.clone()),
                     _ => None,
                 })
@@ -1650,7 +1704,7 @@ mod tests {
                 .map(|t| {
                     t.items
                         .iter()
-                        .filter_map(|it| match it {
+                        .filter_map(|it| match it.as_ref() {
                             Item::Tool { call_id: cid, status, name, details, .. }
                                 if cid == call_id =>
                             {
@@ -1692,7 +1746,7 @@ mod tests {
             .iter()
             .find(|t| t.id == tid)
             .and_then(|t| {
-                t.items.iter().find_map(|i| match i {
+                t.items.iter().find_map(|i| match i.as_ref() {
                     Item::Tool { call_id, args, .. } if call_id == "call_a1" => Some(args.clone()),
                     _ => None,
                 })

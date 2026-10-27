@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// JSON-RPC 2.0 请求/通知帧
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -354,7 +355,10 @@ pub struct Thread {
     #[serde(rename = "createdAt")]
     pub created_at: u64,
     pub workspace: String,
-    pub items: Vec<Item>,
+    /// 卡片列表。用 `Arc` 是为了让快照/增量帧**共享**卡片而不是整份 clone：
+    /// 长会话的单帧序列化曾经是主要卡顿来源（几百张卡、每张都带文本/工具输出）。
+    /// 线上形状与 `Vec<Item>` 完全一致（serde 的 `rc` 特性透明序列化 `Arc<T>`）。
+    pub items: Vec<Arc<Item>>,
     #[serde(default)]
     pub messages: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -568,4 +572,42 @@ pub struct FsRoot {
     pub path: String,
     #[serde(rename = "kind")]
     pub kind: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Thread.items: Vec<Arc<Item>>` 的线上形状必须与 `Vec<Item>` **完全一致**：
+    /// 客户端（SSR / 旧客户端）看到的仍是普通数组，任何 `Arc` 痕迹都不许漏出去。
+    #[test]
+    fn test_arc_items_serialize_exactly_like_plain_items() {
+        let items = vec![
+            Item::User {
+                id: "u1".to_string(),
+                at: 1,
+                text: "你好".to_string(),
+                images: None,
+                queued: None,
+            },
+            Item::Assistant {
+                id: "a1".to_string(),
+                at: 2,
+                text: "收到".to_string(),
+                streaming: None,
+                duration_ms: None,
+                turn_duration_ms: None,
+                usage: None,
+            },
+        ];
+        let plain = serde_json::to_value(&items).expect("普通 items 序列化");
+        let shared: Vec<Arc<Item>> = items.iter().map(|item| Arc::new(item.clone())).collect();
+        let wrapped = serde_json::to_value(&shared).expect("Arc items 序列化");
+        assert_eq!(plain, wrapped, "Arc 只是内存共享，不许改变线上形状");
+
+        // 反序列化同一条：serde 的 rc 特性让 `Vec<Arc<Item>>` 可直接收下普通数组
+        let back: Vec<Arc<Item>> = serde_json::from_value(plain).expect("反序列化 Arc items");
+        assert_eq!(back.len(), 2);
+        assert!(matches!(back[0].as_ref(), Item::User { text, .. } if text == "你好"));
+    }
 }

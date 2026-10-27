@@ -1,5 +1,6 @@
 use agent_proto::*;
 use crate::state::store::AgentStore;
+use std::sync::Arc;
 
 /// 快照里**单个文本字段**的上限。
 ///
@@ -44,9 +45,25 @@ pub(crate) fn shrink_item_in_place(item: &mut Item) {
     }
 }
 
-pub(crate) fn shrink_item_for_snapshot(mut item: Item) -> Item {
-    shrink_item_in_place(&mut item);
-    item
+/// 快照投影：**共享**未超限的卡片（只 clone 一个 `Arc`），超限的才复制一份再截断。
+///
+/// 这是 `Arc<Item>` 改造的收益所在：一条几百张卡的长会话，首屏快照不再逐张深拷贝；
+/// 只有真正带超大工具输出的那几张（被限幅改写）需要一次 copy。
+pub(crate) fn shrink_item_arc(item: &Arc<Item>) -> Arc<Item> {
+    let needs_cap = match item.as_ref() {
+        Item::Tool { output, patch, raw_args, .. } => {
+            output.as_deref().map(|s| s.len() > SNAPSHOT_FIELD_LIMIT).unwrap_or(false)
+                || patch.as_deref().map(|s| s.len() > SNAPSHOT_FIELD_LIMIT).unwrap_or(false)
+                || raw_args.len() > SNAPSHOT_FIELD_LIMIT
+        }
+        _ => false,
+    };
+    if !needs_cap {
+        return Arc::clone(item);
+    }
+    let mut owned = (**item).clone();
+    shrink_item_in_place(&mut owned);
+    Arc::new(owned)
 }
 
 /// 根据当前内存状态组装一份高轻量、高性能的可渲染快照（seq 默认为 0）
@@ -89,7 +106,7 @@ fn generate_snapshot_inner(store: &AgentStore, seq: u64, include_items: bool) ->
                 created_at: t.created_at,
                 workspace: t.workspace.clone(),
                 items: if need_full {
-                    t.items.iter().cloned().map(shrink_item_for_snapshot).collect()
+                    t.items.iter().map(shrink_item_arc).collect()
                 } else {
                     Vec::new()
                 },
@@ -176,7 +193,7 @@ mod tests {
             .threads
             .iter()
             .flat_map(|t| t.items.iter())
-            .find_map(|i| match i {
+            .find_map(|i| match i.as_ref() {
                 Item::Tool { call_id, output, .. } if call_id == "call_big" => output.clone(),
                 _ => None,
             })
@@ -194,7 +211,7 @@ mod tests {
             .threads
             .iter()
             .flat_map(|t| t.items.iter())
-            .find_map(|i| match i {
+            .find_map(|i| match i.as_ref() {
                 Item::Tool { call_id, output, .. } if call_id == "call_big" => output.clone(),
                 _ => None,
             })
@@ -214,7 +231,7 @@ mod tests {
             .threads
             .iter()
             .flat_map(|t| t.items.iter())
-            .find_map(|i| match i {
+            .find_map(|i| match i.as_ref() {
                 Item::Tool { call_id, output, .. } if call_id == "call_s" => output.clone(),
                 _ => None,
             })
@@ -241,14 +258,14 @@ mod tests {
             // （那正是本用例要防的退化）。
             let created = thread.created_at;
             let last_at = created + 2_000;
-            thread.items.push(Item::User {
+            thread.items.push(Arc::new(Item::User {
                 id: "u1".to_string(),
                 at: created + 1_000,
                 text: "你好".to_string(),
                 images: None,
                 queued: None,
-            });
-            thread.items.push(Item::Assistant {
+            }));
+            thread.items.push(Arc::new(Item::Assistant {
                 id: "a1".to_string(),
                 at: last_at,
                 text: "收到".to_string(),
@@ -256,7 +273,7 @@ mod tests {
                 duration_ms: None,
                 turn_duration_ms: None,
                 usage: None,
-            });
+            }));
             last_at
         };
         // 再建一条 → 它成为激活会话；把上一条从"打开的 Tab"里摘掉，
@@ -307,13 +324,13 @@ mod tests {
             .map(|t| t.created_at)
             .unwrap_or(1)
             + 5_000;
-        store.threads.iter_mut().find(|t| t.id == tid).unwrap().items.push(Item::User {
+        store.threads.iter_mut().find(|t| t.id == tid).unwrap().items.push(Arc::new(Item::User {
             id: "u1".to_string(),
             at,
             text: "你好".to_string(),
             images: None,
             queued: None,
-        });
+        }));
 
         let meta = generate_snapshot_meta(&store, 7);
         let thread = meta
@@ -330,5 +347,58 @@ mod tests {
         let full = generate_snapshot_with_seq(&store, 7);
         let thread = full.threads.iter().find(|t| t.id == tid).unwrap();
         assert_eq!(thread.items.len(), 1, "完整快照的激活会话必须带 items");
+    }
+
+    /// `Arc<Item>` 的全部意义：普通卡片在快照里与内存是**同一份**（零拷贝），
+    /// 只有被限幅改写的超大卡片才复制一份。
+    #[test]
+    fn test_snapshot_shares_arcs_and_copies_only_capped_items() {
+        let mut store = AgentStore::new("E:/snap_arc_ws".to_string());
+        let tid = store.create_thread(Some("共享测试".to_string()), None);
+        store.add_user_message(&tid, "你好");
+        let huge = "x".repeat(SNAPSHOT_FIELD_LIMIT * 2);
+        store.start_tool_call(&tid, "call_huge", "run_command", "{}");
+        store.finish_tool_call(
+            &tid,
+            "call_huge",
+            true,
+            Some(huge.clone()),
+            Some(1),
+            Some(0),
+            Some(1),
+            None,
+        );
+
+        let snap = generate_snapshot(&store);
+        let store_items = &store.threads.iter().find(|t| t.id == tid).unwrap().items;
+        let snap_items = &snap.threads.iter().find(|t| t.id == tid).unwrap().items;
+        assert_eq!(snap_items.len(), store_items.len(), "快照不许丢卡片");
+
+        for (index, (sent, original)) in snap_items.iter().zip(store_items.iter()).enumerate() {
+            let needs_cap = matches!(
+                original.as_ref(),
+                Item::Tool { output: Some(out), .. } if out.len() == huge.len()
+            );
+            if needs_cap {
+                assert!(
+                    !Arc::ptr_eq(sent, original),
+                    "超限卡片必须先复制再截断（不能改到内存里的原文）"
+                );
+            } else {
+                assert!(
+                    Arc::ptr_eq(sent, original),
+                    "第 {index} 张未超限卡片必须共享同一份 Arc（否则快照又变成整份深拷贝）"
+                );
+            }
+        }
+
+        let in_memory = store_items
+            .iter()
+            .find_map(|item| match item.as_ref() {
+                Item::Tool { output: Some(out), .. } => Some(out.len()),
+                _ => None,
+            })
+            .expect("内存里应有工具卡");
+        assert_eq!(in_memory, huge.len(), "内存里的全文必须原样保留");
     }
 }

@@ -12,6 +12,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use agent_proto::Item;
 
@@ -33,8 +34,9 @@ pub fn item_id(it: &Item) -> &str {
 /// 一次差量的结果。
 #[derive(Debug, Default)]
 pub struct ItemDelta {
-    /// 新增或变更的 item（按 `(threadId, itemId)` 排序，保证帧内容确定）
-    pub upserted: Vec<(String, Item)>,
+    /// 新增或变更的 item（按 `(threadId, itemId)` 排序，保证帧内容确定）。
+    /// 用 `Arc`：没变的一律不进来，变了的也与内存里的卡片共享同一份。
+    pub upserted: Vec<(String, Arc<Item>)>,
     /// 已消失的 item（按身份键排序）
     pub removed: Vec<ItemKey>,
 }
@@ -65,26 +67,26 @@ pub fn fingerprint(item: &Item) -> u64 {
 /// - 指纹相同 → **不发**（这是省掉 99% 字节的地方）；
 /// - `prev` 里有、`current` 里没有 → `removed`（卡片被删/会话被清）；
 /// - 其余 → `upserted`。
-pub fn diff_items(prev: &BTreeMap<ItemKey, u64>, current: &[(&str, &Item)]) -> ItemDelta {
+pub fn diff_items(prev: &BTreeMap<ItemKey, u64>, current: &[(&str, &Arc<Item>)]) -> ItemDelta {
     let mut delta = ItemDelta::default();
     let mut seen: HashSet<ItemKey> = HashSet::new();
 
     for (thread_id, item) in current {
-        let key = ((*thread_id).to_string(), item_id(item).to_string());
+        let key = ((*thread_id).to_string(), item_id(item.as_ref()).to_string());
         // 同一帧里出现重复 id：以最后一条为准，但不重复推送
         if !seen.insert(key.clone()) {
             if let Some(slot) = delta.upserted.iter_mut().find(|(tid, it)| {
-                tid.as_str() == *thread_id && item_id(it) == item_id(item)
+                tid.as_str() == *thread_id && item_id(it.as_ref()) == item_id(item.as_ref())
             }) {
-                *slot = ((*thread_id).to_string(), (*item).clone());
+                *slot = ((*thread_id).to_string(), Arc::clone(item));
             }
             continue;
         }
         match prev.get(&key) {
-            Some(fp) if *fp == fingerprint(item) => {} // 没变：不推
+            Some(fp) if *fp == fingerprint(item.as_ref()) => {} // 没变：不推
             _ => delta
                 .upserted
-                .push(((*thread_id).to_string(), (*item).clone())),
+                .push(((*thread_id).to_string(), Arc::clone(item))),
         }
     }
 
@@ -95,24 +97,24 @@ pub fn diff_items(prev: &BTreeMap<ItemKey, u64>, current: &[(&str, &Item)]) -> I
     }
 
     // 帧内容必须**确定**：顺序取决于 map 迭代顺序的话，客户端 diff 与日志都不可复现
-    delta
-        .upserted
-        .sort_by(|a, b| (a.0.as_str(), item_id(&a.1)).cmp(&(b.0.as_str(), item_id(&b.1))));
+    delta.upserted.sort_by(|a, b| {
+        (a.0.as_str(), item_id(a.1.as_ref())).cmp(&(b.0.as_str(), item_id(b.1.as_ref())))
+    });
     delta.removed.sort();
     delta
 }
 
 /// 用本次差量更新"已发版本"，供下一次 `diff_items` 使用。
-pub fn advance_versions(prev: &mut BTreeMap<ItemKey, u64>, current: &[(&str, &Item)]) {
+pub fn advance_versions(prev: &mut BTreeMap<ItemKey, u64>, current: &[(&str, &Arc<Item>)]) {
     let live: HashSet<ItemKey> = current
         .iter()
-        .map(|(tid, it)| ((*tid).to_string(), item_id(it).to_string()))
+        .map(|(tid, it)| ((*tid).to_string(), item_id(it.as_ref()).to_string()))
         .collect();
     prev.retain(|k, _| live.contains(k));
     for (thread_id, item) in current {
         prev.insert(
-            ((*thread_id).to_string(), item_id(item).to_string()),
-            fingerprint(item),
+            ((*thread_id).to_string(), item_id(item.as_ref()).to_string()),
+            fingerprint(item.as_ref()),
         );
     }
 }
@@ -122,18 +124,18 @@ mod tests {
     use super::*;
     use agent_proto::Item;
 
-    fn user(id: &str, text: &str) -> Item {
-        Item::User {
+    fn user(id: &str, text: &str) -> Arc<Item> {
+        Arc::new(Item::User {
             id: id.to_string(),
             at: 1,
             text: text.to_string(),
             images: None,
             queued: None,
-        }
+        })
     }
 
-    /// 测试里把拥有的 `(threadId, Item)` 列表借成差量函数要的引用切片。
-    fn refs(items: &[(String, Item)]) -> Vec<(&str, &Item)> {
+    /// 测试里把拥有的 `(threadId, Arc<Item>)` 列表借成差量函数要的引用切片。
+    fn refs(items: &[(String, Arc<Item>)]) -> Vec<(&str, &Arc<Item>)> {
         items.iter().map(|(tid, it)| (tid.as_str(), it)).collect()
     }
 
@@ -167,7 +169,7 @@ mod tests {
         ];
         let delta = diff_items(&prev, &refs(&after));
         assert_eq!(delta.upserted.len(), 1, "只该推变过的那一条：{delta:?}");
-        assert_eq!(item_id(&delta.upserted[0].1), "b");
+        assert_eq!(item_id(delta.upserted[0].1.as_ref()), "b");
         assert!(delta.removed.is_empty());
     }
 
@@ -217,7 +219,7 @@ mod tests {
         assert_eq!(
             d1.upserted
                 .iter()
-                .map(|(t, i)| format!("{t}/{}", item_id(i)))
+                .map(|(t, i)| format!("{t}/{}", item_id(i.as_ref())))
                 .collect::<Vec<_>>(),
             vec!["t1/a", "t1/b", "t2/z"]
         );

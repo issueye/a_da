@@ -222,11 +222,12 @@ async fn test_compact_writes_entry_and_keeps_recent_items() {
     {
         let s = store.read().await;
         let t = s.threads.iter().find(|t| t.id == tid).expect("会话还在");
+        let first = t.items.first().map(|item| item.as_ref());
         assert!(
-            matches!(t.items.first(), Some(Item::Compact { .. })),
+            matches!(first, Some(Item::Compact { .. })),
             "首项必须是压缩卡片"
         );
-        let compact = match t.items.first() {
+        let compact = match first {
             Some(Item::Compact {
                 pre_tokens,
                 turns_summarized,
@@ -529,6 +530,7 @@ fn test_assistant_stats_lands_on_current_card() {
         .unwrap()
         .items
         .last()
+        .map(|item| item.as_ref())
         .unwrap()
     {
         Item::Assistant {
@@ -558,6 +560,7 @@ fn test_assistant_stats_lands_on_current_card() {
         .unwrap()
         .items
         .last()
+        .map(|item| item.as_ref())
         .unwrap()
     {
         Item::Assistant {

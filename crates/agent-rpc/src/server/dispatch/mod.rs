@@ -291,7 +291,7 @@ impl Dispatcher {
             //
             // 为什么不直接靠全量快照：一条长会话 822 个 item、单帧 1.85 MB（合成负载 3.7 MB），
             // 16ms 一帧就是每秒几十 MB 的序列化 + IPC + 前端解析——增量与分页都是为了这一点。
-            // 分页同样套用快照那套字段限幅（`shrink_item_for_snapshot`），免得单条超大输出把一页撑爆。
+            // 分页同样套用快照那套字段限幅（`shrink_item_arc`），免得单条超大输出把一页撑爆。
             THREAD_ITEMS_PAGE => {
                 let thread_id = params
                     .get("threadId")
@@ -317,10 +317,9 @@ impl Dispatcher {
                 // `from` 超界不报错：如实回一个空窗口，界面按 `total` 自行纠正
                 let from = from.min(total);
                 let to = (from + count).min(total);
-                let items: Vec<Item> = thread.items[from..to]
+                let items: Vec<Arc<Item>> = thread.items[from..to]
                     .iter()
-                    .cloned()
-                    .map(crate::state::snapshot::shrink_item_for_snapshot)
+                    .map(crate::state::snapshot::shrink_item_arc)
                     .collect();
                 Ok(serde_json::json!({
                     "threadId": thread_id,
@@ -919,14 +918,17 @@ impl Dispatcher {
                 let mut store = self.store.write().await;
                 if let Some(thread) = store.threads.iter_mut().find(|t| t.id == thread_id) {
                     for item in &mut thread.items {
+                        // 先看不可变引用：命中了才 copy-on-write，
+                        // 别让 revert 把会话里其它共享卡片整份克隆一遍。
                         if let Item::Tool {
                             checkpoint_id: Some(cid),
-                            reverted,
                             ..
-                        } = item
+                        } = item.as_ref()
                         {
                             if cid == checkpoint_id {
-                                *reverted = Some(true);
+                                if let Item::Tool { reverted, .. } = Arc::make_mut(item) {
+                                    *reverted = Some(true);
+                                }
                             }
                         }
                     }
@@ -969,11 +971,14 @@ impl Dispatcher {
                 let mut store = self.store.write().await;
                 if let Some(thread) = store.threads.iter_mut().find(|t| t.id == thread_id) {
                     for item in &mut thread.items {
-                        if let Item::Tool { args, reverted, .. } = item {
-                            if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
-                                if p == file_path {
-                                    *reverted = Some(true);
-                                }
+                        let hit = matches!(
+                            item.as_ref(),
+                            Item::Tool { args, .. }
+                                if args.get("path").and_then(|v| v.as_str()) == Some(file_path)
+                        );
+                        if hit {
+                            if let Item::Tool { reverted, .. } = Arc::make_mut(item) {
+                                *reverted = Some(true);
                             }
                         }
                     }
@@ -1011,8 +1016,10 @@ impl Dispatcher {
                 let mut store = self.store.write().await;
                 if let Some(thread) = store.threads.iter_mut().find(|t| t.id == thread_id) {
                     for item in &mut thread.items {
-                        if let Item::Tool { reverted, .. } = item {
-                            *reverted = Some(true);
+                        if matches!(item.as_ref(), Item::Tool { .. }) {
+                            if let Item::Tool { reverted, .. } = Arc::make_mut(item) {
+                                *reverted = Some(true);
+                            }
                         }
                     }
                 }
@@ -1913,16 +1920,26 @@ impl Dispatcher {
 
                 if let Some(t) = store.get_thread_mut(thread_id) {
                     for item in t.items.iter_mut() {
-                        if let Item::Tool { status, output, .. } = item {
-                            if status == "running" || status == "awaiting" {
-                                *status = "error".to_string();
-                                if output.is_none() {
-                                    *output = Some("用户主动中止了执行".to_string());
+                        // 只有这两类要改才 copy-on-write（其余卡片保持共享，不复制）。
+                        if !matches!(
+                            item.as_ref(),
+                            Item::Tool { .. } | Item::Assistant { .. }
+                        ) {
+                            continue;
+                        }
+                        match Arc::make_mut(item) {
+                            Item::Tool { status, output, .. } => {
+                                if status == "running" || status == "awaiting" {
+                                    *status = "error".to_string();
+                                    if output.is_none() {
+                                        *output = Some("用户主动中止了执行".to_string());
+                                    }
                                 }
                             }
-                        }
-                        if let Item::Assistant { streaming, .. } = item {
-                            *streaming = None;
+                            Item::Assistant { streaming, .. } => {
+                                *streaming = None;
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -2102,14 +2119,13 @@ impl Dispatcher {
 
                 for thread in &mut store.threads {
                     for item in &mut thread.items {
-                        if let Item::Tool {
-                            id,
-                            call_id: cid,
-                            status,
-                            ..
-                        } = item
-                        {
-                            if id == tool_item_id || cid == tool_item_id {
+                        let hit = matches!(
+                            item.as_ref(),
+                            Item::Tool { id, call_id: cid, .. }
+                                if id == tool_item_id || cid == tool_item_id
+                        );
+                        if hit {
+                            if let Item::Tool { status, .. } = Arc::make_mut(item) {
                                 *status = if approved {
                                     "running".to_string()
                                 } else {

@@ -1114,7 +1114,10 @@ impl SessionManager {
                     .max()
                     .unwrap_or(0)
                     .max(header.updated_at.max(0) as u64),
-                items,
+                items: items
+                    .into_iter()
+                    .map(std::sync::Arc::new)
+                    .collect(),
                 messages,
                 mode: restored_mode,
                 agent_id: restored_agent,
@@ -1134,7 +1137,7 @@ impl SessionManager {
         let mut sub_to_parent: HashMap<String, String> = HashMap::new();
         for t in &threads {
             for it in &t.items {
-                if let Item::Tool { name, details, output, .. } = it {
+                if let Item::Tool { name, details, output, .. } = it.as_ref() {
                     if name == "invoke_subagent" {
                         if let Some(sub_id) = details.as_ref().and_then(|d| d.get("subagent_thread_id").or_else(|| d.get("threadId"))).and_then(|v| v.as_str()) {
                             sub_to_parent.insert(sub_id.to_string(), t.id.clone());
@@ -1649,19 +1652,19 @@ mod tests {
         // （见 `test_restored_cards_have_increasing_at_so_client_order_matches` 与
         // `tools/verify-card-order-e2e.mjs`）。
         assert_eq!(thread.items.len(), 4, "应生成 User, Thinking, Assistant, Tool 共 4 个卡片");
-        match &thread.items[0] {
+        match thread.items[0].as_ref() {
             Item::User { text, .. } => assert_eq!(text, "请帮我运行 git status"),
             other => panic!("第一张卡片应为 User 卡片，实际为 {:?}", other),
         }
-        match &thread.items[1] {
+        match thread.items[1].as_ref() {
             Item::Thinking { text, .. } => assert!(text.contains("用户需要了解")),
             other => panic!("第二张卡片应为 Thinking 卡片，实际为 {:?}", other),
         }
-        match &thread.items[2] {
+        match thread.items[2].as_ref() {
             Item::Assistant { text, .. } => assert_eq!(text, "我将检查当前 git 状态。"),
             other => panic!("第三张卡片应为 Assistant 卡片，实际为 {:?}", other),
         }
-        match &thread.items[3] {
+        match thread.items[3].as_ref() {
             Item::Tool { call_id: cid, name, status, output, .. } => {
                 assert_eq!(cid, call_id);
                 assert_eq!(name, "run_command");
@@ -1745,7 +1748,7 @@ mod tests {
 
         let kinds: Vec<&str> = items
             .iter()
-            .map(|i| match i {
+            .map(|i| match i.as_ref() {
                 Item::User { .. } => "user",
                 Item::Thinking { .. } => "thinking",
                 Item::Tool { .. } => "tool",
@@ -1759,7 +1762,7 @@ mod tests {
         // ① 时间戳严格递增（同毫秒的卡片必须被顺延开）
         let times: Vec<u64> = items
             .iter()
-            .map(|i| match i {
+            .map(|i| match i.as_ref() {
                 Item::User { at, .. }
                 | Item::Thinking { at, .. }
                 | Item::Tool { at, .. }
@@ -1794,7 +1797,7 @@ mod tests {
                 | Item::Compact { at, .. } => *at,
             }
         };
-        let mut frame: Vec<&Item> = items.iter().collect();
+        let mut frame: Vec<&Item> = items.iter().map(|i| i.as_ref()).collect();
         frame.sort_by_key(|i| id_of(i));
         let mut client: Vec<&Item> = Vec::new();
         for it in frame {
@@ -1861,7 +1864,7 @@ mod tests {
         let (usage, duration_ms, turn_duration_ms) = thread
             .items
             .iter()
-            .find_map(|item| match item {
+            .find_map(|item| match item.as_ref() {
                 Item::Assistant { text, usage, duration_ms, turn_duration_ms, .. } if text == "答案" => {
                     Some((usage.clone(), *duration_ms, *turn_duration_ms))
                 }

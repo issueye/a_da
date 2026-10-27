@@ -41,7 +41,9 @@ tokio-stream = "0.1"
 futures-util = "0.3"
 
 # 序列化与数据结构
-serde = { version = "1.0", features = ["derive"] }
+# `rc`：协议里的 `Vec<Arc<Item>>` 要能直接序列化（线上形状与 `Vec<Item>` 完全一致；
+# 反序列化会各自新建 Arc——我们不依赖"反序列化后共享同一份"）。
+serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 serde_urlencoded = "0.7"
 clap = { version = "4.5", features = ["derive"] }

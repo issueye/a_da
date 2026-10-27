@@ -218,7 +218,7 @@ impl Dispatcher {
                                             .map(|t| {
                                                 t.items
                                                     .iter()
-                                                    .filter_map(|it| match it {
+                                                    .filter_map(|it| match it.as_ref() {
                                                         agent_proto::Item::Tool {
                                                             name,
                                                             status,
@@ -259,37 +259,40 @@ impl Dispatcher {
                                                 st.get_thread_mut(&parent_tid_monitor)
                                             {
                                                 for item in parent_t.items.iter_mut().rev() {
+                                                    // 只认这一张正在跑的 invoke_subagent 卡：
+                                                    // 命中才 copy-on-write，别克隆其它共享卡片。
+                                                    let hit = matches!(
+                                                        item.as_ref(),
+                                                        agent_proto::Item::Tool { call_id, status, .. }
+                                                            if call_id == &call_id_monitor
+                                                                && status == "running"
+                                                    );
+                                                    if !hit {
+                                                        continue;
+                                                    }
                                                     if let agent_proto::Item::Tool {
-                                                        call_id,
                                                         details,
-                                                        status,
                                                         ..
-                                                    } = item
+                                                    } = Arc::make_mut(item)
                                                     {
-                                                        if call_id == &call_id_monitor
-                                                            && status == "running"
-                                                        {
-                                                            let mut det =
-                                                                details.take().unwrap_or_else(
-                                                                    || serde_json::json!({}),
+                                                        let mut det = details.take().unwrap_or_else(
+                                                            || serde_json::json!({}),
+                                                        );
+                                                        if let Some(obj) = det.as_object_mut() {
+                                                            if !obj.contains_key("threadId") {
+                                                                obj.insert(
+                                                                    "threadId".to_string(),
+                                                                    serde_json::json!(child_id),
                                                                 );
-                                                            if let Some(obj) = det.as_object_mut() {
-                                                                if !obj.contains_key("threadId") {
-                                                                    obj.insert(
-                                                                        "threadId".to_string(),
-                                                                        serde_json::json!(child_id),
-                                                                    );
-                                                                    obj.insert(
-                                                                        "subagent_thread_id"
-                                                                            .to_string(),
-                                                                        serde_json::json!(child_id),
-                                                                    );
-                                                                    updated = true;
-                                                                }
+                                                                obj.insert(
+                                                                    "subagent_thread_id".to_string(),
+                                                                    serde_json::json!(child_id),
+                                                                );
+                                                                updated = true;
                                                             }
-                                                            *details = Some(det);
-                                                            break;
                                                         }
+                                                        *details = Some(det);
+                                                        break;
                                                     }
                                                 }
                                             }
@@ -505,11 +508,16 @@ impl Dispatcher {
                     store.end_thinking(&target_tid_clone);
                     if let Some(t) = store.get_thread_mut(&target_tid_clone) {
                         for item in t.items.iter_mut() {
-                            if let Item::Assistant { streaming, .. } = item {
+                            if !matches!(item.as_ref(), Item::Assistant { .. }) {
+                                continue;
+                            }
+                            if let Item::Assistant { streaming, .. } = Arc::make_mut(item) {
                                 *streaming = None;
                             }
                         }
-                        if let Some(Item::Thinking { text, .. }) = t.items.last() {
+                        if let Some(Item::Thinking { text, .. }) =
+                            t.items.last().map(|item| item.as_ref())
+                        {
                             if text.trim().is_empty() {
                                 t.items.pop();
                             }

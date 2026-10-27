@@ -613,10 +613,10 @@ pub(super) async fn resolve_engine_from_cache(
 }
 
 /// 把将被丢弃的历史渲染成给"压缩器"看的纯文本（带角色前缀，工具输出取前 400 字）。
-pub(super) fn render_transcript_for_summary(items: &[Item]) -> String {
+pub(super) fn render_transcript_for_summary(items: &[Arc<Item>]) -> String {
     let mut out = String::new();
     for it in items {
-        match it {
+        match it.as_ref() {
             Item::User { text, .. } => out.push_str(&format!("【用户】{}\n", text.trim())),
             Item::Assistant { text, .. } if !text.trim().is_empty() => {
                 out.push_str(&format!("【助手】{}\n", text.trim()))
@@ -737,7 +737,7 @@ pub(crate) async fn compact_thread_with_summary(
             .items
             .iter()
             .rev()
-            .find_map(|it| match it {
+            .find_map(|it| match it.as_ref() {
                 Item::Assistant { usage: Some(u), .. } => Some(u.prompt_tokens),
                 _ => None,
             })
@@ -772,7 +772,7 @@ pub(crate) async fn compact_thread_with_summary(
         if let Some(t) = s.get_thread_mut(thread_id) {
             let preserve = t.items.len().saturating_sub(4).max(1);
             let preserved = t.items.split_off(preserve);
-            t.items = vec![Item::Compact {
+            t.items = vec![Arc::new(Item::Compact {
                 id: compact_id.clone(),
                 at: now,
                 summary: summary.clone(),
@@ -780,7 +780,7 @@ pub(crate) async fn compact_thread_with_summary(
                 post_tokens,
                 saved_tokens: pre_tokens.saturating_sub(post_tokens),
                 turns_summarized: to_summarize as u64,
-            }];
+            })];
             t.items.extend(preserved);
         }
     }

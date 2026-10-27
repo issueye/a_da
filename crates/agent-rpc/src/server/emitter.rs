@@ -125,7 +125,7 @@ impl StateBroadcaster {
             let (meta, mut delta) = {
                 let store = self.store.read().await;
                 let meta = crate::state::generate_snapshot_meta(&store, current_seq);
-                let current: Vec<(&str, &agent_proto::Item)> = store
+                let current: Vec<(&str, &Arc<agent_proto::Item>)> = store
                     .threads
                     .iter()
                     .filter(|thread| store.projects_thread_items(thread))
@@ -143,8 +143,9 @@ impl StateBroadcaster {
             };
             // 与全量快照**同一套限幅**：upserted 里可能带着超大工具输出，
             // 不截断就会让一帧重新背上几 MB（正是增量帧要解决的问题）。
+            // 未超限的条目直接共享内存里的 Arc，不复制。
             for (_, item) in delta.upserted.iter_mut() {
-                crate::state::snapshot::shrink_item_in_place(item);
+                *item = crate::state::snapshot::shrink_item_arc(item);
             }
             let base_seq = self.last_sent_seq.swap(current_seq, Ordering::Relaxed);
 

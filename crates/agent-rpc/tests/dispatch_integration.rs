@@ -1308,7 +1308,7 @@ async fn test_approval_request_reaches_store_and_decide_resumes_the_turn() {
                 .iter()
                 .find(|t| t.id == tid)
                 .and_then(|t| {
-                    t.items.iter().find_map(|it| match it {
+                    t.items.iter().find_map(|it| match it.as_ref() {
                         Item::Tool { call_id, status, .. } if call_id == CALL_ID => {
                             Some(status.clone())
                         }
@@ -1379,7 +1379,7 @@ async fn test_approval_request_reaches_store_and_decide_resumes_the_turn() {
             .find(|t| t.id == tid)
             .map(|t| {
                 t.items.iter().any(|it| {
-                    matches!(it, Item::Assistant { text, .. } if text.contains("读完了"))
+                    matches!(it.as_ref(), Item::Assistant { text, .. } if text.contains("读完了"))
                 })
             })
             .unwrap_or(false),
@@ -1451,7 +1451,7 @@ async fn test_failure_notice_stays_out_of_assistant_text_and_model_context() {
     let threads = session_mgr.restore_all_threads();
     let t = threads.iter().find(|t| t.id == tid).expect("应还原出会话");
     assert!(
-        t.items.iter().any(|it| matches!(it, Item::Notice { level, text, .. }
+        t.items.iter().any(|it| matches!(it.as_ref(), Item::Notice { level, text, .. }
             if level == "error" && text.contains("已重试 0 次仍失败"))),
         "报错应还原成一张 Notice 卡片；实际 items：{:?}",
         t.items
@@ -1459,7 +1459,7 @@ async fn test_failure_notice_stays_out_of_assistant_text_and_model_context() {
     assert!(
         !t.items
             .iter()
-            .any(|it| matches!(it, Item::Assistant { text, .. } if text.contains("请求异常"))),
+            .any(|it| matches!(it.as_ref(), Item::Assistant { text, .. } if text.contains("请求异常"))),
         "报错**不得**混进助手正文"
     );
 
@@ -1477,9 +1477,9 @@ async fn test_failure_notice_stays_out_of_assistant_text_and_model_context() {
 
     // 3. 重试清理：内存卡片没了，磁盘记录也得没（否则同步会把卡片拽回来）
     let mut store_items = t.items.clone();
-    store_items.retain(|it| !matches!(it, Item::Notice { .. }));
+    store_items.retain(|it| !matches!(it.as_ref(), Item::Notice { .. }));
     assert!(
-        !store_items.iter().any(|it| matches!(it, Item::Notice { .. })),
+        !store_items.iter().any(|it| matches!(it.as_ref(), Item::Notice { .. })),
         "清内存后不该还有 Notice"
     );
     let removed = session_mgr.clear_notice_entries(tid).expect("清理磁盘 notice 失败");
@@ -1495,14 +1495,14 @@ async fn test_failure_notice_stays_out_of_assistant_text_and_model_context() {
     let threads_after = session_mgr.restore_all_threads();
     let t_after = threads_after.iter().find(|t| t.id == tid).expect("会话应还在");
     assert!(
-        !t_after.items.iter().any(|it| matches!(it, Item::Notice { .. })),
+        !t_after.items.iter().any(|it| matches!(it.as_ref(), Item::Notice { .. })),
         "磁盘清干净后不该再还原出 Notice"
     );
     assert!(
         t_after
             .items
             .iter()
-            .any(|it| matches!(it, Item::Assistant { text, .. } if text.contains("我先看看"))),
+            .any(|it| matches!(it.as_ref(), Item::Assistant { text, .. } if text.contains("我先看看"))),
         "清理只该删 Notice，正常对话必须留着"
     );
 
@@ -2290,7 +2290,7 @@ async fn test_plugin_tool_is_called_by_the_model_and_returns_success() {
         card = {
             let s = store.read().await;
             s.threads.iter().find(|t| t.id == tid).and_then(|t| {
-                t.items.iter().find_map(|it| match it {
+                t.items.iter().find_map(|it| match it.as_ref() {
                     Item::Tool { call_id, status, output, .. } if call_id == CALL_ID => {
                         Some((status.clone(), output.clone()))
                     }
@@ -2519,8 +2519,11 @@ async fn test_turn_without_engine_leaves_a_visible_notice() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let s = store.read().await;
         if let Some(t) = s.threads.iter().find(|t| t.id == tid) {
-            if let Some(Item::Notice { text, .. }) =
-                t.items.iter().find(|i| matches!(i, Item::Notice { .. }))
+            if let Some(Item::Notice { text, .. }) = t
+                .items
+                .iter()
+                .find(|i| matches!(i.as_ref(), Item::Notice { .. }))
+                .map(|i| i.as_ref())
             {
                 notice = Some(text.clone());
                 break;
