@@ -21,7 +21,7 @@ const metadata = {
   tools: { count: 1, names: ["test_tool"] },
   systemPrompt: { count: 1, names: ["增强命中"] },
   skills: { count: 1, names: ["test_skill"] },
-  hooks: { count: 1, names: ["afterTurn"] },
+  events: { count: 1, names: ["event_after_turn"] },
 };
 
 export default function (ada) {
@@ -39,8 +39,8 @@ export default function (ada) {
 
   ada.registerSystemPrompt({ id: "增强命中", content: "Prefer precise matches." });
 
-  ada.on("turn_end", async (event, ctx) => {
-    ada.trace(`${ctx.point} ${ctx.threadId}`);
+  ada.on("event_after_turn", async (event, ctx) => {
+    ada.trace(`${ctx.event} ${ctx.threadId}`);
     return { action: "note", note: `completed step ${event.step}` };
   });
 }
@@ -59,8 +59,7 @@ Loose single-file plugins and object-style default exports are no longer discove
 accepted by `plugin.validate`.
 
 `metadata` counts and required `names` arrays are checked against the declarations
-collected by the isolated inspector. `ada.on(event, handler)` is an alias for hook
-registration. Handlers receive `(event, ctx)`; `ctx` exposes workspace/session
+collected by the isolated inspector. `ada.on(event, handler)` is the only event registration entrypoint; the name must be a unified `event_*` value and legacy camelCase names are rejected. Handlers receive `(event, ctx)`; `ctx` exposes workspace/session
 identifiers, timeout budget, and validated registration methods, but not raw host
 IO or arbitrary host actions.
 
@@ -85,7 +84,7 @@ ada.registerAction({
 - `mode: "read"` is required for `intent: "read"`; write actions are rejected when
   the caller declares read intent.
 - `metadata.actions` is optional but mandatory once an action is registered;
-  `count` / `names` are validated like tools and hooks.
+  `count` / `names` are validated like tools and events.
 - The action result is `{ ok: true, data }`; a returned `{ ok: false, error }` is a
   soft failure with a user-readable message.
 - Each call creates a fresh sandbox; actions have no cross-request module state.
@@ -279,30 +278,31 @@ Async subset (`spawn` / `exec` / `execFile`):
 2026-10-19: calling it is ignored and reported as a `skill_spec_violation:*` diagnostic.
 `metadata.skills` is declarative only and is not checked for consistency.
 
-## Hook points and capability gates (as of 2026-10-27)
+## Events and capability gates (as of 2026-10-27)
 
-* Every point in `agent_base::ports::hooks::points::IMPLEMENTED` (29 of them) is callable
-  and registrable; a point that is not registered is reported as `no_subscriber` rather
-  than silently skipped.
+* Plugins register exactly one namespace: `event_*`. `ada.on` and object-form `events`
+  reject any other name at inspection time; the old camelCase names and short aliases
+  (`turn_end`, `beforeToolCall`, …) are gone.
+* Every internal point in `agent_base::ports::hooks::points::IMPLEMENTED` (29 of them) has
+  a unified event name in `agent_base::ports::hooks::EVENT_POINTS`. A registered event is
+  callable; an event nobody subscribed to is reported as `no_subscriber` rather than
+  silently skipped.
 * `beforeTodoUpdate` / `afterTodoUpdate` / `beforeApproval` / `afterApproval` were removed
-  on 2026-10-27; todo updates and approval are no longer hook points. They will be
-  re-expressed through the unified `event_*` system when the plugin event bus lands.
-* `ada.on` also accepts the unified `event_*` names (`event_before_tool_call`,
-  `event_after_turn`, …). They are folded back to the legacy point at registration time
-  (`agent-node/src/hooks/event_names.rs`) until the engine dispatcher migration.
-* Which **actions** a hook may take is graded per point
+  on 2026-10-27; todo updates and approval are no longer core extension points. Plugins
+  that need policy behavior attach to `event_before_*` instead.
+* Which **actions** an event may take is graded per point
   (`HookLevel` + `allows`): third-party plugins can `Deny` / `Replace` on the data-plane
-  `beforeToolCall` only; control-plane `Deny` is limited to builtin plugins.
+  `event_before_tool_call` only; control-plane `Deny` is limited to builtin plugins.
 * The user's plugin capability switches gate actions on top of that: with
-  `allowThirdPartyHooks` off, third-party hook declarations are rejected at assembly time
-  (`third_party_hooks_disabled`); `allowTextRewrite` off drops `note` results;
+  `allowThirdPartyEvents` off, third-party event declarations are rejected at assembly time
+  (`third_party_events_disabled`); `allowTextRewrite` off drops `note` results;
   `allowThreadDeleteBlock` / `allowCompactionReplace` off make the corresponding
   deny/replace a no-op. Every such block is recorded with a reason you can read in the
   diagnostics panel.
-* `ctx.registerTool` / `registerSkill` / `registerSystemPrompt` inside a handler are
-  currently **collected but not applied** (the host does not install them yet); the runtime
-  logs a warning when a handler asks for them. There is **no** `ctx.registerHook`: hooks must
-  be declared at factory time via `ada.on(point, handler)` — runtime hook registration would
-  mutate the hook table mid-turn, which the assembly model forbids.
+* `ctx.registerTool` / `registerSystemPrompt` inside a handler are currently **collected
+  but not applied** (the host does not install them yet); the runtime logs a warning when
+  a handler asks for them. There is **no** `ctx.registerHook`: events must be declared at
+  factory time via `ada.on(event, handler)` — runtime registration would mutate the event
+  table mid-turn, which the assembly model forbids.
 
 See [`extension-api.d.ts`](extension-api.d.ts) for the type contract.

@@ -77,7 +77,7 @@ pub struct ServerCapabilities {
     pub images: bool,
     pub rollback: bool,
     pub plugins: bool,
-    pub hooks: bool,
+    pub plugin_events: bool,
     pub resync: bool,
     pub events: ServerEventsCapability,
 }
@@ -88,7 +88,7 @@ impl Default for ServerCapabilities {
             images: false, // MVP 如实声明不支持图片，绝不做半吊子
             rollback: true,
             plugins: true,
-            hooks: false,
+            plugin_events: false,
             resync: false,
             events: ServerEventsCapability {
                 granularity: "coarse".to_string(),

@@ -27,7 +27,7 @@ use agent_base::ports::{
     BoxFuture, ModuleHandle, ScriptBudget, ScriptCtx, ScriptError, ScriptHost,
 };
 
-use crate::plugins::{PluginCapabilities, PluginHookDeclaration};
+use crate::plugins::{PluginCapabilities, PluginEventDeclaration};
 
 mod event_dispatcher;
 mod event_names;
@@ -36,17 +36,13 @@ mod event_runtime;
 pub use event_dispatcher::HookEventDispatcher;
 pub use event_runtime::{EventRuntimeStats, PluginEventRuntime, DEFAULT_LANE_CAPACITY};
 
-/// 一条被接受并已排好序的钩子注册。
+/// 一条被接受并已排好序的事件注册。
 #[derive(Debug, Clone)]
 pub struct RegisteredHook {
     pub plugin_id: String,
     pub trust: PluginTrust,
-    /// 引擎调用的规范点位名（旧钩子名）。
+    /// 统一事件名（`event_before_tool_call` …）；这是插件声明与沙箱查找的唯一键。
     pub point: String,
-    /// 插件声明时用的名字（可能是 `event_before_tool_call`）。
-    ///
-    /// 沙箱按声明名查找处理器；迁移期两套名字不能混着传给 `invoke_hook`。
-    handler_point: String,
     pub actions: Vec<HookAction>,
     pub order: i32,
     handle: ModuleHandle,
@@ -63,9 +59,9 @@ impl RegisteredHook {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookRejection {
     pub plugin_id: String,
-    pub point: String,
-    /// 为什么没生效：`unknown_point` / `point_not_implemented` / `unknown_action:xx` /
-    /// `duplicate_hook_point` / 分级函数给的理由（如 `control_plane_deny_not_permitted`）
+    pub event: String,
+    /// 为什么没生效：`unknown_event` / `event_not_implemented` / `unknown_action:xx` /
+    /// `duplicate_event` / 分级函数给的理由（如 `control_plane_deny_not_permitted`）
     pub reason: String,
 }
 
@@ -123,7 +119,7 @@ impl HookRuntime {
 
     /// 空运行时（没有脚本宿主，也没有任何注册）。
     ///
-    /// 用途只有一个：产品声明 `capabilities.hooks == false` 时，组合根**如实不装钩子**，
+    /// 用途只有一个：产品声明 `capabilities.events == false` 时，组合根**如实不装钩子**，
     /// 但引擎仍然拿到一个运行时——于是"没装钩子"与"钩子全都没生效"在诊断上分得开
     /// （后者会有 `no_subscriber` 记录）。
     pub fn disabled() -> Self {
@@ -216,41 +212,51 @@ impl HookRuntime {
         plugin_id: &str,
         trust: PluginTrust,
         handle: ModuleHandle,
-        decl: &PluginHookDeclaration,
+        decl: &PluginEventDeclaration,
         rejections: &mut Vec<HookRejection>,
     ) {
         // 插件可以用统一事件名声明；引擎当前仍按旧点位名调用。
         // 映射只在这一处，未知 event_* 原样交给 HookLevel::of 拒绝。
-        let handler_point = decl.point.trim().to_string();
-        let point = event_names::normalize_point(&decl.point);
+        // 插件只能声明统一事件名；旧 camelCase 点位不再接受。
+        let raw_point = decl.event.trim().to_string();
+        if !event_names::is_known_event(&raw_point) {
+            rejections.push(HookRejection {
+                plugin_id: plugin_id.to_string(),
+                event: raw_point,
+                reason: "unknown_event".to_string(),
+            });
+            return;
+        }
+        let point = event_names::normalize_event(&raw_point);
+        let legacy_point = agent_base::ports::hooks::point_for_event(&point).unwrap_or(&point);
         let reject = |rejections: &mut Vec<HookRejection>, reason: String| {
             rejections.push(HookRejection {
                 plugin_id: plugin_id.to_string(),
-                point: point.clone(),
+                event: point.clone(),
                 reason,
             });
         };
 
-        // 能力开关 `allowThirdPartyHooks`：关掉之后**第三方插件的钩子一条都不装**。
+        // 能力开关 `allowThirdPartyEvents`：关掉之后**第三方插件的事件处理器一条都不装**。
         //
         // 放在最前面：它否掉的是整个来源，而理由必须说清是"这台机器不许第三方挂钩子"，
         // 不是"你的点位拼错了"——顺序错了，作者会一直对着自己的声明找问题。
-        if trust == PluginTrust::ThirdParty && !self.capabilities.allow_third_party_hooks {
-            reject(rejections, "third_party_hooks_disabled".to_string());
+        if trust == PluginTrust::ThirdParty && !self.capabilities.allow_third_party_events {
+            reject(rejections, "third_party_events_disabled".to_string());
             return;
         }
 
         let level = match HookLevel::of(&point) {
             Some(l) => l,
             None => {
-                reject(rejections, "unknown_point".to_string());
+                reject(rejections, "unknown_event".to_string());
                 return;
             }
         };
-        if !points::IMPLEMENTED.contains(&point.as_str()) {
-            // 点位在分级表里有、但本批还没接（例如 beforeTurn）——**如实说**，
+        if !points::IMPLEMENTED.contains(&legacy_point) {
+            // 事件在分级表里有、但本批还没接——**如实说**，
             // 而不是收下之后永不调用（那正是 AGENTS §15 的坑）
-            reject(rejections, "point_not_implemented".to_string());
+            reject(rejections, "event_not_implemented".to_string());
             return;
         }
         if self
@@ -259,8 +265,8 @@ impl HookRuntime {
             .map(|r| r.iter().any(|h| h.plugin_id == plugin_id && h.point == point))
             .unwrap_or(false)
         {
-            // 一个插件在一个点位上只留一条：多条处理器会让"谁拦的"变成猜谜
-            reject(rejections, "duplicate_hook_point".to_string());
+            // 一个插件在一个事件上只留一条：多条处理器会让"谁拦的"变成猜谜
+            reject(rejections, "duplicate_event".to_string());
             return;
         }
 
@@ -285,7 +291,7 @@ impl HookRuntime {
                     // 放在装配期（而不是运行期静默忽略）是因为"声明了却永远不生效"
                     // 必须在装配期就说清楚——那正是 AGENTS §15 警告的那个坑。
                     if action == HookAction::Replace
-                        && !points::REPLACE_SUPPORTED.contains(&point.as_str())
+                        && !points::REPLACE_SUPPORTED.contains(&legacy_point)
                     {
                         reject(rejections, "replace_not_supported_for_point".to_string());
                         reported += 1;
@@ -316,7 +322,6 @@ impl HookRuntime {
                 plugin_id: plugin_id.to_string(),
                 trust,
                 point,
-                handler_point,
                 actions: accepted,
                 order: decl.order,
                 handle,
@@ -342,7 +347,7 @@ impl HookRuntime {
                 Err(e) => {
                     rejections.push(HookRejection {
                         plugin_id: plugin_id.clone(),
-                        point: String::new(),
+                        event: String::new(),
                         reason: format!("declarations_unreadable:{e:?}"),
                     });
                     continue;
@@ -353,8 +358,8 @@ impl HookRuntime {
                     plugin_id,
                     *trust,
                     handle.clone(),
-                    &PluginHookDeclaration {
-                        point: decl.point,
+                    &PluginEventDeclaration {
+                        event: decl.point,
                         actions: decl.actions,
                         order: decl.order,
                     },
@@ -404,7 +409,7 @@ impl HookRuntime {
     ///
     /// 只报**注册成功**的：被分级、未实现、能力开关挡下的都不在里面。
     /// 这正是这份清单的意义：它说的是"实际生效",而不是"声明过"。
-    pub fn points_by_plugin(&self) -> std::collections::BTreeMap<String, Vec<String>> {
+    pub fn events_by_plugin(&self) -> std::collections::BTreeMap<String, Vec<String>> {
         let mut out: std::collections::BTreeMap<String, Vec<String>> = Default::default();
         if let Ok(regs) = self.registrations.read() {
             for reg in regs.iter() {
@@ -444,13 +449,13 @@ impl HookRuntime {
                 "turnId": ctx.turn_id,
                 "callId": ctx.call_id,
                 "pluginId": reg.plugin_id,
-                "point": reg.handler_point,
+                "event": reg.point,
                 "timeoutMs": self.budget.timeout_ms,
             },
         });
         let call = self
             .script_host
-            .invoke_hook(&reg.handle, &reg.handler_point, script_payload, &script_ctx);
+            .invoke_hook(&reg.handle, &reg.point, script_payload, &script_ctx);
 
         // 单点位预算：**超时即无意见**（§5.5）。这里再兜一层墙钟——
         // 沙箱自己也有一层，但那是"这个脚本跑太久"，这里是"这个点位的预算"，
@@ -531,7 +536,9 @@ impl HookRuntime {
                         "action_not_declared:replace",
                     );
                 }
-                if !points::REPLACE_SUPPORTED.contains(&point) {
+                let legacy_point =
+                    agent_base::ports::hooks::point_for_event(point).unwrap_or(point);
+                if !points::REPLACE_SUPPORTED.contains(&legacy_point) {
                     // 装配期就该拦（`replace_not_supported_for_point`）；这里兜底
                     return HookEntryResult::simple(
                         HookEntryOutcome::Passed,
@@ -575,6 +582,7 @@ impl HookRuntime {
     /// 判定只此一处：点位的调用方分散在三处（引擎轮内、Dispatcher 管理面、`todo` 工具），
     /// 各判一遍迟早出现"引擎里拦得住、管理面拦不住"这种自相矛盾。
     fn action_disabled_by_capabilities(&self, point: &str, action: Option<&str>) -> Option<String> {
+        let point = agent_base::ports::hooks::point_for_event(point).unwrap_or(point);
         let action = action?.trim().to_ascii_lowercase();
         let veto = matches!(action.as_str(), "deny" | "abort" | "abortturn");
         match action.as_str() {
@@ -786,12 +794,15 @@ impl HookRunner for HookRuntime {
         ctx: &'a HookCtx<'a>,
     ) -> BoxFuture<'a, BeforeOutcome> {
         Box::pin(async move {
-            let regs = self.registrations(&req.point);
+            // 引擎内部调用方仍可能传旧点位名；插件侧只认 `event_*`。
+            // 在这里统一成事件名，注册与调用才不会各用一套键。
+            let point = agent_base::ports::hooks::normalize_event_name(&req.point);
+            let regs = self.registrations(&point);
             if regs.is_empty() {
                 // 缺席可见：没人订阅这个点位也要报一条，否则"没人管"与"没装过"分不出来
                 (ctx.on_event)(HookObservation {
-                    call_id: format!("{}#none#0", req.point),
-                    point: req.point.clone(),
+                    call_id: format!("{}#none#0", point),
+                    point: point.clone(),
                     plugin_id: String::new(),
                     phase: HookPhase::Finished,
                     entry_outcome: Some(HookEntryOutcome::Passed),
@@ -811,10 +822,10 @@ impl HookRunner for HookRuntime {
             let mut last_replacer: Option<(String, serde_json::Value)> = None;
 
             for (idx, reg) in regs.iter().enumerate() {
-                let call_id = format!("{}#{}#{}", req.point, reg.plugin_id, idx);
+                let call_id = format!("{}#{}#{}", point, reg.plugin_id, idx);
                 (ctx.on_event)(HookObservation {
                     call_id: call_id.clone(),
-                    point: req.point.clone(),
+                    point: point.clone(),
                     plugin_id: reg.plugin_id.clone(),
                     phase: HookPhase::Entered,
                     entry_outcome: None,
@@ -825,11 +836,11 @@ impl HookRunner for HookRuntime {
                     bytes_delta: None,
                 });
                 let started = Instant::now();
-                let entry = self.run_one(reg, &req.point, current_payload.clone(), ctx).await;
+                let entry = self.run_one(reg, &point, current_payload.clone(), ctx).await;
                 let elapsed = started.elapsed().as_millis() as u64;
                 (ctx.on_event)(HookObservation {
                     call_id,
-                    point: req.point.clone(),
+                    point: point.clone(),
                     plugin_id: reg.plugin_id.clone(),
                     phase: HookPhase::Finished,
                     entry_outcome: Some(entry.outcome),
@@ -874,12 +885,13 @@ impl HookRunner for HookRuntime {
 
     fn after<'a>(&'a self, req: AfterRequest, ctx: &'a HookCtx<'a>) -> BoxFuture<'a, Vec<AfterNote>> {
         Box::pin(async move {
-            let regs = self.registrations(&req.point);
+            let point = agent_base::ports::hooks::normalize_event_name(&req.point);
+            let regs = self.registrations(&point);
             let mut notes = Vec::new();
             if regs.is_empty() {
                 (ctx.on_event)(HookObservation {
-                    call_id: format!("{}#none#0", req.point),
-                    point: req.point.clone(),
+                    call_id: format!("{}#none#0", point),
+                    point: point.clone(),
                     plugin_id: String::new(),
                     phase: HookPhase::Finished,
                     entry_outcome: Some(HookEntryOutcome::Passed),
@@ -892,10 +904,10 @@ impl HookRunner for HookRuntime {
                 return notes;
             }
             for (idx, reg) in regs.iter().enumerate() {
-                let call_id = format!("{}#{}#{}", req.point, reg.plugin_id, idx);
+                let call_id = format!("{}#{}#{}", point, reg.plugin_id, idx);
                 (ctx.on_event)(HookObservation {
                     call_id: call_id.clone(),
-                    point: req.point.clone(),
+                    point: point.clone(),
                     plugin_id: reg.plugin_id.clone(),
                     phase: HookPhase::Entered,
                     entry_outcome: None,
@@ -906,10 +918,10 @@ impl HookRunner for HookRuntime {
                     bytes_delta: None,
                 });
                 let started = Instant::now();
-                let entry = self.run_one(reg, &req.point, req.payload.clone(), ctx).await;
+                let entry = self.run_one(reg, &point, req.payload.clone(), ctx).await;
                 (ctx.on_event)(HookObservation {
                     call_id,
-                    point: req.point.clone(),
+                    point: point.clone(),
                     plugin_id: reg.plugin_id.clone(),
                     phase: HookPhase::Finished,
                     entry_outcome: Some(entry.outcome),
@@ -968,7 +980,7 @@ pub fn collect_hooks(
             Err(e) => {
                 rejections.push(HookRejection {
                     plugin_id: plugin_id.clone(),
-                    point: String::new(),
+                    event: String::new(),
                     reason: format!("declarations_unreadable:{e:?}"),
                 });
                 continue;
@@ -979,8 +991,8 @@ pub fn collect_hooks(
                 plugin_id,
                 *trust,
                 handle.clone(),
-                &PluginHookDeclaration {
-                    point: decl.point,
+                &PluginEventDeclaration {
+                    event: decl.point,
                     actions: decl.actions,
                     order: decl.order,
                 },
@@ -1004,7 +1016,7 @@ mod tests {
     #[derive(Default)]
     struct FakeHost {
         /// `handle.id` → 该模块声明的点位
-        decls: HashMap<String, Vec<PluginHookDeclaration>>,
+        decls: HashMap<String, Vec<PluginEventDeclaration>>,
         /// `handle.id#point` → 处理器返回的动作
         returns: HashMap<String, serde_json::Value>,
         /// `handle.id#point` → 睡多久（毫秒），用于超时用例
@@ -1016,8 +1028,8 @@ mod tests {
     impl FakeHost {
         fn declare(&mut self, handle: &str, point: &str, actions: &[&str], order: i32) {
             self.decls.entry(handle.to_string()).or_default().push(
-                PluginHookDeclaration {
-                    point: point.to_string(),
+                PluginEventDeclaration {
+                    event: point.to_string(),
                     actions: actions.iter().map(|s| s.to_string()).collect(),
                     order,
                 },
@@ -1078,7 +1090,7 @@ mod tests {
                 .unwrap_or_default()
                 .into_iter()
                 .map(|d| agent_base::ports::ScriptHookDeclaration {
-                    point: d.point,
+                    point: d.event,
                     actions: d.actions,
                     order: d.order,
                 })
@@ -1164,8 +1176,8 @@ mod tests {
                     pid,
                     *trust,
                     handle_for(pid),
-                    &PluginHookDeclaration {
-                        point: point.to_string(),
+                    &PluginEventDeclaration {
+                        event: point.to_string(),
                         actions: actions.iter().map(|s| s.to_string()).collect(),
                         order: *order,
                     },
@@ -1220,15 +1232,15 @@ mod tests {
     async fn test_order_is_builtin_first_then_order_then_id() {
         let mut host = FakeHost::default();
         for id in ["zzz-plugin", "aaa-plugin", "builtin-guard"] {
-            host.declare(id, "beforeToolCall", &["observe"], 0);
+            host.declare(id, "event_before_tool_call", &["observe"], 0);
         }
         let host = Arc::new(host);
         let (runtime, rejections) = runtime_with(
             host.clone(),
             &[
-                ("zzz-plugin", PluginTrust::ThirdParty, &[("beforeToolCall", &["observe"], 0)]),
-                ("aaa-plugin", PluginTrust::ThirdParty, &[("beforeToolCall", &["observe"], 0)]),
-                ("builtin-guard", PluginTrust::Builtin, &[("beforeToolCall", &["observe"], 0)]),
+                ("zzz-plugin", PluginTrust::ThirdParty, &[("event_before_tool_call", &["observe"], 0)]),
+                ("aaa-plugin", PluginTrust::ThirdParty, &[("event_before_tool_call", &["observe"], 0)]),
+                ("builtin-guard", PluginTrust::Builtin, &[("event_before_tool_call", &["observe"], 0)]),
             ],
             500,
         );
@@ -1236,14 +1248,14 @@ mod tests {
 
         let obs = Observers::new();
         let sink = obs.sink();
-        let outcome = runtime.before(before_req("beforeToolCall"), &ctx(&sink)).await;
+        let outcome = runtime.before(before_req("event_before_tool_call"), &ctx(&sink)).await;
         assert!(outcome.is_pass());
         assert_eq!(
             host.called(),
             vec![
-                "builtin-guard#beforeToolCall".to_string(),
-                "aaa-plugin#beforeToolCall".to_string(),
-                "zzz-plugin#beforeToolCall".to_string(),
+                "builtin-guard#event_before_tool_call".to_string(),
+                "aaa-plugin#event_before_tool_call".to_string(),
+                "zzz-plugin#event_before_tool_call".to_string(),
             ],
             "内置优先，其余按插件 id 兜底（order 都是 0）"
         );
@@ -1256,18 +1268,18 @@ mod tests {
         let (runtime, _) = runtime_with(
             host.clone(),
             &[
-                ("late", PluginTrust::ThirdParty, &[("beforeToolCall", &["observe"], 50)]),
-                ("early", PluginTrust::ThirdParty, &[("beforeToolCall", &["observe"], 10)]),
+                ("late", PluginTrust::ThirdParty, &[("event_before_tool_call", &["observe"], 50)]),
+                ("early", PluginTrust::ThirdParty, &[("event_before_tool_call", &["observe"], 10)]),
             ],
             500,
         );
         let obs = Observers::new();
         let sink = obs.sink();
-        let _ = runtime.before(before_req("beforeToolCall"), &ctx(&sink)).await;
+        let _ = runtime.before(before_req("event_before_tool_call"), &ctx(&sink)).await;
         // returns 里没有预置，fake 会返回 {}（无意见），但调用顺序仍然记录
         assert_eq!(
             host.called(),
-            vec!["early#beforeToolCall".to_string(), "late#beforeToolCall".to_string()]
+            vec!["early#event_before_tool_call".to_string(), "late#event_before_tool_call".to_string()]
         );
     }
 
@@ -1277,28 +1289,28 @@ mod tests {
         let mut host = FakeHost::default();
         host.ret(
             "guard",
-            "beforeToolCall",
+            "event_before_tool_call",
             serde_json::json!({ "action": "deny", "reason": "这条命令会删库" }),
         );
         let host = Arc::new(host);
         let (runtime, _) = runtime_with(
             host.clone(),
             &[
-                ("guard", PluginTrust::ThirdParty, &[("beforeToolCall", &["deny"], 0)]),
-                ("later", PluginTrust::ThirdParty, &[("beforeToolCall", &["deny"], 10)]),
+                ("guard", PluginTrust::ThirdParty, &[("event_before_tool_call", &["deny"], 0)]),
+                ("later", PluginTrust::ThirdParty, &[("event_before_tool_call", &["deny"], 10)]),
             ],
             500,
         );
         let obs = Observers::new();
         let sink = obs.sink();
-        let outcome = runtime.before(before_req("beforeToolCall"), &ctx(&sink)).await;
+        let outcome = runtime.before(before_req("event_before_tool_call"), &ctx(&sink)).await;
         match outcome {
             BeforeOutcome::Deny { reason } => assert_eq!(reason, "这条命令会删库"),
             other => panic!("应当被拦下，实际 {other:?}"),
         }
         assert_eq!(
             host.called(),
-            vec!["guard#beforeToolCall".to_string()],
+            vec!["guard#event_before_tool_call".to_string()],
             "定稿之后不许再问别人（否则'谁拦的'就说不清了）"
         );
     }
@@ -1309,18 +1321,18 @@ mod tests {
         let mut host = FakeHost::default();
         host.ret(
             "sneaky",
-            "beforeToolCall",
+            "event_before_tool_call",
             serde_json::json!({ "action": "deny", "reason": "我没声明过这个" }),
         );
         let host = Arc::new(host);
         let (runtime, _) = runtime_with(
             host.clone(),
-            &[("sneaky", PluginTrust::ThirdParty, &[("beforeToolCall", &["observe"], 0)])],
+            &[("sneaky", PluginTrust::ThirdParty, &[("event_before_tool_call", &["observe"], 0)])],
             500,
         );
         let obs = Observers::new();
         let sink = obs.sink();
-        let outcome = runtime.before(before_req("beforeToolCall"), &ctx(&sink)).await;
+        let outcome = runtime.before(before_req("event_before_tool_call"), &ctx(&sink)).await;
         assert!(outcome.is_pass(), "未声明的动作不得生效：{outcome:?}");
         let finished = obs
             .all()
@@ -1338,23 +1350,23 @@ mod tests {
     #[tokio::test]
     async fn test_timeout_is_treated_as_no_opinion() {
         let mut host = FakeHost::default();
-        host.delay("slow", "beforeToolCall", 300);
+        host.delay("slow", "event_before_tool_call", 300);
         host.ret(
             "slow",
-            "beforeToolCall",
+            "event_before_tool_call",
             serde_json::json!({ "action": "deny", "reason": "本来想拦" }),
         );
         let host = Arc::new(host);
         // 预算 50ms，插件要睡 300ms
         let (runtime, _) = runtime_with(
             host,
-            &[("slow", PluginTrust::ThirdParty, &[("beforeToolCall", &["deny"], 0)])],
+            &[("slow", PluginTrust::ThirdParty, &[("event_before_tool_call", &["deny"], 0)])],
             50,
         );
         let obs = Observers::new();
         let sink = obs.sink();
         let started = std::time::Instant::now();
-        let outcome = runtime.before(before_req("beforeToolCall"), &ctx(&sink)).await;
+        let outcome = runtime.before(before_req("event_before_tool_call"), &ctx(&sink)).await;
         assert!(outcome.is_pass(), "超时必须视为无意见，实际 {outcome:?}");
         assert!(
             started.elapsed() < std::time::Duration::from_millis(250),
@@ -1440,8 +1452,8 @@ mod tests {
             "bad",
             PluginTrust::ThirdParty,
             handle_for("bad"),
-            &PluginHookDeclaration {
-                point: "beforeToolCall".to_string(),
+            &PluginEventDeclaration {
+                event: "event_before_tool_call".to_string(),
                 actions: vec!["deny".to_string()],
                 order: 0,
             },
@@ -1451,7 +1463,7 @@ mod tests {
 
         let obs = Observers::new();
         let sink = obs.sink();
-        let outcome = runtime.before(before_req("beforeToolCall"), &ctx(&sink)).await;
+        let outcome = runtime.before(before_req("event_before_tool_call"), &ctx(&sink)).await;
         assert!(outcome.is_pass(), "坏掉的钩子不得拦住工具：{outcome:?}");
         let finished = obs
             .all()
@@ -1474,12 +1486,12 @@ mod tests {
         let host = Arc::new(FakeHost::default());
         let (runtime, _) = runtime_with(
             host,
-            &[("p1", PluginTrust::ThirdParty, &[("beforeToolCall", &["observe"], 0)])],
+            &[("p1", PluginTrust::ThirdParty, &[("event_before_tool_call", &["observe"], 0)])],
             500,
         );
         let obs = Observers::new();
         let sink = obs.sink();
-        let _ = runtime.before(before_req("beforeToolCall"), &ctx(&sink)).await;
+        let _ = runtime.before(before_req("event_before_tool_call"), &ctx(&sink)).await;
         let all = obs.all();
         let entered: Vec<_> = all.iter().filter(|o| o.phase == HookPhase::Entered).collect();
         let finished: Vec<_> = all.iter().filter(|o| o.phase == HookPhase::Finished).collect();
@@ -1490,7 +1502,7 @@ mod tests {
         // 没人订阅的点位：报 `no_subscriber`（"没人管"与"没装过"要分得出来）
         let obs2 = Observers::new();
         let sink2 = obs2.sink();
-        let outcome = runtime.before(before_req("afterToolCall"), &ctx(&sink2)).await;
+        let outcome = runtime.before(before_req("event_after_tool_call"), &ctx(&sink2)).await;
         assert!(outcome.is_pass());
         let all2 = obs2.all();
         assert_eq!(all2.len(), 1);
@@ -1508,7 +1520,7 @@ mod tests {
             &[(
                 "third-party",
                 PluginTrust::ThirdParty,
-                &[("beforePluginToggle", &["deny"], 0)],
+                &[("event_before_plugin_toggle", &["deny"], 0)],
             )],
             500,
         );
@@ -1521,7 +1533,7 @@ mod tests {
         // ② 同一个点位，内置插件可以拦（分级不是"一律禁止"）
         let (runtime, rejections) = runtime_with(
             host.clone(),
-            &[("builtin-guard", PluginTrust::Builtin, &[("beforePluginToggle", &["deny"], 0)])],
+            &[("builtin-guard", PluginTrust::Builtin, &[("event_before_plugin_toggle", &["deny"], 0)])],
             500,
         );
         assert!(rejections.is_empty(), "{rejections:?}");
@@ -1530,7 +1542,7 @@ mod tests {
         // ③ 数据面：第三方可以拦
         let (runtime, rejections) = runtime_with(
             host.clone(),
-            &[("third-party", PluginTrust::ThirdParty, &[("beforeToolCall", &["deny"], 0)])],
+            &[("third-party", PluginTrust::ThirdParty, &[("event_before_tool_call", &["deny"], 0)])],
             500,
         );
         assert!(rejections.is_empty(), "{rejections:?}");
@@ -1539,7 +1551,7 @@ mod tests {
         // ④ 第三方要"结束整轮" → 拒（那是拒绝服务）
         let (_, rejections) = runtime_with(
             host.clone(),
-            &[("third-party", PluginTrust::ThirdParty, &[("beforeToolCall", &["abort"], 0)])],
+            &[("third-party", PluginTrust::ThirdParty, &[("event_before_tool_call", &["abort"], 0)])],
             500,
         );
         assert!(
@@ -1554,7 +1566,7 @@ mod tests {
             &[(
                 "third-party",
                 PluginTrust::ThirdParty,
-                &[("beforeToolCall", &["replace"], 0)],
+                &[("event_before_tool_call", &["replace"], 0)],
             )],
             500,
         );
@@ -1567,7 +1579,7 @@ mod tests {
             &[(
                 "builtin-guard",
                 PluginTrust::Builtin,
-                &[("beforePluginToggle", &["replace"], 0)],
+                &[("event_before_plugin_toggle", &["replace"], 0)],
             )],
             500,
         );
@@ -1579,7 +1591,7 @@ mod tests {
         // ⑥ 本批还没接的点位（beforeTurn 在分级表里有、但没实现）→ 如实说
         let (_, rejections) = runtime_with(
             host.clone(),
-            &[("p", PluginTrust::ThirdParty, &[("beforeTurn", &["deny"], 0)])],
+            &[("p", PluginTrust::ThirdParty, &[("event_before_turn", &["deny"], 0)])],
             500,
         );
         assert!(rejections[0].reason.starts_with("control_plane_deny_not_permitted"));
@@ -1590,25 +1602,25 @@ mod tests {
             &[("p", PluginTrust::ThirdParty, &[("afterDeploy", &["observe"], 0)])],
             500,
         );
-        assert_eq!(rejections[0].reason, "unknown_point");
+        assert_eq!(rejections[0].reason, "unknown_event");
     }
 
     /// 一个插件在一个点位上只留一条注册（多条会让"谁拦的"变成猜谜）。
     #[tokio::test]
-    async fn test_duplicate_registration_for_the_same_point_is_rejected() {
+    async fn test_duplicate_registration_for_the_same_event_is_rejected() {
         let host = Arc::new(FakeHost::default());
         let (runtime, rejections) = runtime_with(
             host,
             &[(
                 "p1",
                 PluginTrust::ThirdParty,
-                &[("beforeToolCall", &["deny"], 0), ("beforeToolCall", &["deny"], 0)],
+                &[("event_before_tool_call", &["deny"], 0), ("event_before_tool_call", &["deny"], 0)],
             )],
             500,
         );
         assert_eq!(runtime.len(), 1);
         assert_eq!(rejections.len(), 1);
-        assert_eq!(rejections[0].reason, "duplicate_hook_point");
+        assert_eq!(rejections[0].reason, "duplicate_event");
     }
 
     /// 事后只收旁注：`note` 进模型上下文（通过返回值交回调用方），空旁的丢掉。
@@ -1617,16 +1629,16 @@ mod tests {
         let mut host = FakeHost::default();
         host.ret(
             "talker",
-            "afterToolCall",
+            "event_after_tool_call",
             serde_json::json!({ "action": "note", "note": "记得跑一遍测试" }),
         );
-        host.ret("mute", "afterToolCall", serde_json::json!({ "action": "note", "note": "  " }));
+        host.ret("mute", "event_after_tool_call", serde_json::json!({ "action": "note", "note": "  " }));
         let host = Arc::new(host);
         let (runtime, rejections) = runtime_with(
             host,
             &[
-                ("talker", PluginTrust::ThirdParty, &[("afterToolCall", &["note"], 0)]),
-                ("mute", PluginTrust::ThirdParty, &[("afterToolCall", &["note"], 10)]),
+                ("talker", PluginTrust::ThirdParty, &[("event_after_tool_call", &["note"], 0)]),
+                ("mute", PluginTrust::ThirdParty, &[("event_after_tool_call", &["note"], 10)]),
             ],
             500,
         );
@@ -1636,7 +1648,7 @@ mod tests {
         let notes = runtime
             .after(
                 AfterRequest {
-                    point: "afterToolCall".to_string(),
+                    point: "event_after_tool_call".to_string(),
                     subject: Some("run_command".to_string()),
                     payload: serde_json::json!({ "status": "success" }),
                 },
@@ -1662,7 +1674,7 @@ mod tests {
         let mut host = FakeHost::default();
         host.ret(
             "registrar",
-            "afterTurn",
+            "event_after_turn",
             serde_json::json!({
                 "action": "observe",
                 "data": {
@@ -1677,7 +1689,7 @@ mod tests {
         let host = Arc::new(host);
         let (runtime, rejections) = runtime_with(
             host,
-            &[("registrar", PluginTrust::ThirdParty, &[("afterTurn", &["observe"], 0)])],
+            &[("registrar", PluginTrust::ThirdParty, &[("event_after_turn", &["observe"], 0)])],
             500,
         );
         assert!(rejections.is_empty(), "{rejections:?}");
@@ -1686,7 +1698,7 @@ mod tests {
         let _ = runtime
             .after(
                 AfterRequest {
-                    point: "afterTurn".to_string(),
+                    point: "event_after_turn".to_string(),
                     subject: None,
                     payload: serde_json::json!({ "step": 1 }),
                 },
@@ -1702,24 +1714,24 @@ mod tests {
 
     // ── P4：能力开关接线（幽灵开关治理）────────────────────────────────────
 
-    /// `allowThirdPartyHooks` 关掉 → 第三方钩子**装配期即拒**（理由说清是开关，不是点位写错），
+    /// `allowThirdPartyEvents` 关掉 → 第三方事件处理器**装配期即拒**（理由说清是开关，不是点位写错），
     /// 且**内置插件不受影响**（开关否的是来源，不是机制）。
     #[tokio::test]
-    async fn test_allow_third_party_hooks_off_rejects_only_third_party() {
+    async fn test_allow_third_party_events_off_rejects_only_third_party() {
         let mut host = FakeHost::default();
-        host.declare("builtin-guard", "beforeToolCall", &["deny"], 0);
-        host.declare("third-party", "beforeToolCall", &["deny"], 10);
+        host.declare("builtin-guard", "event_before_tool_call", &["deny"], 0);
+        host.declare("third-party", "event_before_tool_call", &["deny"], 10);
         let host = Arc::new(host);
 
         let caps = PluginCapabilities {
-            allow_third_party_hooks: false,
+            allow_third_party_events: false,
             ..Default::default()
         };
         let (runtime, rejections) = runtime_with_caps(
             host,
             &[
-                ("builtin-guard", PluginTrust::Builtin, &[("beforeToolCall", &["deny"], 0)]),
-                ("third-party", PluginTrust::ThirdParty, &[("beforeToolCall", &["deny"], 10)]),
+                ("builtin-guard", PluginTrust::Builtin, &[("event_before_tool_call", &["deny"], 0)]),
+                ("third-party", PluginTrust::ThirdParty, &[("event_before_tool_call", &["deny"], 10)]),
             ],
             500,
             caps,
@@ -1727,11 +1739,11 @@ mod tests {
         assert_eq!(rejections.len(), 1, "只该拒第三方那一条：{rejections:?}");
         assert_eq!(rejections[0].plugin_id, "third-party");
         assert_eq!(
-            rejections[0].reason, "third_party_hooks_disabled",
+            rejections[0].reason, "third_party_events_disabled",
             "理由要说清是能力开关挡的，不是声明写错了"
         );
         assert_eq!(runtime.len(), 1, "内置插件照样装上");
-        assert_eq!(runtime.registrations("beforeToolCall").len(), 1);
+        assert_eq!(runtime.registrations("event_before_tool_call").len(), 1);
     }
 
     /// 统一事件名在注册期折回旧点位；引擎按旧点位调用时照样命中。
@@ -1760,7 +1772,7 @@ mod tests {
         );
         assert!(rejections.is_empty(), "{rejections:?}");
         assert_eq!(
-            runtime.registrations("beforeToolCall").len(),
+            runtime.registrations("event_before_tool_call").len(),
             1,
             "事件名必须在注册期折回旧点位"
         );
@@ -1770,7 +1782,7 @@ mod tests {
         let outcome = runtime
             .before(
                 BeforeRequest {
-                    point: "beforeToolCall".to_string(),
+                    point: "event_before_tool_call".to_string(),
                     subject: Some("run_command".to_string()),
                     payload: serde_json::json!({ "tool": "run_command" }),
                 },
@@ -1791,22 +1803,22 @@ mod tests {
     #[tokio::test]
     async fn test_action_capabilities_gate_actions_with_visible_reasons() {
         let mut host = FakeHost::default();
-        host.declare("notes-plugin", "afterToolCall", &["note"], 0);
+        host.declare("notes-plugin", "event_after_tool_call", &["note"], 0);
         host.ret(
             "notes-plugin",
-            "afterToolCall",
+            "event_after_tool_call",
             serde_json::json!({ "action": "note", "note": "旁注" }),
         );
-        host.declare("builtin-guard", "beforeThreadDelete", &["deny"], 0);
+        host.declare("builtin-guard", "event_before_thread_delete", &["deny"], 0);
         host.ret(
             "builtin-guard",
-            "beforeThreadDelete",
+            "event_before_thread_delete",
             serde_json::json!({ "action": "deny", "reason": "别删" }),
         );
-        host.declare("builtin-guard", "beforeCompaction", &["deny"], 0);
+        host.declare("builtin-guard", "event_before_compaction", &["deny"], 0);
         host.ret(
             "builtin-guard",
-            "beforeCompaction",
+            "event_before_compaction",
             serde_json::json!({ "action": "deny", "reason": "别压" }),
         );
         let host = Arc::new(host);
@@ -1815,14 +1827,14 @@ mod tests {
             (
                 "notes-plugin",
                 PluginTrust::ThirdParty,
-                &[("afterToolCall", &["note"], 0)],
+                &[("event_after_tool_call", &["note"], 0)],
             ),
             (
                 "builtin-guard",
                 PluginTrust::Builtin,
                 &[
-                    ("beforeThreadDelete", &["deny"], 0),
-                    ("beforeCompaction", &["deny"], 0),
+                    ("event_before_thread_delete", &["deny"], 0),
+                    ("event_before_compaction", &["deny"], 0),
                 ],
             ),
         ];
@@ -1835,7 +1847,7 @@ mod tests {
         assert_eq!(
             on.after(
                 AfterRequest {
-                    point: "afterToolCall".to_string(),
+                    point: "event_after_tool_call".to_string(),
                     subject: None,
                     payload: serde_json::json!({}),
                 },
@@ -1846,11 +1858,11 @@ mod tests {
             1
         );
         assert!(matches!(
-            on.before(before_req("beforeThreadDelete"), &ctx(&sink)).await,
+            on.before(before_req("event_before_thread_delete"), &ctx(&sink)).await,
             BeforeOutcome::Deny { .. }
         ));
         assert!(matches!(
-            on.before(before_req("beforeCompaction"), &ctx(&sink)).await,
+            on.before(before_req("event_before_compaction"), &ctx(&sink)).await,
             BeforeOutcome::Deny { .. }
         ));
 
@@ -1867,7 +1879,7 @@ mod tests {
         let notes = off
             .after(
                 AfterRequest {
-                    point: "afterToolCall".to_string(),
+                    point: "event_after_tool_call".to_string(),
                     subject: None,
                     payload: serde_json::json!({}),
                 },
@@ -1875,8 +1887,8 @@ mod tests {
             )
             .await;
         assert!(notes.is_empty(), "关掉 allowTextRewrite 之后不再注入旁注：{notes:?}");
-        assert!(off.before(before_req("beforeThreadDelete"), &ctx(&sink_off)).await.is_pass());
-        assert!(off.before(before_req("beforeCompaction"), &ctx(&sink_off)).await.is_pass());
+        assert!(off.before(before_req("event_before_thread_delete"), &ctx(&sink_off)).await.is_pass());
+        assert!(off.before(before_req("event_before_compaction"), &ctx(&sink_off)).await.is_pass());
 
         let reasons: Vec<String> = obs_off
             .all()

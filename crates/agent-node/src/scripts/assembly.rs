@@ -247,7 +247,7 @@ mod tests {
         tools: &[&str],
         prompts: &[&str],
         skills: &[&str],
-        hooks: &[&str],
+        events: &[&str],
         factory_body: &str,
     ) -> std::path::PathBuf {
         let package_root = crate::plugins::PluginManager::agent_extensions_dir(&workspace.to_string_lossy())
@@ -259,7 +259,7 @@ mod tests {
             "tools": { "count": tools.len(), "names": tools },
             "systemPrompt": { "count": prompts.len(), "names": prompts },
             "skills": { "count": skills.len(), "names": skills },
-            "hooks": { "count": hooks.len(), "names": hooks },
+            "events": { "count": events.len(), "names": events },
         });
         let source = format!(
             "const metadata = {}; export default function(ada: any) {{ ada.metadata = metadata; {} }}",
@@ -300,7 +300,7 @@ mod tests {
             &["read_file", "my_custom_tool"],
             &["factory-prompt"],
             &["factory-skill"],
-            &["afterTurn"],
+            &["event_after_turn"],
             r#"
               ada.registerTool({
                 name: 'read_file', description: '注册表里有', parameters: { type: 'object', properties: {} },
@@ -311,7 +311,7 @@ mod tests {
                 execute: async () => ({ ok: true, output: 'custom-output' })
               });
               ada.registerSystemPrompt({ id: 'factory-prompt', content: 'factory prompt fragment' });
-              ada.on('turn_end', async (event: any, ctx: any) => ({ action: 'note', note: `${ctx.point}:${event.step}` }));
+              ada.on('event_after_turn', async (event: any, ctx: any) => ({ action: 'note', note: `${ctx.event}:${event.step}` }));
             "#,
         );
 
@@ -324,7 +324,7 @@ mod tests {
         assert_eq!(asm.plugins_loaded, 1);
         assert_eq!(asm.prompt_fragments.len(), 1, "factory system prompt registration should be assembled");
         assert_eq!(plugin_only(&asm).len(), 1, "factory skill registration should be assembled");
-        assert_eq!(asm.handles.len(), 1, "factory ada.on should be collected as a hook declaration");
+        assert_eq!(asm.handles.len(), 1, "factory ada.on should be collected as an event declaration");
         let custom = asm.tools.iter().find(|(_, tool)| tool.descriptor().name == "my_custom_tool").unwrap();
         assert!(!custom.1.descriptor().is_readonly(), "unknown plugin tools fail closed as write tools");
 

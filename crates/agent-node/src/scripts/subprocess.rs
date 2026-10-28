@@ -282,8 +282,8 @@ impl ScriptHost for SubprocessScriptHost {
                 resp.get("prompts").cloned().unwrap_or(serde_json::json!([])),
             )
             .unwrap_or_default();
-            let hooks: Vec<crate::plugins::PluginHookDeclaration> = serde_json::from_value(
-                resp.get("hooks").cloned().unwrap_or(serde_json::json!([])),
+            let events: Vec<crate::plugins::PluginEventDeclaration> = serde_json::from_value(
+                resp.get("events").cloned().unwrap_or(serde_json::json!([])),
             )
             .unwrap_or_default();
             // 技能不再来自脚本声明（2026-10-19）：目录约定 `skills/<name>/SKILL.md`
@@ -303,11 +303,11 @@ impl ScriptHost for SubprocessScriptHost {
                     })
                     .collect(),
                 skills: resolved_skills,
-                hooks: hooks
+                hooks: events
                     .into_iter()
-                    .filter(|h| !h.point.trim().is_empty())
+                    .filter(|h| !h.event.trim().is_empty())
                     .map(|h| ScriptHookDeclaration {
-                        point: h.point,
+                        point: h.event,
                         actions: h.actions,
                         order: h.order,
                     })
@@ -450,10 +450,10 @@ impl ScriptHost for SubprocessScriptHost {
             let resp = self
                 .round_trip(
                     serde_json::json!({
-                        "kind": "hook",
+                        "kind": "event",
                         "path": loaded.path.to_string_lossy(),
                         "workspace": loaded.workspace.to_string_lossy(),
-                        "point": point,
+                        "event": point,
                         "payload": payload,
                         "needs": Self::needs_json(loaded.needs),
                         "timeoutMs": ctx.budget.timeout_ms,

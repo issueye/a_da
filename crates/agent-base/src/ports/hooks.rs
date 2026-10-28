@@ -100,9 +100,9 @@ pub mod points {
     pub const REPLACE_SUPPORTED: &[&str] = &[BEFORE_TOOL_CALL];
 }
 
-/// 旧点位 ↔ 统一事件名的**唯一映射表**（迁移期）。
+/// 旧内部点位名 ↔ 统一事件名的**唯一映射表**（引擎内部使用）。
 ///
-/// 插件可以开始写 `ada.on("event_before_tool_call")`；引擎按旧点位名调用。
+/// 插件侧只认右侧的 `event_*`；左侧的 camelCase 名字不再接受注册。
 /// 两边都从这里取，避免“注册一套、调用另一套”。
 pub const EVENT_POINTS: &[(&str, &str)] = &[
     (points::BEFORE_TOOL_CALL, "event_before_tool_call"),
@@ -136,17 +136,29 @@ pub const EVENT_POINTS: &[(&str, &str)] = &[
     (points::AFTER_CONTEXT, "event_after_context"),
 ];
 
-/// 把统一事件名折回旧点位名；旧名/未知名原样返回。
+/// 把内部点位名统一成事件名；事件名原样返回，未知名也原样返回。
 pub fn normalize_event_name(raw: &str) -> String {
     let trimmed = raw.trim();
-    if trimmed.starts_with("event_") {
-        for (point, event) in EVENT_POINTS {
-            if *event == trimmed {
-                return (*point).to_string();
-            }
-        }
+    if is_known_event(trimmed) {
+        return trimmed.to_string();
     }
-    trimmed.to_string()
+    event_name_for_point(trimmed)
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
+/// 是否是插件可注册的统一事件名。
+pub fn is_known_event(name: &str) -> bool {
+    let trimmed = name.trim();
+    EVENT_POINTS.iter().any(|(_, event)| *event == trimmed)
+}
+
+/// 事件名 → 内部点位名（只给分级/实现范围等内部判定用）。
+pub fn point_for_event(event: &str) -> Option<&'static str> {
+    let trimmed = event.trim();
+    EVENT_POINTS
+        .iter()
+        .find_map(|(point, name)| (*name == trimmed).then_some(*point))
 }
 
 /// 旧点位名 → 统一事件名。
@@ -172,8 +184,10 @@ pub enum HookLevel {
 }
 
 impl HookLevel {
-    pub fn of(point: &str) -> Option<Self> {
+    /// 接受事件名或内部点位名；插件注册只用事件名，内部调用仍可能传点位名。
+    pub fn of(name: &str) -> Option<Self> {
         use points::*;
+        let point = point_for_event(name).unwrap_or(name);
         match point {
             BEFORE_TOOL_CALL | AFTER_TOOL_CALL => Some(Self::DataPlane),
             BEFORE_PLUGIN_TOGGLE | AFTER_PLUGIN_TOGGLE => Some(Self::ControlPlane),
@@ -514,24 +528,24 @@ pub struct HookCtx<'a> {
 ///   与"跑了一条钩子"是两种事实，混在一个点位上就没法机械验证成对性。
 pub fn observation_to_diagnostic(obs: &HookObservation) -> crate::domain::DiagnosticEvent {
     use crate::domain::{
-        DiagFamily, DiagOutcome, DiagnosticEvent, Origin, POINT_HOOK_ENTERED,
-        POINT_HOOK_FINISHED, POINT_HOOK_SKIPPED,
+        DiagFamily, DiagOutcome, DiagnosticEvent, Origin, POINT_EVENT_ENTERED,
+        POINT_EVENT_FINISHED, POINT_EVENT_SKIPPED,
     };
 
     if obs.plugin_id.is_empty() {
-        return DiagnosticEvent::new(DiagFamily::Hook, POINT_HOOK_SKIPPED, Origin::Engine)
+        return DiagnosticEvent::new(DiagFamily::Event, POINT_EVENT_SKIPPED, Origin::Engine)
             .with_outcome(DiagOutcome::Skipped)
             .with_reason(obs.reason.clone().unwrap_or_else(|| "no_subscriber".into()))
-            .with_data(serde_json::json!({ "point": obs.point }));
+            .with_data(serde_json::json!({ "event": obs.point }));
     }
 
     let origin = Origin::Plugin {
         id: obs.plugin_id.clone(),
     };
     match obs.phase {
-        HookPhase::Entered => DiagnosticEvent::new(DiagFamily::Hook, POINT_HOOK_ENTERED, origin)
+        HookPhase::Entered => DiagnosticEvent::new(DiagFamily::Event, POINT_EVENT_ENTERED, origin)
             .with_data(serde_json::json!({
-                "point": obs.point,
+                "event": obs.point,
                 "callId": obs.call_id,
             })),
         HookPhase::Finished => {
@@ -543,10 +557,10 @@ pub fn observation_to_diagnostic(obs: &HookObservation) -> crate::domain::Diagno
                 HookEntryOutcome::TimedOut => DiagOutcome::TimedOut,
                 HookEntryOutcome::Aborted => DiagOutcome::Aborted,
             };
-            let mut ev = DiagnosticEvent::new(DiagFamily::Hook, POINT_HOOK_FINISHED, origin)
+            let mut ev = DiagnosticEvent::new(DiagFamily::Event, POINT_EVENT_FINISHED, origin)
                 .with_outcome(outcome)
                 .with_data(serde_json::json!({
-                    "point": obs.point,
+                    "event": obs.point,
                     "callId": obs.call_id,
                     "action": obs.entry_outcome.unwrap_or(HookEntryOutcome::Passed).label(),
                     // 改写必须可追溯（P3b·SP-60）：改前改后的指纹与字节差

@@ -20,7 +20,7 @@
 | 系统**现在能做什么** | [quality/feature-catalog.md](quality/feature-catalog.md) |
 | 系统是**怎么分层**的、有哪些端口 | [architecture/kernel-design.md](architecture/kernel-design.md) |
 | 客户端和宿主**怎么通信**（WS 线协议 + HTTP API 的统一接口文档） | [protocol/README.md](protocol/README.md) |
-| **插件怎么写**、有哪些钩子点位 | [plugins/README.md](plugins/README.md) |
+| **插件怎么写**、有哪些事件与动作分级 | [plugins/README.md](plugins/README.md) |
 | **统一事件总线与插件系统**（基座 + TS 引擎 + 插件系统） | [architecture/PLAN-unified-events.md](architecture/PLAN-unified-events.md) |
 | 插件契约的精确形状（工厂 API / 类型） | [plugins/extension-factory.md](plugins/extension-factory.md)、[plugins/extension-api.d.ts](plugins/extension-api.d.ts) |
 | **一个包同时包含前端与后端**（统一插件包） | [plugins/unified-package.md](plugins/unified-package.md) |
@@ -47,7 +47,7 @@
 | [quality/unfinished-features.md](quality/unfinished-features.md) | **功能缺口**清单（证据 + 最小实现路径 + 状态） | 缺口唯一口径 |
 | [plans/README.md](plans/README.md) | 历史计划入口（wiring / milestones 已精简） | 历史归档 |
 | [protocol/README.md](protocol/README.md) | **接口文档（唯一）**：WS JSON-RPC 帧、HTTP `/api/*` 端点表、事件与增量帧契约、提问通道、错误码与 HTTP 映射、Phase 3 缺口 | **接口唯一口径** |
-| [plugins/README.md](plugins/README.md) | 插件平台现状：发现规则、贡献模型、钩子点位与分级、能力开关、管理面、排错 | 插件现状总览 |
+| [plugins/README.md](plugins/README.md) | 插件平台现状：发现规则、贡献模型、事件与动作分级、能力开关、管理面、排错 | 插件现状总览 |
 | [plugins/extension-factory.md](plugins/extension-factory.md) | Extension Factory 契约：包形态、`metadata`、注册 API、动作分级 | **插件契约唯一口径** |
 | [plugins/extension-api.d.ts](plugins/extension-api.d.ts) | 插件作者用的 TypeScript 类型声明 | 类型契约 |
 | [plugins/frontend-backend-integration.md](plugins/frontend-backend-integration.md) | 前端插件与后端插件的**现有**对接方式：投影读取、核心路由写回、间接协同 | **现状说明** |
@@ -64,7 +64,7 @@
 |---|---|
 | 协议方法 | [`spec/proto/`](../spec/proto/README.md) |
 | 工具描述符与元数据 | `crates/agent-toolkit/src/registry.rs` |
-| 钩子点位与动作分级 | `crates/agent-base/src/ports/hooks.rs` |
+| 事件与动作分级 | `crates/agent-base/src/ports/hooks.rs` |
 | 诊断点位词汇表 | `crates/agent-base/src/domain/diag.rs` |
 | 产品声明 | `products/*/agent.spec.json`、`products/*/modes/*.agent.spec.json` |
 

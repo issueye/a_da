@@ -369,9 +369,9 @@ const CAPABILITY_FIELDS: &[(&str, &[&str])] = &[
     ("rollback", &["capabilities.rollback", "caps.rollback"]),
     ("subagents", &["capabilities.subagents", "caps.subagents"]),
     ("plugins", &["capabilities.plugins", "caps.plugins"]),
-    // P3a·SP-56：钩子能力位的两个消费者——握手如实回报（dispatch），
-    // 以及**装不装钩子运行时**（agent-host 按它决定；没开就连 runner 都不装）
-    ("hooks", &["capabilities.hooks", "caps.hooks"]),
+    // P3a·SP-56：事件能力位的两个消费者——握手如实回报（dispatch），
+    // 以及**装不装事件运行时**（agent-host 按它决定；没开就连 runner 都不装）
+    ("events", &["capabilities.events", "caps.events"]),
     ("delegation", &["capabilities.delegation", "caps.delegation"]),
 ];
 
@@ -2038,10 +2038,10 @@ const PLUGIN_CAPABILITY_FIELDS: &[(&str, &[&str])] = &[
         "allow_system_prompt_replace",
         &["caps.allow_system_prompt_replace"],
     ),
-    // 钩子面：四位都在 `HookRuntime` 一处判（装配期拒收 / 动作降级）
+    // 事件面：开关都在 `HookRuntime` 一处判（装配期拒收 / 动作降级）
     (
-        "allow_third_party_hooks",
-        &["capabilities.allow_third_party_hooks"],
+        "allow_third_party_events",
+        &["capabilities.allow_third_party_events"],
     ),
     ("allow_text_rewrite", &["capabilities.allow_text_rewrite"]),
     (
@@ -2052,12 +2052,12 @@ const PLUGIN_CAPABILITY_FIELDS: &[(&str, &[&str])] = &[
         "allow_compaction_replace",
         &["capabilities.allow_compaction_replace"],
     ),
-    // 钩子预算（组合根 `products/ada-coding/src/main.rs` 读出来交给 `HookBudget`）
+    // 事件预算（组合根 `products/ada-coding/src/main.rs` 读出来交给 `HookBudget`）
     //
-    // 判据串原先写作 `plugin_caps.hook_timeout_ms`——那是个不存在的变量名，
-    // 于是这一位**常年假红**：消费者在组合根上，写法是 `out.caps.hook_timeout_ms`。
+    // 判据串原先写作 `plugin_caps.event_timeout_ms`——那是个不存在的变量名，
+    // 于是这一位**常年假红**：消费者在组合根上，写法是 `out.caps.event_timeout_ms`。
     // 2026-10-18 文档整理时按真实读点改正（判据串写错 = 门禁在测一个幻觉）。
-    ("hook_timeout_ms", &["caps.hook_timeout_ms"]),
+    ("event_timeout_ms", &["caps.event_timeout_ms"]),
 ];
 
 /// L2. **插件能力开关必须有生产消费者**（P4 · 幽灵开关治理）。

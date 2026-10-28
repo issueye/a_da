@@ -218,7 +218,7 @@ export interface ServerCapabilities {
   images: boolean
   rollback: boolean
   plugins: boolean
-  hooks: boolean
+  pluginEvents: boolean
   resync: boolean
   events: ServerEventsCapability
 }
@@ -336,8 +336,8 @@ export interface PluginItem {
   tools: PluginToolInfo[]
   skills: SkillSummary[]
   prompts: PromptItem[]
-  /** 该插件**真的注册上**的钩子点位（由装配期执行结果填入；目录扫描给的是空数组） */
-  hooks: string[]
+  /** 该插件**真的注册上**的事件（由装配期执行结果填入；目录扫描给的是空数组） */
+  events: string[]
   isPackage?: boolean
   error?: string
   sizeBytes: number
@@ -356,9 +356,9 @@ export interface PluginCapabilities {
   allowTextRewrite: boolean
   allowThreadDeleteBlock: boolean
   allowCompactionReplace: boolean
-  allowThirdPartyHooks: boolean
+  allowThirdPartyEvents: boolean
   allowBuiltinShadow: boolean
-  hookTimeoutMs: number
+  eventTimeoutMs: number
 }
 
 export interface ResolvedPluginCapabilitiesDto {

@@ -111,9 +111,10 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
 ## 三类脚本贡献 + 一类磁盘贡献（技能）
 - `ada.registerTool({ name, label?, description, parameters, execute })` —— 给模型一个工具。
 - `ada.registerSystemPrompt({ id, content })` —— 加一段系统提示词（带 `plugin:<id>` 归因）；正文为空会被丢掉。
-- `ada.on(point, handler, { actions, order })` —— 注册钩子。**声明即授权**：`actions` 里没有的动作运行期不生效。
-  点位：`beforeToolCall`（可用 observe/note/deny/replace）、`afterToolCall`、`beforeTurn`、`afterTurn`、
-  `beforeContext`、`beforeProviderRequest`、`beforeProviderHeaders`、`afterProviderResponse`。
+- `ada.on(event, handler, { actions, order })` —— 注册事件处理器。**声明即授权**：`actions` 里没有的动作运行期不生效。
+  事件名必须是 `event_*`：`event_before_tool_call`（可用 observe/note/deny/replace）、`event_after_tool_call`、
+  `event_before_turn`、`event_after_turn`、`event_before_context`、`event_before_provider_request`、
+  `event_before_provider_headers`、`event_after_provider_response`。
 - **技能不在脚本里注册**：它是磁盘上的目录 `skills/<name>/SKILL.md`（Agent Skills 规范，
   见 `docs/SKILL_SPEC.md`），宿主装配期直接扫描。frontmatter 必须有 `name`（**等于目录名**，
   1-64 个小写字母/数字/连字符）与 `description`（1-1024，写清"做什么 + 什么时候用"）；
@@ -129,7 +130,7 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
 - 写成 `export const metadata` 无效：转译把 `export default fn` 译成
   `module.exports = exports.default = fn`，挂在 exports 上的东西一起被换掉 →
   装载期报「插件包入口缺少 metadata 对象」。
-- `tools` / `systemPrompt` / `hooks` 的 `count` 与 `names` 是**量出来的**：
+- `tools` / `systemPrompt` / `events` 的 `count` 与 `names` 是**量出来的**：
   必须与注册**逐项、按顺序**一致；多注册一条就要同步改，否则装载期直接拒。
 - `skills` 是**声明性**的（宿主以目录扫描为准），不参与上面那条一致性校验。
 
@@ -155,7 +156,7 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
 
 ## 别做的事
 - 别在插件里直接用 `fs` / `fetch` 却漏了 `@ada-needs`——沙箱里它们是 undefined。
-- 别为「看起来完整」给 `hooks.count` 写 1；它是量出来的。"#,
+- 别为「看起来完整」给 `events.count` 写 1；它是量出来的。"#,
         }],
     },
     BuiltinPluginDefinition {
@@ -259,9 +260,9 @@ pub fn get_builtin_plugin_items(disabled_ids: &std::collections::HashSet<String>
                     Vec::new()
                 },
                 prompts: Vec::new(),
-                // 内置插件的钩子点位不在这里凭空填：它们由 `HookRuntime` 注册后才有定论，
+                // 内置插件的事件不在这里凭空填：它们由事件运行时注册后才有定论，
                 // 静态清单一律为空（界面读装配期的活体视图）
-                hooks: Vec::new(),
+                events: Vec::new(),
                 is_package: Some(false),
                 error: None,
                 size_bytes: 0,

@@ -102,14 +102,14 @@
 
 ---
 
-## 七、插件与钩子（扩展点）
+## 七、插件与事件（扩展点）
 
 | 能力 | 落点 |
 |---|---|
 | 包发现（工作区 / 全局，包根 `index.ts|js`，标识 `scope:<id>`） | `crates/agent-node/src/plugins/manager.rs` |
-| **四类贡献**：工具 / 系统提示词 / 技能 / 钩子（装配期结算） | `plugins/sandbox.rs`（脚本侧）+ `plugins/view.rs`（活体视图） |
-| **钩子 29 个点位**（2026-10-27 移除 todo/approval 四点位），缺席报 `no_subscriber` | `crates/agent-base/src/ports/hooks.rs` |
-| 动作分级（数据面 / 控制面 / 只读面；`abort` 只给内置；`replace` 当前仅 `beforeToolCall`） | 同上 `HookLevel` / `allows` / `REPLACE_SUPPORTED` |
+| **四类贡献**：工具 / 系统提示词 / 技能 / 事件处理器（装配期结算） | `plugins/sandbox.rs`（脚本侧）+ `plugins/view.rs`（活体视图） |
+| **29 个事件**（2026-10-27 移除 todo/approval 四个旧事件名），缺席报 `no_subscriber` | `crates/agent-base/src/ports/hooks.rs` |
+| 动作分级（数据面 / 控制面 / 只读面；`abort` 只给内置；`replace` 当前仅 `event_before_tool_call`） | 同上 `HookLevel` / `allows` / `REPLACE_SUPPORTED` |
 | 用户能力开关（6 位 + 超时，每位都有生产消费者） | `plugins/types.rs` 的 `PluginCapabilities`，门禁 `verify-wiring` check L2 |
 | 沙箱两档（进程内 Boa / 子进程） | `crates/ts-engine` + `--script-sandbox subprocess` |
 | 能力声明 `// @ada-needs`（`fs` / `fs=read` / `fs=write` / `net` / `sqlite` / `exec` / `none`） | `crates/agent-node/src/scripts/needs.rs` |
@@ -226,7 +226,7 @@ unary 方法映射为 `/api/*`（18 条查询 + 42 条写），另有 11 条网�
 ## 能力位（产品声明的现状）
 
 `products/ada-coding/agent.spec.json`：`images` / `streaming` / `rollback` / `subagents` /
-`plugins` / `hooks` **全部为 true**；`policies`：`parallelTools: 4`、`toolTimeoutSec: 120`。
+`plugins` / `events` **全部为 true**；`policies`：`parallelTools: 4`、`toolTimeoutSec: 120`。
 > ⚠️ `parallelTools` 目前只是声明：`RunPolicy.max_parallel_tools` 尚未被引擎读取，工具实际始终串行。
 `capabilities.images` 是**产品级**开关，单个模型认不认图另由 `ModelEntry.supportsImages` 表达
 （**两者不是一回事**）。

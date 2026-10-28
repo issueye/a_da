@@ -920,7 +920,7 @@ mod tests {
               tools: {{ count: 1, names: ['demo_tool'] }},
               systemPrompt: {{ count: 0, names: [] }},
               skills: {{ count: 0, names: [] }},
-              hooks: {{ count: 0, names: [] }}
+              events: {{ count: 0, names: [] }}
             }};
             export default function (ada) {{
               ada.metadata = metadata;

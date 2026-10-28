@@ -48,7 +48,7 @@ impl Origin {
             Self::Builtin { name } => format!("builtin:{name}"),
             Self::Plugin { id } => format!("plugin:{id}"),
             Self::Skill { id } => format!("skill:{id}"),
-            Self::Hook { point } => format!("hook:{point}"),
+            Self::Hook { point } => format!("event:{point}"),
             Self::Subagent { id } => format!("subagent:{id}"),
         }
     }

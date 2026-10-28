@@ -2111,7 +2111,7 @@ export function Page() {
         .unwrap();
         fs::write(
             package.join("index.ts"),
-            "export default function (ada) { ada.metadata = { name: 'backend-only', description: 'x', tools: { count: 0, names: [] }, systemPrompt: { count: 0, names: [] }, hooks: { count: 0, names: [] } }; }",
+            "export default function (ada) { ada.metadata = { name: 'backend-only', description: 'x', tools: { count: 0, names: [] }, systemPrompt: { count: 0, names: [] }, events: { count: 0, names: [] } }; }",
         )
         .unwrap();
 

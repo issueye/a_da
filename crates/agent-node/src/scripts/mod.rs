@@ -214,14 +214,14 @@ impl ScriptHost for TsScriptHost {
                     inspected.ignored_skills.join("、")
                 );
             }
-            // P3a·SP-50：钩子注册（点位 + 声明动作 + 顺序）。**没有 handler 的声明照收**：
+            // P3a·SP-50：事件注册（事件名 + 声明动作 + 顺序）。**没有 handler 的声明照收**：
             // 它会在调用期被如实报成"未实现 handler"（装配期过滤掉反而看不出问题）。
             let hooks: Vec<ScriptHookDeclaration> = inspected
-                .hooks
+                .events
                 .into_iter()
-                .filter(|h| !h.point.trim().is_empty())
+                .filter(|h| !h.event.trim().is_empty())
                 .map(|h| ScriptHookDeclaration {
-                    point: h.point,
+                    point: h.event,
                     actions: h.actions,
                     order: h.order,
                 })

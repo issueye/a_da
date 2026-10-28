@@ -68,7 +68,7 @@
 `token-weather` 仍在原目录。`ask-user` 现在是**前后端一体的统一插件**：
 后端提供 `ask_user` 工具与 `list`/`answer` 动作，前端占 `thread.tray`。
 `task-plan` 已改为**纯前端插件**（只读 `props.data.todo`）；`plugins/approval` 已整体删除（2026-10-27）。原来的
-`beforeTodoUpdate` / `afterTodoUpdate` / `beforeApproval` / `afterApproval` 点位
+`beforeTodoUpdate` / `afterTodoUpdate` / `beforeApproval` / `afterApproval` 这些旧事件名
 已从核心移除，后续由统一事件系统提供。核心审批已物理删除；插件若要做策略，
 走受信插件 + `event_before_*`。后端需要自己的 HTTP 接口时用 `ada.route({ method, path, handler })`，
 浏览器入口是 `/ext/{id}/route/*`，**新增接口只改 TS，不需要改 Rust**。
@@ -85,11 +85,11 @@
 | 工具 | `ada.registerTool({ name, description, parameters, execute })` | 工具目录（`ToolCatalog`） |
 | 系统提示词片段 | `ada.registerSystemPrompt({ id, content })` | 系统提示词，带 `plugin:<id>` 归因 |
 | 技能 | **磁盘目录** `skills/<name>/SKILL.md`（见 §2.1） | 技能三来源之一（目录 / 插件 / 内置） |
-| 钩子 | `ada.on(point, handler, { actions, order })` | 扩展点运行时（见 §3） |
+| 事件处理器 | `ada.on(event, handler, { actions, order })` | 事件运行时（见 §3） |
 | 界面动作 | `ada.registerAction({ name, mode, execute })` | 统一插件的 `frontend.actions` → `plugin.invoke`；**不进模型工具目录** |
 
 ⚠️ **必须写 `ada.metadata`**（工厂里**第一句**）：宿主在装配后读它，且
-`tools` / `systemPrompt` / `hooks` 的 `count` 与 `names` 会**逐项、按顺序**
+`tools` / `systemPrompt` / `events` 的 `count` 与 `names` 会**逐项、按顺序**
 与实际注册比对——多注册一条忘了同步，装载期直接拒。
 `actions` 组可选；一旦注册了动作，同样按 `count` / `names` 对账。
 `skills` 是**声明性**字段（宿主以目录扫描为准），不参与这条校验。
@@ -152,13 +152,17 @@ description: 发布流程：先跑测试再打标签。Use when the user asks to
 
 ---
 
-## 3. 钩子点位与动作分级
+## 3. 统一事件与动作分级
 
-点位单一真源：`agent_base::ports::hooks::points::IMPLEMENTED`（**29 个，全部可注册、全部有调用方**）。
+事件名是插件侧**唯一**的注册键：`ada.on` 与对象式 `events` 都只接受 `event_*`
+（如 `event_before_tool_call`）。旧 camelCase 事件名与短别名（`turn_end` 等）
+**已移除**，装配期会以 `unknown_event` 拒收。
+引擎内部仍用一组常量做分级与实现范围判定，这组常量 ↔ 事件名的映射表只有
+`agent_base::ports::hooks::EVENT_POINTS` 一处；实现范围在 `points::IMPLEMENTED`
+（**29 个，全部可注册、全部有调用方**）。
 声明即授权：`actions` 里没有的动作，运行期即使插件返回了也不生效（并记理由）。
 2026-10-27：`beforeTodoUpdate` / `afterTodoUpdate` / `beforeApproval` / `afterApproval`
-已移除，后续由统一事件系统提供。`ada.on` 现在也接受统一的 `event_*` 名称
-（如 `event_before_tool_call`），注册期会折回旧点位，直到引擎完成 dispatcher 迁移。
+对应的旧事件名已从核心移除。
 
 **动作**：`observe`（只进诊断面）、`note`（往结果追一句旁注，**模型看得到**）、
 `replace`（改写载荷，改完**重新校验**）、`deny`（拦下这一次行为）、`abort`（结束整轮）。
@@ -167,18 +171,18 @@ description: 发布流程：先跑测试再打标签。Use when the user asks to
 
 | 级别 | 第三方插件 | 内置插件 |
 |---|---|---|
-| **数据面** `beforeToolCall` / `afterToolCall` | 可 `deny` / `replace` | 同左 |
+| **数据面** `event_before_tool_call` / `event_after_tool_call` | 可 `deny` / `replace` | 同左 |
 | **控制面**（轮次、会话、Agent、压缩、模型、子智能体、提示词、上下文…） | 只能 `observe` / `note` | 可 `deny` / `replace` |
-| **只读面** `beforePersist` / `afterCheckpoint` / `beforeSkillLoad` / `afterSkillLoad` | 只能 `observe` / `note` | 同左 |
+| **只读面** `event_before_persist` / `event_after_checkpoint` / `event_before_skill_load` / `event_after_skill_load` | 只能 `observe` / `note` | 同左 |
 
 `abort` **只给内置**（它等于"拒绝服务"）。`replace` 只开放给 `REPLACE_SUPPORTED`
-（当前只有 `beforeToolCall`）——载荷必须是"一份完整、可重新校验的数据"。
+（当前只有 `event_before_tool_call`）——载荷必须是"一份完整、可重新校验的数据"。
 
-**成对是硬约束**：每个点位都是 `before` / `after` 一对，运行期发成对诊断
-（`hook.entered` ↔ `hook.finished` / `hook.skipped`）；没有订阅者时如实报
+**成对是硬约束**：每个事件都是 `before` / `after` 一对，运行期发成对诊断
+（`event.entered` ↔ `event.finished` / `event.skipped`）；没有订阅者时如实报
 `no_subscriber`，而不是静默跳过。
 
-> 点位清单（按族）见 [quality/unfinished-features.md](../quality/unfinished-features.md) §一.9，
+> 事件清单（按族）见 [quality/unfinished-features.md](../quality/unfinished-features.md) §一.9，
 > 那里同时记着"哪些曾经声明了却没人调用"的历史教训。
 
 ---
@@ -191,13 +195,13 @@ description: 发布流程：先跑测试再打标签。Use when the user asks to
 
 | 开关 | 关掉之后 |
 |---|---|
-| `allowThirdPartyHooks` | 第三方钩子**装配期即拒**（`third_party_hooks_disabled`），内置不受影响 |
+| `allowThirdPartyEvents` | 第三方插件的事件处理器**装配期即拒**（`third_party_events_disabled`），内置不受影响 |
 | `allowBuiltinShadow` | 插件工具不再顶掉同名内置工具（`builtin_shadow_disabled`） |
 | `allowSystemPromptReplace` | 插件提示词片段不进系统提示词 |
 | `allowTextRewrite` | `note` 旁注不再注入 |
-| `allowThreadDeleteBlock` | `beforeThreadDelete` 的拦下不生效 |
-| `allowCompactionReplace` | `beforeCompaction` 的拦下 / 改写不生效 |
-| `hookTimeoutMs`（默认 500） | 单点位时间预算；**超时一律视为"无意见"** |
+| `allowThreadDeleteBlock` | `event_before_thread_delete` 的拦下不生效 |
+| `allowCompactionReplace` | `event_before_compaction` 的拦下 / 改写不生效 |
+| `eventTimeoutMs`（默认 500） | 单个事件处理器的时间预算；**超时一律视为"无意见"** |
 
 每一位都必须有生产消费者（`cargo xtask verify-wiring` 的 check L2 逐个核对）——
 界面承诺了"关掉会发生什么"，就必须真的发生。
@@ -218,7 +222,7 @@ description: 发布流程：先跑测试再打标签。Use when the user asks to
 - `net` 策略**先于请求**判定：超时与域名白名单已生效，来源是环境变量
   `A_DA_PLUGIN_NET_TIMEOUT_SECS` / `A_DA_PLUGIN_NET_ALLOW`（配置文件与界面还没做）。
 - 转译走 oxc 类型擦除；**运行时错误的行号是转译后 JS 的座标**（source map 未做）。
-- 失败安全口径：脚本抛错 = 无意见；钩子超时 = 无意见。**没有**对反复失败的插件做熔断。
+- 失败安全口径：脚本抛错 = 无意见；事件处理器超时 = 无意见。**没有**对反复失败的插件做熔断。
 
 ---
 
@@ -246,16 +250,16 @@ description: 发布流程：先跑测试再打标签。Use when the user asks to
 
 ## 7. 诊断与排错
 
-诊断点位词汇表在 `agent-base/src/domain/diag.rs`（**只登记真有发射方的点位**，
+诊断事件词汇表在 `agent-base/src/domain/diag.rs`（**只登记真有发射方的记录**，
 `verify-wiring` check K 盯着）。与插件相关的：
 
-| 点位 | 什么时候发 |
+| 事件 | 什么时候发 |
 |---|---|
 | `plugin.discovered` / `plugin.skipped` | 扫到 / 跳过（`disabled`、`tool_not_registered`…）。**一个都没有也会发**（缺席可见） |
 | `plugin.replaced_builtin` | 插件工具顶掉了同名内置工具——用户的信任工具被换了，必须报 |
 | `script.invoked` / `script.finished` | 每次脚本调用（耗时、结果） |
-| `hook.entered` / `hook.finished` / `hook.skipped` | 成对；`skipped` = **没有任何插件订阅这个点位** |
-| `hook.replace` / `hook.replace_rejected` | 改写生效 / 改写被重新校验拒掉（形状、schema、路径越界） |
+| `event.entered` / `event.finished` / `event.skipped` | 成对；`skipped` = **没有任何插件订阅这个事件** |
+| `event.replace` / `event.replace_rejected` | 改写生效 / 改写被重新校验拒掉（形状、schema、路径越界） |
 
 **常见失败对照表**：
 
@@ -265,10 +269,10 @@ description: 发布流程：先跑测试再打标签。Use when the user asks to
 | 装载期报 `metadata tools.count=N，实际为 M` | 注册项与 `metadata` 不同步 |
 | 插件在、模型看不到工具 | 插件被停用，或贡献还没重载（贡献是装配期结算的，改完要重新加载 / 新开一轮） |
 | 工具永远调不到 | 工具名含空格或中文（`create_plugin` 会当场拒），或 `execute` 形参写错（一个形参 = `(args)`，两个 = `(callId, args)`） |
-| 钩子"声明了却没人调用" | 点位不在 `IMPLEMENTED` 里，或动作越权（控制面 `deny` 归内置），或能力开关关了——三种都会记理由，去诊断面板看 |
+| 事件"声明了却没人调用" | 事件名不是 `event_*`、不在已登记事件表里，或动作越权（控制面 `deny` 归内置），或能力开关关了——都会记理由，去诊断面板看 |
 
 **已知小尾巴**（详见 [quality/unfinished-features.md](../quality/unfinished-features.md) §三）：
-钩子内动态注册（`ctx.registerTool` / `registerSkill` / `registerSystemPrompt`）目前
+事件处理器内动态注册（`ctx.registerTool` / `registerSkill` / `registerSystemPrompt`）目前
 **只收集、不生效**；工作区级能力开关覆盖不存在；运行时错误无 source map。
 
 ---
@@ -283,4 +287,4 @@ description: 发布流程：先跑测试再打标签。Use when the user asks to
 | [unified-package.md](unified-package.md) | 统一插件包：一个 `plugin.json` 同时声明 frontend/backend，含动作桥接 |
 | [PLAN-frontend-backend-bridge.md](PLAN-frontend-backend-bridge.md) | 前端插件调用后端插件：动作契约、`plugin.invoke`、SSR 桥接（设计提案与已落地 v1 的对照） |
 | [../quality/unfinished-features.md](../quality/unfinished-features.md) | 插件相关的缺口与尾巴 |
-| [../architecture/conventions.md](../architecture/conventions.md) | §12（钩子成对、工具集只能收窄）、§15（别断言钩子被调用，断言副作用）；§14 的审批分离已随审批删除 |
+| [../architecture/conventions.md](../architecture/conventions.md) | §12（事件成对、工具集只能收窄）、§15（别断言事件处理器被调用，断言副作用）；§14 的审批分离已随审批删除 |

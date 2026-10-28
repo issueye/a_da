@@ -13,7 +13,7 @@
     "rollback": true,
     "subagents": true,
     "plugins": true,
-    "hooks": true
+    "events": true
   },
   "policies": {
     "parallelTools": 4,

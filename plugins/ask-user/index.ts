@@ -20,7 +20,7 @@ const metadata = {
   description: "向用户提问：模型工具 + 界面插槽 + 后端动作",
   tools: { count: 1, names: ["ask_user"] },
   systemPrompt: { count: 0, names: [] },
-  hooks: { count: 0, names: [] },
+  events: { count: 0, names: [] },
   actions: { count: 2, names: ["list", "answer"] },
   routes: { count: 0, names: [] },
 };

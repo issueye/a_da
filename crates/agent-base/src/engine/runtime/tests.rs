@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain::{
-    Access, Execution, POINT_HOOK_ENTERED, POINT_HOOK_FINISHED, POINT_HOOK_SKIPPED,
+    Access, Execution, POINT_EVENT_ENTERED, POINT_EVENT_FINISHED, POINT_EVENT_SKIPPED,
     POINT_TURN_ABORTED, RollbackPolicy, ToolCall, ToolDescriptor,
 };
 use crate::model::{ProviderConfig, ToolCallInfo};
@@ -116,7 +116,7 @@ fn tool_output_from_store(store: &InMemorySessionStore, thread_id: &str) -> Stri
 #[tokio::test]
 async fn test_before_tool_call_hook_denies_with_a_normal_tool_result() {
     let runner = Arc::new(ScriptedHookRunner::new().deny_at(
-        "beforeToolCall",
+        "event_before_tool_call",
         "这条命令会删掉整个磁盘，请改用更精确的路径",
     ));
     let (rt, catalog) =
@@ -168,7 +168,7 @@ async fn test_before_tool_call_hook_denies_with_a_normal_tool_result() {
 #[tokio::test]
 async fn test_before_tool_call_hook_can_abort_the_whole_turn() {
     let runner = Arc::new(
-        ScriptedHookRunner::new().abort_at("beforeToolCall", "检测到高危操作，本轮已终止"),
+        ScriptedHookRunner::new().abort_at("event_before_tool_call", "检测到高危操作，本轮已终止"),
     );
     let (rt, _) = runtime_with_one_tool(Some(runner), ToolReceipt::success("不该跑", 0, 5));
     let sink = RecordingSink::new();
@@ -204,7 +204,7 @@ async fn test_before_tool_call_hook_can_abort_the_whole_turn() {
             .reason
             .as_deref()
             .unwrap_or("")
-            .contains("beforeToolCall"),
+            .contains("event_before_tool_call"),
         "中止理由要指出是哪个点位：{aborted:?}"
     );
 }
@@ -213,7 +213,7 @@ async fn test_before_tool_call_hook_can_abort_the_whole_turn() {
 #[tokio::test]
 async fn test_after_tool_call_note_is_appended_without_changing_status() {
     let store = Arc::new(InMemorySessionStore::new());
-    let runner = Arc::new(ScriptedHookRunner::new().note_at("afterToolCall", "记得跑一遍测试"));
+    let runner = Arc::new(ScriptedHookRunner::new().note_at("event_after_tool_call", "记得跑一遍测试"));
     let catalog = Arc::new(InMemoryToolCatalog::with_tools(vec![Arc::new(
         MockTool::new(
             make_test_descriptor(
@@ -283,11 +283,11 @@ async fn test_after_tool_call_note_is_appended_without_changing_status() {
     assert_eq!(receipts, vec![ToolStatus::Success], "事后**不得**改状态");
 }
 
-/// SP-52：**成对性契约**——每条 `hook.entered` 恰好一个 `hook.finished`，
-/// 且配对键一致；没人订阅时报 `hook.skipped`。
+/// SP-52：**成对性契约**——每条 `event.entered` 恰好一个 `event.finished`，
+/// 且配对键一致；没人订阅时报 `event.skipped`。
 #[tokio::test]
 async fn test_hook_diagnostics_are_paired_and_absence_is_reported() {
-    let runner = Arc::new(ScriptedHookRunner::new().note_at("afterToolCall", "旁注"));
+    let runner = Arc::new(ScriptedHookRunner::new().note_at("event_after_tool_call", "旁注"));
     let (rt, _) = runtime_with_one_tool(Some(runner), ToolReceipt::success("ok", 0, 5));
     let sink = RecordingSink::new();
     let req = TurnRequest::new("t_hook_pairs", mock_provider_config()).with_user_prompt("go");
@@ -299,7 +299,7 @@ async fn test_hook_diagnostics_are_paired_and_absence_is_reported() {
         .snapshot()
         .iter()
         .filter_map(|e| match &e.body {
-            AgentEventBody::Diagnostic(d) if d.point.starts_with("hook.") => Some((
+            AgentEventBody::Diagnostic(d) if d.point.starts_with("event.") => Some((
                 d.point.clone(),
                 d.data
                     .get("callId")
@@ -312,11 +312,11 @@ async fn test_hook_diagnostics_are_paired_and_absence_is_reported() {
 
     let entered: Vec<&(String, Option<String>)> = points
         .iter()
-        .filter(|(p, _)| p == POINT_HOOK_ENTERED)
+        .filter(|(p, _)| p == POINT_EVENT_ENTERED)
         .collect();
     let finished: Vec<&(String, Option<String>)> = points
         .iter()
-        .filter(|(p, _)| p == POINT_HOOK_FINISHED)
+        .filter(|(p, _)| p == POINT_EVENT_FINISHED)
         .collect();
     assert!(
         !entered.is_empty(),
@@ -336,7 +336,7 @@ async fn test_hook_diagnostics_are_paired_and_absence_is_reported() {
         );
     }
 
-    // 没订阅的点位（这里：afterToolCall 有订阅、afterTurn 没被问过）
+    // 没订阅的事件（这里：event_after_tool_call 有订阅、event_after_turn 没被问过）
     // —— 用"没人订阅"的替身再跑一遍，断言 skipped 如实出现
     let quiet = Arc::new(ScriptedHookRunner::new().unsubscribed());
     let (rt2, _) = runtime_with_one_tool(Some(quiet), ToolReceipt::success("ok", 0, 5));
@@ -349,7 +349,7 @@ async fn test_hook_diagnostics_are_paired_and_absence_is_reported() {
         .snapshot()
         .into_iter()
         .filter_map(|e| match e.body {
-            AgentEventBody::Diagnostic(d) if d.point == POINT_HOOK_SKIPPED => Some(d),
+            AgentEventBody::Diagnostic(d) if d.point == POINT_EVENT_SKIPPED => Some(d),
             _ => None,
         })
         .collect();
@@ -358,11 +358,11 @@ async fn test_hook_diagnostics_are_paired_and_absence_is_reported() {
     assert_eq!(
         skipped.iter().find_map(|d| d
             .data
-            .get("point")
+            .get("event")
             .and_then(|v| v.as_str())
-            .filter(|p| *p == "beforeToolCall")),
-        Some("beforeToolCall"),
-        "要指出是哪个点位没人管：{:?}",
+            .filter(|p| *p == "event_before_agent_start")),
+        Some("event_before_agent_start"),
+        "要指出是哪个事件没人管：{:?}",
         skipped[0]
     );
 }
@@ -380,7 +380,7 @@ async fn test_no_hook_diagnostics_when_hooks_are_not_installed() {
     assert!(
         !sink.snapshot().iter().any(|e| matches!(
             &e.body,
-            AgentEventBody::Diagnostic(d) if d.point.starts_with("hook.")
+            AgentEventBody::Diagnostic(d) if d.point.starts_with("event.")
         )),
         "没装钩子就不该有点位诊断：{:?}",
         sink.snapshot()
@@ -498,7 +498,7 @@ fn diag_reason(sink: &RecordingSink, point: &str) -> Option<String> {
 #[tokio::test]
 async fn test_replacement_is_applied_and_the_tool_sees_new_args() {
     let runner = Arc::new(ScriptedHookRunner::new().replace_at(
-        "beforeToolCall",
+        "event_before_tool_call",
         serde_json::json!({ "cmd": "echo 更精确的路径" }),
     ));
     let (rt, seen) = runtime_with_capturing_probe(
@@ -520,7 +520,7 @@ async fn test_replacement_is_applied_and_the_tool_sees_new_args() {
         .snapshot()
         .into_iter()
         .find_map(|e| match e.body {
-            AgentEventBody::Diagnostic(d) if d.point == POINT_HOOK_REPLACE_APPLIED => Some(d),
+            AgentEventBody::Diagnostic(d) if d.point == POINT_EVENT_REPLACE_APPLIED => Some(d),
             _ => None,
         })
         .expect("改写生效必须留下 hook.replace 诊断");
@@ -550,7 +550,7 @@ async fn test_replacement_is_applied_and_the_tool_sees_new_args() {
 async fn test_schema_mismatch_in_replacement_is_rejected() {
     let runner = Arc::new(
         ScriptedHookRunner::new()
-            .replace_at("beforeToolCall", serde_json::json!({ "count": "不是数字" })),
+            .replace_at("event_before_tool_call", serde_json::json!({ "count": "不是数字" })),
     );
     let (rt, seen) = runtime_with_capturing_probe(
         runner,
@@ -571,7 +571,7 @@ async fn test_schema_mismatch_in_replacement_is_rejected() {
         "{seen:?}"
     );
     assert_eq!(
-        diag_reason(&sink, POINT_HOOK_REPLACE_REJECTED).as_deref(),
+        diag_reason(&sink, POINT_EVENT_REPLACE_REJECTED).as_deref(),
         Some("schema_mismatch"),
         "schema 不符必须留痕"
     );
@@ -581,7 +581,7 @@ async fn test_schema_mismatch_in_replacement_is_rejected() {
 #[tokio::test]
 async fn test_replacement_cannot_change_the_tool_identity() {
     let runner = Arc::new(ScriptedHookRunner::new().replace_at(
-        "beforeToolCall",
+        "event_before_tool_call",
         serde_json::json!({ "tool": "read_file", "cmd": "echo hi" }),
     ));
     let (rt, seen) = runtime_with_capturing_probe(
@@ -625,8 +625,8 @@ async fn test_no_replacement_path_when_nothing_subscribes() {
         !sink.snapshot().iter().any(|e| matches!(
             &e.body,
             AgentEventBody::Diagnostic(d)
-                if d.point == POINT_HOOK_REPLACE_APPLIED
-                    || d.point == POINT_HOOK_REPLACE_REJECTED
+                if d.point == POINT_EVENT_REPLACE_APPLIED
+                    || d.point == POINT_EVENT_REPLACE_REJECTED
         )),
         "没订阅就没有改写这回事"
     );

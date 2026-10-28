@@ -519,7 +519,7 @@ pub(super) fn merge_contribution_views(
             .iter()
             .map(|p| serde_json::json!({ "id": p.id, "content": p.content }))
             .collect();
-        item.hooks = view.hooks.clone();
+        item.events = view.events.clone();
         // `plugin.contributions.tools` 是声明形状（装配与审计读它），与上面对齐着填
         item.plugin.contributions.tools = view
             .tools

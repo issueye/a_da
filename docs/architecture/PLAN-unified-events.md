@@ -420,8 +420,8 @@ export default function (ada) {
 - [x] `PluginEvent` / `EventOutcome` / `EventEffect` / `EventSpec` 类型加入
   `agent-base/src/domain/plugin_event.rs`；
 - [x] `EventDispatcher` 端口加入 `agent-base/src/ports/events.rs`；
-- [x] `ada.on("event_*")` 在注册期折回旧点位（`agent-node/src/hooks/event_names.rs`），
-  引擎仍按旧点位调用；
+- [x] `ada.on("event_*")` 只接受事件名；内部旧点位名由运行时归一到事件名
+  （`agent-node/src/hooks/event_names.rs`），引擎与插件共用同一个键；
 - [ ] 3 个纵向切片（before_tool_call / after_tool_call / turn_finished）的运行时总线；
 - [ ] 排序、超时、热重载与收据的端到端用例。
 
@@ -430,7 +430,7 @@ export default function (ada) {
 - [x] `agent-base` 增加 `PluginEvent` / `EventDispatcher` / `EventOutcome` / `EventSpec`；
 - [x] `agent-node` 增加 `HookEventDispatcher` 迁移适配器（统一事件 → `HookRuntime`）；
 - [x] `agent-node` 实现 `PluginEventRuntime`（有界 Critical/Decorate/Notify/Stream lane、异步 worker、generation）；
-- [x] `ts-engine` 的 `ada.on` 已能接受 `event_*` 名称（宿主注册期折回旧点位）；
+- [x] `ts-engine` 的 `ada.on` 只接受 `event_*` 名称（旧别名与 camelCase 已在 E3 移除）；
 - [x] 引擎 **before / after 点位**由 dispatcher 产生；`EventSink` 仍是领域事件唯一出口；
 - [x] `LivePluginReassembler` 在重装配后 `bump_generation`，旧排队事件作废。
 
@@ -439,13 +439,15 @@ export default function (ada) {
 - [x] `run_before_hook` / `run_after_hook` 统一走 `EventDispatcher`（适配器折回 `HookRunner`）；
 - [x] after 多条 note/observe 通过 `dispatch_many` 汇总；
 - [ ] 每个点位补测试：允许、拒绝、超时、替换后重新校验、旁注时序；
-- 保留旧钩子名别名，直到插件生态迁移完成。
+- 旧钩子名别名已移除（E3）；内部点位的映射只保留在 `EVENT_POINTS` 一处。
 
-### E3：移除旧 API
+### E3：移除旧 API（已落地，2026-10-25）
 
-- 插件文档与 `extension-api.d.ts` 移除钩子术语；
-- `HookRunner` 可更名为 `EventDispatcher`，但**不能**降级成只有 `emit` 的 `EventSink`；
-- 线协议 `evt.*` 与内部 `AgentEventBody` 暂不改名；若未来要改，走协议 v2 并提供别名。
+- [x] 插件文档与 `extension-api.d.ts` 移除钩子术语；`metadata.events`、`ada.on("event_*")`、
+  `ctx.event` 成为唯一插件面，旧 camelCase 与短别名在装配期以 `unknown_event` 拒收；
+- [x] `HookRunner` 保留为内部端口（未降级成只有 `emit` 的 `EventSink`）；引擎直连路径也会先把
+  内部点位名归一成事件名，插件侧不再看到两套键；
+- [x] 线协议 `evt.*` 与内部 `AgentEventBody` 未改名；若未来要改，走协议 v2 并提供别名。
 
 ### E4：安全插件
 
@@ -604,7 +606,7 @@ export default function (ada) {
   历史记录渲染，不能留下“点不动的批准按钮”。
 - **插件**：完整删除时移除 `plugins/approval` 与 `thread.approval` 插槽；
   本次已先把它改成**纯前端**插件（只读 `props.data.approvals`），后端 hooks 已删除。
-  第三方若仍声明已删除的 hook 点位，加载期会收到 `unknown_point`/`point_not_implemented`。
+  第三方若仍声明已删除的 hook 点位，加载期会收到 `unknown_event`/`event_not_implemented`。
 - **测试**：删除审批相关单测；`verify-ssr-abort.mjs` 拆成 abort-only 或删除；
   全量测试不再构造 `RecordingApprovalGate`。
 

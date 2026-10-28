@@ -17,7 +17,7 @@
 //! ```json
 //! {"kind":"inspect","path":"…","workspace":"…","needs":{"fs":true,"net":false},"timeoutMs":30000}
 //! {"kind":"call","path":"…","workspace":"…","export":"web_search","args":{…}, …}
-//! {"kind":"hook","path":"…","workspace":"…","point":"beforeToolCall","payload":{…}, …}
+//! {"kind":"hook","path":"…","workspace":"…","event":"event_before_tool_call","payload":{…}, …}
 //! ```
 //!
 //! 响应一律是一个 JSON 对象：`{"ok":true,…}` 或 `{"ok":false,"error":"…"}`。
@@ -44,7 +44,7 @@ struct Request {
     #[serde(default)]
     args: Option<serde_json::Value>,
     #[serde(default)]
-    point: Option<String>,
+    event: Option<String>,
     #[serde(default)]
     payload: Option<serde_json::Value>,
     #[serde(default)]
@@ -135,7 +135,7 @@ async fn handle(req: Request) -> serde_json::Value {
                 "tools": ins.tools,
                 "prompts": ins.prompts,
                 "skills": ins.skills,
-                "hooks": ins.hooks,
+                "events": ins.events,
             }),
             Err(e) => serde_json::json!({ "ok": false, "error": format!("{e}") }),
         },
@@ -160,13 +160,13 @@ async fn handle(req: Request) -> serde_json::Value {
                 Err(e) => serde_json::json!({ "ok": false, "error": format!("{e}") }),
             }
         }
-        "hook" => {
-            let Some(point) = req.point.clone() else {
-                return serde_json::json!({ "ok": false, "error": "hook 请求缺少 point" });
+        "event" => {
+            let Some(event_name) = req.event.clone() else {
+                return serde_json::json!({ "ok": false, "error": "event 请求缺少 event" });
             };
             let payload = req.payload.clone().unwrap_or(serde_json::json!({}));
             match PluginSandbox::call_hook_budgeted(
-                &path, &point, payload, &workspace, timeout_s, needs, limits,
+                &path, &event_name, payload, &workspace, timeout_s, needs, limits,
             )
             .await
             {

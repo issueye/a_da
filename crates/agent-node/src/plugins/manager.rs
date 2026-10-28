@@ -559,14 +559,22 @@ impl PluginManager {
                         if let Some(v) = pc.get("allowCompactionReplace").and_then(|b| b.as_bool()) {
                             caps.allow_compaction_replace = v;
                         }
-                        if let Some(v) = pc.get("allowThirdPartyHooks").and_then(|b| b.as_bool()) {
-                            caps.allow_third_party_hooks = v;
+                        if let Some(v) = pc
+                            .get("allowThirdPartyEvents")
+                            .or_else(|| pc.get("allowThirdPartyHooks"))
+                            .and_then(|b| b.as_bool())
+                        {
+                            caps.allow_third_party_events = v;
                         }
                         if let Some(v) = pc.get("allowBuiltinShadow").and_then(|b| b.as_bool()) {
                             caps.allow_builtin_shadow = v;
                         }
-                        if let Some(v) = pc.get("hookTimeoutMs").and_then(|n| n.as_u64()) {
-                            caps.hook_timeout_ms = v;
+                        if let Some(v) = pc
+                            .get("eventTimeoutMs")
+                            .or_else(|| pc.get("hookTimeoutMs"))
+                            .and_then(|n| n.as_u64())
+                        {
+                            caps.event_timeout_ms = v;
                         }
                     }
                 }
@@ -895,7 +903,7 @@ impl PluginManager {
                     tools,
                     skills: Vec::new(),
                     prompts: Vec::new(),
-                    hooks: Vec::new(),
+                    events: Vec::new(),
                     is_package: Some(true),
                     error: if package_entry_missing {
                         Some("missing index.ts/index.js".to_string())
@@ -948,7 +956,7 @@ impl PluginManager {
   tools: {{ count: 0, names: [] }},
   systemPrompt: {{ count: 0, names: [] }},
   skills: {{ count: 0, names: [] }},
-  hooks: {{ count: 0, names: [] }},
+  events: {{ count: 0, names: [] }},
 }};
 
 export default function (ada) {{
@@ -956,8 +964,8 @@ export default function (ada) {{
   // Pi-style registration API:
   // ada.registerTool({{ name, description, parameters, execute }});
   // ada.registerSystemPrompt({{ id, content }});
-  // ada.registerSkill({{ name, description, path }});
-  // ada.on('turn_end', async (event, ctx) => {{ ... }});
+  // ada.on('event_after_turn', async (event, ctx) => {{ ... }});
+  // 技能是目录约定：skills/<name>/SKILL.md
 }}
 "#,
             name = name
@@ -1178,7 +1186,7 @@ mod tests {
               description: '统一包动作测试',
               tools: { count: 0, names: [] },
               systemPrompt: { count: 0, names: [] },
-              hooks: { count: 0, names: [] },
+              events: { count: 0, names: [] },
               actions: { count: 2, names: ['status', 'refresh'] },
             };
             export default function (ada) {
@@ -1288,7 +1296,7 @@ mod tests {
               description: '动态路由测试',
               tools: { count: 0, names: [] },
               systemPrompt: { count: 0, names: [] },
-              hooks: { count: 0, names: [] },
+              events: { count: 0, names: [] },
               routes: { count: 2, names: ['GET /hello/:name', 'POST /echo'] },
             };
             export default function (ada) {
@@ -1431,7 +1439,7 @@ mod tests {
               description: 'SQLite 能力测试',
               tools: { count: 0, names: [] },
               systemPrompt: { count: 0, names: [] },
-              hooks: { count: 0, names: [] },
+              events: { count: 0, names: [] },
               actions: { count: 1, names: ['bump'] },
             };
             export default function (ada) {
@@ -1517,7 +1525,7 @@ mod tests {
               description: 'child_process 能力测试',
               tools: { count: 0, names: [] },
               systemPrompt: { count: 0, names: [] },
-              hooks: { count: 0, names: [] },
+              events: { count: 0, names: [] },
               actions: { count: 1, names: ['echo'] },
             };
             export default function (ada) {

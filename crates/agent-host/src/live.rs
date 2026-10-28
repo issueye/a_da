@@ -298,17 +298,17 @@ impl LivePluginReassembler {
             // 少了这一步就会出现"关掉了插件，它的 beforeToolCall 还在拦"——比工具残留更糟，
             // 因为那是**行为面**的残留。
             let mut hook_notes: Vec<String> = Vec::new();
-            let mut hooks_by_plugin: std::collections::BTreeMap<String, Vec<String>> =
+            let mut events_by_plugin: std::collections::BTreeMap<String, Vec<String>> =
                 Default::default();
             if let Some(rt) = &self.hook_runtime {
                 let mut rej = Vec::new();
                 rt.reassemble(&collected.handles, &mut rej);
                 hook_notes = rej
                     .iter()
-                    .map(|r| format!("{}：{}（{}）", r.plugin_id, r.point, r.reason))
+                    .map(|r| format!("{}：{}（{}）", r.plugin_id, r.event, r.reason))
                     .collect();
                 // 重新注册之后才知道"现在真的装上了哪些点位"（分级/开关随时可能挡下）
-                hooks_by_plugin = rt.points_by_plugin();
+                events_by_plugin = rt.events_by_plugin();
             }
 
             // 2.5 事件运行时：旧 generation 的排队事件在 worker 取到时作废，
@@ -321,7 +321,7 @@ impl LivePluginReassembler {
             // 与初装走**同一个** `views_from_assembly`，免得两处各算一份、说不一样的话。
             if let Some(store) = &self.contribution_views {
                 if let Ok(mut views) = store.write() {
-                    *views = agent_node::plugins::views_from_assembly(&collected, &hooks_by_plugin);
+                    *views = agent_node::plugins::views_from_assembly(&collected, &events_by_plugin);
                 }
             }
 

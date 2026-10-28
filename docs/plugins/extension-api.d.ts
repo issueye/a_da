@@ -1,17 +1,17 @@
 /** Type declarations for a-da agent-coding extension packages. */
-export type HookAction = "observe" | "note" | "replace" | "deny" | "abort";
+export type EventAction = "observe" | "note" | "replace" | "deny" | "abort";
 
-export interface ExtensionHookContext {
+export interface ExtensionEventContext {
 	readonly threadId: string;
 	readonly turnId: string;
 	readonly callId: string | null;
 	readonly pluginId: string;
-	readonly point: string;
+	/** Unified event name (`event_*`). */
+	readonly event: string;
 	readonly workspace: string;
 	readonly timeoutMs: number;
 	registerTool(tool: ToolDefinition): { ok: boolean; reason?: string };
 	registerSystemPrompt(prompt: SystemPromptDefinition): { ok: boolean; reason?: string };
-	registerSkill(skill: SkillDefinition): { ok: boolean; reason?: string };
 }
 
 export interface ToolDefinition {
@@ -24,14 +24,6 @@ export interface ToolDefinition {
 export interface SystemPromptDefinition {
 	id: string;
 	content: string;
-}
-
-export interface SkillDefinition {
-	name: string;
-	description: string;
-	/** Relative to the plugin package root or `.ada/agent-coding/skills/`. */
-	path: string;
-	body?: string;
 }
 
 /** UI action intent; `read` forbids write-mode actions. */
@@ -107,17 +99,18 @@ export interface RouteResponseHelpers {
 	redirect(location: string, status?: number): HttpResponse;
 }
 
-/** Object-form hook declaration (`export default { hooks: [...] }`). */
-export interface HookDefinition {
-	point: string;
-	actions?: HookAction[];
+/** Object-form event declaration (`export default { events: [...] }`). */
+export interface EventDefinition {
+	/** Unified event name (`event_*`). */
+	event: string;
+	actions?: EventAction[];
 	order?: number;
-	handler: (event: Record<string, unknown>, ctx: ExtensionHookContext) => unknown | Promise<unknown>;
+	handler: (event: Record<string, unknown>, ctx: ExtensionEventContext) => unknown | Promise<unknown>;
 }
 
 export interface ExtensionMetadataGroup {
 	count: number;
-	/** Exact registered names/ids/points, validated against the factory output. */
+	/** Exact registered names/ids/events, validated against the factory output. */
 	names: string[];
 }
 
@@ -126,8 +119,9 @@ export interface ExtensionMetadata {
 	description: string;
 	tools: ExtensionMetadataGroup;
 	systemPrompt: ExtensionMetadataGroup;
+	/** Skills are directories (`skills/<name>/SKILL.md`), so this group is declarative. */
 	skills: ExtensionMetadataGroup;
-	hooks: ExtensionMetadataGroup;
+	events: ExtensionMetadataGroup;
 	/** Optional; required when the factory registers actions. */
 	actions?: ExtensionMetadataGroup;
 	/** Optional; when present, validated against the routes registered by `ada.route`. */
@@ -149,12 +143,14 @@ export interface ExtensionAPI extends RouteResponseHelpers {
 	registerSystemPrompt(prompt: SystemPromptDefinition): void;
 	/** Compatibility alias for registerSystemPrompt. */
 	registerPrompt(prompt: SystemPromptDefinition): void;
-	registerSkill(skill: SkillDefinition): void;
-	/** The only hook registration entrypoint; object-form `hooks` also accepted. */
+	/**
+	 * The only event registration entrypoint. `event` must be a unified `event_*`
+	 * name; object-form `events` declarations are also accepted.
+	 */
 	on(
 		event: string,
-		handler: (event: Record<string, unknown>, ctx: ExtensionHookContext) => unknown | Promise<unknown>,
-		options?: { actions?: HookAction[]; order?: number },
+		handler: (event: Record<string, unknown>, ctx: ExtensionEventContext) => unknown | Promise<unknown>,
+		options?: { actions?: EventAction[]; order?: number },
 	): void;
 }
 

@@ -51,7 +51,7 @@ const metadata = {
   description: "Git 读写工具：只读查询（status/diff/log/show/blame）与写操作集于两枚工具",
   tools: { count: 2, names: ["git", "git_read"] },
   systemPrompt: { count: 0, names: [] },
-  hooks: { count: 0, names: [] },
+  events: { count: 0, names: [] },
   actions: { count: 0, names: [] },
   routes: { count: 0, names: [] },
 };

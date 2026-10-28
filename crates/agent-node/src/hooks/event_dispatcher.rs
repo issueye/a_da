@@ -1,11 +1,9 @@
-//! `EventDispatcher` 的生产适配器：把统一 `event_*` 事件折回现有 `HookRuntime`。
+//! `EventDispatcher` 的生产适配器：把统一 `event_*` 事件交给 `HookRuntime`。
 //!
 //! 这是迁移期的桥，不是最终总线：
 //! - `dispatch` 用于 `event_before_*` / `event_after_*`，把结果映射成 [`EventOutcome`]；
-//! - `publish` 用于 `event_*` 通知，异步跑一遍 after 钩子并丢弃结果；
-//! - 引擎迁移到 dispatcher 后，本适配器可以删掉，由真正的 plugin event bus 取代。
-//!
-//! 事件名归一化仍只在 `event_names` 一处，避免“注册时一套、调用时另一套”。
+//! - `publish` 用于 `event_*` 通知，异步跑一遍 after 事件并丢弃结果；
+//! - 事件名直接透传，注册与调用使用同一个 `event_*` 键。
 
 use std::sync::Arc;
 
@@ -15,9 +13,7 @@ use agent_base::ports::hooks::{
 };
 use agent_base::ports::{BoxFuture, CancelToken, EventDispatcher};
 
-use super::event_names;
-
-/// 生产适配器：统一事件 → 现有钩子运行时。
+/// 生产适配器：统一事件 → 现有事件运行时。
 pub struct HookEventDispatcher {
     runtime: Arc<dyn HookRunner>,
 }
@@ -57,11 +53,10 @@ impl EventDispatcher for HookEventDispatcher {
                     .unwrap_or(EventOutcome::Pass);
             }
 
-            let point = event_names::normalize_point(&event.name);
             let request = BeforeRequest {
                 subject: subject_of(&event),
                 payload: event.payload.clone(),
-                point,
+                point: event.name.clone(),
             };
             match runtime
                 .before(request, &hook_ctx(&event, on_observation))
@@ -106,7 +101,7 @@ async fn run_after(
     let request = AfterRequest {
         subject: subject_of(event),
         payload: event.payload.clone(),
-        point: event_names::normalize_point(&event.name),
+        point: event.name.clone(),
     };
     runtime
         .after(request, &hook_ctx(event, on_observation))

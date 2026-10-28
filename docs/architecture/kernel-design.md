@@ -234,7 +234,7 @@ pub struct RunPolicy { max_steps: Option<u32>, max_parallel_tools: usize, tool_t
   "toolkits": ["core", "web", "calendar", "reminder", "notes"],
   "capabilities": {                      // 声明即契约：未列出的能力位在握手里回答 false
     "images": true, "streaming": true, "rollback": true,
-    "subagents": true, "plugins": ["rss"], "hooks": ["beforeTurn","afterToolCall","beforeToolCall"]
+    "subagents": true, "plugins": true, "events": true
   },
   "policies": {
     "budget": { "maxSteps": null, "toolTimeoutSec": 120, "parallelTools": 2 }
@@ -303,7 +303,7 @@ pub trait Toolkit: Send + Sync {
 | 层 | 内容 | 谁定义 |
 |---|---|---|
 L0 **base 协议** | `session.*`、`thread.*`（create/send/abort/retry/editAndResend/compact）、`queue.*`、`subagent.*`、`evt.turn/tool/*`、能力协商、错误码 | 基座，版本化，**所有产品逐字节一致** |
-| L1 **能力位** | `images`、`rollback`、`plugins`、`hooks`、`events.granularity`、`resync` … | 基座登记，产品声明启用 |
+| L1 **能力位** | `images`、`rollback`、`plugins`、`pluginEvents`、`events.granularity`、`resync` … | 基座登记，产品声明启用 |
 | L2 **产品扩展** | `x.<product>.<domain>.*`（如 `x.life.calendar.list`） | 产品在 `proto/ext.json` 声明，生成器并入该产品的目录 |
 
 命名判据：**方法里的名词属于"agent 领域"还是"产品世界"**——`thread.send` 属 L0，`calendar.list` 属 L2；

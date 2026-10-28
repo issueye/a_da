@@ -13,7 +13,7 @@
     "rollback": false,
     "subagents": true,
     "plugins": true,
-    "hooks": true,
+    "events": true,
     "delegation": "gateway"
   },
   "gateway": {

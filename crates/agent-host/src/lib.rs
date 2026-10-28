@@ -526,14 +526,14 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
     // 分级校验（越级/未实现/重名）与运行时构建都在组合根完成（它才有脚本宿主），
     // 这里只负责两件事：① 按产品声明决定要不要装；② 把拒绝理由如实报成诊断。
     //
-    // 🔴 声明 `capabilities.hooks == false` 的产品**不装**：那时引擎没有 runner，
+    // 🔴 声明 `capabilities.events == false` 的产品**不装**：那时引擎没有 runner，
     // 一条 hook.* 诊断都不发。为此**额外报一条**说清"不是你的插件写错了，
     // 是这个产品没开钩子"——否则插件作者会一直对着自己的代码找问题。
-    let hooks_blocked_by_product = !caps.hooks && hook_runner.is_some();
+    let hooks_blocked_by_product = !caps.events && hook_runner.is_some();
     if hooks_blocked_by_product {
-        tracing::warn!("[hooks] 产品声明未开钩子（capabilities.hooks=false）：已装好的钩子不会被执行");
+        tracing::warn!("[hooks] 产品声明未开事件机制（capabilities.events=false）：已装好的事件处理器不会被执行");
     }
-    let hook_runner = if caps.hooks { hook_runner } else { None };
+    let hook_runner = if caps.events { hook_runner } else { None };
 
     // ── 活的贡献集合（P2·SP-46）────────────────────────────────────────────
     //
@@ -629,7 +629,7 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
                 agent_rpc::server::diag::project_out_of_turn(
                     &mut store_w,
                     &DiagnosticEvent::new(
-                        DiagFamily::Hook,
+                        DiagFamily::Event,
                         POINT_PLUGIN_SKIPPED,
                         match r.plugin_id.as_str() {
                             "" => Origin::Host,
@@ -638,17 +638,17 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
                     )
                     .with_outcome(DiagOutcome::Skipped)
                     .with_reason(r.reason.clone())
-                    .with_data(serde_json::json!({ "point": r.point })),
+                    .with_data(serde_json::json!({ "event": r.event })),
                 );
             }
             if hooks_blocked_by_product {
                 agent_rpc::server::diag::project_out_of_turn(
                     &mut store_w,
-                    &DiagnosticEvent::new(DiagFamily::Hook, POINT_PLUGIN_SKIPPED, Origin::Host)
+                    &DiagnosticEvent::new(DiagFamily::Event, POINT_PLUGIN_SKIPPED, Origin::Host)
                         .with_outcome(DiagOutcome::Skipped)
-                        .with_reason("hooks_disabled_by_product")
+                        .with_reason("events_disabled_by_product")
                         .with_data(serde_json::json!({
-                            "hint": "该产品声明 capabilities.hooks=false，插件钩子不会被调用",
+                            "hint": "该产品声明 capabilities.events=false，插件事件处理器不会被调用",
                         })),
                 );
             }
@@ -883,7 +883,7 @@ mod tests {
         "archetype": "coding",
         "identity": { "name": "宿主测试助手", "persona": "system.md", "locale": "zh-CN" },
         "toolkits": ["core"],
-        "capabilities": { "images": false, "streaming": true, "rollback": false, "subagents": false, "hooks": true },
+        "capabilities": { "images": false, "streaming": true, "rollback": false, "subagents": false, "events": true },
         "policies": { "maxSteps": 3, "parallelTools": 1, "toolTimeoutSec": 60 }
     }"#;
 
@@ -911,7 +911,7 @@ mod tests {
             "tools": { "count": tool_names.len(), "names": tool_names },
             "systemPrompt": { "count": prompt_ids.len(), "names": prompt_ids },
             "skills": { "count": skill_names.len(), "names": skill_names },
-            "hooks": { "count": hook_points.len(), "names": hook_points },
+            "events": { "count": hook_points.len(), "names": hook_points },
         });
         let path = package_root.join("index.ts");
         std::fs::write(
@@ -1442,7 +1442,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// P3a·SP-51 生产路径端到端：**真插件在 `beforeToolCall` 拦下一次调用**，
+    /// P3a·SP-51 生产路径端到端：**真插件在 `event_before_tool_call` 拦下一次调用**，
     /// 理由作为普通工具结果回给模型，而工具**确实没有执行**。
     ///
     /// 与引擎侧那条用例的分工：那条用测试替身验"引擎把 Deny 处理对了"，
@@ -1458,8 +1458,8 @@ mod tests {
             &["git_status"],
             &[],
             &[],
-            &["beforeToolCall"],
-            "ada.on('tool_call', async (event: any) => { if (String(event.input?.cmd || '').includes('rm -rf')) return { block: true, reason: '这条命令会删掉整个工作区，请改用更精确的路径' }; }); ada.registerTool({ name: 'git_status', description: '插件版 git 状态', parameters: { type: 'object', properties: {} }, execute: async () => ({ ok: true, output: '插件真的跑了' }) });",
+            &["event_before_tool_call"],
+            "ada.on('event_before_tool_call', async (event: any) => { if (String(event.input?.cmd || '').includes('rm -rf')) return { block: true, reason: '这条命令会删掉整个工作区，请改用更精确的路径' }; }); ada.registerTool({ name: 'git_status', description: '插件版 git 状态', parameters: { type: 'object', properties: {} }, execute: async () => ({ ok: true, output: '插件真的跑了' }) });",
         );
 
         let plugin_mgr = Arc::new(agent_node::plugins::PluginManager::with_home(&home));
@@ -1529,15 +1529,15 @@ mod tests {
             .snapshot()
             .iter()
             .filter_map(|e| match &e.body {
-                AgentEventBody::Diagnostic(d) if d.point.starts_with("hook.") => Some(d.point.clone()),
+                AgentEventBody::Diagnostic(d) if d.point.starts_with("event.") => Some(d.point.clone()),
                 _ => None,
             })
             .collect();
         assert!(
-            points.contains(&"hook.entered".to_string()),
+            points.contains(&"event.entered".to_string()),
             "真链路上也要有一进一出的埋点：{points:?}"
         );
-        assert!(points.contains(&"hook.finished".to_string()), "{points:?}");
+        assert!(points.contains(&"event.finished".to_string()), "{points:?}");
 
         let _ = std::fs::remove_dir_all(&ws);
         let _ = std::fs::remove_dir_all(&home);
@@ -1578,8 +1578,8 @@ mod tests {
             &[],
             &[],
             &[],
-            &["beforePluginToggle"],
-            "ada.on('beforePluginToggle', async () => ({ action: 'deny', reason: '不许关我' }), { actions: ['deny'] });",
+            &["event_before_plugin_toggle"],
+            "ada.on('event_before_plugin_toggle', async () => ({ action: 'deny', reason: '不许关我' }), { actions: ['deny'] });",
         );
 
         let plugin_mgr = Arc::new(agent_node::plugins::PluginManager::with_home(&home));
@@ -1638,12 +1638,12 @@ mod tests {
             .and_then(|e| e.payload.clone())
             .expect("越级声明必须留下诊断（否则插件作者看不到任何线索）");
         assert_eq!(
-            diag["family"], "hook",
-            "诊断族要是 hook（否则在面板上会被当成插件加载问题）：{diag:?}"
+            diag["family"], "event",
+            "诊断族要是 event（否则在面板上会被当成插件加载问题）：{diag:?}"
         );
         assert_eq!(
-            diag["data"]["point"], "beforePluginToggle",
-            "要说清是哪个点位：{diag:?}"
+            diag["data"]["event"], "event_before_plugin_toggle",
+            "要说清是哪个事件：{diag:?}"
         );
         assert_eq!(
             diag["origin"], "plugin:workspace:self-crowned",

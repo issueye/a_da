@@ -110,15 +110,15 @@ impl PluginSkillDeclaration {
     }
 }
 
-/// 插件声明的一条**钩子注册**（P3a · SP-50）。
+/// 插件声明的一条**事件注册**（P3a · SP-50）。
 ///
-/// 声明面是 `api.on(point, handler, { actions, order })`（对象形态
-/// `export default { hooks: [...] }` 也行）。**声明即授权**：`actions` 里没有的动作，
+/// 声明面是 `api.on(event, handler, { actions, order })`（对象形态
+/// `export default { events: [...] }` 也行）。**声明即授权**：`actions` 里没有的动作，
 /// 运行期即使插件返回了也不生效（并记理由）——否则"我声明了 observe、实际却拦下了"就没法解释。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct PluginHookDeclaration {
-    pub point: String,
+pub struct PluginEventDeclaration {
+    pub event: String,
     #[serde(default)]
     pub actions: Vec<String>,
     #[serde(default)]
@@ -294,11 +294,11 @@ pub struct PluginItem {
     pub tools: Vec<PluginToolInfo>,
     pub skills: Vec<crate::skills::SkillSummary>,
     pub prompts: Vec<serde_json::Value>,
-    /// 该插件**真的注册上**的钩子点位（P4）：`plugin.list` 由装配期的活体视图填。
+    /// 该插件**真的注册上**的事件（P4）：`plugin.list` 由装配期的活体视图填。
     ///
-    /// 静态目录扫描给的永远是空——钩子要在注册期过分级/能力开关才有定论。
+    /// 静态目录扫描给的永远是空——事件要在注册期过分级/能力开关才有定论。
     #[serde(default)]
-    pub hooks: Vec<String>,
+    pub events: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_package: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -323,9 +323,13 @@ pub struct PluginCapabilities {
     pub allow_text_rewrite: bool,
     pub allow_thread_delete_block: bool,
     pub allow_compaction_replace: bool,
-    pub allow_third_party_hooks: bool,
+    /// 第三方插件的**事件处理器**是否允许装配（旧配置键 `allowThirdPartyHooks` 仍可读）。
+    #[serde(alias = "allowThirdPartyHooks")]
+    pub allow_third_party_events: bool,
     pub allow_builtin_shadow: bool,
-    pub hook_timeout_ms: u64,
+    /// 单个事件处理器的预算（旧配置键 `hookTimeoutMs` 仍可读）。
+    #[serde(alias = "hookTimeoutMs")]
+    pub event_timeout_ms: u64,
 }
 
 impl Default for PluginCapabilities {
@@ -335,9 +339,9 @@ impl Default for PluginCapabilities {
             allow_text_rewrite: true,
             allow_thread_delete_block: true,
             allow_compaction_replace: true,
-            allow_third_party_hooks: true,
+            allow_third_party_events: true,
             allow_builtin_shadow: true,
-            hook_timeout_ms: 500,
+            event_timeout_ms: 500,
         }
     }
 }

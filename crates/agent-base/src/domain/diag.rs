@@ -28,8 +28,8 @@ pub enum DiagFamily {
     Plugin,
     /// 脚本调用（沙箱进出、耗时、预算）
     Script,
-    /// 钩子点位（进出与结果）
-    Hook,
+    /// 插件事件（进出与结果）
+    Event,
     /// 提示词组装
     Prompt,
     /// 技能加载
@@ -45,7 +45,7 @@ impl DiagFamily {
         match self {
             Self::Plugin => "plugin",
             Self::Script => "script",
-            Self::Hook => "hook",
+            Self::Event => "event",
             Self::Prompt => "prompt",
             Self::Skill => "skill",
             Self::Decision => "decision",
@@ -193,23 +193,23 @@ pub const POINT_SKILL_INVALID: &str = "skill.invalid";
 ///
 /// **成对是硬约束**：每条 `hook.entered` 必须有且只有一个终结记录
 /// （`hook.finished` 或 `hook.skipped`）。契约测试直接数这两个计数。
-pub const POINT_HOOK_ENTERED: &str = "hook.entered";
+pub const POINT_EVENT_ENTERED: &str = "event.entered";
 /// 一条钩子跑完（带 `outcome`：`passed` / `denied` / `timed_out` / `aborted` 与耗时）。
-pub const POINT_HOOK_FINISHED: &str = "hook.finished";
+pub const POINT_EVENT_FINISHED: &str = "event.finished";
 /// **没有任何插件订阅这个点位**（P3a · SP-52 的缺席可见）。
 ///
 /// 这条必须发：面板上"没人管这个点位"与"这个点位压根没被问过"长得一模一样，
 /// 而作者最常问的正是"我的钩子为什么没被调用"。
-pub const POINT_HOOK_SKIPPED: &str = "hook.skipped";
+pub const POINT_EVENT_SKIPPED: &str = "event.skipped";
 /// 一次参数改写**真的生效了**（P3b · SP-60）。
 ///
 /// 带改前/改后的内容指纹与字节差（`hook.finished` 里也有，这里再单独记一条是因为
 /// 改写是安全敏感动作：面板上要能一眼筛出"这次调用被谁改过"）。
-pub const POINT_HOOK_REPLACE_APPLIED: &str = "hook.replace";
+pub const POINT_EVENT_REPLACE_APPLIED: &str = "event.replace";
 /// 一次参数改写被**重新校验拒了**（P3b · SP-61）。
 ///
 /// 拒绝的理由（形状 / schema）必须留下：这是"插件想做但没做成"的记录。
-pub const POINT_HOOK_REPLACE_REJECTED: &str = "hook.replace_rejected";
+pub const POINT_EVENT_REPLACE_REJECTED: &str = "event.replace_rejected";
 
 /// 已实现的点位词汇表（**先有发射方再登记**，不许先声明后实现）。
 ///
@@ -227,11 +227,11 @@ pub const DIAG_POINTS: &[&str] = &[
     POINT_SKILL_LOADED,
     POINT_SKILL_SKIPPED,
     POINT_SKILL_INVALID,
-    POINT_HOOK_ENTERED,
-    POINT_HOOK_FINISHED,
-    POINT_HOOK_SKIPPED,
-    POINT_HOOK_REPLACE_APPLIED,
-    POINT_HOOK_REPLACE_REJECTED,
+    POINT_EVENT_ENTERED,
+    POINT_EVENT_FINISHED,
+    POINT_EVENT_SKIPPED,
+    POINT_EVENT_REPLACE_APPLIED,
+    POINT_EVENT_REPLACE_REJECTED,
 ];
 
 #[cfg(test)]

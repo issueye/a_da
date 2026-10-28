@@ -227,7 +227,7 @@ impl Dispatcher {
                             // P3a·SP-56：钩子机制已落地（引擎有生产调用点、成对埋点、
                             // 缺席可见用例），所以这里**从声明派生**——声明 true 就是 true。
                             // `resync` 仍如实为 false：客户端缺口重同步尚未实现。
-                            hooks: spec.capabilities.hooks,
+                            plugin_events: spec.capabilities.events,
                             resync: false,
                             events: agent_proto::ServerEventsCapability {
                                 granularity: "coarse".to_string(),

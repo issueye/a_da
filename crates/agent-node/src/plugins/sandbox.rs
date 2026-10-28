@@ -5,7 +5,7 @@ use anyhow::Result;
 use ada_ts_engine::{compiler::transpile_ts_module_cached, PureTsRuntime};
 
 use super::types::{
-    PluginActionDeclaration, PluginHookDeclaration, PluginPromptDeclaration,
+    PluginActionDeclaration, PluginEventDeclaration, PluginPromptDeclaration,
     PluginRouteDeclaration, PluginSkillDeclaration, PluginToolDeclaration,
 };
 use agent_toolkit::ToolResult;
@@ -234,7 +234,7 @@ pub struct PluginInspection {
     /// 静默忽略会让作者以为"技能声明成功了"，而界面上根本没有它。
     pub ignored_skills: Vec<String>,
     /// P3a·SP-50：插件声明的钩子注册（同上）
-    pub hooks: Vec<PluginHookDeclaration>,
+    pub events: Vec<PluginEventDeclaration>,
     /// 面向界面的确定性动作（`ada.registerAction`）。空数组 = 没声明。
     pub actions: Vec<PluginActionDeclaration>,
     /// 动态 HTTP 路由（`ada.route`）。空数组 = 没声明。
@@ -260,7 +260,7 @@ struct ApiSurface {
     tools: bool,
     actions: bool,
     routes: bool,
-    hooks: bool,
+    events: bool,
     prompts: bool,
     /// 技能已改为目录约定（`skills/<name>/SKILL.md`）：这里只把调用记成诊断。
     skill_diagnostics: bool,
@@ -274,7 +274,7 @@ impl ApiSurface {
         tools: true,
         actions: true,
         routes: true,
-        hooks: true,
+        events: true,
         prompts: true,
         skill_diagnostics: true,
         metadata: true,
@@ -290,34 +290,25 @@ fn collector_line(enabled: bool, name: &str, push: &str) -> String {
     }
 }
 
-/// 钩子收集器（`ada.on`）。
+/// 事件收集器（`ada.on`）。
 ///
-/// 单独抽出来是因为它比一行 no-op 复杂得多（事件别名 + 动作声明），而检查期与
-/// 钩子调用期**必须**用同一套别名表——两边不一致的话，会出现"检查说有这个点位、
-/// 调的时候找不到"。
+/// 只接受统一事件名 `event_*`；旧 camelCase 点位与短别名（`turn_end` 等）不再兼容。
+/// 检查期与调用期必须用同一个键，避免“检查说有、调的时候找不到”。
 const HOOK_ON_JS: &str = r#"                on: (event, handler, options = {}) => {
-                    const aliases = {
-                        turn_start: 'beforeTurn', turn_end: 'afterTurn',
-                        tool_call: 'beforeToolCall', tool_execution_start: 'beforeToolCall',
-                        tool_execution_end: 'afterToolCall', tool_result: 'afterToolCall',
-                        agent_start: 'beforeAgentStart', agent_end: 'afterAgentEnd',
-                        before_provider_request: 'beforeProviderRequest',
-                        before_provider_headers: 'beforeProviderHeaders',
-                        after_provider_response: 'afterProviderResponse',
-                        context: 'beforeContext',
-                    };
-                    const point = aliases[event] || event;
-                    // 写错就报错：静默跳过会让作者一直以为钩子装上了。
+                    const eventName = typeof event === 'string' ? event.trim() : '';
+                    if (!eventName.startsWith('event_')) {
+                        throw new Error("ada.on requires an event_* name (got '" + eventName + "')");
+                    }
                     if (typeof handler !== 'function') throw new Error('ada.on requires a handler');
-                    const inferredActions = point === 'beforeToolCall'
+                    const inferredActions = eventName === 'event_before_tool_call'
                         ? ['observe', 'note', 'deny', 'replace']
                         : ['observe', 'note'];
-                    hooksRaw.push({
-                        point,
-                        apiEvent: event,
+                    eventsRaw.push({
+                        event: eventName,
                         handler,
                         actions: Array.isArray(options.actions) ? options.actions : inferredActions,
                         order: typeof options.order === 'number' ? options.order : 0,
+                        apiEvent: eventName === 'event_before_tool_call' ? 'tool_call' : undefined,
                     });
                 },
 "#;
@@ -371,7 +362,7 @@ impl PluginSandbox {
         } else {
             "                registerSkill: () => {},\n"
         });
-        out.push_str(if surface.hooks {
+        out.push_str(if surface.events {
             HOOK_ON_JS
         } else {
             "                on: () => {},\n"
@@ -471,7 +462,7 @@ impl PluginSandbox {
                     let toolsRaw = [];
                     let promptsRaw = [];
                     let ignoredSkills = [];
-                    let hooksRaw = [];
+                    let eventsRaw = [];
                     let actionsRaw = [];
                     let routesRaw = [];
                     if (typeof desc === 'function') {{
@@ -486,13 +477,13 @@ impl PluginSandbox {
                         const raw = desc.tools || [];
                         const rawPrompts = desc.systemPrompts || desc.prompts || [];
                         const rawSkills = desc.skills || [];
-                        const rawHooks = desc.hooks || [];
+                        const rawEvents = desc.events || [];
                         for (let i = 0; i < rawPrompts.length; i++) promptsRaw.push(rawPrompts[i]);
                         // 对象形态的 `skills` 数组也是旧 API：记下来报诊断，不再收
                         for (let i = 0; i < rawSkills.length; i++) {{
                             ignoredSkills.push(rawSkills[i] && rawSkills[i].name ? String(rawSkills[i].name) : '<unnamed>');
                         }}
-                        for (let i = 0; i < rawHooks.length; i++) hooksRaw.push(rawHooks[i]);
+                        for (let i = 0; i < rawEvents.length; i++) eventsRaw.push(rawEvents[i]);
                         for (let i = 0; i < raw.length; i++) {{
                             const item = raw[i];
                             const tool = typeof item === 'function' ? await item(ws || process.cwd()) : item;
@@ -528,15 +519,15 @@ impl PluginSandbox {
                     // 2026-10-19：技能改为目录约定（`skills/<name>/SKILL.md`），
                     // 沙箱**不再产出技能声明**——目录扫描在装配层做（`skills::spec`）。
                     const skills = [];
-                    // P3a·SP-50：钩子注册的**声明**（处理器是函数，不进 JSON——
-                    // 它在调用期按点位名重新找出来执行）。
-                    const hooks = [];
-                    const hooksByPoint = new Map();
-                    for (let i = 0; i < hooksRaw.length; i++) {{
-                        const h = hooksRaw[i];
+                    // P3a·SP-50：事件注册的**声明**（处理器是函数，不进 JSON——
+                    // 它在调用期按事件名重新找出来执行）。
+                    const events = [];
+                    const eventsByEvent = new Map();
+                    for (let i = 0; i < eventsRaw.length; i++) {{
+                        const h = eventsRaw[i];
                         if (!h || typeof h !== 'object') continue;
-                        const point = typeof h.point === 'string' ? h.point.trim() : '';
-                        if (!point) continue;
+                        const event = typeof h.event === 'string' ? h.event.trim() : '';
+                        if (!event) continue;
                         const rawActions = Array.isArray(h.actions) ? h.actions
                             : (typeof h.action === 'string' ? [h.action] : []);
                         const actions = [];
@@ -544,14 +535,14 @@ impl PluginSandbox {
                             if (typeof rawActions[j] === 'string') actions.push(rawActions[j]);
                         }}
                         const order = typeof h.order === 'number' ? h.order : 0;
-                        const existing = hooksByPoint.get(point);
+                        const existing = eventsByEvent.get(event);
                         if (existing) {{
                             for (const action of actions) if (!existing.actions.includes(action)) existing.actions.push(action);
                             existing.order = Math.min(existing.order, order);
                         }} else {{
-                            const declaration = {{ point, actions, order }};
-                            hooksByPoint.set(point, declaration);
-                            hooks.push(declaration);
+                            const declaration = {{ event, actions, order }};
+                            eventsByEvent.set(event, declaration);
+                            events.push(declaration);
                         }}
                     }}
                     const actions = [];
@@ -587,7 +578,7 @@ impl PluginSandbox {
                             path: declaredRoutes[i].path,
                         }});
                     }}
-                    return JSON.stringify({{ ok: true, metadata: metadata || null, tools: tools, prompts: prompts, skills: skills, ignoredSkills: ignoredSkills, hooks: hooks, actions: actions, routes: routes }});
+                    return JSON.stringify({{ ok: true, metadata: metadata || null, tools: tools, prompts: prompts, skills: skills, ignoredSkills: ignoredSkills, events: events, actions: actions, routes: routes }});
                 }} catch (err) {{
                     // 🔴 带上 `stack`（P4·SP-73）：只拿 `err.message` 的话，报错不带文件与行号。
                     // 反过来只取 `stack` 又会丢掉 Boa 的消息行（只剩帧），所以两者都留。
@@ -647,8 +638,8 @@ impl PluginSandbox {
                 })
                 .unwrap_or_default();
             // P3a·SP-50：钩子注册同理
-            let hooks: Vec<PluginHookDeclaration> = serde_json::from_value(
-                resp.get("hooks").cloned().unwrap_or(serde_json::json!([])),
+            let events: Vec<PluginEventDeclaration> = serde_json::from_value(
+                resp.get("events").cloned().unwrap_or(serde_json::json!([])),
             )
             .unwrap_or_default();
             // 面向界面的动作声明（空数组 = 没声明）
@@ -675,7 +666,7 @@ impl PluginSandbox {
                     &tools,
                     &prompts,
                     &skills,
-                    &hooks,
+                    &events,
                     &actions,
                     &routes,
                 )?;
@@ -686,7 +677,7 @@ impl PluginSandbox {
                 prompts,
                 skills,
                 ignored_skills,
-                hooks,
+                events,
                 actions,
                 routes,
             })
@@ -707,7 +698,7 @@ impl PluginSandbox {
         tools: &[PluginToolDeclaration],
         prompts: &[PluginPromptDeclaration],
         _skills: &[PluginSkillDeclaration],
-        hooks: &[PluginHookDeclaration],
+        events: &[PluginEventDeclaration],
         actions: &[PluginActionDeclaration],
         routes: &[PluginRouteDeclaration],
     ) -> Result<()> {
@@ -736,9 +727,9 @@ impl PluginSandbox {
                 anyhow::bail!("插件 metadata `skills` 必须是对象（可省略）");
             }
         }
-        Self::validate_metadata_group(metadata, "hooks", hooks.len(), hooks.iter().map(|v| v.point.as_str()))?;
+        Self::validate_metadata_group(metadata, "events", events.len(), events.iter().map(|v| v.event.as_str()))?;
         // 动作组是**可选**的：没有动作的旧插件不必补字段；一旦注册了动作就必须对账，
-        // 与 tools / systemPrompt / hooks 同一条失败安全口径。
+        // 与 tools / systemPrompt / events 同一条失败安全口径。
         if !actions.is_empty() {
             Self::validate_metadata_group(
                 metadata,
@@ -862,13 +853,13 @@ impl PluginSandbox {
                         return JSON.stringify({{ error: "插件未导出有效对象或函数" }});
                     }}
                     const ws = {ws_json};
-                    const targetPoint = {point_json};
+                    const targetEvent = {point_json};
                     const requireFactory = {require_factory};
                     const eventPayload = payload && payload.__ada_hook_event !== undefined
                         ? payload.__ada_hook_event
                         : payload;
                     const hookCtx = Object.assign(
-                        {{ point: targetPoint, workspace: ws }},
+                        {{ event: targetEvent, workspace: ws }},
                         payload && payload.__ada_hook_ctx !== undefined ? payload.__ada_hook_ctx : {{}},
                     );
                     const registrations = [];
@@ -907,10 +898,10 @@ impl PluginSandbox {
                         }});
                         return {{ ok: true }};
                     }};
-                    // 钩子内**没有** registerHook：动态注册目前整条链没有消费者
+                    // 事件内**没有** registerHook：动态注册目前整条链没有消费者
                     // （`take_registrations` 只被测试调用），留着只会让作者以为注册成功。
-                    // 需要新增钩子请在工厂期用 `ada.on` 声明。
-                    let hooksRaw = [];
+                    // 需要新增事件请在工厂期用 `ada.on` 声明。
+                    let eventsRaw = [];
                     if (typeof desc === 'function') {{
                         const api = {api};
                         try {{
@@ -919,15 +910,15 @@ impl PluginSandbox {
                             return JSON.stringify({{ error: "插件初始化执行异常: " + (e && e.message ? e.message : e) }});
                         }}
                     }} else if (typeof desc === 'object' && !requireFactory) {{
-                        for (const hook of (desc.hooks || [])) hooksRaw.push(hook);
+                        for (const hook of (desc.events || [])) eventsRaw.push(hook);
                     }} else {{
                         return JSON.stringify({{ error: "Extension Factory must be a default-exported function" }});
                     }}
 
-                    const targets = hooksRaw.filter((h) => h && h.point === targetPoint)
+                    const targets = eventsRaw.filter((h) => h && h.event === targetEvent)
                         .sort((a, b) => (a.order || 0) - (b.order || 0));
                     if (targets.length === 0) {{
-                        return JSON.stringify({{ error: "插件未声明点位: " + targetPoint }});
+                        return JSON.stringify({{ error: "插件未声明事件: " + targetEvent }});
                     }}
 
                     // 🔴 入参**已经是对象**：`call_async_fn` 会把传进去的 JSON 串解析成 JS 值
@@ -982,7 +973,7 @@ impl PluginSandbox {
             "#,
             ws_json = ws_json,
             point_json = point_json,
-            api = Self::api_literal(ApiSurface { hooks: true, ..Default::default() }),
+            api = Self::api_literal(ApiSurface { events: true, ..Default::default() }),
             require_factory = require_factory
         );
         if let Err(e) = runtime.eval_ts(call_setup, Some("ada_hook_caller.js")).await {
@@ -1636,7 +1627,7 @@ mod tests {
                     description: "动作与动态路由同在一个工厂里",
                     tools: { count: 0, names: [] },
                     systemPrompt: { count: 0, names: [] },
-                    hooks: { count: 0, names: [] },
+                    events: { count: 0, names: [] },
                     actions: { count: 1, names: ["ping"] },
                     routes: { count: 1, names: ["GET /ping"] },
                 };
@@ -2004,18 +1995,18 @@ mod tests {
     /// 3. **工具调用路径的 api 必须也带钩子注册入口**：插件工厂调了它就抛，
     ///    于是"带钩子的插件连工具都调不动"——这条用例的后半段专门守着它。
     #[tokio::test]
-    async fn test_sandbox_call_hook_round_trip_and_tool_still_works() {
-        let dir = std::env::temp_dir().join(format!("a_da_hook_rt_{}", uuid::Uuid::new_v4()));
+    async fn test_sandbox_event_round_trip_and_tool_still_works() {
+        let dir = std::env::temp_dir().join(format!("a_da_event_rt_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("guard.ts");
         std::fs::write(
             &path,
             "export default function (api: any) {\n\
-               api.on('beforeToolCall', async (payload: any, ctx: any) => {\n\
+               api.on('event_before_tool_call', async (payload: any, ctx: any) => {\n\
                  if (String((payload.args && payload.args.cmd) || '').includes('rm -rf')) {\n\
                    return { action: 'deny', reason: '会删掉整个工作区' };\n\
                  }\n\
-                 return { note: String(ctx.point) + ':' + String(ctx.workspace || '') };\n\
+                 return { note: String(ctx.event) + ':' + String(ctx.workspace || '') };\n\
                });\n\
                api.registerTool({ name: 'git_status', description: '插件版 git 状态', \
                  execute: async () => ({ ok: true, output: '插件真的跑了' }) });\n\
@@ -2026,7 +2017,7 @@ mod tests {
         // ① 拦下：拿到结构化动作与理由
         let deny = PluginSandbox::call_hook_budgeted(
             &path,
-            "beforeToolCall",
+            "event_before_tool_call",
             serde_json::json!({ "tool": "git_status", "args": { "cmd": "rm -rf /" } }),
             &dir,
             10,
@@ -2044,7 +2035,7 @@ mod tests {
         // ② 无意见：返回空对象（等价于 Pass），不是错误
         let pass = PluginSandbox::call_hook_budgeted(
             &path,
-            "beforeToolCall",
+            "event_before_tool_call",
             serde_json::json!({ "tool": "git_status", "args": { "cmd": "git status" } }),
             &dir,
             10,
@@ -2058,7 +2049,7 @@ mod tests {
         // ③ 同一个插件的**工具**照样能调（工厂里少了 `on` 时这一步会红）
         assert_eq!(
             pass.get("note").and_then(|v| v.as_str()),
-            Some(format!("beforeToolCall:{}", dir.to_string_lossy()).as_str()),
+            Some(format!("event_before_tool_call:{}", dir.to_string_lossy()).as_str()),
             "pi-style ctx should be injected as the second handler argument: {pass}"
         );
 
@@ -2074,21 +2065,21 @@ mod tests {
         assert!(tool.ok, "带钩子的插件，工具必须照常可调：{}", tool.output);
         assert_eq!(tool.output, "插件真的跑了");
 
-        let registration_dir = std::env::temp_dir().join(format!("a_da_hook_register_{}", uuid::Uuid::new_v4()));
+        let registration_dir = std::env::temp_dir().join(format!("a_da_event_register_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&registration_dir).unwrap();
         let registration_path = registration_dir.join("registrations.ts");
         std::fs::write(
             &registration_path,
-            "export default { hooks: [{ point: 'afterTurn', actions: ['observe'], handler: async (_event: any, ctx: any) => { \
+            "export default { events: [{ event: 'event_after_turn', actions: ['observe'], handler: async (_event: any, ctx: any) => { \
               ctx.registerTool({ name: 'dynamic_tool', description: 'dynamic', parameters: { type: 'object' }, executeExport: 'dynamic_tool' }); \
               ctx.registerSystemPrompt({ id: 'dynamic-prompt', content: 'Use the dynamic prompt.' }); \
               ctx.registerSkill({ name: 'dynamic-skill', description: 'dynamic skill', path: '.ada/agent-coding/skills/dynamic-skill.md' }); \
-              return { action: 'observe', data: { point: ctx.point } }; } }] };\n",
+              return { action: 'observe', data: { event: ctx.event } }; } }] };\n",
         )
         .unwrap();
         let registrations_result = PluginSandbox::call_hook_budgeted(
             &registration_path,
-            "afterTurn",
+            "event_after_turn",
             serde_json::json!({ "step": 1 }),
             &registration_dir,
             10,
@@ -2096,7 +2087,7 @@ mod tests {
             ada_ts_engine::Limits::default(),
         )
         .await
-        .expect("registration hook should succeed");
+        .expect("registration event should succeed");
         let registrations = registrations_result["data"]["registrations"]
             .as_array()
             .expect("registration requests should be returned");
@@ -2123,14 +2114,14 @@ mod tests {
               tools: { count: 1, names: ['test_tool'] },
               systemPrompt: { count: 1, names: ['增强命中'] },
               skills: { count: 1, names: ['test_skill'] },
-              hooks: { count: 1, names: ['afterTurn'] }
+              events: { count: 1, names: ['event_after_turn'] }
             };
             export default function (ada) {
               ada.metadata = metadata;
               ada.registerTool({ name: 'test_tool', description: 'tool', parameters: {}, execute: async () => 'ok' });
               ada.registerSystemPrompt({ id: '增强命中', content: '命中提示' });
               ada.registerSkill({ name: 'test_skill', description: 'skill', path: 'skills/test_skill.md', body: 'skill body' });
-              ada.on('turn_end', async (event, ctx) => ({ action: 'note', note: `${ctx.point}:${event.step}` }));
+              ada.on('event_after_turn', async (event, ctx) => ({ action: 'note', note: `${ctx.event}:${event.step}` }));
             }"#,
         )
         .unwrap();
@@ -2148,11 +2139,11 @@ mod tests {
         // 技能不再由脚本声明（目录约定），旧的 registerSkill 只被记名字
         assert!(inspected.skills.is_empty());
         assert_eq!(inspected.ignored_skills, vec!["test_skill".to_string()]);
-        assert_eq!(inspected.hooks[0].point, "afterTurn");
+        assert_eq!(inspected.events[0].event, "event_after_turn");
 
         let hook_result = PluginSandbox::call_hook_budgeted(
             &index,
-            "afterTurn",
+            "event_after_turn",
             serde_json::json!({ "step": 3 }),
             &dir,
             10,
@@ -2162,11 +2153,11 @@ mod tests {
         .await
         .expect("pi-style on registration should execute");
         assert_eq!(hook_result["action"], "note");
-        assert_eq!(hook_result["note"], "afterTurn:3");
+        assert_eq!(hook_result["note"], "event_after_turn:3");
 
         std::fs::write(
             &index,
-            "const metadata = { name: 'test', description: 'bad', tools: { count: 2, names: ['test_tool', 'extra'] }, systemPrompt: { count: 0, names: [] }, skills: { count: 0, names: [] }, hooks: { count: 0, names: [] } }; export default function (ada) { ada.metadata = metadata; ada.registerTool({ name: 'test_tool', description: 'tool', parameters: {}, execute: async () => 'ok' }); }",
+            "const metadata = { name: 'test', description: 'bad', tools: { count: 2, names: ['test_tool', 'extra'] }, systemPrompt: { count: 0, names: [] }, skills: { count: 0, names: [] }, events: { count: 0, names: [] } }; export default function (ada) { ada.metadata = metadata; ada.registerTool({ name: 'test_tool', description: 'tool', parameters: {}, execute: async () => 'ok' }); }",
         )
         .unwrap();
         let error = PluginSandbox::inspect_plugin_full(
@@ -2180,7 +2171,7 @@ mod tests {
 
         std::fs::write(
             &index,
-            "export default { metadata: { name: 'legacy', description: 'object form', tools: { count: 0, names: [] }, systemPrompt: { count: 0, names: [] }, skills: { count: 0, names: [] }, hooks: { count: 0, names: [] } }, tools: [] }",
+            "export default { metadata: { name: 'legacy', description: 'object form', tools: { count: 0, names: [] }, systemPrompt: { count: 0, names: [] }, skills: { count: 0, names: [] }, events: { count: 0, names: [] } }, tools: [] }",
         )
         .unwrap();
         let error = PluginSandbox::inspect_plugin_full(
@@ -2245,8 +2236,8 @@ mod tests {
         assert_eq!(manifest.name, "demo-guard", "frontmatter 的 name 必须等于目录名");
         assert!(!manifest.body.is_empty(), "正文不能为空");
         assert!(
-            insp.hooks.is_empty(),
-            "骨架不该偷偷注册钩子（metadata 里写的就是 0）"
+            insp.events.is_empty(),
+            "骨架不该偷偷注册事件处理器（metadata 里写的就是 0）"
         );
 
         // 示例工具真的能跑（工具名/参数 schema/execute 约定任何一处写错，这里就挂）
@@ -2283,7 +2274,7 @@ mod tests {
               description: '动作测试',
               tools: { count: 1, names: ['echo_tool'] },
               systemPrompt: { count: 0, names: [] },
-              hooks: { count: 0, names: [] },
+              events: { count: 0, names: [] },
               actions: { count: 2, names: ['status', 'refresh'] },
             };
             export default function (ada) {

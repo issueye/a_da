@@ -114,7 +114,7 @@ fn plugin_source(version: &str) -> String {
   tools: {{ count: 0, names: [] }},
   systemPrompt: {{ count: 0, names: [] }},
   skills: {{ count: 0, names: [] }},
-  hooks: {{ count: 0, names: [] }}
+  events: {{ count: 0, names: [] }}
 }};
 export default function (ada) {{ ada.metadata = metadata; }}"#
     )

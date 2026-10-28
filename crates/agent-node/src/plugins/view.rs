@@ -30,7 +30,7 @@ pub struct PluginContributionView {
     pub prompts: Vec<PluginPromptDeclaration>,
     pub skills: Vec<SkillSummary>,
     /// 该插件**装上了**的钩子点位（已排序、已去重）。空 = 它没订任何点位。
-    pub hooks: Vec<String>,
+    pub events: Vec<String>,
 }
 
 /// 插件贡献视图的活体（装配期写、重装配原地替换、界面读）。
@@ -44,11 +44,11 @@ pub fn new_contribution_store(views: Vec<PluginContributionView>) -> PluginContr
 /// 从**一次装载的产物**造视图。初装（组合根）与重装配（`LivePluginReassembler`）都走它，
 /// 免得两处各写一份"怎么算这个插件的贡献"，迟早说不一样的话。
 ///
-/// `hooks_by_plugin` 来自 `HookRuntime::points_by_plugin`：钩子在**注册期**才有定论
+/// `events_by_plugin` 来自 `HookRuntime::events_by_plugin`：事件在**注册期**才有定论
 /// （分级/未实现/能力开关都可能把它们挡掉），所以它由运行时给，不在这里猜。
 pub fn views_from_assembly(
     asm: &PluginToolAssembly,
-    hooks_by_plugin: &BTreeMap<String, Vec<String>>,
+    events_by_plugin: &BTreeMap<String, Vec<String>>,
 ) -> Vec<PluginContributionView> {
     let mut views: BTreeMap<String, PluginContributionView> = BTreeMap::new();
     let entry = |plugin_id: &str| -> PluginContributionView {
@@ -57,7 +57,7 @@ pub fn views_from_assembly(
             tools: Vec::new(),
             prompts: Vec::new(),
             skills: Vec::new(),
-            hooks: Vec::new(),
+            events: Vec::new(),
         }
     };
 
@@ -90,11 +90,11 @@ pub fn views_from_assembly(
         view.skills.push(decl.to_summary(plugin_id, plugin_name));
     }
     // 钩子：注册成功的点位（被分级/开关挡下的不在里面——那正是"实际生效"的意思）
-    for (plugin_id, points) in hooks_by_plugin {
+    for (plugin_id, points) in events_by_plugin {
         let view = views
             .entry(plugin_id.clone())
             .or_insert_with(|| entry(plugin_id));
-        view.hooks = points.clone();
+        view.events = points.clone();
     }
 
     let mut out: Vec<PluginContributionView> = views.into_values().collect();
@@ -102,8 +102,8 @@ pub fn views_from_assembly(
         view.tools.sort_by(|a, b| a.name.cmp(&b.name));
         view.prompts.sort_by(|a, b| a.id.cmp(&b.id));
         view.skills.sort_by(|a, b| a.name.cmp(&b.name));
-        view.hooks.sort();
-        view.hooks.dedup();
+        view.events.sort();
+        view.events.dedup();
     }
     out
 }
@@ -180,13 +180,13 @@ mod tests {
             )],
             ..Default::default()
         };
-        let mut hooks = BTreeMap::new();
-        hooks.insert(
+        let mut events = BTreeMap::new();
+        events.insert(
             "workspace:demo".to_string(),
-            vec!["afterTurn".to_string(), "beforeToolCall".to_string()],
+            vec!["event_after_turn".to_string(), "event_before_tool_call".to_string()],
         );
 
-        let views = views_from_assembly(&asm, &hooks);
+        let views = views_from_assembly(&asm, &events);
         assert_eq!(views.len(), 2, "两个插件各一条视图：{views:?}");
         let demo = views
             .iter()
@@ -203,13 +203,13 @@ mod tests {
         assert_eq!(demo.prompts.len(), 1);
         assert_eq!(demo.skills.len(), 1);
         assert_eq!(demo.skills[0].plugin_id.as_deref(), Some("workspace:demo"));
-        assert_eq!(demo.hooks, vec!["afterTurn", "beforeToolCall"]);
+        assert_eq!(demo.events, vec!["event_after_turn", "event_before_tool_call"]);
 
         let other = views
             .iter()
             .find(|v| v.plugin_id == "global:other")
             .expect("另一个插件也要有视图");
         assert_eq!(other.tools.len(), 1);
-        assert!(other.prompts.is_empty() && other.skills.is_empty() && other.hooks.is_empty());
+        assert!(other.prompts.is_empty() && other.skills.is_empty() && other.events.is_empty());
     }
 }

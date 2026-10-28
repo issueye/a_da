@@ -29,7 +29,7 @@ fn plugin_item(id: &str, scope: &str) -> agent_node::plugins::PluginItem {
         tools: Vec::new(),
         skills: Vec::new(),
         prompts: Vec::new(),
-        hooks: Vec::new(),
+        events: Vec::new(),
         is_package: Some(true),
         error: None,
         size_bytes: 0,
@@ -56,7 +56,7 @@ fn test_merge_contribution_views_fills_disk_plugin_contributions() {
                 content: "一律用 tabs".to_string(),
             }],
             skills: Vec::new(),
-            hooks: vec!["beforeToolCall".to_string()],
+            events: vec!["event_before_tool_call".to_string()],
         },
     ]);
     let mut items = vec![plugin_item("workspace:demo", "workspace")];
@@ -73,7 +73,7 @@ fn test_merge_contribution_views_fills_disk_plugin_contributions() {
         "读写性如实照抄（界面据此显示写徽章）"
     );
     assert_eq!(items[0].prompts.len(), 1);
-    assert_eq!(items[0].hooks, vec!["beforeToolCall".to_string()]);
+    assert_eq!(items[0].events, vec!["event_before_tool_call".to_string()]);
     assert_eq!(
         items[0].plugin.contributions.tools.len(),
         1,
@@ -87,7 +87,7 @@ fn test_merge_contribution_views_fills_disk_plugin_contributions() {
     // 没有视图的插件一个字段都不动（如实为空）
     let mut untouched = vec![plugin_item("global:other", "global")];
     merge_contribution_views(Some(&store), &mut untouched);
-    assert!(untouched[0].tools.is_empty() && untouched[0].hooks.is_empty());
+    assert!(untouched[0].tools.is_empty() && untouched[0].events.is_empty());
 
     // 没注入视图 → 同样不动（"这台宿主没执行过插件"的真相）
     let mut no_store = vec![plugin_item("workspace:demo", "workspace")];
@@ -109,7 +109,7 @@ fn test_merge_contribution_views_never_touches_builtin_items() {
             }],
             prompts: Vec::new(),
             skills: Vec::new(),
-            hooks: Vec::new(),
+            events: Vec::new(),
         },
     ]);
     let mut items = vec![plugin_item("builtin:ask-user", "builtin")];
@@ -412,7 +412,7 @@ async fn test_handshake_capabilities_come_from_the_product_declaration() {
     );
     assert_eq!(caps.get("images").and_then(|v| v.as_bool()), Some(false));
     assert_eq!(
-        caps.get("hooks").and_then(|v| v.as_bool()),
+        caps.get("pluginEvents").and_then(|v| v.as_bool()),
         Some(false),
         "骨架产品**没有**声明 hooks → 必须如实回 false（能力位从声明派生，不是恒真）"
     );
@@ -690,7 +690,7 @@ async fn test_session_initialize_returns_capabilities_and_snapshot_has_seq() {
     assert_eq!(caps.get("rollback").and_then(|v| v.as_bool()), Some(true));
     assert_eq!(caps.get("plugins").and_then(|v| v.as_bool()), Some(true));
     assert_eq!(
-        caps.get("hooks").and_then(|v| v.as_bool()),
+        caps.get("pluginEvents").and_then(|v| v.as_bool()),
         Some(true),
         "P3a 起 ada-coding 声明 hooks=true（引擎有生产调用点 + 成对埋点 + 缺席可见用例）"
     );
@@ -870,7 +870,7 @@ async fn test_plugin_route_dispatches_to_the_ts_router_and_keeps_http_status() {
           description: 'dispatch route test',
           tools: { count: 0, names: [] },
           systemPrompt: { count: 0, names: [] },
-          hooks: { count: 0, names: [] },
+          events: { count: 0, names: [] },
         };
         export default function (ada) {
           ada.metadata = metadata;

@@ -7,7 +7,7 @@
     "images": false,
     "rollback": true,
     "plugins": true,
-    "hooks": false,
+    "pluginEvents": false,
     "resync": false,
     "events": {
       "granularity": "coarse",

@@ -159,7 +159,7 @@ async fn build_injection(
         // P4：把"这次装载真的收下了什么"写成视图（插件启停时由重装配器原地替换）
         let hooks_by_plugin = hook_runtime_for_dispatch
             .as_ref()
-            .map(|r| r.points_by_plugin())
+            .map(|r| r.events_by_plugin())
             .unwrap_or_default();
         if let Ok(mut views) = plugin_contribution_views.write() {
             *views = agent_node::plugins::views_from_assembly(&asm, &hooks_by_plugin);
@@ -375,12 +375,12 @@ async fn collect_plugins(
         .map(|(_, t)| (t.descriptor().name.clone(), t.descriptor().summary.clone()))
         .collect();
     // P3a·SP-50：钩子运行时在这里装（它要 ScriptHost，宿主那层没有）。
-    if spec.capabilities.hooks {
-        let hook_timeout_ms = out.caps.hook_timeout_ms;
+    if spec.capabilities.events {
+        let event_timeout_ms = out.caps.event_timeout_ms;
         let (runtime, rejections) = agent_node::hooks::collect_hooks(
             script_host.clone(),
             agent_base::ports::HookBudget {
-                timeout_ms: hook_timeout_ms,
+                timeout_ms: event_timeout_ms,
             },
             &asm.handles,
             out.caps.clone(),
@@ -395,7 +395,7 @@ async fn collect_plugins(
             info!(
                 "[{label}] 钩子就绪：{} 条注册（单点位预算 {}ms）",
                 runtime.len(),
-                hook_timeout_ms
+                event_timeout_ms
             );
             let rt = Arc::new(runtime);
             out.hook_runtime = Some(rt.clone());

@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::domain::{
     AgentError, AgentEvent, AgentEventBody, AgentMessage, DiagFamily, DiagOutcome,
-    DiagnosticEvent, Origin, POINT_HOOK_REPLACE_APPLIED, POINT_HOOK_REPLACE_REJECTED,
+    DiagnosticEvent, Origin, POINT_EVENT_REPLACE_APPLIED, POINT_EVENT_REPLACE_REJECTED,
     POINT_PROMPT_COMPOSED, POINT_TURN_ABORTED, Termination, ToolCall, ToolCallBlock, ToolReceipt,
     ToolStatus, TraceCtx, TurnStopReason, make_turn_id,
 };
@@ -227,10 +227,11 @@ impl AgentRuntime {
             cancel,
             on_event: &on_event,
         };
+        let name = crate::ports::hooks::event_name_for_point(point).unwrap_or(point);
         runner
             .before(
                 BeforeRequest {
-                    point: point.to_string(),
+                    point: name.to_string(),
                     subject,
                     payload,
                 },
@@ -291,10 +292,11 @@ impl AgentRuntime {
             cancel,
             on_event: &on_event,
         };
+        let name = crate::ports::hooks::event_name_for_point(point).unwrap_or(point);
         runner
             .after(
                 AfterRequest {
-                    point: point.to_string(),
+                    point: name.to_string(),
                     subject,
                     payload,
                 },
@@ -342,8 +344,8 @@ impl AgentRuntime {
             thread_id,
             trace,
             DiagnosticEvent::new(
-                DiagFamily::Hook,
-                POINT_HOOK_REPLACE_REJECTED,
+                DiagFamily::Event,
+                POINT_EVENT_REPLACE_REJECTED,
                 Origin::Plugin { id: by.to_string() },
             )
             .with_outcome(DiagOutcome::Denied)
@@ -486,7 +488,7 @@ impl AgentRuntime {
             }
             BeforeOutcome::AbortTurn { reason } => {
                 let stop = TurnStopReason::Aborted;
-                self.emit_aborted(sink, &thread_id, &trace, "hook:beforeAgentStart");
+                self.emit_aborted(sink, &thread_id, &trace, "event:event_before_agent_start");
                 let _ = self
                     .run_after_hook(
                         points::AFTER_AGENT_END,
@@ -703,7 +705,7 @@ impl AgentRuntime {
                         sink,
                         &thread_id,
                         &trace,
-                        &format!("hook:{}:{reason}", points::BEFORE_TURN),
+                        &format!("event:{}:{reason}", crate::ports::hooks::event_name_for_point(points::BEFORE_TURN).unwrap_or(points::BEFORE_TURN)),
                     );
                     final_stop_reason = TurnStopReason::Aborted;
                     break 'turn_loop;
@@ -806,7 +808,7 @@ impl AgentRuntime {
                             sink,
                             &thread_id,
                             &trace,
-                            &format!("hook:{point}:{reason}"),
+                            &format!("event:{}:{reason}", crate::ports::hooks::event_name_for_point(point).unwrap_or(point)),
                         );
                         final_stop_reason = TurnStopReason::Aborted;
                         break 'turn_loop;
@@ -839,7 +841,7 @@ impl AgentRuntime {
                     break 'turn_loop;
                 }
                 BeforeOutcome::AbortTurn { reason } => {
-                    self.emit_aborted(sink, &thread_id, &trace, &format!("hook:{}:{reason}", points::BEFORE_LLM_REQUEST));
+                    self.emit_aborted(sink, &thread_id, &trace, &format!("event:{}:{reason}", crate::ports::hooks::event_name_for_point(points::BEFORE_LLM_REQUEST).unwrap_or(points::BEFORE_LLM_REQUEST)));
                     final_stop_reason = TurnStopReason::Aborted;
                     break 'turn_loop;
                 }
@@ -1162,7 +1164,7 @@ impl AgentRuntime {
                                     sink,
                                     &thread_id,
                                     &trace,
-                                    &format!("hook:{}:{reason}", points::BEFORE_TOOL_CALL),
+                                    &format!("event:{}:{reason}", crate::ports::hooks::event_name_for_point(points::BEFORE_TOOL_CALL).unwrap_or(points::BEFORE_TOOL_CALL)),
                                 );
                                 final_stop_reason = TurnStopReason::Aborted;
                                 trace.call_id = None;
@@ -1198,8 +1200,8 @@ impl AgentRuntime {
                                             &thread_id,
                                             &trace,
                                             DiagnosticEvent::new(
-                                                DiagFamily::Hook,
-                                                POINT_HOOK_REPLACE_APPLIED,
+                                                DiagFamily::Event,
+                                                POINT_EVENT_REPLACE_APPLIED,
                                                 Origin::Plugin { id: by.clone() },
                                             )
                                             .with_outcome(DiagOutcome::Passed)

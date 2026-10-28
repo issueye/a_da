@@ -110,7 +110,7 @@ const metadata = {
   description: "统一插件示例",
   tools: { count: 0, names: [] },
   systemPrompt: { count: 0, names: [] },
-  hooks: { count: 0, names: [] },
+  events: { count: 0, names: [] },
   actions: { count: 2, names: ["status", "refresh"] },
 };
 

@@ -401,7 +401,7 @@ curl -i -H 'Authorization: Bearer secret' -H 'If-None-Match: "snap-42"' \
 | `-32001` | Unauthorized | 未授权 |
 | `-32002` | NotFound | 目标不存在 |
 | `-32003` | NotReady | 宿主未就绪 |
-| `-32004` | Denied | 被策略/钩子拒绝 |
+| `-32004` | Denied | 被策略/事件处理器拒绝 |
 | `-32005` | Timeout | 超时 |
 | `-32006` | AlreadyAnswered | 该问题/审批已被回答 |
 | `-32007` | WorkspaceDenied | 工作区路径被沙箱拒绝 |

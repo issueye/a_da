@@ -18,7 +18,7 @@
 
 ```text
 后端插件（agent）
-  └─ 工具 / 钩子 / 提示词 / 技能
+  └─ 工具 / 事件处理器 / 提示词 / 技能
         │
         ▼
    agent 引擎与状态（tool 卡、todo、会话快照；插件自己的状态由插件动作提供）
@@ -35,7 +35,7 @@
   或把统一插件的只读动作结果放进 `props.data.backend`；
 - 前端能**触发**动作，是因为它提交到**核心路由**（发送、供应商保存等）
   或**插件自己的桥接路由** `/ext/{id}/backend/{binding}`；
-- 前端**不能**按名字调用某个后端插件的工具或钩子；
+- 前端**不能**按名字调用某个后端插件的工具或事件处理器；
 - 后端**不能**定义页面或插槽，也不能直接向前端插件推送事件。
 
 一句话：**核心状态读投影，插件状态读动作，写走核心路由或插件桥接；插件之间不直连。**
@@ -63,8 +63,8 @@
                                 ▼
 ┌────────────────────────── agent-rpc / agent ──────────────────────┐
 │  - JSON-RPC 方法（thread.send、plugin.invoke…）                      │
-│  - 后端插件装配：工具 / 提示词 / 技能 / 钩子                        │
-│  - 引擎执行工具、触发钩子、产生事件与快照                           │
+│  - 后端插件装配：工具 / 提示词 / 技能 / 事件处理器                        │
+│  - 引擎执行工具、触发事件处理器、产生事件与快照                           │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -138,7 +138,7 @@ agent RPC：
 `plugin.invoke`，例如提问插件的 `/ext/ask-user/backend/answer`。这条路仍然只接受
 插件清单里显式声明的绑定，不是“任意插件动作面”。
 
-### 4.3 后端工具/钩子产生界面可见的状态
+### 4.3 后端工具/事件处理器产生界面可见的状态
 
 后端插件不能直接渲染 UI，但它的工具结果、动作结果、计划事件可以被核心或插件自己的
 前端插槽消费。两条典型链路：
@@ -316,7 +316,7 @@ plugins/ask-user（同一个统一插件）
 | SSR → agent | 服务端 `AgentClient`，网关 token 不下发浏览器 |
 | 前端 TSX → 宿主 | 无 fs/net/process；HTML 白名单；500ms 渲染预算；无内存上限 |
 | 前端浏览器脚本 | 与页面同源，能调核心路由；**能力声明不约束脚本** |
-| 后端插件 → 宿主 | `@ada-needs` 模块注入清单；路径只解析；net 按策略；sqlite/exec 需声明；钩子分级 |
+| 后端插件 → 宿主 | `@ada-needs` 模块注入清单；路径只解析；net 按策略；sqlite/exec 需声明；事件处理器分级 |
 | 前端能力 | `providers.read` / `processes.read` / `tasks.read` / `runs.read` 是**数据最小化**，不是授权系统 |
 
 两个需要特别记住的事实：
@@ -344,7 +344,7 @@ plugins/ask-user（同一个统一插件）
 | 后端插件沙箱 | `crates/agent-node/src/plugins/sandbox.rs` |
 | `@ada-needs` 解析 | `crates/agent-node/src/scripts/needs.rs` |
 | 后端工具适配 | `crates/agent-node/src/scripts/plugin_tool.rs` |
-| 钩子分级 | `crates/agent-base/src/ports/hooks.rs` |
+| 事件处理器分级 | `crates/agent-base/src/ports/hooks.rs` |
 | `plugin.*` RPC | `crates/agent-rpc/src/server/dispatch/mod.rs` |
 | 前端 ↔ 后端动作桥接（统一包 v1） | [unified-package.md](unified-package.md)、`crates/agent-web/src/handlers/bridge.rs` |
 | 动作契约与后续提案 | [PLAN-frontend-backend-bridge.md](PLAN-frontend-backend-bridge.md) |

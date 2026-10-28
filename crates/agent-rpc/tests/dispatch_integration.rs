@@ -45,7 +45,7 @@ fn write_extension_package(
     tool_names: &[&str],
     prompt_ids: &[&str],
     skill_names: &[&str],
-    hook_points: &[&str],
+    event_names: &[&str],
     factory_body: &str,
 ) -> std::path::PathBuf {
     let package_root = PluginManager::agent_extensions_dir(&workspace.to_string_lossy()).join(package);
@@ -55,7 +55,7 @@ fn write_extension_package(
         "tools": {"count": tool_names.len(), "names": tool_names},
         "systemPrompt": {"count": prompt_ids.len(), "names": prompt_ids},
         "skills": {"count": skill_names.len(), "names": skill_names},
-        "hooks": {"count": hook_points.len(), "names": hook_points},
+        "events": {"count": event_names.len(), "names": event_names},
     });
     let entry = package_root.join("index.ts");
     std::fs::write(
@@ -455,13 +455,13 @@ async fn test_plugin_and_skill_lifecycle() {
     dispatcher.dispatch("plugin.capabilities.set", serde_json::json!({
         "patch": {
             "allowSystemPromptReplace": true,
-            "hookTimeoutMs": 8888
+            "eventTimeoutMs": 8888
         }
     })).await.unwrap();
 
     let caps = plugin_mgr.get_capabilities(None);
     assert!(caps.capabilities.allow_system_prompt_replace);
-    assert_eq!(caps.capabilities.hook_timeout_ms, 8888);
+    assert_eq!(caps.capabilities.event_timeout_ms, 8888);
 
     // 清理测试目录
     let _ = std::fs::remove_dir_all(&test_dir);
@@ -2078,7 +2078,7 @@ async fn test_plugin_list_merges_live_contribution_views() {
         &["hello_view_tool"],
         &[],
         &[],
-        &["afterTurn"],
+        &["event_after_turn"],
         "ada.registerTool({ name: 'hello_view_tool', description: '打招呼', parameters: { type: 'object', properties: {} }, execute: async () => 'hello' });",
     );
     let ws = ws_dir.to_string_lossy().to_string();
@@ -2096,7 +2096,7 @@ async fn test_plugin_list_merges_live_contribution_views() {
             }],
             prompts: Vec::new(),
             skills: Vec::new(),
-            hooks: vec!["afterTurn".to_string()],
+            events: vec!["event_after_turn".to_string()],
         },
     ]);
 
@@ -2126,7 +2126,7 @@ async fn test_plugin_list_merges_live_contribution_views() {
         "工具贡献要由活体视图填上（静态扫描恒为空）：{item}"
     );
     assert_eq!(
-        item["hooks"].as_array().map(|a| a.len()),
+        item["events"].as_array().map(|a| a.len()),
         Some(1),
         "钩子点位清单要一起给（'这个插件会动手做哪些事'）：{item}"
     );
@@ -2143,7 +2143,7 @@ async fn test_plugin_list_merges_live_contribution_views() {
         .find(|p| p["scope"] == "builtin")
         .expect("内置插件也在列表里");
     assert!(
-        builtin["hooks"].as_array().map(|a| a.is_empty()).unwrap_or(true),
+        builtin["events"].as_array().map(|a| a.is_empty()).unwrap_or(true),
         "内置插件的钩子点位不该被视图改写：{builtin}"
     );
 

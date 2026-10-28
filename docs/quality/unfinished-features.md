@@ -96,33 +96,33 @@
 - **仍不在范围内**：`run_turn_with_images` 的门禁（W5-T4）只在 `agent-host` 直连路径上，
   RPC 生产路径没有二次校验——两份产品声明现在都是 `true`，所以不构成不一致。
 
-### 8. 钩子点位　`已落地（P3a，2026-10-16；P4 复核修正 2026-10-17；2026-10-27 缩减）`
+### 8. 插件事件　`已落地（P3a，2026-10-16；P4 复核修正 2026-10-17；2026-10-27 缩减）`
 
-- **现状（已按代码复核）**：`agent_base::ports::hooks::points::IMPLEMENTED` 列 **29 个点位**，
+- **现状（已按代码复核）**：`agent_base::ports::hooks::points::IMPLEMENTED` 列 **29 个事件**，
   **全部**都有真实调用方：
-  - 工具：`beforeToolCall` / `afterToolCall`（拦下 / 旁注 / 改写）
-  - 轮次：`beforeTurn` / `afterTurn`
-  - 会话：`beforeThreadCreate` / `afterThreadCreate` / `beforeThreadDelete` / `afterThreadDelete`
-  - Agent：`beforeAgentStart` / `afterAgentEnd`　压缩：`beforeCompaction` / `afterCompaction`
-  - 模型：`beforeLlmRequest` / `afterLlmResponse` / `beforeProviderRequest` /
-    `beforeProviderHeaders` / `afterProviderResponse`；上下文：`beforeContext` / `afterContext`
-  - 提示词：`beforeSystemPrompt` / `afterSystemPrompt`　只读面：`beforePersist` /
-    `afterCheckpoint` / `beforeSkillLoad` / `afterSkillLoad`
-  - 子智能体：`beforeSubagentStart` / `afterSubagentEnd`
-  - 插件启停：`beforePluginToggle` / `afterPluginToggle`
-  成对埋点 `hook.entered` / `hook.finished` / `hook.skipped`。
+  - 工具：`event_before_tool_call` / `event_after_tool_call`（拦下 / 旁注 / 改写）
+  - 轮次：`event_before_turn` / `event_after_turn`
+  - 会话：`event_before_thread_create` / `event_after_thread_create` / `event_before_thread_delete` / `event_after_thread_delete`
+  - Agent：`event_before_agent_start` / `event_after_agent_end`　压缩：`event_before_compaction` / `event_after_compaction`
+  - 模型：`event_before_llm_request` / `event_after_llm_response` / `event_before_provider_request` /
+    `event_before_provider_headers` / `event_after_provider_response`；上下文：`event_before_context` / `event_after_context`
+  - 提示词：`event_before_system_prompt` / `event_after_system_prompt`　只读面：`event_before_persist` /
+    `event_after_checkpoint` / `event_before_skill_load` / `event_after_skill_load`
+  - 子智能体：`event_before_subagent_start` / `event_after_subagent_end`
+  - 插件启停：`event_before_plugin_toggle` / `event_after_plugin_toggle`
+  成对埋点 `event.entered` / `event.finished` / `event.skipped`。
 - **2026-10-27 移除**：`beforeTodoUpdate` / `afterTodoUpdate` / `beforeApproval` /
-  `afterApproval` 已从点位表与调用点删除；`task-plan` 改为纯前端，`plugins/approval`
+  `afterApproval` 已从事件表与调用点删除；`task-plan` 改为纯前端，`plugins/approval`
   整个删除，`todo_diff` 与相关测试一并删除。后续由统一事件系统（`event_*`）提供。
-- ⚠️ **本文此前的"仍未接"清单已过时**（把上表一大半点位列为未接），**已删除**：
-  那些点位既在 `IMPLEMENTED` 里、也都有调用方。判断口径以
+- ⚠️ **本文此前的"仍未接"清单已过时**（把上表一大半事件列为未接），**已删除**：
+  那些事件既在 `IMPLEMENTED` 里、也都有调用方。判断口径以
   `points::IMPLEMENTED` + 调用点为准，不要看旧清单。
-- **`onThreadSwitch` 不存在**（旧清单里列着它）：代码里没有这个点位常量，
+- **`onThreadSwitch` 不存在**（旧清单里列着它）：代码里没有这个事件常量，
   `HookLevel::of` 也没有它。要做请先加常量 + 调用点，别只登记名字。
-- **改写（`Replace`）**：当前只有 `beforeToolCall`（数据面）开放；
+- **改写（`Replace`）**：当前只有 `event_before_tool_call`（数据面）开放；
   改完只重跑形状 / schema 校验。载荷只有 `args`：工具名、读写性、描述符字段都改不动。
-  **其余点位不支持改写**（`points::REPLACE_SUPPORTED` 是单一真源，声明会被装配期如实拒）。
-- **"受信"档位不存在**：控制面点位的 `Deny` 因此对第三方一律关闭（只有内置插件能用）。
+  **其余事件不支持改写**（`points::REPLACE_SUPPORTED` 是单一真源，声明会被装配期如实拒）。
+- **"受信"档位不存在**：控制面事件的 `Deny` 因此对第三方一律关闭（只有内置插件能用）。
   将来要放开，应由 manifest 的显式字段驱动，不靠目录猜。
 - **熔断未做**：只有"超时 = 无意见""脚本抛错 = 无意见"两条失败安全口径，
   没有对反复失败的插件降权/熔断。
@@ -136,7 +136,7 @@
 ### 10. 插件能力开关　`已接线（P4，2026-10-17）`
 
 - **背景**：`PluginCapabilities` 的 8 个位被界面渲染成"关掉后会发生什么"的开关，
-  而其中**只有 `hookTimeoutMs` 有真实消费者**——其余 7 位只被解析、无人读取。
+  而其中**只有 `eventTimeoutMs` 有真实消费者**——其余 7 位只被解析、无人读取。
   用户关掉它们**什么都不会发生**，界面还在承诺（7 条用户可见的不实描述）。
 - **现在的处置**：**7 位全部接上判定，1 位删除**：
 
@@ -144,19 +144,19 @@
   |---|---|
   | `allowBuiltinShadow` | 装配管线 `AssemblyBuilder::with_builtin_shadow`（关掉＝同名插件工具不注册、内置保留，跳过的记 `builtin_shadow_disabled`） |
   | `allowSystemPromptReplace` | `agent_host::ContributionPolicy::filter_prompt_fragments`（关掉＝插件提示词片段不进系统提示词，被挡的进 `plugin.skipped` 诊断） |
-  | `allowThirdPartyHooks` | `HookRuntime::register`（关掉＝第三方钩子**装配期即拒**，理由 `third_party_hooks_disabled`；内置不受影响） |
+  | `allowThirdPartyEvents` | `HookRuntime::register`（关掉＝第三方事件处理器**装配期即拒**，理由 `third_party_events_disabled`；内置不受影响） |
   | `allowTextRewrite` | `HookRuntime::action_disabled_by_capabilities`（关掉＝`note` 旁注不再注入） |
-  | `allowThreadDeleteBlock` | 同上（关掉＝`beforeThreadDelete` 的拦下不生效） |
-  | `allowCompactionReplace` | 同上（关掉＝`beforeCompaction` 的拦下/改写不生效） |
-  | `hookTimeoutMs` | `HookBudget`（单点位预算，早已消费） |
+  | `allowThreadDeleteBlock` | 同上（关掉＝`event_before_thread_delete` 的拦下不生效） |
+  | `allowCompactionReplace` | 同上（关掉＝`event_before_compaction` 的拦下/改写不生效） |
+  | `eventTimeoutMs` | `HookBudget`（单事件预算，早已消费） |
   | ~~`allowPlanModeHooks`~~ | **已删除**（见下） |
 
 - **门禁**：`cargo xtask verify-wiring` 新增 **check L2** —— 逐个字段要求
   `PluginCapabilities` 的每一位在**生产代码**里有判定点（判据是读取点写法本身，
   排除定义处与"只解析不判定"的 `manager.rs`）。新加开关却没人读，会在门禁上直接红。
-- 🔴 **读开关的时机是进程装配期**（与 `hookTimeoutMs` 同源）：改开关要**重启产品**
+- 🔴 **读开关的时机是进程装配期**（与 `eventTimeoutMs` 同源）：改开关要**重启产品**
   才生效，与"声明式装配只发生在启动/启停"一致。别把它当成热生效。
-- **`allowPlanModeHooks` 为什么删掉**：它的承诺是"plan 模式下不跑钩子"，而 Rust 引擎
+- **旧的 `allowPlanModeHooks` 为什么删掉**：它的承诺是"plan 模式下不跑事件处理器"，而 Rust 引擎
   **不知道会话处于哪个 mode**——`AgentMode` 只被解析、存进 store、投影给界面，
   执行侧没有任何分支读它。也就是说，它连"要判什么"都不存在。要做得先把 mode 接进引擎，
   届时连开关一起加（界面文案已同步删除）。
@@ -191,15 +191,15 @@
 
 ## 二、明确不做的（设计上划出去了，别当缺口）
 
-- **第三优先钩子点位**：模型选择、上下文超限前的主动裁剪、并发批次控制、错误 / 重试、
-  用户输入改写。**判据**：这些点位不在 `points::IMPLEMENTED` 与 `HookLevel::of` 的值域内——
+- **第三优先事件**：模型选择、上下文超限前的主动裁剪、并发批次控制、错误 / 重试、
+  用户输入改写。**判据**：这些事件不在 `points::IMPLEMENTED` 与 `HookLevel::of` 的值域内——
   要做请先加常量 + 调用点 + 分级，别只登记名字（旧清单里那个 `onThreadSwitch` 就是这么被删掉的）。
 - **`casual` 惰性工具档位**：契约里保留了该取值，运行层**明确拒绝并记 trace**，
   不会假装降级成功。开发计划里标注为"不在 MVP"。
 - **决策插件的引擎驱动"自动模式"**：每轮多一次引擎调用（成本与延迟翻倍），
   没有可用引擎时只能靠启发式——按本项目"拿不到真实判断就不假装有判断"的原则不做。
   已实现的是确定性工具路由。
-- **`beforeTurn.replaceText` / `afterAgentEnd.appendNote`**：本项目没有"改写已渲染回复"与
+- **`event_before_turn` 的改写 / `event_after_agent_end` 的追加旁注**：本项目没有"改写已渲染回复"与
   "向已结束会话追加旁注"的交付通道，声明它们只会变成静默失效，所以契约里没有这两个字段
   （原因写在 `AGENTS.md` §12）。
 - **`cargo xtask gen`（协议四产物生成）**：W5-T1 判定不划算，**正式降级**为
@@ -216,15 +216,15 @@
 > - **`net` 策略的配置面只有环境变量**（SP-72 的一半）：超时与域名白名单**已经生效**
 >   （`NetPolicy`，策略先于请求），但来源是运维环境变量
 >   （`A_DA_PLUGIN_NET_TIMEOUT_SECS` / `A_DA_PLUGIN_NET_ALLOW`）——
->   配置文件 + 界面（和 `hookTimeoutMs` 那样可编辑）还没做。
+>   配置文件 + 界面（和 `eventTimeoutMs` 那样可编辑）还没做。
 > - **`fs` 没有 read/write 分离**：`@ada-needs fs` 是"读写都能"，不是 §3.5 设计的
 >   `fs: [read|write]`。
 > - **运行时错误的行号是"转译后 JS"的座标**（source map 未做）：转译错误已经带原始
 >   行列与出错行原文，运行时错误带文件/位置/栈，但 oxc 的 codegen 会重排行，
 >   所以行号与原 TS 不一一对应。
 > - **诊断面板只聚合到"来源"这一层**（SP-74 的余下部分）：插件卡已渲染自述诊断、
->   诊断日志已按来源聚合（条数 + 最近点位），但还没有跨会话的持久化汇总、
->   也没有按点位的二次分组。
+>   诊断日志已按来源聚合（条数 + 最近事件），但还没有跨会话的持久化汇总、
+>   也没有按事件的二次分组。
 > - ~~**待办清单的"上一次"在内存里**~~：`afterTodoUpdate` 已移除（2026-10-27），
 >   `todo` 工具不再记上一版清单、不再算 diff；计划状态只由核心 `todo_view` 从工具参数投影。
 
@@ -240,16 +240,16 @@
    `PluginManager::get_capabilities(_workspace)` 显式忽略工作区参数，`config_path()` 恒为
    `~/.a-da/config.json`；`pluginCapabilities` / `pluginConfig` 都只写全局那份。
    要做"仅本项目"得先让配置按工作区分区。
-3. ~~插件卡不列"注册了哪些钩子点位"~~ → **已接线（P4）**：`PluginItem.hooks` 由装配期
-   活体视图填入（只列**真的注册上**的点位），插件卡渲染成钩子胶囊。
-4. **钩子内动态注册（`ctx.registerTool/registerSkill/registerSystemPrompt`）目前只收集、不生效**：
+3. ~~插件卡不列"注册了哪些事件"~~ → **已接线（P4）**：`PluginItem.events` 由装配期
+   活体视图填入（只列**真的注册上**的事件），插件卡渲染成事件胶囊。
+4. **事件处理器内动态注册（`ctx.registerTool/registerSkill/registerSystemPrompt`）目前只收集、不生效**：
    沙箱会如实把请求交出来（`HookRuntime::take_registrations` / `data.registrations`），
    但**没有生产调用方**把它们装进 catalog / 提示词。收集处已打 warn 说清"不会生效"，
    免得作者以为注册成功了。要做：启停式的重装配已经就位（`LiveContributions`），
    接法是把这些注册项并进下一次装配，而不是就地改活体（那会在轮内改工具表）。
    **`ctx.registerHook` 已删除**（2026-10-17）：它与工厂期的 `ada.on` 重复，且
    `handlerExport` 在执行期根本找不到函数（`call_hook` 只认 `typeof handler === 'function'`），
-   留着等于承诺一个永远不会跑的点位。钩子只能在装配期声明。
+   留着等于承诺一个永远不会跑的事件。事件只能在装配期声明。
 
 ---
 
@@ -350,9 +350,9 @@
 > **P4（2026-10-17）已修的两条**：
 > - **插件贡献字段不再是空的**：`plugin.list` / `plugin.load` 读装配期的**活体视图**
 >   （`agent_node::plugins::PluginContributionView`），磁盘插件的工具 / 技能 / 提示词片段 /
->   钩子点位终于有值——此前静态目录扫描让贡献计数恒为 0、核心工具页的"被插件重实现"永不亮。
+>   事件终于有值——此前静态目录扫描让贡献计数恒为 0、核心工具页的"被插件重实现"永不亮。
 >   启停时由 `LivePluginReassembler` 原地替换（与技能活体同一模式）。
-> - `PluginItem.hooks`（新增字段）：插件卡列出"这个插件会动手做哪些事"。
+> - `PluginItem.events`（新增字段）：插件卡列出"这个插件会动手做哪些事"。
 
 ### 明确留给别的客户端（不是缺口）
 
@@ -361,7 +361,7 @@
 `ProductInfo.archetype`、`InitializeResult.sessionId`、`PluginManifest.author`、
 `LoadedPlugin.declarative`、`PluginItem.isPackage` / `.sizeBytes`、
 `ServerEventsCapability.granularity`、`ServerCapabilities.rollback`：信息性字段，界面暂时不需要。
-`ServerCapabilities.hooks` 自 P3a 起**不再属于本条**（点位已接线，见 §一.9），界面暂未消费它。
+`ServerCapabilities.pluginEvents` 自 P3a 起**不再属于本条**（事件已接线，见 §一.9），界面暂未消费它。
 `CapabilitySpec.streaming`（产品声明位）：引擎**恒定流式**，该位没有分支消费点，只用于向客户端
 表达"本产品支持流式"。由 `verify-wiring` 的 check L 盯着——它要么在这里登记，要么就得接上消费者
 （未实现的能力位不得声明为 true）。
@@ -376,5 +376,5 @@
 | [`docs/architecture/kernel-design.md`](../architecture/kernel-design.md) | 设计口径（分层、端口、协议单源、装配） |
 | [`AGENTS.md`](../../AGENTS.md) | 接手须知与 § 索引 |
 | [`docs/protocol/README.md`](../protocol/README.md) | 接口文档（WS 线协议 + HTTP API 统一口径） |
-| [`docs/plugins/README.md`](../plugins/README.md) | 插件平台现状（贡献模型、点位、能力开关、排错） |
+| [`docs/plugins/README.md`](../plugins/README.md) | 插件平台现状（贡献模型、事件、能力开关、排错） |
 | [`docs/quality/feature-catalog.md`](feature-catalog.md) | 已实现功能清单 |

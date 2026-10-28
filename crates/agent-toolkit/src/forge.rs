@@ -354,7 +354,7 @@ const metadata = {
   tools: { count: 1, names: ['@@TOOL@@'] },
   systemPrompt: { count: 1, names: ['@@ID@@-usage'] },
   skills: { count: 1, names: ['@@ID@@'] },
-  hooks: { count: 0, names: [] },
+  events: { count: 0, names: [] },
 };
 
 export default function (ada) {
@@ -473,7 +473,7 @@ frontmatter 必填两项：
 
 ## 三条容易踩的规矩
 
-1. **metadata 必须与实际注册一致**：`tools` / `systemPrompt` / `hooks` 的
+1. **metadata 必须与实际注册一致**：`tools` / `systemPrompt` / `events` 的
    `count` 与 `names` 是量出来的，改注册就要同步改它，否则装载期直接拒。
    （`skills` 是声明性的：宿主以目录扫描为准。）
 2. **能力声明写在首部注释**：`// @ada-needs fs,net`。有指令就**只有**指令里列的那些
@@ -625,7 +625,7 @@ mod tests {
         assert!(index.contains("tools: { count: 1, names: ['todo_guard_hello'] }"));
         assert!(index.contains("systemPrompt: { count: 1, names: ['todo-guard-usage'] }"));
         assert!(index.contains("skills: { count: 1, names: ['todo-guard'] }"));
-        assert!(index.contains("hooks: { count: 0, names: [] }"));
+        assert!(index.contains("events: { count: 0, names: [] }"));
         assert!(index.contains("ada.registerTool({"));
         // 描述里的引号必须被转义，否则 TS 直接语法错
         assert!(index.contains("'拦截没有验收标准的 todo'"));
