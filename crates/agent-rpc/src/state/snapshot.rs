@@ -152,7 +152,6 @@ fn generate_snapshot_inner(store: &AgentStore, seq: u64, include_items: bool) ->
         log,
         workspace: store.workspace.clone(),
         config: store.config.clone(),
-        pending_questions: store.pending_questions.clone(),
         public_workspace: store.public_workspace.clone(),
         appearance: store.appearance.clone(),
         ui: store.ui.clone(),

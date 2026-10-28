@@ -74,12 +74,6 @@ pub fn project_to_loop_event(event: &AgentEvent) -> Option<AgentLoopEvent> {
                 details: receipt.details.clone(),
             })
         }
-        AgentEventBody::QuestionAsked { call_id, question } => {
-            Some(AgentLoopEvent::ToolAwaitingQuestion {
-                id: call_id.clone(),
-                question: question.clone(),
-            })
-        }
         AgentEventBody::TurnFinished { stop } => Some(AgentLoopEvent::TurnFinished {
             stop_reason: stop_reason_name(stop),
         }),
@@ -188,8 +182,7 @@ pub struct DirectEventSink {
 fn is_critical_event(body: &AgentEventBody) -> bool {
     matches!(
         body,
-        AgentEventBody::QuestionAsked { .. }
-            | AgentEventBody::ToolCallFinished { .. }
+        AgentEventBody::ToolCallFinished { .. }
             | AgentEventBody::TurnFinished { .. }
             | AgentEventBody::Failed { .. }
     )
@@ -218,7 +211,7 @@ impl EventSink for DirectEventSink {
         self.seq.check(&event);
         // 🔴 关键事件**绝不静默丢弃**：通道满时做**有界**退避重试（上限约 1 秒）。
         //
-        // 丢一条增量只是少刷一帧文字；丢一次 `QuestionAsked` / `TurnFinished`，
+        // 丢一条增量只是少刷一帧文字；丢一次 `ToolCallFinished` / `TurnFinished`，
         // 界面就永远不知道"有人在等你"或"这轮已经结束"——那是静默卡死，用户没有任何线索。
         if is_critical_event(&event.body) {
             let mut pending = event;
@@ -380,13 +373,6 @@ mod tests {
                 }
             )),
             Some(AgentLoopEvent::ToolCallFinished { .. })
-        ));
-        assert!(matches!(
-            project_to_loop_event(&ev(
-                5,
-                AgentEventBody::QuestionAsked { call_id: "c1".into(), question: serde_json::json!({}) }
-            )),
-            Some(AgentLoopEvent::ToolAwaitingQuestion { .. })
         ));
         assert!(matches!(
             project_to_loop_event(&ev(
@@ -687,10 +673,6 @@ mod tests {
                 true,
             ),
             (
-                AgentEventBody::QuestionAsked { call_id: "c".into(), question: serde_json::json!({}) },
-                true,
-            ),
-            (
                 AgentEventBody::SubagentStarted { thread_id: "s".into(), subagent: "x".into() },
                 false,
             ),
@@ -722,7 +704,6 @@ mod tests {
                 AgentEventBody::TextDelta { .. } => "text.delta",
                 AgentEventBody::ToolCallStarted { .. } => "tool.started",
                 AgentEventBody::ToolCallFinished { .. } => "tool.finished",
-                AgentEventBody::QuestionAsked { .. } => "question.asked",
                 AgentEventBody::SubagentStarted { .. } => "subagent.started",
                 AgentEventBody::SubagentFinished { .. } => "subagent.finished",
                 AgentEventBody::UsageReported { .. } => "usage",
@@ -732,13 +713,13 @@ mod tests {
             };
         }
 
-        // 2. 完备性：13 种 kind 每种恰好一次
+        // 2. 完备性：11 种 kind 每种恰好一次
         let mut kinds: Vec<&str> = cases.iter().map(|(b, _)| b.kind()).collect();
         kinds.sort_unstable();
         let mut unique = kinds.clone();
         unique.dedup();
         assert_eq!(unique.len(), cases.len(), "投影表里同一事件种类出现了多次：{kinds:?}");
-        assert_eq!(unique.len(), 12, "领域事件共 13 种，投影表必须全覆盖：{unique:?}");
+        assert_eq!(unique.len(), 11, "领域事件共 11 种，投影表必须全覆盖：{unique:?}");
 
         // 3. 结论与表一致
         for (body, expect_mapped) in &cases {

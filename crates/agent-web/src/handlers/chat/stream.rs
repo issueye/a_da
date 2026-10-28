@@ -641,7 +641,6 @@ fn parts_fingerprint(meta: &Value) -> String {
         "waiting": meta.get("waitingThreadIds"),
         "queue": meta.get("queue"),
         "config": meta.get("config"),
-        "pending": meta.get("pendingQuestions"),
         "openTabs": meta.get("ui").and_then(|ui| ui.get("openTabIds")),
         "threads": threads,
     })

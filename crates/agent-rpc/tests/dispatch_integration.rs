@@ -449,7 +449,6 @@ async fn test_plugin_and_skill_lifecycle() {
     assert!(plugin_ids.contains(&"builtin:project-inspector".to_string()));
     assert!(plugin_ids.contains(&"builtin:test-runner".to_string()));
     assert!(plugin_ids.contains(&"builtin:batch-ops".to_string()));
-    assert!(plugin_ids.contains(&"builtin:ask-user".to_string()));
     assert!(plugin_ids.contains(&"builtin:ponytail".to_string()));
 
     // 4. 测试插件能力开关持久化

@@ -15,7 +15,7 @@
 //! - **内联源码**：沙箱按路径装载（要读盘、要做路径沙箱判定），所以 `ScriptSource::Inline`
 //!   在这里**如实拒绝**，而不是偷偷写临时文件凑合。
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub mod assembly;
 pub mod needs;
@@ -33,13 +33,26 @@ use agent_base::domain::{
     DiagFamily, DiagOutcome, DiagnosticEvent, Origin, POINT_SCRIPT_FINISHED, POINT_SCRIPT_INVOKED,
 };
 use agent_base::ports::{
-    BoxFuture, InvokeRequest, LoadRequest, ModuleHandle, ScriptCtx, ScriptError, ScriptHookDeclaration,
-    ScriptHookOutcome, ScriptHost, ScriptNeeds, ScriptOutcome, ScriptSkillDeclaration,
-    ScriptSource, ScriptToolDeclaration,
+    BoxFuture, CancelToken, InvokeRequest, LoadRequest, ModuleHandle, ScriptCtx, ScriptError,
+    ScriptHookDeclaration, ScriptHookOutcome, ScriptHost, ScriptNeeds, ScriptOutcome,
+    ScriptSkillDeclaration, ScriptSource, ScriptToolDeclaration,
 };
 
 use crate::plugins::PluginSandbox;
 use crate::scripts::registry::{LoadedScript, ScriptRegistry};
+
+/// 轮询取消信号；插件工具可能在沙箱里等很久（例如提问），必须能被用户中止。
+async fn wait_cancel(cancel: &dyn CancelToken) {
+    if cancel.is_cancelled() {
+        return;
+    }
+    loop {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if cancel.is_cancelled() {
+            return;
+        }
+    }
+}
 
 /// 宿主级的遥测出口。
 ///
@@ -173,6 +186,7 @@ impl ScriptHost for TsScriptHost {
                     parameters: tool.parameters,
                     // 自述只读由沙箱归一化成 `"read"` / `"write"`，这里只做映射。
                     access: agent_base::ports::ScriptToolAccess::from_declared(Some(&tool.access)),
+                    long_running: tool.long_running,
                 })
                 .collect();
             let exports: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
@@ -387,13 +401,18 @@ impl ScriptHost for TsScriptHost {
                 &call.export,
                 call.args.clone(),
                 &loaded.workspace,
+                Some(ctx.thread_id),
                 timeout_s,
                 to_engine_needs(loaded.needs),
                 // SP-11：进程内限额来自**同一个预算**——墙钟兜"等待型"，
                 // 指令上限兜"同步死循环"，两者不能各说各话。
                 ada_ts_engine::Limits::tight(ctx.budget.loop_iterations),
-            )
-            .await;
+            );
+            tokio::pin!(result);
+            let result = tokio::select! {
+                result = &mut result => result,
+                _ = wait_cancel(ctx.cancel) => return Err(ScriptError::Aborted),
+            };
 
             let elapsed_ms = started.elapsed().as_millis() as u64;
 

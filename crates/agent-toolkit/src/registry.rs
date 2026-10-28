@@ -15,8 +15,6 @@ use serde_json::json;
 /// 这份名单是**唯一真源**：每个工具的 `Tool::long_running()` 必须与它一致，
 /// `test_long_running_set_matches_tool_declarations` 机械守门（漂移就红）。
 pub const LONG_RUNNING_TOOLS: &[&str] = &[
-    // 等用户回答问题
-    "ask_user",
     // 等子智能体跑完（分钟级）
     "invoke_subagent",
     // 命令执行自带超时（默认 120s、上限 600s），不该被策略超时二次截断
@@ -243,75 +241,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                 termination: Termination::ContinueTurn,
             },
             ToolDescriptor {
-                name: "ask_user".to_string(),
-                summary: "在交互界面向用户发起选择（单选/多选）或补充说明提问并阻塞等待答复。".to_string(),
-                schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "question": {
-                            "type": "string",
-                            "description": "向用户提出的问题文本。**要一次问多个问题请改用 `questions`**（一次问完，用户逐题作答后一起提交）"
-                        },
-                        "choices": {
-                            "type": "array",
-                            "description": "供用户选择的选项列表（可选，不传则仅为文本输入）",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "id": { "type": "string", "description": "选项唯一标识（可选，如 c1、c2，回传时使用）" },
-                                    "label": { "type": "string", "description": "显示给用户的选项文案" },
-                                    "description": { "type": "string", "description": "选项说明或辅助解释" }
-                                },
-                                "required": ["label"]
-                            }
-                        },
-                        "multi_select": {
-                            "type": "boolean",
-                            "description": "是否允许多选：需要用户同时勾选多个选项时设为 true（默认 false，单选点一下即答）"
-                        },
-                        "allow_text": {
-                            "type": "boolean",
-                            "description": "是否允许用户输入自定义文本（默认为 true）"
-                        },
-                        "questions": {
-                            "type": "array",
-                            "description": "一次向用户提出**多个**问题（最多 10 题）。给了它就忽略 question/choices/multi_select/allow_text：界面把每道题分别渲染出来，用户逐题作答后一次提交。适合'发布前一次确认几个约束'这类同批问题。",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "id": { "type": "string", "description": "题号（可选，如 q1、q2；不填自动生成）" },
-                                    "question": { "type": "string", "description": "该题的题目文本" },
-                                    "choices": {
-                                        "type": "array",
-                                        "description": "该题的选项列表（可选）",
-                                        "items": {
-                                            "type": "object",
-                                            "properties": {
-                                                "id": { "type": "string", "description": "选项唯一标识（可选，如 c1、c2）" },
-                                                "label": { "type": "string", "description": "显示给用户的选项文案" },
-                                                "description": { "type": "string", "description": "选项说明或辅助解释" }
-                                            },
-                                            "required": ["label"]
-                                        }
-                                    },
-                                    "multi_select": { "type": "boolean", "description": "该题是否多选（默认 false）" },
-                                    "allow_text": { "type": "boolean", "description": "该题是否允许文本补充（默认 true）" }
-                                },
-                                "required": ["question"]
-                            }
-                        }
-                    },
-                    "anyOf": [
-                        { "required": ["question"] },
-                        { "required": ["questions"] }
-                    ]
-                }),
-                access: Access::ReadOnly,
-                rollback: RollbackPolicy::None,
-                execution: Execution::Sequential,
-                termination: Termination::ContinueTurn,
-            },
-            ToolDescriptor {
                 name: "todo".to_string(),
                 summary: "记录或查看当前会话的待办任务与进度清单。".to_string(),
                 schema: json!({
@@ -493,7 +422,8 @@ mod tests {
         let list = standard_tool_descriptors();
         // 2026-10-19：`git_status` / `git_diff` / `git_log` 合并为一个 `git`（22 → 20）。
         // 2026-10-27：`git` 搬成插件 `plugins/git-tools`，基座描述符里不再有它（20 → 19）。
-        assert_eq!(list.len(), 19, "必须声明全部 19 个标准内置工具描述符");
+        // 2026-10-28：`ask_user` 搬成插件 `plugins/ask-user`（19 → 18）。
+        assert_eq!(list.len(), 18, "必须声明全部 18 个标准内置工具描述符");
 
         let mut seen = HashSet::new();
         for desc in list {

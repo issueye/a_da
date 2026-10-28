@@ -28,7 +28,7 @@ pub trait WebBackend: Send + Sync {
     /// 一元 POST。
     async fn post(&self, path: &str, body: Value) -> Result<Value>;
 
-    /// 需要 WS 的命令（`thread.send` / `question.answer` / ...）。
+    /// 需要 WS 的命令（`thread.send` / `thread.abort` / ...）。
     async fn rpc(&self, method: &str, params: Value) -> Result<Value>;
 
     /// 订阅 `evt.state.snapshot` / `evt.state.patch`；连接断开时返回。

@@ -39,7 +39,7 @@
 | `workspace` | object | 工作区（§2.6） |
 | `counts` | object | 计数（§2.7） |
 | `todo` | object \| null | `todo` 工具的当前计划（§2.8） |
-| `questions` | array | 当前会话**待答复**的提问（§2.10；`thread.tray` 插件用） |
+| `questions` | ~~array~~ 已删除：提问由 `plugins/ask-user` 的 `backend["ask-user"]["list"]` 提供 |
 | `providerAdmin` | object | 供应商只读投影（§2.9；仅声明 `providers.read` 的插件） |
 | `processes` | object \| null | 网关与 agent 实例的只读投影（§2.11；仅声明 `processes.read` 的插件） |
 | `backend` | object | 统一插件只读动作的预取结果（§2.12；`data.backend.<pluginId>.<binding>`） |
@@ -159,34 +159,38 @@
 - 写操作不在 TSX 里执行：表单提交到核心 `/providers/*`，成功后宿主按 `Referer`
   把重定向改回插件页（`?provider=…&tab=…&notice=…`）；
 - API Key 输入框提交后直接到核心，不经过 Boa；插件只负责渲染“已配置 + 掩码”。
-### 2.10 `questions`（待答复的提问）
+### 2.10 `backend["ask-user"]["list"]`（待答复的提问）
 
-当前会话里 `ask_user` 工具挂起等待回答的提问（已归一化：单题/多题摊平、
-选项的 `value` 就是作答回传口径）。**没有待答提问时是空数组**，不是 `null`。
+提问已完全由 `plugins/ask-user` 提供：核心不再投影 `data.questions`。
+前端读取的是该插件只读动作 `list` 的预取结果：
 
 ```jsonc
-[{
-  "callId": "call_…",          // 作答路由按它寻址：POST /questions/{callId}/answer
-  "askedAt": 1761000000000,     // 提问时刻（epoch ms；"已等待 Ns"用它）
-  "single": true,               // 是否单题（决定表单字段要不要 q_{id}__ 前缀）
-  "questions": [{
-    "id": "q1",                 // 题号（多题作答按它对应）
-    "question": "用哪个环境？",
-    "allowText": true,          // 是否允许文本补充（缺省 true）
-    "multiSelect": false,       // 多选题选项用 checkbox
-    "options": [{ "value": "c1", "label": "开发环境", "description": "…" }]
-  }]
-}]
+{
+  "ok": true,
+  "data": {
+    "questions": [{
+      "id": "q_…",                 // 插件生成的提问 id
+      "threadId": "thread-…",
+      "createdAt": 1761000000000,
+      "items": [{
+        "id": "q1",
+        "question": "用哪个环境？",
+        "allowText": true,
+        "multiSelect": false,
+        "choices": [{ "id": "c1", "label": "开发环境", "description": "…" }]
+      }]
+    }]
+  },
+  "error": null,
+  "fetchedAt": 1761000001000
+}
 ```
 
-- `options` 为空数组 + `allowText` 时是纯文本题（可以只提交 `text`）；
-- **写操作不进插件**：作答表单提交到核心路由 `POST /questions/{callId}/answer`，
-  表单字段约定与核心提问托盘共用一套（见
-  [PLAN-question-panel.md](PLAN-question-panel.md) §4），解析端只有一处；
-- 提问被回答 / 超时后 `ask_user` 卡不再是 `awaiting`，下一次 `parts` 投影里
-  这条就消失了——插件不需要自己清除；
-- 这份数据没有敏感信息，**不需要 capability**（与 `todo` 同级；
-  `providerAdmin` 要 gate 是因为 headers 可能带凭据）。
+- 作答表单提交到插件自己的桥接路由 `POST /ext/ask-user/backend/answer`，
+  字段是 `question_id` / `thread_id` / `choice__{id}` / `choices__{id}` / `text__{id}`；
+- 后端 `answer` 动作写回 `.ada/ask-user/questions.json`，正在等待的 `ask_user` 工具
+  随即被唤醒；下一次 `parts` 帧里 `list` 不再返回该提问；
+- 这条数据来自插件动作，不是核心 `plugin_data` 字段；插件停用则整条链消失。
 
 ### 2.10 `api`（插件 API 端点的请求面）
 
@@ -359,7 +363,7 @@
 | `composer.left` / `composer.right` | 聊天页输入框工具行 | 整页加载（`live` 会整块换输入框辅助区，但工具行不换） |
 | `composer.footer` | 聊天页输入框下方辅助区 | 首屏 + `parts.aux` / 2s live 轮询 |
 | `composer.above` | 聊天页右下角悬浮区 | 首屏 + `parts.above` / 2s live 轮询；有后台任务在跑时，输出变化会额外触发 `parts`（约 1 秒一帧） |
-| `thread.tray` | 聊天页托盘区（输入框上方 in-flow）的**提问段** | 首屏 + `parts.trays` / 2s live 轮询；输出非空时**替换核心提问托盘**，为空/停用/失败自动回退核心实现 |
+| `thread.tray` | 聊天页托盘区（输入框上方 in-flow）的**提问段** | 首屏 + `parts.trays` / 2s live 轮询；提问由 `plugins/ask-user` 自己渲染与作答，核心不再兜底 |
 | `transcript.after` | 聊天页对话流末尾 | 首屏（整段同步时随对话流重渲染） |
 | `extensions.list` | `/extensions` | 整页加载 |
 | `dashboard.widgets` | `/overview` | 整页加载 / 5s 片段刷新（如插件自己声明） |

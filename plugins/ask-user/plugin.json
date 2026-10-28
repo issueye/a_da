@@ -1,8 +1,8 @@
 {
   "id": "ask-user",
   "name": "提问卡片",
-  "version": "0.1.0",
-  "description": "用 thread.tray 插槽渲染待答复的提问（ask_user）并提供作答表单；停用或删除后自动回退到核心提问托盘",
+  "version": "0.2.0",
+  "description": "提问由插件完整提供：后端 ask_user 工具 + 状态文件，前端 thread.tray 插槽渲染待答项并通过后端动作作答。",
   "frontend": {
     "slots": [
       {
@@ -14,6 +14,11 @@
     "assets": "static",
     "styles": [
       "ask-user.css"
-    ]
-  }
+    ],
+    "actions": {
+      "list": { "action": "list", "read": true },
+      "answer": { "action": "answer" }
+    }
+  },
+  "backend": {}
 }

@@ -34,10 +34,7 @@ pub enum Slot {
     /// 输入框**上方**的悬浮点位（贴底浮在对话流之上）。
     ComposerAbove,
     /// 托盘区（输入框上方 in-flow 区域）里**提问段**的挂载点。
-    ///
-    /// 托盘区从上到下是：提问 → 排队（核心）。插件在这里的输出
-    /// **非空时替换核心提问托盘**（排队不受影响）；插件停用、加载失败或
-    /// 没有插件时自动退回核心实现（见 [docs/PLAN-question-panel.md](../docs/PLAN-question-panel.md) D5）。
+    /// 提问完全由 `plugins/ask-user` 提供；核心不再有提问托盘兜底。
     ThreadTray,
     /// 对话流末尾（消息之后）。
     TranscriptAfter,

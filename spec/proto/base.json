@@ -68,7 +68,6 @@
     { "name": "thread.setWorkspace", "kind": "command", "since": "1.0", "description": "绑定会话专属工作区目录" },
     { "name": "thread.editAndResend", "kind": "command", "since": "1.0", "description": "编辑历史用户消息并重新生成分支" },
     { "name": "thread.retry", "kind": "command", "since": "1.0", "description": "重试上一轮执行" },
-    { "name": "question.answer", "kind": "command", "since": "1.0", "description": "答复交互提问" },
     { "name": "queue.clear", "kind": "command", "since": "1.0", "description": "清空用户待发指令队列" },
     { "name": "queue.promote", "kind": "command", "since": "1.0", "description": "置顶队列指令" },
     { "name": "queue.remove", "kind": "command", "since": "1.0", "description": "移除指定排队指令" }

@@ -59,12 +59,14 @@
 ```
 
 `frontend` 与顶层扁平字段**不能同时写**；加载期会拒绝，避免“哪份生效”说不清。
-仓库自带的纯前端插件（`ask-user` / `hello-tsx` / `process-manager` /
+仓库自带的纯前端插件（`hello-tsx` / `process-manager` /
 `provider-admin` / `task-manager` / `task-plan` / `token-weather`）
 已经统一到 `frontend` 段，它们没有后端入口，因此不写 `backend`。
 `plugins/approval` 已删除（2026-10-27）。
-`unified-demo` 是完整的前后端一体例子：同包 `index.ts` 提供动作与动态路由，
-前端通过只读 action / route 读取。
+`ask-user` 是完整的前后端一体插件：`index.ts` 提供 `ask_user` 工具与
+`list`/`answer` 动作，前端 `thread.tray` 只读 `list` 的结果并提交到
+`/ext/ask-user/backend/answer`。
+`unified-demo` 是另一个前后端一体例子（动作与动态路由）。
 
 ---
 

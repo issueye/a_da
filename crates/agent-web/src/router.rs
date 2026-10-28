@@ -59,10 +59,9 @@ pub fn router(state: AppState) -> Router {
             post(handlers::remove_queue),
         )
         .route(
-            "/questions/{call_id}/answer",
-            post(handlers::answer_question),
+            "/providers",
+            get(handlers::providers_redirect),
         )
-        .route("/providers", get(handlers::providers_redirect))
         .route("/workspaces", get(handlers::workspace_picker))
         .route("/workspaces/select", post(handlers::select_workspace))
         .route("/workspaces/mkdir", post(handlers::make_workspace_dir))

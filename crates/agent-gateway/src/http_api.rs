@@ -558,17 +558,6 @@ static ROUTES: &[RouteSpec] = &[
     ),
     route!(
         "POST",
-        "/questions/:call_id/answer",
-        Target::Agent(QUESTION_ANSWER),
-        [("call_id", "callId")],
-        [],
-        BodyMode::Merge,
-        false,
-        false,
-        false
-    ),
-    route!(
-        "POST",
         "/threads/:thread_id/changes/revert-card",
         Target::Agent(CHANGE_REVERT_CARD),
         [("thread_id", "threadId")],
@@ -1632,9 +1621,9 @@ mod tests {
 
     #[test]
     fn test_route_table_has_no_duplicates_and_expected_size() {
-        // 69 = Phase 1 的 17 条 + Phase 2 的 41 条 + 网关管理面 11 条。
+        // 68 = Phase 1 的 17 条 + Phase 2 的 40 条 + 网关管理面 11 条。
         // 加/删端点时同步改这里，避免“文档写了、路由没挂”。
-        assert_eq!(ROUTES.len(), 69);
+        assert_eq!(ROUTES.len(), 68);
         let mut seen = std::collections::HashSet::new();
         for route in ROUTES {
             assert!(

@@ -308,17 +308,6 @@ impl AgentClient {
         self.rpc("task.kill", json!({ "taskId": task_id })).await
     }
 
-    /// 回答智能体的提问（`ask_user`）。
-    ///
-    /// `params` 由 [`crate::questions::answer_params_from_form`] 产出（choice /
-    /// choices / text 或多题 answers），`callId` 从动作路由的 path 里补进来。
-    pub async fn answer_question(&self, call_id: &str, mut params: Value) -> Result<Value> {
-        if let Some(obj) = params.as_object_mut() {
-            obj.insert("callId".to_string(), json!(call_id));
-        }
-        self.rpc("question.answer", params).await
-    }
-
     pub async fn promote_queue(&self, index: usize, thread_id: &str) -> Result<Value> {
         self.rpc(
             "queue.promote",

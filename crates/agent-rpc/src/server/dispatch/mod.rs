@@ -1877,7 +1877,6 @@ impl Dispatcher {
                     handle.abort();
                 }
 
-                agent_node::questions::global_question_manager().cancel_all();
 
                 // 3. 立即在 store 中清空该会话所有排队消息、闭合流式卡片与未完成工具卡片并置为非运行态
                 let mut store = self.store.write().await;
@@ -2043,58 +2042,6 @@ impl Dispatcher {
                 Ok(res)
             }
 
-            QUESTION_ANSWER => {
-                let call_id = params.get("callId").and_then(|v| v.as_str()).unwrap_or("");
-                let choice = params
-                    .get("choice")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                // 多选：`choices: ["a1","a3"]`（单选路径仍走 `choice`）
-                let choices: Option<Vec<String>> = params
-                    .get("choices")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect::<Vec<String>>()
-                    })
-                    .filter(|list| !list.is_empty());
-                let text = params
-                    .get("text")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                // 多题：`answers: [{id?, choice?, choices?, text?}]`（单题路径留空）
-                let answers: Option<Vec<agent_toolkit::core::ask_user::QuestionSubAnswer>> = params
-                    .get("answers")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|a| serde_json::from_value(a.clone()).ok())
-                            .collect::<Vec<_>>()
-                    })
-                    .filter(|list: &Vec<_>| !list.is_empty());
-
-                let mut store = self.store.write().await;
-                store.pending_questions.retain(|q| q.call_id != call_id);
-                drop(store);
-
-                if let Some(ref bc) = self.broadcaster {
-                    bc.broadcast_immediate().await;
-                }
-
-                let resolved = agent_node::questions::global_question_manager().resolve_answer(
-                    call_id,
-                    agent_node::questions::QuestionAnswer {
-                        choice,
-                        choices,
-                        text,
-                        answered_by: "user".to_string(),
-                        answers,
-                    },
-                );
-
-                Ok(serde_json::json!({ "resolved": resolved }))
-            }
 
             WORKSPACE_OPEN_PUBLIC => {
                 let mut store = self.store.write().await;

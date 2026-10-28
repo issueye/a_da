@@ -63,10 +63,11 @@
 
 默认统一包根是 `~/.a-da/plugins`，开发时用 `A_DA_UNIFIED_PLUGINS_DIR` 指向仓库的
 `plugins/`。旧版扁平前端清单与独立后端插件仍兼容；它们之间没有直连通道。
-仓库自带的 6 个纯前端插件已改用 `frontend` 段；`ask-user` / `process-manager` /
+仓库自带的纯前端插件已改用 `frontend` 段；`process-manager` /
 `provider-admin` / `task-manager` 已迁到统一根 `plugins/`，`hello-tsx` 与
-`token-weather` 仍在原目录。`task-plan` 已改为**纯前端插件**（只读 `props.data.todo`）；
-`plugins/approval` 已整体删除（2026-10-27）。原来的
+`token-weather` 仍在原目录。`ask-user` 现在是**前后端一体的统一插件**：
+后端提供 `ask_user` 工具与 `list`/`answer` 动作，前端占 `thread.tray`。
+`task-plan` 已改为**纯前端插件**（只读 `props.data.todo`）；`plugins/approval` 已整体删除（2026-10-27）。原来的
 `beforeTodoUpdate` / `afterTodoUpdate` / `beforeApproval` / `afterApproval` 点位
 已从核心移除，后续由统一事件系统提供。核心审批已物理删除；插件若要做策略，
 走受信插件 + `event_before_*`。后端需要自己的 HTTP 接口时用 `ada.route({ method, path, handler })`，
@@ -234,9 +235,9 @@ description: 发布流程：先跑测试再打标签。Use when the user asks to
 | `plugin.delete` / `plugin.createTemplate` | 删除与生成骨架 |
 | `plugin.capabilities.set` / `plugin.config.set` / `plugin.secret.set` | 能力开关 / 配置 / 密钥 |
 
-**内置插件**（7 个，编译进产品）：`code-outline`、`project-inspector`、
-`test-runner`、`batch-ops`、`plugin-forge`、`ask-user`、`ponytail`。
-`approval-guard` 与 `plugins/approval` 已随审批物理删除。
+**内置插件**（6 个，编译进产品）：`code-outline`、`project-inspector`、
+`test-runner`、`batch-ops`、`plugin-forge`、`ponytail`。
+`approval-guard` 与 `plugins/approval` 已随审批物理删除；`ask-user` 已迁到磁盘统一插件。
 
 > `git-tools` 已不再内置：它现在是统一插件包 `plugins/git-tools`（TS 实现，
 > `git` + `git_read` 两枚工具），用插件启停控制，而不是一个工具包。

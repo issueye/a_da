@@ -513,7 +513,9 @@ impl PluginSandbox {
                             parameters: inst.parameters || {{}},
                             // 访问类别：只认显式的 'read'（作者担保只读），其余一律按写。
                             // 归一化在这里做一次，宿主侧不再猜字符串。
-                            access: (inst.access === 'read' || inst.readOnly === true) ? 'read' : 'write'
+                            access: (inst.access === 'read' || inst.readOnly === true) ? 'read' : 'write',
+                            // 长时等待：由引擎跳过策略超时；宿主仍保留墙钟上限与取消。
+                            longRunning: inst.longRunning === true
                         }});
                     }}
                     const prompts = [];
@@ -1332,6 +1334,7 @@ impl PluginSandbox {
             tool_name,
             args,
             workspace,
+            None,
             timeout_s,
             needs,
             ada_ts_engine::Limits::default(),
@@ -1349,6 +1352,7 @@ impl PluginSandbox {
         tool_name: &str,
         args: serde_json::Value,
         workspace: &Path,
+        thread_id: Option<&str>,
         timeout_s: u64,
         needs: ada_ts_engine::Needs,
         limits: ada_ts_engine::Limits,
@@ -1363,6 +1367,7 @@ impl PluginSandbox {
 
         let plugin_file_json = serde_json::to_string(&plugin_path.to_string_lossy())?;
         let ws_json = serde_json::to_string(&workspace.to_string_lossy())?;
+        let thread_json = serde_json::to_string(&thread_id.unwrap_or(""))?;
         let tool_name_json = serde_json::to_string(tool_name)?;
         let require_factory = plugin_path
             .file_name()
@@ -1403,6 +1408,7 @@ impl PluginSandbox {
                         return JSON.stringify({{ ok: false, output: "插件未导出有效对象或函数" }});
                     }}
                     const ws = {ws_json};
+                    globalThis.__ada_tool_context = {{ threadId: {thread_json}, workspace: ws }};
                     const targetName = {tool_name_json};
                     const requireFactory = {require_factory};
                     let toolsRaw = [];
@@ -1484,6 +1490,7 @@ impl PluginSandbox {
             }};
             "#,
             ws_json = ws_json,
+            thread_json = thread_json,
             tool_name_json = tool_name_json,
             api = Self::api_literal(ApiSurface { tools: true, ..Default::default() }),
             require_factory = require_factory

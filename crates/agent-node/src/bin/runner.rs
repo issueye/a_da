@@ -38,6 +38,8 @@ struct Request {
     #[serde(default)]
     workspace: Option<String>,
     #[serde(default)]
+    thread_id: Option<String>,
+    #[serde(default)]
     export: Option<String>,
     #[serde(default)]
     args: Option<serde_json::Value>,
@@ -143,7 +145,14 @@ async fn handle(req: Request) -> serde_json::Value {
             };
             let args = req.args.clone().unwrap_or(serde_json::json!({}));
             match PluginSandbox::call_tool_budgeted(
-                &path, &export, args, &workspace, timeout_s, needs, limits,
+                &path,
+                &export,
+                args,
+                &workspace,
+                req.thread_id.as_deref(),
+                timeout_s,
+                needs,
+                limits,
             )
             .await
             {

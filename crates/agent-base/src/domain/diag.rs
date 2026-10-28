@@ -1,6 +1,6 @@
 //! 诊断事件族（P0 埋点地基）：面向机器与诊断面板的**扩展点遥测**。
 //!
-//! 与面向会话流的卡片事件（`ToolCallStarted` / `QuestionAsked` …）刻意分开：
+//! 与面向会话流的卡片事件（`ToolCallStarted` / `ToolCallFinished` …）刻意分开：
 //! 诊断**只给人看，永不进模型上下文、不进会话 items 的正文**——沿用 `Item::Notice`
 //! 已经立好的口径（`fold_messages` 明确跳过它）。
 //!

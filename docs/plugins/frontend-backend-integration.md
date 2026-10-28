@@ -21,22 +21,24 @@
   └─ 工具 / 钩子 / 提示词 / 技能
         │
         ▼
-   agent 引擎与状态（tool 卡、todo、提问、审批、会话快照）
+   agent 引擎与状态（tool 卡、todo、会话快照；插件自己的状态由插件动作提供）
         │
         ▼
-   agent-web 的 props.data 投影
+   agent-web 的 props.data 投影 + 统一插件只读动作
         │
         ▼
 前端插件（SSR TSX）
   └─ 页面 / 插槽 / 仪表盘 / 插件 JSON API
 ```
 
-- 前端能**读**后端产生的状态，是因为宿主把状态投影进了 `props.data`；
-- 前端能**触发**动作，是因为它提交到了**核心路由**（发送、审批、作答、供应商保存等）；
+- 前端能**读**后端产生的状态，是因为宿主把核心状态投影进 `props.data`，
+  或把统一插件的只读动作结果放进 `props.data.backend`；
+- 前端能**触发**动作，是因为它提交到**核心路由**（发送、供应商保存等）
+  或**插件自己的桥接路由** `/ext/{id}/backend/{binding}`；
 - 前端**不能**按名字调用某个后端插件的工具或钩子；
 - 后端**不能**定义页面或插槽，也不能直接向前端插件推送事件。
 
-一句话：**读走投影，写走核心路由；插件之间不直连。**
+一句话：**核心状态读投影，插件状态读动作，写走核心路由或插件桥接；插件之间不直连。**
 
 ---
 
@@ -45,13 +47,14 @@
 ```text
 ┌────────────────────────────── 浏览器 ──────────────────────────────┐
 │  SSR 页面 / TSX 插槽 / 可选插件脚本（同源）                        │
-│  表单或 fetch → 核心路由（/threads/*、/questions/*、/providers/*）  │
+│  表单或 fetch → 核心路由（/threads/*、/providers/*）                │
+│                 或插件桥接（/ext/{id}/backend/*）                   │
 └───────────────────────────────┬────────────────────────────────────┘
                                 │ 会话 cookie + Host/Origin 校验
                                 ▼
 ┌────────────────────────── agent-web（SSR 宿主） ───────────────────┐
 │  - 读 agent 快照 / 配置 / 进程管理面                                │
-│  - 组装 props.data（会话、token、todo、提问、provider、processes）  │
+│  - 组装 props.data（会话、token、todo、backend、provider、processes）│
 │  - 渲染 TSX 页面 / 插槽 / 仪表盘                                   │
 │  - 核心路由内部再调 AgentClient.rpc(...)                            │
 │  - 不跑多轮引擎，不缓存会话真源（INV-8）                            │
@@ -59,7 +62,7 @@
                                 │ 进程内（网关）或 WS（独立运行）
                                 ▼
 ┌────────────────────────── agent-rpc / agent ──────────────────────┐
-│  - JSON-RPC 方法（thread.send、approval.decide、question.answer…）  │
+│  - JSON-RPC 方法（thread.send、plugin.invoke…）                      │
 │  - 后端插件装配：工具 / 提示词 / 技能 / 钩子                        │
 │  - 引擎执行工具、触发钩子、产生事件与快照                           │
 └────────────────────────────────────────────────────────────────────┘
@@ -98,8 +101,7 @@
 | `tokens` | 最近一次助手回复的 usage | `token-weather` |
 | `thread` / `counts` | 会话快照 | 通用 |
 | `todo` | 核心 `todo_view` 推演；**统一 `task-plan` 的后端 action 优先** | `task-plan`（降级） |
-| `backend` | 统一插件只读动作的预取结果 | `task-plan`（`plan` action） |
-| `questions` | `ask_user` 工具挂起的提问 | `ask-user`（`thread.tray`） |
+| `backend` | 统一插件只读动作的预取结果 | `task-plan`（`plan` action）、`ask-user`（`list` action） |
 | `model` / `config` / `workspace` | 快照与配置 | 通用 |
 | `providerAdmin` | 供应商 RPC + 配置，**仅声明 `providers.read` 的插件页面** | `provider-admin` |
 | `processes` | 网关管理面，**任一启用插件声明 `processes.read` 时全页注入** | `process-manager` |
@@ -128,31 +130,36 @@ agent RPC：
 | 前端动作 | 核心路由 | 最终落到 agent 的 |
 |---|---|---|
 | 发送消息 | `/threads/{id}/send` | `thread.send` |
-| 回答提问 | `/questions/{call_id}/answer` | `question.answer` |
 | 保存供应商 | `/providers/*` | `provider.save` 等 |
 | 新建会话/工作区 | `/threads`、`/workspaces/select` | `thread.create` / `workspace.add` |
 | 重载后端插件 | `/agent-plugins/reload` | `plugin.reload` |
 
-这条路是**用户级动作面**，不是“任意插件动作面”。如果某个动作没有对应的核心路由，
-前端插件不能自己发明一条到 agent 的调用；它只能新增核心路由，或者等插件动作桥接落地。
+统一插件的写动作走**插件自己的桥接路由** `/ext/{id}/backend/{binding}` →
+`plugin.invoke`，例如提问插件的 `/ext/ask-user/backend/answer`。这条路仍然只接受
+插件清单里显式声明的绑定，不是“任意插件动作面”。
 
 ### 4.3 后端工具/钩子产生界面可见的状态
 
-后端插件不能直接渲染 UI，但它的工具结果、提问、计划事件会被核心投影成卡片，
-再被前端插件消费。典型链路：
+后端插件不能直接渲染 UI，但它的工具结果、动作结果、计划事件可以被核心或插件自己的
+前端插槽消费。两条典型链路：
 
 ```text
-后端插件/内置工具
-  └─ ask_user 工具挂起
-       └─ 事件 / 快照里的 waiting question
-            └─ props.data.questions
-                 └─ plugins/ask-user 的 thread.tray 插槽
-                      └─ 表单提交到 POST /questions/{callId}/answer
-                           └─ question.answer → ask_user 工具返回
+plugins/ask-user（同一个统一插件）
+  └─ 后端 ask_user 工具写 .ada/ask-user/questions.json 并等待
+       └─ 前端 thread.tray 通过只读动作 list 读取
+            └─ 表单提交 /ext/ask-user/backend/answer
+                 └─ 后端 answer 动作写回 → 工具被唤醒
 ```
 
-`todo` 与 `task-plan` 也是同一模式：**后端产生状态，核心投影状态，前端渲染状态**。
-前端插件与后端插件之间没有直接调用，只有共享的核心状态契约。
+```text
+核心 todo 工具
+  └─ 核心 todo_view 投影 props.data.todo
+       └─ plugins/task-plan 纯前端插槽渲染
+```
+
+`ask-user` 是“一个插件提供完整能力”，`task-plan` 是“核心投影 + 前端渲染”。
+前端插件与后端插件之间没有直接函数调用；跨进程/跨沙箱的交接要么走核心投影，
+要么走插件自己的动作与工作区文件。
 
 ### 4.4 管理页：两套插件并列，但管理动作不同
 
@@ -180,14 +187,16 @@ agent RPC：
 
 ## 5. 现有协同案例
 
-### 5.1 `ask-user`：同主题，但不是插件互调
+### 5.1 `ask-user`：一个统一插件提供完整提问链
 
-- 后端：内置插件 `ask-user` 提供 `ask_user` 工具；
-- 前端：`plugins/ask-user` 用 `thread.tray` 渲染 `data.questions`；
-- 中间：`question.answer` 核心路由与提问事件。
+- 后端：同一个包的 `index.ts` 注册 `ask_user` 工具（`longRunning`）和 `list` / `answer` 动作；
+- 前端：`thread.tray` 通过只读动作 `list` 读取待答项，表单提交到
+  `/ext/ask-user/backend/answer`；
+- 中间：工作区 `.ada/ask-user/questions.json` 是工具与动作的交接面；核心没有
+  `question.answer`、`QuestionManager` 或提问事件。
 
-前端插件停用后，核心提问托盘自动接管。这是“共享核心契约”的正面例子，不是两个插件
-互相调用。
+停用这个插件后，模型看不到 `ask_user` 工具，界面也没有提问表单；这是“插件提供完整能力”
+的例子，而不是核心投影 + 前端渲染。
 
 ### 5.2 `task-plan`：核心投影上的前端卡片
 

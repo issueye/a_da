@@ -20,11 +20,11 @@ pub mod theme;
 pub mod todo;
 
 pub use components::{
-    effort_label, model_chip_inner, normalize_effort, render_slot, waited_from_ms,
+    effort_label, model_chip_inner, normalize_effort, render_slot,
     AssistantMessage, AuxItem, Button, Chip, Composer, ComposerAux, ConfirmDialog, Disclosure,
     EmptyState, IconButton, Modal, ModelChoice, ModelGroup, ModelPicker, ModelTable, ModelTableRow,
-    Notice, Panel, QueueItem, QuestionTray, QueueTray, Render, Select, SendButton, Slot, TabItem,
-    Tabs, TextField, ToolCall, UserMessage,
+    Notice, Panel, QueueItem, QueueTray, Render, Select, SendButton, Slot, TabItem, Tabs,
+    TextField, ToolCall, UserMessage,
 };
 pub use icons::{icon, sprite};
 pub use rows::{

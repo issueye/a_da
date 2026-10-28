@@ -535,6 +535,7 @@ pub(super) fn merge_contribution_views(
                 // 投影回声明形状：读写性来自描述符（`is_write` 就是 `!is_readonly()`），
                 // 这里只是把同一份事实写成声明侧的字符串。
                 access: if t.is_write { "write" } else { "read" }.to_string(),
+                long_running: false,
             })
             .collect();
     }

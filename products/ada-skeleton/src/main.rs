@@ -114,8 +114,9 @@ mod tests {
         let hosted = run_from_spec(spec(), host_options()).expect("宿主装配必须成功");
 
         // W2-T1 守门：`core` 工具包的工具必须真的进了 catalog（声明 → 装配 → catalog）
+        // `ask_user` 已迁到插件，不再属于核心工具包。
         let names = hosted.tool_names();
-        for expect in ["ask_user", "todo", "finish"] {
+        for expect in ["todo", "finish"] {
             assert!(
                 names.contains(&expect),
                 "`core` 工具包应提供 `{expect}`，实际: {names:?}"

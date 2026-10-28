@@ -4,13 +4,13 @@ use super::types::{SubagentMode, SubagentProfile, SubagentScope};
 ///
 /// 为什么需要这张小表：子智能体的 `allowed_tools` 要按"名字是否真实存在"校验
 /// （`test_subagent_tool_lists_have_no_ghost_names`），而插件工具的描述符由插件自述
-/// （`ScriptToolDeclaration`），基座注册表里查不到。当前只有 `plugins/git-tools`
-/// 提供 `git` / `git_read`。
+/// （`ScriptToolDeclaration`），基座注册表里查不到。当前是 `plugins/git-tools`
+/// 的 `git` / `git_read`，以及 `plugins/ask-user` 的 `ask_user`。
 ///
 /// ⚠️ 加名字的门槛：必须是**仓内自带插件**提供的名字，并且要在那个插件的
 /// `metadata.tools.names` 里出现；插件停用时白名单里的名字会被老实过滤掉
 /// （白名单只表达"允许"，不保证"存在"）。
-pub const PLUGIN_TOOL_NAMES: &[&str] = &["git", "git_read"];
+pub const PLUGIN_TOOL_NAMES: &[&str] = &["git", "git_read", "ask_user"];
 
 pub fn builtin_subagents() -> Vec<SubagentProfile> {
     vec![

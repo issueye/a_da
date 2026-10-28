@@ -267,8 +267,6 @@ pub enum EventOutcome {
 | `TextDelta` | `event_text_delta` | Stream |
 | `ToolCallStarted` | `event_tool_call_started` | Notify |
 | `ToolCallFinished` | `event_tool_call_finished` | Notify |
-| `ApprovalRequested` | `event_approval_requested` | Notify |
-| `QuestionAsked` | `event_question_asked` | Notify |
 | `SubagentStarted` | `event_subagent_started` | Notify |
 | `SubagentFinished` | `event_subagent_finished` | Notify |
 | `UsageReported` | `event_usage_reported` | Notify |
@@ -523,9 +521,9 @@ export default function (ada) {
   `ToolDescriptor.approval`、审批诊断族与点位、引擎审批等待与 `apply_fail_direction`。
   `Scope::resolve_path` 改为只解析、返回 `PathBuf`，不再做边界拒绝。
 - `agent-adapter`：删除 `approval/` 与 `ApprovalAwareScope`；`WorkspaceScope` 换成 `PathResolver`。
-- `agent-node`：删除 `approval/`（闸门 / waiter 表 / 策略 shim）；`QuestionManager` 迁到
-  `agent-node/src/questions.rs`（提问是用户交互，不是审批）；`ReadonlyEnforcingGate` 删除，
-  只读子智能体仍靠装配期按 `Access::ReadOnly` 裁切工具。
+- `agent-node`：删除 `approval/`（闸门 / waiter 表 / 策略 shim）；`ReadonlyEnforcingGate` 删除，
+  只读子智能体仍靠装配期按 `Access::ReadOnly` 裁切工具。`QuestionManager` 随后于
+  2026-10-28 随提问插件化一并删除（见 §11.8）。
 - `agent-rpc`：删除 `approval.decide`、`config.setApproval`、审批 waiter 表注入、审批卡投影与
   `set_tool_waiting_approval`；`NodeConfigSource` 只保留 provider / contextWindow。
 - `agent-web` / `plugins`：删除审批档位选择器、审批托盘、审批浮窗、`thread.approval` 插槽、
@@ -628,6 +626,23 @@ export default function (ada) {
   走受信插件 + Intercept，不复活旧的 `ApprovalGate` 代码。
 - 回滚方式只能是 revert 本系列 commit；不要依赖已经删除的 `SECURITY_ENFORCED` 常量。
 - 删除后仍要保证 `Access` 只读分类、路径解析、取消贯穿、事件顺序和结构化回执不被破坏。
+
+### 11.8 提问通道插件化（2026-10-28）
+
+提问与审批不同：它必须**阻塞等待用户输入**，但仍不需要核心拥有专用通道。
+本次把整条提问链迁到 `plugins/ask-user`：
+
+- 删除核心 `ask_user` 工具、`QuestionAsked` 事件、`QuestionManager` 全局单例、
+  `question.answer` 协议方法、AgentStore 的 `pending_questions` 与核心提问托盘；
+- 插件后端 `ask_user` 工具声明 `longRunning`，把问题写入工作区
+  `.ada/ask-user/questions.json` 并轮询答案；
+- 插件前端 `thread.tray` 通过只读动作 `list` 读取待答项，表单提交到
+  `/ext/ask-user/backend/answer`，写回后工具被唤醒；
+- 插件平台新增两个通用能力：插件工具可读取 `threadId` / `workspace` 上下文；
+  工具声明 `longRunning` 时脚本墙钟上限抬到 30 分钟，并保留取消竞争。
+
+这条链完全由插件提供：停用 `ask-user` 插件，模型就看不到 `ask_user` 工具，
+界面也没有提问表单。
 
 ---
 

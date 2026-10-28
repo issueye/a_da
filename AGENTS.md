@@ -14,14 +14,15 @@
 >
 > **仍然保留的契约**（它们不是安全闸门，删掉会让界面/模型收到假信息）：
 > - 工具回执结构化、事件顺序与 `seq`、取消贯穿、描述符单一真源、`Access` 只读分类；
-> - 提问通道（`question.answer`）仍在——那是用户主动交互，不是工具审批；
+> - 提问通道已迁到 **`plugins/ask-user`**（工具 + 前端插槽 + 后端动作），核心不再有
+>   `question.answer` / `QuestionManager` / `QuestionAsked`；提问能力随插件启停。
 > - `@ada-needs` 只剩**模块注入清单**语义：声明了什么就注入什么，不再作为权限门。
 >
 > 后续若需要审批/策略，走受信插件 + `event_before_*`（Intercept），**不要复活旧代码**。
 > 设计与删除边界见 [docs/architecture/PLAN-unified-events.md](docs/architecture/PLAN-unified-events.md) §11。
 
 项目速览：**纯 Rust 微内核**（`crates/agent-base/`：零 IO 的领域层 + 13 个端口 + **唯一**多轮引擎 `run_turn`）
-+ **两层拆包**（S4）：`crates/agent-node/`（节点：会话 / 检查点 / 委派 / 插件 / 技能 / 提问）
++ **两层拆包**（S4）：`crates/agent-node/`（节点：会话 / 检查点 / 委派 / 插件 / 技能）
 与 `crates/agent-rpc/`（桥接面：JSON-RPC 分发 + WS 宿主 + UI 投影）
 + **网关**（S5/S6）：`crates/agent-gateway/`（`ada-gateway`：AGENT 管理平台 + 交互平台 + 桥接平台）
 + **网页界面**：`crates/agent-web/`（SSR 投影层，产品代号 `ssr-h`；网关默认挂载，一个进程一个端口）
@@ -61,9 +62,7 @@ node tools/verify-electron-ssr.mjs                    # Electron + SSR：加载 
 
 - **`typecheck` 与 `cargo test` 是两个独立的门，两个都要过**，别只跑一个。
 - **Rust 测试必须串行跑**（`--test-threads=1`，`bun run test` 已带）：`test_plugin_and_skill_lifecycle`
-  读 `~/.a-da` 配置，而提问链路仍走全局单例 `questions::GLOBAL_QUESTION_MANAGER`
-  （`OnceLock`），并行会互相污染（单独跑各自通过）。根因是共享全局态（INV-8）；
-  提问端口化（S1a）会去掉这个单例，届时再改回并行。
+  读 `~/.a-da` 配置，共享全局态会互相污染（单独跑各自通过，INV-8 的已知缺口）。
 - 🔴 **本机 `C:\pagefile.sys` 上限只有 2 GB**：默认并行度下编译/链接大 crate 会
   `failed to mmap rmeta ... os error 1455（页面文件太小）` 或 `link.exe 1102`。
   用 `CARGO_BUILD_JOBS=2`（或 `-j 2`，**注意 `-j` 要放在 `--` 之前**）即可。
@@ -110,7 +109,7 @@ node tools/verify-electron-ssr.mjs                    # Electron + SSR：加载 
   引擎对**非** `Tool::long_running()` 的工具加超时，超时给一条 `ToolStatus::Timeout` 回执
   （回执里说清是哪个工具、让模型换路子），整轮**继续**而不是永远挂住。
   哪些工具豁免由 `agent_toolkit::registry::LONG_RUNNING_TOOLS` 单一真源声明
-  （等提问 / 派活 / 命令执行 / 决策插件），契约测试
+  （派活 / 命令执行 / 决策插件 / 插件声明的 longRunning 工具），契约测试
   `test_long_running_set_matches_tool_declarations` 守着名单与实现一致。
   🔴 **子进程的 stdin 一律 `Stdio::null()`**（`cmd_tools::run_command` 与 `background`）：
   继承 stdin 时，一条等输入的命令（npm 确认、git 凭据、忘了 `--yes` 的安装器）会**卡满整个超时**，
@@ -216,7 +215,7 @@ node tools/verify-electron-ssr.mjs                    # Electron + SSR：加载 
 - `crates/agent-runtime` 组合根：`ProductBuilder`、产品声明 `AgentSpec`、贡献装配与工具目录；`agent-host` 按声明把它装配成带真实端口的运行时
 - `crates/agent-host` 宿主装配层：`run_from_spec` / `HostedProduct`，产品二进制与测试共用同一条装配路径
 - `crates/agent-conformance` 合规套件：端口契约、跨端口不变量与 golden 夹具（`dev-dependencies` 使用，不参与产品运行时）
-- **`crates/agent-node`（S4 拆出，src 44 文件）** —— 节点：`session` / `questions` / `checkpoint` / `subagents`（含 `agent_bus.rs` 委派总线端口与 `local_bus.rs` 本地实现；端口支持**多轮续跑** `thread_id`，本地总线对它是**如实拒绝**——一次性子智能体没有可续线程）/ `plugins` / `skills` / `node_config.rs`（节点配置端口）/ `delegation_depth.rs`（委派深度端口：被派活的节点靠它知道自己「在第几层」）。**不含协议管道**（不依赖 `tokio-tungstenite`）、**不含 UI 投影**（不依赖 `AgentStore`）。`AgentBus` 的网关实现（`GatewayAgentBus`）在 **`agent-rpc`**——跨进程委派需要 WS 客户端，那属于桥接面，节点只保留端口
+- **`crates/agent-node`（S4 拆出，src 43 文件）** —— 节点：`session` / `checkpoint` / `subagents`（含 `agent_bus.rs` 委派总线端口与 `local_bus.rs` 本地实现；端口支持**多轮续跑** `thread_id`，本地总线对它是**如实拒绝**——一次性子智能体没有可续线程）/ `plugins` / `skills` / `node_config.rs`（节点配置端口）/ `delegation_depth.rs`（委派深度端口：被派活的节点靠它知道自己「在第几层」）。**不含协议管道**（不依赖 `tokio-tungstenite`）、**不含 UI 投影**（不依赖 `AgentStore`）。`AgentBus` 的网关实现（`GatewayAgentBus`）在 **`agent-rpc`**——跨进程委派需要 WS 客户端，那属于桥接面，节点只保留端口
 - **`crates/agent-rpc`（S4 拆出，src 20 文件 / 约 9.5k 行）** —— 桥接面：`server/`（`dispatch/` 77 个方法的 JSON-RPC 分发、`ws.rs` 宿主、`emitter.rs` 快照合帧、`fs_service.rs`）、`state/`（`AgentStore`，**给界面看的投影**）、`runner/`（引擎调用 + 基座一等事件 `AgentEventBody` 直连投影至 UI store）。**依赖方向单向：`agent-rpc → agent-node`**
 - **`crates/agent-gateway`（S5 新建）** —— a-da 网关，三合一：**AGENT 管理平台**（`registry.rs` 实例注册表 / `supervisor.rs` 生命周期）+ **交互平台**（S6：`delegate.rs` 派活/**多轮续跑**/取消跨网关）+ **桥接平台**（`relay.rs` 路由与透传）+ **WEB 接入面**（S7：`auth.rs` token/作用域/Origin/**配对码**）+ **SSR 挂载面**（`web.rs`：`GatewayBackend` / `GatewayLogin`）。二进制 `ada-gateway`（打印 `A_DA_GATEWAY_READY {port}`）。**只依赖线协议 `agent-proto` 与 UI 投影层 `agent-web`**——不含引擎（INV-1）、不缓存会话状态（INV-8），由 `verify-wiring` check J 守着。🔴 **非回环 `--host` 必须配 `--token`，且必须显式 `--allow-plaintext`**（网关只提供明文 `ws://`，明文上的 token 可嗅探；反代终止 TLS 时由人确认）。两条都**拒绝启动**而不是警告——失败安全。🔴 **SSR 的事件订阅必须持有 `AgentRegistry::open_connection` 守卫**：它不经过 `relay`，不计数的话回收器会把正在被浏览的 agent 当空闲杀掉（连开 15 分钟的页面会“突然不动”）
 - **`crates/agent-web`（2026-10-25 由独立 `ssr-h` 合并）** —— SSR 网页界面：`agent.rs`（`AgentClient`）、`backend.rs`（`WebBackend` 四原语 + `HttpBackend`）、`router.rs`（可挂载 Router + 内嵌静态资源）、`handlers/`（页面/表单/SSE）、`plugins/` + `tsx/`（前端插件与 Boa/OXC 运行时）、`guard.rs`（Host/Origin/CSP/登录 cookie）。`agent-gateway` 依赖它并默认以 `--web-ui ssr` 挂载；独立 `ssr-h` 二进制仅供开发/验收。**不得依赖 `agent-node` / `agent-base` / `agent-runtime` 等节点/引擎 crate**（check J 扩展为同时扫描本 crate）

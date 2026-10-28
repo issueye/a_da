@@ -370,13 +370,6 @@ impl Dispatcher {
                                 bc.broadcast_immediate().await;
                             }
                         }
-                        AgentEventBody::QuestionAsked { call_id, question } => {
-                            store.set_tool_awaiting_question(&target_tid_clone, &call_id, question);
-                            drop(store);
-                            if let Some(ref bc) = broadcaster_clone {
-                                bc.broadcast_immediate().await;
-                            }
-                        }
                         AgentEventBody::UsageReported { usage, duration_ms } => {
                             let turn_duration_ms = turn_started.elapsed().as_millis() as u64;
                             store.set_assistant_stats(

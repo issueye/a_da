@@ -161,23 +161,16 @@
   执行侧没有任何分支读它。也就是说，它连"要判什么"都不存在。要做得先把 mode 接进引擎，
   届时连开关一起加（界面文案已同步删除）。
 
-### 11. 事件变体的发射者缺口（3 个豁免，其中 1 个口径不一致）　`部分已闭、口径待定`
+### 11. 事件变体的发射者缺口（2 个豁免）　`部分已闭、口径待定`
 
 - **现状**：`cargo xtask verify-wiring` 的 `check_event_emitters` 要求每个 `AgentEventBody`
   变体都在 `crates/agent-base/src/engine/**` 的生产段里有发射者。当前明细：
-  **13 个变体、10 个有发射者、3 个无**（`QuestionAsked` / `SubagentStarted` /
-  `SubagentFinished`），三者登记在 `UNEMITTED_EVENT_ALLOW` 豁免表里。
-- **2026-10-18 复核（本条是复核后新登记的，别再照抄旧叙述）**：
-  - `QuestionAsked` **已经有生产发射者**，只是它在**工具层**：
-    `crates/agent-toolkit/src/core/ask_user.rs:301`（同文件 `:749-751` 断言事件真的落进事件池）。
-    门禁只扫引擎层，于是它仍留在豁免表里。**这不是功能缺口，是口径不一致**：
-    INV-6 的原话是"引擎是 `AgentEvent` 的唯一生产者"。二选一——把发射收回引擎，
-    或承认工具层是合法发射方并改判据；**别让豁免表变成没人再看的假条**
-    （`crates/agent-rpc/src/runner/mod.rs` 的模块注释此前也在照抄"`AskUserTool` 直接返回错误"，
-    已同批更正）。
-  - `SubagentStarted` / `SubagentFinished` **仍然没有任何生产发射者**
-    （`engine_bridge` 把它们映射成 `None`）——**子智能体生命周期确实没有上报**：
-    界面看不到"谁在跑、跑到哪了"。
+  **11 个变体、9 个有发射者、2 个无**（`SubagentStarted` / `SubagentFinished`），
+  两者登记在 `UNEMITTED_EVENT_ALLOW` 豁免表里。
+- **2026-10-28 更新**：`QuestionAsked` 已随提问通道迁到插件而删除，不再有口径问题。
+  `SubagentStarted` / `SubagentFinished` **仍然没有任何生产发射者**
+  （`engine_bridge` 把它们映射成 `None`）——**子智能体生命周期确实没有上报**：
+  界面看不到"谁在跑、跑到哪了"。
 - **最小实现路径**：在子智能体运行器的起止处发这两个事件
   （`crates/agent-node/src/subagents/runner.rs` 有天然落点）；补完**必须删掉对应豁免**，
   否则门会报"陈旧豁免"。

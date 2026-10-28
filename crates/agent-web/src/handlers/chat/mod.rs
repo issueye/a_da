@@ -312,11 +312,6 @@ async fn live_parts(
     thread: &Value,
     tasks: Option<&Value>,
 ) -> LiveParts {
-    let raw_items = thread
-        .get("items")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
     let running = running_ids(snapshot).iter().any(|id| id == thread_id);
     let model = model_of(snapshot, &Value::Null);
     let effort = effort_of(snapshot, &Value::Null);
@@ -356,19 +351,14 @@ async fn live_parts(
         chat_context.clone(),
     )
     .await;
-    // 提问段：`thread.tray` 插槽输出非空时替换核心提问托盘（D5 降级规则）。
+    // 提问段：完全由 `plugins/ask-user` 的 `thread.tray` 插槽提供。
     let thread_tray = crate::plugins::render_slot_off_thread(
         std::sync::Arc::clone(&state.frontend),
         Slot::ThreadTray,
         chat_context,
     )
     .await;
-    let (trays, queue_len) = trays_html(
-        snapshot,
-        raw_items,
-        thread_id,
-        Some(thread_tray.html.trim()),
-    );
+    let (trays, queue_len) = trays_html(snapshot, thread_id, Some(thread_tray.html.trim()));
     // 侧栏树与首屏同源（thread_rows 的空占位过滤 + workspace_groups 分组排序），
     // 分组锚点与首屏一致：当前会话的工作区，缺了回落 agent 的当前项目。
     let tree_workspace = if workspace.is_empty() {
@@ -539,13 +529,8 @@ async fn load_chat(
         .render();
 
     // 托盘（提问/排队）：`thread.tray` 插槽已在 base.slots 里按同一份会话上下文渲染，
-    // 输出非空时替换核心提问托盘。
-    let (trays, queue_len) = trays_html(
-        &snapshot,
-        raw_items,
-        &active_thread_id,
-        Some(base.slots.thread_tray.trim()),
-    );
+    // 提问由 `plugins/ask-user` 自行渲染与作答。
+    let (trays, queue_len) = trays_html(&snapshot, &active_thread_id, Some(base.slots.thread_tray.trim()));
 
     // 模型选择器：按供应商分组的模型清单 + 推理等级（数据来自 `/api/providers`）。
     // 只有真要渲染输入框时才多打这一枪；切换动作本身走 `/model/select|effort` 表单。
@@ -1244,57 +1229,6 @@ pub async fn set_thread_workspace(
             "/threads/{thread_id}?notice=thread_workspace_set"
         ))),
         Err(error) => Ok(action_failed(&thread_id, "切换会话工作区失败", error)),
-    }
-}
-
-/// 提问作答表单（核心托盘与 `thread.tray` 插件共用字段约定，见
-/// `crate::questions::answer_params_from_form`）。
-///
-/// 字段是动态的（多选的同名多值、多题的 `q_*` 前缀），所以收成键值对序列
-/// 而不是固定 struct；`thread_id` 只用来决定失败后跳回哪个会话。
-pub async fn answer_question(
-    State(state): State<AppState>,
-    Path(call_id): Path<String>,
-    Form(form): Form<Vec<(String, String)>>,
-) -> Result<Response, AppError> {
-    if call_id.trim().is_empty() {
-        return Err(AppError::bad("提问缺少 callId"));
-    }
-    let thread_id = form
-        .iter()
-        .find(|(key, _)| key == "thread_id")
-        .map(|(_, value)| value.trim().to_string())
-        .unwrap_or_default();
-    let back = |query: &str| {
-        if thread_id.is_empty() {
-            redirect(&format!("/{query}"))
-        } else {
-            redirect(&format!("/threads/{thread_id}?{query}"))
-        }
-    };
-    let params = match crate::questions::answer_params_from_form(&form) {
-        Ok(params) => params,
-        Err(message) => return Ok(back(&format!("error={}", encode_query(&message)))),
-    };
-    match state.agent.answer_question(&call_id, params).await {
-        // `resolved=false`：callId 不认识（已超时/已在别处作答）——如实告知，
-        // 不假装成功；后端 dispatch 已经把它从 pending 列表摘掉了，托盘会自己消失。
-        Ok(result) if result.get("resolved").and_then(Value::as_bool) == Some(true) => {
-            Ok(back("notice=answered"))
-        }
-        Ok(_) => Ok(back(&format!(
-            "error={}",
-            encode_query("这条提问已失效（可能已超时或已作答）")
-        ))),
-        Err(error) => {
-            if thread_id.is_empty() {
-                tracing::warn!("提交回答失败: {error:#}");
-                let message = format!("提交回答失败：{}", public_reason(&error));
-                Ok(redirect(&format!("/?error={}", encode_query(&message))))
-            } else {
-                Ok(action_failed(&thread_id, "提交回答失败", error))
-            }
-        }
     }
 }
 

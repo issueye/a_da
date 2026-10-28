@@ -26,7 +26,6 @@ pub mod delegation_depth;
 pub mod hooks;
 pub mod node_config;
 pub mod plugins;
-pub mod questions;
 pub mod scripts;
 pub mod session;
 pub mod skills;

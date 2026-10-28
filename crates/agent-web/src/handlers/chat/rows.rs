@@ -818,12 +818,6 @@ pub(super) fn workspace_label(workspace: &str) -> String {
         .to_string()
 }
 
-pub(super) fn waited_label(value: &Value) -> String {
-    // 用 `startedAt`（绝对毫秒）算等待时长——`at` 是排序序号，不是时间戳，
-    // 与行内 `elapsed_label` 同一口径（拿不到就干脆不显示，不拿 at 兜底）。
-    let started = value.get("startedAt").and_then(Value::as_u64).unwrap_or(0);
-    ui::waited_from_ms(started)
-}
 
 pub(super) fn queue_rows(snapshot: &Value, thread_id: &str) -> Vec<QueueRow> {
     array_at(snapshot, "queue")
@@ -954,29 +948,18 @@ pub(crate) fn thread_rows(snapshot: &Value, active_thread_id: &str) -> Vec<Threa
         .collect()
 }
 
-/// 提问 + 排队托盘。返回 `(html, 排队数)`。
+/// 插件托盘 + 排队托盘。返回 `(html, 排队数)`。
 ///
-/// `plugin_questions_html` 是 `thread.tray` 插槽的输出：非空时替换核心提问托盘。
-/// 插件停用、加载失败或没渲染出东西时传 `None`/空串，自动退回核心实现。
+/// 提问完全由 `plugins/ask-user` 的 `thread.tray` 插槽提供；核心只负责把插件输出
+/// 与排队托盘拼在一起。插件停用或未输出时这里为空，不再有核心提问兜底。
 pub(super) fn trays_html(
     snapshot: &Value,
-    raw_items: &[Value],
     thread_id: &str,
-    plugin_questions_html: Option<&str>,
+    plugin_tray_html: Option<&str>,
 ) -> (String, usize) {
-    let questions_html = match plugin_questions_html {
+    let plugin_html = match plugin_tray_html {
         Some(html) if !html.trim().is_empty() => html.to_string(),
-        _ => crate::questions::pending_questions_from_items(raw_items)
-            .iter()
-            .map(|question| {
-                ui::QuestionTray {
-                    question: question.clone(),
-                    thread_id: thread_id.to_string(),
-                }
-                .render()
-            })
-            .collect::<Vec<_>>()
-            .join(""),
+        _ => String::new(),
     };
     let queue = queue_rows(snapshot, thread_id);
     let queue_html = if queue.is_empty() {
@@ -995,7 +978,7 @@ pub(super) fn trays_html(
         }
         .render()
     };
-    (format!("{questions_html}{queue_html}"), queue.len())
+    (format!("{plugin_html}{queue_html}"), queue.len())
 }
 
 pub(super) fn render_string<T: Template>(template: &T) -> String {
@@ -1010,19 +993,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn waited_label_uses_started_at_not_sort_ordinal() {
-        // 回归锁（建议 05）：只有排序序号 `at` 时必须不显示等待时长，
-        // 否则「已等待 20000 天」这类天文数字会出现在托盘里。
-        assert_eq!(waited_label(&json!({"at": 1})), "");
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap();
-        let label = waited_label(&json!({"at": 1, "startedAt": now - 4_000}));
-        assert!(label.starts_with("已等待 "), "{label}");
-        assert!(!label.contains("d "), "不应出现按天计的等待时长: {label}");
-    }
 
     #[test]
     fn compact_row_uses_summary_not_text() {

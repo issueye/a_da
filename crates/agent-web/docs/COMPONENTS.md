@@ -122,7 +122,7 @@ ssr-h/
 | `Notice` | 提示卡（可带动作） | `tone` `action` |
 | `EmptyState` | 空状态 | `icon` `title` `description` `action` |
 | `Composer` + `ComposerAux` | 输入框与辅助区 | `left` `right` `aux` `focus_hint` |
-| `QueueTray` / `QuestionTray` | 排队 / 提问浮层 | — |
+| `QueueTray` | 排队浮层 | — |
 | `SendButton` | 发送主操作 | `disabled` |
 | `Slot` | 插件插槽容器 | `name` `html` `fallback` `contributors` |
 

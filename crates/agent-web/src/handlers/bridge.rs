@@ -152,13 +152,24 @@ fn parse_post_body(headers: &HeaderMap, body: &Bytes) -> Result<Value, AppError>
         return Ok(value);
     }
     if content_type.contains("application/x-www-form-urlencoded") {
-        let form: HashMap<String, String> =
-            serde_urlencoded::from_bytes(body).map_err(|error| {
-                AppError::new(StatusCode::BAD_REQUEST, format!("动作表单不合法: {error}"))
-            })?;
         let mut object = serde_json::Map::new();
-        for (key, value) in form {
-            object.insert(key, Value::String(value));
+        for (key, value) in form_urlencoded::parse(&body) {
+            let key = key.into_owned();
+            let value = Value::String(value.into_owned());
+            match object.get_mut(&key) {
+                None => {
+                    object.insert(key, value);
+                }
+                Some(existing) => {
+                    // 多选（checkbox 同名多值）必须保住全部值，否则“勾了两个只收到一个”。
+                    if let Some(list) = existing.as_array_mut() {
+                        list.push(value);
+                    } else {
+                        let first = existing.take();
+                        *existing = Value::Array(vec![first, value]);
+                    }
+                }
+            }
         }
         return Ok(Value::Object(object));
     }

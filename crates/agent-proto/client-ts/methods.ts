@@ -40,8 +40,6 @@ export const THREAD_SET_WORKSPACE = 'thread.setWorkspace'
 export const THREAD_EDIT_AND_RESEND = 'thread.editAndResend'
 export const THREAD_RETRY = 'thread.retry'
 
-// 问答 (Question)
-export const QUESTION_ANSWER = 'question.answer'
 
 // 指令队列 (Queue)
 export const QUEUE_CLEAR = 'queue.clear'

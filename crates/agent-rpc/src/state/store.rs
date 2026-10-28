@@ -128,7 +128,6 @@ pub struct AgentStore {
     pub provider: agent_base::model::ProviderConfig,
     pub providers: Vec<agent_base::model::ProviderEntry>,
     pub active_provider_id: String,
-    pub pending_questions: Vec<PendingQuestionEntry>,
     pub public_workspace: String,
     pub appearance: String,
     pub ui: UiSnapshot,
@@ -398,7 +397,6 @@ impl AgentStore {
             provider: prov,
             providers: providers_list,
             active_provider_id: active_pid,
-            pending_questions: Vec::new(),
             public_workspace: default_public_workspace,
             appearance: appearance_str,
             ui: UiSnapshot {
@@ -951,7 +949,6 @@ impl AgentStore {
 
         // 审批通过、工具开始执行 → "正在等你批准"不再是事实，必须重算：
         // 否则"有会话在等你操作"的全局提示会一直挂在界面上（这条状态由卡片状态派生）。
-        self.refresh_waiting_state(thread_id);
     }
 
     /// 记录工具调用完成
@@ -1009,9 +1006,7 @@ impl AgentStore {
                 }
             }
         }
-        self.pending_questions.retain(|item| item.call_id != call_id);
         // 该工具不再等待 → 若这个会话已经没有别的等待项，就从"等你操作"里摘掉
-        self.refresh_waiting_state(thread_id);
     }
 
     /// 追加一张**提示卡片**（`Item::Notice`）——面向人的信息，不进模型上下文。
@@ -1060,73 +1055,6 @@ impl AgentStore {
         before != t.items.len()
     }
 
-    /// 标记工具调用正在等待用户提问答复
-    pub fn set_tool_awaiting_question(&mut self, thread_id: &str, call_id: &str, question_val: serde_json::Value) {
-        if let Some(t) = self.get_thread_mut(thread_id) {
-            for item in t.items.iter_mut().rev() {
-                let hit = matches!(
-                    item.as_ref(),
-                    Item::Tool { call_id: cid, .. } if cid == call_id
-                );
-                if !hit {
-                    continue;
-                }
-                if let Item::Tool { status, details, .. } = item_mut(item) {
-                    *status = "awaiting".to_string();
-                    let mut det = details.take().unwrap_or_else(|| serde_json::json!({}));
-                    if let Some(obj) = det.as_object_mut() {
-                        obj.insert("question".to_string(), question_val.clone());
-                    }
-                    *details = Some(det);
-                    break;
-                }
-            }
-        }
-
-        // 同步到 pending_questions 列表中
-        // （状态与提问时刻由**持有方**填：提问事件里没有这两个字段）
-        if let Ok(mut q) = serde_json::from_value::<agent_proto::AgentQuestion>(question_val) {
-            q.status = "awaiting".to_string();
-            q.asked_at = now_millis();
-            self.pending_questions.retain(|item| item.call_id != call_id);
-            self.pending_questions.push(agent_proto::PendingQuestionEntry {
-                call_id: call_id.to_string(),
-                question: q,
-            });
-        }
-
-        // 提问同样属于"等你操作"：别的会话里也要能看见
-        self.refresh_waiting_state(thread_id);
-    }
-
-    /// 维护 `waiting_thread_ids`：界面靠它做"**别的会话正在等你操作**"的全局提示。
-    ///
-    /// 这个字段以前只初始化、只进快照，**从来没被填过**——于是某个会话在等批准时，
-    /// 你在别的标签页上什么都看不到（实测：一条 `cargo test` 的审批请求等了 5 分钟超时
-    /// 被自动拒绝，用户完全不知道发生过）。
-    fn refresh_waiting_state(&mut self, thread_id: &str) {
-        let still_waiting = self
-            .threads
-            .iter()
-            .find(|t| t.id == thread_id)
-            .map(|t| {
-                t.items.iter().any(|it| {
-                    matches!(
-                        it.as_ref(),
-                        Item::Tool { status, .. } if status == "awaiting"
-                    )
-                })
-            })
-            .unwrap_or(false);
-        if still_waiting {
-            if !self.waiting_thread_ids.iter().any(|id| id == thread_id) {
-                self.waiting_thread_ids.push(thread_id.to_string());
-            }
-        } else {
-            self.waiting_thread_ids.retain(|id| id != thread_id);
-        }
-    }
-
     /// 完成当前轮次
     pub fn finish_turn(&mut self, thread_id: &str) {
         self.end_thinking(thread_id);
@@ -1161,17 +1089,6 @@ impl AgentStore {
             .map(|t| t.id.clone())
             .collect();
         self.running_thread_ids.retain(|tid| !children.contains(tid));
-    }
-}
-
-/// 参数是否"有内容"（`{}` / `null` / `""` 都算没有——界面拿它什么也显示不出来）。
-fn has_content(v: &serde_json::Value) -> bool {
-    match v {
-        serde_json::Value::Null => false,
-        serde_json::Value::Object(m) => !m.is_empty(),
-        serde_json::Value::String(s) => !s.trim().is_empty(),
-        serde_json::Value::Array(a) => !a.is_empty(),
-        _ => true,
     }
 }
 

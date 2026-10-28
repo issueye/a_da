@@ -275,6 +275,7 @@ impl ScriptHost for SubprocessScriptHost {
                     parameters: tool.parameters,
                     // 子进程档走同一份归一化结果（runner 回的 `access` 字段）。
                     access: agent_base::ports::ScriptToolAccess::from_declared(Some(&tool.access)),
+                    long_running: tool.long_running,
                 })
                 .collect();
             let prompts: Vec<crate::plugins::PluginPromptDeclaration> = serde_json::from_value(
@@ -370,6 +371,7 @@ impl ScriptHost for SubprocessScriptHost {
                         "kind": "call",
                         "path": loaded.path.to_string_lossy(),
                         "workspace": loaded.workspace.to_string_lossy(),
+                        "threadId": ctx.thread_id,
                         "export": call.export,
                         "args": call.args,
                         "needs": Self::needs_json(loaded.needs),

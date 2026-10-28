@@ -89,7 +89,7 @@ cargo xtask verify-wiring                                   # 7 没有第二份�
 | INV-5 | **回执结构化且必填**：`status`/`started_at`/`finished_at` 非 `Option`，`duration` 派生 | AGENTS.md §18 的双写兜底 |
 | INV-6 | **事件有序可重放**：事件带 `(seq, thread, turn)`；快照带 `seq`；缺口可重同步；未实现的能力必须在握手里如实降级 | 快照无 seq、无 resync |
 | INV-7 | **领域与投影分离**：`Item`/`ClientSnapshot` 是投影；领域里不出现 `settings_open` 这类界面状态 | DTO 就是 UI 形状 |
-| INV-8 | **无隐藏全局态**：端口由组合根注入；单例/`get_app_home()`/`PluginManager::new()` 只许存在于适配器内部 | `global_question_manager()`、每轮重扫盘 |
+| INV-8 | **无隐藏全局态**：端口由组合根注入；单例/`get_app_home()`/`PluginManager::new()` 只许存在于适配器内部 | 每轮重扫盘、全局等待表 |
 | INV-9 | **兼容在适配层**：旧字段名/旧会话版本只在 serde 适配与投影层处理，不进领域模型 | `session/types.rs:56-95` 的 alias |
 | INV-10 | **能力先声明**：新产品要的新能力 = 内核加能力位 + 适配器实现 + 合规断言；**禁止 fork 引擎** | 防产品分叉 |
 | INV-11 | **协议单源**：base 协议一份，产品扩展在 `x.<product>.*` 命名空间内声明；四份产物（Rust 常量/dispatch 臂/客户端类型/文档）由生成器产出并校验 | §1.1 的目录漂移 |
@@ -302,7 +302,7 @@ pub trait Toolkit: Send + Sync {
 
 | 层 | 内容 | 谁定义 |
 |---|---|---|
-L0 **base 协议** | `session.*`、`thread.*`（create/send/abort/retry/editAndResend/compact）、`queue.*`、`question.*`、`subagent.*`、`evt.turn/tool/*`、能力协商、错误码 | 基座，版本化，**所有产品逐字节一致** |
+L0 **base 协议** | `session.*`、`thread.*`（create/send/abort/retry/editAndResend/compact）、`queue.*`、`subagent.*`、`evt.turn/tool/*`、能力协商、错误码 | 基座，版本化，**所有产品逐字节一致** |
 | L1 **能力位** | `images`、`rollback`、`plugins`、`hooks`、`events.granularity`、`resync` … | 基座登记，产品声明启用 |
 | L2 **产品扩展** | `x.<product>.<domain>.*`（如 `x.life.calendar.list`） | 产品在 `proto/ext.json` 声明，生成器并入该产品的目录 |
 

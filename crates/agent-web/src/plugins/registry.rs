@@ -1928,6 +1928,75 @@ export function Page() {
         assert!(!above.html.contains("任务规划"), "{}", above.html);
     }
 
+    /// `ask-user` 是前后端一体插件：插槽读 `data.backend["ask-user"].list`，
+    /// 作答提交到插件自己的桥接路由（不是已删除的核心 `question.answer`）。
+    #[test]
+    fn ask_user_plugin_renders_backend_questions_and_posts_to_its_action() {
+        let primary = temp_root("ask-user-primary");
+        let unified = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
+        let registry = registry_at(&primary).with_unified_dir(unified);
+        let plugin = registry.find("ask-user").expect("ask-user 插件应当被发现");
+        assert!(plugin.is_active(), "errors: {:?}", plugin.errors);
+        assert!(plugin.scripts.is_empty(), "提问插件不需要额外浏览器脚本");
+        assert!(
+            plugin.action("list").is_some_and(|action| action.read),
+            "list 必须是只读动作"
+        );
+        assert!(
+            plugin.action("answer").is_some_and(|action| !action.read),
+            "answer 必须是写动作"
+        );
+
+        let context = RenderContext::default().with_data(serde_json::json!({
+            "thread": { "id": "thread-1" },
+            "backend": {
+                "ask-user": {
+                    "list": {
+                        "ok": true,
+                        "data": {
+                            "questions": [{
+                                "id": "q_test",
+                                "threadId": "thread-1",
+                                "createdAt": 1_761_000_000_000u64,
+                                "items": [
+                                    {
+                                        "id": "q1",
+                                        "question": "用哪个环境？",
+                                        "allowText": true,
+                                        "multiSelect": false,
+                                        "choices": [
+                                            { "id": "c1", "label": "开发环境" },
+                                            { "id": "c2", "label": "生产环境" }
+                                        ]
+                                    },
+                                    {
+                                        "id": "q2",
+                                        "question": "还有什么补充？",
+                                        "allowText": true,
+                                        "multiSelect": false,
+                                        "choices": []
+                                    }
+                                ]
+                            }]
+                        },
+                        "error": null
+                    }
+                }
+            }
+        }));
+        let slot = registry.render_slot_with(Slot::ThreadTray, &context);
+        assert!(slot.failed.is_empty(), "failed={:?}; html={}", slot.failed, slot.html);
+        assert!(slot.html.contains("/ext/ask-user/backend/answer"), "{}", slot.html);
+        assert!(slot.html.contains("name=\"question_id\""), "{}", slot.html);
+        assert!(slot.html.contains("choice__q1"), "{}", slot.html);
+        assert!(slot.html.contains("text__q2"), "{}", slot.html);
+        assert!(slot.html.contains("生产环境"), "{}", slot.html);
+        assert!(slot.html.contains("data-question-pager"), "{}", slot.html);
+        // 没有提问时返回 null，不渲染空壳。
+        let empty = registry.render_slot_with(Slot::ThreadTray, &RenderContext::default());
+        assert!(empty.html.is_empty(), "{:?}", empty.html);
+    }
+
     use super::*;
 
     /// 停用状态必须跨「重启」存活：新建注册表 = 模拟一次重启。

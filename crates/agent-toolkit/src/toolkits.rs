@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn test_all_toolkit_tool_names_covers_the_expected_core_tools() {
         let names = all_toolkit_tool_names(ws());
-        for expect in ["read_file", "write_file", "run_command", "ask_user", "todo", "finish", "project_inspect", "create_plugin"] {
+        for expect in ["read_file", "write_file", "run_command", "todo", "finish", "project_inspect", "create_plugin"] {
             assert!(names.contains(expect), "`{expect}` 应来自某个工具包：{names:?}");
         }
     }

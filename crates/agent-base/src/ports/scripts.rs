@@ -97,6 +97,11 @@ pub struct ScriptToolDeclaration {
     pub parameters: serde_json::Value,
     /// 插件自述的访问类别（见 [`ScriptToolAccess`]）。
     pub access: ScriptToolAccess,
+    /// 作者声明"本工具会合法地长时间等待"（例如等待用户作答）。
+    ///
+    /// 为 `true` 时宿主跳过策略超时，并给脚本调用一个与等待语义相称的墙钟上限；
+    /// 这不是权限位，插件仍受取消与沙箱预算约束。
+    pub long_running: bool,
 }
 
 /// 插件对一个工具声明的**访问类别**（插件自述只读的**唯一**合法出口）。

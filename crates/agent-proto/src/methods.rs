@@ -32,8 +32,6 @@ pub const THREAD_UPDATE: &str = "thread.update";
 pub const TASK_LIST: &str = "task.list";
 pub const TASK_KILL: &str = "task.kill";
 
-// 提问
-pub const QUESTION_ANSWER: &str = "question.answer";
 
 // 工作区与配置
 // W5-T2：`workspace.set` / `config.update` 已删除——它们**没有任何 dispatch 臂**
@@ -161,7 +159,6 @@ pub const ALL_METHODS: &[&str] = &[
     THREAD_SET_WORKSPACE,
     THREAD_EDIT_AND_RESEND,
     THREAD_RETRY,
-    QUESTION_ANSWER,
     WORKSPACE_ADD,
     WORKSPACE_REMOVE,
     WORKSPACE_ENTRIES,
@@ -249,7 +246,8 @@ mod tests {
         // 任务管理：新增 `task.list` / `task.kill` 后 83 → 85
         // 动态路由：新增 `plugin.route` 后 85 → 86
         // 审批/安全下线：删除审批与配置档位两个方法后 86 → 84
-        assert_eq!(ALL_METHODS.len(), 84);
+        // 提问插件化：删除 `question.answer` 后 84 → 83
+        assert_eq!(ALL_METHODS.len(), 83);
 
         let mut event_set = HashSet::new();
         for &e in ALL_EVENTS {

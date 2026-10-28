@@ -28,13 +28,13 @@
 
 ## 二、工具与路径
 
-**19 个内置工具描述符**，元数据（读写性、回滚、终止）单一真源在
+**18 个内置工具描述符**，元数据（读写性、回滚、终止）单一真源在
 `crates/agent-toolkit/src/registry.rs`；工具包名单单一真源在 `toolkits.rs`
 （`core` / `fs` / `command` / `git` / `project` / `forge`）。
 
 | 工具包 | 工具 | 备注 |
 |---|---|---|
-| `core` | `ask_user`、`todo`、`finish` | 提问、多步规划、终止整轮 |
+| `core` | `todo`、`finish` | 多步规划、终止整轮；`ask_user` 已迁到插件 |
 | `fs` | `read_file`、`write_file`、`edit_file`、`list_files`、`search_files`、`batch_write`、`batch_replace` | 编辑按文本匹配，**匹配按 LF 归一化、写回按文件原换行还原**（`agent-toolkit/src/newline.rs`） |
 | `command` | `run_command`、`run_background`、`check_task`、`kill_task` | **超时/中止杀整棵进程树**；子进程 stdin 一律空设备（否则一条等输入的命令会卡满超时） |
 | `git` | `git`（单工具，15 个 `action`） | 只读动作（status/diff/log/show/blame）与写动作靠描述符的 `Access` 区分；参数经 argv 直传，不经 shell |
@@ -64,9 +64,15 @@
 
 ---
 
-## 四、提问
+## 四、提问（插件）
 
-- 模型主动提问（`ask_user`）→ 卡片进入 `awaiting`，界面托盘作答，走 `question.answer`。
+提问由统一插件 `plugins/ask-user` 完整提供：
+
+- 后端工具 `ask_user`（`longRunning`）把问题写入工作区 `.ada/ask-user/questions.json` 并等待；
+- 前端 `thread.tray` 插槽通过只读动作 `list` 读取待答项；
+- 表单提交到 `/ext/ask-user/backend/answer`，后端动作写回答案后工具被唤醒。
+
+核心不再有 `QuestionAsked` / `QuestionManager` / `question.answer`；插件停用则提问能力消失。
 - **审批已物理删除**（2026-10-27）：不再有 `ApprovalRequested` / `waiting_approval` 新卡 /
   `approval.decide` / 审批档位或托盘。历史会话里的 `waiting_approval` 卡按已结束记录展示。
 
@@ -111,7 +117,7 @@
 | 子进程（`node:child_process`：同步 `execFileSync` / `spawnSync` / `execSync`，异步 `spawn` / `exec` / `execFile` 带真流式 stdio；`fork` 未提供） | `crates/ts-engine/src/env/child_process.rs` + `child_process_async.rs`（`@ada-needs exec`） |
 | 管理面：`plugin.list/load/validate/invoke/setEnabled/reload/delete/builtinCatalog/createTemplate/capabilities.set/config.set/secret.set` | `spec/proto/ada-coding.ext.json` |
 | **统一插件包**（一个 `plugin.json` 同时声明 `frontend` / `backend`；动作 `registerAction`） | `crates/agent-web/src/plugins/manifest.rs` + `crates/agent-node/src/plugins/manager.rs`；说明见 [plugins/unified-package.md](../plugins/unified-package.md) |
-| 内置插件 **7 个**：`code-outline`、`project-inspector`、`test-runner`、`batch-ops`、`plugin-forge`、`ask-user`、`ponytail` | `crates/agent-node/src/plugins/builtins.rs` |
+| 内置插件 **6 个**：`code-outline`、`project-inspector`、`test-runner`、`batch-ops`、`plugin-forge`、`ponytail` | `crates/agent-node/src/plugins/builtins.rs` |
 | **Git 工具是插件**（`plugins/git-tools`）：`git`（全动作，写语义）+ `git_read`（status/diff/log/show/blame，自述只读） | `plugins/git-tools/index.ts`；自述只读见 `ScriptToolAccess` |
 
 细节与排错见 [../plugins/README.md](../plugins/README.md)。
@@ -185,12 +191,12 @@
   上下文用量。
 - **模式**：coding / pm 由 `mode` 表达（`agent_id` 恒为 `ada-coding`），PM 是**模式预设**不是第二个产品。
 
-## 十二、协议面（84 个方法）
+## 十二、协议面（83 个方法）
 
 | 域 | 代表方法 |
 |---|---|
 | 会话与轮次 | `session.initialize` / `session.snapshot`、`thread.create` / `send` / `retry` / `abort` / `compact` / `editAndResend` / `items.page` |
-| 提问 | `question.answer` |
+| 提问（插件动作） | `plugins/ask-user` 的 `list` / `answer`（不是 RPC 方法） |
 | 队列 | `queue.promote` / `remove` / `clear` |
 | 界面态 | `ui.activeThread` / `activeProject` / `openTab` / `closeTab` / `setShell` |
 | 配置与供应商 | `config.get` / `setProvider` / `checkProvider` / `setEffort` / `setRetryCount`、`provider.*` |

@@ -12,7 +12,7 @@
 
 | 面 | 传输 | 路径 | 用途 | 服务端事件 |
 |---|---|---|---|---|
-| **WS 线协议** | JSON-RPC 2.0 over WebSocket | `/rpc` | 全部方法；流式输出、状态增量、提问、长任务 | ✅ 推送 `evt.*` |
+| **WS 线协议** | JSON-RPC 2.0 over WebSocket | `/rpc` | 全部方法；流式输出、状态增量、长任务 | ✅ 推送 `evt.*` |
 | **HTTP API** | HTTP/1.1 unary | `/api/*` | 一问一答的命令/查询（配置、工作区、插件、文件、快照读取） | ❌ 不承载事件 |
 | **静态页面** | HTTP GET | `/`、`/assets/*` | 前端产物（网页形态，见 §1.2） | — |
 
@@ -22,7 +22,7 @@
    两者参数与结果形状一致——HTTP 只是换了信封，没有第二套语义。
 2. **事件只能走 WS**：`evt.state.snapshot` / `evt.state.patch` / `evt.message.delta` /
    `evt.card.updated` 全部经 `/rpc` 推送，HTTP 不做轮询。
-3. **人和流式只能走 WS**：提问（`question.answer`）、
+3. **流式只能走 WS**：
    `thread.send` 这类"要等模型说很久"的操作没有 HTTP 形态（§8 说明了为什么）。
 
 ---
@@ -234,8 +234,7 @@ curl -i -H 'Authorization: Bearer secret' -H 'If-None-Match: "snap-42"' \
 | DELETE | `/api/threads/{id}/queue` | `queue.clear` |
 | POST | `/api/threads/{id}/queue/{index}/promote` | `queue.promote` |
 | DELETE | `/api/threads/{id}/queue/{index}` | `queue.remove` |
-| POST | `/api/questions/{callId}/answer` | `question.answer` |
-| POST | `/api/threads/{id}/changes/revert-card` | `change.revertCard` |
+| POST | `/threads/{id}/changes/revert-card` | `change.revertCard` |
 | POST | `/api/threads/{id}/changes/revert-checkpoint` | `change.revertCheckpoint` |
 | POST | `/api/threads/{id}/changes/revert-file` | `change.revertFile` |
 | POST | `/api/threads/{id}/changes/revert-all` | `change.revertAll` |
@@ -369,13 +368,16 @@ curl -i -H 'Authorization: Bearer secret' -H 'If-None-Match: "snap-42"' \
 
 ---
 
-## 5. 提问（**唯一需要"人"的通道**）
+## 5. 提问（已迁到插件）
 
-审批已随核心物理删除（2026-10-27）：不再有 `ApprovalRequested`、`waiting_approval` 新卡、
-`approval.decide` 或 `/api/approvals/*`。需要策略时由受信插件通过 `event_before_*` 决定。
+核心不再有提问通道：`question.answer`、`QuestionAsked`、`QuestionManager` 均已删除。
+提问由 `plugins/ask-user` 统一插件提供：
 
-模型主动提问走 `ask_user` / `question.answer`（HTTP 侧 `POST /api/questions/{callId}/answer`）：
-提问卡进入 `status: "awaiting"`，界面作答后方法返回。
+- 模型工具 `ask_user` 把问题写入工作区 `.ada/ask-user/questions.json` 并等待；
+- 前端 `thread.tray` 插槽通过后端只读动作 `list` 读取待答项；
+- 作答表单提交到 `/ext/ask-user/backend/answer`，插件后端写回答案后工具被唤醒。
+
+这条链路不经过核心协议方法，也不依赖核心事件；插件停用则提问能力随之消失。
 
 ---
 
@@ -496,7 +498,7 @@ client.on('evt.state.snapshot', (params) => { /* seq 对账 */ })
 
 | 层 | 内容 | 登记处 |
 |---|---|---|
-| **L0** | 核心通信与调度：`session.*`、`thread.*`、`approval.*`、`question.*`、`queue.*`、`ui.*`、`evt.*` | `spec/proto/base.json` |
+| **L0** | 核心通信与调度：`session.*`、`thread.*`、`queue.*`、`ui.*`、`evt.*` | `spec/proto/base.json` |
 | **L1** | 系统能力位与标准错误码 | `spec/proto/base.json`（`capabilities` / `errorCodes`） |
 | **L2** | 产品扩展：工作区、配置、供应商、插件、技能、提示词、子智能体、Git/FS、检查点、调试 | `spec/proto/<product>.ext.json` |
 

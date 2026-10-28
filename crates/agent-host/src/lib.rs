@@ -385,15 +385,6 @@ fn assemble(
 }
 
 pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProduct, HostError> {
-    // 提问通道必须**在装配期就装上**，不能等"谁先碰全局单例谁顺手装"。
-    //
-    // `ask_user` 的注册器原本只挂在 `global_question_manager()` 的 `OnceLock` 初始化里，
-    // 而生产路径上第一个碰它的地方是"用户答复提问"或"中止会话"——于是**全新进程里的
-    // 第一次 ask_user 必然失败**（实测 PM 就这样：工具直接回
-    // "当前环境未接入交互提问协调器（无事件问答通道）"，只能改成自己猜），
-    // 只有先答过一次提问或中止过一次会话之后才会好。装配期显式装上是幂等的。
-    agent_node::questions::init_question_registrar();
-
     let workspace = options.workspace.clone();
     let background_tasks = options.background_tasks.clone().unwrap_or_else(|| {
         Arc::new(agent_toolkit::background::BackgroundTasks::new(
@@ -962,9 +953,9 @@ mod tests {
         )
         .expect("装配必须成功");
 
-        // 1. 工具来自声明的工具包（core → ask_user/todo/finish）
+        // 1. 工具来自声明的工具包（core → todo/finish；ask_user 由插件提供）
         let names = hosted.tool_names();
-        assert_eq!(names, vec!["ask_user", "todo", "finish"], "工具应来自 spec.toolkits");
+        assert_eq!(names, vec!["todo", "finish"], "工具应来自 spec.toolkits");
 
         // 2. 真引擎跑完一轮
         let outcome = hosted
@@ -982,33 +973,6 @@ mod tests {
         // 4. 会话真的落了盘（FsSessionStore，不是内存替身）
         let session_dir = ws.join(".a-da").join("sessions");
         assert!(session_dir.exists(), "会话目录应被真实创建：{}", session_dir.display());
-
-        let _ = std::fs::remove_dir_all(&ws);
-    }
-
-    /// 守门：**装配期**必须把提问通道装上。
-    ///
-    /// 注册器原本只挂在 `global_question_manager()` 的 `OnceLock` 初始化里，而生产路径上
-    /// 第一个碰它的是"答复提问/中止会话"——于是全新进程里的第一次 `ask_user` 必然失败
-    /// （实测 PM：工具直接回"当前环境未接入交互提问协调器（无事件问答通道）"，
-    /// 模型只能改成自己猜），只有先答过/中止过一次才会好。
-    #[test]
-    fn test_assembly_installs_the_question_registrar() {
-        agent_toolkit::core::ask_user::clear_question_registrar();
-        assert!(
-            agent_toolkit::core::ask_user::get_question_registrar().is_none(),
-            "前置条件：先模拟全新进程（没有注册器）"
-        );
-
-        let ws = tmp_ws("question_registrar");
-        let spec = AgentSpec::from_json_str(SKELETON_SPEC).expect("spec 合法");
-        let _ = run_from_spec(spec, HostOptions::new(&ws).with_model(scripted()))
-            .expect("装配必须成功");
-
-        assert!(
-            agent_toolkit::core::ask_user::get_question_registrar().is_some(),
-            "装配完成后 ask_user 必须拿得到提问通道，否则第一次提问就失败"
-        );
 
         let _ = std::fs::remove_dir_all(&ws);
     }
