@@ -513,7 +513,9 @@ impl PluginSandbox {
                             parameters: inst.parameters || {{}},
                             // 访问类别：只认显式的 'read'（作者担保只读），其余一律按写。
                             // 归一化在这里做一次，宿主侧不再猜字符串。
-                            access: (inst.access === 'read' || inst.readOnly === true) ? 'read' : 'write'
+                            access: (inst.access === 'read' || inst.readOnly === true) ? 'read' : 'write',
+                            // 长时等待：由引擎跳过策略超时；宿主仍保留墙钟上限与取消。
+                            longRunning: inst.longRunning === true
                         }});
                     }}
                     const prompts = [];
@@ -1332,6 +1334,7 @@ impl PluginSandbox {
             tool_name,
             args,
             workspace,
+            None,
             timeout_s,
             needs,
             ada_ts_engine::Limits::default(),
@@ -1349,6 +1352,7 @@ impl PluginSandbox {
         tool_name: &str,
         args: serde_json::Value,
         workspace: &Path,
+        thread_id: Option<&str>,
         timeout_s: u64,
         needs: ada_ts_engine::Needs,
         limits: ada_ts_engine::Limits,
@@ -1363,6 +1367,7 @@ impl PluginSandbox {
 
         let plugin_file_json = serde_json::to_string(&plugin_path.to_string_lossy())?;
         let ws_json = serde_json::to_string(&workspace.to_string_lossy())?;
+        let thread_json = serde_json::to_string(&thread_id.unwrap_or(""))?;
         let tool_name_json = serde_json::to_string(tool_name)?;
         let require_factory = plugin_path
             .file_name()
@@ -1403,6 +1408,7 @@ impl PluginSandbox {
                         return JSON.stringify({{ ok: false, output: "插件未导出有效对象或函数" }});
                     }}
                     const ws = {ws_json};
+                    globalThis.__ada_tool_context = {{ threadId: {thread_json}, workspace: ws }};
                     const targetName = {tool_name_json};
                     const requireFactory = {require_factory};
                     let toolsRaw = [];
@@ -1484,6 +1490,7 @@ impl PluginSandbox {
             }};
             "#,
             ws_json = ws_json,
+            thread_json = thread_json,
             tool_name_json = tool_name_json,
             api = Self::api_literal(ApiSurface { tools: true, ..Default::default() }),
             require_factory = require_factory
@@ -2396,212 +2403,6 @@ mod tests {
         .await
         .expect("missing action should return a structured refusal");
         assert_eq!(missing["kind"], "not_found");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// 仓库里的 task-plan 统一包：afterTodoUpdate 写状态，plan action 读回。
-    #[tokio::test]
-    async fn repo_task_plan_backend_writes_and_reads_the_plan() {
-        let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../plugins/task-plan/index.ts");
-        let dir = std::env::temp_dir().join(format!(
-            "a_da_task_plan_test_{}_{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let inspected = PluginSandbox::inspect_plugin_full(
-            &entry,
-            &dir,
-            ada_ts_engine::Needs::everything(),
-        )
-        .await
-        .expect("task-plan backend should inspect");
-        assert!(
-            inspected.hooks.iter().any(|hook| hook.point == "afterTodoUpdate"),
-            "hooks: {:?}",
-            inspected.hooks
-        );
-        assert!(
-            inspected.actions.iter().any(|action| action.name == "plan" && action.is_read()),
-            "actions: {:?}",
-            inspected.actions
-        );
-
-        let hook = PluginSandbox::call_hook_budgeted(
-            &entry,
-            "afterTodoUpdate",
-            serde_json::json!({
-                "__ada_hook_event": {
-                    "todos": [
-                        { "id": "t1", "title": "读列表", "status": "completed" },
-                        { "id": "t2", "title": "写条目", "status": "in_progress" }
-                    ],
-                    "diff": ""
-                },
-                "__ada_hook_ctx": {
-                    "threadId": "thread-1",
-                    "turnId": "turn-1",
-                    "callId": "call-1",
-                    "pluginId": "task-plan",
-                    "point": "afterTodoUpdate",
-                    "timeoutMs": 500
-                }
-            }),
-            &dir,
-            5,
-            ada_ts_engine::Needs::everything(),
-            ada_ts_engine::Limits::default(),
-        )
-        .await
-        .expect("afterTodoUpdate should run");
-        assert!(
-            hook.get("error").is_none(),
-            "hook should not fail: {hook:?}"
-        );
-
-        let plan = PluginSandbox::call_action_budgeted(
-            &entry,
-            "plan",
-            serde_json::json!({ "threadId": "thread-1" }),
-            serde_json::json!({ "workspace": dir.to_string_lossy(), "caller": "web", "now": 1 }),
-            "read",
-            &dir,
-            5,
-            ada_ts_engine::Needs::everything(),
-            ada_ts_engine::Limits::default(),
-        )
-        .await
-        .expect("plan action should run");
-        assert_eq!(plan["ok"], true);
-        assert_eq!(plan["data"]["total"], 2);
-        assert_eq!(plan["data"]["done"], 1);
-        assert_eq!(plan["data"]["active"], "写条目");
-        assert_eq!(plan["data"]["steps"][1]["title"], "写条目");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// 仓库里的 approval 统一包：beforeApproval 记 pending，afterApproval 累计。
-    #[tokio::test]
-    async fn repo_approval_backend_records_pending_and_decisions() {
-        let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../plugins/approval/index.ts");
-        let dir = std::env::temp_dir().join(format!(
-            "a_da_approval_test_{}_{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let inspected = PluginSandbox::inspect_plugin_full(
-            &entry,
-            &dir,
-            ada_ts_engine::Needs::everything(),
-        )
-        .await
-        .expect("approval backend should inspect");
-        assert!(inspected
-            .hooks
-            .iter()
-            .any(|hook| hook.point == "beforeApproval"));
-        assert!(inspected
-            .hooks
-            .iter()
-            .any(|hook| hook.point == "afterApproval"));
-        assert!(inspected
-            .actions
-            .iter()
-            .any(|action| action.name == "pending" && action.is_read()));
-
-        let hook_ctx = |call_id: &str| {
-            serde_json::json!({
-                "__ada_hook_ctx": {
-                    "threadId": "thread-1",
-                    "turnId": "turn-1",
-                    "callId": call_id,
-                    "pluginId": "approval",
-                    "point": "beforeApproval",
-                    "timeoutMs": 500
-                }
-            })
-        };
-        let before = PluginSandbox::call_hook_budgeted(
-            &entry,
-            "beforeApproval",
-            serde_json::json!({
-                "__ada_hook_event": {
-                    "callId": "call-1",
-                    "tool": "run_command",
-                    "args": { "command": "cargo test" },
-                    "isWrite": true
-                },
-                "__ada_hook_ctx": hook_ctx("call-1")["__ada_hook_ctx"]
-            }),
-            &dir,
-            5,
-            ada_ts_engine::Needs::everything(),
-            ada_ts_engine::Limits::default(),
-        )
-        .await
-        .expect("beforeApproval should run");
-        assert!(before.get("error").is_none(), "{before:?}");
-
-        let pending = PluginSandbox::call_action_budgeted(
-            &entry,
-            "pending",
-            serde_json::json!({ "threadId": "thread-1" }),
-            serde_json::json!({ "workspace": dir.to_string_lossy(), "caller": "web", "now": 10_000 }),
-            "read",
-            &dir,
-            5,
-            ada_ts_engine::Needs::everything(),
-            ada_ts_engine::Limits::default(),
-        )
-        .await
-        .expect("pending action should run");
-        assert_eq!(pending["data"]["items"].as_array().unwrap().len(), 1);
-        assert_eq!(pending["data"]["items"][0]["tool"], "run_command");
-
-        let after = PluginSandbox::call_hook_budgeted(
-            &entry,
-            "afterApproval",
-            serde_json::json!({
-                "__ada_hook_event": {
-                    "tool": "run_command",
-                    "approved": true,
-                    "by": "user",
-                    "waitedMs": 1200
-                },
-                "__ada_hook_ctx": hook_ctx("call-1")["__ada_hook_ctx"]
-            }),
-            &dir,
-            5,
-            ada_ts_engine::Needs::everything(),
-            ada_ts_engine::Limits::default(),
-        )
-        .await
-        .expect("afterApproval should run");
-        assert!(after.get("error").is_none(), "{after:?}");
-
-        let pending = PluginSandbox::call_action_budgeted(
-            &entry,
-            "pending",
-            serde_json::json!({ "threadId": "thread-1" }),
-            serde_json::json!({ "workspace": dir.to_string_lossy(), "caller": "web", "now": 20_000 }),
-            "read",
-            &dir,
-            5,
-            ada_ts_engine::Needs::everything(),
-            ada_ts_engine::Limits::default(),
-        )
-        .await
-        .expect("pending action should run");
-        assert!(pending["data"]["items"].as_array().unwrap().is_empty());
-        assert_eq!(pending["data"]["approved"], 1);
-        assert_eq!(pending["data"]["rejected"], 0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

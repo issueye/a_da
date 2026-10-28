@@ -20,12 +20,11 @@
 //!
 //! | 端口 | 真实实现 | 来源 |
 //! |---|---|---|
-//! | `Scope` | [`WorkspaceScope`] | `agent-adapter`（路径沙箱） |
+//! | `Scope` | [`PathResolver`] | `agent-adapter`（只解析路径，不裁决边界） |
 //! | `SessionStore` | [`FsSessionStore`] | `agent-adapter`（JSONL 落盘） |
 //! | `PromptSource` | [`CodingPromptSource`] | `agent-adapter`（静态前缀 + 扩展段） |
 //! | `Clock` | [`SystemClock`] | `agent-adapter`（全仓唯一读系统时间处） |
 //! | `ModelClient` | [`NetworkModelClient`] | `agent-adapter`（三家协议 SSE） |
-//! | `ApprovalGate` | [`HostApprovalGate`] | 宿主执行侧（AGENTS.md §14：策略在插件、执行在核心） |
 //! | `EventSink` | [`WsEventSink`] | 宿主事件出口（有序账本 + seq 违约检测） |
 //!
 //! # 边界（本任务不做什么）
@@ -42,13 +41,12 @@ use agent_adapter::cancel::CancelHandle;
 use agent_adapter::clock::SystemClock;
 use agent_adapter::model::client::NetworkModelClient;
 use agent_adapter::prompt::{CodingPromptSource, ProductIdentity};
-use agent_adapter::scope::WorkspaceScope;
+use agent_adapter::scope::PathResolver;
 use agent_adapter::store::FsSessionStore;
 use agent_base::domain::ToolDescriptor;
 use agent_base::engine::{AgentRuntime, TurnOutcome};
 use agent_base::model::ProviderConfig;
 use agent_base::ports::{ModelClient, Tool};
-use agent_node::approval::{ApprovalManager, HostApprovalGate};
 use agent_rpc::server::{EngineInjection, StateBroadcaster, WsEventSink};
 use agent_rpc::state::AgentStore;
 use agent_runtime::{
@@ -88,20 +86,10 @@ pub struct HostOptions {
     pub broadcast_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     /// 宿主已有的会话态（UI 快照/配置的来源）。
     ///
-    /// **必须与 ws 宿主共用同一个实例**：新引擎的审批闸门（[`HostApprovalGate`]）要读
-    /// `store.config.approval` 才知道当前档位。各造一个 store 会让"界面上是只读档、
-    /// 引擎却按默认档跑"。
+    /// **必须与 ws 宿主共用同一个实例**：模型供应商、上下文窗口等运行期配置都从它读。
     pub store: Option<Arc<RwLock<AgentStore>>>,
     /// 技能管理器实例（若不注入则装配默认实例）。
     pub skill_mgr: Option<Arc<agent_node::skills::SkillManager>>,
-    /// 审批 waiter 表（若不注入则自建一个）。
-    ///
-    /// 🔴 **同一进程里所有引擎必须共用同一个实例**：`Dispatcher.approval_mgr` 是 UI 的
-    /// `approval.decide` 落到的那张表，而闸门（[`HostApprovalGate`]）把 waiter 注册到
-    /// 自己那份表上。各装配一次就多一张表，UI 的批准就永远送不到闸门——表现为
-    /// "审批卡弹出来了、点了批准却一直卡住"，直到 30 分钟超时被自动拒绝。
-    /// **按工作区动态装配**（`EngineFactory`）时尤其容易漏：那次装配同样必须复用这张表。
-    pub approval_mgr: Option<Arc<ApprovalManager>>,
     /// **组合根预先装好的插件贡献**（P1·SP-16 的工具 + P2·SP-44/45 的片段与技能
     /// + P3a·SP-50 的钩子句柄）。
     ///
@@ -201,7 +189,6 @@ impl HostOptions {
             broadcast_tx: None,
             store: None,
             skill_mgr: None,
-            approval_mgr: None,
             plugin_contributions: PluginContributions::default(),
             plugin_capabilities: agent_node::plugins::PluginCapabilities::default(),
             app_home: None,
@@ -238,12 +225,6 @@ impl HostOptions {
     /// 传入组合根收集好的插件贡献（工具 / 片段 / 技能 / 钩子句柄）。
     pub fn with_plugin_contributions(mut self, contributions: PluginContributions) -> Self {
         self.plugin_contributions = contributions;
-        self
-    }
-
-    /// 复用宿主已有的审批 waiter 表（跨引擎共享，见字段注释）。
-    pub fn with_approval_manager(mut self, mgr: Arc<ApprovalManager>) -> Self {
-        self.approval_mgr = Some(mgr);
         self
     }
 
@@ -289,8 +270,6 @@ pub struct HostedProduct {
     pub spec: AgentSpec,
     /// 宿主会话态（UI 快照与配置的来源）。
     pub store: Arc<RwLock<AgentStore>>,
-    /// 审批执行侧（waiter 表）。
-    pub approval: Arc<ApprovalManager>,
     /// 事件出口（有序账本）。
     pub events: Arc<WsEventSink>,
     /// 轮次取消句柄（每次轮次取 `child()`）。
@@ -315,6 +294,8 @@ pub struct HostedProduct {
     /// 拿它调 [`LivePluginContributions::apply`]，工具 / 提示词片段 / 技能三样会**一起**换掉；
     /// 没拿它（老调用点）就只是没有这条能力，其余行为一字不变。
     pub live: Arc<LivePluginContributions>,
+    /// 插件事件运行时（启停时由 `LivePluginReassembler` 递增 generation）。
+    pub plugin_events: Option<Arc<agent_node::hooks::PluginEventRuntime>>,
 }
 
 impl HostedProduct {
@@ -404,15 +385,6 @@ fn assemble(
 }
 
 pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProduct, HostError> {
-    // 提问通道必须**在装配期就装上**，不能等"谁先碰全局单例谁顺手装"。
-    //
-    // `ask_user` 的注册器原本只挂在 `global_question_manager()` 的 `OnceLock` 初始化里，
-    // 而生产路径上第一个碰它的地方是"用户答复提问"或"中止会话"——于是**全新进程里的
-    // 第一次 ask_user 必然失败**（实测 PM 就这样：工具直接回
-    // "当前环境未接入交互提问协调器（无事件问答通道）"，只能改成自己猜），
-    // 只有先答过一次提问或中止过一次会话之后才会好。装配期显式装上是幂等的。
-    agent_node::approval::init_question_registrar();
-
     let workspace = options.workspace.clone();
     let background_tasks = options.background_tasks.clone().unwrap_or_else(|| {
         Arc::new(agent_toolkit::background::BackgroundTasks::new(
@@ -425,21 +397,13 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
         .unwrap_or_else(|| workspace.join(".a-da").join("sessions"));
 
     // ── 宿主态 ────────────────────────────────────────────────────────────
-    // 复用宿主传入的 store（审批档位必须与界面看到的一致）；没有才自建
+    // 复用宿主传入的 store（运行期配置必须与界面看到的一致）；没有才自建
     let store = options
         .store
         .clone()
         .unwrap_or_else(|| Arc::new(RwLock::new(AgentStore::new(
             workspace.to_string_lossy().to_string(),
         ))));
-    // 复用宿主注入的 waiter 表：**同一进程里所有引擎（含按工作区动态装配的那些）
-    // 必须把 waiter 注册到同一张表**，否则 UI 的 `approval.decide` 找不到闸门的等待者
-    // （见 `HostOptions::approval_mgr`）。
-    let approval = options
-        .approval_mgr
-        .clone()
-        .unwrap_or_else(|| Arc::new(ApprovalManager::new()));
-
     // 事件出口：有 ws 传输层就广播，没有就走离线形态（只记账，不产生无人消费的通道）
     let events = Arc::new(match &options.broadcast_tx {
         Some(tx) => {
@@ -460,36 +424,8 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
     let IdentitySpec { name, persona, locale } = &spec.identity;
     let caps: &CapabilitySpec = &spec.capabilities;
 
-    let scope: Arc<dyn agent_base::ports::Scope> = {
-        // P1b（SP-33）：作用域按**权限档位**裁决路径边界。档位与审批闸门读同一处
-        // （`StoreBackedNodeConfig` 同时实现 `NodeConfigSource` 与 `ApprovalModeSource`）——
-        // 两处各读一份会出现"界面显示完全访问、路径仍被锁在工作区"这种自相矛盾。
-        let mode_source: Arc<dyn agent_adapter::scope::ApprovalModeSource> =
-            Arc::new(agent_rpc::server::StoreBackedNodeConfig::new(store.clone()));
-        // 保留目录：应用自己的配置与密钥（`~/.a-da`）。**任何档位都不可越**（见 `scope::access`）。
-        let app_home_root = {
-            use agent_base::ports::AppHome;
-            agent_adapter::app_home::SystemAppHome::from_env()
-                .root()
-                .to_path_buf()
-        };
-        Arc::new(
-            agent_adapter::scope::ApprovalAwareScope::new(
-                WorkspaceScope::new(workspace.clone()),
-                mode_source,
-                vec![app_home_root.clone()],
-            )
-            // 保留目录里**不是凭据**的两棵树：装好的插件与技能。完全访问下放行，
-            // 其余（config.json / 网关发现文件 / 会话）仍然拒——见 `scope::access` 的文档。
-            .with_allowed_subtrees(vec![
-                app_home_root.join("agent-coding").join("extensions"),
-                app_home_root.join("agent-coding").join("skills"),
-            ])
-            // 安全下线（`agent_toolkit::security::deferred()`）：视作完全访问。
-            // 保留目录黑名单仍然生效（数据完整性，不是审批闸门）。
-            .with_security_deferred(agent_toolkit::security::deferred()),
-        )
-    };
+    let scope: Arc<dyn agent_base::ports::Scope> =
+        Arc::new(PathResolver::new(workspace.clone()));
     let session_store: Arc<dyn agent_base::ports::SessionStore> = Arc::new(FsSessionStore::new(
         sessions_root,
         workspace.to_string_lossy().to_string(),
@@ -566,14 +502,9 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
         .clone()
         .unwrap_or_else(|| Arc::new(NetworkModelClient::new()));
     // S2：节点配置端口。**唯一**知道"配置存在 AgentStore 里"的地方在这里
-    // （组合根）——节点层（审批闸门、委派工具）只认端口。
+    // （组合根）——节点层（委派工具）只认端口。
     let node_config: Arc<dyn agent_node::node_config::NodeConfigSource> =
         Arc::new(agent_rpc::server::StoreBackedNodeConfig::new(store.clone()));
-    let approval_gate: Arc<dyn agent_base::ports::ApprovalGate> = Arc::new(
-        HostApprovalGate::new(node_config.clone(), approval.clone())
-            // 安全下线（`agent_toolkit::security::deferred()`）：不询问、不建卡、不等用户。
-            .with_security_deferred(agent_toolkit::security::deferred()),
-    );
 
     // ── 按声明装配（P2·SP-40：走**统一装配管线**）──────────────────────────
     //
@@ -808,7 +739,6 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
         // SP-46：引擎用**活体注册表**（重装配要往同一本账里 register/unregister）
         .with_catalog(live.catalog())
         .with_model(model)
-        .with_approval(approval_gate)
         .with_store(session_store)
         .with_prompt(prompt)
         .with_scope(scope)
@@ -818,15 +748,22 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
     // P3a·SP-51/53：装上钩子运行时（单点位预算在它内部，来自插件能力的 `hookTimeoutMs`）。
     // 只有产品开了钩子才装 runner——没开就一条 hook.* 诊断都不发（见上面的说明）。
     let mut runtime = runtime;
+    let mut plugin_events = None;
     if let Some(runner) = hook_runner {
-        runtime = runtime.with_hooks(runner);
+        // 统一事件路径：引擎的 before/after 点位走 PluginEventRuntime（有界 lane），
+        // 内层 HookEventDispatcher 再折回同一个 HookRuntime。
+        let adapter = Arc::new(agent_node::hooks::HookEventDispatcher::new(runner.clone()));
+        let events = Arc::new(agent_node::hooks::PluginEventRuntime::new(adapter));
+        runtime = runtime
+            .with_hooks(runner)
+            .with_events(events.clone());
+        plugin_events = Some(events);
     }
 
     Ok(HostedProduct {
         runtime,
         spec,
         store,
-        approval,
         events,
         cancel: CancelHandle::new(),
         background_tasks,
@@ -835,6 +772,7 @@ pub fn run_from_spec(spec: AgentSpec, options: HostOptions) -> Result<HostedProd
         accepts_images,
         workspace,
         live,
+        plugin_events,
     })
 }
 
@@ -852,7 +790,7 @@ pub fn run_from_spec_json(
 /// 把 `store`、工作区与自己的 `agent.spec.json` 交给它。
 ///
 /// 收敛在这里的理由（R2：一处真源）：产品宿主所需的装配完全一样——复用宿主的 `store`、
-/// 会话落盘到 app home、把 `ApprovalManager` 一并带出去给 `Dispatcher` 共用。
+/// 会话落盘到 app home、把产品声明与工具目录一并带出去。
 /// 各写一份迟早漂移。
 ///
 /// `sessions_root` 由调用方给出（通常是 `get_app_home()/sessions`）。
@@ -869,7 +807,7 @@ pub fn build_engine_injection(
         .with_store(store.clone())
         .with_sessions_root(sessions_root_buf.clone());
 
-    let HostedProduct { runtime, approval, spec, background_tasks, .. } = run_from_spec(spec, options)?;
+    let HostedProduct { runtime, spec, background_tasks, .. } = run_from_spec(spec, options)?;
 
     let spec_json_string = spec_json.to_string();
     let store_for_factory = store.clone();
@@ -895,7 +833,6 @@ pub fn build_engine_injection(
 
     Ok(EngineInjection {
         runtime: Arc::new(runtime),
-        approval_mgr: approval,
         // W3-T6：声明一起注入，`session.initialize` 才能如实回报能力位与产品身份
         spec: Arc::new(spec),
         factory: Some(factory),
@@ -1004,43 +941,6 @@ mod tests {
         ]]))
     }
 
-    /// 守门：**注入的审批 waiter 表必须被复用**，装配过程不得换一张新的。
-    ///
-    /// 同一进程里会有多个引擎：coding、PM 模式预设、以及**按工作区动态装配**的那些
-    /// （`EngineFactory` 每次都用 `run_from_spec` 现装一个）。而 UI 的 `approval.decide`
-    /// 只认 `Dispatcher` 手里那一张表——各装配一份新表，就会变成"审批卡弹出来了、
-    /// 点批准却永远卡住"，一直卡到 30 分钟超时被自动拒绝。
-    #[tokio::test]
-    async fn test_injected_approval_manager_is_reused() {
-        let ws = tmp_ws("approval_share");
-        let shared = Arc::new(ApprovalManager::new());
-
-        // 启动期那次装配
-        let hosted = run_from_spec(
-            AgentSpec::from_json_str(SKELETON_SPEC).expect("spec 合法"),
-            HostOptions::new(&ws)
-                .with_model(scripted())
-                .with_approval_manager(shared.clone()),
-        )
-        .expect("装配必须成功");
-        assert!(
-            Arc::ptr_eq(&hosted.approval, &shared),
-            "装配必须复用注入的 waiter 表；换一张新的，UI 的批准就送不到闸门"
-        );
-
-        // 模拟"按工作区动态装配"那一次（同一个进程、另一份 spec 实例）
-        let dynamic = run_from_spec(
-            AgentSpec::from_json_str(SKELETON_SPEC).expect("spec 合法"),
-            HostOptions::new(&ws)
-                .with_model(scripted())
-                .with_approval_manager(shared.clone()),
-        )
-        .expect("动态装配必须成功");
-        assert!(
-            Arc::ptr_eq(&dynamic.approval, &shared),
-            "动态装配的引擎也必须挂到**同一张** waiter 表上"
-        );
-    }
 
     /// W3-T1 出口判据：**从 spec 到 AgentRuntime 的全链路**。
     #[tokio::test]
@@ -1053,9 +953,9 @@ mod tests {
         )
         .expect("装配必须成功");
 
-        // 1. 工具来自声明的工具包（core → ask_user/todo/finish）
+        // 1. 工具来自声明的工具包（core → todo/finish；ask_user 由插件提供）
         let names = hosted.tool_names();
-        assert_eq!(names, vec!["ask_user", "todo", "finish"], "工具应来自 spec.toolkits");
+        assert_eq!(names, vec!["todo", "finish"], "工具应来自 spec.toolkits");
 
         // 2. 真引擎跑完一轮
         let outcome = hosted
@@ -1073,33 +973,6 @@ mod tests {
         // 4. 会话真的落了盘（FsSessionStore，不是内存替身）
         let session_dir = ws.join(".a-da").join("sessions");
         assert!(session_dir.exists(), "会话目录应被真实创建：{}", session_dir.display());
-
-        let _ = std::fs::remove_dir_all(&ws);
-    }
-
-    /// 守门：**装配期**必须把提问通道装上。
-    ///
-    /// 注册器原本只挂在 `global_question_manager()` 的 `OnceLock` 初始化里，而生产路径上
-    /// 第一个碰它的是"答复提问/中止会话"——于是全新进程里的第一次 `ask_user` 必然失败
-    /// （实测 PM：工具直接回"当前环境未接入交互提问协调器（无事件问答通道）"，
-    /// 模型只能改成自己猜），只有先答过/中止过一次才会好。
-    #[test]
-    fn test_assembly_installs_the_question_registrar() {
-        agent_toolkit::core::ask_user::clear_question_registrar();
-        assert!(
-            agent_toolkit::core::ask_user::get_question_registrar().is_none(),
-            "前置条件：先模拟全新进程（没有注册器）"
-        );
-
-        let ws = tmp_ws("question_registrar");
-        let spec = AgentSpec::from_json_str(SKELETON_SPEC).expect("spec 合法");
-        let _ = run_from_spec(spec, HostOptions::new(&ws).with_model(scripted()))
-            .expect("装配必须成功");
-
-        assert!(
-            agent_toolkit::core::ask_user::get_question_registrar().is_some(),
-            "装配完成后 ask_user 必须拿得到提问通道，否则第一次提问就失败"
-        );
 
         let _ = std::fs::remove_dir_all(&ws);
     }

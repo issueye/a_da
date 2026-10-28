@@ -5,7 +5,7 @@
 //! - [`RunPolicy`]：运行策略（步数预算、工具并发等）
 //! - [`TurnRequest`] 与 [`TurnOutcome`]：单轮请求与执行产出
 //! - [`format_messages_for_model`]：消息格式化纯函数
-//! - [`hook_guard`]：**改写后的重新校验**（P3b）：schema / 路径沙箱
+//! - [`hook_guard`]：**改写后的重新校验**（P3b）：形状与 schema
 
 pub mod hook_guard;
 pub mod policy;
@@ -13,7 +13,7 @@ pub mod prompt_format;
 pub mod runtime;
 pub mod turn;
 
-pub use hook_guard::{check_paths, path_fields_of, validate_args_against_schema, ReplaceRejection};
+pub use hook_guard::{validate_args_against_schema, ReplaceRejection};
 pub use policy::RunPolicy;
 pub use prompt_format::format_messages_for_model;
 pub use runtime::AgentRuntime;

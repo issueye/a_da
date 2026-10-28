@@ -59,8 +59,8 @@ impl Tool for EditFileTool {
                     .collect()
             });
 
-            let gate = crate::fs_tools::PathGate::scoped(ctx.scope, &self.workspace);
-            let res = edit_file(gate, path, old_string, new_string, edits);
+            let paths = crate::fs_tools::ToolPaths::new(&self.workspace);
+            let res = edit_file(paths, path, old_string, new_string, edits);
             let finished_at = crate::now_ms().max(started_at);
 
             if res.ok {

@@ -254,6 +254,7 @@ dependencies = [
  "base64 0.22.1",
  "boa_engine",
  "clap",
+ "form_urlencoded",
  "futures-util",
  "oxc_allocator",
  "oxc_ast",

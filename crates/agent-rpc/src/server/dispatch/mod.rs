@@ -10,7 +10,6 @@ use crate::state::{generate_snapshot_with_seq, AgentStore};
 use agent_adapter::model::client::NetworkModelClient;
 use agent_base::domain::{AgentEvent, AgentEventBody, TurnStopReason};
 use agent_base::model::ProviderConfig;
-use agent_node::approval::ApprovalManager;
 use agent_node::checkpoint::CheckpointManager;
 use agent_node::plugins::PluginManager;
 use agent_node::session::SessionManager;
@@ -33,7 +32,6 @@ pub struct Dispatcher {
     session_mgr: Arc<SessionManager>,
     checkpoint_mgr: Arc<CheckpointManager>,
     subagent_mgr: Arc<SubagentManager>,
-    approval_mgr: Arc<ApprovalManager>,
     plugin_mgr: Arc<PluginManager>,
     skill_mgr: Arc<SkillManager>,
     broadcaster: Option<Arc<StateBroadcaster>>,
@@ -1467,38 +1465,6 @@ impl Dispatcher {
                 }))
             }
 
-            CONFIG_SET_APPROVAL => {
-                let mut store = self.store.write().await;
-                if let Some(mode) = params.get("mode").and_then(|v| v.as_str()) {
-                    // 走 `set_approval_mode`：字段与无锁镜像一起改。直接写字段的话，
-                    // 闸门在锁被占时读到的是镜像（还是旧值）→ 改档位"看起来没生效"。
-                    match mode {
-                        "auto" => store.set_approval_mode(ApprovalMode::Auto),
-                        "ask" => store.set_approval_mode(ApprovalMode::Ask),
-                        "readonly" => store.set_approval_mode(ApprovalMode::Readonly),
-                        // P1b 加了第四档，但这里漏了分支：选「完全访问」等于什么都没发生。
-                        "full" => store.set_approval_mode(ApprovalMode::Full),
-                        _ => {}
-                    }
-                }
-                // **必须落盘**：审批档位是安全设置，重启后悄悄回到"自动执行"比不让改更糟。
-                //
-                // 落盘失败**必须报给界面**：只 `warn!` 一下的话，界面照样弹"保存成功"，
-                // 用户下次启动才发现被回滚——这正是"改了又恢复默认"最难查的成因。
-                save_app_config(&store).map_err(|e| {
-                    ProtocolError::internal_error(format!(
-                        "审批档位已在本次运行中生效，但写入 config.json 失败（重启后会回滚）：{e}"
-                    ))
-                })?;
-                drop(store);
-
-                if let Some(ref bc) = self.broadcaster {
-                    bc.broadcast_immediate().await;
-                }
-
-                Ok(serde_json::Value::Null)
-            }
-
             CONFIG_SET_EFFORT => {
                 let mut store = self.store.write().await;
                 if let Some(eff) = params.get("effort").and_then(|v| v.as_str()) {
@@ -1911,7 +1877,6 @@ impl Dispatcher {
                     handle.abort();
                 }
 
-                agent_node::approval::global_question_manager().cancel_all();
 
                 // 3. 立即在 store 中清空该会话所有排队消息、闭合流式卡片与未完成工具卡片并置为非运行态
                 let mut store = self.store.write().await;
@@ -2077,129 +2042,6 @@ impl Dispatcher {
                 Ok(res)
             }
 
-            APPROVAL_DECIDE => {
-                let tool_item_id = params
-                    .get("toolItemId")
-                    .or_else(|| params.get("itemId"))
-                    .or_else(|| params.get("callId"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let approved = params
-                    .get("approved")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-
-                let mut resolved = self.approval_mgr.resolve_approval(tool_item_id, approved);
-
-                // 容错兜底：若该工具调用为等待用户作答的提问（如 ask_user），联动唤醒提问协调器
-                if !resolved
-                    && agent_node::approval::global_question_manager().has_pending(tool_item_id)
-                {
-                    if approved {
-                        resolved = agent_node::approval::global_question_manager().resolve_answer(
-                            tool_item_id,
-                            agent_node::approval::QuestionAnswer {
-                                choice: None,
-                                choices: None,
-                                text: None,
-                                answered_by: "user".to_string(),
-                                answers: None,
-                            },
-                        );
-                    } else {
-                        agent_node::approval::global_question_manager().cancel(tool_item_id);
-                        resolved = true;
-                    }
-                }
-
-                let mut store = self.store.write().await;
-                store
-                    .pending_questions
-                    .retain(|q| q.call_id != tool_item_id);
-
-                for thread in &mut store.threads {
-                    for item in &mut thread.items {
-                        let hit = matches!(
-                            item.as_ref(),
-                            Item::Tool { id, call_id: cid, .. }
-                                if id == tool_item_id || cid == tool_item_id
-                        );
-                        if hit {
-                            if let Item::Tool { status, .. } = Arc::make_mut(item) {
-                                *status = if approved {
-                                    "running".to_string()
-                                } else {
-                                    "rejected".to_string()
-                                };
-                            }
-                        }
-                    }
-                }
-                drop(store);
-
-                if let Some(ref bc) = self.broadcaster {
-                    bc.broadcast_immediate().await;
-                }
-
-                Ok(serde_json::json!({
-                    "resolved": resolved,
-                    "toolItemId": tool_item_id,
-                    "approved": approved
-                }))
-            }
-
-            QUESTION_ANSWER => {
-                let call_id = params.get("callId").and_then(|v| v.as_str()).unwrap_or("");
-                let choice = params
-                    .get("choice")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                // 多选：`choices: ["a1","a3"]`（单选路径仍走 `choice`）
-                let choices: Option<Vec<String>> = params
-                    .get("choices")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect::<Vec<String>>()
-                    })
-                    .filter(|list| !list.is_empty());
-                let text = params
-                    .get("text")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                // 多题：`answers: [{id?, choice?, choices?, text?}]`（单题路径留空）
-                let answers: Option<Vec<agent_toolkit::core::ask_user::QuestionSubAnswer>> = params
-                    .get("answers")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|a| serde_json::from_value(a.clone()).ok())
-                            .collect::<Vec<_>>()
-                    })
-                    .filter(|list: &Vec<_>| !list.is_empty());
-
-                let mut store = self.store.write().await;
-                store.pending_questions.retain(|q| q.call_id != call_id);
-                drop(store);
-
-                if let Some(ref bc) = self.broadcaster {
-                    bc.broadcast_immediate().await;
-                }
-
-                let resolved = agent_node::approval::global_question_manager().resolve_answer(
-                    call_id,
-                    agent_node::approval::QuestionAnswer {
-                        choice,
-                        choices,
-                        text,
-                        answered_by: "user".to_string(),
-                        answers,
-                    },
-                );
-
-                Ok(serde_json::json!({ "resolved": resolved }))
-            }
 
             WORKSPACE_OPEN_PUBLIC => {
                 let mut store = self.store.write().await;

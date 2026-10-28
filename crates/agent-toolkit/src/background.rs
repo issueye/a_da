@@ -29,7 +29,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use super::cmd_tools::{kill_process_tree, truncate_buffer};
-use super::sandbox::{check_workspace_sandbox, resolve_path_unrestricted};
+use super::sandbox::resolve_path;
 
 /// 已知 INV-8 缝隙：`ToolContext` 目前**没有**时钟端口，所以这里直接读系统时间。
 /// 与同目录的 `command/run.rs` 是同一个缺口，一并等 `ToolContext` 拿到 clock 后收敛。
@@ -136,13 +136,7 @@ impl BackgroundTasks {
         thread_id: &str,
     ) -> Result<String, String> {
         let run_cwd = match cwd {
-            Some(p) if !p.trim().is_empty() => {
-                if crate::security::deferred() {
-                    resolve_path_unrestricted(workspace, p.trim())
-                } else {
-                    check_workspace_sandbox(workspace, p.trim()).map_err(|e| e.to_string())?
-                }
-            }
+            Some(p) if !p.trim().is_empty() => resolve_path(workspace, p.trim()),
             _ => workspace.to_path_buf(),
         };
 
@@ -471,8 +465,8 @@ mod tests {
         fn id(&self) -> &str {
             "test_root"
         }
-        fn resolve_path(&self, raw: &str) -> Result<PathBuf, agent_base::domain::DenialKind> {
-            Ok(self.0.join(raw))
+        fn resolve_path(&self, raw: &str) -> PathBuf {
+            self.0.join(raw)
         }
     }
 
@@ -610,30 +604,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cwd_outside_workspace_is_rejected() {
-        let ws = std::env::current_dir().unwrap();
-        let tasks = Arc::new(BackgroundTasks::new(&ws));
-        let run = RunBackgroundTool::new(tasks.clone());
-        let (scope, cancel, sink) = ctx_parts(&ws);
-        let ctx = ToolContext { scope: &scope, cancel: &cancel, events: &sink, thread_id: "t1", hooks: None };
-
-        let r = run
-            .execute(
-                &call("run_background", json!({"command": echo_cmd("x"), "cwd": "../../../../Windows"})),
-                &ctx,
-            )
-            .await;
-        assert_eq!(r.status, ToolStatus::Error, "越界 cwd 必须被拒：{}", r.output);
-    }
-
-    #[tokio::test]
-    async fn test_shared_store_still_validates_cwd_against_the_engine_workspace() {
-        // 安全下线期间 cwd 边界不生效；恢复 `SECURITY_ENFORCED = true` 后这条断言才成立。
-        if crate::security::deferred() {
-            return;
-        }
-        // 多工作区引擎共用一张任务表时，缺省目录与 cwd 沙箱必须跟着**发起任务的引擎**
-        // 走，而不是任务表创建时的工作区。
+    async fn test_shared_store_uses_the_engine_workspace_as_default_cwd() {
+        // 多工作区引擎共用一张任务表时，缺省目录跟着**发起任务的引擎**走，
+        // 而不是任务表创建时的工作区；cwd 本身只解析、不再裁决边界。
         let root = std::env::temp_dir().join(format!("a_da_bg_shared_{}", uuid::Uuid::new_v4()));
         let primary = root.join("primary");
         let other = root.join("other");
@@ -656,7 +629,7 @@ mod tests {
             .await;
         assert_eq!(ok.status, ToolStatus::Success, "本工作区 cwd 应被接受：{}", ok.output);
 
-        let denied = run
+        let other_cwd = run
             .execute(
                 &call("run_background", json!({
                     "command": echo_cmd("x"),
@@ -666,10 +639,10 @@ mod tests {
             )
             .await;
         assert_eq!(
-            denied.status,
-            ToolStatus::Error,
-            "另一个工作区不在本引擎沙箱内：{}",
-            denied.output
+            other_cwd.status,
+            ToolStatus::Success,
+            "cwd 只解析、不再做边界裁决：{}",
+            other_cwd.output
         );
 
         let _ = std::fs::remove_dir_all(&root);

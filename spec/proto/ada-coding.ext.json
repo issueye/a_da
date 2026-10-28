@@ -14,7 +14,6 @@
     { "name": "config.presets", "alias": "x.coding.config.presets", "kind": "command", "since": "1.0", "description": "获取模型预设方案" },
     { "name": "config.setProvider", "alias": "x.coding.config.setProvider", "kind": "command", "since": "1.0", "description": "切换激活供应商" },
     { "name": "config.checkProvider", "alias": "x.coding.config.checkProvider", "kind": "command", "since": "1.0", "description": "测试供应商连通性" },
-    { "name": "config.setApproval", "alias": "x.coding.config.setApproval", "kind": "command", "since": "1.0", "description": "设置全局审批策略" },
     { "name": "config.setEffort", "alias": "x.coding.config.setEffort", "kind": "command", "since": "1.0", "description": "设置深度思考档位" },
     { "name": "config.setRetryCount", "alias": "x.coding.config.setRetryCount", "kind": "command", "since": "1.0", "description": "设置模型请求重试次数（默认 5；重试耗尽即断开本轮对话）" },
     { "name": "thread.items.page", "alias": "x.coding.thread.items.page", "kind": "command", "since": "1.0", "description": "长会话分页：按窗口取一段 item（界面只渲染窗口，更早的按需拉）" },

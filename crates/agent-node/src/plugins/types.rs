@@ -38,6 +38,9 @@ pub struct PluginToolDeclaration {
     /// 采信与否则由宿主决定（见 `ScriptToolAccess`）。
     #[serde(default)]
     pub access: String,
+    /// 作者声明该工具会合法地长时间等待（例如等待用户作答）。
+    #[serde(default)]
+    pub long_running: bool,
 }
 
 /// 插件声明的一段**提示词片段**（P2 · SP-44）。

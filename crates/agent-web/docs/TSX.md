@@ -84,10 +84,10 @@ function Page(props: any) {
                 "agentId": "ada-coding", "createdAt": 0,
                 "running": true, "waiting": false, "isSubagent": false },
     "model": { "id": "…", "name": "…", "providerId": "…", "providerName": "…", "protocol": "openai_chat" },
-    "config": { "approval": "ask", "effort": "high", "mode": "code", "contextWindow": 128000,
+    "config": { "effort": "high", "mode": "code", "contextWindow": 128000,
                 "maxOutputTokens": 64000, "supportsImages": true, "retryCount": 5 },
     "workspace": { "project": "…", "current": "…", "publicWorkspace": "…" },
-    "counts": { "threads": 6, "running": 1, "waiting": 0, "queue": 0, "approvals": 0 },
+    "counts": { "threads": 6, "running": 1, "waiting": 0, "queue": 0 },
     "todo": {
       "done": 2,
       "total": 3,
@@ -139,9 +139,9 @@ function Page(props: any) {
   live 轮询每 2 秒刷新）、概览卡片。顺带演示相对 import（`components/weather.tsx` 三处共用）、
   `props.data.tokens` 数据契约（含 `cachedTokens` 缓存命中与 `M`/`K` 缩写），
   以及 `hx-get` + `hx-select` 做页面自刷新；
-- `plugins/task-plan/`：**统一插件示例**。后端 `afterTodoUpdate` 维护计划状态，
-  前端 `plan` action 读取并渲染任务卡；演示 `chat.corner`（会话区右上角）与
-  `composer.above`（输入框上方）两处挂载点可切换，以及 `scripts` 注入的浏览器增强；
+- `plugins/task-plan/`：**前端插件示例**。直接读核心 `props.data.todo` 渲染任务卡；
+  演示 `chat.corner`（会话区右上角）与 `composer.above`（输入框上方）两处挂载点可切换，
+  以及 `scripts` 注入的浏览器增强；
 - `plugin.json` 里所有 `template` / `dashboard` 都必须是 `.tsx`；
 
 ### 自定义 CSS / JS

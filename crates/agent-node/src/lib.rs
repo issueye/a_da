@@ -14,14 +14,13 @@
 //!
 //! ```text
 //! agent-rpc（桥接面）：JSON-RPC 分发 + WS 宿主 + UI 投影 + 快照
-//!    └── agent-node（本 crate）：会话 / 审批 / 检查点 / 委派 / 插件 / 技能
+//!    └── agent-node（本 crate）：会话 / 提问 / 检查点 / 委派 / 插件 / 技能
 //!           └── agent-base（引擎与端口）
 //! ```
 //!
 //! 依赖方向**单向**：`agent-rpc → agent-node`。反向的依赖由 `cargo xtask verify-wiring` 守门。
 
 pub mod agent_bus;
-pub mod approval;
 pub mod checkpoint;
 pub mod delegation_depth;
 pub mod hooks;

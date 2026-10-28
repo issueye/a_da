@@ -36,8 +36,8 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // 2. 装配：宿主层按声明装工具包、接真实端口。
     //    骨架是**演示产品**，没有真实 API key，所以只注入脚本化模型；
-    //    其余端口全部是生产实现（WorkspaceScope / FsSessionStore / CodingPromptSource /
-    //    SystemClock / HostApprovalGate / WsEventSink）。
+    //    其余端口全部是生产实现（PathResolver / FsSessionStore / CodingPromptSource /
+    //    SystemClock / WsEventSink）。
     let model = Arc::new(ScriptedModelClient::new(vec![vec![
         StreamDelta::Text { text: "你好！我是 ada-skeleton 极简骨架助手。".into() },
         StreamDelta::Done { stop_reason: "stop".into() },
@@ -114,8 +114,9 @@ mod tests {
         let hosted = run_from_spec(spec(), host_options()).expect("宿主装配必须成功");
 
         // W2-T1 守门：`core` 工具包的工具必须真的进了 catalog（声明 → 装配 → catalog）
+        // `ask_user` 已迁到插件，不再属于核心工具包。
         let names = hosted.tool_names();
-        for expect in ["ask_user", "todo", "finish"] {
+        for expect in ["todo", "finish"] {
             assert!(
                 names.contains(&expect),
                 "`core` 工具包应提供 `{expect}`，实际: {names:?}"

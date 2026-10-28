@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use agent_base::domain::{
-    Access, ApprovalPolicy, Execution, PathSelector, RollbackPolicy, Termination, ToolDescriptor,
+    Access, Execution, PathSelector, RollbackPolicy, Termination, ToolDescriptor,
 };
 use serde_json::json;
 
@@ -15,8 +15,6 @@ use serde_json::json;
 /// 这份名单是**唯一真源**：每个工具的 `Tool::long_running()` 必须与它一致，
 /// `test_long_running_set_matches_tool_declarations` 机械守门（漂移就红）。
 pub const LONG_RUNNING_TOOLS: &[&str] = &[
-    // 等用户回答问题
-    "ask_user",
     // 等子智能体跑完（分钟级）
     "invoke_subagent",
     // 命令执行自带超时（默认 120s、上限 600s），不该被策略超时二次截断
@@ -46,7 +44,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["path"]
                 }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::ParallelSafe,
                 termination: Termination::ContinueTurn,
@@ -63,7 +60,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["path", "content"]
                 }),
                 access: Access::Mutates { paths: PathSelector::Single("path") },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::SingleTarget,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -93,7 +89,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["path"]
                 }),
                 access: Access::Mutates { paths: PathSelector::Single("path") },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::SingleTarget,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -109,7 +104,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     }
                 }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::ParallelSafe,
                 termination: Termination::ContinueTurn,
@@ -130,7 +124,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["pattern"]
                 }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::ParallelSafe,
                 termination: Termination::ContinueTurn,
@@ -157,7 +150,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["files"]
                 }),
                 access: Access::Mutates { paths: PathSelector::Batch("files") },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::PerTargetInBatch,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -179,7 +171,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["files", "old_string", "new_string"]
                 }),
                 access: Access::Mutates { paths: PathSelector::Batch("files") },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::PerTargetInBatch,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -209,7 +200,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                 // `id` 不是路径字段，但落点由它派生（<ws>/.ada/agent-coding/extensions/<id>）：
                 // 把它交给 PathSelector 是为了让钩子/回滚能看到"这次动了哪个插件"。
                 access: Access::Mutates { paths: PathSelector::Single("id") },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 // 一次只动一个目标（一个插件目录）→ SingleTarget。
                 // 🔴 不能写 `None`：变更类工具声明 None 会被 catalog 契约判违约，
                 // 而那是**装配期**才炸的——表现是"引擎没注入"→发消息毫无反应（2026-10-18 真事故）。
@@ -230,7 +220,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["command"]
                 }),
                 access: Access::Executes { command_arg: "command" },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -247,77 +236,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["command"]
                 }),
                 access: Access::Executes { command_arg: "command" },
-                approval: ApprovalPolicy::Named("approval-guard"),
-                rollback: RollbackPolicy::None,
-                execution: Execution::Sequential,
-                termination: Termination::ContinueTurn,
-            },
-            ToolDescriptor {
-                name: "ask_user".to_string(),
-                summary: "在交互界面向用户发起选择（单选/多选）或补充说明提问并阻塞等待答复。".to_string(),
-                schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "question": {
-                            "type": "string",
-                            "description": "向用户提出的问题文本。**要一次问多个问题请改用 `questions`**（一次问完，用户逐题作答后一起提交）"
-                        },
-                        "choices": {
-                            "type": "array",
-                            "description": "供用户选择的选项列表（可选，不传则仅为文本输入）",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "id": { "type": "string", "description": "选项唯一标识（可选，如 c1、c2，回传时使用）" },
-                                    "label": { "type": "string", "description": "显示给用户的选项文案" },
-                                    "description": { "type": "string", "description": "选项说明或辅助解释" }
-                                },
-                                "required": ["label"]
-                            }
-                        },
-                        "multi_select": {
-                            "type": "boolean",
-                            "description": "是否允许多选：需要用户同时勾选多个选项时设为 true（默认 false，单选点一下即答）"
-                        },
-                        "allow_text": {
-                            "type": "boolean",
-                            "description": "是否允许用户输入自定义文本（默认为 true）"
-                        },
-                        "questions": {
-                            "type": "array",
-                            "description": "一次向用户提出**多个**问题（最多 10 题）。给了它就忽略 question/choices/multi_select/allow_text：界面把每道题分别渲染出来，用户逐题作答后一次提交。适合'发布前一次确认几个约束'这类同批问题。",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "id": { "type": "string", "description": "题号（可选，如 q1、q2；不填自动生成）" },
-                                    "question": { "type": "string", "description": "该题的题目文本" },
-                                    "choices": {
-                                        "type": "array",
-                                        "description": "该题的选项列表（可选）",
-                                        "items": {
-                                            "type": "object",
-                                            "properties": {
-                                                "id": { "type": "string", "description": "选项唯一标识（可选，如 c1、c2）" },
-                                                "label": { "type": "string", "description": "显示给用户的选项文案" },
-                                                "description": { "type": "string", "description": "选项说明或辅助解释" }
-                                            },
-                                            "required": ["label"]
-                                        }
-                                    },
-                                    "multi_select": { "type": "boolean", "description": "该题是否多选（默认 false）" },
-                                    "allow_text": { "type": "boolean", "description": "该题是否允许文本补充（默认 true）" }
-                                },
-                                "required": ["question"]
-                            }
-                        }
-                    },
-                    "anyOf": [
-                        { "required": ["question"] },
-                        { "required": ["questions"] }
-                    ]
-                }),
-                access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -349,7 +267,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     }
                 }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -365,7 +282,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["summary"]
                 }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::EndTurn,
@@ -375,7 +291,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                 summary: "项目工程与环境诊断报告。".to_string(),
                 schema: json!({ "type": "object" }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::ParallelSafe,
                 termination: Termination::ContinueTurn,
@@ -391,7 +306,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["path"]
                 }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::ParallelSafe,
                 termination: Termination::ContinueTurn,
@@ -401,7 +315,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                 summary: "自动探测并执行项目单元测试。".to_string(),
                 schema: json!({ "type": "object" }),
                 access: Access::Executes { command_arg: "command" },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -415,7 +328,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["task_id"]
                 }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::ParallelSafe,
                 termination: Termination::ContinueTurn,
@@ -429,7 +341,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                     "required": ["task_id"]
                 }),
                 access: Access::Executes { command_arg: "task_id" },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -455,7 +366,6 @@ pub fn standard_tool_descriptors() -> &'static [ToolDescriptor] {
                 // 因此按"驱动一段外部执行"归到 Executes，字段名说明它取的是任务文本。
                 // 失败安全（AGENTS.md §2）：绝不能标成 ReadOnly，否则只读档/plan 模式会放行它。
                 access: Access::Executes { command_arg: "task" },
-                approval: ApprovalPolicy::Named("approval-guard"),
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,
@@ -479,10 +389,9 @@ pub fn find_tool_descriptor(name: &str) -> Option<&'static ToolDescriptor> {
 
 /// 🔴 **遗留口径**：按**工具名**回查内置注册表判断只读性。
 ///
-/// 权威判据是**描述符**（`ToolDescriptor::access` / `is_readonly()`；审批侧用
-/// `agent_adapter::approval::is_write_by_access(Some(&desc.access))`）。按名字回查有个
+/// 权威判据是**描述符**（`ToolDescriptor::access` / `is_readonly()`）。按名字回查有个
 /// 结构性缺陷：注册表里只有内置工具，插件工具与外部工具（MCP server / 远端）的名字永远查不到，
-/// 于是它们被无条件判成“写”——读类工具在只读档里会被逐次审批，而“用户授权某个外部工具只读”
+/// 于是它们被无条件判成“写”——读类工具在只读档里会被逐次过滤，而“用户授权某个外部工具只读”
 /// 也无处落地（见 `Access::External`）。
 ///
 /// 保留它是为了兼容既有调用方；**新代码不要再调它**。
@@ -513,7 +422,8 @@ mod tests {
         let list = standard_tool_descriptors();
         // 2026-10-19：`git_status` / `git_diff` / `git_log` 合并为一个 `git`（22 → 20）。
         // 2026-10-27：`git` 搬成插件 `plugins/git-tools`，基座描述符里不再有它（20 → 19）。
-        assert_eq!(list.len(), 19, "必须声明全部 19 个标准内置工具描述符");
+        // 2026-10-28：`ask_user` 搬成插件 `plugins/ask-user`（19 → 18）。
+        assert_eq!(list.len(), 18, "必须声明全部 18 个标准内置工具描述符");
 
         let mut seen = HashSet::new();
         for desc in list {

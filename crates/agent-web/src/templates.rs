@@ -29,10 +29,8 @@ pub struct SlotContent {
     pub composer_footer: String,
     /// 输入框上方的悬浮插槽（贴底浮在对话流之上）。
     pub composer_above: String,
-    /// 托盘区里提问段的插槽输出；非空时替换核心提问托盘（D5 降级规则）。
+    /// 托盘区里提问段的插槽输出；提问完全由 `plugins/ask-user` 提供。
     pub thread_tray: String,
-    /// 托盘区里审批段的插槽输出；非空时替换核心审批托盘。
-    pub thread_approval: String,
     pub transcript_after: String,
     pub extensions_list: String,
     pub dashboard_widgets: String,
@@ -149,14 +147,6 @@ pub struct WorkspaceRow {
 #[derive(Debug, Clone)]
 pub struct ItemRow {
     pub html: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct ApprovalRow {
-    pub call_id: String,
-    pub tool_name: String,
-    pub args: String,
-    pub waited: String,
 }
 
 #[derive(Debug, Clone)]

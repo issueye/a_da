@@ -24,7 +24,6 @@ pub mod handlers;
 pub mod html;
 pub mod markdown;
 pub mod plugins;
-pub mod questions;
 pub mod router;
 pub mod standalone;
 pub mod templates;

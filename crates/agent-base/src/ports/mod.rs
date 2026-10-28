@@ -5,7 +5,6 @@
 //! 不许给一个"什么都不做"的默认实现——那正是 AGENTS.md §15 那个静默坑的来源。
 
 pub mod app_home;
-pub mod approval;
 pub mod cancel;
 pub mod clock;
 pub mod events;
@@ -18,10 +17,9 @@ pub mod store;
 pub mod tools;
 
 pub use app_home::AppHome;
-pub use approval::{AnsweredBy, ApprovalGate, ApprovalOutcome, ApprovalRequest};
 pub use cancel::CancelToken;
 pub use clock::Clock;
-pub use events::EventSink;
+pub use events::{EventDispatcher, EventSink};
 pub use hooks::{
     AfterNote, AfterRequest, BeforeOutcome, BeforeRequest, HookAction, HookBudget, HookCtx,
     HookEntryOutcome, HookLevel, HookObservation, HookPhase, HookRegistration, HookRunner,

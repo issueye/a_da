@@ -28,14 +28,6 @@ pub enum AgentLoopEvent {
         status: Option<String>,
         details: Option<serde_json::Value>,
     },
-    ToolAwaitingQuestion { id: String, question: serde_json::Value },
-    /// 工具调用**等待用户批准**（W3-T3）。
-    ///
-    /// 界面按 `status == "waiting_approval"` 渲染"批准/拒绝"按钮并回发 `approval.decide`，
-    /// 最终唤醒引擎的审批闸门。真引擎的 `ApprovalRequested` 领域事件投影到这里。
-    ///
-    /// `args` **必须带**：审批卡要显示"要批准的是什么"（危险命令原文 / 目标文件路径）。
-    ApprovalRequested { id: String, tool: String, args: serde_json::Value },
     /// 一次大模型调用结束后的真实用量与耗时（界面遥测条与单条回复徽章的数据源）
     AssistantStats { usage: Option<agent_base::model::TokenUsage>, duration_ms: u64, turn_duration_ms: u64 },
     /// 本轮因**上下文撞顶**而收尾（引擎的 `TurnStopReason::ContextWindowExceeded`）。
@@ -62,8 +54,6 @@ mod tests {
                 AgentLoopEvent::TextDelta { .. } => "text",
                 AgentLoopEvent::ToolCallStarted { .. } => "tool.started",
                 AgentLoopEvent::ToolCallFinished { .. } => "tool.finished",
-                AgentLoopEvent::ToolAwaitingQuestion { .. } => "question",
-                AgentLoopEvent::ApprovalRequested { .. } => "approval",
                 AgentLoopEvent::AssistantStats { .. } => "stats",
                 AgentLoopEvent::ContextWindowExceeded { .. } => "context.window.exceeded",
                 AgentLoopEvent::TurnFinished { .. } => "turn.finished",
@@ -86,12 +76,6 @@ mod tests {
                 status: None,
                 details: None,
             },
-            AgentLoopEvent::ToolAwaitingQuestion { id: "i".into(), question: serde_json::json!({}) },
-            AgentLoopEvent::ApprovalRequested {
-                id: "i".into(),
-                tool: "t".into(),
-                args: serde_json::json!({ "command": "cargo test" }),
-            },
             AgentLoopEvent::AssistantStats { usage: None, duration_ms: 1, turn_duration_ms: 2 },
             AgentLoopEvent::ContextWindowExceeded { prompt_tokens: 445_637, window: 128_000 },
             AgentLoopEvent::TurnFinished { stop_reason: "stop".into() },
@@ -103,6 +87,6 @@ mod tests {
         let mut unique = kinds.clone();
         unique.dedup();
         assert_eq!(unique.len(), all.len(), "同一种类出现多次：{kinds:?}");
-        assert_eq!(unique.len(), 10, "界面事件共 10 种：{unique:?}");
+        assert_eq!(unique.len(), 8, "界面事件共 8 种：{unique:?}");
     }
 }

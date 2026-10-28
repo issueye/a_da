@@ -145,17 +145,6 @@ impl ToolCatalog for CompositeToolCatalog {
                             agent_base::domain::Access::External => {}
                         }
                     }
-                    Consumer::ApprovalPolicy => {
-                        if let agent_base::domain::ApprovalPolicy::DangerScan { patterns } = &d.approval {
-                            if patterns.is_empty() {
-                                violations.push(ContractViolation {
-                                    consumer: *c,
-                                    tool: d.name.clone(),
-                                    detail: "DangerScan 审批策略未配置任何危险匹配模式".to_string(),
-                                });
-                            }
-                        }
-                    }
                     Consumer::RollbackPolicy => {
                         if matches!(d.access, agent_base::domain::Access::Mutates { .. })
                             && d.rollback == agent_base::domain::RollbackPolicy::None
@@ -279,7 +268,6 @@ mod tests {
             summary: "外部工具".to_string(),
             schema: serde_json::json!({ "type": "object" }),
             access: agent_base::domain::Access::External,
-            approval: agent_base::domain::ApprovalPolicy::Always,
             rollback,
             execution: agent_base::domain::Execution::Sequential,
             termination: agent_base::domain::Termination::ContinueTurn,

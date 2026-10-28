@@ -107,7 +107,6 @@ writeFileSync(
       model: 'stub-model',
       protocol: 'openai_chat',
       retryCount: 1,
-      approval: 'auto',
       disabledPlugins: [],
       providers: [
         {

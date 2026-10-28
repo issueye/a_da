@@ -267,7 +267,6 @@ async fn run_delegation(
     let mut tool_calls: u64 = 0;
     let started_at = now_ms();
     let mut saw_running = false;
-    let mut answered_questions: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // ②.5 **续跑**时线程已经存在，直接发任务。
     //
@@ -419,84 +418,6 @@ async fn run_delegation(
                         last_assistant = t.to_string();
                     }
                 }
-
-                // ── 进程级别子代理问答裁决：子代理调 ask_user 时由主AGENT进行判断 ──
-                for it in items {
-                    if it.get("kind").and_then(|v| v.as_str()) == Some("tool")
-                        && it.get("status").and_then(|v| v.as_str()) == Some("awaiting")
-                    {
-                        let call_id = it.get("callId").and_then(|v| v.as_str()).unwrap_or("");
-                        if !call_id.is_empty() && !answered_questions.contains(call_id) {
-                            answered_questions.insert(call_id.to_string());
-                            let q_obj = it
-                                .get("details")
-                                .and_then(|d| d.get("question"))
-                                .cloned()
-                                .unwrap_or_else(|| serde_json::json!({}));
-                            let (chosen_choice, decision_text) = evaluate_subagent_question(
-                                task,
-                                subagent_id.as_deref(),
-                                &q_obj,
-                            );
-                            info!(
-                                "进程级子代理 {} 发起提问 [call_id={call_id}], 主AGENT已判定答复: choice={:?}, text={:?}",
-                                tid, chosen_choice, decision_text
-                            );
-                            send_frame(
-                                &mut tx,
-                                &mut next_id,
-                                "question.answer",
-                                serde_json::json!({
-                                    "callId": call_id,
-                                    "choice": chosen_choice,
-                                    "text": decision_text,
-                                }),
-                            )
-                            .await?;
-                        }
-                    }
-                }
-            }
-
-            // 同样扫描快照顶层的 pendingQuestions 列表进行补充判定
-            if let Some(pending_list) = payload.get("pendingQuestions").and_then(|v| v.as_array()) {
-                for p in pending_list {
-                    let call_id = p.get("callId").and_then(|v| v.as_str()).unwrap_or("");
-                    if !call_id.is_empty() && !answered_questions.contains(call_id) {
-                        let belongs_to_thread = thread
-                            .get("items")
-                            .and_then(|v| v.as_array())
-                            .map(|items| {
-                                items.iter().any(|it| it.get("callId").and_then(|v| v.as_str()) == Some(call_id))
-                            })
-                            .unwrap_or(false);
-
-                        if belongs_to_thread {
-                            answered_questions.insert(call_id.to_string());
-                            let q_obj = p.get("question").cloned().unwrap_or_else(|| serde_json::json!({}));
-                            let (chosen_choice, decision_text) = evaluate_subagent_question(
-                                task,
-                                subagent_id.as_deref(),
-                                &q_obj,
-                            );
-                            info!(
-                                "进程级子代理 {} (pending) 发起提问 [call_id={call_id}], 主AGENT已判定答复: choice={:?}, text={:?}",
-                                tid, chosen_choice, decision_text
-                            );
-                            send_frame(
-                                &mut tx,
-                                &mut next_id,
-                                "question.answer",
-                                serde_json::json!({
-                                    "callId": call_id,
-                                    "choice": chosen_choice,
-                                    "text": decision_text,
-                                }),
-                            )
-                            .await?;
-                        }
-                    }
-                }
             }
 
             // 完成判据：已发任务 + 不在运行 + (开跑过或已有 assistant 内容)
@@ -579,77 +500,6 @@ fn extract_thread_id(result: &serde_json::Value) -> Option<String> {
 }
 
 /// 进程级别子代理发起提问时，由主AGENT结合委派任务目标与上下文进行裁决与答复。
-pub fn evaluate_subagent_question(
-    task: &str,
-    _subagent_id: Option<&str>,
-    q_obj: &serde_json::Value,
-) -> (Option<String>, Option<String>) {
-    let question_text = q_obj
-        .get("question")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim();
-
-    let choices = q_obj.get("choices").and_then(|v| v.as_array());
-
-    let task_short: String = task.chars().take(40).collect();
-    let task_short = task_short.replace(['\r', '\n'], " ");
-
-    if let Some(choices) = choices {
-        if !choices.is_empty() {
-            // 遍历每个选项，根据委派任务文本的相关度打分匹配
-            let mut best_choice_idx = 0;
-            let mut best_score = 0;
-
-            for (idx, ch) in choices.iter().enumerate() {
-                let label = ch.get("label").and_then(|v| v.as_str()).unwrap_or("");
-                let desc = ch.get("description").and_then(|v| v.as_str()).unwrap_or("");
-                let mut score = 0;
-
-                // 完整短语匹配
-                if !label.is_empty() && task.contains(label) {
-                    score += 10;
-                }
-                if !desc.is_empty() && task.contains(desc) {
-                    score += 5;
-                }
-
-                // 词级别匹配
-                for word in label.split(|c: char| !c.is_alphanumeric() && c != '_') {
-                    if word.len() >= 2 && task.contains(word) {
-                        score += 2;
-                    }
-                }
-
-                if score > best_score {
-                    best_score = score;
-                    best_choice_idx = idx;
-                }
-            }
-
-            let chosen = &choices[best_choice_idx];
-            let chosen_label = chosen.get("label").and_then(|v| v.as_str()).unwrap_or("方案");
-            let chosen_id = chosen
-                .get("id")
-                .and_then(|v| v.as_str())
-                .unwrap_or(chosen_label);
-
-            let decision_text = format!(
-                "主智能体裁决：结合委派任务「{}」及提问「{}」，判定选用【{}】方案。请按此方案继续推进。",
-                task_short, question_text, chosen_label
-            );
-
-            return (Some(chosen_id.to_string()), Some(decision_text));
-        }
-    }
-
-    // 自由文本提问（无固定选项）
-    let decision_text = format!(
-        "主智能体指导：结合委派任务「{}」与提问「{}」，请优先遵循任务目标自主决策并以最小可行、安全可靠的方式推进。",
-        task_short, question_text
-    );
-    (None, Some(decision_text))
-}
 
 #[cfg(test)]
 mod tests {
@@ -730,31 +580,4 @@ mod tests {
         assert_eq!(extract_thread_id(&serde_json::json!({"ok": true})), None);
     }
 
-    #[test]
-    fn test_evaluate_subagent_question_matches_task_and_choices() {
-        let task = "请使用 SQLite 编写数据持久化层，不要使用复杂的数据库。";
-        let q_obj = serde_json::json!({
-            "question": "应该使用哪个数据库驱动？",
-            "choices": [
-                { "id": "pg", "label": "PostgreSQL", "description": "企业级关系型数据库" },
-                { "id": "sqlite", "label": "SQLite", "description": "嵌入式轻量数据库" },
-            ],
-            "allowText": true
-        });
-
-        let (chosen, text) = evaluate_subagent_question(task, Some("coding"), &q_obj);
-        assert_eq!(chosen.as_deref(), Some("sqlite"));
-        assert!(text.as_deref().unwrap().contains("SQLite"));
-        assert!(text.as_deref().unwrap().contains("主智能体裁决"));
-
-        // 自由文本测试
-        let free_text_q = serde_json::json!({
-            "question": "还有什么补充说明？",
-            "choices": [],
-            "allowText": true
-        });
-        let (chosen2, text2) = evaluate_subagent_question("开发新模块", Some("coding"), &free_text_q);
-        assert_eq!(chosen2, None);
-        assert!(text2.as_deref().unwrap().contains("主智能体指导"));
-    }
 }

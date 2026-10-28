@@ -5,12 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use agent_base::domain::DenialKind;
-use agent_base::ports::Scope;
-
 use super::diff::unified_diff;
-use super::sandbox::{check_workspace_sandbox, resolve_real_path, should_skip_dir};
-use crate::newline::{
+use super::sandbox::{resolve_path, resolve_real_path, should_skip_dir};use crate::newline::{
     apply_eol, dominant_eol, expand_newline_escapes, follow_eol, looks_newline_escaped, to_lf,
     LfView, CRLF,
 };
@@ -130,74 +126,39 @@ fn read_text_file(path: &Path) -> Result<String> {
     Ok(content)
 }
 
-/// 路径闸门：工具拿到的路径**该按谁的规则裁决**。
+/// 工具路径上下文：只解析路径，不裁决访问边界。
 ///
-/// 这是 P1b 权限档位漏掉的一环：引擎在工具执行前用 `Scope` 判过一次，
-/// 但工具内部又按 `workspace` 硬判一次（`check_workspace_sandbox`）——
-/// 于是"完全访问"在引擎侧放行了，工具侧仍然回"拒绝访问工作区外的路径"。
-/// 档位只有一个真源（`Scope`），所以工具也必须问它。
-///
-/// - [`PathGate::Workspace`]：只认工作区沙箱。插件工具、内部调用与单测走这条，
-///   行为与 P1b 之前**逐字节一致**；
-/// - [`PathGate::Scoped`]：交给引擎注入的 `Scope`——完全访问放开工作区边界，
-///   而 `~/.a-da`（应用配置与密钥）任何档位都不可越。
+/// 相对路径以 `root` 为基准；绝对路径与跨出根目录的 `..` 照常解析。
 #[derive(Clone, Copy)]
-pub enum PathGate<'a> {
-    Workspace(&'a Path),
-    Scoped {
-        scope: &'a dyn Scope,
-        workspace: &'a Path,
-    },
+pub struct ToolPaths<'a> {
+    root: &'a Path,
 }
 
-impl<'a> PathGate<'a> {
-    /// 按引擎注入的 `Scope` 裁决（工具执行路径都用它）。
-    pub fn scoped(scope: &'a dyn Scope, workspace: &'a Path) -> Self {
-        Self::Scoped { scope, workspace }
+impl<'a> ToolPaths<'a> {
+    pub fn new(root: &'a Path) -> Self {
+        Self { root }
     }
 
     /// 相对路径的基准目录（也是列目录/搜索时"相对显示"的根）。
     pub fn workspace(&self) -> &'a Path {
-        match self {
-            Self::Workspace(ws) => ws,
-            Self::Scoped { workspace, .. } => workspace,
-        }
+        self.root
     }
 
-    /// 解析并校验一个模型给出的路径。
-    pub fn resolve(&self, raw: &str) -> Result<PathBuf, String> {
-        match self {
-            Self::Workspace(ws) => {
-                check_workspace_sandbox(ws, raw).map_err(|e| e.to_string())
-            }
-            Self::Scoped { scope, .. } => scope.resolve_path(raw).map_err(|d| match d {
-                DenialKind::Sandbox { .. } => {
-                    // 说清"为什么被拒"：用户开着完全访问时，最容易被误解成沙箱坏了
-                    format!(
-                        "拒绝访问该路径：{raw}\n\
-                         工作区之外的路径需要开启「完全访问」；\
-                         `~/.a-da` 下只有插件（agent-coding/extensions）与技能（agent-coding/skills）\
-                         目录在完全访问时开放，配置与密钥始终关闭。"
-                    )
-                }
-                other => format!("拒绝访问该路径：{raw}（{other}）"),
-            }),
-        }
+    /// 解析一个模型给出的路径。
+    pub fn resolve(&self, raw: &str) -> PathBuf {
+        resolve_path(self.root, raw)
     }
 }
 
 
 /// 1. read_file
 pub fn read_file(
-    gate: PathGate<'_>,
+    paths: ToolPaths<'_>,
     path: &str,
     offset: Option<usize>,
     limit: Option<usize>,
 ) -> ToolResult {
-    let full = match gate.resolve(path) {
-        Ok(p) => p,
-        Err(e) => return ToolResult::error(e),
-    };
+    let full = paths.resolve(path);
 
     let content = match read_text_file(&full) {
         Ok(c) => c,
@@ -242,11 +203,8 @@ pub fn read_file(
 ///
 /// 覆写一个**已存在**的文件时，内容换行会跟随该文件原有的约定（见 [`follow_eol`]）：
 /// 否则模型给一串 LF 就能把一个 CRLF 文件整体改成 LF，diff 变成"每行都动了"。
-pub fn write_file(gate: PathGate<'_>, path: &str, content: &str) -> ToolResult {
-    let full = match gate.resolve(path) {
-        Ok(p) => p,
-        Err(e) => return ToolResult::error(e),
-    };
+pub fn write_file(paths: ToolPaths<'_>, path: &str, content: &str) -> ToolResult {
+    let full = paths.resolve(path);
 
     let before = fs::read_to_string(&full).unwrap_or_default();
     let content = follow_eol(content, &before);
@@ -284,16 +242,13 @@ pub fn write_file(gate: PathGate<'_>, path: &str, content: &str) -> ToolResult {
 /// 直白的 `after.find(&old_s)` 是行不通的：`read_file` 用 `str::lines()` 输出，CRLF 文件的
 /// `\r` 不会出现在工具输出里，模型抄回来的 `old_string` 只带 LF，跨行匹配就必然失败。
 pub fn edit_file(
-    gate: PathGate<'_>,
+    paths: ToolPaths<'_>,
     path: &str,
     old_string: Option<&str>,
     new_string: Option<&str>,
     edits: Option<Vec<EditPair>>,
 ) -> ToolResult {
-    let full = match gate.resolve(path) {
-        Ok(p) => p,
-        Err(e) => return ToolResult::error(e),
-    };
+    let full = paths.resolve(path);
 
     if !full.exists() {
         return ToolResult::error(format!("文件不存在: {}", path));
@@ -441,13 +396,10 @@ fn not_found_message(path: &str, old_raw: &str, text: &str, eol: &str) -> String
 }
 
 /// 4. list_files
-pub fn list_files(gate: PathGate<'_>, subpath: Option<&str>, depth: Option<usize>) -> ToolResult {
-    let workspace_root = resolve_real_path(gate.workspace());
+pub fn list_files(paths: ToolPaths<'_>, subpath: Option<&str>, depth: Option<usize>) -> ToolResult {
+    let workspace_root = resolve_real_path(paths.workspace());
     let target = match subpath {
-        Some(p) if !p.trim().is_empty() => match gate.resolve(p.trim()) {
-            Ok(checked) => checked,
-            Err(e) => return ToolResult::error(e),
-        },
+        Some(p) if !p.trim().is_empty() => paths.resolve(p.trim()),
         _ => workspace_root.clone(),
     };
 
@@ -545,7 +497,7 @@ fn walk_dir(
 
 /// 5. search_files
 pub fn search_files(
-    gate: PathGate<'_>,
+    paths: ToolPaths<'_>,
     pattern: &str,
     glob: Option<&str>,
     path: Option<&str>,
@@ -558,12 +510,9 @@ pub fn search_files(
         return ToolResult::error("缺少 pattern 搜索内容参数。");
     }
 
-    let workspace_root = resolve_real_path(gate.workspace());
+    let workspace_root = resolve_real_path(paths.workspace());
     let target = match path {
-        Some(p) if !p.trim().is_empty() => match gate.resolve(p.trim()) {
-            Ok(checked) => checked,
-            Err(e) => return ToolResult::error(e),
-        },
+        Some(p) if !p.trim().is_empty() => paths.resolve(p.trim()),
         _ => workspace_root.clone(),
     };
 
@@ -723,7 +672,7 @@ mod tests {
         fs::create_dir_all(&temp_dir)?;
 
         // 1. 写文件
-        let res_write = write_file(PathGate::Workspace(&temp_dir),
+        let res_write = write_file(ToolPaths::new(&temp_dir),
             "test_dir/hello.txt",
             "Hello World\nLine 2\nLine 3\n",
         );
@@ -731,14 +680,14 @@ mod tests {
         assert!(res_write.patch.is_some());
 
         // 2. 读文件
-        let res_read = read_file(PathGate::Workspace(&temp_dir), "test_dir/hello.txt", Some(1), Some(2));
+        let res_read = read_file(ToolPaths::new(&temp_dir), "test_dir/hello.txt", Some(1), Some(2));
         assert!(res_read.ok);
         assert!(res_read.output.contains("1 | Hello World"));
         assert!(res_read.output.contains("2 | Line 2"));
         assert!(!res_read.output.contains("3 | Line 3"));
 
         // 3. 编辑文件
-        let res_edit = edit_file(PathGate::Workspace(&temp_dir),
+        let res_edit = edit_file(ToolPaths::new(&temp_dir),
             "test_dir/hello.txt",
             Some("Line 2"),
             Some("Line 2 Modified"),
@@ -748,13 +697,13 @@ mod tests {
         assert!(res_edit.patch.is_some());
 
         // 4. 列出文件
-        let res_list = list_files(PathGate::Workspace(&temp_dir), None, Some(3));
+        let res_list = list_files(ToolPaths::new(&temp_dir), None, Some(3));
         assert!(res_list.ok);
         assert!(res_list.output.contains("test_dir/"));
         assert!(res_list.output.contains("test_dir/hello.txt"));
 
         // 5. 搜索文件
-        let res_search = search_files(PathGate::Workspace(&temp_dir),
+        let res_search = search_files(ToolPaths::new(&temp_dir),
             "Modified",
             None,
             None,
@@ -782,7 +731,7 @@ mod tests {
         fs::write(ws.join("win.rs"), "fn a() {\r\n    let x = 1;\r\n}\r\n").unwrap();
 
         // 模型只会给出 LF（read_file 的输出里没有 \r）
-        let res = edit_file(PathGate::Workspace(&ws),
+        let res = edit_file(ToolPaths::new(&ws),
             "win.rs",
             Some("let x = 1;\n}"),
             Some("let x = 2;\n}"),
@@ -804,7 +753,7 @@ mod tests {
         let ws = temp_ws();
         fs::write(ws.join("unix.rs"), "fn a() {\n    let x = 1;\n}\n").unwrap();
 
-        let res = edit_file(PathGate::Workspace(&ws),
+        let res = edit_file(ToolPaths::new(&ws),
             "unix.rs",
             Some("let x = 1;\r\n}"),
             Some("let x = 3;\r\n}"),
@@ -827,7 +776,7 @@ mod tests {
         )
         .unwrap();
 
-        let res = edit_file(PathGate::Workspace(&ws),
+        let res = edit_file(ToolPaths::new(&ws),
             "cn.txt",
             Some("第一行\n第二行"),
             Some("第一行改\n第二行改"),
@@ -848,7 +797,7 @@ mod tests {
         fs::write(ws.join("win.rs"), "a();\r\nb();\r\n").unwrap();
 
         // 模型把换行写成了字面 `\r\n`（四个字符），整段没有真实换行 → 允许按转义解读
-        let res = edit_file(PathGate::Workspace(&ws),
+        let res = edit_file(ToolPaths::new(&ws),
             "win.rs",
             Some(r"a();\r\nb();"),
             Some(r"a();\r\nc();"),
@@ -867,7 +816,7 @@ mod tests {
         let ws = temp_ws();
         fs::write(ws.join("dup.txt"), "x\r\nsame\r\ny\r\nsame\r\n").unwrap();
 
-        let res = edit_file(PathGate::Workspace(&ws), "dup.txt", Some("same"), Some("other"), None);
+        let res = edit_file(ToolPaths::new(&ws), "dup.txt", Some("same"), Some("other"), None);
         assert!(!res.ok);
         assert!(res.output.contains("2 次"), "报错要说清命中次数：{}", res.output);
 
@@ -883,7 +832,7 @@ mod tests {
         )
         .unwrap();
 
-        let res = edit_file(PathGate::Workspace(&ws),
+        let res = edit_file(ToolPaths::new(&ws),
             "hint.txt",
             Some("let target = 42;\nline four"),
             Some("nope"),
@@ -914,7 +863,7 @@ mod tests {
                 new_string: "TWO\nTHREE".into(),
             },
         ];
-        let res = edit_file(PathGate::Workspace(&ws), "b.rs", None, None, Some(edits));
+        let res = edit_file(ToolPaths::new(&ws), "b.rs", None, None, Some(edits));
         assert!(res.ok, "{}", res.output);
         assert_eq!(
             fs::read_to_string(ws.join("b.rs")).unwrap(),
@@ -929,7 +878,7 @@ mod tests {
         let ws = temp_ws();
         fs::write(ws.join("e.txt"), "abc\n").unwrap();
 
-        let res = edit_file(PathGate::Workspace(&ws), "e.txt", Some(""), Some("prefix\n"), None);
+        let res = edit_file(ToolPaths::new(&ws), "e.txt", Some(""), Some("prefix\n"), None);
         assert!(!res.ok);
         assert!(res.output.contains("不能为空"), "{}", res.output);
         assert_eq!(fs::read_to_string(ws.join("e.txt")).unwrap(), "abc\n");
@@ -942,7 +891,7 @@ mod tests {
         let ws = temp_ws();
         fs::write(ws.join("keep.rs"), "a\r\nb\r\n").unwrap();
 
-        let res = write_file(PathGate::Workspace(&ws), "keep.rs", "a\nb\nc\n");
+        let res = write_file(ToolPaths::new(&ws), "keep.rs", "a\nb\nc\n");
         assert!(res.ok);
         assert_eq!(
             fs::read_to_string(ws.join("keep.rs")).unwrap(),
@@ -951,7 +900,7 @@ mod tests {
         );
 
         // 新文件不猜换行：给什么写什么
-        let res_new = write_file(PathGate::Workspace(&ws), "new.rs", "x\ny\n");
+        let res_new = write_file(ToolPaths::new(&ws), "new.rs", "x\ny\n");
         assert!(res_new.ok);
         assert_eq!(fs::read_to_string(ws.join("new.rs")).unwrap(), "x\ny\n");
 

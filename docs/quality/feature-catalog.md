@@ -17,41 +17,36 @@
 | 能力 | 落点 |
 |---|---|
 | **单一多轮循环** `run_turn`（唯一的 agent 循环，INV-1） | `crates/agent-base/src/engine/runtime/mod.rs` |
-| 零 IO / 零产品名词的领域层 | `crates/agent-base/src/domain/`（消息、工具描述符与回执、事件、错误与失败方向、诊断） |
-| **13 个端口**（无默认实现，缺实现就编译不过） | `crates/agent-base/src/ports/`：`AppHome` `ApprovalGate` `CancelToken` `Clock` `EventSink` `HookRunner` `ModelClient` `PromptSource` `Scope` `ScriptHost` `SessionStore` `Tool` `ToolCatalog` |
-| 一等事件流（13 个变体）+ 单调 `seq` | `crates/agent-base/src/domain/event.rs` |
-| **失败方向**（`Closed` 默认拒绝 / `Open` 放行） | `ApprovalGate::direction()`（INV-4） |
+| 零 IO / 零产品名词的领域层 | `crates/agent-base/src/domain/`（消息、工具描述符与回执、事件、错误与拒绝原因、诊断） |
+| **13 个端口**（无默认实现，缺实现就编译不过） | `crates/agent-base/src/ports/`：`AppHome` `CancelToken` `Clock` `EventSink` `EventDispatcher` `HookRunner` `ModelClient` `PromptSource` `Scope` `ScriptHost` `SessionStore` `Tool` `ToolCatalog` |
+| 一等事件流（12 个变体）+ 单调 `seq` | `crates/agent-base/src/domain/event.rs` |
 | 取消贯穿到工具执行内部 | `CancelToken` → `ModelClient::stream` / `Tool::execute`（INV-8） |
 | 轮次预算（步数 / 并发 / 工具超时） | `RunPolicy` ← 产品声明 `policies` |
 | **诊断遥测**（17 个点位，只登记真有发射方的） | `crates/agent-base/src/domain/diag.rs` 的 `DIAG_POINTS` |
 
 ---
 
-## 二、工具与工作区沙箱
+## 二、工具与路径
 
-**20 个内置工具描述符**，元数据（读写性、审批、回滚、终止）单一真源在
+**18 个内置工具描述符**，元数据（读写性、回滚、终止）单一真源在
 `crates/agent-toolkit/src/registry.rs`；工具包名单单一真源在 `toolkits.rs`
 （`core` / `fs` / `command` / `git` / `project` / `forge`）。
 
 | 工具包 | 工具 | 备注 |
 |---|---|---|
-| `core` | `ask_user`、`todo`、`finish` | 提问、多步规划、终止整轮 |
+| `core` | `todo`、`finish` | 多步规划、终止整轮；`ask_user` 已迁到插件 |
 | `fs` | `read_file`、`write_file`、`edit_file`、`list_files`、`search_files`、`batch_write`、`batch_replace` | 编辑按文本匹配，**匹配按 LF 归一化、写回按文件原换行还原**（`agent-toolkit/src/newline.rs`） |
 | `command` | `run_command`、`run_background`、`check_task`、`kill_task` | **超时/中止杀整棵进程树**；子进程 stdin 一律空设备（否则一条等输入的命令会卡满超时） |
-| `git` | `git`（单工具，15 个 `action`） | 只读动作（status/diff/log/show/blame）不问、危险动作（reset/checkout/restore/merge/push、stash drop、force、hard）走 `DangerScan` 必审批；参数经 argv 直传，不经 shell |
+| `git` | `git`（单工具，15 个 `action`） | 只读动作（status/diff/log/show/blame）与写动作靠描述符的 `Access` 区分；参数经 argv 直传，不经 shell |
 | `project` | `project_inspect`、`code_outline`、`run_tests` | `run_tests` 会执行命令，按**写工具**处理 |
 | `forge` | `create_plugin` | 生成可加载的插件包骨架；`scope` **必填**（workspace/global），缺了会让模型先 `ask_user` 问用户 |
 | 能力位装配 | `invoke_subagent` | 由 `capabilities.subagents` 决定是否装配 |
 
-- **路径沙箱**：所有路径解析回会话工作区根；越界拒绝（含 `run_command` 的 `cwd`）；
-  字符串检查之后还 realpath 解析符号链接（Windows junction 也算），按**真实落点**拒绝。
-- **档位与路径同源**：fs 工具走 `PathGate::Scoped`（引擎注入的 `Scope`），
-  `Full`（完全访问）下工作区外的路径可读写；`~/.a-da` 里只有 `agent-coding/extensions/`
-  （插件）与 `agent-coding/skills/`（技能）放行，配置与密钥仍拒；
-  插件工具与内部调用走 `PathGate::Workspace`（只认工作区，行为不变）。
+- **路径只解析**：相对路径拼到工作区根，`..` / 绝对路径 / 符号链接都按真实落点解析，
+  不再做越界拒绝；`run_command` / `run_background` 的 `cwd` 同样只解析。
 - **长时工具豁免**：等用户、等子智能体、自带超时的命令不套策略超时
   （`LONG_RUNNING_TOOLS` 单一真源 + 契约测试）。
-- **失败安全**：认不出的工具名一律按**写操作**处理（该审批就审批）。
+- **失败安全**：认不出的工具访问方式一律按**写操作**处理（`Access::External` 永不算只读）。
 
 ---
 
@@ -69,15 +64,17 @@
 
 ---
 
-## 四、审批与提问
+## 四、提问（插件）
 
-- 引擎判定"要问"→ 发 `ApprovalRequested`（**带工具名与参数原文**）→ 卡片进入
-  `waiting_approval`；界面在**输入框上方浮窗**批准 / 拒绝（`ApprovalFloatingPanel.tsx`，
-  不随对话流滚动），走 `approval.decide`。
-- **拒绝不抛错**：拒绝理由作为**工具结果**回模型（模型知道自己被拒了）。
-- 三档审批档位 + `Full`（完全访问，放开工作区边界与插件网络能力）。
-- 超时默认 300s，按失败方向处理并记 `by: Timeout`。
-- 模型主动提问走同一形态（`ask_user` / `question.answer`，`AskUserFloatingPanel.tsx`）。
+提问由统一插件 `plugins/ask-user` 完整提供：
+
+- 后端工具 `ask_user`（`longRunning`）把问题写入工作区 `.ada/ask-user/questions.json` 并等待；
+- 前端 `thread.tray` 插槽通过只读动作 `list` 读取待答项；
+- 表单提交到 `/ext/ask-user/backend/answer`，后端动作写回答案后工具被唤醒。
+
+核心不再有 `QuestionAsked` / `QuestionManager` / `question.answer`；插件停用则提问能力消失。
+- **审批已物理删除**（2026-10-27）：不再有 `ApprovalRequested` / `waiting_approval` 新卡 /
+  `approval.decide` / 审批档位或托盘。历史会话里的 `waiting_approval` 卡按已结束记录展示。
 
 ---
 
@@ -87,8 +84,7 @@
 |---|---|
 | 一等工具 `invoke_subagent`（描述符在注册表里） | `crates/agent-toolkit/src/registry.rs` + `crates/agent-node/src/subagents/` |
 | 只拿 `profile.system_prompt`；上下文一次性（不污染主会话） | `ProfilePrompt` + `EphemeralSessionStore` |
-| 只读档位挡写工具（子智能体没有用户可问 → 直接拒） | `ReadonlyEnforcingGate` |
-| 工具表按描述符裁切 | `filter_subagent_tools` |
+| 只读档位挡写工具（装配期按 `Access::ReadOnly` 裁切工具面） | `filter_subagent_tools` |
 | 父会话取消穿透 | `WatchedCancel` → 引擎 `CancelToken` |
 | 跨进程委派与**多轮续跑** | `AgentBus` 端口（本地实现如实拒绝续跑；网关实现 `GatewayAgentBus` 支持） |
 
@@ -112,16 +108,16 @@
 |---|---|
 | 包发现（工作区 / 全局，包根 `index.ts|js`，标识 `scope:<id>`） | `crates/agent-node/src/plugins/manager.rs` |
 | **四类贡献**：工具 / 系统提示词 / 技能 / 钩子（装配期结算） | `plugins/sandbox.rs`（脚本侧）+ `plugins/view.rs`（活体视图） |
-| **钩子 33 个点位**，成对硬约束，缺席报 `no_subscriber` | `crates/agent-base/src/ports/hooks.rs` |
-| 动作分级（数据面 / 控制面 / 只读面；`abort` 只给内置；`replace` 仅两处） | 同上 `HookLevel` / `allows` / `REPLACE_SUPPORTED` |
+| **钩子 29 个点位**（2026-10-27 移除 todo/approval 四点位），缺席报 `no_subscriber` | `crates/agent-base/src/ports/hooks.rs` |
+| 动作分级（数据面 / 控制面 / 只读面；`abort` 只给内置；`replace` 当前仅 `beforeToolCall`） | 同上 `HookLevel` / `allows` / `REPLACE_SUPPORTED` |
 | 用户能力开关（6 位 + 超时，每位都有生产消费者） | `plugins/types.rs` 的 `PluginCapabilities`，门禁 `verify-wiring` check L2 |
 | 沙箱两档（进程内 Boa / 子进程） | `crates/ts-engine` + `--script-sandbox subprocess` |
 | 能力声明 `// @ada-needs`（`fs` / `fs=read` / `fs=write` / `net` / `sqlite` / `exec` / `none`） | `crates/agent-node/src/scripts/needs.rs` |
-| SQLite（`node:sqlite` 的 `DatabaseSync` / `StatementSync` 子集；路径受工作区沙箱） | `crates/ts-engine/src/env/sqlite.rs`（rusqlite，`@ada-needs sqlite`） |
+| SQLite（`node:sqlite` 的 `DatabaseSync` / `StatementSync` 子集；路径只解析） | `crates/ts-engine/src/env/sqlite.rs`（rusqlite，`@ada-needs sqlite`） |
 | 子进程（`node:child_process`：同步 `execFileSync` / `spawnSync` / `execSync`，异步 `spawn` / `exec` / `execFile` 带真流式 stdio；`fork` 未提供） | `crates/ts-engine/src/env/child_process.rs` + `child_process_async.rs`（`@ada-needs exec`） |
 | 管理面：`plugin.list/load/validate/invoke/setEnabled/reload/delete/builtinCatalog/createTemplate/capabilities.set/config.set/secret.set` | `spec/proto/ada-coding.ext.json` |
 | **统一插件包**（一个 `plugin.json` 同时声明 `frontend` / `backend`；动作 `registerAction`） | `crates/agent-web/src/plugins/manifest.rs` + `crates/agent-node/src/plugins/manager.rs`；说明见 [plugins/unified-package.md](../plugins/unified-package.md) |
-| 内置插件 **8 个**：`code-outline`、`project-inspector`、`test-runner`、`batch-ops`、`plugin-forge`、`approval-guard`、`ask-user`、`ponytail` | `crates/agent-node/src/plugins/builtins.rs` |
+| 内置插件 **6 个**：`code-outline`、`project-inspector`、`test-runner`、`batch-ops`、`plugin-forge`、`ponytail` | `crates/agent-node/src/plugins/builtins.rs` |
 | **Git 工具是插件**（`plugins/git-tools`）：`git`（全动作，写语义）+ `git_read`（status/diff/log/show/blame，自述只读） | `plugins/git-tools/index.ts`；自述只读见 `ScriptToolAccess` |
 
 细节与排错见 [../plugins/README.md](../plugins/README.md)。
@@ -186,8 +182,8 @@
   显示并聚焦窗口。关闭窗口仍是退出应用，不隐藏到托盘。
 - **SSR 布局**：顶栏（连接态 / 模式徽标 / 窗口控制）+ 侧栏（工作区树与会话）+ 主区
   （对话流 + 输入卡）+ 右侧栏/抽屉（上下文面板）。
-- **浮层**：审批与排队（托盘区 `#ada-trays`）、提问（浮动覆盖、一次一题）、待办（右上角胶囊 →
-  320px 卡片）、命令面板、斜杠命令、`@` 引用菜单、进程查看、设置（供应商 / 模型 / 审批档位 /
+- **浮层**：排队（托盘区 `#ada-trays`）、提问（浮动覆盖、一次一题）、待办（右上角胶囊 →
+  320px 卡片）、命令面板、斜杠命令、`@` 引用菜单、进程查看、设置（供应商 / 模型 /
   重试次数）、插件管理与诊断。
 - **工作区与文件**：Web 原生目录选择走 `fs.roots` / `fs.list` / `fs.mkdir`，
   **不使用操作系统原生弹窗**；截断会如实提示（"已省略 N 项"）。
@@ -195,21 +191,21 @@
   上下文用量。
 - **模式**：coding / pm 由 `mode` 表达（`agent_id` 恒为 `ada-coding`），PM 是**模式预设**不是第二个产品。
 
-## 十二、协议面（77 个方法）
+## 十二、协议面（83 个方法）
 
 | 域 | 代表方法 |
 |---|---|
 | 会话与轮次 | `session.initialize` / `session.snapshot`、`thread.create` / `send` / `retry` / `abort` / `compact` / `editAndResend` / `items.page` |
-| 审批与提问 | `approval.decide`、`question.answer` |
+| 提问（插件动作） | `plugins/ask-user` 的 `list` / `answer`（不是 RPC 方法） |
 | 队列 | `queue.promote` / `remove` / `clear` |
 | 界面态 | `ui.activeThread` / `activeProject` / `openTab` / `closeTab` / `setShell` |
-| 配置与供应商 | `config.get` / `setProvider` / `checkProvider` / `setApproval` / `setEffort` / `setRetryCount`、`provider.*` |
+| 配置与供应商 | `config.get` / `setProvider` / `checkProvider` / `setEffort` / `setRetryCount`、`provider.*` |
 | 插件 / 技能 / 提示词 / 子智能体画像 | `plugin.*`、`skill.*`、`prompt.*`、`subagentProfile.*` |
 | 改动与回滚 | `change.*` |
 | 文件与工作区 | `fs.roots` / `list` / `mkdir` / `read_base64`、`workspace.add` / `remove` / `entries` / `openPublic` |
 | 调试 | `debug.hostInfo` / `trace` / `log.clear`、`stats.promptChars` |
 
-登记表真源：[`spec/proto/`](../../spec/proto/README.md)（base 23 + 产品扩展 54）。
+登记表真源：[`spec/proto/`](../../spec/proto/README.md)（base 24 + 产品扩展 60）。
 
 **HTTP unary API（Phase 0/1/2）**：`crates/agent-gateway/src/http_api.rs` 把 60 个
 unary 方法映射为 `/api/*`（18 条查询 + 42 条写），另有 11 条网关管理面；Bearer/Origin/
@@ -222,7 +218,7 @@ unary 方法映射为 `/api/*`（18 条查询 + 42 条写），另有 11 条网�
 静态门：`cargo xtask verify-spec` / `verify-wiring` / `compat` / `verify-docs`（`verify --fast` 一次跑完）；
 测试门：`cargo test --workspace -- --test-threads=1`（**必须串行**）与 `bun run typecheck`。
 实机脚本：Electron 默认 SSR（`verify-electron-ssr.mjs`）、React 桌面壳（`--ui=desktop`；锁屏时自动走 CDP 无头版）、重试与断线、卡片顺序、插件平台、网关进程模型、网关内置 SSR
-（`tools/verify-gateway-web.mjs`）、SSR 流式 / 审批中止 / 工作区（`tools/verify-ssr-*.mjs`，均为单进程），
+（`tools/verify-gateway-web.mjs`）、SSR 流式 / 中止 / 工作区（`tools/verify-ssr-*.mjs`，均为单进程），
 见 [README.md](../../README.md#门禁与测试)。
 
 ---

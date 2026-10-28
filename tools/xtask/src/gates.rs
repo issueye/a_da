@@ -613,7 +613,6 @@ pub fn verify_wiring() -> anyhow::Result<Report> {
     check_builtin_catalog(&root, &mut rep)?;
     check_descriptor_reachability(&root, &mut rep)?;
     check_port_impls(&root, &mut rep)?;
-    check_fail_direction_is_consumed(&root, &mut rep)?;
     check_frontend_reconnect(&root, &mut rep)?;
     check_event_emitters(&root, &mut rep)?;
     check_no_ui_store_in_node_layer(&root, &mut rep)?;
@@ -852,33 +851,6 @@ fn check_descriptor_reachability(root: &Path, rep: &mut Report) -> anyhow::Resul
 ///
 /// 只断言"引擎里出现方向裁决"这一件具体的事，不做宽泛的"所有 trait 方法都要被调用"
 /// 启发式（那会把合法的扩展点也判红）。
-fn check_fail_direction_is_consumed(root: &Path, rep: &mut Report) -> anyhow::Result<()> {
-    let engine_dir = root.join("crates/agent-base/src/engine");
-    let mut callers: Vec<String> = Vec::new();
-
-    let mut files: Vec<PathBuf> = Vec::new();
-    collect_rs(&engine_dir, &mut files);
-    for p in &files {
-        let Ok(src) = fs::read_to_string(p) else { continue };
-        // 只看生产段（跳过 `#[cfg(test)]` 之后的断言）
-        let prod = production_prefix(&src).unwrap_or(&src);
-        if prod.contains(".direction()") {
-            callers.push(rel(root, p));
-        }
-    }
-
-    if callers.is_empty() {
-        rep.violations.push(
-            "`FailDirection` 没有被真实消费：`crates/agent-base/src/engine` 里没有任何 \
-             `.direction()` 调用点（声明了安全默认，但代码路径上不存在）"
-                .to_string(),
-        );
-    } else {
-        rep.notes
-            .push(format!("`FailDirection` 的生产消费者 → {}", callers.join(", ")));
-    }
-    Ok(())
-}
 
 /// F. SSR 实时通道必须具备五项能力（2026-10 由 W6-T6 的 WS 客户端契约迁移而来）。
 ///
@@ -955,11 +927,6 @@ fn check_frontend_reconnect(root: &Path, rep: &mut Report) -> anyhow::Result<()>
 /// 这样缺口不会被"记在某个文档里然后忘掉"，而是**钉在门禁上**。
 const UNEMITTED_EVENT_ALLOW: &[(&str, &str)] = &[
     (
-        "QuestionAsked",
-        "缺口：`ask_user` 工具（agent-toolkit/src/core/ask_user.rs）不提问就返回错误，\
-         因此无人注册 waiter、无人发射本事件 → 界面永不显示提问卡片、`question.answer` 找不到 waiter",
-    ),
-    (
         "SubagentStarted",
         "缺口：子智能体生命周期未上报（engine_bridge 把本事件映射为 None）；\
          子智能体进度通道 `SubagentStepUpdate` 在 `InvokeSubagentTool` 里被置为 None",
@@ -974,8 +941,8 @@ const UNEMITTED_EVENT_ALLOW: &[(&str, &str)] = &[
 ///
 /// 为什么需要这条：`AgentEventBody` 是领域事件的**定义处**，而"定义了却没人发"
 /// 是一类**静默失效**——消费方写好了、界面渲染写好了、测试也在（喂的是手工构造的事件），
-/// 唯独生产路径上没有任何东西发出它。`QuestionAsked` 就是这么躺了很久的：
-/// `ask_user` 在 catalog 里、工具实现存在、UI 卡片组件存在，**但那条链路永远不触发**。
+/// 唯独生产路径上没有任何东西发出它。`SubagentStarted` / `SubagentFinished` 就是这类：
+/// 事件类型存在，但生产路径仍靠子智能体自己的进度通道。
 ///
 /// 判据：变体必须出现在 `crates/agent-base/src/engine/**` 的生产段里——
 /// 引擎是 `AgentEvent` 的**唯一生产者**（INV-6：`seq` 由 runtime 生成）。

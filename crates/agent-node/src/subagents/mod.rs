@@ -9,7 +9,7 @@ pub mod types;
 pub use builtins::builtin_subagents;
 pub use local_bus::LocalAgentBus;
 pub use manager::SubagentManager;
-pub use ports::{EphemeralSessionStore, ProfilePrompt, ReadonlyEnforcingGate};
+pub use ports::{EphemeralSessionStore, ProfilePrompt};
 pub use runner::{
     filter_subagent_tools, run_subagent, RunSubagentOptions, LEGACY_ONLY_TOOLS,
     NEVER_FOR_SUBAGENT,
@@ -24,7 +24,7 @@ pub use types::{
 mod tests {
     use super::*;
     use agent_base::domain::{
-        Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolDescriptor,
+        Access, Execution, RollbackPolicy, Termination, ToolDescriptor,
     };
     use agent_base::ports::Tool;
     use agent_base::testing::MockTool;
@@ -42,7 +42,6 @@ mod tests {
                 summary: format!("tool {name}"),
                 schema: serde_json::json!({ "type": "object" }),
                 access: Access::ReadOnly,
-                approval: ApprovalPolicy::Never,
                 rollback: RollbackPolicy::None,
                 execution: Execution::Sequential,
                 termination: Termination::ContinueTurn,

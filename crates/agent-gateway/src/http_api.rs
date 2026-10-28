@@ -360,17 +360,6 @@ static ROUTES: &[RouteSpec] = &[
     ),
     route!(
         "PUT",
-        "/config/approval",
-        Target::Agent(CONFIG_SET_APPROVAL),
-        [],
-        [],
-        BodyMode::Merge,
-        false,
-        false,
-        false
-    ),
-    route!(
-        "PUT",
         "/config/effort",
         Target::Agent(CONFIG_SET_EFFORT),
         [],
@@ -563,28 +552,6 @@ static ROUTES: &[RouteSpec] = &[
         [("thread_id", "threadId"), ("index", "index")],
         [],
         BodyMode::None,
-        false,
-        false,
-        false
-    ),
-    route!(
-        "POST",
-        "/approvals/:call_id/decision",
-        Target::Agent(APPROVAL_DECIDE),
-        [("call_id", "toolItemId")],
-        [],
-        BodyMode::Merge,
-        false,
-        false,
-        false
-    ),
-    route!(
-        "POST",
-        "/questions/:call_id/answer",
-        Target::Agent(QUESTION_ANSWER),
-        [("call_id", "callId")],
-        [],
-        BodyMode::Merge,
         false,
         false,
         false
@@ -1654,9 +1621,9 @@ mod tests {
 
     #[test]
     fn test_route_table_has_no_duplicates_and_expected_size() {
-        // 71 = Phase 1 的 18 条 + Phase 2 的 42 条 + 网关管理面 11 条。
+        // 68 = Phase 1 的 17 条 + Phase 2 的 40 条 + 网关管理面 11 条。
         // 加/删端点时同步改这里，避免“文档写了、路由没挂”。
-        assert_eq!(ROUTES.len(), 71);
+        assert_eq!(ROUTES.len(), 68);
         let mut seen = std::collections::HashSet::new();
         for route in ROUTES {
             assert!(

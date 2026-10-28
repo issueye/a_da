@@ -48,10 +48,10 @@ export default function (ada) {
 
 `registerTool` declarations are collected during isolated inspection and installed in the
 runtime catalog. Built-in names keep their canonical descriptor. New third-party tool
-names receive a conservative descriptor (write-classified and approval-required), and
+names receive a conservative descriptor (write-classified), and
 their `execute` factory closure is recreated inside the script sandbox for each call.
 Thus package-defined tools are not limited to names already present in the built-in
-registry; unknown plugin tools fail safe as writes and must pass approval.
+registry; unknown plugin tools fail safe as writes.
 
 The package entrypoint must be `<package-root>/index.ts` or `<package-root>/index.js`.
 Node-style relative module loading is not currently supported inside the Boa sandbox.
@@ -79,7 +79,7 @@ ada.registerAction({
 });
 ```
 
-- Actions do **not** enter the model tool catalog, approval gate, or checkpoints.
+- Actions do **not** enter the model tool catalog or checkpoints.
 - They are called by the SSR bridge `plugin.invoke`; a unified package's
   `plugin.json` maps a frontend binding to an action name.
 - `mode: "read"` is required for `intent: "read"`; write actions are rejected when
@@ -201,7 +201,7 @@ Supported surface (Node-compatible subset):
   expression depth 500, 1,000 variables, trigger depth 100
 - SQLite extension loading is not exposed
 
-SQL is not a model tool and does not enter the approval gate: it is a backend
+SQL is not a model tool: it is a backend
 capability, same as `fs`. Use `readOnly: true` for read-only databases.
 
 ## child_process: sync subset + async subset
@@ -270,7 +270,7 @@ Async subset (`spawn` / `exec` / `execFile`):
 - `ChildProcess` 上没人监听的 `'error'` 不会抛出（抛会把事件循环炸掉）：会记到
   `child.spawnError` 并打一条 `console.error`，在插件日志里能看到。
 - ⚠️ `exec` 等价于任意代码执行。当前阶段优先功能实现，信任边界由插件安装者负责；
-  后续再补审批/策略。不要在不可信插件上声明 `exec`。
+  后续再补策略。不要在不可信插件上声明 `exec`。
 
 **Skills are directories, not declarations.** Put `skills/<name>/SKILL.md` next to
 `index.ts`; the host scans it during assembly and reads the YAML frontmatter
@@ -279,14 +279,20 @@ Async subset (`spawn` / `exec` / `execFile`):
 2026-10-19: calling it is ignored and reported as a `skill_spec_violation:*` diagnostic.
 `metadata.skills` is declarative only and is not checked for consistency.
 
-## Hook points and capability gates (as of 2026-10-17)
+## Hook points and capability gates (as of 2026-10-27)
 
-* Every point in `agent_base::ports::hooks::points::IMPLEMENTED` (33 of them, including
-  `beforeTodoUpdate` / `afterTodoUpdate`) is callable and registrable; a point that is not
-  registered is reported as `no_subscriber` rather than silently skipped.
+* Every point in `agent_base::ports::hooks::points::IMPLEMENTED` (29 of them) is callable
+  and registrable; a point that is not registered is reported as `no_subscriber` rather
+  than silently skipped.
+* `beforeTodoUpdate` / `afterTodoUpdate` / `beforeApproval` / `afterApproval` were removed
+  on 2026-10-27; todo updates and approval are no longer hook points. They will be
+  re-expressed through the unified `event_*` system when the plugin event bus lands.
+* `ada.on` also accepts the unified `event_*` names (`event_before_tool_call`,
+  `event_after_turn`, …). They are folded back to the legacy point at registration time
+  (`agent-node/src/hooks/event_names.rs`) until the engine dispatcher migration.
 * Which **actions** a hook may take is graded per point
-  (`HookLevel` + `allows`): third-party plugins can `Deny` / `Replace` on data-plane points
-  (`beforeToolCall`, `beforeTodoUpdate`) only; control-plane `Deny` is limited to builtin plugins.
+  (`HookLevel` + `allows`): third-party plugins can `Deny` / `Replace` on the data-plane
+  `beforeToolCall` only; control-plane `Deny` is limited to builtin plugins.
 * The user's plugin capability switches gate actions on top of that: with
   `allowThirdPartyHooks` off, third-party hook declarations are rejected at assembly time
   (`third_party_hooks_disabled`); `allowTextRewrite` off drops `note` results;

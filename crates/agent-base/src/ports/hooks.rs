@@ -32,17 +32,12 @@ use crate::ports::CancelToken;
 pub mod points {
     pub const BEFORE_TOOL_CALL: &str = "beforeToolCall";
     pub const AFTER_TOOL_CALL: &str = "afterToolCall";
-    pub const BEFORE_APPROVAL: &str = "beforeApproval";
-    pub const AFTER_APPROVAL: &str = "afterApproval";
     pub const BEFORE_PLUGIN_TOGGLE: &str = "beforePluginToggle";
     pub const AFTER_PLUGIN_TOGGLE: &str = "afterPluginToggle";
     pub const BEFORE_THREAD_CREATE: &str = "beforeThreadCreate";
     pub const AFTER_THREAD_CREATE: &str = "afterThreadCreate";
     pub const BEFORE_TURN: &str = "beforeTurn";
     pub const AFTER_TURN: &str = "afterTurn";
-    /// 待办清单被更新（P3b · SP-63）：载荷是**全量清单**。
-    pub const BEFORE_TODO_UPDATE: &str = "beforeTodoUpdate";
-    pub const AFTER_TODO_UPDATE: &str = "afterTodoUpdate";
     pub const BEFORE_AGENT_START: &str = "beforeAgentStart";
     pub const AFTER_AGENT_END: &str = "afterAgentEnd";
     pub const BEFORE_COMPACTION: &str = "beforeCompaction";
@@ -69,16 +64,12 @@ pub mod points {
     pub const IMPLEMENTED: &[&str] = &[
         BEFORE_TOOL_CALL,
         AFTER_TOOL_CALL,
-        BEFORE_TODO_UPDATE,
-        AFTER_TODO_UPDATE,
         BEFORE_PLUGIN_TOGGLE,
         AFTER_PLUGIN_TOGGLE,
         BEFORE_THREAD_CREATE,
         AFTER_THREAD_CREATE,
         BEFORE_TURN,
         AFTER_TURN,
-        BEFORE_APPROVAL,
-        AFTER_APPROVAL,
         BEFORE_AGENT_START,
         AFTER_AGENT_END,
         BEFORE_COMPACTION,
@@ -105,9 +96,64 @@ pub mod points {
     /// **支持改写**的点位（P3b · SP-60）。
     ///
     /// 只有载荷是"一份完整、可重新校验的数据"的点位才开放 `Replace`：
-    /// 工具参数与待办清单都能重跑校验（schema / 路径 / 清单形状），
-    /// 而"插件启停"这种**行为**没有可改写的载荷（它只有"允许/不允许"）。
-    pub const REPLACE_SUPPORTED: &[&str] = &[BEFORE_TOOL_CALL, BEFORE_TODO_UPDATE];
+    /// 工具参数能重跑校验（schema / 路径 / 风险单调性），行为类点位没有可改写的载荷。
+    pub const REPLACE_SUPPORTED: &[&str] = &[BEFORE_TOOL_CALL];
+}
+
+/// 旧点位 ↔ 统一事件名的**唯一映射表**（迁移期）。
+///
+/// 插件可以开始写 `ada.on("event_before_tool_call")`；引擎按旧点位名调用。
+/// 两边都从这里取，避免“注册一套、调用另一套”。
+pub const EVENT_POINTS: &[(&str, &str)] = &[
+    (points::BEFORE_TOOL_CALL, "event_before_tool_call"),
+    (points::AFTER_TOOL_CALL, "event_after_tool_call"),
+    (points::BEFORE_PLUGIN_TOGGLE, "event_before_plugin_toggle"),
+    (points::AFTER_PLUGIN_TOGGLE, "event_after_plugin_toggle"),
+    (points::BEFORE_THREAD_CREATE, "event_before_thread_create"),
+    (points::AFTER_THREAD_CREATE, "event_after_thread_create"),
+    (points::BEFORE_TURN, "event_before_turn"),
+    (points::AFTER_TURN, "event_after_turn"),
+    (points::BEFORE_AGENT_START, "event_before_agent_start"),
+    (points::AFTER_AGENT_END, "event_after_agent_end"),
+    (points::BEFORE_COMPACTION, "event_before_compaction"),
+    (points::AFTER_COMPACTION, "event_after_compaction"),
+    (points::BEFORE_LLM_REQUEST, "event_before_llm_request"),
+    (points::AFTER_LLM_RESPONSE, "event_after_llm_response"),
+    (points::BEFORE_THREAD_DELETE, "event_before_thread_delete"),
+    (points::AFTER_THREAD_DELETE, "event_after_thread_delete"),
+    (points::BEFORE_SUBAGENT_START, "event_before_subagent_start"),
+    (points::AFTER_SUBAGENT_END, "event_after_subagent_end"),
+    (points::BEFORE_SYSTEM_PROMPT, "event_before_system_prompt"),
+    (points::AFTER_SYSTEM_PROMPT, "event_after_system_prompt"),
+    (points::BEFORE_PERSIST, "event_before_persist"),
+    (points::AFTER_CHECKPOINT, "event_after_checkpoint"),
+    (points::BEFORE_SKILL_LOAD, "event_before_skill_load"),
+    (points::AFTER_SKILL_LOAD, "event_after_skill_load"),
+    (points::BEFORE_PROVIDER_REQUEST, "event_before_provider_request"),
+    (points::BEFORE_PROVIDER_HEADERS, "event_before_provider_headers"),
+    (points::AFTER_PROVIDER_RESPONSE, "event_after_provider_response"),
+    (points::BEFORE_CONTEXT, "event_before_context"),
+    (points::AFTER_CONTEXT, "event_after_context"),
+];
+
+/// 把统一事件名折回旧点位名；旧名/未知名原样返回。
+pub fn normalize_event_name(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.starts_with("event_") {
+        for (point, event) in EVENT_POINTS {
+            if *event == trimmed {
+                return (*point).to_string();
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
+/// 旧点位名 → 统一事件名。
+pub fn event_name_for_point(point: &str) -> Option<&'static str> {
+    EVENT_POINTS
+        .iter()
+        .find_map(|(legacy, event)| (*legacy == point).then_some(*event))
 }
 
 /// 点位属于哪一级订阅面（设计 §5.9）。
@@ -130,11 +176,6 @@ impl HookLevel {
         use points::*;
         match point {
             BEFORE_TOOL_CALL | AFTER_TOOL_CALL => Some(Self::DataPlane),
-            // 待办清单与工具参数同属**数据面**：载荷是一份能重新校验的清单，
-            // 第三方拦下/改写它并不比拦下 `todo` 这一次工具调用多出任何权力
-            // （`beforeToolCall` 本来就给得出这个），所以分级与工具调用一致。
-            BEFORE_TODO_UPDATE | AFTER_TODO_UPDATE => Some(Self::DataPlane),
-            BEFORE_APPROVAL | AFTER_APPROVAL => Some(Self::ControlPlane),
             BEFORE_PLUGIN_TOGGLE | AFTER_PLUGIN_TOGGLE => Some(Self::ControlPlane),
             BEFORE_THREAD_CREATE | AFTER_THREAD_CREATE => Some(Self::ControlPlane),
             BEFORE_TURN | AFTER_TURN => Some(Self::ControlPlane),
@@ -524,13 +565,10 @@ pub fn observation_to_diagnostic(obs: &HookObservation) -> crate::domain::Diagno
     }
 }
 
-/// **工具内部点位**的钩子入口（P3b · SP-63）：交给工具的上下文里带这一份。
+/// **工具内部点位**的钩子入口：交给工具的上下文里带这一份。
 ///
-/// # 为什么工具需要它，而不是由引擎代跑
-///
-/// `beforeTodoUpdate` 的载荷是"待办清单的**语义**"——它由工具自己解释（哪个字段是标题、
-/// 什么算一次更新）。引擎代跑就只能靠"工具名叫 `todo`"这类硬编码，那是最脆的一种耦合。
-/// 所以：引擎把**运行时 + 归属 + 遥测出口**交给工具，由工具在正确的时机调用自己的点位。
+/// 2026-10-27：`todo` 的 `beforeTodoUpdate` / `afterTodoUpdate` 已移除，核心工具不再
+/// 使用这条入口；保留给未来需要“在工具内部触发点位”的插件工具（需重新设计事件契约）。
 ///
 /// # 为什么遥测出口也给它
 ///

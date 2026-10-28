@@ -74,16 +74,6 @@ pub fn event_probe_stream(thread_id: &str) -> Vec<AgentEvent> {
             name: "read_file".into(),
             receipt: ToolReceipt::new(ToolStatus::Success, "文件内容", 0, 5),
         }),
-        next(AgentEventBody::ApprovalRequested {
-            call_id: "call_2".into(),
-            tool: "write_file".into(),
-            // 合规样例必须带参数：审批卡靠它显示"要批准什么"
-            args: serde_json::json!({ "path": "src/lib.rs", "content": "…" }),
-        }),
-        next(AgentEventBody::QuestionAsked {
-            call_id: "call_3".into(),
-            question: serde_json::json!({ "prompt": "选哪个？" }),
-        }),
         next(AgentEventBody::SubagentStarted {
             thread_id: "sub_1".into(),
             subagent: "coder".into(),
@@ -182,8 +172,8 @@ mod tests {
         let sink = RecordingSink::new();
         verify_event_sink_contract(&sink, &event_probe_stream("t1"))
             .expect("录制型出口必须合规");
-        // 全部 13 种事件类型都必须真的被接受（不许有 todo!()/漏分支）
-        assert_eq!(sink.snapshot().len(), 13, "探针必须覆盖全部事件类型");
+        // 全部 11 种事件类型都必须真的被接受（不许有 todo!()/漏分支）
+        assert_eq!(sink.snapshot().len(), 11, "探针必须覆盖全部事件类型");
     }
 
     /// 探针本身必须是合法的：否则契约失败时无法区分"实现有问题"与"探针写错了"。

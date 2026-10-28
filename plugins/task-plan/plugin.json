@@ -2,7 +2,7 @@
   "id": "task-plan",
   "name": "任务卡片",
   "version": "0.1.0",
-  "description": "把 todo 工具的任务规划渲染成会话区右上角（或输入框上方）的悬浮卡片；后端插件通过 afterTodoUpdate 维护计划，前端读取后端 action，核心投影作为降级。",
+  "description": "把 todo 工具的任务规划渲染成会话区右上角（或输入框上方）的悬浮卡片；计划状态直接来自核心 props.data.todo。",
   "frontend": {
     "assets": "static",
     "styles": [
@@ -17,13 +17,6 @@
         "template": "slot.tsx",
         "order": 10
       }
-    ],
-    "actions": {
-      "plan": {
-        "action": "plan",
-        "read": true
-      }
-    }
-  },
-  "backend": {}
+    ]
+  }
 }

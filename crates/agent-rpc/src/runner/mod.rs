@@ -23,20 +23,11 @@
 //! 3. **`evaluate_diff` / `manage_ponytail` 连描述符都不在**（不在 20 个工具里）——
 //!    那些测试测的是死分支。
 //!
-//! ## 删掉的 7 个测试里，有 1 个当时是"唯一实现"（**已过时，见下**）
+//! ## 提问链路已迁到插件（2026-10-28）
 //!
-//! `ask_user` 的问句流程：legacy `execute_ask_user` 曾是**唯一**会注册 waiter 并发
-//! `QuestionAsked` 事件的实现，而当时新路径的 `AskUserTool` 直接返回错误。
-//!
-//! **2026-10-18 复核更新**：这条叙述**已经过时**——`AskUserTool` 现在自己发
-//! `QuestionAsked` 并等答复（`crates/agent-toolkit/src/core/ask_user.rs:301`，
-//! 单测断言事件真的落进事件池：同文件 `:749-751`）。也就是说"问句链路不通"这个
-//! 缺口**已经关闭**。
-//!
-//! ⚠️ 但门禁豁免**还没消**：`check_event_emitters` 扫的是 `crates/agent-base/src/engine/**`，
-//! 而 `QuestionAsked` 的发射点在**工具层**，于是它仍留在 `UNEMITTED_EVENT_ALLOW` 里。
-//! 两者口径不一致（INV-6 说"引擎是 `AgentEvent` 的唯一生产者"）：要么把发射收回引擎，
-//! 要么承认工具层也是合法发射方并改口径——**别让豁免表变成"没人再看的假条"**。
+//! 核心 `ask_user` 工具、`QuestionAsked` 事件、`QuestionManager` 与 `question.answer`
+//! 协议方法均已删除；提问由 `plugins/ask-user` 统一插件提供：
+//! 后端工具写问题文件并等待，前端插槽经后端动作读取/作答。核心事件集不再包含提问事件。
 //!
 //! 同类缺口还有 `SubagentStarted` / `SubagentFinished`（同一张豁免表）：
 //! 这两个**至今没有任何生产发射者**，`engine_bridge` 把它们映射成 `None`

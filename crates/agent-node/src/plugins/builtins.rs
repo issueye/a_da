@@ -159,22 +159,6 @@ pub const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
         }],
     },
     BuiltinPluginDefinition {
-        id: "approval-guard",
-        name: "审批安全守卫 (approval-guard)",
-        description: "提供前置操作拦截、高危指令阻断与审批策略管控。",
-        tools: &[],
-        skills: &[],
-    },
-    BuiltinPluginDefinition {
-        id: "ask-user",
-        name: "向用户提问 (ask-user)",
-        description: "向用户发起单选、多选按钮交互或自由文本输入提问。",
-        tools: &[
-            ("ask_user", "在交互界面向用户发起单选选择或补充说明提问并阻塞等待答复。"),
-        ],
-        skills: &[],
-    },
-    BuiltinPluginDefinition {
         id: "ponytail",
         name: "马尾调度管理器 (ponytail)",
         description: "提示词、技能生命周期管理与上下文任务调度。",
@@ -205,6 +189,7 @@ pub fn get_builtin_plugin_items(disabled_ids: &std::collections::HashSet<String>
                         // 内置插件的工具是编译进基座的实现，读写性来自注册表描述符；
                         // 这里的 `access` 只是卡片投影的占位（没有脚本声明可采信）。
                         access: "write".to_string(),
+                        long_running: false,
                     }
                 })
                 .collect();

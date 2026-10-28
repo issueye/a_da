@@ -105,6 +105,7 @@ mod tests {
                 description: "read file".to_string(),
                 parameters: serde_json::json!({"type":"object","properties":{}}),
                 access: agent_base::ports::ScriptToolAccess::External,
+                long_running: false,
             }],
             prompts: Vec::new(),
             skills: Vec::new(),

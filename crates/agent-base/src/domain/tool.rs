@@ -1,7 +1,7 @@
 //! 工具调用与回执：**能力由描述符声明**（INV-3），**回执结构化且字段必填**（INV-5）。
 //!
 //! 这一层是 AGENTS.md §1/§2/§4/§5/§6/§10/§18 的"类型化"落点：
-//! - 只读性、审批策略、回滚策略、执行模式、终止语义全部来自 [`ToolDescriptor`]，
+//! - 只读性、回滚策略、执行模式、终止语义全部来自 [`ToolDescriptor`]，
 //!   不再有 `is_readonly_tool` 那样的按名字名单；
 //! - [`ToolReceipt`] 的 `duration_ms` 是**派生**的，不是并列字段，因此不存在"两个键写歪一个"的静默失效。
 
@@ -36,7 +36,7 @@ pub enum Access {
     ///    想要"这个外部工具是只读的"，基座**不**采信外部自述；插件工具的唯一例外是
     ///    显式的 `ScriptToolAccess::ReadOnly`（2026-10-27：只允许声明"读"，代价与边界
     ///    写在那个枚举上，见 `ports/scripts.rs`）。
-    /// 2. **不进路径沙箱**：参数里没有工作区路径可校验（`path_fields_of` 为空）。
+    /// 2. **不参与路径校验**：参数里没有工作区路径可校验。
     /// 3. **不得声明回滚策略**：本地没有可回滚的路径，`RollbackPolicy` 必须是 `None`。
     ///    早先插件自定义工具谎称 `Mutates { Batch("paths") }` + `PerTargetInBatch`，
     ///    于是回滚/检查点会去找一个根本不存在的 `paths` 字段——这个变体就是为了
@@ -50,17 +50,6 @@ pub enum PathSelector {
     Single(&'static str),
     /// 批量：参数里一个"文件数组"字段（每个元素都要进回滚记录，见 §4）
     Batch(&'static str),
-}
-
-/// 审批策略（取代"谁决定免问"散在几处的现状）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ApprovalPolicy {
-    Never,
-    Always,
-    /// 命中危险模式才问（即使用户开了自动批准）
-    DangerScan { patterns: Vec<String> },
-    /// 由命名的策略实现决定（如插件提供的 approval-guard）
-    Named(&'static str),
 }
 
 /// 回滚策略（取代 coding 专有的"写前检查点"手写分支）。生活类助手可以换成别的实现。
@@ -85,7 +74,7 @@ pub enum Termination {
     EndTurn,
 }
 
-/// 工具自述：**注册表即真源**（INV-3）。任何消费侧（只读过滤、审批、回滚、子智能体白名单、
+/// 工具自述：**注册表即真源**（INV-3）。任何消费侧（只读过滤、回滚、子智能体白名单、
 /// 插件声明）都必须从这里取，不许各写一份名单。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolDescriptor {
@@ -93,7 +82,6 @@ pub struct ToolDescriptor {
     pub summary: String,
     pub schema: serde_json::Value,
     pub access: Access,
-    pub approval: ApprovalPolicy,
     pub rollback: RollbackPolicy,
     pub execution: Execution,
     pub termination: Termination,
@@ -187,7 +175,6 @@ mod tests {
             summary: String::new(),
             schema: serde_json::json!({ "type": "object" }),
             access: Access::ReadOnly,
-            approval: ApprovalPolicy::Never,
             rollback: RollbackPolicy::None,
             execution: Execution::Sequential,
             termination: Termination::ContinueTurn,
@@ -210,7 +197,6 @@ mod tests {
             summary: String::new(),
             schema: serde_json::json!({ "type": "object" }),
             access: Access::External,
-            approval: ApprovalPolicy::Always,
             rollback: RollbackPolicy::None,
             execution: Execution::Sequential,
             termination: Termination::ContinueTurn,

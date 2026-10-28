@@ -34,14 +34,6 @@ pub enum AgentEventBody {
     TextDelta { text: String },
     ToolCallStarted { call_id: String, name: String, args: serde_json::Value },
     ToolCallFinished { call_id: String, name: String, receipt: ToolReceipt },
-    /// 请求用户批准这次工具调用。
-    ///
-    /// 🔴 **必须带 `args`**：审批卡要回答的是"我到底在批准什么"——危险命令的原文、
-    /// 要覆写的文件路径。只给一个工具名，用户只能闭着眼点"批准"，那道确认闸门就白设了。
-    /// 这也是本事件与 [`Self::ToolCallStarted`] 的分工：审批在前、建卡在后，
-    /// 审批卡拿不到 `ToolCallStarted` 的 args，只能自己带。
-    ApprovalRequested { call_id: String, tool: String, args: serde_json::Value },
-    QuestionAsked { call_id: String, question: serde_json::Value },
     SubagentStarted { thread_id: String, subagent: String },
     SubagentFinished { thread_id: String, ok: bool, summary: String },
     UsageReported { usage: TokenUsage, duration_ms: u64 },
@@ -63,8 +55,6 @@ impl AgentEventBody {
             Self::TextDelta { .. } => "text.delta",
             Self::ToolCallStarted { .. } => "tool.started",
             Self::ToolCallFinished { .. } => "tool.finished",
-            Self::ApprovalRequested { .. } => "approval.requested",
-            Self::QuestionAsked { .. } => "question.asked",
             Self::SubagentStarted { .. } => "subagent.started",
             Self::SubagentFinished { .. } => "subagent.finished",
             Self::UsageReported { .. } => "usage",

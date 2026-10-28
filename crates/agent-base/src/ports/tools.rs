@@ -21,11 +21,11 @@ pub struct ToolContext<'a> {
     pub cancel: &'a dyn CancelToken,
     pub events: &'a dyn EventSink,
     pub thread_id: &'a str,
-    /// **工具内部点位**的钩子入口（P3b · SP-63）。
+    /// **工具内部点位**的钩子入口（保留给未来插件工具）。
     ///
     /// `None` = 这个产品没开钩子（或这次调用没经过引擎，例如测试直接构造上下文）。
-    /// 需要它的工具目前只有 `todo`——它解释"清单"这个载荷的语义，所以点位由它自己跑
-    /// （设计 §5.4 把 `beforeTodoUpdate` 的实施位置定在"todo 工具内部"）。
+    /// 2026-10-27：`todo` 的 `beforeTodoUpdate` / `afterTodoUpdate` 已移除，核心工具
+    /// 不再使用这条入口；当前没有内置工具需要它。
     pub hooks: Option<crate::ports::hooks::ToolHooks<'a>>,
 }
 
@@ -38,7 +38,7 @@ pub trait Tool: Send + Sync {
     /// 这个工具是否会**合法地**长时间运行 / 阻塞等待外部输入？
     ///
     /// 引擎的策略超时（[`crate::engine::RunPolicy::tool_timeout`]）对 `true` 的工具**不生效**：
-    /// 审批、提问要等用户（上限 30 分钟），派活要等子智能体跑完，命令执行自带超时
+    /// 提问要等用户（上限 30 分钟），派活要等子智能体跑完，命令执行自带超时
     /// （最长 10 分钟）——拿策略超时（120 秒）去掐它们，只会把"正常的长任务/等用户点一下"
     /// 变成一次假失败。
     ///
@@ -54,8 +54,6 @@ pub trait Tool: Send + Sync {
 pub enum Consumer {
     /// 只读过滤（plan/只读子智能体拿不拿得到）
     ReadonlyFilter,
-    /// 审批策略
-    ApprovalPolicy,
     /// 回滚/检查点策略
     RollbackPolicy,
     /// 子智能体白名单
@@ -65,9 +63,8 @@ pub enum Consumer {
 }
 
 impl Consumer {
-    pub const ALL: [Consumer; 5] = [
+    pub const ALL: [Consumer; 4] = [
         Consumer::ReadonlyFilter,
-        Consumer::ApprovalPolicy,
         Consumer::RollbackPolicy,
         Consumer::SubagentAllowlist,
         Consumer::PluginDeclaration,

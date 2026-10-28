@@ -298,7 +298,6 @@ async fn render_parts(
             "topbarActions": parts.topbar_actions,
             "aux": parts.aux,
             "above": parts.composer_above,
-            "approval": parts.approval_chip,
             "model": parts.model_chip,
             "threads": parts.thread_list,
         })
@@ -542,7 +541,7 @@ impl StreamView {
 
     /// 给 `live_parts` 用的快照：meta 原样，目标会话只放**工具卡 + 助手用量**。
     ///
-    /// 托盘只关心 `waiting_approval` 的工具、任务规划只关心 `todo` 工具；
+    /// 托盘只关心提问工具、任务规划只关心 `todo` 工具；
     /// 插件（Token 天气）的 `props.data.tokens` 读助手卡的 `usage` 与 `durationMs`
     /// （缓存命中、tok/s 都从这里来）。没必要把整段对话（长会话上千条、单体几十 KB）
     /// 每 500ms 克隆一遍，但**不能只留工具卡**——那会让用量插件读到 0，界面显示"晴天 0%"。
@@ -642,7 +641,6 @@ fn parts_fingerprint(meta: &Value) -> String {
         "waiting": meta.get("waitingThreadIds"),
         "queue": meta.get("queue"),
         "config": meta.get("config"),
-        "pending": meta.get("pendingQuestions"),
         "openTabs": meta.get("ui").and_then(|ui| ui.get("openTabIds")),
         "threads": threads,
     })
@@ -744,7 +742,7 @@ mod tests {
             "runningThreadIds": [],
             "waitingThreadIds": [],
             "queue": [],
-            "config": {"model": "m", "approval": "auto"},
+            "config": {"model": "m"},
             "ui": {"openTabIds": []},
             "threads": [
                 {"id": "t1", "title": "会话一", "workspace": "E:/w", "items": if thread_id == "t1" { items.clone() } else { json!([]) }},
@@ -994,7 +992,7 @@ mod tests {
             "waitingThreadIds": [],
             "queue": [],
             "log": [],
-            "config": {"model": "fake-model", "approval": "auto", "contextWindow": 1000},
+            "config": {"model": "fake-model", "contextWindow": 1000},
             "ui": {"openTabIds": ["t1"]},
             "threads": [{
                 "id": "t1",

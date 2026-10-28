@@ -152,16 +152,7 @@ impl SubprocessScriptHost {
     }
 
     fn needs_json(needs: ScriptNeeds) -> serde_json::Value {
-        // 安全下线：与进程内档同一口径（`to_engine_needs`），子进程也拿全部能力。
-        if agent_toolkit::security::deferred() {
-            return serde_json::json!({
-                "fs_read": true,
-                "fs_write": true,
-                "net": true,
-                "sqlite": true,
-                "exec": true,
-            });
-        }
+        // 与进程内档同一口径（`to_engine_needs`）：`Needs` 是模块注入清单，不是权限门。
         serde_json::json!({
             "fs_read": needs.fs_read,
             "fs_write": needs.fs_write,
@@ -284,6 +275,7 @@ impl ScriptHost for SubprocessScriptHost {
                     parameters: tool.parameters,
                     // 子进程档走同一份归一化结果（runner 回的 `access` 字段）。
                     access: agent_base::ports::ScriptToolAccess::from_declared(Some(&tool.access)),
+                    long_running: tool.long_running,
                 })
                 .collect();
             let prompts: Vec<crate::plugins::PluginPromptDeclaration> = serde_json::from_value(
@@ -379,6 +371,7 @@ impl ScriptHost for SubprocessScriptHost {
                         "kind": "call",
                         "path": loaded.path.to_string_lossy(),
                         "workspace": loaded.workspace.to_string_lossy(),
+                        "threadId": ctx.thread_id,
                         "export": call.export,
                         "args": call.args,
                         "needs": Self::needs_json(loaded.needs),

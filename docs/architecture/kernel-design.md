@@ -8,6 +8,12 @@
 > `verify-archive`、"归档"等字样均为**历史记录**（迁移过程与决策依据），
 > 不再是现行路径或门禁。现行门禁清单见 [README.md](../../README.md) 与 [AGENTS.md](../../AGENTS.md)。
 
+> 🔴 **2026-10-27 更新**：审批与安全机制**已物理删除**——`ApprovalGate` / `ApprovalMode` /
+> `ApprovalPolicy` / `ApprovalRequested` / `approval.decide` / 审批 UI、路径沙箱、
+> `SECURITY_ENFORCED`、危险命令扫描全部移除；`Scope` 只解析路径，不裁决边界。
+> 本文中涉及 `approval` / `FailDirection` / 沙箱的段落属于**删除前的历史设计**；
+> 现行口径见 [PLAN-unified-events.md](PLAN-unified-events.md) §11 与 [AGENTS.md](../../AGENTS.md)。
+
 > 状态：**设计 v0.2 的现行部分**。2026-10-19 已移除 TS 时代的事实陈述、迁移路径与未落地附录；历史从 git 取回。
 > **v0.2 的定位变更（相对 v0.1）**：① **只考虑 Rust**——TS 那套 agent 实现（`src/agent/**` 的循环/宿主/工具）
 > 作为**归档版本**，不再是参考设计、不再是等价性基准；② 目标从"把 a_da 抽象出来"改成
@@ -47,7 +53,7 @@
 |---|---|
 | `verify-proto` | base 协议在所有产品间**逐字节一致**；每个产品的目录 = base ∪ 自己的扩展；生成物（Rust 常量 / dispatch 臂 / 文档表格 / 客户端类型）**集合相等** |
 | `verify-spec` | 声明里出现的工具/能力位/方法**都能被装配**（没有"声明了没有实现"），且没有"实现了却没声明" |
-| `conformance` | 端口契约 + 跨端口不变量全绿（审批必被调用、取消贯穿、回执完整、失败方向一致…） |
+| `conformance` | 端口契约 + 跨端口不变量全绿（取消贯穿、回执完整、事件有序…） |
 | ~~`verify-archive`~~ | 仓库里**不再存在**第二份引擎实现（防止 TS 那套以任何形式复活）。**2026-10-17 已随归档删除**；"无第二份引擎"由 `verify-wiring` 的端口实现/依赖方向断言继续守住 |
 
 新增一个 agent core 的路径（**7 步，其中 5 步是生成/校验**）：
@@ -78,12 +84,12 @@ cargo xtask verify-wiring                                   # 7 没有第二份�
 |---|---|---|
 | INV-1 | **单一引擎**：仓库内只有 `agent-base` 一份多轮循环；产品不得自带循环 | 双引擎漂移（§1.1） |
 | INV-2 | **端口必填**：契约性端口方法禁止默认实现；不支持 → 显式 `Unsupported` | 钩子整套缺失（§1.2） |
-| INV-3 | **注册表即真源**：工具的只读性/审批/回滚/执行模式/终止语义全部来自 `ToolDescriptor`；任何按名字的旁路名单都是缺陷 | 五处名单（§1.3） |
-| INV-4 | **失败方向在类型里**：`FailDirection`，默认 `Closed` | §2/§9/§12 只在文档里 |
+| INV-3 | **注册表即真源**：工具的只读性/回滚/执行模式/终止语义全部来自 `ToolDescriptor`；任何按名字的旁路名单都是缺陷 | 五处名单（§1.3） |
+| INV-4 | ~~失败方向在类型里~~：`FailDirection` 已随审批物理删除（2026-10-27） | §2/§9/§12 只在文档里 |
 | INV-5 | **回执结构化且必填**：`status`/`started_at`/`finished_at` 非 `Option`，`duration` 派生 | AGENTS.md §18 的双写兜底 |
 | INV-6 | **事件有序可重放**：事件带 `(seq, thread, turn)`；快照带 `seq`；缺口可重同步；未实现的能力必须在握手里如实降级 | 快照无 seq、无 resync |
 | INV-7 | **领域与投影分离**：`Item`/`ClientSnapshot` 是投影；领域里不出现 `settings_open` 这类界面状态 | DTO 就是 UI 形状 |
-| INV-8 | **无隐藏全局态**：端口由组合根注入；单例/`get_app_home()`/`PluginManager::new()` 只许存在于适配器内部 | `global_question_manager()`、每轮重扫盘 |
+| INV-8 | **无隐藏全局态**：端口由组合根注入；单例/`get_app_home()`/`PluginManager::new()` 只许存在于适配器内部 | 每轮重扫盘、全局等待表 |
 | INV-9 | **兼容在适配层**：旧字段名/旧会话版本只在 serde 适配与投影层处理，不进领域模型 | `session/types.rs:56-95` 的 alias |
 | INV-10 | **能力先声明**：新产品要的新能力 = 内核加能力位 + 适配器实现 + 合规断言；**禁止 fork 引擎** | 防产品分叉 |
 | INV-11 | **协议单源**：base 协议一份，产品扩展在 `x.<product>.*` 命名空间内声明；四份产物（Rust 常量/dispatch 臂/客户端类型/文档）由生成器产出并校验 | §1.1 的目录漂移 |
@@ -96,7 +102,7 @@ cargo xtask verify-wiring                                   # 7 没有第二份�
 零 IO、零产品名词、零传输。**它只认识四件事：会话状态、模型流、工具调用、策略与事件。**
 
 > **落地进度（2026-10-08）**：`crates/agent-base` 已建，`model/`（模型面类型）、`domain/`（消息 / 工具描述符与回执 /
-> 事件 / 错误与失败方向）、`ports/`（Clock / AppHome / EventSink / CancelToken / Scope / Tool(Catalog) /
+> 事件 / 错误与失败方向）、`ports/`（Clock / AppHome / EventSink / EventDispatcher / CancelToken / Scope / Tool(Catalog) /
 > ModelClient / ApprovalGate / SessionStore / PromptSource，全部无默认实现）、`engine/`（`AgentRuntime::run_turn` /
 > `RunPolicy` / `TurnRequest` / `TurnOutcome` / 纯函数消息格式化）、`testing/`（FixedClock / RecordingSink /
 > NeverCancel / ManualCancel / TempAppHome / InMemorySessionStore / FixedPrompt / MockScope / RecordingApprovalGate /
@@ -127,11 +133,10 @@ pub enum ContentPart {                        // 附件/思考/工具都是 part
 
 pub struct ToolDescriptor {                   // INV-3：一个结构取代五处名单
     name: ToolName, summary: String, schema: Json,
-    access: Access, approval: ApprovalPolicy,
+    access: Access,
     rollback: RollbackPolicy, execution: Execution, termination: Termination,
 }
-pub enum Access { ReadOnly, Mutates { paths: PathSelector }, Executes { command_arg: &'static str } }
-pub enum ApprovalPolicy { Never, Always, DangerScan { patterns: Vec<String> }, Named(&'static str) }
+pub enum Access { ReadOnly, Mutates { paths: PathSelector }, Executes { command_arg: &'static str }, External }
 pub enum RollbackPolicy { None, SingleTarget, PerTargetInBatch }   // coding 的"检查点"是它的一个实现
 pub enum Execution { Sequential, ParallelSafe }
 pub enum Termination { ContinueTurn, EndTurn }
@@ -177,6 +182,10 @@ pub trait PluginHost: Send + Sync {            // 钩子 + 外部工具（TS 沙
     fn tools(&self) -> Vec<Arc<dyn Tool>>;
 }
 pub trait EventSink: Send + Sync { fn emit(&self, ev: AgentEvent); }
+pub trait EventDispatcher: Send + Sync {
+    fn publish(&self, event: PluginEvent);                         // Notify / Stream
+    fn dispatch<'a>(&'a self, event: PluginEvent) -> BoxFuture<'a, EventOutcome>; // Intercept / Decorate
+}
 pub trait Clock: Send + Sync { fn now(&self) -> Timestamp; }
 pub trait CancelToken: Clone + Send + Sync { fn is_cancelled(&self) -> bool; }
 ```
@@ -187,7 +196,7 @@ pub trait CancelToken: Clone + Send + Sync { fn is_cancelled(&self) -> bool; }
 ### 3.3 引擎契约（一份实现，产品共用）
 
 ```rust
-pub struct AgentRuntime { model, tools, approval, store, rollback: Option<..>,
+pub struct AgentRuntime { model, tools, store, rollback: Option<..>,
                           prompt, scope, plugins: Option<..>, clock, policy: RunPolicy }
 
 impl AgentRuntime {
@@ -225,13 +234,10 @@ pub struct RunPolicy { max_steps: Option<u32>, max_parallel_tools: usize, tool_t
   "toolkits": ["core", "web", "calendar", "reminder", "notes"],
   "capabilities": {                      // 声明即契约：未列出的能力位在握手里回答 false
     "images": true, "streaming": true, "rollback": true,
-    "subagents": true, "plugins": ["rss"], "hooks": ["beforeTurn","afterToolCall","beforeApproval"]
+    "subagents": true, "plugins": ["rss"], "hooks": ["beforeTurn","afterToolCall","beforeToolCall"]
   },
   "policies": {
-    "approval": { "default": "ask", "autoApprove": ["web_search","calendar_list"],
-                  "dangerScan": ["delete","transfer"] },
-    "budget": { "maxSteps": null, "toolTimeoutSec": 120, "parallelTools": 2 },
-    "failDirection": { "approval": "closed", "gate": "open" }   // INV-4：方向写在声明里
+    "budget": { "maxSteps": null, "toolTimeoutSec": 120, "parallelTools": 2 }
   },
   "scope": { "kind": "user-data", "roots": ["{appData}"], "deny": ["{appData}/secrets"] },
   "store": { "kind": "fs", "layout": "{appHome}/sessions" },
@@ -249,7 +255,7 @@ pub struct RunPolicy { max_steps: Option<u32>, max_parallel_tools: usize, tool_t
 | 工具包 | `core`(todo/ask_user) + `web` | `core` + `web` + `calendar` + `reminder` + `notes` | `core` + `fs` + `command` + `git` + `patch` |
 | 能力位 | images, subagents | images, subagents, rollback(生活操作可撤销) | images, subagents, rollback(写前快照), plugins |
 | 作用域 | 会话沙箱 | 用户数据根 + 资源白名单 | 工作区目录 |
-| 审批默认 | ask | ask（转账/删除二次确认） | readonly 档位 + 危险命令扫描 |
+| 审批默认 | ~~ask~~（已删除） | ~~ask~~（已删除） | ~~readonly + 危险扫描~~（已删除） |
 | 协议扩展 | `x.assistant.chat.*` | `x.life.calendar.*`、`x.life.reminder.*` | `x.coding.change.*`（现有 `change.*` 改造） |
 | 传输 | inproc + ws | inproc + ws（手机端后续） | inproc + ws + cli |
 | **改动内核？** | 否 | 否 | 否 |
@@ -278,8 +284,8 @@ pub trait Toolkit: Send + Sync {
 |---|---|---|---|
 | `core` | `todo`、`ask_user`、`finish` | 无 | 所有产品必带；`ask_user` 的 schema 必须与 handler 对齐（现状 `plugins/builtins.rs:104` 是空对象） |
 | `fs` | `read_file`/`write_file`/`edit_file`/`list_files`/`search_files` | `ScopePolicy=workspace`、`RollbackPolicy∈{SingleTarget,PerTargetInBatch}` | 现 `tools/fs_tools.rs` 整体搬迁 |
-| `command` | `run_command` | `ScopePolicy`、审批 `DangerScan`、**必须接 `CancelToken`** | 现 `cmd_tools.rs`；治 §1.2 取消断链 |
-| `git` | `git`（`action`：status/diff/log/show/blame + add/commit/checkout/restore/reset/stash/branch/merge/push/pull） | `command`、`DangerScan`（危险动作） | 原 `git_status`/`git_diff`/`git_log` 三工具，2026-10-19 合并为单工具 |
+| `command` | `run_command` | **必须接 `CancelToken`** | 现 `cmd_tools.rs`；治 §1.2 取消断链 |
+| `git` | `git`（`action`：status/diff/log/show/blame + add/commit/checkout/restore/reset/stash/branch/merge/push/pull） | `command` | 原 `git_status`/`git_diff`/`git_log` 三工具，2026-10-19 合并为单工具 |
 | `patch` | `apply_patch`/`batch_write`/`batch_replace` | `fs` + `RollbackStore` | 现 `builtin_tools.rs:201-240`（当前**不拍快照**，迁移必修） |
 | `web` | `web_search`/`fetch_url` | 出网策略 | 通用/生活类主力 |
 | `calendar`/`reminder`/`notes` | 各自的读写工具 | `ScopePolicy=user-data` | 生活类主力；与 coding 完全无关，验证内核中性 |
@@ -296,7 +302,7 @@ pub trait Toolkit: Send + Sync {
 
 | 层 | 内容 | 谁定义 |
 |---|---|---|
-L0 **base 协议** | `session.*`、`thread.*`（create/send/abort/retry/editAndResend/compact）、`queue.*`、`approval.*`、`question.*`、`subagent.*`、`evt.turn/tool/*`、能力协商、错误码 | 基座，版本化，**所有产品逐字节一致** |
+L0 **base 协议** | `session.*`、`thread.*`（create/send/abort/retry/editAndResend/compact）、`queue.*`、`subagent.*`、`evt.turn/tool/*`、能力协商、错误码 | 基座，版本化，**所有产品逐字节一致** |
 | L1 **能力位** | `images`、`rollback`、`plugins`、`hooks`、`events.granularity`、`resync` … | 基座登记，产品声明启用 |
 | L2 **产品扩展** | `x.<product>.<domain>.*`（如 `x.life.calendar.list`） | 产品在 `proto/ext.json` 声明，生成器并入该产品的目录 |
 

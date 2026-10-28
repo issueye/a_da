@@ -449,7 +449,6 @@
     topbarActions: 'topbar-actions',
     aux: 'composer-aux',
     above: 'composer-above',
-    approval: 'composer-approval',
     model: 'composer-model',
     threads: 'thread-list',
   };

@@ -6,24 +6,23 @@
 
 **文档按功能域组织，入口是 [docs/README.md](docs/README.md)**。
 
-> 🔴 **2026-10-27 起：审批与安全机制整体下线（仅行为层面）**
+> 🔴 **2026-10-27 起：审批与安全机制已物理删除**
 >
-> 快速落地阶段，审批弹窗、路径沙箱、插件 `@ada-needs` 能力门、危险命令二次确认
-> **一律不再阻塞功能**。总开关是 `crates/agent-toolkit/src/security.rs` 的
-> `SECURITY_ENFORCED`（当前 `false`）；恢复安全只需把它改回 `true`，
-> 端口、策略函数、协议、UI 与测试都保留。
+> `ApprovalGate` / `ApprovalMode` / `ApprovalPolicy` / `ApprovalRequested` / `approval.decide`、
+> 审批 UI、`security.rs`、路径沙箱、危险命令扫描、插件 `@ada-needs` 的授权语义**全部移除**。
+> 核心不再询问、不再等待、不再按路径拒绝；路径只解析，不裁决边界。
 >
-> **仍然保留的底线**（它们不是审批闸门，关掉会让界面/模型收到假信息）：
-> - 经 `Scope` 的文件工具仍不可写 `~/.a-da` 的凭据与配置（数据完整性）；
->   命令 `cwd` 的直通不在此保证内（原实现也只校验 `cwd`，不解析命令内容）；
-> - 工具回执结构化、事件顺序与 `seq`、取消贯穿、描述符单一真源。
+> **仍然保留的契约**（它们不是安全闸门，删掉会让界面/模型收到假信息）：
+> - 工具回执结构化、事件顺序与 `seq`、取消贯穿、描述符单一真源、`Access` 只读分类；
+> - 提问通道已迁到 **`plugins/ask-user`**（工具 + 前端插槽 + 后端动作），核心不再有
+>   `question.answer` / `QuestionManager` / `QuestionAsked`；提问能力随插件启停。
+> - `@ada-needs` 只剩**模块注入清单**语义：声明了什么就注入什么，不再作为权限门。
 >
-> 本文件中所有"必须审批 / 必须沙箱 / 必须问用户"的段落，在开关为 `false` 时
-> **只描述恢复后的目标行为**；新增功能不要再把安全闸门当成交付前置条件。
-> 设计与迁移计划见 [docs/architecture/PLAN-pluginization.md](docs/architecture/PLAN-pluginization.md)。
+> 后续若需要审批/策略，走受信插件 + `event_before_*`（Intercept），**不要复活旧代码**。
+> 设计与删除边界见 [docs/architecture/PLAN-unified-events.md](docs/architecture/PLAN-unified-events.md) §11。
 
 项目速览：**纯 Rust 微内核**（`crates/agent-base/`：零 IO 的领域层 + 13 个端口 + **唯一**多轮引擎 `run_turn`）
-+ **两层拆包**（S4）：`crates/agent-node/`（节点：会话 / 审批 / 检查点 / 委派 / 插件 / 技能）
++ **两层拆包**（S4）：`crates/agent-node/`（节点：会话 / 检查点 / 委派 / 插件 / 技能）
 与 `crates/agent-rpc/`（桥接面：JSON-RPC 分发 + WS 宿主 + UI 投影）
 + **网关**（S5/S6）：`crates/agent-gateway/`（`ada-gateway`：AGENT 管理平台 + 交互平台 + 桥接平台）
 + **网页界面**：`crates/agent-web/`（SSR 投影层，产品代号 `ssr-h`；网关默认挂载，一个进程一个端口）
@@ -51,7 +50,7 @@ cargo xtask verify-spec                       # 声明门：产品/预设 spec �
 cargo xtask verify-docs                       # 文档门：归档布局字样只在白名单文档里 + 协议文档与事件主题同步
 node tools/verify-gateway-web.mjs             # 网关内置 SSR：单进程 / 单端口 / API 隔离 / 登录 cookie
 node tools/verify-ssr-streaming.mjs           # SSR 流式与图片输入（单进程，假模型）
-node tools/verify-ssr-approval-abort.mjs      # SSR 审批批准 → 工具执行 → 流式中止（单进程，假模型）
+node tools/verify-ssr-abort.mjs               # SSR 发消息 → 流式中止（单进程，假模型）
 node tools/verify-ssr-workspaces.mjs          # SSR 工作区树与目录选择（单进程）
 cargo xtask verify --fast                     # 上面四道静态门一次跑完（跳过全量单测）
 bun run electron:dev                          # Electron 桌面端开发（加载网关 SSR）
@@ -63,9 +62,7 @@ node tools/verify-electron-ssr.mjs                    # Electron + SSR：加载 
 
 - **`typecheck` 与 `cargo test` 是两个独立的门，两个都要过**，别只跑一个。
 - **Rust 测试必须串行跑**（`--test-threads=1`，`bun run test` 已带）：`test_plugin_and_skill_lifecycle`
-  读 `~/.a-da` 配置，而提问链路仍走全局单例 `approval::question_manager::GLOBAL_QUESTION_MANAGER`
-  （`OnceLock`），并行会互相污染（单独跑各自通过）。根因是共享全局态（INV-8）；
-  提问端口化（S1a）会去掉这个单例，届时再改回并行。
+  读 `~/.a-da` 配置，共享全局态会互相污染（单独跑各自通过，INV-8 的已知缺口）。
 - 🔴 **本机 `C:\pagefile.sys` 上限只有 2 GB**：默认并行度下编译/链接大 crate 会
   `failed to mmap rmeta ... os error 1455（页面文件太小）` 或 `link.exe 1102`。
   用 `CARGO_BUILD_JOBS=2`（或 `-j 2`，**注意 `-j` 要放在 `--` 之前**）即可。
@@ -108,21 +105,11 @@ node tools/verify-electron-ssr.mjs                    # Electron + SSR：加载 
   `relay` / `http_api::call_agent` / `gateway.delegate` 都走它——各自 `connect_async` 过一份
   就会漂（本轮就是这么发现 `/api/*` 与 `delegate` 会绕过管道的）。管道实例**不做
   `gateway.register` 自注册**（端点无法用 `ws://` 表达）。
-- 🔴 **工具内部的路径校验必须走 `ctx.scope`**（`agent_toolkit::fs_tools::PathGate::Scoped`），
-  不许再自己调 `check_workspace_sandbox`：引擎在工具执行前用 `Scope` 判过一次，工具内部再按
-  `workspace` 硬判一次，`Full`（完全访问）就会在第二处被挡回去——表现是"界面横幅写着可读写
-  工作区之外的路径，模型却一直收到『拒绝访问工作区外的路径』"（2026-10-20 用户实拍）。
-  插件工具与内部调用用 `PathGate::Workspace`（只认工作区，行为与 P1b 之前一致）。
-  **保留目录的红线是"凭据"，不是整棵树**：`~/.a-da` 里 `agent-coding/extensions/`（插件）与
-  `agent-coding/skills/`（技能）在完全访问下**可读写**（`ApprovalAwareScope::with_allowed_subtrees`），
-  `config.json`、网关发现文件与会话仍然拒；判 `allow` 用的是**规范化后**的路径，
-  所以从白名单目录指向 `config.json` 的符号链接照样命中黑名单。
-  实机回归：`bun tools/verify-full-access-paths.mjs`（假模型 + 真协议，四个场景各跑一轮）。
 - **工具超时是真的会生效的**（`RunPolicy::tool_timeout` ← 产品声明 `policies.toolTimeoutSec`）：
   引擎对**非** `Tool::long_running()` 的工具加超时，超时给一条 `ToolStatus::Timeout` 回执
   （回执里说清是哪个工具、让模型换路子），整轮**继续**而不是永远挂住。
   哪些工具豁免由 `agent_toolkit::registry::LONG_RUNNING_TOOLS` 单一真源声明
-  （等审批 / 等提问 / 派活 / 命令执行 / 决策插件），契约测试
+  （派活 / 命令执行 / 决策插件 / 插件声明的 longRunning 工具），契约测试
   `test_long_running_set_matches_tool_declarations` 守着名单与实现一致。
   🔴 **子进程的 stdin 一律 `Stdio::null()`**（`cmd_tools::run_command` 与 `background`）：
   继承 stdin 时，一条等输入的命令（npm 确认、git 凭据、忘了 `--yes` 的安装器）会**卡满整个超时**，
@@ -140,19 +127,6 @@ node tools/verify-electron-ssr.mjs                    # Electron + SSR：加载 
   于是**任何构造 Gateway 的测试都会写用户的真实工作区列表**（历史事故：用户列表里出现
   一堆 `a_da_gw_e2e_*`）。现在构造期不落盘，生产在组合根显式记一次，测试注入
   `Gateway::with_workspaces(临时存储)`。
-- **审批事件必须带 `args`**（`AgentEventBody::ApprovalRequested { call_id, tool, args }`）：
-  审批卡要回答的是"我到底在批准什么"——危险命令原文、要覆写的文件路径。
-  引擎在建卡之前就发这个事件（顺序是 `ApprovalRequested` → 等用户 → `ToolCallStarted`），
-  所以审批卡**拿不到** `ToolCallStarted` 的 args，只能自己带；`store.set_tool_waiting_approval`
-  会把参数落进卡片（`args`/`raw_args`/`details.approval.args`），界面据此渲染待批准内容。
-  只给工具名 = 让用户闭眼点"批准"，那道二次确认闸门形同虚设。
-- **审批的操作面只有一处：输入框上方的审批/排队托盘**
-  （SSR：`agent-web` 的 `ui/components/trays.rs` 模板，挂在托盘区 `#ada-trays` 里，因此**不随对话流滚动**；
-  数据源是会话 items 里 `status == "waiting_approval"` 的卡片，回执走 `approval.decide`）。
-  对话流里那张卡只留**记录**：待批准内容的预览 + “去托盘处理”。
-  同一件事摆两套按钮，用户会怀疑“点哪个才算数”——按钮只在托盘一处；
-  预览文案两处共用 `crates/agent-web/src/handlers/chat/rows.rs` 的审批预览函数，别各写一份。
-  （2026-10：React 桌面端的 `ApprovalFloatingPanel.tsx` 已随 `desktop-ui/` 移除，这里是唯一的操作面。）
 - **模型请求重试次数**（设置项，默认 5，范围 `0..=20`）这条链要一起改才生效：
   `ConfigSnapshot.retryCount`（wire/`client-ts`）↔ `~/.a-da/config.json` 的 `retryCount` ↔
   `config.setRetryCount`（`spec/proto/ada-coding.ext.json` 也要登记）↔ 每轮
@@ -234,14 +208,14 @@ node tools/verify-electron-ssr.mjs                    # Electron + SSR：加载 
 
 **目录结构按设计落地**（`docs/architecture/kernel-design.md` v0.2 §3）：
 
-- `crates/agent-base` 基座内核（零 IO、零产品名词）：`model/`（模型面类型）、`domain/`（消息·工具描述符与回执·事件·错误与失败方向·诊断点位）、`ports/`（**13 个端口**，**无默认实现**：AppHome / ApprovalGate / CancelToken / Clock / EventSink / HookRunner / ModelClient / PromptSource / Scope / ScriptHost / SessionStore / Tool / ToolCatalog）、`engine/`（**唯一**多轮循环 `run_turn` + 钩子编排）、`testing/`（FixedClock/RecordingSink/TempAppHome）
+- `crates/agent-base` 基座内核（零 IO、零产品名词）：`model/`（模型面类型）、`domain/`（消息·工具描述符与回执·事件·错误与拒绝原因·诊断点位）、`ports/`（**13 个端口**，**无默认实现**：AppHome / CancelToken / Clock / EventSink / EventDispatcher / HookRunner / ModelClient / PromptSource / Scope / ScriptHost / SessionStore / Tool / ToolCatalog）、`engine/`（**唯一**多轮循环 `run_turn` + 钩子编排）、`testing/`（FixedClock/RecordingSink/TempAppHome）
 - `crates/agent-proto` 线协议：JSON-RPC 帧、方法常量、线上 DTO、错误码
 - `crates/agent-adapter` 适配器：`model/`（三家协议 SSE + 中止）、`app_home.rs`（**全仓唯一**读 `A_DA_HOME`/`USERPROFILE` 的地方）、`clock.rs`（**全仓唯一**读系统时间的地方）
-- `crates/agent-toolkit` 工具包：文件读写、路径沙箱、命令执行、文本 diff、Git/项目查询、插件包脚手架；`registry.rs` 是**工具元数据与描述符单一真源**（20 个描述符），`toolkits.rs` 是工具包名单单一真源（`core`/`fs`/`command`/`git`/`project`/`forge`）
+- `crates/agent-toolkit` 工具包：文件读写、路径解析、命令执行、文本 diff、Git/项目查询、插件包脚手架；`registry.rs` 是**工具元数据与描述符单一真源**（19 个描述符），`toolkits.rs` 是工具包名单单一真源（`core`/`fs`/`command`/`git`/`project`/`forge`）
 - `crates/agent-runtime` 组合根：`ProductBuilder`、产品声明 `AgentSpec`、贡献装配与工具目录；`agent-host` 按声明把它装配成带真实端口的运行时
 - `crates/agent-host` 宿主装配层：`run_from_spec` / `HostedProduct`，产品二进制与测试共用同一条装配路径
 - `crates/agent-conformance` 合规套件：端口契约、跨端口不变量与 golden 夹具（`dev-dependencies` 使用，不参与产品运行时）
-- **`crates/agent-node`（S4 拆出，src 46 文件 / 约 1.46 万行）** —— 节点：`session` / `approval` / `checkpoint` / `subagents`（含 `agent_bus.rs` 委派总线端口与 `local_bus.rs` 本地实现；端口支持**多轮续跑** `thread_id`，本地总线对它是**如实拒绝**——一次性子智能体没有可续线程）/ `plugins` / `skills` / `node_config.rs`（节点配置端口）/ `delegation_depth.rs`（委派深度端口：被派活的节点靠它知道自己「在第几层」）。**不含协议管道**（不依赖 `tokio-tungstenite`）、**不含 UI 投影**（不依赖 `AgentStore`）。`AgentBus` 的网关实现（`GatewayAgentBus`）在 **`agent-rpc`**——跨进程委派需要 WS 客户端，那属于桥接面，节点只保留端口
+- **`crates/agent-node`（S4 拆出，src 43 文件）** —— 节点：`session` / `checkpoint` / `subagents`（含 `agent_bus.rs` 委派总线端口与 `local_bus.rs` 本地实现；端口支持**多轮续跑** `thread_id`，本地总线对它是**如实拒绝**——一次性子智能体没有可续线程）/ `plugins` / `skills` / `node_config.rs`（节点配置端口）/ `delegation_depth.rs`（委派深度端口：被派活的节点靠它知道自己「在第几层」）。**不含协议管道**（不依赖 `tokio-tungstenite`）、**不含 UI 投影**（不依赖 `AgentStore`）。`AgentBus` 的网关实现（`GatewayAgentBus`）在 **`agent-rpc`**——跨进程委派需要 WS 客户端，那属于桥接面，节点只保留端口
 - **`crates/agent-rpc`（S4 拆出，src 20 文件 / 约 9.5k 行）** —— 桥接面：`server/`（`dispatch/` 77 个方法的 JSON-RPC 分发、`ws.rs` 宿主、`emitter.rs` 快照合帧、`fs_service.rs`）、`state/`（`AgentStore`，**给界面看的投影**）、`runner/`（引擎调用 + 基座一等事件 `AgentEventBody` 直连投影至 UI store）。**依赖方向单向：`agent-rpc → agent-node`**
 - **`crates/agent-gateway`（S5 新建）** —— a-da 网关，三合一：**AGENT 管理平台**（`registry.rs` 实例注册表 / `supervisor.rs` 生命周期）+ **交互平台**（S6：`delegate.rs` 派活/**多轮续跑**/取消跨网关）+ **桥接平台**（`relay.rs` 路由与透传）+ **WEB 接入面**（S7：`auth.rs` token/作用域/Origin/**配对码**）+ **SSR 挂载面**（`web.rs`：`GatewayBackend` / `GatewayLogin`）。二进制 `ada-gateway`（打印 `A_DA_GATEWAY_READY {port}`）。**只依赖线协议 `agent-proto` 与 UI 投影层 `agent-web`**——不含引擎（INV-1）、不缓存会话状态（INV-8），由 `verify-wiring` check J 守着。🔴 **非回环 `--host` 必须配 `--token`，且必须显式 `--allow-plaintext`**（网关只提供明文 `ws://`，明文上的 token 可嗅探；反代终止 TLS 时由人确认）。两条都**拒绝启动**而不是警告——失败安全。🔴 **SSR 的事件订阅必须持有 `AgentRegistry::open_connection` 守卫**：它不经过 `relay`，不计数的话回收器会把正在被浏览的 agent 当空闲杀掉（连开 15 分钟的页面会“突然不动”）
 - **`crates/agent-web`（2026-10-25 由独立 `ssr-h` 合并）** —— SSR 网页界面：`agent.rs`（`AgentClient`）、`backend.rs`（`WebBackend` 四原语 + `HttpBackend`）、`router.rs`（可挂载 Router + 内嵌静态资源）、`handlers/`（页面/表单/SSE）、`plugins/` + `tsx/`（前端插件与 Boa/OXC 运行时）、`guard.rs`（Host/Origin/CSP/登录 cookie）。`agent-gateway` 依赖它并默认以 `--web-ui ssr` 挂载；独立 `ssr-h` 二进制仅供开发/验收。**不得依赖 `agent-node` / `agent-base` / `agent-runtime` 等节点/引擎 crate**（check J 扩展为同时扫描本 crate）
@@ -264,13 +238,13 @@ node tools/verify-electron-ssr.mjs                    # Electron + SSR：加载 
 
 - **不要复活 TS 时代的实现**：它已于 2026-10-17 整体删除（可从 git 历史取回）。仓库里只保留 Rust 这一份引擎/宿主；新增代码不得引入第二套多轮循环。
 - **改 Rust 核心前先看 [docs/quality/feature-catalog.md](docs/quality/feature-catalog.md) 与 [docs/quality/unfinished-features.md](docs/quality/unfinished-features.md)**：审批闸门、取消贯穿、`terminate`、插件 `enabled`、空壳工具等曾被列为"看起来装上了、其实没接线"，那里逐条写明了处置口径（补实现 / 删声明）。**注**：该表是历史记录，其中大部分已收口——判断现状请以代码与 [docs/quality/feature-catalog.md](docs/quality/feature-catalog.md) 为准。
-- **工具描述符与元数据单一真源**（W2-T2 + 单源化收敛）：读写性（`is_write`）、审批要求、
-  检查点回滚策略（`rollback`）、终止语义，以及全部 20 个内置工具的标准描述符与参数 Schema，
+- **工具描述符与元数据单一真源**（W2-T2 + 单源化收敛）：读写性（`is_write`）、
+  检查点回滚策略（`rollback`）、终止语义，以及全部 19 个内置工具的标准描述符与参数 Schema，
   均收敛于 `crates/agent-toolkit/src/registry.rs`；具体实现统一调用 `descriptor()` 构造，严禁内联手写；
   `test_builtins_descriptor_equality` 契约测试（INV-3）机械守门。
   历史上那五处手写名单（`lib.rs` 读写判定、`approval/types.rs` 命令工具、`executor.rs` 检查点、
   子智能体白名单、插件自述 `is_write`）**只剩插件自述一处**，且已改为按描述符校验。
-- **事件流单一真源**：引擎多轮循环向外发射基座一等事件 `AgentEventBody`（13 个变体，其中
+- **事件流单一真源**：引擎多轮循环向外发射基座一等事件 `AgentEventBody`（12 个变体，其中
   `Diagnostic` 承载扩展点遥测：点位名在 `point` 字段、词汇表在 `domain/diag.rs` 的 `DIAG_POINTS`，
   **只登记真有发射方的点位**，由 `verify-wiring` check K 盯着），
   `agent-rpc` 桥接层直接订阅并投影到 UI，严禁在桥接层私造二等中间事件流（历史 `AgentLoopEvent` 已废除）。
@@ -298,8 +272,8 @@ node tools/verify-electron-ssr.mjs                    # Electron + SSR：加载 
 | 10 | 插件生效需**多处同时登记**（READ_ONLY／目录／allowedTools），各有守门测试 |
 | 11 | `LoadedPlugin` 是唯一产物；第三方插件 id 由加载器定为「scope:文件名」 |
 | 12 | 钩子**成对**是硬约束，工具集**只能收窄**；两处刻意偏差别当 bug 修 |
-| 13 | 审批／压缩的效力**刻意不对称**；文末另有 UI 单窗口约束 |
-| 14 | 审批：**策略**归插件 `approval-guard`、**执行**归核心 `askUser`；点位顺序不能反 |
+| 13 | 压缩的效力**刻意不对称**；文末另有 UI 单窗口约束 |
+| 14 | **审批已于 2026-10-27 物理删除**：不再有 `ApprovalGate` / 审批点位 / `approval.decide`；需要策略走受信插件 + `event_before_*` |
 | 15 | 陷阱：钩子"声明了却没人调用"是静默失效——**断言副作用**，别断言钩子被调用 |
 | 16 | 界面只认 `ui/client` 四条通道；**加协议方法要同步四处**（spec → methods.rs → dispatch → client-ts，有守门测试） |
 | 17 | 打包后的 exe **收不到自动化通道**（`console.log` 被劫持进日志）——二进制检查要用应用日志当证据 |

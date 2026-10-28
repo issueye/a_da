@@ -23,7 +23,7 @@
 use std::sync::Arc;
 
 use agent_base::domain::{
-    Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
+    Access, Execution, RollbackPolicy, Termination, ToolCall, ToolDescriptor,
     ToolReceipt,
 };
 use agent_base::ports::{
@@ -104,7 +104,15 @@ pub struct PluginTool {
     handle: ModuleHandle,
     plugin_id: String,
     budget: ScriptBudget,
+    /// 作者声明"本工具会合法地长时间等待"（例如 `ask_user`）。
+    long_running: bool,
 }
+
+/// 长时插件工具的墙钟上限：30 分钟，与旧核心提问通道的等待上限一致。
+///
+/// 它只放宽**等待型**工具的墙钟；引擎仍靠 `Tool::long_running` 跳过策略超时，
+/// 用户取消仍由 `ScriptHost` 的取消竞争终止调用。
+pub const LONG_RUNNING_TOOL_TIMEOUT_MS: u64 = 30 * 60 * 1000;
 
 impl PluginTool {
     /// 构造：名字必须在**注册表**里（决策 1：只认注册表）。
@@ -127,11 +135,18 @@ impl PluginTool {
             handle,
             plugin_id: plugin_id.into(),
             budget: ScriptBudget::default(),
+            long_running: false,
         })
     }
 
     /// 覆盖默认预算（组合根按产品声明给；引擎的 `tool_timeout` 仍是外层上限）。
-    pub fn with_budget(mut self, budget: ScriptBudget) -> Self {
+    ///
+    /// 长时工具会把自己的墙钟下限抬到 [`LONG_RUNNING_TOOL_TIMEOUT_MS`]：
+    /// 默认 30 秒的脚本预算会把"等用户回答"直接掐死。
+    pub fn with_budget(mut self, mut budget: ScriptBudget) -> Self {
+        if self.long_running {
+            budget.timeout_ms = budget.timeout_ms.max(LONG_RUNNING_TOOL_TIMEOUT_MS);
+        }
         self.budget = budget;
         self
     }
@@ -174,12 +189,6 @@ impl PluginTool {
             } else {
                 Access::External
             },
-            // 自述只读的工具不打扰用户；其余仍按"每次都要问"的失败方向。
-            approval: if read_only {
-                ApprovalPolicy::Never
-            } else {
-                ApprovalPolicy::Always
-            },
             rollback: RollbackPolicy::None,
             execution: Execution::Sequential,
             termination: Termination::ContinueTurn,
@@ -190,6 +199,7 @@ impl PluginTool {
             handle,
             plugin_id: plugin_id.into(),
             budget: ScriptBudget::default(),
+            long_running: declaration.long_running,
         })
     }
 }
@@ -227,8 +237,10 @@ impl Tool for PluginTool {
         })
     }
 
-    // 刻意**不覆写** `long_running()`：插件工具默认 `false`，
-    // 于是受引擎策略超时约束——第三方脚本不该有"我是长任务"的免死金牌。
+    /// 作者声明的长时等待工具（如 `ask_user`）不受引擎策略超时约束。
+    fn long_running(&self) -> bool {
+        self.long_running
+    }
 }
 
 #[cfg(test)]
@@ -300,7 +312,7 @@ mod tests {
     }
 
     /// Builtin wrappers still use the canonical descriptor, while custom
-    /// plugin tools receive a conservative write/approval descriptor.
+    /// plugin tools receive a conservative write descriptor.
     #[test]
     fn test_custom_tool_gets_conservative_descriptor() {
         let host: Arc<dyn ScriptHost> = Arc::new(crate::scripts::TsScriptHost::new());
@@ -313,11 +325,11 @@ mod tests {
             description: "plugin custom tool".to_string(),
             parameters: serde_json::json!({ "type": "object", "properties": {} }),
             access: agent_base::ports::ScriptToolAccess::External,
+                long_running: false,
         };
         let custom = PluginTool::from_declaration(&declaration, host.clone(), handle.clone(), "p")
             .expect("valid custom declaration is dynamically registered");
         assert!(!custom.descriptor().is_readonly(), "custom tool registration must fail safe as write");
-        assert_eq!(custom.descriptor().approval, ApprovalPolicy::Always);
         assert_eq!(
             custom.descriptor().access,
             Access::External,
@@ -338,8 +350,8 @@ mod tests {
     /// 作者显式声明 `access: "read"` 时，宿主采信为只读（2026-10-27 决策）。
     ///
     /// 这条钉住两件事：① 采信后 `is_readonly()` 为真，只读档 / plan 模式 / 只读子智能体
-    /// 不再把纯查询工具整条过滤掉；② 审批降为 `Never`（只读不该打扰用户）。
-    /// 谎报的代价由 `ScriptToolAccess` 的文档承担——宿主**无法**验证这句承诺。
+    /// 不再把纯查询工具整条过滤掉；② 谎报的代价由 `ScriptToolAccess` 的文档承担——
+    /// 宿主**无法**验证这句承诺。
     #[test]
     fn test_declared_read_access_is_honoured_as_readonly() {
         let host: Arc<dyn ScriptHost> = Arc::new(crate::scripts::TsScriptHost::new());
@@ -352,6 +364,7 @@ mod tests {
             description: "query only".to_string(),
             parameters: serde_json::json!({ "type": "object", "properties": {} }),
             access: agent_base::ports::ScriptToolAccess::ReadOnly,
+                long_running: false,
         };
         let tool = PluginTool::from_declaration(&declaration, host, handle, "p")
             .expect("只读声明同样应当装配成功");
@@ -360,7 +373,6 @@ mod tests {
             "声明 access=read 之后必须被当作只读"
         );
         assert_eq!(tool.descriptor().access, Access::ReadOnly);
-        assert_eq!(tool.descriptor().approval, ApprovalPolicy::Never);
         assert_eq!(tool.descriptor().rollback, RollbackPolicy::None);
     }
 

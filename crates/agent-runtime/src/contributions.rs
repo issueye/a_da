@@ -473,7 +473,7 @@ impl AssemblyBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_base::domain::{Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolDescriptor, ToolReceipt, ToolCall};
+    use agent_base::domain::{Access, Execution, RollbackPolicy, Termination, ToolDescriptor, ToolReceipt, ToolCall};
     use agent_base::ports::{BoxFuture, ToolContext};
 
     struct StubTool {
@@ -488,7 +488,6 @@ mod tests {
                     summary: format!("{name} 的说明"),
                     schema: serde_json::json!({ "type": "object" }),
                     access: Access::ReadOnly,
-                    approval: ApprovalPolicy::Never,
                     rollback: RollbackPolicy::None,
                     execution: Execution::Sequential,
                     termination: Termination::ContinueTurn,

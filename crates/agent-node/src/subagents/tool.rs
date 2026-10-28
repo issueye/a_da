@@ -226,7 +226,7 @@ impl Tool for InvokeSubagentTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_base::domain::{AgentEvent, DenialKind};
+    use agent_base::domain::{AgentEvent};
     use agent_base::ports::{CancelToken, EventSink, Scope};
     use crate::agent_bus::{AgentHandle, DispatchOutcome, DispatchRequest};
     use serde_json::json;
@@ -247,8 +247,8 @@ mod tests {
         fn id(&self) -> &str {
             "test_root"
         }
-        fn resolve_path(&self, raw: &str) -> Result<PathBuf, DenialKind> {
-            Ok(self.0.join(raw))
+        fn resolve_path(&self, raw: &str) -> PathBuf {
+            self.0.join(raw)
         }
     }
 
@@ -283,7 +283,7 @@ mod tests {
 
     /// S3：工具经 `AgentBus` 端口派活。测试替身因此缩成"一个固定值配置端口 + 本地总线"。
     fn tool(ws: &std::path::Path, provider: agent_base::model::ProviderConfig) -> InvokeSubagentTool {
-        let cfg = crate::node_config::FixedNodeConfig::new(provider, agent_proto::ApprovalMode::Auto);
+        let cfg = crate::node_config::FixedNodeConfig::new(provider);
         let bus = crate::subagents::local_bus::LocalAgentBus::new(
             ws,
             Arc::new(crate::subagents::SubagentManager::new()),

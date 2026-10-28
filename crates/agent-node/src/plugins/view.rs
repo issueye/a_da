@@ -112,7 +112,7 @@ pub fn views_from_assembly(
 mod tests {
     use super::*;
     use agent_base::domain::{
-        Access, ApprovalPolicy, Execution, RollbackPolicy, Termination, ToolDescriptor, ToolReceipt,
+        Access, Execution, RollbackPolicy, Termination, ToolDescriptor, ToolReceipt,
     };
     use agent_base::ports::{BoxFuture, Tool, ToolContext};
     use std::sync::Arc as StdArc;
@@ -144,7 +144,6 @@ mod tests {
                     paths: agent_base::domain::PathSelector::Single("path"),
                 }
             },
-            approval: ApprovalPolicy::Never,
             rollback: RollbackPolicy::None,
             execution: Execution::Sequential,
             termination: Termination::ContinueTurn,

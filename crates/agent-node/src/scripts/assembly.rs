@@ -327,7 +327,6 @@ mod tests {
         assert_eq!(asm.handles.len(), 1, "factory ada.on should be collected as a hook declaration");
         let custom = asm.tools.iter().find(|(_, tool)| tool.descriptor().name == "my_custom_tool").unwrap();
         assert!(!custom.1.descriptor().is_readonly(), "unknown plugin tools fail closed as write tools");
-        assert_eq!(custom.1.descriptor().approval, agent_base::domain::ApprovalPolicy::Always);
 
         let cancel = agent_base::testing::NeverCancel;
         let sink = agent_base::testing::RecordingSink::new();

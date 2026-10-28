@@ -1,6 +1,6 @@
 //! 诊断事件族（P0 埋点地基）：面向机器与诊断面板的**扩展点遥测**。
 //!
-//! 与面向会话流的卡片事件（`ToolCallStarted` / `ApprovalRequested` …）刻意分开：
+//! 与面向会话流的卡片事件（`ToolCallStarted` / `ToolCallFinished` …）刻意分开：
 //! 诊断**只给人看，永不进模型上下文、不进会话 items 的正文**——沿用 `Item::Notice`
 //! 已经立好的口径（`fold_messages` 明确跳过它）。
 //!
@@ -36,8 +36,6 @@ pub enum DiagFamily {
     Skill,
     /// 决策与门禁
     Decision,
-    /// 审批等待
-    Approval,
     /// 轮次级（中止、预算）
     Turn,
 }
@@ -51,7 +49,6 @@ impl DiagFamily {
             Self::Prompt => "prompt",
             Self::Skill => "skill",
             Self::Decision => "decision",
-            Self::Approval => "approval",
             Self::Turn => "turn",
         }
     }
@@ -162,19 +159,8 @@ impl DiagnosticEvent {
 
 /// 提示词组装完成（每轮一次）。P2 起 `data.segments` 会带上各片段的来源与字节数。
 pub const POINT_PROMPT_COMPOSED: &str = "prompt.composed";
-/// 审批等待：等到回答或超时（回答的**内容**是人的决定，不在这里，见 §2.2 只记元数据）。
-pub const POINT_APPROVAL_WAITED: &str = "approval.waited";
 /// 轮次被中止（取消/预算/上下文撞顶之外的显式中止）。
 pub const POINT_TURN_ABORTED: &str = "turn.aborted";
-/// **没问就放行**了一次本可能需要审批的调用（P1b · SP-36 的审计留痕）。
-///
-/// 判据是"声明侧要求审批（非 `Never`）+ 最终没问"——那正是被**档位**放行的那一类
-/// （`auto`/`full`/免问白名单）。刻意不记 `Never` 的工具：`read_file` 这种本来就免问的
-/// 每次都记，只会把 60 条环形缓冲刷满，真正的审计信息反而被淹掉。
-///
-/// ⚠️ 记的是"**没问**"这件事与声明侧策略，不记档位——按 AGENTS §14，引擎不解释档位
-/// （策略归端口）；档位本身界面已经在选择器上显示着。
-pub const POINT_APPROVAL_SKIPPED: &str = "approval.skipped";
 /// 一次脚本调用开始（P1 · SP-11：端口把事件出口带进来了，就得真的用上）。
 pub const POINT_SCRIPT_INVOKED: &str = "script.invoked";
 /// 一次脚本调用结束（带耗时与结果——`outcome` 用 `passed` / `failed` / `timed_out`）。
@@ -222,8 +208,7 @@ pub const POINT_HOOK_SKIPPED: &str = "hook.skipped";
 pub const POINT_HOOK_REPLACE_APPLIED: &str = "hook.replace";
 /// 一次参数改写被**重新校验拒了**（P3b · SP-61）。
 ///
-/// 拒绝的理由（形状 / schema / 路径越界 / 风险降级）必须留下：
-/// 这是"插件想做但没做成"的记录，插件作者与排查者都靠它。
+/// 拒绝的理由（形状 / schema）必须留下：这是"插件想做但没做成"的记录。
 pub const POINT_HOOK_REPLACE_REJECTED: &str = "hook.replace_rejected";
 
 /// 已实现的点位词汇表（**先有发射方再登记**，不许先声明后实现）。
@@ -233,8 +218,6 @@ pub const POINT_HOOK_REPLACE_REJECTED: &str = "hook.replace_rejected";
 /// 字符串清单——那是第三份名单的开始。
 pub const DIAG_POINTS: &[&str] = &[
     POINT_PROMPT_COMPOSED,
-    POINT_APPROVAL_WAITED,
-    POINT_APPROVAL_SKIPPED,
     POINT_TURN_ABORTED,
     POINT_SCRIPT_INVOKED,
     POINT_SCRIPT_FINISHED,

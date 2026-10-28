@@ -3,8 +3,6 @@
  */
 
 export type AgentMode = 'code' | 'plan' | 'create' | 'pm'
-/** `full` = 完全访问（P1b）：不问 + 放开工作区边界与脚本网络（`~/.a-da` 红线除外）。 */
-export type ApprovalMode = 'auto' | 'ask' | 'readonly' | 'full'
 export type Effort = 'max' | 'high' | 'medium' | 'low'
 export type ModelProtocol = 'openai_chat' | 'anthropic' | 'openai_responses'
 
@@ -69,35 +67,6 @@ export interface ToolCallItem {
   durationMs?: number
 }
 
-export interface QuestionOption {
-  /** 题干里给的短标识（如 `c1`）——**要在选项前面显示出来**，用户才能对上号/照着回话 */
-  id?: string
-  value: string
-  label: string
-  /** 选项的补充说明（模型常用来写风险/代价）；目前作 hover 提示用 */
-  description?: string
-}
-
-/** 一次提问里的单个问题（`ask_user` 支持一次问多题）。 */
-export interface QuestionItemData {
-  /** 题号（如 `q1`）；答复按它对应回题目 */
-  id?: string
-  question: string
-  options?: QuestionOption[]
-  isMultiSelect?: boolean
-  /** 是否允许文本补充（默认 true） */
-  allowText?: boolean
-}
-
-export interface QuestionData {
-  callId: string
-  /** 单题路径就是题目本身；多题路径填首题（兼容不认识 `questions` 的旧渲染） */
-  question: string
-  options?: QuestionOption[]
-  isMultiSelect?: boolean
-  /** 一次问多题时的题目列表（界面逐题作答、一次提交） */
-  questions?: QuestionItemData[]
-}
 
 export interface Item {
   id: string
@@ -108,7 +77,6 @@ export interface Item {
   createdAt?: number
   thinking?: string
   toolCalls?: ToolCallItem[]
-  question?: QuestionData
   images?: string[]
   // 工具调用卡片打平字段
   callId?: string
@@ -201,7 +169,6 @@ export interface ConfigSnapshot {
   contextWindow: number
   maxOutputTokens?: number
   supportsImages: boolean
-  approval: ApprovalMode
   effort: Effort
   mode: AgentMode
   /** 模型请求重试次数（默认 5；重试耗尽即断开本轮对话） */
@@ -230,13 +197,12 @@ export interface ClientSnapshot {
   activeWorkspace: string
   currentMode: AgentMode
   providerConfig: ProviderConfig
-  approvalMode: ApprovalMode
   effort: Effort
   /** 模型请求重试次数（默认 5；重试耗尽即断开本轮对话） */
   retryCount: number
   running: boolean
   runningThreadIds: string[]
-  /** 正在等待用户操作（审批 / 提问）的会话——用于"别的会话在等你"的全局提示 */
+  /** 正在等待用户操作（提问）的会话——用于"别的会话在等你"的全局提示 */
   waitingThreadIds?: string[]
   queue: QueuedItem[]
   providers?: ProviderEntry[]

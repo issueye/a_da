@@ -49,7 +49,7 @@ pub use select::Select;
 pub use slot::{render_slot, Slot};
 pub use tabs::{TabItem, Tabs};
 pub use tool_call::ToolCall;
-pub use trays::{waited_from_ms, ApprovalTray, QueueItem, QuestionTray, QueueTray};
+pub use trays::{QueueItem, QueueTray};
 
 #[cfg(test)]
 mod tests {

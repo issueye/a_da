@@ -7,6 +7,10 @@
 | 依据 | [README.md](../README.md)「当前实现边界」、[UED.md](UED.md) §11/§12 差距表、`src/main.rs` 路由实测 |
 | 图例 | ✅ 已完成　◐ 部分实现　○ 未实现 |
 
+> 🔴 **2026-10-27**：审批与安全机制已物理删除。本文中所有“审批托盘 / 审批档位 /
+> 🔴 **2026-10-28**：核心提问通道（`question.answer` / `QuestionManager` / 核心提问托盘）已删除，提问由 `plugins/ask-user` 提供。
+> 批准拒绝 / `/approval/*`”条目均为**历史记录**，不再适用；当前界面只有提问与排队托盘。
+
 > 维护约定：功能收口后把对应条目改状态并在 TODO 里勾掉；「有意不做」里的条目**不进 TODO**，
 > 别当成 bug 或欠账去修。判断现状以代码为准，本文只是快照。
 
@@ -100,8 +104,8 @@
 - [x] 安全校验：标签 / 属性名 / URL 三重校验、`hx-*` 显式白名单（拒 `hx-on*` 与 `js:` 值）、Boa 无 fs/net/process、循环/递归/输出/嵌套预算
 - [x] 示例插件：`hello-tsx`（最小三件套 + JSON API）、`token-weather`（SSE `parts` 刷新 + 浮层；
       2026-10-24 品牌一致性对齐：emoji 换线性 SVG 图标（新增 i-cloud/i-cloud-fog/i-cloud-rain）、
-      accent 走 `--ph-*` 语义对、去渐变/发光装饰）、`task-plan`（统一插件：前端卡片 +
-      `afterTodoUpdate` 后端计划状态，`chat.corner` / `composer.above` 可挂）
+      accent 走 `--ph-*` 语义对、去渐变/发光装饰）、`task-plan`（纯前端插件：只读
+      核心 `props.data.todo`，`chat.corner` / `composer.above` 可挂）
 - [x] **插件自带 JSON API**（2026-10-24）：manifest `api` 声明 → `/ext/{id}/api/{path}`，
       TSX 入口返回值直接序列化（不走 JSX）；一条静态分发路由 + 注册表热查找实现动态扩展，
       重载即生效；请求面在 `props.api`，方法白名单 GET/POST、体 ≤256KB

@@ -147,12 +147,6 @@ impl WsHostServer {
         let session_mgr = Arc::new(agent_node::session::SessionManager::new(None));
         let checkpoint_mgr = Arc::new(agent_node::checkpoint::CheckpointManager::new(None));
         let subagent_mgr = Arc::new(agent_node::subagents::SubagentManager::new());
-        // 审批 waiter 表：优先使用 coding 引擎的审批表（UI 决策必须落到同一张表）
-        let approval_mgr = match (&coding_injection, &pm_injection) {
-            (Some(i), _) => i.approval_mgr.clone(),
-            (None, Some(i)) => i.approval_mgr.clone(),
-            (None, None) => Arc::new(agent_node::approval::ApprovalManager::new()),
-        };
         let plugin_mgr = Arc::new(agent_node::plugins::PluginManager::new());
         let skill_mgr = Arc::new(agent_node::skills::SkillManager::new());
         // P2·SP-45：插件技能由**组合根**（装配期真的执行了插件的那一层）随注入包递进来。
@@ -197,7 +191,6 @@ impl WsHostServer {
             session_mgr,
             checkpoint_mgr,
             subagent_mgr,
-            approval_mgr,
             plugin_mgr,
             skill_mgr,
             Some(broadcaster.clone()),

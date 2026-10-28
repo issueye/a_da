@@ -63,11 +63,14 @@
 
 默认统一包根是 `~/.a-da/plugins`，开发时用 `A_DA_UNIFIED_PLUGINS_DIR` 指向仓库的
 `plugins/`。旧版扁平前端清单与独立后端插件仍兼容；它们之间没有直连通道。
-仓库自带的 6 个纯前端插件已改用 `frontend` 段；`ask-user` / `process-manager` /
+仓库自带的纯前端插件已改用 `frontend` 段；`process-manager` /
 `provider-admin` / `task-manager` 已迁到统一根 `plugins/`，`hello-tsx` 与
-`token-weather` 仍在原目录。`task-plan` 与 `approval` 也带后端
-（`afterTodoUpdate` / `beforeApproval+afterApproval`），审批策略与闸门仍在核心，
-插件不能改变。后端需要自己的 HTTP 接口时用 `ada.route({ method, path, handler })`，
+`token-weather` 仍在原目录。`ask-user` 现在是**前后端一体的统一插件**：
+后端提供 `ask_user` 工具与 `list`/`answer` 动作，前端占 `thread.tray`。
+`task-plan` 已改为**纯前端插件**（只读 `props.data.todo`）；`plugins/approval` 已整体删除（2026-10-27）。原来的
+`beforeTodoUpdate` / `afterTodoUpdate` / `beforeApproval` / `afterApproval` 点位
+已从核心移除，后续由统一事件系统提供。核心审批已物理删除；插件若要做策略，
+走受信插件 + `event_before_*`。后端需要自己的 HTTP 接口时用 `ada.route({ method, path, handler })`，
 浏览器入口是 `/ext/{id}/route/*`，**新增接口只改 TS，不需要改 Rust**。
 完整契约、限制与示例见 [unified-package.md](unified-package.md)。
 
@@ -92,17 +95,17 @@
 `skills` 是**声明性**字段（宿主以目录扫描为准），不参与这条校验。
 
 工具的写入性**默认不由插件自述**：内置工具名走描述符（`registry.rs`），
-第三方新工具名一律**按写操作 + 需要审批**处理（失败安全，`AGENTS.md` §2）。
+第三方新工具名一律按写操作处理（失败安全，`AGENTS.md` §2）。
 它们在描述符里用 `Access::External`（作用域不可静态描述）——**不是** `Mutates { Batch("paths") }`：
 后者的回滚承诺会去找一个 schema 里根本不存在的 `paths` 字段。
 
 **例外（2026-10-27 决策）：作者可以自述只读。** `ada.registerTool({ ..., access: "read" })`
-会被采信为 `Access::ReadOnly`（审批降为 `Never`）。理由：插件化推进到真实工具之后
+会被采信为 `Access::ReadOnly`。理由：插件化推进到真实工具之后
 （`git` 就是第一个），纯查询工具在只读档、plan 模式、只读子智能体里被整条过滤掉，属于功能回退。
 
 🔴 边界必须清楚：
 
-- 自述只读是一句**承诺**，宿主无法验证；谎报会绕过写审批。第三方插件自述只读属于
+- 自述只读是一句**承诺**，宿主无法验证；第三方插件自述只读属于
   "安装即信任"的一部分，分发侧要能审计（这是本条决策的已知代价）；
 - 只能声明"读"，**不能**声明"我改哪个路径 / 执行什么命令"（`Mutates` / `Executes` 不可自述）；
 - 一个工具里既有读又有写（如 `git` 含 `commit` / `push`）时**不得**整体声明只读——
@@ -141,18 +144,21 @@ description: 发布流程：先跑测试再打标签。Use when the user asks to
 （面板可见），不会静默消失。完整规范见 [`docs/SKILL_SPEC.md`](../SKILL_SPEC.md)。
 
 工具的写入性**不由插件自述**：内置工具名走描述符（`registry.rs`），
-第三方新工具名一律**按写操作 + 需要审批**处理（失败安全，`AGENTS.md` §2）。
+第三方新工具名一律**按写操作**处理（失败安全，`AGENTS.md` §2）。
 它们在描述符里用 `Access::External`（作用域不可静态描述）——**不是** `Mutates { Batch("paths") }`：
 后者的回滚承诺会去找一个 schema 里根本不存在的 `paths` 字段。
-外部工具的审批读写性取自**描述符**（`Access`），不再按工具名回查注册表——
+外部工具的读写性取自**描述符**（`Access`），不再按工具名回查注册表——
 注册表里只有内置工具，插件/外部工具的名字永远不在里面。
 
 ---
 
 ## 3. 钩子点位与动作分级
 
-点位单一真源：`agent_base::ports::hooks::points::IMPLEMENTED`（**33 个，全部可注册、全部有调用方**）。
+点位单一真源：`agent_base::ports::hooks::points::IMPLEMENTED`（**29 个，全部可注册、全部有调用方**）。
 声明即授权：`actions` 里没有的动作，运行期即使插件返回了也不生效（并记理由）。
+2026-10-27：`beforeTodoUpdate` / `afterTodoUpdate` / `beforeApproval` / `afterApproval`
+已移除，后续由统一事件系统提供。`ada.on` 现在也接受统一的 `event_*` 名称
+（如 `event_before_tool_call`），注册期会折回旧点位，直到引擎完成 dispatcher 迁移。
 
 **动作**：`observe`（只进诊断面）、`note`（往结果追一句旁注，**模型看得到**）、
 `replace`（改写载荷，改完**重新校验**）、`deny`（拦下这一次行为）、`abort`（结束整轮）。
@@ -161,12 +167,12 @@ description: 发布流程：先跑测试再打标签。Use when the user asks to
 
 | 级别 | 第三方插件 | 内置插件 |
 |---|---|---|
-| **数据面** `beforeToolCall` / `afterToolCall` / `beforeTodoUpdate` / `afterTodoUpdate` | 可 `deny` / `replace` | 同左 |
-| **控制面**（审批、轮次、会话、Agent、压缩、模型、子智能体、提示词、上下文…） | 只能 `observe` / `note` | 可 `deny` / `replace` |
+| **数据面** `beforeToolCall` / `afterToolCall` | 可 `deny` / `replace` | 同左 |
+| **控制面**（轮次、会话、Agent、压缩、模型、子智能体、提示词、上下文…） | 只能 `observe` / `note` | 可 `deny` / `replace` |
 | **只读面** `beforePersist` / `afterCheckpoint` / `beforeSkillLoad` / `afterSkillLoad` | 只能 `observe` / `note` | 同左 |
 
 `abort` **只给内置**（它等于"拒绝服务"）。`replace` 只开放给 `REPLACE_SUPPORTED`
-（`beforeToolCall` / `beforeTodoUpdate`）——载荷必须是"一份完整、可重新校验的数据"。
+（当前只有 `beforeToolCall`）——载荷必须是"一份完整、可重新校验的数据"。
 
 **成对是硬约束**：每个点位都是 `before` / `after` 一对，运行期发成对诊断
 （`hook.entered` ↔ `hook.finished` / `hook.skipped`）；没有订阅者时如实报
@@ -198,12 +204,11 @@ description: 发布流程：先跑测试再打标签。Use when the user asks to
 
 ---
 
-## 5. 沙箱与运行时
+## 5. 运行时与注入
 
-> 🔴 **2026-10-27 起安全机制整体下线**（`agent-toolkit::security::SECURITY_ENFORCED = false`）：
-> `@ada-needs` 只作声明，插件实际拿到 `fs` / `net` / `sqlite` / `exec` 全部能力；
-> 下面的能力门与网络白名单描述的是**恢复安全后**的目标行为。
-> 恢复与物理删除计划见 [../architecture/PLAN-pluginization.md](../architecture/PLAN-pluginization.md) §4。
+> 🔴 **2026-10-27 起审批与安全机制已物理删除**：
+> `@ada-needs` 只作**模块注入清单**——声明了什么就注入什么，不再作为权限门；
+> 路径只解析、不裁决边界。需要策略时由受信插件通过 `event_before_*` 决定。
 
 | 档位 | 启动方式 | 隔离性 |
 |---|---|---|
@@ -230,9 +235,9 @@ description: 发布流程：先跑测试再打标签。Use when the user asks to
 | `plugin.delete` / `plugin.createTemplate` | 删除与生成骨架 |
 | `plugin.capabilities.set` / `plugin.config.set` / `plugin.secret.set` | 能力开关 / 配置 / 密钥 |
 
-**内置插件**（8 个，编译进产品）：`code-outline`、`project-inspector`、
-`test-runner`、`batch-ops`、`plugin-forge`、`approval-guard`、`ask-user`、`ponytail`。
-其中 `approval-guard` 是**审批策略**的唯一归属（执行归核心，`AGENTS.md` §14）。
+**内置插件**（6 个，编译进产品）：`code-outline`、`project-inspector`、
+`test-runner`、`batch-ops`、`plugin-forge`、`ponytail`。
+`approval-guard` 与 `plugins/approval` 已随审批物理删除；`ask-user` 已迁到磁盘统一插件。
 
 > `git-tools` 已不再内置：它现在是统一插件包 `plugins/git-tools`（TS 实现，
 > `git` + `git_read` 两枚工具），用插件启停控制，而不是一个工具包。
@@ -278,4 +283,4 @@ description: 发布流程：先跑测试再打标签。Use when the user asks to
 | [unified-package.md](unified-package.md) | 统一插件包：一个 `plugin.json` 同时声明 frontend/backend，含动作桥接 |
 | [PLAN-frontend-backend-bridge.md](PLAN-frontend-backend-bridge.md) | 前端插件调用后端插件：动作契约、`plugin.invoke`、SSR 桥接（设计提案与已落地 v1 的对照） |
 | [../quality/unfinished-features.md](../quality/unfinished-features.md) | 插件相关的缺口与尾巴 |
-| [../architecture/conventions.md](../architecture/conventions.md) | §12（钩子成对、工具集只能收窄）、§14（审批策略与执行分离）、§15（别断言钩子被调用，断言副作用） |
+| [../architecture/conventions.md](../architecture/conventions.md) | §12（钩子成对、工具集只能收窄）、§15（别断言钩子被调用，断言副作用）；§14 的审批分离已随审批删除 |

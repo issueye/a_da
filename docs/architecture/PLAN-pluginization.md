@@ -3,7 +3,11 @@
 > 状态：**执行中**（2026-10-27 起）
 > 范围：全仓（`crates/`、`plugins/`、`products/`）
 > 相关：[kernel-design.md](kernel-design.md)、[conventions.md](conventions.md)、
+> [PLAN-unified-events.md](PLAN-unified-events.md)、
 > [../plugins/README.md](../plugins/README.md)、[../quality/unfinished-features.md](../quality/unfinished-features.md)
+>
+> 事件/钩子模型以 [PLAN-unified-events.md](PLAN-unified-events.md) 为准：本文的
+> “钩子”章节描述的是迁移前现状，不作为新插件 API 的目标形态。
 
 ---
 
@@ -254,8 +258,8 @@ pub const fn deferred() -> bool { !SECURITY_ENFORCED }
 2. **工具回执结构化**：`status` / `started_at` / `finished_at` 非 `Option`，否则界面静默变空。
 3. **事件顺序与 `seq`**：`ToolCallStarted` 先于 `ToolCallFinished`，每轮恰好一个 `TurnFinished`。
 4. **取消贯穿**：`CancelToken` 仍传进模型流与工具执行。
-5. **描述符单一真源**：工具读写性/审批/回滚仍来自 `registry.rs`；插件不能自述只读。
-6. **失败方向**：端口/策略的 `FailDirection` 类型保留，等安全恢复时直接生效。
+5. **描述符单一真源**：工具读写性/回滚仍来自 `registry.rs`；插件不能自述只读。
+6. **失败方向**：`FailDirection` 已随审批物理删除（2026-10-27）；不再保留该类型。
 
 ### 4.5 恢复步骤
 
@@ -264,7 +268,11 @@ pub const fn deferred() -> bool { !SECURITY_ENFORCED }
 3. 如需逐项恢复，按 §4.2 的表逐个把调用方改回强制实现（开关支持分批：
    可在 `security.rs` 增加 `APPROVAL_ENFORCED` / `SCOPE_ENFORCED` 等细分常量）。
 
-### 4.6 物理删除清单（P3，可选）
+### 4.6 物理删除清单（P3，已完成 2026-10-27）
+
+> **执行记录**：审批与安全代码已按 [PLAN-unified-events.md](PLAN-unified-events.md) §11
+> 物理删除（审批端口/协议/UI、路径沙箱、`security.rs`、危险命令扫描、`plugins/approval`）。
+> `@ada-needs` 保留为模块注入清单，授权语义已移除。本节保留为历史清单。
 
 只有确认"不再需要这些能力"时才做，且必须单独分支、单独 PR：
 

@@ -6,7 +6,6 @@ impl Dispatcher {
         session_mgr: Arc<SessionManager>,
         checkpoint_mgr: Arc<CheckpointManager>,
         subagent_mgr: Arc<SubagentManager>,
-        approval_mgr: Arc<ApprovalManager>,
         plugin_mgr: Arc<PluginManager>,
         skill_mgr: Arc<SkillManager>,
         broadcaster: Option<Arc<StateBroadcaster>>,
@@ -61,7 +60,6 @@ impl Dispatcher {
             session_mgr,
             checkpoint_mgr,
             subagent_mgr,
-            approval_mgr,
             plugin_mgr,
             skill_mgr,
             broadcaster,
@@ -160,9 +158,6 @@ impl Dispatcher {
     }
 
     /// 同上，但接受 `Option`——宿主"有就注入、没有就保持 legacy"的形态。
-    ///
-    /// ⚠️ 这里**只取 `runtime`**：`approval_mgr` 必须由调用方在构造 `Dispatcher` 时就传对
-    /// （见 [`EngineInjection`] 的说明），事后替换会留下"闸门挂在旧表上"的坑。
     pub fn pipe_engine(mut self, injection: Option<EngineInjection>) -> Self {
         if let Some(i) = injection {
             self.engine = Some(i.runtime);

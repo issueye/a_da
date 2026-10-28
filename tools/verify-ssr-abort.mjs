@@ -1,14 +1,11 @@
-// SSR 浏览器端「审批 → 中止」实机验收。
+// SSR 浏览器端「流式 → 中止」实机验收。
 //
-// 覆盖计划 §7.4 第 5 项里原先没有断言的两步：
-//   1. 模型发起写工具 → 页面出现审批托盘（带工具名与参数）→ 点「批准」；
-//   2. 工具真的执行（工作区里出现文件）→ 模型继续流式输出 → 点「中止」；
-//   3. 中止后运行状态结束、助手正文不再增长。
+// 覆盖：模型持续流式输出 → 页面正文增长 → 点「中止」→ 运行状态结束、正文不再增长。
 //
 // 零 API 花费、不碰用户 `~/.a-da`：假模型 + 真网关 + 真 ada-coding + 真 SSR 路由。
 
 import { createServer } from 'node:http'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync} from 'node:fs'
 import { join } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { createServer as createNetServer } from 'node:net'
@@ -40,25 +37,18 @@ async function freePort() {
   return port
 }
 
-const verifyRoot = join(REPO, 'target', 'ssr-verify-approval')
+const verifyRoot = join(REPO, 'target', 'ssr-verify-abort')
 mkdirSync(verifyRoot, { recursive: true })
 const appHome = mkdtempSync(join(verifyRoot, 'home-'))
 const wsDir = mkdtempSync(join(verifyRoot, 'ws-'))
 
-// ── 假模型：首轮返回写工具调用；看到 tool 结果后慢慢流式输出 ────────────────
+// ── 假模型：直接慢速流式输出，给中止留出窗口 ────────────────────────────────
 const modelRequests = []
 const model = createServer((req, res) => {
   let body = ''
   req.on('data', (chunk) => (body += chunk))
   req.on('end', async () => {
     modelRequests.push(body)
-    let payload = {}
-    try {
-      payload = JSON.parse(body)
-    } catch {}
-    const messages = Array.isArray(payload.messages) ? payload.messages : []
-    const hasToolResult = messages.some((m) => m && m.role === 'tool')
-
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -72,34 +62,7 @@ const model = createServer((req, res) => {
           choices: [{ index: 0, delta, ...(finish ? { finish_reason: finish } : {}) }],
         })}\n\n`,
       )
-
     try {
-      if (!hasToolResult) {
-        // 第一轮：要求写一个工作区文件（Ask 档必须弹审批）。
-        send({ role: 'assistant', content: '' })
-        send({
-          tool_calls: [
-            {
-              index: 0,
-              id: 'call_approval_1',
-              type: 'function',
-              function: {
-                name: 'write_file',
-                arguments: JSON.stringify({
-                  path: 'approved.txt',
-                  content: 'approved by browser\n',
-                }),
-              },
-            },
-          ],
-        })
-        send({}, 'tool_calls')
-        res.write('data: [DONE]\n\n')
-        res.end()
-        return
-      }
-
-      // 第二轮：工具已执行，慢慢写正文，给中止留出窗口。
       send({ role: 'assistant', content: '' })
       for (let i = 0; i < 80; i += 1) {
         send({ content: `第 ${i} 段：中止验收。` })
@@ -127,8 +90,6 @@ writeFileSync(
       maxOutputTokens: 1024,
       model: 'stub-model',
       protocol: 'openai_chat',
-      // Ask：写工具必须等用户批准。
-      approval: 'ask',
       retryCount: 1,
       disabledPlugins: [],
       providers: [
@@ -231,20 +192,6 @@ async function assistantText(gatewayUrl, threadId) {
     .join('\n')
 }
 
-async function waitForApproval(ui, threadId, timeoutMs) {
-  const started = Date.now()
-  while (Date.now() - started < timeoutMs) {
-    const response = await fetch(`${ui}/threads/${threadId}/live`)
-    if (response.ok) {
-      const html = await response.text()
-      const match = html.match(/action="\/approvals\/([^"/]+)\/decision"/)
-      if (match) return { callId: match[1], html }
-    }
-    await sleep(150)
-  }
-  throw new Error('审批托盘没有出现')
-}
-
 try {
   check(existsSync(GATEWAY), `网关二进制存在：${GATEWAY}`)
   if (failures.length) throw new Error('缺少二进制')
@@ -280,7 +227,7 @@ try {
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: '审批中止验收', workspace: wsDir }),
+      body: JSON.stringify({ title: '中止验收', workspace: wsDir }),
     },
   )
   const createdBody = await created.json().catch(() => ({}))
@@ -291,56 +238,18 @@ try {
   const sent = await fetch(`${gatewayUrl}/threads/${threadId}/send`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ text: '写一个文件，然后继续输出。' }).toString(),
+    body: new URLSearchParams({ text: '请持续输出一段长文，用于中止验收。' }).toString(),
     redirect: 'manual',
   })
   check(sent.status === 303, '发送后被 303 跳回会话页', `HTTP ${sent.status}`)
 
-  const approval = await waitForApproval(gatewayUrl, threadId, 15_000)
-  check(Boolean(approval.callId), '页面出现审批托盘（带 callId）', approval.callId)
-  check(approval.html.includes('write_file'), '审批托盘显示工具名 write_file')
-  check(approval.html.includes('approved.txt'), '审批托盘显示待写文件参数')
-
-  const decided = await fetch(
-    `${gatewayUrl}/approvals/${approval.callId}/decision`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ thread_id: threadId, approved: 'true' }).toString(),
-      redirect: 'manual',
-    },
-  )
-  check(decided.status === 303, '批准后 303 回跳', `HTTP ${decided.status}`)
-
-  // 工具真的执行了：工作区里出现审批时看到的文件。
-  const approvedFile = join(wsDir, 'approved.txt')
-  let wrote = false
-  for (let i = 0; i < 100; i += 1) {
-    if (existsSync(approvedFile)) {
-      wrote = true
-      break
-    }
-    await sleep(100)
-  }
-  check(wrote, '批准后工具真的执行（工作区出现 approved.txt）')
-  if (wrote) {
-    check(
-      readFileSync(approvedFile, 'utf8').includes('approved by browser'),
-      '文件内容与模型参数一致',
-    )
-  }
-
-  // 第二轮模型请求应带回 tool 结果，随后开始流式正文。
-  let secondRound = false
   let beforeAbort = ''
   for (let i = 0; i < 100; i += 1) {
-    secondRound = modelRequests.length >= 2
     beforeAbort = await assistantText(gatewayUrl, threadId)
-    if (secondRound && beforeAbort.length > 0) break
+    if (beforeAbort.length > 0) break
     await sleep(100)
   }
-  check(secondRound, '批准后模型收到 tool 结果并进入第二轮')
-  check(beforeAbort.length > 0, '第二轮正文已开始流式输出', beforeAbort.slice(0, 80))
+  check(beforeAbort.length > 0, '正文已开始流式输出', beforeAbort.slice(0, 80))
 
   const aborted = await fetch(`${gatewayUrl}/threads/${threadId}/abort`, {
     method: 'POST',
@@ -349,7 +258,6 @@ try {
   })
   check(aborted.status === 303, '中止请求 303 回跳', `HTTP ${aborted.status}`)
 
-  // 运行状态结束。
   let stopped = false
   for (let i = 0; i < 100; i += 1) {
     const state = await snapshotThread(gatewayUrl, threadId)
@@ -361,7 +269,6 @@ try {
   }
   check(stopped, '中止后 runningThreadIds 不再包含该会话')
 
-  // 正文不再增长（允许一帧在途）。
   const textAtAbort = await assistantText(gatewayUrl, threadId)
   await sleep(1000)
   const textAfter = await assistantText(gatewayUrl, threadId)
@@ -370,17 +277,13 @@ try {
     '中止后助手正文不再持续增长',
     `${textAtAbort.length} → ${textAfter.length}`,
   )
-  const lastRequest = modelRequests.at(-1) || ''
-  check(
-    lastRequest.includes('"role":"tool"') || lastRequest.includes('approved by browser'),
-    '第二轮模型请求带回工具结果',
-  )
+  check(modelRequests.length >= 1, '假模型至少收到一次请求')
 } finally {
   cleanup()
 }
 
 if (failures.length) {
-  console.error(`\n[FAIL] SSR 审批 → 中止验收未通过（${failures.length} 项）`)
+  console.error(`\n[FAIL] SSR 流式 → 中止验收未通过（${failures.length} 项）`)
   process.exit(1)
 }
-console.log('\n[PASS] SSR 浏览器端：审批托盘 → 批准执行 → 流式中止全流程可用')
+console.log('\n[PASS] SSR 浏览器端：流式输出 → 中止 → 状态收尾全流程可用')

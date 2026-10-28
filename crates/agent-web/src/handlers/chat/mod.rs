@@ -7,7 +7,6 @@ mod rows;
 mod stream;
 
 use rows::*;
-pub(super) use rows::approval_rows;
 
 pub use stream::live_stream;
 
@@ -29,16 +28,11 @@ use crate::ui::{
 };
 struct ComposerArgs<'a> {
     thread_id: &'a str,
-    approval: &'a str,
-    /// 审批档位原值（auto/ask/readonly/full）：弹层用它标出当前项。
-    approval_mode: &'a str,
-    approval_tone: &'a str,
     workspace_label: &'a str,
     workspace_path: &'a str,
     connected: bool,
     running: bool,
     queue_len: usize,
-    approval_count: usize,
     /// 最近一回合的速度 / 缓存命中 / 上下文占用。
     stats: TurnStats,
 }
@@ -117,11 +111,6 @@ fn composer_html(slots: &SlotContent, args: &ComposerArgs<'_>, model_picker: &st
             "ada-tool--workspace",
         ));
     }
-    // 用独立容器包住：live 轮询只换这一个（不重建整条工具行）。
-    left.push_str(&format!(
-        r#"<span id="composer-approval">{}</span>"#,
-        approval_picker_html(args.approval_mode, args.approval, args.approval_tone, args.thread_id)
-    ));
     left.push_str(&slots.composer_left);
 
     // 右组：模型选择（DeepSeek 式弹层）+ 发送。
@@ -149,12 +138,6 @@ fn composer_aux(slots: &SlotContent, args: &ComposerArgs<'_>) -> ComposerAux {
     // 连上了不必说"已连接"：那是默认状态，天天显示只是噪音；断线才值得喊一声。
     if !args.connected {
         status.push(AuxItem::new("网关未连接", Tone::Danger).icon("i-alert"));
-    }
-    if args.approval_count > 0 {
-        status.push(
-            AuxItem::new(format!("等待批准 {} 项", args.approval_count), Tone::Warn)
-                .icon("i-shield-check"),
-        );
     }
     if args.queue_len > 0 {
         status.push(
@@ -261,64 +244,6 @@ fn topbar_status_html(_running: bool, connected: bool) -> String {
     out
 }
 
-/// 审批档位弹层：输入框工具行的药丸点开是四档选择（无 JS 可用）。
-///
-/// 当前档位打勾且不可再点；「完全访问」是安全降级动作，走共享确认弹窗
-/// （data-confirm 在 form 上，app.js 拦截）。菜单随 `parts` 的
-/// `composer-approval` 整块换新，`id` 供 replaceKeepingOpen 还原开合
-/// （换帧不关菜单，与模型选择器同口径）。`mode` 为空（未连接）保持只读药丸。
-fn approval_picker_html(mode: &str, label: &str, tone: &str, thread_id: &str) -> String {
-    let (icon, modifier) = match tone {
-        "danger" => ("i-shield-check", "ada-tool--danger"),
-        "warn" => ("i-shield-check", "ada-tool--warn"),
-        _ => ("i-shield", ""),
-    };
-    if mode.is_empty() {
-        return format!(
-            r#"<span class="ada-tool {modifier}" title="审批档位">{glyph}<span class="ada-tool__label">{label}</span></span>"#,
-            glyph = ui::icon(icon, 14),
-            label = escape(label),
-        );
-    }
-    let options = [
-        ("auto", "自动批准", "i-sparkles", ""),
-        ("ask", "每次询问", "i-chat", ""),
-        ("readonly", "严格只读", "i-file", ""),
-        (
-            "full",
-            "完全访问",
-            "i-shield-check",
-            r#" data-confirm="切换到「完全访问」后，工具执行将不再逐一询问，确定吗？""#,
-        ),
-    ];
-    let mut rows = String::new();
-    for (value, option_label, icon, confirm) in options {
-        let is_current = value == mode;
-        let check = if is_current {
-            format!(
-                r#"<span class="ada-approval-picker__check">{}</span>"#,
-                ui::icon("i-check", 12)
-            )
-        } else {
-            String::new()
-        };
-        rows.push_str(&format!(
-            r#"<form method="post" action="/approval/mode" data-partial{confirm}><input type="hidden" name="thread_id" value="{thread}"><input type="hidden" name="mode" value="{value}"><button class="ada-approval-picker__option" type="submit"{disabled}>{glyph}<span>{option_label}</span>{check}</button></form>"#,
-            thread = escape(thread_id),
-            value = value,
-            confirm = confirm,
-            disabled = if is_current { " disabled" } else { "" },
-            glyph = ui::icon(icon, 14),
-            check = check,
-        ));
-    }
-    format!(
-        r#"<details class="ada-popover ada-approval-picker" id="approval-picker"><summary class="ada-tool {modifier}" title="审批档位（点击切换）">{glyph}<span class="ada-tool__label">{label}</span>{caret}</summary><div class="ada-popover__panel ada-approval-picker__panel" role="menu">{rows}</div></details>"#,
-        glyph = ui::icon(icon, 14),
-        caret = ui::icon("i-chevron-down", 12),
-    )
-}
-
 /// 药丸内部的标签：模型名 + 推理等级（外层是模型选择器的 `<summary>`）。
 ///
 /// live 轮询只替换 `#composer-model` 的内容，菜单本身（`<details>`）不会被关掉。
@@ -367,7 +292,6 @@ struct LiveParts {
     aux: String,
     /// 输入框上方的插件悬浮区（`composer.above`）。
     composer_above: String,
-    approval_chip: String,
     model_chip: String,
     /// 侧栏会话树（`#thread-list` 的 innerHTML）。
     ///
@@ -388,15 +312,7 @@ async fn live_parts(
     thread: &Value,
     tasks: Option<&Value>,
 ) -> LiveParts {
-    let raw_items = thread
-        .get("items")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
     let running = running_ids(snapshot).iter().any(|id| id == thread_id);
-    let mode = approval_mode(snapshot, &Value::Null);
-    let approval = approval_label(&mode);
-    let tone = approval_tone(&mode);
     let model = model_of(snapshot, &Value::Null);
     let effort = effort_of(snapshot, &Value::Null);
     let workspace = str_at(thread, "workspace");
@@ -435,27 +351,14 @@ async fn live_parts(
         chat_context.clone(),
     )
     .await;
-    // 审批段：`thread.approval` 插槽输出非空时替换核心审批托盘；批准/拒绝仍走核心。
-    let thread_approval = crate::plugins::render_slot_off_thread(
-        std::sync::Arc::clone(&state.frontend),
-        Slot::ThreadApproval,
-        chat_context.clone(),
-    )
-    .await;
-    // 提问段：`thread.tray` 插槽输出非空时替换核心提问托盘（D5 降级规则）。
+    // 提问段：完全由 `plugins/ask-user` 的 `thread.tray` 插槽提供。
     let thread_tray = crate::plugins::render_slot_off_thread(
         std::sync::Arc::clone(&state.frontend),
         Slot::ThreadTray,
         chat_context,
     )
     .await;
-    let (trays, approval_count, queue_len) = trays_html(
-        snapshot,
-        raw_items,
-        thread_id,
-        Some(thread_approval.html.trim()),
-        Some(thread_tray.html.trim()),
-    );
+    let (trays, queue_len) = trays_html(snapshot, thread_id, Some(thread_tray.html.trim()));
     // 侧栏树与首屏同源（thread_rows 的空占位过滤 + workspace_groups 分组排序），
     // 分组锚点与首屏一致：当前会话的工作区，缺了回落 agent 的当前项目。
     let tree_workspace = if workspace.is_empty() {
@@ -473,15 +376,11 @@ async fn live_parts(
     };
     let args = ComposerArgs {
         thread_id,
-        approval: &approval,
-        approval_mode: &mode,
-        approval_tone: &tone,
         workspace_label: &workspace_label,
         workspace_path,
         connected: true,
         running,
         queue_len,
-        approval_count,
         stats: turn_stats(snapshot, thread),
     };
     LiveParts {
@@ -492,7 +391,6 @@ async fn live_parts(
         topbar_actions: topbar_actions_html(thread_id, running),
         aux: composer_aux_html(&slots, &args),
         composer_above: above.html,
-        approval_chip: approval_picker_html(&mode, &approval, &tone, thread_id),
         model_chip: model_chip_html(&model, &effort),
         thread_list,
     }
@@ -588,9 +486,6 @@ async fn load_chat(
     let config = state.agent.config().await.unwrap_or(Value::Null);
     let model = model_of(&snapshot, &config);
     let effort = effort_of(&snapshot, &config);
-    let mode = approval_mode(&snapshot, &config);
-    let approval = approval_label(&mode);
-    let approval_tone = approval_tone(&mode);
     let title = active
         .as_ref()
         .map(|thread| thread.title.clone())
@@ -633,15 +528,9 @@ async fn load_chat(
         .connected(Some(true))
         .render();
 
-    // 托盘（审批/提问/排队）：`thread.approval` / `thread.tray` 插槽已在 base.slots
-    // 里按同一份会话上下文渲染，输出非空时替换对应核心托盘。
-    let (trays, approval_count, queue_len) = trays_html(
-        &snapshot,
-        raw_items,
-        &active_thread_id,
-        Some(base.slots.thread_approval.trim()),
-        Some(base.slots.thread_tray.trim()),
-    );
+    // 托盘（提问/排队）：`thread.tray` 插槽已在 base.slots 里按同一份会话上下文渲染，
+    // 提问由 `plugins/ask-user` 自行渲染与作答。
+    let (trays, queue_len) = trays_html(&snapshot, &active_thread_id, Some(base.slots.thread_tray.trim()));
 
     // 模型选择器：按供应商分组的模型清单 + 推理等级（数据来自 `/api/providers`）。
     // 只有真要渲染输入框时才多打这一枪；切换动作本身走 `/model/select|effort` 表单。
@@ -683,15 +572,11 @@ async fn load_chat(
             &base.slots,
             &ComposerArgs {
                 thread_id: &active_thread_id,
-                approval: &approval,
-                approval_mode: &mode,
-                approval_tone: &approval_tone,
                 workspace_label: &workspace_label,
                 workspace_path: &workspace_path,
                 connected: true,
                 running: is_running,
                 queue_len,
-                approval_count,
                 stats: active_value
                     .map(|value| turn_stats(&snapshot, value))
                     .unwrap_or_default(),
@@ -802,15 +687,11 @@ async fn live_offline(state: &AppState, thread_id: &str) -> Response {
     };
     let args = ComposerArgs {
         thread_id,
-        approval: "未连接",
-        approval_mode: "",
-        approval_tone: "neutral",
         workspace_label: &label,
         workspace_path: &state.agent.workspace,
         connected: false,
         running: false,
         queue_len: 0,
-        approval_count: 0,
         stats: TurnStats::default(),
     };
     let body = [
@@ -819,10 +700,6 @@ async fn live_offline(state: &AppState, thread_id: &str) -> Response {
         oob("chat-corner", &corner.html),
         oob("composer-above", &above.html),
         oob("composer-aux", &composer_aux_html(&slots, &args)),
-        oob(
-            "composer-approval",
-            &approval_picker_html("", "未连接", "neutral", ""),
-        ),
         oob("composer-model", &model_chip_html("未连接", "")),
     ]
     .concat();
@@ -830,9 +707,6 @@ async fn live_offline(state: &AppState, thread_id: &str) -> Response {
 }
 
 /// 每 2 秒的局部刷新：一个响应里带回所有动态区域。
-///
-/// 为什么不是只刷新对话流：审批按钮、运行状态、任务规划都在对话流之外，
-/// 只刷新 transcript 会让"等待批准"永久停在页面上（只能手工 F5 才出现按钮）。
 pub async fn live(State(state): State<AppState>, Path(thread_id): Path<String>) -> Response {
     let snapshot = match state.agent.snapshot().await {
         Ok(snapshot) => snapshot,
@@ -878,7 +752,6 @@ pub async fn live(State(state): State<AppState>, Path(thread_id): Path<String>) 
         // 输入框上方的插件悬浮区：用量会随对话变化，跟其他区域一起每 2 秒刷新。
         oob("composer-above", &parts.composer_above),
         oob("composer-aux", &parts.aux),
-        oob("composer-approval", &parts.approval_chip),
         oob("composer-model", &parts.model_chip),
     ]
     .concat();
@@ -1191,54 +1064,6 @@ pub async fn abort_thread(
     }
 }
 
-pub async fn decide_approval(
-    State(state): State<AppState>,
-    Path(call_id): Path<String>,
-    headers: HeaderMap,
-    Form(form): Form<ApprovalForm>,
-) -> Result<Response, AppError> {
-    let partial = wants_partial(&headers);
-    if call_id.trim().is_empty() {
-        let message = "审批缺少 callId";
-        return if partial {
-            Ok(partial_err(message))
-        } else {
-            Err(AppError::bad(message))
-        };
-    }
-    let approved = matches!(
-        form.approved.trim().to_ascii_lowercase().as_str(),
-        "true" | "1" | "on" | "yes"
-    );
-    match state.agent.decide_approval(&call_id, approved).await {
-        Ok(_) if partial => Ok(partial_ok(if approved { "approved" } else { "rejected" })),
-        Ok(_) => {
-            // key 写成 `notice=` 字面量，供源码扫描守门对账（见 handlers::NOTICE_TEXTS）。
-            let notice_query = if approved {
-                "notice=approved"
-            } else {
-                "notice=rejected"
-            };
-            Ok(redirect(&format!(
-                "/threads/{}?{notice_query}",
-                form.thread_id
-            )))
-        }
-        Err(error) if partial => Ok(partial_err(format!(
-            "提交审批失败：{}",
-            public_reason(&error)
-        ))),
-        Err(error) => {
-            if form.thread_id.trim().is_empty() {
-                tracing::warn!("提交审批失败: {error:#}");
-                let message = format!("提交审批失败：{}", public_reason(&error));
-                Ok(redirect(&format!("/?error={}", encode_query(&message))))
-            } else {
-                Ok(action_failed(&form.thread_id, "提交审批失败", error))
-            }
-        }
-    }
-}
 
 pub async fn retry_thread(
     State(state): State<AppState>,
@@ -1340,53 +1165,6 @@ pub async fn delete_thread(
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ApprovalModeForm {
-    mode: String,
-    thread_id: Option<String>,
-}
-
-/// `POST /approval/mode`：页内切换审批档位（`config.setApproval`）。
-///
-/// 后端会落盘并广播——快照 `config.approval` 变化触发 parts 重发，弹层与
-/// 药丸随之更新。「完全访问」在弹层里带 data-confirm，这里再做一次白名单校验。
-pub async fn set_approval_mode(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Form(form): Form<ApprovalModeForm>,
-) -> Result<Response, AppError> {
-    let partial = wants_partial(&headers);
-    let mode = form.mode.trim();
-    if !matches!(mode, "auto" | "ask" | "readonly" | "full") {
-        let message = format!("未知审批档位: {mode}");
-        return if partial {
-            Ok(partial_err(message))
-        } else {
-            Err(AppError::bad(message))
-        };
-    }
-    let back = match form.thread_id.as_deref().map(str::trim) {
-        Some(id) if !id.is_empty() => format!("/threads/{id}"),
-        _ => "/".to_string(),
-    };
-    match state.agent.set_approval_mode(mode).await {
-        Ok(_) if partial => Ok(partial_ok(&format!("approval_{mode}"))),
-        Ok(_) => Ok(redirect(&format!("{back}?notice=approval_{}", encode_query(mode)))),
-        Err(error) if partial => Ok(partial_err(format!(
-            "切换审批档位失败：{}",
-            public_reason(&error)
-        ))),
-        Err(error) => {
-            if back == "/" {
-                tracing::warn!("切换审批档位失败: {error:#}");
-                let message = format!("切换审批档位失败：{}", public_reason(&error));
-                Ok(redirect(&format!("/?error={}", encode_query(&message))))
-            } else {
-                Ok(action_failed(&back, "切换审批档位失败", error))
-            }
-        }
-    }
-}
 
 #[derive(Debug, Deserialize)]
 pub struct ThreadModeForm {
@@ -1451,57 +1229,6 @@ pub async fn set_thread_workspace(
             "/threads/{thread_id}?notice=thread_workspace_set"
         ))),
         Err(error) => Ok(action_failed(&thread_id, "切换会话工作区失败", error)),
-    }
-}
-
-/// 提问作答表单（核心托盘与 `thread.tray` 插件共用字段约定，见
-/// `crate::questions::answer_params_from_form`）。
-///
-/// 字段是动态的（多选的同名多值、多题的 `q_*` 前缀），所以收成键值对序列
-/// 而不是固定 struct；`thread_id` 只用来决定失败后跳回哪个会话。
-pub async fn answer_question(
-    State(state): State<AppState>,
-    Path(call_id): Path<String>,
-    Form(form): Form<Vec<(String, String)>>,
-) -> Result<Response, AppError> {
-    if call_id.trim().is_empty() {
-        return Err(AppError::bad("提问缺少 callId"));
-    }
-    let thread_id = form
-        .iter()
-        .find(|(key, _)| key == "thread_id")
-        .map(|(_, value)| value.trim().to_string())
-        .unwrap_or_default();
-    let back = |query: &str| {
-        if thread_id.is_empty() {
-            redirect(&format!("/{query}"))
-        } else {
-            redirect(&format!("/threads/{thread_id}?{query}"))
-        }
-    };
-    let params = match crate::questions::answer_params_from_form(&form) {
-        Ok(params) => params,
-        Err(message) => return Ok(back(&format!("error={}", encode_query(&message)))),
-    };
-    match state.agent.answer_question(&call_id, params).await {
-        // `resolved=false`：callId 不认识（已超时/已在别处作答）——如实告知，
-        // 不假装成功；后端 dispatch 已经把它从 pending 列表摘掉了，托盘会自己消失。
-        Ok(result) if result.get("resolved").and_then(Value::as_bool) == Some(true) => {
-            Ok(back("notice=answered"))
-        }
-        Ok(_) => Ok(back(&format!(
-            "error={}",
-            encode_query("这条提问已失效（可能已超时或已作答）")
-        ))),
-        Err(error) => {
-            if thread_id.is_empty() {
-                tracing::warn!("提交回答失败: {error:#}");
-                let message = format!("提交回答失败：{}", public_reason(&error));
-                Ok(redirect(&format!("/?error={}", encode_query(&message))))
-            } else {
-                Ok(action_failed(&thread_id, "提交回答失败", error))
-            }
-        }
     }
 }
 
@@ -1657,19 +1384,4 @@ mod tests {
             .is_empty());
     }
 
-    #[test]
-    fn approval_picker_options_have_svg_icons_and_current_check() {
-        let html = approval_picker_html("ask", "每次询问", "warn", "t1");
-        for label in ["自动批准", "每次询问", "严格只读", "完全访问"] {
-            assert!(html.contains(label), "缺少档位：{label}");
-        }
-        // 4 个选项各一个图标 + 当前项的勾 + 药丸本体 + caret。
-        assert_eq!(
-            html.matches("<svg class=\"ada-icon\"").count(),
-            7,
-            "每个档位都应有 SVG 图标：{html}"
-        );
-        assert!(html.contains("ada-approval-picker__check"), "{html}");
-        assert!(!html.contains("TSX 插槽"), "工具栏不应再有演示胶囊");
-    }
 }

@@ -147,24 +147,6 @@ pub enum AgentMode {
     Pm,
 }
 
-/// 审批模式
-///
-/// `Full`（完全访问）是 P1b 新增的第四档：**完全放行**——不再询问，且放开工作区边界与
-/// 脚本的网络能力（见 `docs/plugins/README.md` §5 "沙箱与运行时"）。
-///
-/// 它**不是** `Auto` 的别名：`Auto` 只是"不再询问"，路径仍在工作区内、插件仍拿不到网络；
-/// 真正的增量是那两项（命令执行在 `Auto` 下本来就放行）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum ApprovalMode {
-    #[default]
-    Auto,
-    Ask,
-    Readonly,
-    /// 完全访问：不问 + 放开工作区边界与脚本网络（`~/.a-da` 红线除外）
-    Full,
-}
-
 /// 深度档位
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -176,85 +158,6 @@ pub enum Effort {
     Low,
 }
 
-/// 待办与提问
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChoiceOption {
-    pub id: String,
-    pub label: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-}
-
-/// 一次提问里的**单个问题**（`ask_user` 支持一次问多题）。
-///
-/// 与 [`AgentQuestion`] 是"一小一大"的关系：单选路径只有一个问题，就退化成
-/// `AgentQuestion` 自己的字段；多题路径把每一项放在 `AgentQuestion::questions` 里。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentQuestionItem {
-    /// 题号（如 `q1`）。答复按它对应回题目，缺省由工具补齐。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    pub question: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub choices: Option<Vec<ChoiceOption>>,
-    #[serde(
-        rename = "allowText",
-        alias = "allow_text",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub allow_text: Option<bool>,
-    #[serde(
-        default,
-        rename = "multiSelect",
-        alias = "multi_select",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub multi_select: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentQuestion {
-    pub question: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub choices: Option<Vec<ChoiceOption>>,
-    /// 提问事件里发的是 `allow_text`（snake），线协议对外是 `allowText`——两种拼写都收。
-    #[serde(
-        rename = "allowText",
-        alias = "allow_text",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub allow_text: Option<bool>,
-    /// 是否多选。提问事件里发的是 `multi_select`（与 `allow_text` 同风格），
-    /// 这里两种拼写都收（`alias`），对外仍按驼峰序列化。
-    #[serde(
-        default,
-        rename = "multiSelect",
-        alias = "multi_select",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub multi_select: Option<bool>,
-    /// 一次问多题时的题目列表。单选路径为空（题目就在上面的 `question`/`choices` 里）。
-    ///
-    /// 顶层的 `question`/`choices`/`multi_select` 在多题时填**首题**，这样老的渲染路径
-    /// （不认识 `questions`）至少还能显示第一题，而不是一片空白。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub questions: Option<Vec<AgentQuestionItem>>,
-    /// 状态与提问时刻由**持有方**（AgentStore）填，提问事件本身不带——
-    /// 所以这里必须容忍缺省，否则 `pending_questions` 会因为反序列化失败而永远为空。
-    #[serde(default)]
-    pub status: String,
-    #[serde(rename = "askedAt", default)]
-    pub asked_at: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub answer: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PendingQuestionEntry {
-    #[serde(rename = "callId")]
-    pub call_id: String,
-    pub question: AgentQuestion,
-}
 
 /// 界面卡片 Item
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -457,7 +360,6 @@ pub struct ConfigSnapshot {
     pub max_output_tokens: Option<u64>,
     #[serde(rename = "supportsImages")]
     pub supports_images: bool,
-    pub approval: ApprovalMode,
     pub effort: Effort,
     pub mode: AgentMode,
     /// 模型请求**重试次数**（首次失败后最多再试几次；默认见
@@ -480,7 +382,6 @@ impl Default for ConfigSnapshot {
             context_window: 0,
             max_output_tokens: None,
             supports_images: false,
-            approval: ApprovalMode::default(),
             effort: Effort::default(),
             mode: AgentMode::default(),
             retry_count: default_retry_count(),
@@ -529,8 +430,6 @@ pub struct ClientSnapshot {
     pub log: Vec<DebugEntry>,
     pub workspace: WorkspaceSnapshot,
     pub config: ConfigSnapshot,
-    #[serde(rename = "pendingQuestions")]
-    pub pending_questions: Vec<PendingQuestionEntry>,
     #[serde(rename = "publicWorkspace")]
     pub public_workspace: String,
     pub appearance: String,

@@ -29,12 +29,24 @@ use agent_base::ports::{
 
 use crate::plugins::{PluginCapabilities, PluginHookDeclaration};
 
+mod event_dispatcher;
+mod event_names;
+mod event_runtime;
+
+pub use event_dispatcher::HookEventDispatcher;
+pub use event_runtime::{EventRuntimeStats, PluginEventRuntime, DEFAULT_LANE_CAPACITY};
+
 /// 一条被接受并已排好序的钩子注册。
 #[derive(Debug, Clone)]
 pub struct RegisteredHook {
     pub plugin_id: String,
     pub trust: PluginTrust,
+    /// 引擎调用的规范点位名（旧钩子名）。
     pub point: String,
+    /// 插件声明时用的名字（可能是 `event_before_tool_call`）。
+    ///
+    /// 沙箱按声明名查找处理器；迁移期两套名字不能混着传给 `invoke_hook`。
+    handler_point: String,
     pub actions: Vec<HookAction>,
     pub order: i32,
     handle: ModuleHandle,
@@ -207,7 +219,10 @@ impl HookRuntime {
         decl: &PluginHookDeclaration,
         rejections: &mut Vec<HookRejection>,
     ) {
-        let point = decl.point.trim().to_string();
+        // 插件可以用统一事件名声明；引擎当前仍按旧点位名调用。
+        // 映射只在这一处，未知 event_* 原样交给 HookLevel::of 拒绝。
+        let handler_point = decl.point.trim().to_string();
+        let point = event_names::normalize_point(&decl.point);
         let reject = |rejections: &mut Vec<HookRejection>, reason: String| {
             rejections.push(HookRejection {
                 plugin_id: plugin_id.to_string(),
@@ -301,6 +316,7 @@ impl HookRuntime {
                 plugin_id: plugin_id.to_string(),
                 trust,
                 point,
+                handler_point,
                 actions: accepted,
                 order: decl.order,
                 handle,
@@ -428,13 +444,13 @@ impl HookRuntime {
                 "turnId": ctx.turn_id,
                 "callId": ctx.call_id,
                 "pluginId": reg.plugin_id,
-                "point": point,
+                "point": reg.handler_point,
                 "timeoutMs": self.budget.timeout_ms,
             },
         });
         let call = self
             .script_host
-            .invoke_hook(&reg.handle, point, script_payload, &script_ctx);
+            .invoke_hook(&reg.handle, &reg.handler_point, script_payload, &script_ctx);
 
         // 单点位预算：**超时即无意见**（§5.5）。这里再兜一层墙钟——
         // 沙箱自己也有一层，但那是"这个脚本跑太久"，这里是"这个点位的预算"，
@@ -1134,7 +1150,7 @@ mod tests {
         budget_ms: u64,
         capabilities: PluginCapabilities,
     ) -> (HookRuntime, Vec<HookRejection>) {
-        let mut runtime = HookRuntime::new(
+        let runtime = HookRuntime::new(
             host,
             HookBudget {
                 timeout_ms: budget_ms,
@@ -1415,7 +1431,7 @@ mod tests {
             }
         }
 
-        let mut runtime = HookRuntime::new(
+        let runtime = HookRuntime::new(
             Arc::new(BrokenHost),
             HookBudget { timeout_ms: 500 },
         );
@@ -1684,77 +1700,7 @@ mod tests {
         assert!(matches!(registrations[2], HookRegistration::Skill { ref name, ref path, .. } if name == "dynamic-skill" && path.ends_with("dynamic-skill.md")));
     }
 
-    // ── P4：死点位修复 + 能力开关接线（幽灵开关治理）────────────────────────
-
-    /// `beforeTodoUpdate` / `afterTodoUpdate` 必须**走真实注册路径装得上、且真的会跑**。
-    ///
-    /// 修之前 `HookLevel::of` 漏了这两条分支，`register` 以 `unknown_point` 拒收：
-    /// `IMPLEMENTED` 与 `REPLACE_SUPPORTED` 都声称它们可用、`todo` 工具也真的在发事件，
-    /// 可生产链路上它们**永远是 `no_subscriber`**（且单测测不出来——脚本化的钩子运行器
-    /// 直接注入引擎，绕过了注册）。
-    #[tokio::test]
-    async fn test_todo_points_register_and_fire() {
-        let mut host = FakeHost::default();
-        host.declare("guard", "beforeTodoUpdate", &["deny", "replace"], 0);
-        host.ret(
-            "guard",
-            "beforeTodoUpdate",
-            serde_json::json!({ "action": "deny", "reason": "清单不许动" }),
-        );
-        host.declare("guard", "afterTodoUpdate", &["note"], 0);
-        host.ret(
-            "guard",
-            "afterTodoUpdate",
-            serde_json::json!({ "action": "note", "note": "已记一笔" }),
-        );
-        let host = Arc::new(host);
-
-        let (runtime, rejections) = runtime_with(
-            host,
-            &[(
-                "guard",
-                PluginTrust::ThirdParty,
-                &[
-                    ("beforeTodoUpdate", &["deny", "replace"], 0),
-                    ("afterTodoUpdate", &["note"], 0),
-                ],
-            )],
-            500,
-        );
-        assert!(
-            rejections.is_empty(),
-            "todo 两个点位必须注册得上（修之前是 unknown_point）：{rejections:?}"
-        );
-
-        let obs = Observers::new();
-        let sink = obs.sink();
-        let before = runtime
-            .before(
-                BeforeRequest {
-                    point: "beforeTodoUpdate".to_string(),
-                    subject: Some("todo".to_string()),
-                    payload: serde_json::json!({ "todos": [] }),
-                },
-                &ctx(&sink),
-            )
-            .await;
-        assert!(
-            matches!(before, BeforeOutcome::Deny { .. }),
-            "待办更新在数据面上可被第三方拦下：{before:?}"
-        );
-
-        let notes = runtime
-            .after(
-                AfterRequest {
-                    point: "afterTodoUpdate".to_string(),
-                    subject: Some("todo".to_string()),
-                    payload: serde_json::json!({ "todos": [] }),
-                },
-                &ctx(&sink),
-            )
-            .await;
-        assert_eq!(notes.len(), 1, "事后旁注要收得到：{notes:?}");
-    }
+    // ── P4：能力开关接线（幽灵开关治理）────────────────────────────────────
 
     /// `allowThirdPartyHooks` 关掉 → 第三方钩子**装配期即拒**（理由说清是开关，不是点位写错），
     /// 且**内置插件不受影响**（开关否的是来源，不是机制）。
@@ -1786,6 +1732,55 @@ mod tests {
         );
         assert_eq!(runtime.len(), 1, "内置插件照样装上");
         assert_eq!(runtime.registrations("beforeToolCall").len(), 1);
+    }
+
+    /// 统一事件名在注册期折回旧点位；引擎按旧点位调用时照样命中。
+    ///
+    /// 这是迁移期的兼容层：插件可以开始用 `event_before_tool_call`，
+    /// 引擎不需要同时认识两套名字。
+    #[tokio::test]
+    async fn test_event_alias_registers_as_legacy_point_and_fires() {
+        let mut host = FakeHost::default();
+        host.declare("audit", "event_before_tool_call", &["deny"], 0);
+        host.ret(
+            "audit",
+            "event_before_tool_call",
+            serde_json::json!({ "action": "deny", "reason": "blocked by event alias" }),
+        );
+        let host = Arc::new(host);
+
+        let (runtime, rejections) = runtime_with(
+            host,
+            &[(
+                "audit",
+                PluginTrust::ThirdParty,
+                &[("event_before_tool_call", &["deny"], 0)],
+            )],
+            500,
+        );
+        assert!(rejections.is_empty(), "{rejections:?}");
+        assert_eq!(
+            runtime.registrations("beforeToolCall").len(),
+            1,
+            "事件名必须在注册期折回旧点位"
+        );
+
+        let obs = Observers::new();
+        let sink = obs.sink();
+        let outcome = runtime
+            .before(
+                BeforeRequest {
+                    point: "beforeToolCall".to_string(),
+                    subject: Some("run_command".to_string()),
+                    payload: serde_json::json!({ "tool": "run_command" }),
+                },
+                &ctx(&sink),
+            )
+            .await;
+        assert!(
+            matches!(outcome, BeforeOutcome::Deny { .. }),
+            "旧点位调用必须命中用事件名注册的处理器：{outcome:?}"
+        );
     }
 
     /// 动作面的三个开关：关掉之后**动作不生效但照常放行**，且理由进观测（面板看得见）。

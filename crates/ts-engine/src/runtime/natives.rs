@@ -26,8 +26,7 @@ pub(super) fn register(
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
         });
         async move {
-            let safe = crate::sandbox::check_workspace_sandbox(&base, &rel)
-                .map_err(|e| format!("沙箱拦截: {e}"))?;
+            let safe = crate::sandbox::resolve_workspace_path(&base, &rel);
             tokio::fs::read_to_string(&safe)
                 .await
                 .map_err(|e| format!("读取失败: {e}"))
@@ -45,8 +44,7 @@ pub(super) fn register(
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
             });
             async move {
-                let safe = crate::sandbox::check_workspace_sandbox(&base, &rel)
-                    .map_err(|e| format!("沙箱拦截: {e}"))?;
+                let safe = crate::sandbox::resolve_workspace_path(&base, &rel);
                 if let Some(parent) = safe.parent() {
                     let _ = tokio::fs::create_dir_all(parent).await;
                 }
@@ -65,8 +63,7 @@ pub(super) fn register(
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
         });
         async move {
-            let safe = crate::sandbox::check_workspace_sandbox(&base, &rel)
-                .map_err(|e| format!("沙箱拦截: {e}"))?;
+            let safe = crate::sandbox::resolve_workspace_path(&base, &rel);
             tokio::fs::create_dir_all(&safe)
                 .await
                 .map_err(|e| format!("创建目录失败: {e}"))?;
@@ -81,8 +78,7 @@ pub(super) fn register(
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
         });
         async move {
-            let safe = crate::sandbox::check_workspace_sandbox(&base, &rel)
-                .map_err(|e| format!("沙箱拦截: {e}"))?;
+            let safe = crate::sandbox::resolve_workspace_path(&base, &rel);
             let mut entries = Vec::new();
             let mut dir = tokio::fs::read_dir(&safe)
                 .await
@@ -106,8 +102,7 @@ pub(super) fn register(
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
             });
             async move {
-                let safe = crate::sandbox::check_workspace_sandbox(&base, &rel)
-                    .map_err(|e| format!("沙箱拦截: {e}"))?;
+                let safe = crate::sandbox::resolve_workspace_path(&base, &rel);
                 let meta = tokio::fs::metadata(&safe)
                     .await
                     .map_err(|e| format!("获取元数据失败: {e}"))?;
@@ -138,8 +133,7 @@ pub(super) fn register(
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
         });
         async move {
-            let safe = crate::sandbox::check_workspace_sandbox(&base, &rel)
-                .map_err(|e| format!("沙箱拦截: {e}"))?;
+            let safe = crate::sandbox::resolve_workspace_path(&base, &rel);
             if safe.is_dir() {
                 tokio::fs::remove_dir_all(&safe)
                     .await

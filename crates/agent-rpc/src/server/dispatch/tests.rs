@@ -100,7 +100,7 @@ fn test_merge_contribution_views_fills_disk_plugin_contributions() {
 fn test_merge_contribution_views_never_touches_builtin_items() {
     let store = agent_node::plugins::new_contribution_store(vec![
         agent_node::plugins::PluginContributionView {
-            plugin_id: "builtin:approval-guard".to_string(),
+            plugin_id: "builtin:ask-user".to_string(),
             tools: vec![agent_node::plugins::PluginToolInfo {
                 name: "should_not_appear".to_string(),
                 description: String::new(),
@@ -112,7 +112,7 @@ fn test_merge_contribution_views_never_touches_builtin_items() {
             hooks: Vec::new(),
         },
     ]);
-    let mut items = vec![plugin_item("builtin:approval-guard", "builtin")];
+    let mut items = vec![plugin_item("builtin:ask-user", "builtin")];
     merge_contribution_views(Some(&store), &mut items);
     assert!(
         items[0].tools.is_empty(),
@@ -382,7 +382,6 @@ async fn test_handshake_capabilities_come_from_the_product_declaration() {
             std::env::temp_dir().join("a_da_test_home"),
         ))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::new()),
         Arc::new(SkillManager::new()),
         None,
@@ -447,7 +446,6 @@ async fn test_handshake_without_spec_falls_back_to_defaults() {
             std::env::temp_dir().join("a_da_test_home"),
         ))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::new()),
         Arc::new(SkillManager::new()),
         None,
@@ -596,7 +594,6 @@ async fn test_builtin_catalog_matches_registry_exactly() {
         ))),
         Arc::new(agent_node::checkpoint::CheckpointManager::new(None)),
         Arc::new(agent_node::subagents::SubagentManager::new()),
-        Arc::new(agent_node::approval::ApprovalManager::new()),
         Arc::new(agent_node::plugins::PluginManager::new()),
         Arc::new(agent_node::skills::SkillManager::new()),
         None,
@@ -642,52 +639,6 @@ async fn test_builtin_catalog_matches_registry_exactly() {
 }
 
 #[tokio::test]
-async fn test_approval_decide_resolves_pending_question() {
-    let store = Arc::new(tokio::sync::RwLock::new(AgentStore::new(
-        "E:/codes/default_ws".to_string(),
-    )));
-    let session_mgr = Arc::new(agent_node::session::SessionManager::new(Some(
-        std::path::PathBuf::from("E:/codes/default_ws"),
-    )));
-    let checkpoint_mgr = Arc::new(agent_node::checkpoint::CheckpointManager::new(None));
-    let subagent_mgr = Arc::new(agent_node::subagents::SubagentManager::new());
-    let approval_mgr = Arc::new(agent_node::approval::ApprovalManager::new());
-    let plugin_mgr = Arc::new(agent_node::plugins::PluginManager::new());
-    let skill_mgr = Arc::new(agent_node::skills::SkillManager::new());
-
-    let dispatcher = Dispatcher::new(
-        store.clone(),
-        session_mgr,
-        checkpoint_mgr,
-        subagent_mgr,
-        approval_mgr,
-        plugin_mgr,
-        skill_mgr,
-        None,
-    );
-
-    let call_id = "test_ask_approval_fallback";
-    let rx = agent_node::approval::global_question_manager().register_waiter(call_id);
-    assert!(agent_node::approval::global_question_manager().has_pending(call_id));
-
-    // 模拟前端调用 approval.decide
-    let req = serde_json::json!({
-        "toolItemId": call_id,
-        "approved": true
-    });
-
-    let res = dispatcher
-        .dispatch(agent_proto::methods::APPROVAL_DECIDE, req)
-        .await
-        .expect("调用应该成功");
-    assert_eq!(res.get("resolved").and_then(|v| v.as_bool()), Some(true));
-
-    let ans = rx.await.expect("应该唤醒等待者");
-    assert_eq!(ans.answered_by, "user");
-    assert!(!agent_node::approval::global_question_manager().has_pending(call_id));
-}
-
-#[tokio::test]
 async fn test_session_initialize_returns_capabilities_and_snapshot_has_seq() {
     let store = Arc::new(tokio::sync::RwLock::new(AgentStore::new(
         "E:/codes/default_ws".to_string(),
@@ -695,7 +646,6 @@ async fn test_session_initialize_returns_capabilities_and_snapshot_has_seq() {
     let session_mgr = Arc::new(agent_node::session::SessionManager::new(None));
     let checkpoint_mgr = Arc::new(agent_node::checkpoint::CheckpointManager::new(None));
     let subagent_mgr = Arc::new(agent_node::subagents::SubagentManager::new());
-    let approval_mgr = Arc::new(agent_node::approval::ApprovalManager::new());
     let plugin_mgr = Arc::new(agent_node::plugins::PluginManager::new());
     let skill_mgr = Arc::new(agent_node::skills::SkillManager::new());
 
@@ -704,7 +654,6 @@ async fn test_session_initialize_returns_capabilities_and_snapshot_has_seq() {
         session_mgr,
         checkpoint_mgr,
         subagent_mgr,
-        approval_mgr,
         plugin_mgr,
         skill_mgr,
         None,
@@ -786,7 +735,7 @@ async fn test_plugin_reload_invalidates_workspace_engine_caches() {
     use agent_base::ports::ToolCatalog;
     use agent_base::testing::{
         FixedClock, FixedPrompt, InMemorySessionStore, InMemoryToolCatalog, MockScope,
-        RecordingApprovalGate, ScriptedModelClient,
+        ScriptedModelClient,
     };
     use std::path::PathBuf;
 
@@ -794,7 +743,6 @@ async fn test_plugin_reload_invalidates_workspace_engine_caches() {
     let runtime = Arc::new(AgentRuntime::new(
         Arc::new(ScriptedModelClient::new(vec![])),
         catalog,
-        Arc::new(RecordingApprovalGate::new(true)),
         Arc::new(InMemorySessionStore::new()),
         Arc::new(FixedPrompt::new("test")),
         Arc::new(MockScope::new("test")),
@@ -812,7 +760,6 @@ async fn test_plugin_reload_invalidates_workspace_engine_caches() {
             std::env::temp_dir().join("a_da_test_home"),
         ))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::new()),
         Arc::new(SkillManager::new()),
         None,
@@ -871,7 +818,6 @@ async fn test_task_list_and_kill_use_the_injected_background_store() {
         Arc::new(SessionManager::new(Some(home.clone()))),
         Arc::new(CheckpointManager::new(Some(home.clone()))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(PluginManager::with_home(home.clone())),
         Arc::new(SkillManager::with_home(home.clone())),
         None,
@@ -945,7 +891,6 @@ async fn test_plugin_route_dispatches_to_the_ts_router_and_keeps_http_status() {
         Arc::new(SessionManager::new(Some(home.clone()))),
         Arc::new(CheckpointManager::new(Some(home.clone()))),
         Arc::new(SubagentManager::new()),
-        Arc::new(ApprovalManager::new()),
         Arc::new(
             PluginManager::with_home(home.clone()).with_unified_dir(unified.clone()),
         ),

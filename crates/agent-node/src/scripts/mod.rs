@@ -15,7 +15,7 @@
 //! - **内联源码**：沙箱按路径装载（要读盘、要做路径沙箱判定），所以 `ScriptSource::Inline`
 //!   在这里**如实拒绝**，而不是偷偷写临时文件凑合。
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub mod assembly;
 pub mod needs;
@@ -33,13 +33,26 @@ use agent_base::domain::{
     DiagFamily, DiagOutcome, DiagnosticEvent, Origin, POINT_SCRIPT_FINISHED, POINT_SCRIPT_INVOKED,
 };
 use agent_base::ports::{
-    BoxFuture, InvokeRequest, LoadRequest, ModuleHandle, ScriptCtx, ScriptError, ScriptHookDeclaration,
-    ScriptHookOutcome, ScriptHost, ScriptNeeds, ScriptOutcome, ScriptSkillDeclaration,
-    ScriptSource, ScriptToolDeclaration,
+    BoxFuture, CancelToken, InvokeRequest, LoadRequest, ModuleHandle, ScriptCtx, ScriptError,
+    ScriptHookDeclaration, ScriptHookOutcome, ScriptHost, ScriptNeeds, ScriptOutcome,
+    ScriptSkillDeclaration, ScriptSource, ScriptToolDeclaration,
 };
 
 use crate::plugins::PluginSandbox;
 use crate::scripts::registry::{LoadedScript, ScriptRegistry};
+
+/// 轮询取消信号；插件工具可能在沙箱里等很久（例如提问），必须能被用户中止。
+async fn wait_cancel(cancel: &dyn CancelToken) {
+    if cancel.is_cancelled() {
+        return;
+    }
+    loop {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if cancel.is_cancelled() {
+            return;
+        }
+    }
+}
 
 /// 宿主级的遥测出口。
 ///
@@ -173,6 +186,7 @@ impl ScriptHost for TsScriptHost {
                     parameters: tool.parameters,
                     // 自述只读由沙箱归一化成 `"read"` / `"write"`，这里只做映射。
                     access: agent_base::ports::ScriptToolAccess::from_declared(Some(&tool.access)),
+                    long_running: tool.long_running,
                 })
                 .collect();
             let exports: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
@@ -387,13 +401,18 @@ impl ScriptHost for TsScriptHost {
                 &call.export,
                 call.args.clone(),
                 &loaded.workspace,
+                Some(ctx.thread_id),
                 timeout_s,
                 to_engine_needs(loaded.needs),
                 // SP-11：进程内限额来自**同一个预算**——墙钟兜"等待型"，
                 // 指令上限兜"同步死循环"，两者不能各说各话。
                 ada_ts_engine::Limits::tight(ctx.budget.loop_iterations),
-            )
-            .await;
+            );
+            tokio::pin!(result);
+            let result = tokio::select! {
+                result = &mut result => result,
+                _ = wait_cancel(ctx.cancel) => return Err(ScriptError::Aborted),
+            };
 
             let elapsed_ms = started.elapsed().as_millis() as u64;
 
@@ -479,11 +498,8 @@ impl ScriptHost for TsScriptHost {
 /// 端口不认识 `Needs`、引擎不认识 `ScriptNeeds`，转换只能有一处：
 /// 各写一份迟早出现"端口说给了 fs、引擎那边没注入"这种对不上的账。
 pub(crate) fn to_engine_needs(needs: ScriptNeeds) -> ada_ts_engine::Needs {
-    // 安全下线：`@ada-needs` 只作声明，不再作为授权门。插件一律拿到全部能力。
-    // 恢复安全：删掉这个分支即可（`SECURITY_ENFORCED = true` 时它不会命中）。
-    if agent_toolkit::security::deferred() {
-        return ada_ts_engine::Needs::everything();
-    }
+    // `@ada-needs` 只是**模块注入清单**，不再承担授权语义：
+    // 声明了哪几项，沙箱里就注入哪几项；未声明的能力在本插件里不存在。
     ada_ts_engine::Needs {
         fs_read: needs.fs_read,
         fs_write: needs.fs_write,
@@ -724,11 +740,6 @@ mod tests {
     /// 一个连 JS 都跑不起来的沙箱也能让 `typeof fetch` 是 undefined。
     #[tokio::test]
     async fn test_plugin_default_needs_hides_the_network() {
-        // 安全下线期间能力门不生效（插件拿到全部能力）；恢复
-        // `SECURITY_ENFORCED = true` 后这条断言才描述生产行为。
-        if agent_toolkit::security::deferred() {
-            return;
-        }
         let (dir, path) = write_plugin(
             "export default { tools: [ { name: 'probe', description: '看有没有网', \
              execute: async () => ({ ok: true, output: typeof fetch }) } ] }\n",
@@ -794,10 +805,6 @@ mod tests {
     /// 而且声明之后**真的能拿到**（两个方向都断言，才分得清"门禁生效"与"沙箱本来就坏"）。
     #[tokio::test]
     async fn test_declared_needs_gate_the_network_per_plugin() {
-        // 安全下线期间能力门不生效；恢复 `SECURITY_ENFORCED = true` 后这条断言才成立。
-        if agent_toolkit::security::deferred() {
-            return;
-        }
         // ① 没有指令 → 宿主地板：fs 开、net 关 → `fetch` 不存在
         let (dir, path) = write_plugin(
             "export default { tools: [ { name: 'probe', description: '看有没有网', \

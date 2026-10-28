@@ -10,7 +10,7 @@ use tokio::process::Command;
 use tokio::sync::watch;
 
 use super::fs_tools::{ToolFailure, ToolResult};
-use super::sandbox::{check_workspace_sandbox, resolve_path_unrestricted};
+use super::sandbox::resolve_path;
 
 
 const DEFAULT_TIMEOUT_S: u64 = 120;
@@ -60,19 +60,7 @@ pub async fn run_command(
     mut abort_rx: Option<watch::Receiver<bool>>,
 ) -> ToolResult {
     let run_cwd = match cwd {
-        Some(p) if !p.trim().is_empty() => {
-            // 安全下线（`security::deferred()`）时不再校验 cwd 边界；
-            // 启用的路径保持原有沙箱判定（纯函数不变，单测继续有效）。
-            let resolved = if crate::security::deferred() {
-                Ok(resolve_path_unrestricted(workspace, p.trim()))
-            } else {
-                check_workspace_sandbox(workspace, p.trim())
-            };
-            match resolved {
-                Ok(checked) => checked,
-                Err(e) => return ToolResult::error(e.to_string()),
-            }
-        }
+        Some(p) if !p.trim().is_empty() => resolve_path(workspace, p.trim()),
         _ => workspace.to_path_buf(),
     };
 

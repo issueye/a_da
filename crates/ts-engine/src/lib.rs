@@ -14,5 +14,5 @@ pub use runtime::{
     is_limit_error, ConsoleMode, ConsoleSnapshot, EventLoopMsg, Limits, PureTsRuntime,
     CONSOLE_CAPTURE_LIMIT, LIMIT_MARKER,
 };
-pub use sandbox::{check_workspace_sandbox, resolve_real_path, strip_unc_prefix};
+pub use sandbox::{resolve_workspace_path, resolve_real_path, strip_unc_prefix};
 
